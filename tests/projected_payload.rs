@@ -52,7 +52,6 @@ mod through_mapping {
     use super::*;
     use orbital_core::runtime::projected_payload::projected_through_mapping;
     use orbital_core::schema::SExpression;
-    use std::collections::HashMap;
 
     fn target() -> Vec<PayloadField> {
         serde_json::from_value(json!([
@@ -62,7 +61,7 @@ mod through_mapping {
         .expect("target fields")
     }
 
-    fn mapping(pairs: &[(&str, &str)]) -> HashMap<String, SExpression> {
+    fn mapping(pairs: &[(&str, &str)]) -> orbital_core::schema::SObject {
         pairs.iter().map(|(k, v)| (k.to_string(), SExpression::String(v.to_string()))).collect()
     }
 
@@ -83,7 +82,7 @@ mod through_mapping {
     #[test]
     fn edge_a_computed_mapping_value_is_not_a_pass_through() {
         let rows = tags();
-        let computed: HashMap<String, SExpression> = HashMap::from([(
+        let computed: orbital_core::schema::SObject = orbital_core::schema::SObject::from([(
             "tagId".to_string(),
             SExpression::Array(vec![SExpression::String("str/concat".into()), SExpression::String("@payload.id".into())]),
         )]);

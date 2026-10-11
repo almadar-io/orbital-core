@@ -28,7 +28,7 @@ pub fn projected_payload<'a>(
 /// that source field `f` of `T`'s first row. Computed mapping values are not pass-throughs.
 pub fn projected_through_mapping<'a>(
     target_fields: &[PayloadField],
-    mapping: &HashMap<String, SExpression>,
+    mapping: &crate::schema::SObject,
     rows_for: impl Fn(&str) -> Option<&'a [Value]>,
 ) -> HashMap<String, Value> {
     let projected = projected_payload(target_fields, rows_for);

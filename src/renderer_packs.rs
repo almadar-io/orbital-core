@@ -1,8 +1,7 @@
 //! Native renderer packs (`docs/Almadar_Behavior_Packages.md` §14, 5c): the
 //! generated per-target renderer sources and pattern fixtures live in their own
-//! repos, checked out as submodules beside the shell templates
-//! (`orbital-rust/templates/almadar-renderers-<target>`) and shipped with each
-//! `orb` release the same way — read from disk at emit, never baked into the
+//! shell repos (`renderers/<name>/`) and ship with each shell release beside its
+//! templates — read from disk at emit, never baked into the
 //! binary, so a renderer change is a submodule bump, not a Rust rebuild. The
 //! pack's `package.json` `orbRenderer` block declares the target, the renderer
 //! interface version the sources were generated against, the pattern registry
@@ -26,34 +25,33 @@ pub fn pack_dir_name(target: &str) -> String {
     format!("almadar-renderers-{target}")
 }
 
-/// Locate a templates-directory entry (`ios-shell`, `almadar-renderers-ios`, …)
-/// the way the shells locate their templates: `ORBITAL_SHELLS_DIR`, then a
-/// `templates/` (or `shells/`) folder beside the running executable (a
-/// distributed `orb`), then this checkout's `orbital-rust/templates`.
-pub fn find_template_dir(name: &str) -> Option<PathBuf> {
+/// A shipped templates-directory entry (`ios-shell`, `almadar-renderers-ios`, …):
+/// `ORBITAL_SHELLS_DIR`, then a `templates/` (or `shells/`) folder beside the
+/// running executable (a distributed shell program or `orb`).
+fn shipped_dir(name: &str) -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("ORBITAL_SHELLS_DIR") {
         let path = PathBuf::from(dir).join(name);
         if path.exists() {
             return Some(path);
         }
     }
-    if let Some(exe_dir) = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(Path::to_path_buf))
-    {
-        for dir_name in ["templates", "shells"] {
-            for depth in ["", "../", "../../", "../../../"] {
-                let path = exe_dir.join(format!("{depth}{dir_name}/{name}"));
-                if path.exists() {
-                    return Some(path);
-                }
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    for dir_name in ["templates", "shells"] {
+        for depth in ["", "../", "../../", "../../../"] {
+            let path = exe_dir.join(format!("{depth}{dir_name}/{name}"));
+            if path.exists() {
+                return Some(path);
             }
         }
     }
-    let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../templates")
-        .join(name);
-    checkout.exists().then_some(checkout)
+    None
+}
+
+/// A shell's scaffold `name`: the shipped copy ([`shipped_dir`]), else the
+/// shell repo's own `templates/<name>` (`crate_dir` is the shell crate's
+/// `CARGO_MANIFEST_DIR`).
+pub fn shell_template(name: &str, crate_dir: &Path) -> PathBuf {
+    shipped_dir(name).unwrap_or_else(|| crate_dir.join("templates").join(name))
 }
 
 /// One installed pack: every source file (path relative to `sources`) and every
@@ -133,15 +131,15 @@ fn files_under(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Locates `target`'s pack ([`find_template_dir`], else `local`, the shell
-/// crate's own `renderer-pack/`) and reads it.
+/// Locates `target`'s pack (the shipped copy, else `local`, the shell repo's
+/// own `renderers/<name>/`) and reads it.
 pub fn find_renderer_pack(
     target: &str,
     expected: u64,
     local: &Path,
 ) -> Result<RendererPack, RendererPackError> {
     let name = pack_dir_name(target);
-    let dir = find_template_dir(&name)
+    let dir = shipped_dir(&name)
         .or_else(|| local.is_dir().then(|| local.to_path_buf()))
         .ok_or_else(|| RendererPackError::NotInstalled {
             package: name.clone(),
@@ -333,7 +331,7 @@ mod tests {
     #[test]
     fn control_a_missing_local_pack_is_not_installed() {
         let root = tmp("nolocal");
-        let err = find_renderer_pack("zzlocal", 1, &root.join("renderer-pack")).unwrap_err();
+        let err = find_renderer_pack("zzlocal", 1, &root.join("renderers/zzlocal")).unwrap_err();
         assert!(matches!(err, RendererPackError::NotInstalled { .. }), "{err:?}");
     }
 
@@ -395,5 +393,24 @@ mod tests {
         .unwrap();
         let err = load_renderer_pack("ios", 1, &root.join("almadar-renderers-ios")).unwrap_err();
         assert!(err.to_string().contains("orbRenderer"), "{err}");
+    }
+
+    #[test]
+    fn a_shell_template_falls_back_to_the_shell_repos_templates_dir() {
+        let crate_dir = Path::new("/nonexistent/orbital-shell-zz");
+        assert_eq!(shell_template("zz-shell-not-shipped", crate_dir), crate_dir.join("templates/zz-shell-not-shipped"));
+    }
+
+    #[test]
+    fn control_every_shell_repo_carries_its_scaffold_under_templates() {
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for (repo, name) in [("python", "python-shell"), ("rust", "rust-shell"), ("mobile", "mobile-shell"), ("android", "android-shell"), ("ios", "ios-shell"), ("chrome", "chrome-shell"), ("typescript", "almadar-shell")] {
+            let dir = crates.join(format!("orbital-shell-{repo}"));
+            if !dir.is_dir() {
+                continue;
+            }
+            assert!(dir.join("templates").join(name).is_dir(), "{repo}: templates/{name}");
+            assert!(!dir.join("template").exists() && !dir.join("renderer-pack").exists(), "{repo}: old layout left behind");
+        }
     }
 }

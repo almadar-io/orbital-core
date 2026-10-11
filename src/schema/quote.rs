@@ -166,7 +166,7 @@ fn extract_holes(
             // Canonical key order, so hole numbering matches the body bytes on every path.
             let mut keys: Vec<&String> = map.keys().collect();
             keys.sort();
-            let mut out = std::collections::HashMap::new();
+            let mut out = crate::schema::SObject::new();
             for key in keys {
                 out.insert(key.clone(), extract_holes(&map[key], holes)?);
             }

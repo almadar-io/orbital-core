@@ -309,12 +309,22 @@ pub fn user_store_dir() -> Option<PathBuf> {
 /// (Phase 2).
 pub const STD_PACKAGE: &str = "@almadar/std";
 
-/// The shared "not installed" message for a missing behavior package —
-/// `orbital-compiler`'s loader, `orbital-lolo`'s contracts loader, and
-/// `orbital-cli` all report a missing package through this one function
-/// instead of hand-writing the text.
+/// The command that installs `package`: `orb update` for what every orb needs
+/// (`@almadar/core`, `@almadar/std`, which it installs itself), `orb add
+/// <package>` for anything else.
+pub fn install_command(package: &str) -> String {
+    if package == STD_PACKAGE || package == crate::language_data::CORE_PACKAGE {
+        "orb update".to_string()
+    } else {
+        format!("orb add {package}")
+    }
+}
+
+/// The shared "not installed" message for a missing package — `orbital-compiler`'s
+/// loader, `orbital-lolo`'s contracts loader, the language-data loader and
+/// `orbital-cli` all report a missing package through this one function.
 pub fn not_installed_message(package: &str) -> String {
-    format!("{package} is not installed — run `orb behaviors install {package}` (or `--global`)")
+    format!("{package} is not installed — run `{}` (or with `--global`)", install_command(package))
 }
 
 pub fn compiler_satisfies(range: &str, running_version: &str) -> Result<bool, semver::Error> {
@@ -1295,14 +1305,13 @@ mod tests {
     fn not_installed_message_names_the_package_and_install_command() {
         assert_eq!(
             not_installed_message(STD_PACKAGE),
-            "@almadar/std is not installed — run `orb behaviors install @almadar/std` \
-             (or `--global`)"
+            "@almadar/std is not installed — run `orb update` (or with `--global`)"
         );
         assert_eq!(
             not_installed_message("@fake-io/behaviors"),
-            "@fake-io/behaviors is not installed — run `orb behaviors install \
-             @fake-io/behaviors` (or `--global`)"
+            "@fake-io/behaviors is not installed — run `orb add @fake-io/behaviors` (or with `--global`)"
         );
+        assert_eq!(install_command(crate::language_data::CORE_PACKAGE), "orb update", "core is what orb installs itself");
     }
 
     /// A plain npm package.json (no `orb` block) — `find_npm_package` targets

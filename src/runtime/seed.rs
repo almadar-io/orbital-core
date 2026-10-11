@@ -351,6 +351,19 @@ fn sample_value(
                 ));
             }
         }
+        // A behavior field's candidates are behavior specifiers, used verbatim as behavior values.
+        if field.field_type == FieldType::Behavior {
+            let candidates = mock_candidates(declared);
+            return Some(
+                match candidates.get((ordinal - 1) % candidates.len().max(1)) {
+                    Some(spec) => Value::Object(HashMap::from([(
+                        "behavior".to_string(),
+                        Value::String(spec.to_string()),
+                    )])),
+                    None => Value::Null,
+                },
+            );
+        }
         if matches!(field.field_type, FieldType::Date | FieldType::Datetime | FieldType::Timestamp) {
             let candidates = mock_candidates(declared);
             let literal = candidates
@@ -1064,7 +1077,7 @@ fn is_blank(value: &Value) -> bool {
 /// `<Entity> Id N`, and absent timestamps are `now` — as a mock-store `create` stamps them.
 pub fn instance_rows(
     entity_name: &str,
-    instances: &[HashMap<String, SExpression>],
+    instances: &[crate::schema::SObject],
     now_iso: &str,
 ) -> Vec<Value> {
     let mut minted = 0;
@@ -1974,6 +1987,43 @@ mod policy_tests {
             cell(&rows, 1, "clientName"),
             Value::String("person-name-2".to_string())
         );
+    }
+
+    fn behavior_value(spec: &str) -> Value {
+        Value::Object(std::collections::HashMap::from([(
+            "behavior".to_string(),
+            Value::String(spec.to_string()),
+        )]))
+    }
+
+    #[test]
+    fn declared_mock_on_a_behavior_field_seeds_a_behavior_value_per_row_verbatim() {
+        let f = field_json(json!({
+            "name": "behavior",
+            "type": "behavior",
+            "required": true,
+            "mock": "almadar-behaviors/std-booking-solution, almadar-behaviors/std-accounting-solution"
+        }));
+        let rows = sample_rows(&entity("E", None, vec![f]), 3);
+        assert_eq!(
+            cell(&rows, 0, "behavior"),
+            behavior_value("almadar-behaviors/std-booking-solution")
+        );
+        assert_eq!(
+            cell(&rows, 1, "behavior"),
+            behavior_value("almadar-behaviors/std-accounting-solution")
+        );
+        assert_eq!(
+            cell(&rows, 2, "behavior"),
+            behavior_value("almadar-behaviors/std-booking-solution")
+        );
+    }
+
+    #[test]
+    fn control_a_behavior_field_without_mock_seeds_none() {
+        let f = field_json(json!({ "name": "behavior", "type": "behavior", "required": true }));
+        let rows = sample_rows(&entity("E", None, vec![f]), 1);
+        assert_eq!(cell(&rows, 0, "behavior"), Value::Null);
     }
 
     #[test]

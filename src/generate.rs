@@ -19,7 +19,7 @@ pub fn unsupported_operator_marker(function: &str) -> String {
 }
 
 /// A generated file
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GeneratedFile {
     /// Relative path within the generated directory
     pub path: String,
@@ -37,7 +37,7 @@ impl GeneratedFile {
 }
 
 /// Output from code generation
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GeneratedOutput {
     /// Generated files
     pub files: Vec<GeneratedFile>,
@@ -46,7 +46,8 @@ pub struct GeneratedOutput {
 }
 
 /// Shell mode for mixed-language compilation
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ShellMode {
     /// Generate everything (default)
     #[default]

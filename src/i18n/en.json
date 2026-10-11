@@ -578,6 +578,7 @@
     "behavior/detect-layout": "behavior/detect-layout",
     "behavior/pipe": "behavior/pipe",
     "behavior/ref": "behavior/ref",
+    "behavior/resolve": "behavior/resolve",
     "behavior/source": "behavior/source",
     "behavior/wire": "behavior/wire",
     "browser/clipboard-read": "browser/clipboard-read",

@@ -65,7 +65,7 @@ fn format_list(items: &[SExpression], each: &dyn Fn(&SExpression) -> String) -> 
 }
 
 fn format_object(
-    map: &std::collections::HashMap<String, SExpression>,
+    map: &crate::schema::SObject,
     each: &dyn Fn(&SExpression) -> String,
 ) -> String {
     if map.is_empty() {

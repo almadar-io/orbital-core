@@ -169,7 +169,7 @@ fn locale_instances_round_trip_through_serde() {
 #[test]
 fn the_viewer_locale_takes_its_own_rows_else_the_default_rows() {
     let e = localized_invoice();
-    let client = |rows: &[std::collections::HashMap<String, orbital_core::schema::SExpression>]| {
+    let client = |rows: &[orbital_core::schema::SObject]| {
         rows[0].get("client").and_then(|v| v.as_str()).map(str::to_string)
     };
     assert_eq!(client(e.instances_for_locale(Some("ar"))).as_deref(), Some("نور للخدمات اللوجستية"));

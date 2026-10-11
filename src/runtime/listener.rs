@@ -25,7 +25,7 @@ pub struct ListenerInfo {
     pub source: Option<ListenSource>,
 
     /// Optional payload remap applied to the source event's payload.
-    pub payload_mapping: Option<HashMap<String, SExpression>>,
+    pub payload_mapping: Option<crate::schema::SObject>,
 
     /// Optional guard gating whether the listener fires.
     pub guard: Option<SExpression>,
@@ -399,7 +399,7 @@ mod tests {
             },
         ));
 
-        let mut mapping = HashMap::new();
+        let mut mapping = crate::schema::SObject::new();
         mapping.insert(
             "userId".to_string(),
             serde_json::from_str::<SExpression>(r#""@payload.id""#).unwrap(),

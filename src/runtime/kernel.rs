@@ -18,7 +18,7 @@ use super::{
 use crate::effects::{
     delivery_record_value, BusEventSource, DeliveryRecord, DispatchLog, PersistOperation,
 };
-use crate::util::dispatch_visit_key;
+use crate::util::DispatchVisits;
 use crate::{
     effects::{
         Effect, EffectExecutor, EffectOutcome, EffectResult, EventRequest, EventResponse,
@@ -1151,7 +1151,7 @@ impl RuntimeKernel {
     /// `listens` matches `(event, source-trait)` processes its triggered event, and any
     /// `emit` effect fans out the same way. Returns one outcome per processed trait, in
     /// dispatch order, so the caller merges their effects into a single response. A
-    /// `(trait, event, from, payload, frame)` visited-set bounds cycles (`dispatch_visit_key`).
+    /// `(trait, event, from, payload, frame)` visited-set bounds cycles (`DispatchVisits`).
     ///
     /// This is the single dispatch entry point the client bridge and server route call —
     /// `process_event` is the single-trait primitive it builds on. Without this, a user
@@ -1240,7 +1240,7 @@ impl RuntimeKernel {
         let _stamp = self.begin_dispatch();
         let eid = entity_id.unwrap_or("singleton").to_string();
         let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
-        let mut visited: HashSet<String> = HashSet::new();
+        let mut visited = DispatchVisits::default();
         // A server leg carries the client's mount (`_awaitingInit`, never a
         // payload binding): deliveries held for a trait the client has since
         // initialized go out first, ahead of this request's seed.
@@ -1290,9 +1290,7 @@ impl RuntimeKernel {
         for scope in &seed_scopes {
             let from = self.current_state_name(scope, Some(&eid));
             let frame = self.step_entity_view(scope, &eid);
-            if !visited.insert(dispatch_visit_key(
-                scope, event_name, &from, &payload, &frame,
-            )) {
+            if !visited.insert(scope, event_name, &from, payload.clone(), frame) {
                 continue;
             }
             let view = memory.view(scope, &seed_delivery);
@@ -1347,7 +1345,7 @@ impl RuntimeKernel {
         &self,
         eid: &str,
         mut queue: VecDeque<CascadeItem>,
-        visited: &mut HashSet<String>,
+        visited: &mut DispatchVisits,
         already_delivered: &HashSet<(String, String)>,
         memory: &mut DispatchMemory,
         outcomes: &mut Vec<(String, ProcessEventResult)>,
@@ -1375,8 +1373,7 @@ impl RuntimeKernel {
             } = item;
             let from = self.current_state_name(&t, Some(eid));
             let frame = self.step_entity_view(&t, eid);
-            let key = dispatch_visit_key(&t, &ev, &from, &pl, &frame);
-            if visited.contains(&key) {
+            if visited.contains(&t, &ev, &from, &pl, &frame) {
                 continue;
             }
             let view = memory.view(&t, &delivery);
@@ -1386,7 +1383,7 @@ impl RuntimeKernel {
                     continue;
                 }
             }
-            visited.insert(key);
+            visited.insert(&t, &ev, &from, pl.clone(), frame);
             if steps >= CROSS_TRAIT_CASCADE_CAP {
                 let dropped: BTreeSet<String> = std::iter::once(t)
                     .chain(queue.into_iter().map(|item| item.trait_name))
@@ -1777,7 +1774,7 @@ impl RuntimeKernel {
             self.run_cascade(
                 &eid,
                 queue,
-                &mut HashSet::new(),
+                &mut DispatchVisits::default(),
                 &HashSet::new(),
                 &mut DispatchMemory::default(),
                 &mut outcomes,
@@ -2054,7 +2051,7 @@ impl RuntimeKernel {
             }
         }
 
-        let mut visited: HashSet<String> = HashSet::new();
+        let mut visited = DispatchVisits::default();
         let mut fanned: Vec<CascadeItem> = Vec::new();
         for ev in &response.emitted_events {
             let source = ev.source.clone().unwrap_or_default();

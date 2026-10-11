@@ -6,4 +6,4 @@ pub mod canonical_json;
 pub mod visit_key;
 
 pub use canonical_json::canonical_json;
-pub use visit_key::dispatch_visit_key;
+pub use visit_key::{dispatch_visit_key, DispatchVisits};

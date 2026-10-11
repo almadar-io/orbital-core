@@ -229,6 +229,7 @@ fn stamp_orbital(orbital: &mut Orbital, synthetic_traits: &HashSet<String>, mint
         };
         let mut ent_names: HashSet<String> = HashSet::new();
         collect_entity_ref_names(&body, &ids.entities, &mut ent_names);
+        let ent_names: std::collections::BTreeSet<String> = ent_names.into_iter().collect();
         let entity_map: HashMap<String, String> = ent_names
             .into_iter()
             .filter_map(|n| ids.entities.get(&n).map(|id| (n, id.clone())))
@@ -237,6 +238,7 @@ fn stamp_orbital(orbital: &mut Orbital, synthetic_traits: &HashSet<String>, mint
 
         let mut embed_names: HashSet<String> = HashSet::new();
         collect_embed_ref_names(&body, &ids.traits, &mut embed_names);
+        let embed_names: std::collections::BTreeSet<String> = embed_names.into_iter().collect();
         let embed_map: HashMap<String, String> = embed_names
             .into_iter()
             .filter_map(|n| ids.traits.get(&n).map(|id| (n, id.clone())))

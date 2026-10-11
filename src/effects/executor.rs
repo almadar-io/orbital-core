@@ -1562,7 +1562,7 @@ mod tests {
                 SExpression::String("object/merge".to_string()),
                 SExpression::String("@payload.data".to_string()),
                 SExpression::Object({
-                    let mut m = HashMap::new();
+                    let mut m = crate::schema::SObject::new();
                     m.insert(
                         "sender".to_string(),
                         SExpression::String("@user.id".to_string()),

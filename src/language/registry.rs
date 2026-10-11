@@ -167,6 +167,9 @@ pub struct EmbeddedOperator {
     /// Argument naming a data effect's target entity; the effect runs where that entity's rows live. Pinned to `crate::effects::ENTITY_ARGS` by `tests/runs_on_drift.rs`.
     #[serde(rename = "entityArgPosition", default)]
     pub entity_arg_position: Option<usize>,
+    /// The host that executes the effect (`program`: the shared program host, `runProgramEffect`); absent when the runtime executes it.
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 /// Metadata for an operator category.
@@ -209,6 +212,25 @@ pub fn is_known_operator(name: &str) -> bool {
 /// Look up the metadata for an operator by name.
 pub fn get_operator(name: &str) -> Option<&'static EmbeddedOperator> {
     operators().get(name)
+}
+
+/// [`get_operator`] for callers that can run before the installed operator table is loaded: `None` until it is.
+pub fn try_get_operator(name: &str) -> Option<&'static EmbeddedOperator> {
+    crate::language_data::operator_data().ok()?;
+    get_operator(name)
+}
+
+/// Whether the installed operator table routes `name` to the shared program host (`host: "program"`).
+pub fn is_program_host_effect(name: &str) -> bool {
+    try_get_operator(name).is_some_and(|op| op.host.as_deref() == Some("program"))
+}
+
+/// Every effect the installed operator table routes to the shared program host.
+pub fn program_host_effects() -> impl Iterator<Item = &'static str> {
+    operators()
+        .iter()
+        .filter(|(_, op)| op.host.as_deref() == Some("program"))
+        .map(|(name, _)| name.as_str())
 }
 
 /// Returns true if the operator category targets Rust (or if unknown).
@@ -966,6 +988,32 @@ mod tests {
         let table = get_pattern("table-view").unwrap();
         assert_eq!(table.category, "display");
         assert!(table.props_schema.contains_key("entity"));
+    }
+
+    #[test]
+    fn program_host_effects_are_the_installed_tables_host_program_operators() {
+        let from_table: std::collections::BTreeSet<&str> = operators()
+            .iter()
+            .filter(|(_, op)| op.host.as_deref() == Some("program"))
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert!(from_table.contains("behavior/resolve"), "{from_table:?}");
+        assert_eq!(
+            program_host_effects().collect::<std::collections::BTreeSet<_>>(),
+            from_table
+        );
+        for op in &from_table {
+            assert!(is_program_host_effect(op), "{op}");
+        }
+        for op in [
+            "persist",
+            "call-service",
+            "behavior/apply",
+            "llm/generate",
+            "no/such",
+        ] {
+            assert!(!is_program_host_effect(op), "control: {op}");
+        }
     }
 
     #[test]

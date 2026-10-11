@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn struct_map_json_node_scalar_defer_to_renderer_object() {
-        let mut fields = std::collections::HashMap::new();
+        let mut fields = crate::ir::OirObject::new();
         fields.insert("a".to_string(), OirValue::Number(1.0));
         let value = OirValue::Object(fields);
         for ty in [
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn row_object_is_accepted_and_defers_to_renderer_object() {
-        let mut fields = std::collections::HashMap::new();
+        let mut fields = crate::ir::OirObject::new();
         fields.insert("a".to_string(), OirValue::Number(1.0));
         let value = OirValue::Object(fields);
         let ty = OirType::row("Revision");
@@ -433,7 +433,7 @@ mod tests {
         assert_eq!(boolean_vs_string.expected, "boolean");
         assert_eq!(boolean_vs_string.found, "string");
 
-        let mut fields = std::collections::HashMap::new();
+        let mut fields = crate::ir::OirObject::new();
         fields.insert("a".to_string(), OirValue::Number(1.0));
         let reference_vs_object = render_default(
             &r(),

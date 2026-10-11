@@ -5,7 +5,7 @@
 //! Mirrors `collectEmbeddedTraits` in `@almadar/runtime/ui`.
 
 use super::{OirEffect, OirExpr, OirModule, OirPattern, OirValue};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// Every `render-ui` pattern reachable from a transition's effects,
 /// including ones nested inside `(if …)` branches. A top-level-only scan
@@ -66,7 +66,7 @@ pub fn collect_trait_refs_from_pattern(
 }
 
 pub fn collect_trait_refs_from_config(
-    config: &HashMap<String, OirValue>,
+    config: &super::types::OirObject,
     resolve: &dyn Fn(&str) -> Option<String>,
     out: &mut HashSet<String>,
 ) {

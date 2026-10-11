@@ -3,6 +3,9 @@
 
 use serde::Serialize;
 use serde_json::{Map, Number, Value};
+use std::collections::HashMap;
+
+use crate::evaluator::Value as EvalValue;
 
 /// Largest integer an `f64` holds exactly; beyond it an integral float stays a float.
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
@@ -20,13 +23,63 @@ fn canonical_payload(value: &Value) -> Value {
             Value::Object(sorted)
         }
         Value::Array(items) => Value::Array(items.iter().map(canonical_payload).collect()),
-        Value::Number(n) => match n.as_f64() {
-            Some(f) if n.is_f64() && f.fract() == 0.0 && f.abs() <= MAX_SAFE_INTEGER => {
-                Value::Number(Number::from(f as i64))
-            }
-            _ => value.clone(),
-        },
+        Value::Number(n) => Value::Number(canonical_number(n)),
         other => other.clone(),
+    }
+}
+
+fn canonical_number(n: &Number) -> Number {
+    match n.as_f64() {
+        Some(f) if n.is_f64() && f.fract() == 0.0 && f.abs() <= MAX_SAFE_INTEGER => {
+            Number::from(f as i64)
+        }
+        _ => n.clone(),
+    }
+}
+
+/// `canonical_json(a) == canonical_json(b)` on two JSON trees, without building either string.
+fn same_canonical(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| same_canonical(v, w)))
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(v, w)| same_canonical(v, w))
+        }
+        (Value::Number(x), Value::Number(y)) => canonical_number(x) == canonical_number(y),
+        _ => a == b,
+    }
+}
+
+/// `canonical_json(a) == canonical_json(b)` on two evaluator values (a non-finite number
+/// serializes as null; a lambda as its s-expression).
+fn same_value(a: &EvalValue, b: &EvalValue) -> bool {
+    match (a, b) {
+        (EvalValue::Lambda { .. }, _) | (_, EvalValue::Lambda { .. }) => same_canonical(
+            &serde_json::to_value(a).unwrap_or(Value::Null),
+            &serde_json::to_value(b).unwrap_or(Value::Null),
+        ),
+        (EvalValue::Number(x), EvalValue::Number(y)) => {
+            if x.is_finite() && y.is_finite() {
+                x == y
+            } else {
+                !x.is_finite() && !y.is_finite()
+            }
+        }
+        (EvalValue::Number(n), EvalValue::Null) | (EvalValue::Null, EvalValue::Number(n)) => {
+            !n.is_finite()
+        }
+        (EvalValue::Object(x), EvalValue::Object(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| same_value(v, w)))
+        }
+        (EvalValue::Array(x), EvalValue::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(v, w)| same_value(v, w))
+        }
+        _ => a == b,
     }
 }
 
@@ -50,10 +103,58 @@ pub fn dispatch_visit_key(
     format!("{trait_name}\u{0}{event}\u{0}{from}\u{0}{payload}\u{0}{frame}")
 }
 
+/// A set of deliveries under the `dispatch_visit_key` identity. Steps are filed by
+/// `(trait, event, from)`; payload and frame are compared only against earlier visits of that
+/// same step, so a large entity frame is not serialized on every cascade step.
+#[derive(Debug, Default)]
+pub struct DispatchVisits {
+    steps: HashMap<String, Vec<(EvalValue, EvalValue)>>,
+}
+
+impl DispatchVisits {
+    pub fn contains(
+        &self,
+        trait_name: &str,
+        event: &str,
+        from: &str,
+        payload: &EvalValue,
+        frame: &EvalValue,
+    ) -> bool {
+        self.steps
+            .get(&format!("{trait_name}\u{0}{event}\u{0}{from}"))
+            .is_some_and(|seen| {
+                seen.iter()
+                    .any(|(p, f)| same_value(p, payload) && same_value(f, frame))
+            })
+    }
+
+    /// `true` when the step was not visited before (as `HashSet::insert`).
+    pub fn insert(
+        &mut self,
+        trait_name: &str,
+        event: &str,
+        from: &str,
+        payload: EvalValue,
+        frame: EvalValue,
+    ) -> bool {
+        if self.contains(trait_name, event, from, &payload, &frame) {
+            return false;
+        }
+        self.steps
+            .entry(format!("{trait_name}\u{0}{event}\u{0}{from}"))
+            .or_default()
+            .push((payload, frame));
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evaluator::Value as EValue;
+    use crate::schema::SExpression;
     use serde_json::json;
+    use std::sync::Arc;
 
     fn key(p: Value) -> String {
         dispatch_visit_key("Search", "STEP", "searching", &p, &Value::Null)
@@ -150,5 +251,135 @@ mod tests {
         let a = dispatch_visit_key("T", "E", "s", &json!(1), &json!(2));
         let b = dispatch_visit_key("T", "E", "s", &json!(2), &json!(1));
         assert_ne!(a, b);
+    }
+
+    fn ev(v: Value) -> EValue {
+        fn conv(v: Value) -> EValue {
+            match v {
+                Value::Null => EValue::Null,
+                Value::Bool(b) => EValue::Bool(b),
+                Value::Number(n) => EValue::Number(n.as_f64().unwrap_or(f64::NAN)),
+                Value::String(s) => EValue::String(s),
+                Value::Array(a) => EValue::Array(a.into_iter().map(conv).collect()),
+                Value::Object(o) => {
+                    EValue::Object(o.into_iter().map(|(k, v)| (k, conv(v))).collect())
+                }
+            }
+        }
+        conv(v)
+    }
+
+    fn lambda(param: &str) -> EValue {
+        EValue::Lambda {
+            params: vec![param.to_string()],
+            body: Arc::new(SExpression::String(param.to_string())),
+        }
+    }
+
+    fn corpus() -> Vec<EValue> {
+        let mut values: Vec<EValue> = [
+            Value::Null,
+            json!(0),
+            json!(1),
+            json!(1.5),
+            json!(-1),
+            json!(""),
+            json!("null"),
+            json!("1"),
+            json!(true),
+            json!(false),
+            json!([]),
+            json!([null]),
+            json!([1, 2]),
+            json!([2, 1]),
+            json!({}),
+            json!({ "a": null }),
+            json!({ "a": 1 }),
+            json!({ "b": 2, "a": 1 }),
+            json!({ "a": 1, "b": 2 }),
+            json!({ "a": [1, { "c": 2 }] }),
+            json!({ "a": [1, { "c": 3 }] }),
+        ]
+        .into_iter()
+        .map(ev)
+        .collect();
+        values.extend([
+            EValue::Number(-0.0),
+            EValue::Number(f64::NAN),
+            EValue::Number(f64::INFINITY),
+            EValue::Number(1e300),
+            EValue::Number(9_007_199_254_740_993.0),
+            lambda("x"),
+            lambda("y"),
+            ev(json!(["fn", ["x"], "x"])),
+            EValue::Array(vec![lambda("x")]),
+        ]);
+        values
+    }
+
+    #[test]
+    fn visits_agree_with_the_key_on_every_payload_pair() {
+        for a in corpus() {
+            for b in corpus() {
+                let mut visits = DispatchVisits::default();
+                visits.insert("T", "E", "s", a.clone(), EValue::Null);
+                assert_eq!(
+                    visits.contains("T", "E", "s", &b, &EValue::Null),
+                    dispatch_visit_key("T", "E", "s", &a, &EValue::Null)
+                        == dispatch_visit_key("T", "E", "s", &b, &EValue::Null),
+                    "{a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn visits_agree_with_the_key_on_every_frame_pair() {
+        for a in corpus() {
+            for b in corpus() {
+                let mut visits = DispatchVisits::default();
+                visits.insert("T", "E", "s", EValue::Null, a.clone());
+                assert_eq!(
+                    visits.contains("T", "E", "s", &EValue::Null, &b),
+                    dispatch_visit_key("T", "E", "s", &EValue::Null, &a)
+                        == dispatch_visit_key("T", "E", "s", &EValue::Null, &b),
+                    "{a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn visits_keep_trait_event_and_from_in_the_identity() {
+        let mut visits = DispatchVisits::default();
+        assert!(visits.insert("T", "E", "s", EValue::Null, EValue::Null));
+        assert!(!visits.contains("U", "E", "s", &EValue::Null, &EValue::Null));
+        assert!(!visits.contains("T", "F", "s", &EValue::Null, &EValue::Null));
+        assert!(!visits.contains("T", "E", "t", &EValue::Null, &EValue::Null));
+        assert!(!visits.contains("a\u{0}b", "c", "s", &EValue::Null, &EValue::Null));
+    }
+
+    #[test]
+    fn visits_report_the_identical_step_as_a_repeat() {
+        let mut visits = DispatchVisits::default();
+        assert!(visits.insert("T", "E", "s", ev(json!({ "k": 1 })), ev(json!({ "n": 1 }))));
+        assert!(visits.contains(
+            "T",
+            "E",
+            "s",
+            &ev(json!({ "k": 1 })),
+            &ev(json!({ "n": 1 }))
+        ));
+        assert!(!visits.insert("T", "E", "s", ev(json!({ "k": 1 })), ev(json!({ "n": 1 }))));
+    }
+
+    #[test]
+    fn visits_remember_every_distinct_frame_of_one_step() {
+        let mut visits = DispatchVisits::default();
+        assert!(visits.insert("T", "E", "s", EValue::Null, ev(json!({ "n": 1 }))));
+        assert!(visits.insert("T", "E", "s", EValue::Null, ev(json!({ "n": 2 }))));
+        assert!(visits.contains("T", "E", "s", &EValue::Null, &ev(json!({ "n": 1 }))));
+        assert!(visits.contains("T", "E", "s", &EValue::Null, &ev(json!({ "n": 2 }))));
+        assert!(!visits.contains("T", "E", "s", &EValue::Null, &ev(json!({ "n": 3 }))));
     }
 }

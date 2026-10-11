@@ -176,14 +176,14 @@ pub struct ModalOpenPath {
     /// The modal trait's own event the open fires (the listen's `triggers`, or the source event).
     pub modal_event: String,
     /// The listen's declared payload mapping from the source event into `modal_event`.
-    pub payload_mapping: Option<std::collections::HashMap<String, crate::schema::SExpression>>,
+    pub payload_mapping: Option<crate::schema::SObject>,
 }
 
 /// For every non-`main` slot transition, resolve the (source trait, source event) that
 /// opens it: if the modal trait `listens` for the transition's event from another trait,
 /// that emitter is the source; otherwise the modal trait opens it directly.
 pub fn modal_open_paths(schema: &OrbitalSchema) -> Vec<ModalOpenPath> {
-    type ListenRoute<'a> = (&'a str, &'a str, &'a Option<std::collections::HashMap<String, crate::schema::SExpression>>);
+    type ListenRoute<'a> = (&'a str, &'a str, &'a Option<crate::schema::SObject>);
     let mut listen_index: std::collections::HashMap<(&str, &str), ListenRoute<'_>> =
         std::collections::HashMap::new();
     for orbital in &schema.orbitals {

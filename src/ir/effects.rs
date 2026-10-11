@@ -3,7 +3,6 @@
 //! Effects are actions that modify state or interact with the outside world.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 use super::{OirBinding, OirExpr, OirPattern};
 
@@ -230,7 +229,7 @@ pub enum OirEffect {
     /// Custom effect
     Custom {
         name: String,
-        args: HashMap<String, OirExpr>,
+        args: crate::ir::OirFields,
         /// Success/failure event dispatch for substrate ops (llm/*, workspace/*,
         /// …), mirroring `Fetch`/`Persist`/`CallService`. The effect fires
         /// `getSubstrateService().invoke(name, args)` and dispatches the
@@ -387,27 +386,15 @@ const SUBSTRATE_OPERATOR_PREFIXES: &[&str] = &[
     "integration/",
 ];
 
-/// Substrate operators named exactly: the behavior-reflection and program
-/// effects. `behavior/apply` (pure) and the compile-time `behavior/compose`
-/// family share the `behavior/` namespace, so these are not a prefix.
-const SUBSTRATE_OPERATOR_NAMES: &[&str] = &[
-    "behavior/catalog",
-    "behavior/describe",
-    "behavior/source",
-    "program/read",
-    "program/print",
-    "program/eval",
-    "program/compose",
-];
 
 /// Whether `name` is a substrate operator (one of the `SUBSTRATE_OPERATOR_PREFIXES`
-/// prefixes, or one of the `SUBSTRATE_OPERATOR_NAMES`). The canonical predicate —
+/// prefixes, or an effect the installed operator table routes to the program host). The canonical predicate —
 /// shells and the compiler must call this rather than re-deriving the set.
 pub fn is_substrate_operator(name: &str) -> bool {
     SUBSTRATE_OPERATOR_PREFIXES
         .iter()
         .any(|p| name.starts_with(p))
-        || SUBSTRATE_OPERATOR_NAMES.contains(&name)
+        || crate::language::registry::is_program_host_effect(name)
 }
 
 impl OirEffect {
@@ -1222,6 +1209,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn program_host_effects_are_substrate_operators_through_the_installed_table() {
+        assert!(is_substrate_operator("behavior/resolve"));
+        assert!(is_substrate_operator("program/eval"));
+        assert!(
+            is_substrate_operator("llm/generate"),
+            "a prefixed substrate op"
+        );
+        assert!(
+            !is_substrate_operator("behavior/apply"),
+            "control: a pure behavior operator"
+        );
+        assert!(!is_substrate_operator("persist"), "control: a core effect");
+    }
+
+    #[test]
     fn test_effect_kind() {
         assert_eq!(OirEffect::emit("test").kind(), "emit");
         assert_eq!(OirEffect::fetch("Task").kind(), "fetch");
@@ -1391,7 +1393,7 @@ mod tests {
         let eff = OirEffect::CallService {
             service: "llm".into(),
             method: "classifyMany".into(),
-            args: OirExpr::object(HashMap::new()),
+            args: OirExpr::object(crate::ir::OirFields::new()),
             key: Some(OirExpr::string("batch-1")),
             emit: Some(OirEmitConfig {
                 cancelled: Some("CANCELLED".into()),
@@ -1408,7 +1410,7 @@ mod tests {
 
     #[test]
     fn unkeyed_call_service_skips_key_field() {
-        let eff = OirEffect::call_service("llm", "generate", OirExpr::object(HashMap::new()));
+        let eff = OirEffect::call_service("llm", "generate", OirExpr::object(crate::ir::OirFields::new()));
         let json = serde_json::to_value(&eff).unwrap();
         assert!(json.get("key").is_none(), "{json}");
         assert_eq!(eff.child_exprs().len(), 1);

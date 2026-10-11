@@ -5,6 +5,7 @@
 use crate::schema::{FieldDefinition, FieldType, ServiceRef, ThemeDefinition};
 use crate::str_utils::to_snake_case;
 use serde::{Deserialize, Serialize};
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 /// Config field type declaration, preserving enum `values` alongside the
@@ -305,10 +306,10 @@ pub struct OirEntity {
     pub fields: Vec<OirField>,
     /// Default values for new instances
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub defaults: Option<HashMap<String, OirValue>>,
+    pub defaults: Option<OirObject>,
     /// Pre-authored instances (seed data or static reference data)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub instances: Vec<HashMap<String, OirValue>>,
+    pub instances: Vec<OirObject>,
     /// Cross-references (populated during resolution)
     #[serde(default)]
     pub used_by_traits: Vec<String>,
@@ -495,8 +496,9 @@ pub struct OirField {
     pub merged_from: Option<String>,
     /// The field exactly as the resolved schema declares it (`.orb` JSON). The mock
     /// seeder samples this shape on every path, so the compiled seed emits it verbatim
-    /// rather than re-deriving it from the lossy `field_type`. Not part of the OIR wire.
-    #[serde(skip)]
+    /// rather than re-deriving it from the lossy `field_type`; carried on the IR wire so
+    /// a shell program seeds the same rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared: Option<serde_json::Value>,
 }
 
@@ -887,21 +889,21 @@ pub struct OirTrait {
     /// and resolve it via `resolve_entity_ref(id, name)` — surviving a renamed entity
     /// declaration without a name-rewrite pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entity_ref_ids: Option<HashMap<String, String>>,
+    pub entity_ref_ids: Option<OirIdMap>,
     /// V4 leverage-ids — carries `TraitDefinition.trait_embed_ids` (embed token NAME →
     /// embedded trait id) into the OIR so codegen resolves `@trait.<Name>` embeds via
     /// `resolve_trait_ref(id, name)` under a renamed sibling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trait_embed_ids: Option<HashMap<String, String>>,
+    pub trait_embed_ids: Option<OirIdMap>,
     /// Configuration schema
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<HashMap<String, OirValue>>,
+    pub config: Option<OirObject>,
     /// Declared config field types from the atom's `config {}` block.
     /// Populated by the inline phase when resolving ref traits so the
     /// TypeScript backend can emit a strongly-typed `<TraitName>Config`
     /// interface. Separate from `config` (which holds call-site overrides).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub declared_config_schema: Option<HashMap<String, OirConfigFieldType>>,
+    pub declared_config_schema: Option<OirConfigSchema>,
     /// Declared config field defaults from the atom's `config {}` block.
     /// Parallel to `declared_config_schema` — keys are the same field names,
     /// values are the parsed default expressions. The TypeScript backend
@@ -909,7 +911,7 @@ pub struct OirTrait {
     /// hook so that `config?.icon` resolves to the declared default when no
     /// consumer override is provided. Solution-1 of G24's follow-up.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub declared_config_defaults: Option<HashMap<String, OirValue>>,
+    pub declared_config_defaults: Option<OirObject>,
 
     // State Machine
     pub states: Vec<OirState>,
@@ -1188,7 +1190,7 @@ pub struct OirEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub payload_schema: Option<HashMap<String, OirType>>,
+    pub payload_schema: Option<OirTypeMap>,
     /// Names of payload fields marked `required` (from the `!` author
     /// marker in `.lolo`'s listens block). Preserved alongside
     /// `payload_schema` so the TypeScript codegen can inject API-
@@ -1560,7 +1562,7 @@ pub struct OirListener {
     /// delivery (mirrors `runtime/listener.rs`); the mapped payload REPLACES
     /// the source payload. `None` delivers the source payload unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload_mapping: Option<HashMap<String, super::OirExpr>>,
+    pub payload_mapping: Option<super::OirFields>,
     /// Event to trigger internally
     pub triggers: String,
 }
@@ -1756,7 +1758,7 @@ pub struct OirPattern {
     pub pattern_type: String,
     /// Pattern configuration (varies by pattern)
     #[serde(default)]
-    pub config: HashMap<String, OirValue>,
+    pub config: OirObject,
 }
 
 impl OirPattern {
@@ -1764,7 +1766,7 @@ impl OirPattern {
     pub fn new(pattern_type: impl Into<String>) -> Self {
         Self {
             pattern_type: pattern_type.into(),
-            config: HashMap::new(),
+            config: OirObject::new(),
         }
     }
 
@@ -1794,7 +1796,7 @@ pub struct OirTraitBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trait_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<HashMap<String, OirValue>>,
+    pub config: Option<OirObject>,
 }
 
 impl OirTraitBinding {
@@ -1844,6 +1846,18 @@ pub struct OirNavigation {
     pub icon: Option<String>,
 }
 
+/// Name -> minted id, sorted by name (deterministic IR wire).
+pub type OirIdMap = IndexMap<String, String>;
+
+/// Config knob -> its declared type, in authored order.
+pub type OirConfigSchema = IndexMap<String, OirConfigFieldType>;
+
+/// Named types in authored order (deterministic codegen and IR wire).
+pub type OirTypeMap = IndexMap<String, OirType>;
+
+/// An IR object: keys in authored order, so codegen and the IR wire are deterministic.
+pub type OirObject = IndexMap<String, OirValue>;
+
 /// Universal value type
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -1853,7 +1867,7 @@ pub enum OirValue {
     Number(f64),
     String(String),
     Array(Vec<OirValue>),
-    Object(HashMap<String, OirValue>),
+    Object(OirObject),
 }
 
 impl OirValue {
@@ -1895,7 +1909,7 @@ impl OirValue {
     }
 
     /// Try to get as object
-    pub fn as_object(&self) -> Option<&HashMap<String, OirValue>> {
+    pub fn as_object(&self) -> Option<&OirObject> {
         match self {
             Self::Object(obj) => Some(obj),
             _ => None,
@@ -2177,7 +2191,7 @@ mod tests {
     fn field_shape_object_with_properties_degrades_to_json() {
         // No `&self` here to expand `properties` with.
         let mut f = bare_field(FieldType::Object);
-        let mut props = HashMap::new();
+        let mut props = std::collections::HashMap::new();
         props.insert("label".to_string(), bare_field(FieldType::String));
         f.properties = Some(props);
         assert_eq!(field_shape(&f), OirType::Json);

@@ -3,7 +3,9 @@
 //! Universal expression type for guards and effects (parsed S-expressions).
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+
+/// Expression-object fields in authored order (deterministic codegen and IR wire).
+pub type OirFields = indexmap::IndexMap<String, OirExpr>;
 
 /// Universal expression type (parsed S-expression)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -24,7 +26,7 @@ pub enum OirExpr {
         items: Vec<OirExpr>,
     },
     Object {
-        fields: HashMap<String, OirExpr>,
+        fields: OirFields,
     },
 
     // Bindings
@@ -113,7 +115,7 @@ impl OirExpr {
         Self::Array { items }
     }
 
-    pub fn object(fields: HashMap<String, OirExpr>) -> Self {
+    pub fn object(fields: OirFields) -> Self {
         Self::Object { fields }
     }
 
@@ -152,7 +154,7 @@ impl OirExpr {
                 S::Array(v)
             }
             OirExpr::Object { fields } => {
-                let mut m = HashMap::with_capacity(fields.len());
+                let mut m = crate::schema::SObject::with_capacity(fields.len());
                 for (k, val) in fields {
                     m.insert(k.clone(), val.to_sexpression()?);
                 }

@@ -13,7 +13,7 @@ pub use embed_tokens::{
     collect_state_machine_trait_tokens, collect_trait_tokens, trait_embed_children,
 };
 pub use format::format_sexpr;
-pub use sexpr::{
+pub use sexpr::{SObject, 
     json_value_leaves, json_value_leaves_mut, MappedChildren, OperatorLookup, OperatorReturn,
     SExpression, ValueWalk,
 };

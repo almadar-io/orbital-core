@@ -38,10 +38,32 @@ pub fn canonical_json(value: &Value) -> Value {
     }
 }
 
+/// `value` as pretty JSON with every object's keys sorted: the same bytes
+/// every run, whatever map type the value holds.
+pub fn to_canonical_string_pretty<T: serde::Serialize>(value: &T) -> serde_json::Result<String> {
+    serde_json::to_string_pretty(&canonical_json(&serde_json::to_value(value)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_hash_map_serializes_the_same_bytes_every_run() {
+        let map: std::collections::HashMap<String, u32> = (0..64).map(|i| (format!("k{i:02}"), i)).collect();
+        let text = to_canonical_string_pretty(&map).unwrap();
+        let keys: Vec<&str> = text.lines().filter_map(|l| l.trim().strip_prefix('"')?.split('"').next()).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys.len(), 64);
+        assert_eq!(keys, sorted);
+    }
+
+    #[test]
+    fn control_array_order_survives_pretty_serialization() {
+        assert_eq!(to_canonical_string_pretty(&vec![3, 1, 2]).unwrap(), "[\n  3,\n  1,\n  2\n]");
+    }
 
     #[test]
     fn sorts_object_keys_recursively() {

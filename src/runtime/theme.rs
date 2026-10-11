@@ -331,9 +331,9 @@ fn merge_theme_tokens(base: &ThemeTokens, variant: Option<&ThemeVariant>) -> The
 }
 
 fn merge_colors_map(
-    base: Option<&HashMap<String, String>>,
-    variant: Option<&HashMap<String, String>>,
-) -> Option<HashMap<String, String>> {
+    base: Option<&crate::schema::ThemeMap>,
+    variant: Option<&crate::schema::ThemeMap>,
+) -> Option<crate::schema::ThemeMap> {
     match variant {
         Some(v) => {
             let mut merged = v.clone();

@@ -6,7 +6,6 @@ use crate::ir::{
     OirBinaryOp, OirBinding, OirBindingRoot, OirEffect, OirEmitConfig, OirExpr, OirPattern, OirValue,
 };
 use crate::schema::SExpression;
-use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -119,7 +118,7 @@ impl ExprLowerer {
                 Ok(OirExpr::array(items))
             }
             SExpression::Object(obj) => {
-                let mut fields = HashMap::new();
+                let mut fields = crate::ir::OirFields::new();
                 for (key, value) in obj {
                     fields.insert(key.clone(), self.resolve_sexpr(value)?);
                 }
@@ -362,7 +361,7 @@ impl ExprLowerer {
                     .iter()
                     .map(|a| self.resolve_sexpr(a))
                     .collect::<Result<Vec<_>, _>>()?;
-                let mut args_map = std::collections::HashMap::new();
+                let mut args_map = crate::ir::OirFields::new();
                 for (i, arg) in resolved_args.into_iter().enumerate() {
                     args_map.insert(format!("arg{}", i), arg);
                 }
@@ -397,7 +396,7 @@ impl ExprLowerer {
                     .iter()
                     .map(|a| self.resolve_sexpr(a))
                     .collect::<Result<Vec<_>, _>>()?;
-                let mut args_map = std::collections::HashMap::new();
+                let mut args_map = crate::ir::OirFields::new();
                 for (i, arg) in resolved_args.into_iter().enumerate() {
                     args_map.insert(format!("arg{}", i), arg);
                 }
@@ -668,7 +667,7 @@ impl ExprLowerer {
         let data = if data_end > 2 {
             self.resolve_sexpr(&args[data_end - 1])?
         } else {
-            OirExpr::object(std::collections::HashMap::new())
+            OirExpr::object(crate::ir::OirFields::new())
         };
 
         let mut effect = match operation.as_str() {
@@ -1140,7 +1139,7 @@ impl ExprLowerer {
         let call_args = if args_end > 2 {
             self.resolve_sexpr(&args[args_end - 1])?
         } else {
-            OirExpr::object(std::collections::HashMap::new())
+            OirExpr::object(crate::ir::OirFields::new())
         };
 
         let mut effect = OirEffect::call_service(service, method, call_args);
@@ -1288,7 +1287,7 @@ impl ExprLowerer {
     /// `emit: None` on the OIR and the field is skipped in serialization.
     fn extract_emit_config(
         &self,
-        obj: &std::collections::HashMap<String, SExpression>,
+        obj: &crate::schema::SObject,
     ) -> Result<Option<OirEmitConfig>, LowerError> {
         let emit_entry = match obj.get("emit") {
             Some(SExpression::Object(inner)) => inner,

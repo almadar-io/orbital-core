@@ -85,7 +85,7 @@ pub enum LanguageDataError {
     Invalid { path: PathBuf, reason: String },
     #[error(
         "installed language pack {package}@{version} requires orb {range}, but this orb is {running} \
-         — update the pack (`orb language update`) or upgrade orb"
+         — update the pack (`orb update`) or upgrade orb"
     )]
     PackIncompatible {
         package: String,
@@ -116,23 +116,7 @@ impl LanguageDataError {
     }
 }
 
-/// The command that installs `package`. `@almadar/std` is installed as a
-/// behavior package.
-pub fn install_command(package: &str) -> &'static str {
-    if package == STD_PACKAGE {
-        "orb behaviors install @almadar/std"
-    } else {
-        "orb language install"
-    }
-}
-
-/// Same style as `behavior_packages::not_installed_message`.
-pub fn not_installed_message(package: &str) -> String {
-    format!(
-        "{package} is not installed — run `{}` or `orb setup` (or `--global`)",
-        install_command(package)
-    )
-}
+pub use crate::behavior_packages::{install_command, not_installed_message};
 
 pub(crate) fn running_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -731,7 +715,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("@almadar/core is not installed"), "{msg}");
         assert!(
-            msg.contains("orb language install") && msg.contains("orb setup"),
+            msg.contains("run `orb update`"),
             "{msg}"
         );
     }
@@ -849,7 +833,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("@almadar/std is not installed"), "{msg}");
         assert!(
-            msg.contains("orb behaviors install @almadar/std") && msg.contains("orb setup"),
+            msg.contains("run `orb update`"),
             "{msg}"
         );
     }

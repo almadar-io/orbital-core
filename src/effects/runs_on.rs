@@ -31,9 +31,6 @@ impl RunsOn {
 /// Every effect operator whose site is not `any`, by registry name.
 pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("atomic", RunsOn::Server),
-    ("behavior/catalog", RunsOn::Server),
-    ("behavior/describe", RunsOn::Server),
-    ("behavior/source", RunsOn::Server),
     ("browser/clipboard-read", RunsOn::Client),
     ("browser/clipboard-write", RunsOn::Client),
     ("browser/geolocation-current", RunsOn::Client),
@@ -54,10 +51,6 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("os/watch-process", RunsOn::Server),
     ("os/watch-signal", RunsOn::Server),
     ("persist", RunsOn::Server),
-    ("program/compose", RunsOn::Server),
-    ("program/eval", RunsOn::Server),
-    ("program/print", RunsOn::Server),
-    ("program/read", RunsOn::Server),
     ("render-ui", RunsOn::Client),
     ("send-server", RunsOn::Client),
     ("swap", RunsOn::Server),
@@ -216,10 +209,15 @@ pub fn ir_effect_site(effect: &OirEffect, residence: &Residence) -> RunsOn {
 /// Site of an effect operator by registry name; `Any` for every effect not in
 /// [`EFFECT_SITES`] (and for a name that is not an effect at all).
 pub fn runs_on(operator: &str) -> RunsOn {
-    EFFECT_SITES
-        .iter()
-        .find(|(name, _)| *name == operator)
-        .map_or(RunsOn::Any, |(_, site)| *site)
+    if let Some((_, site)) = EFFECT_SITES.iter().find(|(name, _)| *name == operator) {
+        return *site;
+    }
+    match crate::language::registry::try_get_operator(operator).and_then(|op| op.runs_on.as_deref())
+    {
+        Some("server") => RunsOn::Server,
+        Some("client") => RunsOn::Client,
+        _ => RunsOn::Any,
+    }
 }
 
 /// Registry name of an IR effect (its `kind()` except where the IR spells it differently).
@@ -259,6 +257,18 @@ mod tests {
         }
         assert_eq!(runs_on("persist"), RunsOn::Server);
         assert_eq!(runs_on("render-ui"), RunsOn::Client);
+    }
+
+    #[test]
+    fn an_effect_absent_from_the_core_table_takes_its_site_from_the_installed_registry() {
+        assert!(!EFFECT_SITES.iter().any(|(n, _)| *n == "behavior/resolve"));
+        assert_eq!(runs_on("behavior/resolve"), RunsOn::Server);
+        assert_eq!(runs_on("program/eval"), RunsOn::Server);
+        assert_eq!(
+            runs_on("math/abs"),
+            RunsOn::Any,
+            "control: a pure operator runs anywhere"
+        );
     }
 
     #[test]

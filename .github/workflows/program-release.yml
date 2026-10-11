@@ -1,0 +1,109 @@
+name: Program release
+
+# Builds a program `orb` runs (a shell, orb-desktop) on every platform and
+# publishes it to npm as @almadar/<name> (orbProgram + optionalDependencies)
+# plus @almadar/<name>-<platform> (the stripped binary + the repo's templates).
+# Symbol files go on the GitHub release. Called by each shell repo on a v* tag:
+#
+#   jobs:
+#     release:
+#       uses: almadar-io/orbital-core/.github/workflows/program-release.yml@main
+#       with: { name: orb-shell-python, kind: shell, shell: python, cargo-args: --bin orb-shell-python }
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      name: { required: true, type: string, description: "Program / npm name, e.g. orb-shell-python" }
+      kind: { required: true, type: string, description: "shell | desktop" }
+      shell: { required: false, type: string, default: "", description: "The shell's name (kind shell)" }
+      cargo-args: { required: true, type: string, description: "e.g. --bin orb-shell-python" }
+      linux-libc: { required: false, type: string, default: "musl", description: "musl (static, headless programs) | gnu (needs the system GUI libraries, e.g. orb-desktop)" }
+
+env:
+  CARGO_TERM_COLOR: always
+  # profile.dist, as flags: a standalone repo has no workspace root to declare it.
+  DIST: --release --config profile.release.lto="fat" --config profile.release.codegen-units=1 --config profile.release.debug="line-tables-only"
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, runner: ubuntu-latest, target: "x86_64-unknown-linux-${{ inputs.linux-libc }}", ext: "" }
+          - { name: linux-arm64, runner: ubuntu-24.04-arm, target: "aarch64-unknown-linux-${{ inputs.linux-libc }}", ext: "" }
+          - { name: darwin-x64, runner: macos-15, target: x86_64-apple-darwin, ext: "" }
+          - { name: darwin-arm64, runner: macos-latest, target: aarch64-apple-darwin, ext: "" }
+          - { name: windows-x64, runner: windows-latest, target: x86_64-pc-windows-msvc, ext: ".exe" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with: { repository: almadar-io/orbital-core, path: .orbital-core }
+      - if: startsWith(matrix.runner, 'ubuntu') && inputs.linux-libc == 'musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - if: startsWith(matrix.runner, 'ubuntu') && inputs.linux-libc == 'gnu'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev libwayland-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - shell: bash
+        run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with: { key: "${{ matrix.target }}" }
+      - name: Build
+        shell: bash
+        run: cargo build $DIST ${{ inputs.cargo-args }} --target ${{ matrix.target }}
+      - name: Split symbols and strip
+        shell: bash
+        run: bash .orbital-core/scripts/split-symbols.sh "target/${{ matrix.target }}/release/${{ inputs.name }}${{ matrix.ext }}" "dist/${{ inputs.name }}-${{ matrix.name }}.symbols"
+      - name: Package
+        shell: bash
+        run: |
+          node .orbital-core/scripts/package-program.mjs platform --name ${{ inputs.name }} \
+            --binary "target/${{ matrix.target }}/release/${{ inputs.name }}${{ matrix.ext }}" \
+            --platform ${{ matrix.name }} --version "${GITHUB_REF_NAME#v}" --repo . --out dist/npm \
+            ${{ inputs.shell != '' && format('--shell {0}', inputs.shell) || '' }}
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.name }}
+          retention-days: 1
+          path: |
+            dist/npm/${{ matrix.name }}
+            dist/${{ inputs.name }}-${{ matrix.name }}.symbols*
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+        with: { repository: almadar-io/orbital-core, path: .orbital-core }
+      - uses: actions/download-artifact@v5
+        with: { path: artifacts }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, registry-url: "https://registry.npmjs.org" }
+      - name: Publish the platform packages, then the program
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PLATFORMS=""
+          for dir in artifacts/*/npm/*/; do
+            platform=$(basename "$dir")
+            PLATFORMS="${PLATFORMS:+$PLATFORMS,}$platform"
+            (cd "$dir" && npm publish --access public)
+          done
+          node .orbital-core/scripts/package-program.mjs meta --name ${{ inputs.name }} --version "$VERSION" \
+            --kind ${{ inputs.kind }} --platforms "$PLATFORMS" --out dist \
+            ${{ inputs.shell != '' && format('--shell {0}', inputs.shell) || '' }}
+          (cd dist/meta && npm publish --access public)
+      - name: Symbol files to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" artifacts/*/${{ inputs.name }}-*.symbols* --repo "$GITHUB_REPOSITORY" --clobber

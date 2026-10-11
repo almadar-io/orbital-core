@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+/// An S-expression object: keys in authored order, so lowering and codegen are deterministic.
+pub type SObject = indexmap::IndexMap<String, SExpression>;
+
 /// S-Expression - the fundamental unit of Orbital logic
 ///
 /// An S-expression can be:
@@ -36,7 +39,7 @@ pub enum SExpression {
     /// Array - either a function call `[op, ...args]` or a list
     Array(Vec<SExpression>),
     /// Object - key-value map
-    Object(HashMap<String, SExpression>),
+    Object(SObject),
 }
 
 impl SExpression {
@@ -155,7 +158,7 @@ impl SExpression {
     }
 
     /// Try to get as an object
-    pub fn as_object(&self) -> Option<&HashMap<String, SExpression>> {
+    pub fn as_object(&self) -> Option<&crate::schema::SObject> {
         match self {
             SExpression::Object(o) => Some(o),
             _ => None,
@@ -985,11 +988,10 @@ mod tests {
 
     #[test]
     fn canonical_json_sorts_object_keys_so_emission_is_byte_stable() {
-        use std::collections::HashMap;
         // Build the SAME logical object many times. HashMap iteration order is
         // randomly seeded, so a non-canonical serializer disagrees with itself.
         let render = || {
-            let mut map = HashMap::new();
+            let mut map = SObject::new();
             map.insert("zebra".to_string(), SExpression::Number(1.0));
             map.insert("alpha".to_string(), SExpression::Bool(true));
             map.insert("middle".to_string(), SExpression::String("x".to_string()));
@@ -1327,7 +1329,7 @@ mod tests {
 
     #[test]
     fn is_statically_false_true_for_empty_object() {
-        assert!(SExpression::Object(std::collections::HashMap::new()).is_statically_false());
+        assert!(SExpression::Object(SObject::new()).is_statically_false());
     }
 
     #[test]

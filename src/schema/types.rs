@@ -878,6 +878,9 @@ pub struct IllustrationTokens {
     pub onboarding_asset: Option<String>,
 }
 
+/// Theme token entries in authored order, so the emitted CSS is deterministic.
+pub type ThemeMap = indexmap::IndexMap<String, String>;
+
 /// Theme tokens - design system values
 ///
 /// Layer 1 visual variation: the original `colors`/`radii`/`spacing`/`typography`/`shadows`
@@ -892,23 +895,23 @@ pub struct ThemeTokens {
 
     /// Color tokens (e.g., primary, background, foreground)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub colors: Option<HashMap<String, String>>,
+    pub colors: Option<ThemeMap>,
 
     /// Border radius tokens
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub radii: Option<HashMap<String, String>>,
+    pub radii: Option<ThemeMap>,
 
     /// Spacing tokens
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub spacing: Option<HashMap<String, String>>,
+    pub spacing: Option<ThemeMap>,
 
     /// Typography tokens
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub typography: Option<HashMap<String, String>>,
+    pub typography: Option<ThemeMap>,
 
     /// Shadow tokens
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub shadows: Option<HashMap<String, String>>,
+    pub shadows: Option<ThemeMap>,
 
     /// Density axis — spacing rhythm, per-element heights and paddings
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -962,23 +965,23 @@ pub struct ThemeVariant {
 
     /// Color overrides for this variant
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub colors: Option<HashMap<String, String>>,
+    pub colors: Option<ThemeMap>,
 
     /// Radius overrides
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub radii: Option<HashMap<String, String>>,
+    pub radii: Option<ThemeMap>,
 
     /// Spacing overrides
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub spacing: Option<HashMap<String, String>>,
+    pub spacing: Option<ThemeMap>,
 
     /// Typography overrides
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub typography: Option<HashMap<String, String>>,
+    pub typography: Option<ThemeMap>,
 
     /// Shadow overrides
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub shadows: Option<HashMap<String, String>>,
+    pub shadows: Option<ThemeMap>,
 
     /// Density axis overrides
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2050,7 +2053,7 @@ pub struct EntityDefinition {
 
     /// Pre-authored instances (seed data / static reference data)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instances: Option<Vec<HashMap<String, SExpression>>>,
+    pub instances: Option<Vec<crate::schema::SObject>>,
 
     /// Shared across all bound traits (vs per-trait copy); orthogonal to persistence.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -2086,7 +2089,7 @@ pub struct EntityDefinition {
         skip_serializing_if = "Option::is_none"
     )]
     pub locale_instances:
-        Option<std::collections::BTreeMap<String, Vec<HashMap<String, SExpression>>>>,
+        Option<std::collections::BTreeMap<String, Vec<crate::schema::SObject>>>,
 
     /// `@read` — a per-row predicate (`@entity` = candidate row, `@user` =
     /// viewer) ANDed with any call-site `filter:`. The un-bypassable twin of
@@ -2126,7 +2129,7 @@ pub struct EntityDefinition {
 impl EntityDefinition {
     /// The rows the entity starts with for a viewer's locale: its locale block, else
     /// `instances`. Twin of `@almadar/core` `instancesForLocale`.
-    pub fn instances_for_locale(&self, locale: Option<&str>) -> &[HashMap<String, SExpression>] {
+    pub fn instances_for_locale(&self, locale: Option<&str>) -> &[crate::schema::SObject] {
         locale
             .and_then(|l| self.locale_instances.as_ref()?.get(l))
             .or(self.instances.as_ref())
@@ -3422,7 +3425,7 @@ pub enum ConfigRefEventError {
 /// declared field TYPE is now `"string" | "event"`.
 pub fn resolve_config_ref_event_name(
     event: &str,
-    effective_config: &HashMap<String, SExpression>,
+    effective_config: &crate::schema::SObject,
     declared_config: Option<&HashMap<String, ConfigField>>,
 ) -> Result<String, ConfigRefEventError> {
     let knob = config_ref_event_knob(event).ok_or(ConfigRefEventError::UnknownKnob)?;
@@ -3569,7 +3572,7 @@ pub struct ListenDefinition {
 
     /// Payload mapping
     #[serde(rename = "payloadMapping", skip_serializing_if = "Option::is_none")]
-    pub payload_mapping: Option<HashMap<String, SExpression>>,
+    pub payload_mapping: Option<crate::schema::SObject>,
 
     /// Guard condition
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4213,7 +4216,7 @@ pub struct SectionDefinition {
 
     /// Props
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub props: Option<HashMap<String, SExpression>>,
+    pub props: Option<crate::schema::SObject>,
 }
 
 /// Pattern definition
@@ -4640,13 +4643,13 @@ mod tests {
 
     #[test]
     fn orbital_ref_object_roundtrips_through_serde() {
-        let mut fields = HashMap::new();
+        let mut fields = std::collections::HashMap::new();
         fields.insert("dueDate".to_string(), "deadline".to_string());
 
-        let mut pages = HashMap::new();
+        let mut pages = std::collections::HashMap::new();
         pages.insert("/notes".to_string(), "/scratch-notes".to_string());
 
-        let mut config = HashMap::new();
+        let mut config = std::collections::HashMap::new();
         config.insert(
             "pageSize".to_string(),
             ConfigField {
@@ -4668,7 +4671,7 @@ mod tests {
             },
         );
 
-        let mut events = HashMap::new();
+        let mut events = std::collections::HashMap::new();
         events.insert("NOTE_SAVED".to_string(), "SCRATCH_NOTE_SAVED".to_string());
 
         let obj = OrbitalRefObject {
@@ -4814,7 +4817,7 @@ mod tests {
     fn theme_variant_color_and_illustration_are_optional_and_omitted_when_absent() {
         let variant = ThemeVariant {
             color: None,
-            colors: Some(HashMap::from([(
+            colors: Some(ThemeMap::from([(
                 "background".to_string(),
                 "#111".to_string(),
             )])),
