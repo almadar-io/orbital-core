@@ -1,0 +1,17 @@
+{
+  "source": "@almadar/ui themes/_base.css :root \u2014 the base every theme's motion tokens override",
+  "vars": {
+    "--motion-modal-enter-from-transform": "scale(0.96) translateY(8px)",
+    "--motion-modal-exit-to-transform": "scale(0.92) translateY(16px)",
+    "--motion-popover-enter-from-transform": "scale(0.95)",
+    "--motion-popover-exit-to-transform": "scale(0.95)",
+    "--motion-toast-enter-from-transform": "translateY(16px)",
+    "--motion-toast-exit-to-transform": "translateY(16px)",
+    "--motion-page-enter-from-transform": "translateY(8px)",
+    "--motion-enter-rise-from-transform": "translateY(12px)",
+    "--motion-enter-scale-from-transform": "scale(0.96)",
+    "--motion-enter-slide-from-transform": "translateX(calc(16px * var(--motion-enter-slide-sign)))",
+    "--motion-enter-default": "almadar-enter-fade",
+    "--motion-enter-stagger": "40ms"
+  }
+}

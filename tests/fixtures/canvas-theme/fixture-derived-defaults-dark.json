@@ -1,0 +1,129 @@
+{
+  "theme": "fixture-derived-defaults",
+  "mode": "dark",
+  "preset": {
+    "name": "fixture-derived-defaults",
+    "tokens": {
+      "colors": {
+        "primary": "#c2410c",
+        "foreground": "#1c1917",
+        "muted-foreground": "#78716c",
+        "border": "#e7e5e4",
+        "muted": "#f5f5f4",
+        "card": "#fffbeb"
+      }
+    },
+    "variants": {
+      "dark": {
+        "colors": {
+          "primary": "#38bdf8",
+          "foreground": "#f8fafc",
+          "muted-foreground": "#94a3b8",
+          "border": "#334155",
+          "muted": "#1e293b",
+          "card": "#0f172a"
+        }
+      }
+    }
+  },
+  "canvasTheme": {
+    "ground": "rgb(15, 23, 42)",
+    "surfaces": {
+      "muted": "rgb(30, 41, 59)",
+      "card": "rgb(15, 23, 42)",
+      "onPrimary": "transparent"
+    },
+    "tones": {
+      "ink": "rgb(248, 250, 252)",
+      "label": "rgb(148, 163, 184)",
+      "guide": "rgb(148, 163, 184)",
+      "axis": "rgb(248, 250, 252)",
+      "grid": "rgb(51, 65, 85)",
+      "highlight": "rgb(56, 189, 248)",
+      "fill": "rgb(30, 41, 59)",
+      "series-1": "rgb(56, 189, 248)",
+      "series-2": "rgb(144, 155, 250)",
+      "series-3": "rgb(206, 133, 215)",
+      "series-4": "rgb(236, 125, 148)",
+      "series-5": "rgb(231, 137, 74)",
+      "series-6": "rgb(188, 164, 36)",
+      "series-7": "rgb(109, 186, 104)",
+      "series-8": "rgb(0, 192, 180)",
+      "primary": "rgb(56, 189, 248)",
+      "accent": "currentColor",
+      "success": "currentColor",
+      "warning": "currentColor",
+      "error": "currentColor",
+      "info": "currentColor",
+      "muted": "rgb(148, 163, 184)"
+    },
+    "series": [
+      "rgb(56, 189, 248)",
+      "rgb(144, 155, 250)",
+      "rgb(206, 133, 215)",
+      "rgb(236, 125, 148)",
+      "rgb(231, 137, 74)",
+      "rgb(188, 164, 36)",
+      "rgb(109, 186, 104)",
+      "rgb(0, 192, 180)"
+    ],
+    "strokes": {
+      "thin": 1,
+      "normal": 1.5,
+      "bold": 3
+    },
+    "lineCap": "round",
+    "lineJoin": "round",
+    "dash": [
+      6,
+      4
+    ],
+    "dot": [
+      1,
+      4
+    ],
+    "fillStyle": "tint",
+    "fillOpacity": 0.18,
+    "roughness": 0,
+    "glow": 0,
+    "shadow": null,
+    "marker": "triangle",
+    "faces": {
+      "body": "\"Inter\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+      "display": "\"Söhne\", \"Inter Display\", -apple-system, BlinkMacSystemFont, sans-serif",
+      "mono": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, monospace"
+    },
+    "label": {
+      "font": "body",
+      "size": "sm",
+      "weight": "500",
+      "uppercase": false
+    },
+    "text": {
+      "xs": 12,
+      "sm": 14,
+      "base": 16,
+      "lg": 20,
+      "xl": 24,
+      "2xl": 32
+    },
+    "corner": 4,
+    "motion": {
+      "enabled": true,
+      "fastMs": 150,
+      "normalMs": 250,
+      "slowMs": 400,
+      "easing": "cubic-bezier(0.4, 0, 0.2, 1)"
+    },
+    "scene": {
+      "roughness": 0.6,
+      "metalness": 0,
+      "flat": false,
+      "outline": 0,
+      "ambient": 0.55,
+      "key": 1,
+      "keyColor": "rgb(255, 255, 255)",
+      "fog": 0
+    }
+  }
+}

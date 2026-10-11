@@ -1,0 +1,19 @@
+{
+  "comment": "Shared persona-resolution parity vector — the ALMADAR_PERSONA spec semantics against an app's declared [identity] roster. Read by @almadar/core's mock-parity-vector.test.ts AND orbital-core's mock_seed_parity.rs; one file so both implementations resolve identically. Bare specs match by id first, then role; the JSON form is self-contained; unresolvable specs are hard errors (never boot as nobody).",
+  "roster": [
+    { "id": "Person-1", "name": "Person 1", "email": "person1@example.com", "role": "member" },
+    { "id": "Person-2", "name": "Person 2", "email": "person2@example.com", "role": "moderator" },
+    { "id": "Person-3", "name": "Person 3", "email": "person3@example.com", "role": "admin" },
+    { "id": "member", "name": "Trap Row", "email": "trap@example.com", "role": "admin" }
+  ],
+  "cases": [
+    { "spec": "Person-2", "resolvesToId": "Person-2" },
+    { "spec": " moderator ", "resolvesToId": "Person-2" },
+    { "spec": "admin", "resolvesToId": "Person-3" },
+    { "spec": "member", "resolvesToId": "member" },
+    { "spec": "{\"id\":\"patient-7\",\"role\":\"patient\"}", "resolvesToId": "patient-7" },
+    { "spec": "ghost", "error": true },
+    { "spec": "{\"role\":\"admin\"}", "error": true },
+    { "spec": "{oops", "error": true }
+  ]
+}

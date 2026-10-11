@@ -1,0 +1,5861 @@
+//! Runtime kernel — canonical runtime lifecycle for Orbital applications.
+
+use super::{
+    dispatch_memory::{DispatchMemory, DispatchView},
+    dispatch_mode::DispatchMode,
+    embed_index::EmbedIndex,
+    entity_access::{
+        apply_read_access, scope_fetched_rows, EntityAccessPolicies, EntityAccessTable,
+    },
+    entity_source::EntitySource,
+    listener::{ListenerManager, TriggerCallback},
+    process_result::{DeliveryEntry, OrbitalDetail, OrbitalInfo, ProcessEventResult, RuntimeStats},
+    render_store::RenderStore,
+    server_leg::ServerLegCollector,
+    theme::{resolve_theme, resolve_theme_default, ResolvedTheme, ThemeMode, ThemePresets},
+    KernelConfig,
+};
+use crate::effects::{
+    delivery_record_value, BusEventSource, DeliveryRecord, DispatchLog, PersistOperation,
+};
+use crate::util::dispatch_visit_key;
+use crate::{
+    effects::{
+        Effect, EffectExecutor, EffectOutcome, EffectResult, EventRequest, EventResponse,
+        FetchEmit, FetchHandler, FetchPage, PersistenceHandler, RuntimeEnvironment, TraitFrom,
+    },
+    evaluator::{BindingContext, BindingContextBuilder, Evaluator, Value},
+    events::{shared_bus, SharedEventBus},
+    schema::{
+        EntityDefinition, EntityRef, OrbitalSchema, SExpression, TraitDefinition, TraitReference,
+    },
+    state_machine::{EventPayload, StateMachineManager, TraitState},
+};
+use parking_lot::RwLock;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use tracing::{debug, info};
+
+/// Errors returned by the runtime kernel.
+#[derive(Debug, thiserror::Error)]
+pub enum KernelError {
+    #[error("Trait not found: {0}")]
+    TraitNotFound(String),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+/// Circuit breaker for one dispatch's cross-trait worklist; twin of the JS `CROSS_TRAIT_CASCADE_CAP`.
+pub const CROSS_TRAIT_CASCADE_CAP: usize = 2000;
+
+/// One queued delivery: the trait it reaches, the event it triggers there, and what `@event` reads.
+struct CascadeItem {
+    trait_name: String,
+    event: String,
+    payload: Value,
+    delivery: Value,
+    /// The emit's own payload, which a listens `when` reads as `@payload`.
+    source_payload: Value,
+    /// Evaluated when the delivery is processed, so it sees the listener's log.
+    listen_guard: Option<SExpression>,
+}
+
+/// A trait never receives a routed event before its own lifecycle event
+/// (INIT/LOAD/$MOUNT) has run on the current mount: a delivery reaching a
+/// mounted-but-not-yet-initialized trait is held and re-enqueued right after
+/// that trait's lifecycle step. JS twin: `evaluation/mount-lifecycle.ts`.
+#[derive(Default)]
+struct MountLifecycle {
+    awaiting: HashSet<String>,
+    held: HashMap<String, Vec<CascadeItem>>,
+}
+
+impl MountLifecycle {
+    fn holds(&self, item: &CascadeItem) -> bool {
+        !crate::events::is_bus_excluded_event(&item.event)
+            && self.awaiting.contains(&item.trait_name)
+    }
+
+    fn hold(&mut self, item: CascadeItem) {
+        self.held
+            .entry(item.trait_name.clone())
+            .or_default()
+            .push(item);
+    }
+
+    /// A server host follows the client's mount: `awaiting` is what the client
+    /// still awaits when it posts. Held deliveries for a trait the client has
+    /// since initialized are released (its INIT may never reach this host),
+    /// except the request's own lifecycle target, held until its step runs.
+    fn sync(&mut self, awaiting: HashSet<String>, lifecycle_targets: &[&str]) -> Vec<CascadeItem> {
+        let mut next = awaiting;
+        for t in lifecycle_targets {
+            if self.awaiting.contains(*t) {
+                next.insert(t.to_string());
+            }
+        }
+        let mut released = Vec::new();
+        for t in self.awaiting.iter().filter(|t| !next.contains(*t)) {
+            released.extend(self.held.remove(t).unwrap_or_default());
+        }
+        self.awaiting = next;
+        released
+    }
+
+    /// `trait_name` just ran `event`; when that is its lifecycle step, its held deliveries go out in arrival order.
+    fn release_after(&mut self, trait_name: &str, event: &str) -> Vec<CascadeItem> {
+        if !crate::events::is_bus_excluded_event(event) || !self.awaiting.remove(trait_name) {
+            return Vec::new();
+        }
+        self.held.remove(trait_name).unwrap_or_default()
+    }
+}
+
+/// Split a leg payload's `_awaitingInit` sidecar (the client's mount) from the payload proper.
+fn take_awaiting_sidecar(payload: Value) -> (Value, Option<HashSet<String>>) {
+    let Value::Object(mut map) = payload else {
+        return (payload, None);
+    };
+    let awaiting = map.remove("_awaitingInit").map(|v| {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    let payload = if map.is_empty() && awaiting.is_some() {
+        Value::Null
+    } else {
+        Value::Object(map)
+    };
+    (payload, awaiting)
+}
+
+/// Put a client's mount back on a payload (the inverse of [`take_awaiting_sidecar`]).
+fn with_awaiting_sidecar(payload: Value, awaiting: &HashSet<String>) -> Value {
+    let mut map = match payload {
+        Value::Object(map) => map,
+        _ => HashMap::new(),
+    };
+    let mut list: Vec<&String> = awaiting.iter().collect();
+    list.sort();
+    map.insert(
+        "_awaitingInit".to_string(),
+        Value::Array(list.into_iter().map(|t| Value::String(t.clone())).collect()),
+    );
+    Value::Object(map)
+}
+
+fn listen_guard_passes(
+    guard: &SExpression,
+    source_payload: &Value,
+    from: &str,
+    view: &DispatchView,
+) -> bool {
+    let mut ctx = BindingContextBuilder::new()
+        .payload(source_payload.clone())
+        .state(Value::String(from.to_string()))
+        .build();
+    ctx.from_state = Some(from.to_string());
+    view.apply(&mut ctx);
+    matches!(Evaluator::new().evaluate_guard(guard, &ctx), Ok(true))
+}
+
+/// Shared runtime kernel.
+///
+/// Owns schema registration, trait resolution, event processing, effect execution,
+/// and listener wiring. `orbital-client` and `orbital-server` wrap this kernel and
+/// inject environment-specific entity sources and handlers.
+pub struct RuntimeKernel {
+    config: KernelConfig,
+    state_manager: Arc<RwLock<StateMachineManager>>,
+    effect_executor: Arc<EffectExecutor>,
+    event_bus: SharedEventBus,
+    listener_manager: ListenerManager,
+    schemas: Arc<RwLock<HashMap<String, OrbitalSchema>>>,
+    trait_definitions: Arc<RwLock<HashMap<String, TraitDefinition>>>,
+    entity_source: Arc<dyn EntitySource>,
+    current_user: Arc<RwLock<Value>>,
+    /// The in-flight dispatch's one `now` stamp; set by the outermost entry, reused by nested steps.
+    dispatch_now: Arc<RwLock<Option<f64>>>,
+    /// The program's declared locales (the first is the default) and merged message catalogs.
+    i18n: Arc<RwLock<KernelI18n>>,
+    /// The in-flight dispatch's viewer locale (`EventRequest.locale`), held by a [`LocaleGuard`].
+    dispatch_locale: Arc<RwLock<Option<String>>>,
+    /// Schema-derived `@read`/`@create`/`@update`/`@delete` directives, keyed
+    /// by entity name — populated at `register_schema`, shared with the
+    /// `EffectExecutor` (write side) and `EntitySourceHandler` (read side) so
+    /// every entity mutation/fetch is checked no matter which trait issues it.
+    entity_policies: Arc<RwLock<EntityAccessTable>>,
+    /// Last non-empty event payload seen per `"{trait}:{entity_id}"`. Render-ui
+    /// `@payload.*` bindings must survive the originating event: a fetch/emit
+    /// completion fires once carrying `{ data: rows }`, but the state's render-ui
+    /// is re-resolved on later empty-payload events/ticks. Mirroring the JS runtime,
+    /// we persist the last payload and fall back to it when an event carries none,
+    /// so `@payload.data` (and `@payload.row`, once interaction lands) keep
+    /// resolving across re-renders instead of reverting to a literal token.
+    last_payloads: Arc<RwLock<HashMap<String, Value>>>,
+    /// Inverse of every registered trait's `trait_embed_ids` (§158), rebuilt
+    /// from the full accumulated `trait_definitions` at the end of each
+    /// `register_schema` call so it stays additive across registrations like
+    /// the rest of the kernel's schema-derived tables. `dispatch` reads it to
+    /// bubble a seed event up an embedded trait's host chain.
+    embed_index: Arc<RwLock<EmbedIndex>>,
+    /// Every registered inline `EntityDefinition`, keyed by entity name —
+    /// populated additively alongside `entity_policies` in `register_schema`
+    /// (same loop, same inline-only/additive-across-registrations contract).
+    /// `dispatch_with_server_leg`/`TraitDefinition::dispatch_mode` reads a
+    /// trait's linked entity here to decide `DispatchMode` (declared
+    /// `[runtime]` persistence, never inferred).
+    entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
+    /// Trait frames (`(set @entity.X)` writes), keyed `(frame key, entity id)`: a `[shared]`
+    /// entity's frame is `$shared::<Entity>` for every trait bound to it, any other trait's is
+    /// its own name (Runtime Spec Clause 2.3). `@entity` is the row with the frame over it.
+    frames: Arc<RwLock<HashMap<(String, String), Value>>>,
+    /// The theme presets the registered programs carry (`themeDefinitions`,
+    /// written by `orb` when it compiles a program) — the kernel has no
+    /// filesystem access at runtime. Additive across registrations.
+    theme_presets: Arc<RwLock<ThemePresets>>,
+    /// The kernel's tracked light/dark toggle, independent of what a
+    /// declared theme's key suffix says — `@currentTheme` resolution honors
+    /// this over the declared suffix when EXPLICITLY set via
+    /// `set_theme_mode`. `None` (never set) lets `resolve_theme` fall back
+    /// to the declared theme key's own suffix instead of silently forcing
+    /// Light (§157/C7 `theme-declaration`: a `-dark` key must not be
+    /// overridden by an ambient default no one asked for).
+    theme_mode: Arc<RwLock<Option<ThemeMode>>>,
+    /// The current mount's lifecycle (see [`MountLifecycle`]).
+    mount: Arc<RwLock<MountLifecycle>>,
+    /// Each mounted trait's last `render-ui`, kept to repaint it when the entity it reads changes.
+    renders: Arc<RwLock<RenderStore>>,
+}
+
+impl std::fmt::Debug for RuntimeKernel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeKernel")
+            .field("config", &self.config)
+            .field("state_manager", &self.state_manager)
+            .field("effect_executor", &self.effect_executor)
+            .field("event_bus", &self.event_bus)
+            .field("listener_manager", &self.listener_manager)
+            .field("schemas", &self.schemas)
+            .field("trait_definitions", &self.trait_definitions)
+            .field("current_user", &self.current_user)
+            .finish()
+    }
+}
+
+/// One `dispatch_with_server_leg` call's outcome for a client-role kernel: the
+/// merged client-facing response, the server legs to post (empty when the seed
+/// trait's dispatch mode never produces one, or nothing server-only fired), every
+/// delivery the cascade executed, the seed `(trait, event)` that started it, the
+/// seed trait's resolved [`DispatchMode`], and — for `RuntimeOptimistic` — the
+/// pre-dispatch snapshot a caller rolls back to on a disagreeing/erroring server
+/// response.
+///
+/// A leg is addressed to the trait whose own delivery needs the server: the seed
+/// itself when its own effects do, otherwise each listener that does (a listener
+/// reached through another leg's server-side cascade rides that leg).
+#[derive(Debug, Clone)]
+pub struct ClientDispatch {
+    pub response: EventResponse,
+    pub server_legs: Vec<EventRequest>,
+    pub outcomes: Vec<(String, ProcessEventResult)>,
+    pub seed: (String, String),
+    pub mode: DispatchMode,
+    pub snapshot: Option<TraitSnapshot>,
+    /// The traits awaiting this dispatch's server legs (empty when nothing is posted).
+    pub awaiting: Vec<AwaitingTrait>,
+}
+
+/// A trait awaiting a server round trip, keyed by the transition its local run took
+/// (`@almadar/core` `AwaitingTrait`): with `event`, `from` selects that transition's `awaitRender`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct AwaitingTrait {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub event: String,
+    pub from: String,
+}
+
+/// A trait's `render-ui` repainted because the `@entity` it reads changed: only the slots whose
+/// content differs, resolved against the entity as it is now. Pure binding resolution, no
+/// transition, guard, emit or other effect runs ([`RuntimeKernel::rerender_stale`]).
+#[derive(Debug, Clone)]
+pub struct Rerender {
+    pub trait_name: String,
+    pub state: String,
+    pub entity: Value,
+    pub effects: Vec<Effect>,
+}
+
+/// One scheduled tick's outcome for a client-role kernel ([`RuntimeKernel::dispatch_tick`]):
+/// the tick's own effects, the count of its own server-bound effects that were discarded (a tick
+/// has no event to replay them under, as on web), and one [`TickEmit`] per `emit` it ran.
+#[derive(Debug, Clone)]
+pub struct TickDispatch {
+    pub outcome: ProcessEventResult,
+    pub discarded_server_effects: usize,
+    pub emits: Vec<TickEmit>,
+    /// Traits repainted for the entity the tick and its cascade left behind.
+    pub rerenders: Vec<Rerender>,
+}
+
+/// One `emit` a tick ran: the event and payload, and the [`ClientDispatch`] of its listener
+/// cascade (with the leg to post when that cascade reached a server-bound trait).
+#[derive(Debug, Clone)]
+pub struct TickEmit {
+    pub event: String,
+    pub payload: Value,
+    pub dispatch: ClientDispatch,
+}
+
+/// What [`RuntimeKernel::finish_client_dispatch`] needs to build a dispatch's server leg.
+struct LegSeed<'a> {
+    trait_name: &'a str,
+    event: &'a str,
+    payload: Value,
+    eid: &'a str,
+    client_id: Option<&'a str>,
+    tick: Option<&'a str>,
+    mode: DispatchMode,
+    snapshot: Option<TraitSnapshot>,
+    seed_row: &'a Value,
+    outcomes: &'a [(String, ProcessEventResult)],
+    response: EventResponse,
+}
+
+/// A trait instance's state + entity frame at a point in time. Captured by
+/// [`RuntimeKernel::snapshot_trait`] before a `RuntimeOptimistic` dispatch
+/// commits locally, handed back to [`RuntimeKernel::restore_trait`] to roll
+/// back. `Serialize`/`Deserialize` so it can cross the `orbital-ffi` C ABI
+/// boundary as JSON (`orbital_kernel_dispatch`'s `snapshot` field,
+/// `orbital_kernel_restore`'s input).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraitSnapshot {
+    pub state: String,
+    pub entity: Value,
+}
+
+/// Bridges the executor's Fetch and Persist effects to the kernel's entity
+/// source so list views resolve real data and mutations actually land.
+struct EntitySourceHandler {
+    source: Arc<dyn EntitySource>,
+    entity_policies: Arc<RwLock<EntityAccessTable>>,
+}
+
+impl PersistenceHandler for EntitySourceHandler {
+    fn create(&self, entity_type: &str, data: &Value) -> Result<Value, String> {
+        self.source.create(entity_type, data)
+    }
+    fn read(&self, entity_type: &str, id: &str) -> Result<Value, String> {
+        self.source.read(entity_type, id)
+    }
+    fn update(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String> {
+        self.source.write(entity_type, id, data)
+    }
+    fn delete(&self, entity_type: &str, id: &str) -> Result<(), String> {
+        self.source.delete(entity_type, id)
+    }
+    fn list(&self, entity_type: &str) -> Result<Vec<Value>, String> {
+        self.source.list(entity_type)
+    }
+}
+
+impl FetchHandler for EntitySourceHandler {
+    #[allow(clippy::too_many_arguments)]
+    fn fetch(
+        &self,
+        entity_type: &str,
+        id: Option<&str>,
+        filter: Option<&Value>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        _include: Option<&Vec<String>>,
+        ctx: &BindingContext,
+    ) -> Result<FetchPage, String> {
+        let mut entities = match id {
+            Some(id) => match self.source.read(entity_type, id) {
+                Ok(v) if !v.is_null() => vec![v],
+                _ => Vec::new(),
+            },
+            None => self.source.list(entity_type)?,
+        };
+        tracing::debug!(
+            target: crate::logging::ns::RUNTIME_FETCH,
+            entity = %entity_type,
+            id = ?id,
+            has_filter = filter.is_some(),
+            limit = ?limit,
+            returned = entities.len(),
+            "fetch",
+        );
+        // The env-agnostic entity source lists unfiltered, so the declared
+        // predicate is applied here, through the shared owner every FetchHandler
+        // uses (C-FETCH-FILTER-NOT-APPLIED-BY-ENTITY-SOURCE-HANDLER). The
+        // entity's declared `@read` policy (if any) is ANDed in alongside the
+        // call-site filter — the un-bypassable half of row visibility.
+        let policy = self
+            .entity_policies
+            .read()
+            .get(entity_type)
+            .and_then(|p| p.read.clone());
+        let total = scope_fetched_rows(
+            &mut entities,
+            policy.as_ref(),
+            filter,
+            limit,
+            offset,
+            ctx,
+            entity_type,
+        );
+        Ok(FetchPage {
+            rows: entities,
+            total,
+        })
+    }
+}
+
+/// Clears the dispatch stamp when the outermost entry that set it returns (or unwinds).
+struct DispatchStamp {
+    slot: Option<Arc<RwLock<Option<f64>>>>,
+    now: f64,
+}
+
+#[derive(Debug, Default)]
+struct KernelI18n {
+    locales: Vec<String>,
+    catalogs: HashMap<String, HashMap<String, String>>,
+}
+
+/// Holds a dispatch's viewer locale; dropping it clears the slot. JS twin: `OrbitalEventRequest.locale`.
+pub struct LocaleGuard {
+    slot: Arc<RwLock<Option<String>>>,
+}
+
+impl Drop for LocaleGuard {
+    fn drop(&mut self) {
+        *self.slot.write() = None;
+    }
+}
+
+impl Drop for DispatchStamp {
+    fn drop(&mut self) {
+        if let Some(slot) = &self.slot {
+            *slot.write() = None;
+        }
+    }
+}
+
+impl RuntimeKernel {
+    /// Create a new kernel for the given environment with the supplied entity source.
+    pub fn new(
+        environment: RuntimeEnvironment,
+        entity_source: Arc<dyn EntitySource>,
+        config: KernelConfig,
+    ) -> Self {
+        let event_bus = shared_bus();
+        let state_manager = Arc::new(RwLock::new(StateMachineManager::new()));
+        let entity_policies: Arc<RwLock<EntityAccessTable>> = Arc::new(RwLock::new(HashMap::new()));
+        let entity_handler = Arc::new(EntitySourceHandler {
+            source: entity_source.clone(),
+            entity_policies: entity_policies.clone(),
+        });
+        let mut executor = EffectExecutor::new(environment)
+            .with_fetch_handler(entity_handler.clone())
+            .with_persistence(entity_handler)
+            .with_entity_policies(entity_policies.clone());
+        // Threaded BEFORE the `Arc` wrap (`EffectExecutor::with_delegate` is a
+        // consuming builder) — every client-role kernel is configured with the
+        // ONE `ServerLegCollector` via `KernelConfig.delegate`.
+        if let Some(delegate) = config.delegate.clone() {
+            executor = executor.with_delegate(delegate);
+        }
+        let effect_executor = Arc::new(executor);
+
+        let listener_manager = ListenerManager::new(event_bus.clone());
+
+        // No HTTP request stands behind a headless run, so the viewer comes from
+        // `ALMADAR_PERSONA`. Without it `@user.*` is Null and every role gate and
+        // ownership filter silently takes its empty branch (C-KERNEL-USER-NEVER-SET).
+        // A JSON-form spec is self-contained and resolves here; a bare id/role
+        // names a row of the app's OWN [identity] roster, which exists only once
+        // a schema registers — `register_schema` finishes that resolution.
+        let current_user = match crate::runtime::persona::persona_from_env_spec() {
+            Ok(crate::runtime::persona::EnvPersona::Resolved(user)) => user,
+            Ok(_) => Value::Null,
+            Err(err) => {
+                // A developer who asked to be somebody must never be shown the app
+                // as nobody — report and refuse the bad spec rather than degrade.
+                tracing::error!(error = %err, "invalid {}", crate::runtime::persona::PERSONA_ENV);
+                panic!("{}", err);
+            }
+        };
+
+        Self {
+            config,
+            state_manager,
+            effect_executor,
+            event_bus,
+            listener_manager,
+            schemas: Arc::new(RwLock::new(HashMap::new())),
+            trait_definitions: Arc::new(RwLock::new(HashMap::new())),
+            entity_source,
+            current_user: Arc::new(RwLock::new(current_user)),
+            dispatch_now: Arc::new(RwLock::new(None)),
+            i18n: Arc::new(RwLock::new(KernelI18n::default())),
+            dispatch_locale: Arc::new(RwLock::new(None)),
+            entity_policies,
+            last_payloads: Arc::new(RwLock::new(HashMap::new())),
+            embed_index: Arc::new(RwLock::new(EmbedIndex::default())),
+            entity_definitions: Arc::new(RwLock::new(HashMap::new())),
+            frames: Arc::new(RwLock::new(HashMap::new())),
+            theme_presets: Arc::new(RwLock::new(ThemePresets::new())),
+            theme_mode: Arc::new(RwLock::new(None)),
+            mount: Arc::new(RwLock::new(MountLifecycle::default())),
+            renders: Arc::new(RwLock::new(RenderStore::default())),
+        }
+    }
+
+    /// Traits entering the mount: routed deliveries to them wait for their own lifecycle event.
+    pub fn mount_traits<I, S>(&self, traits: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut mount = self.mount.write();
+        for t in traits {
+            mount.awaiting.insert(t.into());
+        }
+    }
+
+    /// A new mount replacing the previous one (a page switch): nothing held for
+    /// the old mount survives, and `traits` await their lifecycle event.
+    pub fn remount_traits<I, S>(&self, traits: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut mount = self.mount.write();
+        mount.awaiting.clear();
+        mount.held.clear();
+        self.renders.write().clear();
+        for t in traits {
+            mount.awaiting.insert(t.into());
+        }
+    }
+
+    /// Traits leaving the mount: nothing stays held for them.
+    pub fn unmount_traits<I, S>(&self, traits: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut mount = self.mount.write();
+        let mut renders = self.renders.write();
+        for t in traits {
+            let t = t.into();
+            mount.awaiting.remove(&t);
+            mount.held.remove(&t);
+            renders.forget_traits([t.as_str()]);
+        }
+    }
+
+    /// Create a kernel with a trigger callback for listener events.
+    pub fn with_trigger_callback(mut self, callback: TriggerCallback) -> Self {
+        self.listener_manager =
+            ListenerManager::new(self.event_bus.clone()).with_trigger_callback(callback);
+        self
+    }
+
+    /// Register a schema with the kernel.
+    pub fn register_schema(&self, mut schema: OrbitalSchema) -> Result<(), KernelError> {
+        schema.bind_unlinked_traits_to_host_entity();
+        let schema_name = schema.name.clone();
+        info!(schema = %schema_name, "Registering schema");
+        self.theme_presets
+            .write()
+            .merge(ThemePresets::from_definitions(
+                schema.theme_definitions.iter().flatten(),
+            ));
+
+        // A bare `ALMADAR_PERSONA` (id/role) resolves against this app's declared
+        // roster — its [identity] entity's seeded rows — which construction could
+        // not see. Only fills a still-unset viewer: a later registration must not
+        // clobber a viewer somebody already resolved or set.
+        if let Ok(crate::runtime::persona::EnvPersona::Bare(spec)) =
+            crate::runtime::persona::persona_from_env_spec()
+        {
+            if matches!(self.get_current_user(), Value::Null) {
+                let roster = crate::runtime::persona::identity_roster(
+                    &schema,
+                    crate::runtime::persona::DEFAULT_IDENTITY_ROSTER_COUNT,
+                );
+                let user = crate::runtime::persona::resolve_persona_spec(&spec, &roster)
+                    .map_err(KernelError::Internal)?;
+                self.set_current_user(user);
+            }
+        }
+
+        // Populate the entity access table from every declared entity's four
+        // directives (additive across registrations — a later schema never
+        // clobbers an earlier one's policies for an entity it doesn't itself
+        // redeclare).
+        {
+            let mut table = self.entity_policies.write();
+
+            for orbital in &schema.orbitals {
+                for entity_ref in std::iter::once(&orbital.entity)
+                    .chain(orbital.auxiliary_entities.iter().flatten())
+                {
+                    if let EntityRef::Inline(def) = entity_ref {
+                        table.insert(
+                            def.name.clone(),
+                            EntityAccessPolicies {
+                                read: def.read_policy.as_ref().map(sexpr_to_value),
+                                create: def.create_policy.as_ref().map(sexpr_to_value),
+                                update: def.update_policy.as_ref().map(sexpr_to_value),
+                                delete: def.delete_policy.as_ref().map(sexpr_to_value),
+                                collection: def.collection.clone(),
+                                inherited: false,
+                                required_create_fields:
+                                    crate::runtime::entity_access::required_create_field_names(def),
+                            },
+                        );
+                    }
+                }
+            }
+
+            // Access is a property of the DATA, so a collection's declared
+            // policy governs every entity bound to it. Re-run over the whole
+            // accumulated table, not just this schema: an organism's entity and
+            // the std-atom entity that shadows it on the same collection arrive
+            // in different registrations
+            // (`R-SHADOW-ENTITY-SHARES-COLLECTION-DIRECTIVES-DONT-APPLY`).
+            crate::runtime::entity_access::resolve_collection_inheritance(&mut table);
+        }
+
+        // A `persistent:` collection is one table: every entity bound to it reads
+        // and writes the same rows (JS `MockPersistenceAdapter`, the TS shell).
+        for orbital in &schema.orbitals {
+            for entity_ref in
+                std::iter::once(&orbital.entity).chain(orbital.auxiliary_entities.iter().flatten())
+            {
+                if let EntityRef::Inline(def) = entity_ref {
+                    if let Some(collection) = &def.collection {
+                        self.entity_source.bind_collection(&def.name, collection);
+                    }
+                }
+            }
+        }
+
+        // Additive across registrations, same inline-only contract as the access
+        // table above. A SEPARATE lock/loop (never nested inside the
+        // `entity_policies` write guard above) so `entity_policies` and
+        // `entity_definitions` stay two independent leaf locks, not a new
+        // nested pair to add to the documented order.
+        {
+            let mut defs = self.entity_definitions.write();
+            for orbital in &schema.orbitals {
+                for entity_ref in std::iter::once(&orbital.entity)
+                    .chain(orbital.auxiliary_entities.iter().flatten())
+                {
+                    if let EntityRef::Inline(def) = entity_ref {
+                        defs.insert(def.name.clone(), def.clone());
+                    }
+                }
+            }
+        }
+
+        for orbital in &schema.orbitals {
+            for trait_ref in &orbital.traits {
+                if let Some(trait_def) = self.resolve_trait_definition(trait_ref, &schema) {
+                    self.register_trait(&trait_def)?;
+                    self.register_trait_listeners(&trait_def)?;
+                }
+            }
+
+            // Seed entity instances from inline entity definitions.
+            if let EntityRef::Inline(entity_def) = &orbital.entity {
+                if let Some(instances) = &entity_def.instances {
+                    let now = crate::runtime::mock_random::iso_from_ms(
+                        crate::time_util::now_millis_f64(),
+                    );
+                    for entity in
+                        crate::runtime::seed::instance_rows(&entity_def.name, instances, &now)
+                    {
+                        let _ = self.entity_source.create(&entity_def.name, &entity);
+                    }
+                }
+            }
+        }
+
+        self.schemas
+            .write()
+            .insert(schema_name.clone(), schema.clone());
+
+        // Additive rebuild over the FULL accumulated trait set, not just this
+        // schema's — an embed spanning two registrations must still resolve
+        // (mirrors the entity-policy table's additive re-run above).
+        *self.embed_index.write() = EmbedIndex::build(&self.trait_definitions.read());
+
+        info!(schema = %schema_name, "Schema registered successfully");
+        Ok(())
+    }
+
+    /// Resolve a trait reference to its definition.
+    fn resolve_trait_definition(
+        &self,
+        trait_ref: &TraitReference,
+        schema: &OrbitalSchema,
+    ) -> Option<TraitDefinition> {
+        match trait_ref {
+            TraitReference::Inline(def) => Some(def.clone()),
+            TraitReference::Reference {
+                reference, name, ..
+            } => {
+                let lookup_name = reference.as_ref().or(name.as_ref())?;
+                for orbital in &schema.orbitals {
+                    for other_trait_ref in &orbital.traits {
+                        if let TraitReference::Inline(trait_def) = other_trait_ref {
+                            if &trait_def.name == lookup_name {
+                                return Some(trait_def.clone());
+                            }
+                        }
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Register a trait definition with the state manager.
+    fn register_trait(&self, trait_def: &TraitDefinition) -> Result<(), KernelError> {
+        let trait_name = &trait_def.name;
+        debug!(trait_name = %trait_name, "Registering trait");
+
+        self.state_manager.write().register_trait(trait_def.clone());
+        self.trait_definitions
+            .write()
+            .insert(trait_name.clone(), trait_def.clone());
+
+        Ok(())
+    }
+
+    /// Register listeners declared on a trait.
+    fn register_trait_listeners(&self, trait_def: &TraitDefinition) -> Result<(), KernelError> {
+        if let Some(listens) = &trait_def.listens {
+            for listen in listens {
+                self.listener_manager
+                    .register(&trait_def.name, listen)
+                    .map_err(KernelError::Internal)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Process an event for a specific entity.
+    pub fn process_event(
+        &self,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event_name: &str,
+        payload: Value,
+    ) -> Result<ProcessEventResult, KernelError> {
+        self.process_event_in_dispatch(trait_name, entity_id, event_name, payload, None)
+    }
+
+    /// `process_event` inside a dispatch: `view` supplies `@event`/`@prevEvents`/`@prevStates`.
+    /// Guards read the source state; effects read the target (Runtime Spec Clause 3.3).
+    fn process_event_in_dispatch(
+        &self,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event_name: &str,
+        payload: Value,
+        view: Option<&DispatchView>,
+    ) -> Result<ProcessEventResult, KernelError> {
+        // An id-less event (`entity_id: None`) still needs somewhere to keep
+        // `@entity` writes across transitions, so the kernel keys a per-trait
+        // frame under the literal id "singleton" — one frame per (trait,
+        // "singleton") pair, not per row. The compiled TS server reproduces
+        // the same view via `@almadar/core`'s `resolveEntityView` (`frame <
+        // row < id` precedence), with `OirEntity::frame_fields()` (the
+        // `@intrinsic` fields) as the one allow-list for what belongs in the
+        // frame tier on both paths.
+        let entity_id = entity_id.unwrap_or("singleton");
+        let stamp = self.begin_dispatch();
+
+        debug!(
+            trait_name = %trait_name,
+            entity_id = %entity_id,
+            event = %event_name,
+            "Processing event"
+        );
+
+        let trait_def = self
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .cloned()
+            .ok_or_else(|| KernelError::TraitNotFound(trait_name.to_string()))?;
+
+        let mut state_manager = self.state_manager.write();
+
+        let current_state = state_manager
+            .get_or_create_state(trait_name, Some(entity_id))
+            .map_err(|e| KernelError::Internal(e.to_string()))?
+            .clone();
+
+        // Effective payload for BINDING resolution: a re-render (empty-payload event
+        // or a tick) still sees the last meaningful payload for this trait+entity,
+        // so render-ui `@payload.*` keeps resolving instead of reverting to a literal
+        // token. The STATE MACHINE still sees the real `payload` (event_payload.data
+        // below) — only the binding ctx falls back to the persisted payload. Persist
+        // non-empty payloads so the next re-render can reuse them.
+        let payload_key = format!("{trait_name}:{entity_id}");
+        let persisted = self.last_payloads.read().get(&payload_key).cloned();
+        let effective_payload = effective_render_payload(&payload, persisted.as_ref());
+        // Accumulate: store the merged payload so a later gesture/event still sees
+        // fields from an earlier fetch/emit (e.g. @payload.data) alongside its own
+        // (e.g. @payload.row). Only non-empty incoming payloads extend the store.
+        if !is_empty_payload(&payload) {
+            self.last_payloads
+                .write()
+                .insert(payload_key.clone(), effective_payload.clone());
+        }
+
+        let ctx = BindingContextBuilder::new()
+            .payload(effective_payload.clone())
+            .state(Value::String(current_state.current_state.clone()))
+            .user(self.current_user.read().clone())
+            .now(stamp.now)
+            .current_theme(Value::String(
+                self.resolve_current_theme_for_trait(trait_name).key,
+            ));
+        let mut ctx = self.with_viewer_i18n(ctx).build();
+        ctx.set_config(config_defaults_value(
+            &trait_def,
+            &self.trait_definitions.read(),
+        ));
+        if let Some(view) = view {
+            view.apply(&mut ctx);
+        }
+
+        let entity_type = trait_def.linked_entity.as_deref().unwrap_or(trait_name);
+        let entity_data = self.read_trait_entity(trait_name, entity_type, entity_id);
+        if !entity_data.is_null() {
+            ctx.set_entity(entity_data.clone());
+        }
+        debug!(
+            target: "almadar::kernel",
+            entity_type = %entity_type,
+            entity_id = %entity_id,
+            resolved = !entity_data.is_null(),
+            entity_keys = ?entity_data.as_object().map(|o| o.keys().collect::<Vec<_>>()),
+            "kernel: entity read for @entity bindings"
+        );
+
+        let event_payload = EventPayload {
+            event: event_name.to_string(),
+            data: payload.clone(),
+            source: Some(entity_id.to_string()),
+            timestamp: crate::time_util::now_millis(),
+        };
+
+        // Guard/transition evaluation runs against `ctx` — the SAME context
+        // already built above with payload/state/entity/user/config/currentTheme
+        // — instead of a second, state+entity-only context the manager would
+        // otherwise build from scratch (§157 `identity`: this is what makes
+        // `(when ["=", "@user.role", ...])` / `@config.*` guards see real values
+        // on the Rust path).
+        let result = state_manager
+            .process_event_with_ctx(trait_name, Some(entity_id), &event_payload, &ctx)
+            .map_err(|e| KernelError::Internal(e.to_string()))?;
+
+        if result.executed {
+            let new_state = result
+                .new_state
+                .clone()
+                .unwrap_or(current_state.current_state.clone());
+            ctx.set_state(Value::String(new_state.clone()));
+            ctx.from_state = Some(current_state.current_state.clone());
+            ctx.to_state = Some(new_state.clone());
+            let (effect_results, captured_entity_data) = match self.server_leg_collector() {
+                Some(collector) => collector.attribute(trait_name, || {
+                    self.execute_effects_with_entity(&result.effects, &ctx)
+                }),
+                None => self.execute_effects_with_entity(&result.effects, &ctx),
+            };
+
+            // Effective entity = read entity with Set-effect fields merged in. Persist
+            // the MERGED entity (read-modify-write), never the partial
+            // `captured_entity_data` (only the Set-touched fields): a replace-write of
+            // the partial would drop every untouched field, so a later re-render's
+            // `@entity.<untouched-field>` (tabs `activeTab: @entity.filterKind`, board
+            // `current*` card fields, …) reverts to a literal token. The merged value is
+            // also what render-ui resolves against below and what the client receives.
+            let effective_entity = merge_entity(&entity_data, &captured_entity_data);
+
+            if !captured_entity_data.is_null()
+                && captured_entity_data
+                    .as_object()
+                    .map(|o| !o.is_empty())
+                    .unwrap_or(false)
+            {
+                self.write_trait_frame(trait_name, entity_type, entity_id, &captured_entity_data);
+            }
+
+            info!(
+                trait_name = %trait_name,
+                entity_id = %entity_id,
+                event = %event_name,
+                new_state = %new_state,
+                effects_count = effect_results.len(),
+                "Event processed successfully"
+            );
+
+            // Resolve EVERY binding (@payload.X / @entity.X / @config.X / @state / @user)
+            // in the client-facing effects against the full context, through the ONE
+            // canonical resolver — `@payload` is a typed payload so `X` is arbitrary; no
+            // per-field special-cases. The entity is the post-Set effective entity.
+            ctx.set_entity(effective_entity.clone());
+            let sources = render_sources(&effect_results);
+            let effect_results = effect_results
+                .into_iter()
+                .map(|mut er| {
+                    er.effect = resolve_effect_bindings(er.effect, &ctx);
+                    er
+                })
+                .collect::<Vec<_>>();
+            self.record_renders(trait_name, entity_id, sources, &effect_results, &ctx);
+
+            Ok(ProcessEventResult {
+                executed: true,
+                previous_state: current_state.current_state.clone(),
+                new_state,
+                effects_executed: effect_results.len(),
+                effect_results,
+                entity_data: effective_entity,
+                linked_entity: entity_type.to_string(),
+                event: Some(event_name.to_string()),
+                payload: payload.clone(),
+                entry: Some(DeliveryEntry {
+                    entity_before: entity_data,
+                    view: view.cloned().unwrap_or_default(),
+                }),
+            })
+        } else {
+            debug!(
+                trait_name = %trait_name,
+                entity_id = %entity_id,
+                event = %event_name,
+                "Event not processed (guard blocked or no matching transition)"
+            );
+
+            let entity_data = if ctx.entity.is_null() {
+                Value::Object(HashMap::new())
+            } else {
+                ctx.entity.clone()
+            };
+
+            let state_effects = self.get_state_render_effects(
+                &trait_def,
+                &current_state.current_state,
+                &ctx,
+                &entity_data,
+            );
+            self.record_renders(
+                trait_name,
+                entity_id,
+                state_render_sources(&trait_def, &current_state.current_state),
+                &state_effects,
+                &ctx,
+            );
+
+            Ok(ProcessEventResult {
+                event: None,
+                executed: false,
+                previous_state: current_state.current_state.clone(),
+                new_state: current_state.current_state.clone(),
+                effects_executed: 0,
+                effect_results: state_effects,
+                entity_data,
+                linked_entity: entity_type.to_string(),
+                payload: payload.clone(),
+                entry: None,
+            })
+        }
+    }
+
+    /// Run one scheduled tick of `trait_name` against `entity_id` through the **same**
+    /// effect path as a transition (`execute_effects_with_entity`) — no parallel walker.
+    /// Mirrors the canonical JS runtime's `executeTick`: build the entity/state context,
+    /// evaluate the tick's guard (skip when it fails), run the tick's effects, and persist
+    /// any `set` fields back to the entity. A tick is not an event/transition, so this is a
+    /// sibling entry point to `process_event` that shares its effect execution + binding
+    /// resolution, returning the same [`ProcessEventResult`] shape so the existing
+    /// `EventResponse` conversion folds tick effects into the client response unchanged.
+    pub fn process_tick(
+        &self,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        tick_name: &str,
+    ) -> Result<ProcessEventResult, KernelError> {
+        let entity_id = entity_id.unwrap_or("singleton");
+        let stamp = self.begin_dispatch();
+
+        let trait_def = self
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .cloned()
+            .ok_or_else(|| KernelError::TraitNotFound(trait_name.to_string()))?;
+
+        let tick = trait_def
+            .ticks
+            .as_ref()
+            .and_then(|ticks| ticks.iter().find(|t| t.name == tick_name))
+            .cloned()
+            .ok_or_else(|| {
+                KernelError::Internal(format!("tick '{tick_name}' not found on '{trait_name}'"))
+            })?;
+
+        let current_state = {
+            let mut state_manager = self.state_manager.write();
+            state_manager
+                .get_or_create_state(trait_name, Some(entity_id))
+                .map_err(|e| KernelError::Internal(e.to_string()))?
+                .current_state
+                .clone()
+        };
+
+        // `appliesTo` lists the trait states the tick runs in; none listed = every state.
+        if tick
+            .applies_to
+            .as_ref()
+            .is_some_and(|states| !states.is_empty() && !states.contains(&current_state))
+        {
+            return Ok(ProcessEventResult {
+                event: None,
+                executed: false,
+                previous_state: current_state.clone(),
+                new_state: current_state,
+                effects_executed: 0,
+                effect_results: Vec::new(),
+                entity_data: Value::Null,
+                linked_entity: trait_def
+                    .linked_entity
+                    .clone()
+                    .unwrap_or_else(|| trait_name.to_string()),
+                payload: Value::Null,
+                entry: None,
+            });
+        }
+
+        // Ticks carry no event payload; the render-ui they (re)resolve should still
+        // see the last meaningful payload for this trait+entity (same fallback as
+        // process_event's re-render path).
+        let tick_payload_key = format!("{trait_name}:{entity_id}");
+        let tick_persisted = self.last_payloads.read().get(&tick_payload_key).cloned();
+        let tick_payload = effective_render_payload(&Value::Null, tick_persisted.as_ref());
+
+        let ctx = BindingContextBuilder::new()
+            .payload(tick_payload)
+            .state(Value::String(current_state.clone()))
+            .user(self.current_user.read().clone())
+            .now(stamp.now)
+            .current_theme(Value::String(
+                self.resolve_current_theme_for_trait(trait_name).key,
+            ));
+        let mut ctx = self.with_viewer_i18n(ctx).build();
+        ctx.set_config(config_defaults_value(
+            &trait_def,
+            &self.trait_definitions.read(),
+        ));
+
+        let entity_type = trait_def.linked_entity.as_deref().unwrap_or(trait_name);
+        let entity_data = self.read_trait_entity(trait_name, entity_type, entity_id);
+        if !entity_data.is_null() {
+            ctx.set_entity(entity_data.clone());
+        }
+
+        // Guard gates the tick exactly like the JS runtime — evaluated through the one
+        // canonical evaluator, never a re-implemented predicate.
+        if let Some(guard) = &tick.guard {
+            let evaluator = Evaluator::new();
+            if !matches!(evaluator.evaluate_guard(guard, &ctx), Ok(true)) {
+                return Ok(ProcessEventResult {
+                    event: None,
+                    executed: false,
+                    previous_state: current_state.clone(),
+                    new_state: current_state,
+                    effects_executed: 0,
+                    effect_results: Vec::new(),
+                    entity_data,
+                    linked_entity: entity_type.to_string(),
+                    payload: Value::Null,
+                    entry: None,
+                });
+            }
+        }
+
+        let (effect_results, captured_entity_data) =
+            self.execute_effects_with_entity(&tick.effects, &ctx);
+
+        // Effective entity = base entity with the tick's `set` fields merged in.
+        // Persist the MERGED entity (read-modify-write), not the partial — same
+        // reasoning as process_event: a replace-write of only the tick's Set fields
+        // would drop every untouched field on the next render.
+        let effective_entity = merge_entity(&entity_data, &captured_entity_data);
+
+        if captured_entity_data
+            .as_object()
+            .map(|o| !o.is_empty())
+            .unwrap_or(false)
+        {
+            self.write_trait_frame(trait_name, entity_type, entity_id, &captured_entity_data);
+        }
+
+        ctx.set_entity(effective_entity.clone());
+        let sources = render_sources(&effect_results);
+        let effect_results = effect_results
+            .into_iter()
+            .map(|mut er| {
+                er.effect = resolve_effect_bindings(er.effect, &ctx);
+                er
+            })
+            .collect::<Vec<_>>();
+        self.record_renders(trait_name, entity_id, sources, &effect_results, &ctx);
+
+        Ok(ProcessEventResult {
+            event: None,
+            executed: true,
+            previous_state: current_state.clone(),
+            new_state: current_state,
+            effects_executed: effect_results.len(),
+            effect_results,
+            entity_data: effective_entity,
+            linked_entity: entity_type.to_string(),
+            payload: Value::Null,
+            entry: None,
+        })
+    }
+
+    /// Dispatch an event with full cross-trait listener fan-out, mirroring the canonical
+    /// runtime's EventBus. The target trait processes the event; then every trait whose
+    /// `listens` matches `(event, source-trait)` processes its triggered event, and any
+    /// `emit` effect fans out the same way. Returns one outcome per processed trait, in
+    /// dispatch order, so the caller merges their effects into a single response. A
+    /// `(trait, event, from, payload, frame)` visited-set bounds cycles (`dispatch_visit_key`).
+    ///
+    /// This is the single dispatch entry point the client bridge and server route call —
+    /// `process_event` is the single-trait primitive it builds on. Without this, a user
+    /// event sent to one trait (e.g. a "New Item" button's `CREATE`) never reaches the
+    /// modal trait that *listens* for it, so nothing happens (RS-G20).
+    pub fn dispatch(
+        &self,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event_name: &str,
+        payload: Value,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        self.dispatch_continuing(trait_name, entity_id, event_name, payload, None, None)
+    }
+
+    /// [`Self::dispatch`] for a request that continues a client-begun dispatch: `delivery` is the
+    /// target's `@event` and `log` its `@prevEvents`/`@prevStates` so far (`EventRequest.delivery`
+    /// / `.dispatch_log`). `None` for both is a direct dispatch.
+    pub fn dispatch_continuing(
+        &self,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event_name: &str,
+        payload: Value,
+        delivery: Option<&DeliveryRecord>,
+        log: Option<&DispatchLog>,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let target: Vec<&str> = crate::events::is_bus_excluded_event(event_name)
+            .then_some(trait_name)
+            .into_iter()
+            .collect();
+        self.dispatch_seed(
+            trait_name, entity_id, event_name, payload, delivery, log, &target,
+        )
+    }
+
+    /// A mount batch (`EventRequest.mount`): each seed runs its own lifecycle event, in
+    /// order, with the shared `payload`. The client's mount (`_awaitingInit`) is synced
+    /// once against every seed, so no seed's held delivery leaves before its own step.
+    /// A seed naming no registered trait is skipped. JS twin: `evaluateOrbitalEvent`'s
+    /// `request.mount` branch.
+    pub fn dispatch_mount(
+        &self,
+        seeds: &[crate::effects::MountSeed],
+        entity_id: Option<&str>,
+        payload: Value,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let targets: Vec<&str> = seeds.iter().map(|s| s.r#trait.as_str()).collect();
+        let (payload, awaiting) = take_awaiting_sidecar(payload);
+        let mut first = true;
+        let mut outcomes = Vec::new();
+        for seed in seeds {
+            if !self.trait_definitions.read().contains_key(&seed.r#trait) {
+                continue;
+            }
+            // Only the first seed carries the client's mount, synced against all seeds.
+            let seed_payload = match (&awaiting, first) {
+                (Some(list), true) => with_awaiting_sidecar(payload.clone(), list),
+                _ => payload.clone(),
+            };
+            first = false;
+            outcomes.extend(self.dispatch_seed(
+                &seed.r#trait,
+                entity_id,
+                &seed.event,
+                seed_payload,
+                None,
+                None,
+                &targets,
+            )?);
+        }
+        Ok(outcomes)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_seed(
+        &self,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event_name: &str,
+        payload: Value,
+        delivery: Option<&DeliveryRecord>,
+        log: Option<&DispatchLog>,
+        lifecycle_targets: &[&str],
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let _stamp = self.begin_dispatch();
+        let eid = entity_id.unwrap_or("singleton").to_string();
+        let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        // A server leg carries the client's mount (`_awaitingInit`, never a
+        // payload binding): deliveries held for a trait the client has since
+        // initialized go out first, ahead of this request's seed.
+        let (payload, awaiting) = take_awaiting_sidecar(payload);
+        let released = match awaiting {
+            Some(awaiting) => self.mount.write().sync(awaiting, lifecycle_targets),
+            None => Vec::new(),
+        };
+
+        // Seed bubble (§158): the JS runtime fans a UI-originated emit to
+        // every scope on the embed chain, innermost first (`TraitScopeProvider`
+        // R-EMBEDDED-EMIT-BUBBLE) — a host with no transition for the event is
+        // a tolerated no-op, same as `TraitNotFound` below, but it still serves
+        // as a listener source. Only the SEED event bubbles this way; anything
+        // this loop queues afterwards (cascaded listens/emits) keeps the
+        // single-scope semantics `useEventBus.ts` reserves for machine-
+        // originated emits. A trait with no ancestors runs this loop exactly
+        // once, byte-identical to the pre-bubble single-scope dispatch.
+        let mut seed_scopes = vec![trait_name.to_string()];
+        seed_scopes.extend(
+            self.embed_index
+                .read()
+                .ancestors(trait_name)
+                .iter()
+                .cloned(),
+        );
+        let mut memory = DispatchMemory::default();
+        if let Some(log) = log {
+            memory.seed(trait_name, log);
+        }
+        if !released.is_empty() {
+            self.run_cascade(
+                &eid,
+                released.into(),
+                &mut visited,
+                &HashSet::new(),
+                &mut memory,
+                &mut outcomes,
+            )?;
+        }
+        let seed_delivery = match delivery {
+            Some(d) => d.value(),
+            None => delivery_record_value(event_name, &payload, &BusEventSource::default()),
+        };
+        let mut seed_own: Vec<CascadeItem> = Vec::new();
+        let mut seed_fanned: Vec<CascadeItem> = Vec::new();
+        for scope in &seed_scopes {
+            let from = self.current_state_name(scope, Some(&eid));
+            let frame = self.step_entity_view(scope, &eid);
+            if !visited.insert(dispatch_visit_key(
+                scope, event_name, &from, &payload, &frame,
+            )) {
+                continue;
+            }
+            let view = memory.view(scope, &seed_delivery);
+            let result = match self.process_event_in_dispatch(
+                scope,
+                Some(&eid),
+                event_name,
+                payload.clone(),
+                Some(&view),
+            ) {
+                Ok(r) => Some(r),
+                Err(KernelError::TraitNotFound(_)) => None,
+                Err(e) => return Err(e),
+            };
+            if result.is_some() {
+                seed_fanned.extend(self.mount.write().release_after(scope, event_name));
+            }
+            let (own, fanned) =
+                self.step_followups(scope, event_name, &payload, result.as_ref(), &seed_scopes);
+            seed_own.extend(own);
+            seed_fanned.extend(fanned);
+            if let Some(result) = &result {
+                memory.record_delivery(scope, &seed_delivery);
+                if result.executed {
+                    memory.record_transition(scope, &result.previous_state, &result.new_state);
+                }
+            }
+            if let Some(result) = result {
+                outcomes.push((scope.clone(), result));
+            }
+        }
+        let queue: VecDeque<CascadeItem> = seed_own.into_iter().chain(seed_fanned).collect();
+
+        self.run_cascade(
+            &eid,
+            queue,
+            &mut visited,
+            &HashSet::new(),
+            &mut memory,
+            &mut outcomes,
+        )?;
+        Ok(outcomes)
+    }
+
+    /// Shared BFS body: drain `queue`, processing each `(trait, event, payload)`
+    /// through `process_event` and fanning out its own emits + declared listeners.
+    /// The single owner of cross-trait cascade fan-out — `dispatch` (seeded from the
+    /// target trait's own bubble scopes) and `apply_server_response` (seeded from
+    /// un-delivered server-emitted events) both build on this, so there is ONE BFS,
+    /// not two independently-maintained copies that could drift apart.
+    fn run_cascade(
+        &self,
+        eid: &str,
+        mut queue: VecDeque<CascadeItem>,
+        visited: &mut HashSet<String>,
+        already_delivered: &HashSet<(String, String)>,
+        memory: &mut DispatchMemory,
+        outcomes: &mut Vec<(String, ProcessEventResult)>,
+    ) -> Result<(), KernelError> {
+        let mut steps = 0usize;
+        while let Some(item) = queue.pop_front() {
+            if already_delivered.contains(&(item.trait_name.clone(), item.event.clone())) {
+                continue;
+            }
+            {
+                let mut mount = self.mount.write();
+                if mount.holds(&item) {
+                    debug!(trait_name = %item.trait_name, event = %item.event, "fanout:held-until-init");
+                    mount.hold(item);
+                    continue;
+                }
+            }
+            let CascadeItem {
+                trait_name: t,
+                event: ev,
+                payload: pl,
+                delivery,
+                source_payload,
+                listen_guard,
+            } = item;
+            let from = self.current_state_name(&t, Some(eid));
+            let frame = self.step_entity_view(&t, eid);
+            let key = dispatch_visit_key(&t, &ev, &from, &pl, &frame);
+            if visited.contains(&key) {
+                continue;
+            }
+            let view = memory.view(&t, &delivery);
+            if let Some(guard) = &listen_guard {
+                if !listen_guard_passes(guard, &source_payload, &from, &view) {
+                    debug!(trait_name = %t, event = %ev, "fanout:listen-guard-blocked");
+                    continue;
+                }
+            }
+            visited.insert(key);
+            if steps >= CROSS_TRAIT_CASCADE_CAP {
+                let dropped: BTreeSet<String> = std::iter::once(t)
+                    .chain(queue.into_iter().map(|item| item.trait_name))
+                    .collect();
+                tracing::warn!(
+                    target: crate::logging::ns::RUNTIME_KERNEL,
+                    cap = CROSS_TRAIT_CASCADE_CAP,
+                    dropped = ?dropped,
+                    "cascade:truncated",
+                );
+                return Ok(());
+            }
+            steps += 1;
+            // A source trait may not exist as a processable trait (e.g. a render-only
+            // layout that only emits) — skip its own processing but still fan out.
+            let result =
+                match self.process_event_in_dispatch(&t, Some(eid), &ev, pl.clone(), Some(&view)) {
+                    Ok(r) => Some(r),
+                    Err(KernelError::TraitNotFound(_)) => None,
+                    Err(e) => return Err(e),
+                };
+
+            // Fan out from the trait that just handled this event (source = `t`):
+            // the dispatched event itself, plus any events it emitted.
+            let (own, fanned) = self.step_followups(&t, &ev, &pl, result.as_ref(), &[]);
+            if let Some(result) = &result {
+                memory.record_delivery(&t, &delivery);
+                if result.executed {
+                    memory.record_transition(&t, &result.previous_state, &result.new_state);
+                }
+            }
+            if let Some(result) = result {
+                queue.extend(self.mount.write().release_after(&t, &ev));
+                outcomes.push((t, result));
+            }
+            for item in own.into_iter().rev() {
+                queue.push_front(item);
+            }
+            queue.extend(fanned);
+        }
+        Ok(())
+    }
+
+    /// Dispatch through the SEED trait's declared [`DispatchMode`], collecting
+    /// whatever server-only effects (`persist`/`fetch`/`call-service`) the
+    /// `EffectExecutor` delegated instead of executing — the `RuntimeEnvironment::
+    /// Client` path (`executor.rs` `do_persist`/`do_fetch`/`do_call_service`)
+    /// routes those to `self.effect_executor`'s configured [`EffectDelegate`]
+    /// (installed from `KernelConfig.delegate` at construction — see
+    /// [`RuntimeKernel::new`]), which for every client role is the ONE
+    /// [`ServerLegCollector`]. `dispatch_with_server_leg` drains it right after
+    /// this call's `dispatch`, so effects from an unrelated concurrent dispatch
+    /// on another thread must never land here — see the lock-order note on
+    /// [`Self::snapshot_trait`]; this method takes no kernel lock itself besides
+    /// what `dispatch`/`process_event` already take internally, so two threads
+    /// calling `dispatch_with_server_leg` concurrently race on the SAME
+    /// collector and may attribute each other's delegated effects to the wrong
+    /// leg — acceptable for now (client-role kernels are driven from one
+    /// thread; `kernel_concurrent_dispatch_and_apply_no_deadlock` only proves
+    /// the LOCKS never deadlock under concurrency, not per-call attribution).
+    ///
+    /// `orbital` is carried through for tracing/attribution only (no field on
+    /// the wire [`EventRequest`] needs it yet — multiple orbitals sharing one
+    /// client kernel is future work).
+    pub fn dispatch_with_server_leg(
+        &self,
+        orbital: &str,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event: &str,
+        payload: Value,
+        client_id: Option<&str>,
+    ) -> Result<ClientDispatch, KernelError> {
+        let eid = entity_id.unwrap_or("singleton").to_string();
+
+        let trait_def = self
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .cloned()
+            .ok_or_else(|| KernelError::TraitNotFound(trait_name.to_string()))?;
+        let mode = self.dispatch_mode_of(&trait_def);
+
+        // RuntimeOptimistic commits locally before any server round trip, so the
+        // snapshot must be taken BEFORE `dispatch` runs — it's what the caller
+        // rolls back to on a disagreeing/erroring server response.
+        let snapshot = if matches!(mode, DispatchMode::RuntimeOptimistic) {
+            Some(self.snapshot_trait(trait_name, Some(&eid)))
+        } else {
+            None
+        };
+        // The leg replays the event from the pre-dispatch state, so it carries
+        // the pre-dispatch row too.
+        let seed_row = self.snapshot_trait(trait_name, Some(&eid)).entity;
+
+        debug!(
+            target: "almadar::kernel",
+            orbital = %orbital, trait_name = %trait_name, event = %event, mode = ?mode,
+            "dispatch_with_server_leg",
+        );
+
+        let outcomes = self.dispatch(trait_name, Some(&eid), event, payload.clone())?;
+        let mut response = EventResponse::from_process_results(&outcomes, trait_name, event);
+        response.fold_rerenders(&self.rerender_stale());
+
+        Ok(self.finish_client_dispatch(LegSeed {
+            trait_name,
+            event,
+            payload,
+            eid: &eid,
+            client_id,
+            tick: None,
+            mode,
+            snapshot,
+            seed_row: &seed_row,
+            outcomes: &outcomes,
+            response,
+        }))
+    }
+
+    /// Drain the delegated server effects the cascade collected and, for a client-role kernel,
+    /// wrap them in the leg that replays `seed.event` on the server. The one body behind
+    /// [`Self::dispatch_with_server_leg`] and [`Self::dispatch_tick`].
+    fn finish_client_dispatch(&self, seed: LegSeed<'_>) -> ClientDispatch {
+        let LegSeed {
+            trait_name,
+            event,
+            payload,
+            eid,
+            client_id,
+            tick,
+            mode,
+            snapshot,
+            seed_row,
+            outcomes,
+            response,
+        } = seed;
+        let (drained, delegating_traits) = self.drain_server_leg_collector();
+        let hybrid = matches!(mode, DispatchMode::HybridClientOnly);
+        // A local seed never needs the server for its OWN effects, but the
+        // traits its cascade reached (a persistor, a refetching list) may.
+        let downstream_needs_server = delegating_traits.iter().any(|t| t != trait_name);
+
+        let server_legs = if self.effect_executor.environment().is_client() && !drained.is_empty() {
+            if hybrid && !downstream_needs_server {
+                // A `local` trait's OWN effects should be client-only by construction;
+                // a server-only effect the seed itself delegated is a validator bug
+                // (§7 declares `local` legal only where nothing needs the server), not
+                // something to silently ship as a leg. Report and drop.
+                tracing::error!(
+                    trait_name = %trait_name, event = %event, drained = drained.len(),
+                    "HybridClientOnly trait delegated server-only effects — dropping the server leg",
+                );
+                Vec::new()
+            } else {
+                let traits: Vec<TraitFrom> = outcomes
+                    .iter()
+                    .filter(|(t, r)| r.executed || t == trait_name)
+                    .map(|(t, r)| TraitFrom {
+                        r#trait: t.clone(),
+                        from: r.previous_state.clone(),
+                        event: r.event.clone(),
+                    })
+                    .collect();
+                // The client's mount rides every leg so the host holds a seed
+                // for a trait this client has not initialized yet.
+                let awaiting = Value::Array(
+                    self.mount
+                        .read()
+                        .awaiting
+                        .iter()
+                        .cloned()
+                        .map(Value::String)
+                        .collect(),
+                );
+                let with_awaiting = |payload: Value| match payload {
+                    Value::Object(mut map) => {
+                        map.insert("_awaitingInit".to_string(), awaiting.clone());
+                        Some(Value::Object(map))
+                    }
+                    Value::Null => Some(Value::Object(HashMap::from([(
+                        "_awaitingInit".to_string(),
+                        awaiting.clone(),
+                    )]))),
+                    other => Some(other),
+                };
+                let traits = (!traits.is_empty()).then_some(traits);
+                if delegating_traits.contains(trait_name) {
+                    // The seed's own arm needs the server: it replays from its
+                    // pre-dispatch row and the server cascades the rest itself.
+                    let entity_by_trait = (!seed_row.is_null())
+                        .then(|| HashMap::from([(trait_name.to_string(), seed_row.clone())]));
+                    vec![EventRequest {
+                        event: event.to_string(),
+                        tick: tick.map(str::to_string),
+                        payload: with_awaiting(payload.clone()),
+                        entity_id: Some(eid.to_string()),
+                        target_trait: Some(trait_name.to_string()),
+                        client_id: client_id.map(|s| s.to_string()),
+                        source_trait: Some(trait_name.to_string()),
+                        traits,
+                        entity_by_trait,
+                        ..Default::default()
+                    }]
+                } else {
+                    // The seed has nothing to do on the server (the generated handler
+                    // would refuse an event it has no arm for): address each
+                    // listener whose delivery does.
+                    let mut covered: HashSet<&str> = HashSet::new();
+                    let mut legs = Vec::new();
+                    for (t, r) in outcomes {
+                        let Some(entry) = r.entry.as_ref().filter(|_| r.executed) else {
+                            continue;
+                        };
+                        let delivery = DeliveryRecord::from_value(&entry.view.event);
+                        let emitter = delivery.as_ref().and_then(|d| d.source.r#trait.as_deref());
+                        if emitter.is_some_and(|e| covered.contains(e)) {
+                            covered.insert(t.as_str());
+                            continue;
+                        }
+                        if !delegating_traits.contains(t) {
+                            continue;
+                        }
+                        covered.insert(t.as_str());
+                        let Some(delivered) = r.event.clone() else {
+                            continue;
+                        };
+                        let dispatch_log = (!entry.view.prev_events.is_empty()
+                            || !entry.view.prev_states.is_empty())
+                        .then(|| DispatchLog {
+                            prev_events: entry
+                                .view
+                                .prev_events
+                                .iter()
+                                .filter_map(DeliveryRecord::from_value)
+                                .collect(),
+                            prev_states: entry.view.prev_states.clone(),
+                        });
+                        legs.push(EventRequest {
+                            event: delivered,
+                            tick: tick.map(str::to_string),
+                            payload: with_awaiting(r.payload.clone()),
+                            entity_id: Some(eid.to_string()),
+                            target_trait: Some(t.clone()),
+                            client_id: client_id.map(|s| s.to_string()),
+                            source_trait: emitter.map(str::to_string),
+                            traits: traits.clone(),
+                            entity_by_trait: (!entry.entity_before.is_null())
+                                .then(|| HashMap::from([(t.clone(), entry.entity_before.clone())])),
+                            delivery,
+                            dispatch_log,
+                            ..Default::default()
+                        });
+                    }
+                    legs
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        let awaiting = if tick.is_some() || server_legs.is_empty() {
+            Vec::new()
+        } else {
+            self.awaiting_of(outcomes)
+        };
+        ClientDispatch {
+            response,
+            server_legs,
+            outcomes: outcomes.to_vec(),
+            seed: (trait_name.to_string(), event.to_string()),
+            mode,
+            snapshot,
+            awaiting,
+        }
+    }
+
+    /// Each non-local trait a dispatch's local run executed, by its first firing (the web
+    /// client kernel's `awaitingEntries`).
+    fn awaiting_of(&self, outcomes: &[(String, ProcessEventResult)]) -> Vec<AwaitingTrait> {
+        let defs = self.trait_definitions.read();
+        let mut out: Vec<AwaitingTrait> = Vec::new();
+        for (name, result) in outcomes {
+            let Some(event) = result.event.as_ref().filter(|_| result.executed) else {
+                continue;
+            };
+            if out.iter().any(|a| &a.trait_name == name) {
+                continue;
+            }
+            let local = defs.get(name).is_some_and(|def| {
+                matches!(self.dispatch_mode_of(def), DispatchMode::HybridClientOnly)
+            });
+            if local {
+                continue;
+            }
+            out.push(AwaitingTrait {
+                trait_name: name.clone(),
+                event: event.clone(),
+                from: result.previous_state.clone(),
+            });
+        }
+        out
+    }
+
+    /// The tick twin of [`Self::dispatch_with_server_leg`]. Runs the tick's effects through
+    /// [`Self::process_tick`], then takes each `emit` it ran through the normal cascade (its
+    /// declared listeners, and the emitter's own arm for the event when it has one) WITHOUT
+    /// running the emitter as a seed, so its last render is not repainted and no `guardFailed`
+    /// is reported for an event it never received. Each emit yields one [`ClientDispatch`], with
+    /// the tick's name stamped on the event's source and on the leg (`EventRequest.tick`).
+    ///
+    /// Web parity (`useClientTicks` -> `runCircuitEffects`): a tick's OWN `persist`/`fetch`/
+    /// `call-service` is a documented no-op there (`persistDelegated`, `callServiceDelegated`;
+    /// no event exists to replay it under), so it is discarded here too and must not ride the
+    /// next dispatch's leg. Server work done by the emit's listeners does produce a leg, as a
+    /// listener's dispatch does on web.
+    pub fn dispatch_tick(
+        &self,
+        orbital: &str,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        tick_name: &str,
+        client_id: Option<&str>,
+    ) -> Result<TickDispatch, KernelError> {
+        let eid = entity_id.unwrap_or("singleton").to_string();
+        let trait_def = self
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .cloned()
+            .ok_or_else(|| KernelError::TraitNotFound(trait_name.to_string()))?;
+        let mode = self.dispatch_mode_of(&trait_def);
+
+        let outcome = self.process_tick(trait_name, Some(&eid), tick_name)?;
+        let (tick_own, _) = self.drain_server_leg_collector();
+        let discarded_server_effects = tick_own.len();
+        if !tick_own.is_empty() {
+            debug!(
+                target: "almadar::kernel",
+                trait_name = %trait_name, tick = %tick_name, discarded = tick_own.len(),
+                "tick's own server effects have no event to replay under — discarded (web parity)",
+            );
+        }
+        if !outcome.executed {
+            return Ok(TickDispatch {
+                outcome,
+                discarded_server_effects,
+                emits: Vec::new(),
+                rerenders: Vec::new(),
+            });
+        }
+
+        debug!(
+            target: "almadar::kernel",
+            orbital = %orbital, trait_name = %trait_name, tick = %tick_name, mode = ?mode,
+            "dispatch_tick",
+        );
+        let mut source = self.emit_source(trait_name);
+        source.tick = Some(tick_name.to_string());
+        let mut emits = Vec::new();
+        for er in &outcome.effect_results {
+            let Effect::Emit {
+                event: emitted,
+                payload: ep,
+            } = &er.effect
+            else {
+                continue;
+            };
+            let snapshot = matches!(mode, DispatchMode::RuntimeOptimistic)
+                .then(|| self.snapshot_trait(trait_name, Some(&eid)));
+            let seed_row = self.snapshot_trait(trait_name, Some(&eid)).entity;
+
+            let _stamp = self.begin_dispatch();
+            let mut own = Vec::new();
+            let mut fanned = Vec::new();
+            let handled = self.trait_handles(trait_name, &outcome.new_state, emitted);
+            self.emit_followup(
+                trait_name,
+                &source,
+                handled,
+                emitted,
+                ep,
+                &mut own,
+                &mut fanned,
+            );
+            let queue: VecDeque<CascadeItem> = own.into_iter().chain(fanned).collect();
+            let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
+            self.run_cascade(
+                &eid,
+                queue,
+                &mut HashSet::new(),
+                &HashSet::new(),
+                &mut DispatchMemory::default(),
+                &mut outcomes,
+            )?;
+            let response = EventResponse::from_process_results(&outcomes, trait_name, emitted);
+            let dispatch = self.finish_client_dispatch(LegSeed {
+                trait_name,
+                event: emitted,
+                payload: ep.clone(),
+                eid: &eid,
+                client_id,
+                tick: Some(tick_name),
+                mode,
+                snapshot,
+                seed_row: &seed_row,
+                outcomes: &outcomes,
+                response,
+            });
+            emits.push(TickEmit {
+                event: emitted.clone(),
+                payload: ep.clone(),
+                dispatch,
+            });
+        }
+        Ok(TickDispatch {
+            outcome,
+            discarded_server_effects,
+            emits,
+            rerenders: self.rerender_stale(),
+        })
+    }
+
+    /// Downcast the configured [`EffectDelegate`] to the concrete
+    /// [`ServerLegCollector`] every client-role kernel is configured with
+    /// (`KernelConfig.delegate`) and take everything it collected since the
+    /// last drain. Empty when no delegate is configured (e.g. a Server-env
+    /// kernel, or a Client-env kernel under test with no delegate wired).
+    fn drain_server_leg_collector(&self) -> (Vec<Effect>, BTreeSet<String>) {
+        self.server_leg_collector()
+            .map(ServerLegCollector::drain_attributed)
+            .unwrap_or_default()
+    }
+
+    fn server_leg_collector(&self) -> Option<&ServerLegCollector> {
+        self.effect_executor
+            .delegate()
+            .and_then(|d| d.as_any())
+            .and_then(|a| a.downcast_ref::<ServerLegCollector>())
+    }
+
+    /// `(frame key, entity id)` of `trait_name`'s frame (Runtime Spec Clause 2.3).
+    fn frame_slot(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> (String, String) {
+        let shared = self
+            .entity_definitions
+            .read()
+            .get(entity_type)
+            .is_some_and(|d| d.shared);
+        let key = if shared {
+            format!("$shared::{entity_type}")
+        } else {
+            trait_name.to_string()
+        };
+        (key, entity_id.to_string())
+    }
+
+    /// A trait's `@entity`: declared field defaults, then its row, then its frame.
+    fn read_trait_entity(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> Value {
+        let defaults: HashMap<String, Value> = self
+            .entity_definitions
+            .read()
+            .get(entity_type)
+            .map(|d| {
+                d.fields
+                    .iter()
+                    .filter_map(|f| Some((f.name.clone()?, sexpr_to_value(f.default.as_ref()?))))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let base = if defaults.is_empty() {
+            Value::Null
+        } else {
+            Value::Object(defaults)
+        };
+        let row = self
+            .entity_source
+            .read(entity_type, entity_id)
+            .unwrap_or(Value::Null);
+        let with_row = merge_entity(&base, &row);
+        let slot = self.frame_slot(trait_name, entity_type, entity_id);
+        match self.frames.read().get(&slot) {
+            Some(frame) => merge_entity(&with_row, frame),
+            None => with_row,
+        }
+    }
+
+    /// The `@entity` a step of `trait_name` would read now, for the cascade's visit key.
+    fn step_entity_view(&self, trait_name: &str, entity_id: &str) -> Value {
+        let entity_type = self
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .and_then(|d| d.linked_entity.clone())
+            .unwrap_or_else(|| trait_name.to_string());
+        self.read_trait_entity(trait_name, &entity_type, entity_id)
+    }
+
+    /// Merge `set` writes into a trait's frame; the row store is never touched.
+    fn write_trait_frame(
+        &self,
+        trait_name: &str,
+        entity_type: &str,
+        entity_id: &str,
+        writes: &Value,
+    ) {
+        let slot = self.frame_slot(trait_name, entity_type, entity_id);
+        let mut frames = self.frames.write();
+        let merged = merge_entity(frames.get(&slot).unwrap_or(&Value::Null), writes);
+        frames.insert(slot, merged);
+    }
+
+    /// Capture a trait instance's current state + entity frame, for
+    /// `RuntimeOptimistic` rollback (`restore_trait`) when a caller's
+    /// optimistic local commit disagrees with (or errors against) the
+    /// server's response.
+    ///
+    /// Lock order (documented once, honored by every kernel method that reads
+    /// more than one of these): **`state_manager` before `trait_definitions`
+    /// before `entity_source`** — the order `process_event` already
+    /// establishes (its `state_manager.write()` guard is held across the
+    /// `trait_definitions.read()` and `entity_source.read()`/`write()` calls
+    /// inside it). `snapshot_trait`/`restore_trait` never hold more than one
+    /// of these at a time (each `.read()`/`.write()` call is a temporary,
+    /// dropped before the next is taken), so they trivially satisfy the order
+    /// and can never deadlock against a concurrent `dispatch`/`process_event`.
+    pub fn snapshot_trait(&self, trait_name: &str, entity_id: Option<&str>) -> TraitSnapshot {
+        let eid = entity_id.unwrap_or("singleton");
+        let state = self
+            .state_manager
+            .read()
+            .get_state(trait_name, Some(eid))
+            .map(|s| s.current_state.clone())
+            .unwrap_or_default();
+        let entity_type = self
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .and_then(|d| d.linked_entity.clone())
+            .unwrap_or_else(|| trait_name.to_string());
+        let slot = self.frame_slot(trait_name, &entity_type, eid);
+        let entity = self
+            .frames
+            .read()
+            .get(&slot)
+            .cloned()
+            .unwrap_or(Value::Null);
+        TraitSnapshot { state, entity }
+    }
+
+    /// Restore a trait instance to a prior [`TraitSnapshot`] — the
+    /// `RuntimeOptimistic` rollback path. Write-through in the SAME lock order
+    /// `snapshot_trait` reads them (`state_manager` then `entity_source`,
+    /// `trait_definitions` read only to resolve the entity type). A REPLACE of
+    /// the entity, not the usual merge `EntitySource::write` performs — the
+    /// optimistic commit may have ADDED fields since the snapshot that the
+    /// rollback must remove, which a merge would silently keep.
+    ///
+    /// A bound trait's render of the rolled-back entity is stale from here: the next
+    /// [`Self::rerender_stale`] repaints it (the web repaints from the restored store snapshot).
+    /// Restore itself consumes nothing, so a caller with no response to carry it loses no repaint.
+    pub fn restore_trait(
+        &self,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        snapshot: TraitSnapshot,
+    ) {
+        let eid = entity_id.unwrap_or("singleton");
+        if !snapshot.state.is_empty() {
+            let mut state_manager = self.state_manager.write();
+            if state_manager
+                .get_or_create_state(trait_name, Some(eid))
+                .is_ok()
+            {
+                if let Some(state) = state_manager.get_state_mut(trait_name, Some(eid)) {
+                    state.transition_to(&snapshot.state);
+                }
+            }
+        }
+        let entity_type = self
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .and_then(|d| d.linked_entity.clone())
+            .unwrap_or_else(|| trait_name.to_string());
+        // REPLACE the frame, never merge: the optimistic commit may have added
+        // fields a merge would keep. A `Null` snapshot means there was no frame.
+        let slot = self.frame_slot(trait_name, &entity_type, eid);
+        let mut frames = self.frames.write();
+        if snapshot.entity.is_null() {
+            frames.remove(&slot);
+        } else {
+            frames.insert(slot, snapshot.entity);
+        }
+    }
+
+    /// Fold a server [`EventResponse`] into this kernel: `data`/`entity_by_trait`
+    /// merge into the entity source (server wins), `states{}` write through as a
+    /// RECONCILE (no guard evaluation — the server already decided the
+    /// transition fired), and every `emitted_events` entry NOT in
+    /// `already_delivered` fans out through the SAME cascade [`Self::dispatch`]
+    /// uses (`run_cascade`) — the Rust twin of `useTraitStateMachine.ts`'s
+    /// `stampLocallyDeliveredEchoes`, so a live-push echo of an event this
+    /// client already realized locally doesn't re-run it.
+    ///
+    /// An emit whose source trait has an arm for it from its reconciled state and
+    /// that the host did not already run (`source.dispatched`) is delivered to that
+    /// trait first; its listeners fan out from that delivery.
+    ///
+    /// `already_delivered` also seeds the cascade's own visited-set, so a
+    /// listener loop that cycles back onto an already-delivered pair is
+    /// skipped too, not just the top-level entries.
+    pub fn apply_server_response(
+        &self,
+        response: &EventResponse,
+        already_delivered: &HashSet<(String, String)>,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        if let Some(data) = &response.data {
+            for (entity_type, rows) in data {
+                for row in rows {
+                    let id = row
+                        .as_object()
+                        .and_then(|o| o.get("id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("singleton");
+                    let _ = self.entity_source.write(entity_type, id, row);
+                }
+            }
+        }
+
+        let mut trait_entity_ids: HashMap<String, String> = HashMap::new();
+        if let Some(entity_by_trait) = &response.entity_by_trait {
+            let trait_defs = self.trait_definitions.read();
+            for (trait_name, entity_val) in entity_by_trait {
+                let entity_type = trait_defs
+                    .get(trait_name)
+                    .and_then(|d| d.linked_entity.clone())
+                    .unwrap_or_else(|| trait_name.clone());
+                let id = entity_val
+                    .as_object()
+                    .and_then(|o| o.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "singleton".to_string());
+                self.write_trait_frame(trait_name, &entity_type, &id, entity_val);
+                trait_entity_ids.insert(trait_name.clone(), id);
+            }
+        }
+
+        {
+            let mut state_manager = self.state_manager.write();
+            for (trait_name, state_name) in &response.states {
+                let entity_id = Some(
+                    trait_entity_ids
+                        .get(trait_name)
+                        .map_or("singleton", String::as_str),
+                );
+                if state_manager
+                    .get_or_create_state(trait_name, entity_id)
+                    .is_ok()
+                {
+                    if let Some(state) = state_manager.get_state_mut(trait_name, entity_id) {
+                        state.transition_to(state_name);
+                    }
+                }
+            }
+        }
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut fanned: Vec<CascadeItem> = Vec::new();
+        for ev in &response.emitted_events {
+            let source = ev.source.clone().unwrap_or_default();
+            let source_trait = source.r#trait.clone().unwrap_or_default();
+            if already_delivered.contains(&(source_trait.clone(), ev.event.clone())) {
+                continue;
+            }
+            let payload = ev.payload.clone().unwrap_or(Value::Null);
+            let host_ran = source.dispatched == Some(true);
+            if !host_ran
+                && self.trait_handles(
+                    &source_trait,
+                    &self.current_state_name(&source_trait, Some("singleton")),
+                    &ev.event,
+                )
+            {
+                fanned.push(CascadeItem {
+                    trait_name: source_trait.clone(),
+                    event: ev.event.clone(),
+                    delivery: delivery_record_value(&ev.event, &payload, &source),
+                    source_payload: payload.clone(),
+                    payload,
+                    listen_guard: None,
+                });
+                continue;
+            }
+            self.collect_listener_targets(
+                &source,
+                &source_trait,
+                &ev.event,
+                &payload,
+                &[],
+                &mut fanned,
+            );
+        }
+
+        let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
+        // No single entity id is carried on the wire per emitted event (mirrors
+        // `dispatch`'s own single-`eid`-per-call model) — cascaded processing uses
+        // the same id-less convention `process_event` already falls back to.
+        self.run_cascade(
+            "singleton",
+            fanned.into(),
+            &mut visited,
+            already_delivered,
+            &mut DispatchMemory::default(),
+            &mut outcomes,
+        )?;
+        Ok(outcomes)
+    }
+
+    /// Find every listener reacting to `event` from `source_trait`, evaluate each guard +
+    /// payload mapping against `source_payload`, and push `(listener_trait, triggers, payload)`
+    /// targets for the cascade queue.
+    /// What a processed step queues next: the trait's own emits it handles from its new
+    /// state (the same-trait cascade, Runtime Spec 5.3, which runs before any fan-out)
+    /// and every listener target of the dispatched event and of each emit.
+    fn step_followups(
+        &self,
+        trait_name: &str,
+        event: &str,
+        payload: &Value,
+        result: Option<&ProcessEventResult>,
+        direct_scopes: &[String],
+    ) -> (Vec<CascadeItem>, Vec<CascadeItem>) {
+        let source = self.emit_source(trait_name);
+        let mut own = Vec::new();
+        let mut fanned = Vec::new();
+        self.collect_listener_targets(
+            &source,
+            trait_name,
+            event,
+            payload,
+            direct_scopes,
+            &mut fanned,
+        );
+        for er in result.map_or(&[][..], |r| &r.effect_results[..]) {
+            if let Effect::Emit {
+                event: emitted,
+                payload: ep,
+            } = &er.effect
+            {
+                let handled = result.is_some_and(|r| {
+                    r.executed && self.trait_handles(trait_name, &r.new_state, emitted)
+                });
+                self.emit_followup(
+                    trait_name,
+                    &source,
+                    handled,
+                    emitted,
+                    ep,
+                    &mut own,
+                    &mut fanned,
+                );
+            }
+        }
+        (own, fanned)
+    }
+
+    /// What one `emit` queues: the emitter's own arm for it (when `handled`, the same-trait
+    /// cascade) and every listener target.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_followup(
+        &self,
+        trait_name: &str,
+        source: &BusEventSource,
+        handled: bool,
+        emitted: &str,
+        payload: &Value,
+        own: &mut Vec<CascadeItem>,
+        fanned: &mut Vec<CascadeItem>,
+    ) {
+        if handled {
+            own.push(CascadeItem {
+                trait_name: trait_name.to_string(),
+                event: emitted.to_string(),
+                payload: payload.clone(),
+                delivery: delivery_record_value(emitted, payload, source),
+                source_payload: payload.clone(),
+                listen_guard: None,
+            });
+        }
+        self.collect_listener_targets(source, trait_name, emitted, payload, &[], fanned);
+    }
+
+    /// Whether `trait_name` has an arm for `event` from `state`.
+    fn trait_handles(&self, trait_name: &str, state: &str, event: &str) -> bool {
+        self.trait_definitions
+            .read()
+            .get(trait_name)
+            .is_some_and(|d| {
+                d.state_machine
+                    .transitions
+                    .iter()
+                    .any(|tr| tr.event == event && tr.from.matches(state))
+            })
+    }
+
+    fn collect_listener_targets(
+        &self,
+        source: &BusEventSource,
+        source_trait: &str,
+        event: &str,
+        source_payload: &Value,
+        direct_scopes: &[String],
+        out: &mut Vec<CascadeItem>,
+    ) {
+        let listeners = self.listener_manager.matching(event, source_trait);
+        if listeners.is_empty() {
+            return;
+        }
+        let evaluator = Evaluator::new();
+        let ctx = BindingContextBuilder::new()
+            .payload(source_payload.clone())
+            .build();
+        let delivery = delivery_record_value(event, source_payload, source);
+        for l in listeners {
+            // `direct_scopes` already received this very event as a seed scope on the embed
+            // chain; a same-name route back to one of them is that delivery again.
+            if l.triggers == event && direct_scopes.contains(&l.trait_name) {
+                continue;
+            }
+            let mapped = match &l.payload_mapping {
+                Some(mapping) => {
+                    let mut m = HashMap::new();
+                    for (k, expr) in mapping {
+                        if let Ok(v) = evaluator.evaluate(expr, &ctx) {
+                            m.insert(k.clone(), v);
+                        }
+                    }
+                    Value::Object(m)
+                }
+                None => source_payload.clone(),
+            };
+            debug!(
+                source_trait = %source_trait, event = %event,
+                listener_trait = %l.trait_name, triggers = %l.triggers,
+                "listener fan-out",
+            );
+            out.push(CascadeItem {
+                trait_name: l.trait_name,
+                event: l.triggers,
+                payload: mapped,
+                delivery: delivery.clone(),
+                source_payload: source_payload.clone(),
+                listen_guard: l.guard,
+            });
+        }
+    }
+
+    /// The envelope this trait stamps on its emits: `{ orbital, trait }` plus the ids the schema carries.
+    fn emit_source(&self, trait_name: &str) -> BusEventSource {
+        let mut source = BusEventSource::from_trait(trait_name);
+        for schema in self.schemas.read().values() {
+            for orbital in &schema.orbitals {
+                let found = orbital
+                    .traits
+                    .iter()
+                    .find(|r| r.trait_name() == Some(trait_name));
+                if let Some(trait_ref) = found {
+                    source.orbital = Some(orbital.name.clone());
+                    source.orbital_id = orbital.id.clone();
+                    if let TraitReference::Inline(def) = trait_ref {
+                        source.trait_id = def.id.clone();
+                    }
+                    return source;
+                }
+            }
+        }
+        source
+    }
+
+    /// Execute effects and capture Set-effect data.
+    fn execute_effects_with_entity(
+        &self,
+        effects: &[SExpression],
+        ctx: &BindingContext,
+    ) -> (Vec<EffectResult>, Value) {
+        let evaluator = Evaluator::new();
+        let mut effect_results = Vec::new();
+        let mut entity_data: HashMap<String, Value> = HashMap::new();
+
+        for effect_expr in effects {
+            self.exec_effect_expr(
+                effect_expr,
+                ctx,
+                &evaluator,
+                &mut effect_results,
+                &mut entity_data,
+            );
+        }
+
+        (effect_results, Value::Object(entity_data))
+    }
+
+    /// Execute a single top-level effect expression.
+    ///
+    /// Leaf effects (`set`/`render-ui`/`emit`/`fetch`/…) go through the normal
+    /// effect handler so entity writes + render flushing happen. The compound
+    /// forms `let`/`if`/`do`/`when` are control flow, not effects: their parts
+    /// are evaluated through the canonical `Evaluator` (the same `LetOp`/`IfOp`
+    /// scope rules `eval_expr` uses) and their body effects are dispatched
+    /// recursively, so a top-level `(let ((a v)…) (do (set …) (render-ui …)))`
+    /// — a physics tick — actually runs instead of being dropped as a no-op
+    /// `Effect::Custom`.
+    fn exec_effect_expr(
+        &self,
+        effect_expr: &SExpression,
+        ctx: &BindingContext,
+        evaluator: &Evaluator,
+        effect_results: &mut Vec<EffectResult>,
+        entity_data: &mut HashMap<String, Value>,
+    ) {
+        let mirrored = with_pending_sets(ctx, entity_data);
+        let ctx: &BindingContext = &mirrored;
+        if let SExpression::Array(items) = effect_expr {
+            if let Some(SExpression::String(head)) = items.first() {
+                match head.as_str() {
+                    "let" => {
+                        // [ "let", [[name, valExpr], …], body… ]
+                        let mut child_ctx = ctx.child();
+                        if let Some(SExpression::Array(bindings)) = items.get(1) {
+                            for binding in bindings {
+                                if let SExpression::Array(pair) = binding {
+                                    if let (Some(SExpression::String(name)), Some(value_expr)) =
+                                        (pair.first(), pair.get(1))
+                                    {
+                                        if let Ok(value) =
+                                            evaluator.evaluate(value_expr, &child_ctx)
+                                        {
+                                            child_ctx.set_local(name, value);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for body in items.iter().skip(2) {
+                            self.exec_effect_expr(
+                                body,
+                                &child_ctx,
+                                evaluator,
+                                effect_results,
+                                entity_data,
+                            );
+                        }
+                    }
+                    "do" => {
+                        for body in items.iter().skip(1) {
+                            self.exec_effect_expr(
+                                body,
+                                ctx,
+                                evaluator,
+                                effect_results,
+                                entity_data,
+                            );
+                        }
+                    }
+                    "if" => {
+                        // [ "if", cond, then, else? ]
+                        if let Some(cond) = items.get(1) {
+                            let truthy = evaluator
+                                .evaluate(cond, ctx)
+                                .map(|v| v.is_truthy())
+                                .unwrap_or(false);
+                            let branch = if truthy { items.get(2) } else { items.get(3) };
+                            if let Some(branch) = branch {
+                                self.exec_effect_expr(
+                                    branch,
+                                    ctx,
+                                    evaluator,
+                                    effect_results,
+                                    entity_data,
+                                );
+                            }
+                        }
+                    }
+                    "when" => {
+                        // [ "when", cond, body… ]
+                        if let Some(cond) = items.get(1) {
+                            let truthy = evaluator
+                                .evaluate(cond, ctx)
+                                .map(|v| v.is_truthy())
+                                .unwrap_or(false);
+                            if truthy {
+                                for body in items.iter().skip(2) {
+                                    self.exec_effect_expr(
+                                        body,
+                                        ctx,
+                                        evaluator,
+                                        effect_results,
+                                        entity_data,
+                                    );
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    _ => {
+                        self.exec_leaf_effect(
+                            effect_expr,
+                            ctx,
+                            evaluator,
+                            effect_results,
+                            entity_data,
+                        );
+                    }
+                }
+                return;
+            }
+        }
+
+        self.exec_leaf_effect(effect_expr, ctx, evaluator, effect_results, entity_data);
+    }
+
+    /// Execute a single leaf effect (`set`/`render-ui`/`emit`/`fetch`/…) via the
+    /// canonical effect handler, capturing Set-effect data.
+    fn exec_leaf_effect(
+        &self,
+        effect_expr: &SExpression,
+        ctx: &BindingContext,
+        evaluator: &Evaluator,
+        effect_results: &mut Vec<EffectResult>,
+        entity_data: &mut HashMap<String, Value>,
+    ) {
+        // Mirror the `(set @entity.…)` writes made EARLIER IN THIS TRANSITION into
+        // `@entity` before running the next effect. `entity_data` is only merged back
+        // into the stored entity after the whole effect list finishes, so without this
+        // every later effect read a pre-set `@entity`: the dominant list-mutation idiom
+        // `(set @entity.id ?id)` → `(persist update E @entity)` resolved an EMPTY row id
+        // and 404'd, while the same event fired from a state whose preamble had already
+        // set the id passed — the tell that the write was invisible only WITHIN a
+        // transition. `@almadar/runtime` already mirrors (`EffectExecutor.ts`, "so later
+        // effects in the same transition … observe the new value"); this is the missing
+        // Rust twin, not a new behavior (C-KERNEL-INTRA-TRANSITION-SET-INVISIBLE).
+        let mirrored = with_pending_sets(ctx, entity_data);
+        let ctx: &BindingContext = &mirrored;
+        if let Some(effect) = crate::effects::parse_effect(effect_expr) {
+            match &effect {
+                Effect::Set { path, value } => {
+                    let evaluated_value = if value.as_array().is_some() {
+                        if let Ok(json_value) = serde_json::to_value(value.clone()) {
+                            if let Ok(sexpr) = serde_json::from_value::<SExpression>(json_value) {
+                                match evaluator.evaluate(&sexpr, ctx) {
+                                    Ok(v) => v,
+                                    Err(err) => {
+                                        // A value that fails to evaluate is a failed effect, never stored raw.
+                                        tracing::error!(path = %path, error = %err, "kernel: set value failed to evaluate");
+                                        effect_results.push(EffectResult::failed(
+                                            effect.clone(),
+                                            &err.to_string(),
+                                        ));
+                                        return;
+                                    }
+                                }
+                            } else {
+                                value.clone()
+                            }
+                        } else {
+                            value.clone()
+                        }
+                    } else if let Some(s) = value.as_str() {
+                        if s.starts_with('@') {
+                            // `resolve` expects a prefix-less path; a `@`-token must go
+                            // through `resolve_binding` (strips `@`, then resolves). The
+                            // old `ctx.resolve(s)` always returned None and wrote the
+                            // literal token into the entity field.
+                            ctx.resolve_binding(s).unwrap_or_else(|| value.clone())
+                        } else {
+                            value.clone()
+                        }
+                    } else {
+                        value.clone()
+                    };
+
+                    let field_name = path.strip_prefix("@entity.").unwrap_or(path);
+                    entity_data.insert(field_name.to_string(), evaluated_value.clone());
+
+                    effect_results.push(EffectResult::executed(Effect::Set {
+                        path: path.clone(),
+                        value: evaluated_value,
+                    }));
+                }
+                Effect::Fetch {
+                    emit: Some(fetch_emit),
+                    ..
+                } if !fetch_emit.is_empty() => {
+                    let result = self.effect_executor.execute(&effect, ctx);
+                    let completion = fetch_completion_emit(fetch_emit, &result);
+                    effect_results.push(result);
+                    effect_results.extend(completion);
+                }
+                Effect::Persist {
+                    emit: Some(persist_emit),
+                    ..
+                } if !persist_emit.is_empty() => {
+                    let result = self.effect_executor.execute(&effect, ctx);
+                    let completion = persist_completion_emit(persist_emit, &effect, &result);
+                    effect_results.push(result);
+                    effect_results.extend(completion);
+                }
+                Effect::PersistBatch {
+                    emit: Some(batch_emit),
+                    ..
+                } if !batch_emit.is_empty() => {
+                    let result = self.effect_executor.execute(&effect, ctx);
+                    let completion = persist_completion_emit(batch_emit, &effect, &result);
+                    effect_results.push(result);
+                    effect_results.extend(completion);
+                }
+                Effect::CancelCall { .. } | Effect::CallService { key: Some(_), .. } => {
+                    let resolved = resolve_effect_bindings(effect.clone(), ctx);
+                    effect_results.push(self.effect_executor.execute(&resolved, ctx));
+                }
+                Effect::Emit { .. } => {
+                    // Resolve now, against this leaf's scope (`let` locals, earlier sets), as JS does at emit time.
+                    let resolved = resolve_effect_bindings(effect.clone(), ctx);
+                    effect_results.push(self.effect_executor.execute(&resolved, ctx));
+                }
+                _ => {
+                    effect_results.push(self.effect_executor.execute(&effect, ctx));
+                }
+            }
+        }
+    }
+
+    /// Get render-ui effects for a state to show UI when no transition happens.
+    fn get_state_render_effects(
+        &self,
+        trait_def: &TraitDefinition,
+        state_name: &str,
+        ctx: &BindingContext,
+        _entity_data: &Value,
+    ) -> Vec<EffectResult> {
+        // Resolve every binding through the one canonical walker
+        // (`ctx.entity` already carries the current entity here).
+        state_render_sources(trait_def, state_name)
+            .into_iter()
+            .map(|(slot, content)| {
+                EffectResult::executed(resolve_effect_bindings(
+                    Effect::RenderUi { slot, content },
+                    ctx,
+                ))
+            })
+            .collect()
+    }
+
+    /// Keep a client trait's just-run `render-ui` effects (`sources`: unresolved, in run order;
+    /// `resolved`: the same effects after binding resolution) so [`Self::rerender_stale`] can
+    /// repaint them when the entity they read changes.
+    fn record_renders(
+        &self,
+        trait_name: &str,
+        entity_id: &str,
+        sources: Vec<(String, Value)>,
+        resolved: &[EffectResult],
+        ctx: &BindingContext,
+    ) {
+        if sources.is_empty() || !self.effect_executor.environment().is_client() {
+            return;
+        }
+        let resolved = resolved.iter().filter_map(|er| match &er.effect {
+            Effect::RenderUi { content, .. } => Some(content.clone()),
+            _ => None,
+        });
+        let renders = sources
+            .into_iter()
+            .zip(resolved)
+            .map(|((slot, source), content)| (slot, source, content))
+            .collect();
+        self.renders
+            .write()
+            .record(trait_name, entity_id, renders, ctx);
+    }
+
+    /// Repaint every mounted trait whose last `render-ui` reads an entity that has changed since
+    /// it was resolved. Which leaves read the entity is declared in the source: a leaf holding
+    /// `@entity` and no `@payload` (the web's `RenderBindingMarker`); everything else stays at
+    /// the value it was flushed with. Only a client-role kernel repaints, and only for an entity
+    /// the client owns (`[runtime]`, `[shared]`, browser-stored or unbound; the web's
+    /// `clientResolvesRenderBindings`), since a persistent entity's bindings are server-resolved.
+    /// A trait changed by several writes appears once; a second call with nothing new is empty.
+    pub fn rerender_stale(&self) -> Vec<Rerender> {
+        if !self.effect_executor.environment().is_client() {
+            return Vec::new();
+        }
+        let stale = self.renders.write().stale(
+            |trait_name| {
+                let entity_type = self
+                    .trait_definitions
+                    .read()
+                    .get(trait_name)
+                    .and_then(|d| d.linked_entity.clone())
+                    .unwrap_or_else(|| trait_name.to_string());
+                self.entity_definitions
+                    .read()
+                    .get(&entity_type)
+                    .is_none_or(|d| d.shared || d.is_client_resident())
+            },
+            |trait_name, entity_id| self.step_entity_view(trait_name, entity_id),
+        );
+        stale
+            .into_iter()
+            .map(|(trait_name, entity_id, repaints)| Rerender {
+                state: self.current_state_name(&trait_name, Some(&entity_id)),
+                entity: self.step_entity_view(&trait_name, &entity_id),
+                effects: repaints
+                    .into_iter()
+                    .map(|r| Effect::RenderUi {
+                        slot: r.slot,
+                        content: r.content,
+                    })
+                    .collect(),
+                trait_name,
+            })
+            .collect()
+    }
+
+    /// The state a trait instance is in now, or the one it will be created in; empty for an unknown trait.
+    fn current_state_name(&self, trait_name: &str, entity_id: Option<&str>) -> String {
+        if let Some(state) = self.state_manager.read().get_state(trait_name, entity_id) {
+            return state.current_state.clone();
+        }
+        self.trait_definitions
+            .read()
+            .get(trait_name)
+            .and_then(crate::state_machine::StateMachineCore::get_trait_initial_state)
+            .map(str::to_string)
+            .unwrap_or_default()
+    }
+
+    /// A registered trait's derived dispatch mode (`dispatch_mode::compute`).
+    pub fn dispatch_mode_of(&self, trait_def: &TraitDefinition) -> DispatchMode {
+        let entity_def = trait_def
+            .linked_entity
+            .as_deref()
+            .and_then(|name| self.entity_definitions.read().get(name).cloned());
+        let residence =
+            crate::effects::Residence::of_entities(self.entity_definitions.read().values());
+        trait_def.dispatch_mode(entity_def.as_ref(), &residence)
+    }
+
+    /// Every registered trait's state (its initial one while untouched) and derived dispatch mode.
+    pub fn trait_snapshot(
+        &self,
+        entity_id: Option<&str>,
+    ) -> BTreeMap<String, (String, DispatchMode)> {
+        let defs: Vec<TraitDefinition> = self.trait_definitions.read().values().cloned().collect();
+        defs.iter()
+            .map(|def| {
+                let state = self.current_state_name(&def.name, entity_id);
+                (def.name.clone(), (state, self.dispatch_mode_of(def)))
+            })
+            .collect()
+    }
+
+    /// Get the current state for an entity.
+    pub fn get_state(&self, trait_name: &str, entity_id: Option<&str>) -> Option<TraitState> {
+        self.state_manager
+            .read()
+            .get_state(trait_name, entity_id)
+            .cloned()
+    }
+
+    /// Reset a trait instance to its initial state.
+    pub fn reset_state(&self, trait_name: &str, entity_id: Option<&str>) {
+        let _ = self
+            .state_manager
+            .write()
+            .reset_trait(trait_name, entity_id);
+    }
+
+    /// Set the current user.
+    pub fn set_current_user(&self, user: Value) {
+        *self.current_user.write() = user;
+    }
+
+    /// Get the current user.
+    /// Stamp `now` once for the dispatch this call starts; a nested call reuses the outer stamp.
+    fn begin_dispatch(&self) -> DispatchStamp {
+        let mut slot = self.dispatch_now.write();
+        match *slot {
+            Some(now) => DispatchStamp { slot: None, now },
+            None => {
+                let now = crate::time_util::now_millis_f64();
+                *slot = Some(now);
+                DispatchStamp {
+                    slot: Some(Arc::clone(&self.dispatch_now)),
+                    now,
+                }
+            }
+        }
+    }
+
+    pub fn get_current_user(&self) -> Value {
+        self.current_user.read().clone()
+    }
+
+    /// Install the program's declared locales and merged catalogs (`orb resolve`'s `<stem>.<locale>.json`).
+    pub fn set_messages(
+        &self,
+        locales: Vec<String>,
+        catalogs: HashMap<String, HashMap<String, String>>,
+    ) {
+        *self.i18n.write() = KernelI18n { locales, catalogs };
+    }
+
+    /// Run the next dispatches as the viewer's `locale` until the guard drops. A program
+    /// that declares locales refuses one it does not declare; one without accepts any.
+    pub fn enter_locale(&self, locale: Option<&str>) -> Result<LocaleGuard, KernelError> {
+        if let Some(locale) = locale {
+            let i18n = self.i18n.read();
+            if !i18n.locales.is_empty() && !i18n.locales.iter().any(|l| l == locale) {
+                return Err(KernelError::Internal(format!(
+                    "locale \"{locale}\" is not one of the program's declared locales [{}]",
+                    i18n.locales.join(", ")
+                )));
+            }
+        }
+        *self.dispatch_locale.write() = locale.map(str::to_string);
+        Ok(LocaleGuard {
+            slot: Arc::clone(&self.dispatch_locale),
+        })
+    }
+
+    /// `@locale` and its catalog for `i18n/t`: the dispatch's viewer locale, else the first declared.
+    fn with_viewer_i18n(&self, builder: BindingContextBuilder) -> BindingContextBuilder {
+        let i18n = self.i18n.read();
+        let locale = self
+            .dispatch_locale
+            .read()
+            .clone()
+            .or_else(|| i18n.locales.first().cloned());
+        match locale {
+            Some(locale) => {
+                let messages = i18n.catalogs.get(&locale).cloned().unwrap_or_default();
+                builder.locale(Value::String(locale)).messages(messages)
+            }
+            None => builder,
+        }
+    }
+
+    /// Set the kernel's tracked light/dark toggle. Overrides the mode
+    /// encoded in a declared theme's key suffix on every subsequent
+    /// `@currentTheme` resolution (`resolve_theme`'s `requested_mode`).
+    pub fn set_theme_mode(&self, mode: ThemeMode) {
+        *self.theme_mode.write() = Some(mode);
+    }
+
+    /// Get the kernel's tracked light/dark toggle, defaulting to `Light`
+    /// when no explicit mode was ever set. External-facing convenience
+    /// (status/introspection); theme RESOLUTION uses the raw `Option`
+    /// directly (below) so an unset toggle still lets `resolve_theme` honor
+    /// a declared theme key's own `-light`/`-dark` suffix instead of this
+    /// default silently overriding it.
+    pub fn get_theme_mode(&self) -> ThemeMode {
+        self.theme_mode.read().unwrap_or_default()
+    }
+
+    /// Resolve the app-level `@currentTheme` (orbital precedence not
+    /// applied — see [`Self::resolve_current_theme_for_trait`] for the
+    /// per-trait resolution `process_event`/`process_tick` bind into
+    /// render-ui). Snapshot-facing: the FFI's `orbital_kernel_snapshot`
+    /// surfaces this as `"theme"`.
+    pub fn resolved_theme(&self) -> ResolvedTheme {
+        let mode = *self.theme_mode.read();
+        match self.schemas.read().values().next() {
+            Some(schema) => resolve_theme(schema, None, &self.theme_presets.read(), mode),
+            None => resolve_theme_default(&self.theme_presets.read(), mode.unwrap_or_default()),
+        }
+    }
+
+    /// Resolve `@currentTheme` for the orbital that owns `trait_name`,
+    /// applying orbital → app → default precedence (`resolve_theme`). Walks
+    /// the registered schemas the same way [`Self::get_initial_state`] does
+    /// — no separate trait→orbital index to keep in sync.
+    fn resolve_current_theme_for_trait(&self, trait_name: &str) -> ResolvedTheme {
+        let mode = *self.theme_mode.read();
+        let schemas = self.schemas.read();
+        for schema in schemas.values() {
+            for orbital in &schema.orbitals {
+                if orbital
+                    .traits
+                    .iter()
+                    .any(|t| t.trait_name() == Some(trait_name))
+                {
+                    return resolve_theme(
+                        schema,
+                        Some(&orbital.name),
+                        &self.theme_presets.read(),
+                        mode,
+                    );
+                }
+            }
+        }
+        resolve_theme_default(&self.theme_presets.read(), mode.unwrap_or_default())
+    }
+
+    /// Narrow `rows` to the ones the CURRENT USER may read, using the entity's
+    /// declared `@read` policy.
+    ///
+    /// Exists so a caller measuring "how much does this persona see" measures the
+    /// same thing a fetch would. Counting straight off the entity store answers a
+    /// different question — the unfiltered store size, identical for every persona —
+    /// which is how `--all-personas` came to report symmetric results for correctly
+    /// ownership-scoped apps (`S-C2-ASYMMETRY-BLIND-TO-OWNERSHIP-ONLY-SCOPING`).
+    ///
+    /// Reuses `apply_read_access`, the one owner of read filtering, rather than
+    /// re-deriving the predicate.
+    pub fn retain_readable(&self, entity_type: &str, rows: &mut Vec<Value>) {
+        let policy = self
+            .entity_policies
+            .read()
+            .get(entity_type)
+            .and_then(|p| p.read.clone());
+        if policy.is_none() {
+            return;
+        }
+        let mut ctx = BindingContext::new();
+        ctx.set_user(self.get_current_user());
+        apply_read_access(rows, policy.as_ref(), None, &ctx, entity_type);
+    }
+
+    /// List all registered orbitals across all schemas.
+    pub fn list_orbitals(&self) -> Vec<OrbitalInfo> {
+        let schemas = self.schemas.read();
+        let mut orbitals = Vec::new();
+
+        for schema in schemas.values() {
+            for orbital in &schema.orbitals {
+                let entity_name = match &orbital.entity {
+                    EntityRef::Inline(e) => e.name.clone(),
+                    EntityRef::Reference(r) => r.clone(),
+                    EntityRef::Extends(e) => e.reference.clone(),
+                };
+                orbitals.push(OrbitalInfo {
+                    name: orbital.name.clone(),
+                    entity_name,
+                    trait_count: orbital.traits.len(),
+                    page_count: orbital.pages.as_ref().map(|p| p.len()).unwrap_or(0),
+                });
+            }
+        }
+
+        orbitals
+    }
+
+    /// Get detailed information for a single orbital.
+    pub fn get_orbital(&self, orbital_name: &str) -> Option<OrbitalDetail> {
+        let schemas = self.schemas.read();
+
+        for schema in schemas.values() {
+            for orbital in &schema.orbitals {
+                if orbital.name == orbital_name {
+                    return Some(OrbitalDetail {
+                        name: orbital.name.clone(),
+                        entity: orbital.entity.clone(),
+                        traits: orbital
+                            .traits
+                            .iter()
+                            .filter_map(|t| t.trait_name().map(|s| s.to_string()))
+                            .collect(),
+                        pages: orbital.pages.clone().unwrap_or_default(),
+                    });
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Declared external inputs across every registered schema.
+    pub fn external_inputs(&self) -> Vec<super::external_inputs::ExternalInput> {
+        self.schemas
+            .read()
+            .values()
+            .flat_map(super::external_inputs::external_inputs_of)
+            .collect()
+    }
+
+    /// Get the initial state for a trait.
+    pub fn get_initial_state(&self, trait_name: &str) -> Option<String> {
+        let schemas = self.schemas.read();
+
+        for schema in schemas.values() {
+            for orbital in &schema.orbitals {
+                for trait_ref in &orbital.traits {
+                    if let Some(name) = trait_ref.trait_name() {
+                        if name == trait_name {
+                            if let TraitReference::Inline(trait_def) = trait_ref {
+                                let sm = &trait_def.state_machine;
+                                for state in &sm.states {
+                                    if state.is_initial.unwrap_or(false) {
+                                        return Some(state.name.clone());
+                                    }
+                                }
+                                if let Some(first_state) = sm.states.first() {
+                                    return Some(first_state.clone().name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Get runtime statistics.
+    pub fn stats(&self) -> RuntimeStats {
+        let manager_stats = self.state_manager.read().stats();
+        RuntimeStats {
+            registered_schemas: self.schemas.read().len(),
+            registered_traits: manager_stats.registered_traits,
+            active_instances: manager_stats.active_instances,
+            cached_entities: self.entity_source.count(),
+        }
+    }
+
+    /// Access the event bus.
+    pub fn event_bus(&self) -> &SharedEventBus {
+        &self.event_bus
+    }
+
+    /// Access the entity source.
+    pub fn entity_source(&self) -> &Arc<dyn EntitySource> {
+        &self.entity_source
+    }
+
+    /// Access the effect executor.
+    pub fn effect_executor(&self) -> &Arc<EffectExecutor> {
+        &self.effect_executor
+    }
+
+    /// Access the config.
+    pub fn config(&self) -> &KernelConfig {
+        &self.config
+    }
+}
+
+/// The `(trait, event)` pairs a [`ClientDispatch`] already realized LOCALLY —
+/// every event its own outcomes emitted (`response.emitted_events`), plus the
+/// seed dispatch itself, read off `server_leg` (a leg's `target_trait`/`event`
+/// ARE the seed trait's own dispatch — see `dispatch_with_server_leg`; `None`
+/// when no leg was produced, so only the local emits are known). Pass the
+/// result to [`RuntimeKernel::apply_server_response`] so a live-push echo of
+/// an event this client already ran doesn't run it again — the Rust twin of
+/// `useTraitStateMachine.ts`'s `stampLocallyDeliveredEchoes`.
+pub fn already_delivered_from(dispatch: &ClientDispatch) -> HashSet<(String, String)> {
+    let mut set: HashSet<(String, String)> = dispatch
+        .response
+        .emitted_events
+        .iter()
+        .map(|e| {
+            (
+                e.source
+                    .as_ref()
+                    .and_then(|s| s.r#trait.clone())
+                    .unwrap_or_default(),
+                e.event.clone(),
+            )
+        })
+        .collect();
+    if !dispatch.server_legs.is_empty() {
+        set.insert(dispatch.seed.clone());
+    }
+    for leg in &dispatch.server_legs {
+        if let Some(target) = &leg.target_trait {
+            set.insert((target.clone(), leg.event.clone()));
+        }
+    }
+    set
+}
+
+/// Convert an SExpression to a runtime Value for instance seeding. Shared with
+/// `persona::identity_roster`, which materializes the same authored `instances`.
+pub(crate) fn sexpr_to_value(sexpr: &SExpression) -> Value {
+    match sexpr {
+        SExpression::String(s) => Value::String(s.clone()),
+        SExpression::Number(n) => Value::Number(*n),
+        SExpression::Bool(b) => Value::Bool(*b),
+        SExpression::Null => Value::Null,
+        SExpression::Array(items) => Value::Array(items.iter().map(sexpr_to_value).collect()),
+        SExpression::Object(obj) => {
+            let map: HashMap<String, Value> = obj
+                .iter()
+                .map(|(k, v)| (k.clone(), sexpr_to_value(v)))
+                .collect();
+            Value::Object(map)
+        }
+    }
+}
+
+/// Build the `@config` root for the live render context from the trait's declared
+/// config field defaults. Mirrors the JS runtime, where `@config.X` resolves against
+/// the trait's config defaults (and instance overrides). Std behaviors rendered
+/// standalone rely on defaults only — instance/call-site overrides are a deeper
+/// composition concern (follow-up). Fields with no `default` seed to `Null`.
+fn config_defaults_value(
+    trait_def: &TraitDefinition,
+    all_traits: &HashMap<String, TraitDefinition>,
+) -> Value {
+    let mut map: HashMap<String, Value> = HashMap::new();
+    if let Some(cfg) = &trait_def.config {
+        for (k, field) in cfg {
+            let v = field
+                .default
+                .as_ref()
+                .map(sexpr_to_value)
+                .unwrap_or(Value::Null);
+            map.insert(k.clone(), v);
+        }
+    }
+    resolve_config_forwards(&mut map, all_traits);
+    Value::Object(map)
+}
+
+/// Chain wrapper-forward config defaults to the enclosing/host trait's knob.
+///
+/// A peer trait inlined from a wrapper (e.g. `std-export`'s `Button1`, inlined
+/// from `ui-button`) can carry a config default that is itself a `@config.<key>`
+/// forward — `Button1.label = @config.buttonLabel` — where `<key>` is a knob on
+/// the HOST trait that composes it (`ExportMenu.buttonLabel = "Export"`), not a
+/// knob of the peer. The inline phase collapses the peer's own `@config.label`
+/// render binding to the forward token `@config.buttonLabel`, so the peer's
+/// render-ui reads `buttonLabel` — a key ABSENT from its own config root, which
+/// would otherwise paint the literal token.
+///
+/// For each of the trait's config fields whose default is a `@config.<key>`
+/// forward, expose `<key>` in the live config root, resolved against the host
+/// trait that declares it (its `default` already carries any folded call-site
+/// override, so a host-level override flows to the child). The local field is
+/// collapsed too, so both `@config.<key>` and `@config.<field>` resolve. The
+/// forward stays in the trait's declared config + render-ui; only the LIVE render
+/// context is chained, so the knob remains overridable.
+fn resolve_config_forwards(
+    map: &mut HashMap<String, Value>,
+    all_traits: &HashMap<String, TraitDefinition>,
+) {
+    let forwards: Vec<(String, String)> = map
+        .iter()
+        .filter_map(|(k, v)| match v {
+            Value::String(s) => forward_key(s).map(|fk| (k.clone(), fk)),
+            _ => None,
+        })
+        .collect();
+    for (field, fwd_key) in forwards {
+        let mut visited: HashSet<String> = HashSet::new();
+        visited.insert(field.clone());
+        if let Some(resolved) = resolve_forward_key(&fwd_key, all_traits, &mut visited) {
+            // Expose the host knob under its own name (the token the render-ui
+            // reads) without clobbering a same-named local concrete knob…
+            map.entry(fwd_key).or_insert_with(|| resolved.clone());
+            // …and collapse the forwarding field itself.
+            map.insert(field, resolved);
+        }
+    }
+}
+
+/// The single-segment key of a `@config.<key>` wrapper-forward string. Nested
+/// paths (`@config.x.y`) are not host-knob forwards and return `None`.
+fn forward_key(s: &str) -> Option<String> {
+    s.strip_prefix("@config.")
+        .filter(|rest| !rest.contains('.'))
+        .map(|rest| rest.to_string())
+}
+
+/// Resolve a host-knob `key` to its effective value by searching the orbital's
+/// traits (deterministic name order) for the one that declares it. Prefers a
+/// concrete default; if the only declarations are themselves forwards, chains
+/// transitively. `visited` guards against forward cycles.
+fn resolve_forward_key(
+    key: &str,
+    all_traits: &HashMap<String, TraitDefinition>,
+    visited: &mut HashSet<String>,
+) -> Option<Value> {
+    if !visited.insert(key.to_string()) {
+        return None;
+    }
+    let mut names: Vec<&String> = all_traits.keys().collect();
+    names.sort();
+    let mut chained_next: Option<String> = None;
+    for name in names {
+        let Some(cfg) = &all_traits[name].config else {
+            continue;
+        };
+        let Some(field) = cfg.get(key) else { continue };
+        let Some(default) = &field.default else {
+            continue;
+        };
+        let v = sexpr_to_value(default);
+        if let Value::String(s) = &v {
+            if let Some(next) = forward_key(s) {
+                if next != key {
+                    chained_next.get_or_insert(next);
+                }
+                continue;
+            }
+        }
+        return Some(v);
+    }
+    chained_next.and_then(|next| resolve_forward_key(&next, all_traits, visited))
+}
+
+/// Build the completion `emit` for a `fetch` effect: on success, fire `emit.success`
+/// carrying the fetched rows as `{ "data": [...] }` (so a `@payload.data`-bound table
+/// renders); on failure, fire `emit.failure`. This is what advances a data-loading
+/// trait from its `loading` state to its `loaded` state. Returns `None` when the fetch
+/// was delegated/no-op (the real fetch — and its emit — happens in the other environment).
+/// A payload carries nothing a render-ui can bind: `Null` or an empty object `{}`.
+/// Used to decide when to fall back to the trait's last meaningful payload on a
+/// re-render (event with no payload, or a tick). A non-empty object / scalar / array
+/// is real payload data and replaces the persisted one.
+fn is_empty_payload(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::Object(m) => m.is_empty(),
+        _ => false,
+    }
+}
+
+/// Pick the payload the BINDING context should resolve `@payload.*` against. Payloads
+/// ACCUMULATE: a view can reference `@payload.data` (from an earlier fetch/emit) AND
+/// `@payload.row` (from a later gesture) on the same frame, so the persisted payload
+/// is the merge of every non-empty payload seen for the trait+entity, with the latest
+/// incoming winning on conflict. An empty incoming payload (a re-render / no-op event
+/// / tick) sees the full accumulated payload; with nothing accumulated it stays empty.
+/// The `render-ui` effects among `results`, as `(slot, unresolved content)` in run order.
+fn render_sources(results: &[EffectResult]) -> Vec<(String, Value)> {
+    results
+        .iter()
+        .filter_map(|er| match &er.effect {
+            Effect::RenderUi { slot, content } => Some((slot.clone(), content.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The unresolved `render-ui` effects of the transition that enters `state_name`.
+fn state_render_sources(trait_def: &TraitDefinition, state_name: &str) -> Vec<(String, Value)> {
+    let Some(entering) = trait_def
+        .state_machine
+        .transitions
+        .iter()
+        .find(|t| t.to == state_name)
+    else {
+        return Vec::new();
+    };
+    entering
+        .effects
+        .iter()
+        .flatten()
+        .filter_map(|expr| match crate::effects::parse_effect(expr) {
+            Some(Effect::RenderUi { slot, content }) => Some((slot, content)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn effective_render_payload(incoming: &Value, persisted: Option<&Value>) -> Value {
+    let base = persisted.cloned().unwrap_or(Value::Null);
+    merge_entity(&base, incoming)
+}
+
+/// Merge the Set-effect `set` fields into the `base` entity (read-modify-write).
+/// Set fields override; untouched base fields are preserved. Used to PERSIST the
+/// post-Set entity so a later re-render still sees every field (a partial replace-
+/// write of only the Set-touched fields drops the rest and breaks
+/// `@entity.<untouched-field>` on the next frame). Empty/Null `set` ⇒ `base`;
+/// a non-object `set` with no base ⇒ `set` (first write).
+/// `ctx` with the transition's earlier `(set @entity.…)` writes merged into `@entity`, so
+/// every read inside the transition sees them: leaf effects, `if`/`when` conditions,
+/// `let` values (JS twin: `EffectExecutor`'s bindings mirror).
+fn with_pending_sets<'a>(
+    ctx: &'a BindingContext,
+    entity_data: &HashMap<String, Value>,
+) -> std::borrow::Cow<'a, BindingContext> {
+    if entity_data.is_empty() {
+        return std::borrow::Cow::Borrowed(ctx);
+    }
+    let mut c = ctx.clone();
+    c.entity = merge_entity(&ctx.entity, &Value::Object(entity_data.clone()));
+    std::borrow::Cow::Owned(c)
+}
+
+fn merge_entity(base: &Value, set: &Value) -> Value {
+    match (base.as_object(), set.as_object()) {
+        (Some(b), Some(s)) if !s.is_empty() => {
+            let mut merged = b.clone();
+            for (k, v) in s {
+                merged.insert(k.clone(), v.clone());
+            }
+            Value::Object(merged)
+        }
+        _ if set.as_object().map(|o| o.is_empty()).unwrap_or(true) => base.clone(),
+        _ => set.clone(),
+    }
+}
+
+/// Resolve every `@`-binding in a client-facing effect's content/payload against `ctx`,
+/// via the canonical `BindingContext::resolve_value`. Non-client effects pass through.
+fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Effect {
+    match effect {
+        Effect::RenderUi { slot, content } => {
+            let resolved = ctx.resolve_value(&content).into_owned();
+            debug!(
+                target: "almadar::kernel",
+                slot = %slot,
+                before = %content,
+                after = %resolved,
+                "kernel: resolve render-ui bindings"
+            );
+            Effect::RenderUi {
+                slot,
+                content: resolved,
+            }
+        }
+        Effect::Emit { event, payload } => Effect::Emit {
+            event,
+            payload: ctx.resolve_value(&payload).into_owned(),
+        },
+        Effect::Navigate {
+            path,
+            params,
+            options,
+        } => Effect::Navigate {
+            path,
+            params: params.map(|p| {
+                p.iter()
+                    .map(|(k, v)| (k.clone(), ctx.resolve_value(v).into_owned()))
+                    .collect()
+            }),
+            options: options.map(|o| crate::effects::NavigateOptions {
+                crumb: o.crumb.map(|c| {
+                    ctx.resolve_value(&Value::String(c))
+                        .into_owned()
+                        .to_string_value()
+                }),
+            }),
+        },
+        Effect::CallService {
+            service,
+            method,
+            args,
+            key,
+        } => Effect::CallService {
+            service,
+            method,
+            args,
+            key: key.map(|k| resolve_key(&k, ctx)),
+        },
+        Effect::CancelCall { key } => Effect::CancelCall {
+            key: resolve_key(&key, ctx),
+        },
+        other => other,
+    }
+}
+
+fn resolve_key(key: &str, ctx: &BindingContext) -> String {
+    ctx.resolve_value(&Value::String(key.to_string()))
+        .into_owned()
+        .to_string_value()
+}
+
+#[cfg(test)]
+mod navigate_options_tests {
+    use super::*;
+
+    /// §157 `navigate-route-params`: the third `navigate` argument's `crumb` must
+    /// resolve through the same `BindingContext` as `params`, not stay the
+    /// unresolved `@payload.title` literal.
+    #[test]
+    fn navigate_carries_crumb_options() {
+        let mut payload = HashMap::new();
+        payload.insert("title".to_string(), Value::String("My Note".to_string()));
+        let ctx = BindingContextBuilder::new()
+            .payload(Value::Object(payload))
+            .build();
+
+        let effect = Effect::Navigate {
+            path: "/notes/:id".to_string(),
+            params: None,
+            options: Some(crate::effects::NavigateOptions {
+                crumb: Some("@payload.title".to_string()),
+            }),
+        };
+
+        let resolved = resolve_effect_bindings(effect, &ctx);
+        let Effect::Navigate { options, .. } = resolved else {
+            panic!("expected Navigate effect");
+        };
+        assert_eq!(
+            options.and_then(|o| o.crumb),
+            Some("My Note".to_string()),
+            "the crumb must resolve from @payload.title, not stay the literal token"
+        );
+    }
+}
+
+#[cfg(test)]
+mod call_key_tests {
+    use super::*;
+
+    fn ctx_with_batch() -> BindingContext {
+        let mut entity = HashMap::new();
+        entity.insert("batchId".to_string(), Value::String("b-7".to_string()));
+        BindingContextBuilder::new()
+            .entity(Value::Object(entity))
+            .build()
+    }
+
+    #[test]
+    fn call_service_key_resolves_from_the_entity_binding() {
+        let effect = Effect::CallService {
+            service: "llm".into(),
+            method: "classifyMany".into(),
+            args: Value::Null,
+            key: Some("@entity.batchId".into()),
+        };
+        let Effect::CallService { key, .. } = resolve_effect_bindings(effect, &ctx_with_batch())
+        else {
+            panic!("expected CallService");
+        };
+        assert_eq!(key.as_deref(), Some("b-7"));
+    }
+
+    #[test]
+    fn cancel_call_key_resolves_from_the_entity_binding() {
+        let effect = Effect::CancelCall {
+            key: "@entity.batchId".into(),
+        };
+        let Effect::CancelCall { key } = resolve_effect_bindings(effect, &ctx_with_batch()) else {
+            panic!("expected CancelCall");
+        };
+        assert_eq!(key, "b-7");
+    }
+
+    #[test]
+    fn a_literal_key_passes_through_unchanged() {
+        let effect = Effect::CancelCall {
+            key: "fixed".into(),
+        };
+        let Effect::CancelCall { key } = resolve_effect_bindings(effect, &ctx_with_batch()) else {
+            panic!("expected CancelCall");
+        };
+        assert_eq!(key, "fixed");
+    }
+}
+
+fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<EffectResult> {
+    let (event, payload) = match &result.outcome {
+        EffectOutcome::Executed => {
+            let event = emit.success.clone()?;
+            let rows = result
+                .return_value
+                .clone()
+                .unwrap_or_else(|| Value::Array(Vec::new()));
+            // The TS wire (`EffectExecutor.ts`): a by-id hit's `data` is the row itself.
+            let by_id = matches!(&result.effect, Effect::Fetch { id: Some(_), .. });
+            let data = match rows {
+                Value::Array(mut r) if by_id && r.len() == 1 => r.remove(0),
+                other => other,
+            };
+            let mut payload = HashMap::new();
+            payload.insert("data".to_string(), data);
+            payload.insert(
+                "totalCount".to_string(),
+                Value::Number(result.total_count.unwrap_or_default() as f64),
+            );
+            (event, Value::Object(payload))
+        }
+        EffectOutcome::Failed => (emit.failure.clone()?, Value::Object(HashMap::new())),
+        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
+    };
+    Some(EffectResult::executed(Effect::Emit { event, payload }))
+}
+
+/// A `persist`'s declared completion: `emit.failure` with `{ error }` when it failed
+/// (access denial, missing required column), `emit.success` when it ran, carrying the
+/// stored row for create/update and `{ id, deleted: true }` for delete (the JS runtime's
+/// payloads, `emit_contract::success_payload`). A delegated or no-op persist fires
+/// nothing here; the leg that runs it does.
+fn persist_completion_emit(
+    emit: &FetchEmit,
+    effect: &Effect,
+    result: &EffectResult,
+) -> Option<EffectResult> {
+    let (event, payload) = match result.outcome {
+        EffectOutcome::Failed => {
+            let mut payload = HashMap::new();
+            if let Some(err) = &result.error {
+                payload.insert("error".to_string(), Value::String(err.clone()));
+            }
+            (emit.failure.clone()?, Value::Object(payload))
+        }
+        EffectOutcome::Executed => {
+            let event = emit.success.clone()?;
+            let payload = match effect {
+                Effect::Persist {
+                    operation: PersistOperation::Delete,
+                    id,
+                    ..
+                } => {
+                    let mut payload = HashMap::new();
+                    payload.insert(
+                        "id".to_string(),
+                        id.clone().map_or(Value::Null, Value::String),
+                    );
+                    payload.insert("deleted".to_string(), Value::Bool(true));
+                    Value::Object(payload)
+                }
+                _ => result.return_value.clone().unwrap_or(Value::Null),
+            };
+            (event, payload)
+        }
+        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
+    };
+    Some(EffectResult::executed(Effect::Emit { event, payload }))
+}
+
+#[cfg(test)]
+mod payload_persistence_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn obj(pairs: &[(&str, Value)]) -> Value {
+        let mut m = HashMap::new();
+        for (k, v) in pairs {
+            m.insert((*k).to_string(), v.clone());
+        }
+        Value::Object(m)
+    }
+
+    #[test]
+    fn empty_payload_detection() {
+        assert!(is_empty_payload(&Value::Null));
+        assert!(is_empty_payload(&Value::Object(HashMap::new())));
+        assert!(!is_empty_payload(&obj(&[("data", Value::Array(vec![]))])));
+        assert!(!is_empty_payload(&Value::Array(vec![])));
+        assert!(!is_empty_payload(&Value::String("x".to_string())));
+    }
+
+    /// Non-empty incoming payload always wins (and is what gets persisted by the
+    /// caller) — even when a prior payload exists.
+    #[test]
+    fn effective_prefers_real_incoming_over_persisted() {
+        let incoming = obj(&[("data", Value::String("new".to_string()))]);
+        let persisted = obj(&[("data", Value::String("old".to_string()))]);
+        let out = effective_render_payload(&incoming, Some(&persisted));
+        assert_eq!(out, incoming);
+    }
+
+    /// Empty incoming payload falls back to the last meaningful payload — the
+    /// render-ui re-render case (no-op event / tick) that used to revert
+    /// `@payload.data` to a literal token.
+    #[test]
+    fn effective_falls_back_to_persisted_on_empty_incoming() {
+        let persisted = obj(&[(
+            "data",
+            Value::Array(vec![Value::Number(1.0), Value::Number(2.0)]),
+        )]);
+        let out = effective_render_payload(&Value::Null, Some(&persisted));
+        assert_eq!(out, persisted);
+
+        let empty_obj = Value::Object(HashMap::new());
+        let out2 = effective_render_payload(&empty_obj, Some(&persisted));
+        assert_eq!(out2, persisted);
+    }
+
+    /// With nothing persisted, an empty incoming payload stays empty (no
+    /// fabrication — there is genuinely nothing to bind).
+    #[test]
+    fn effective_stays_empty_when_nothing_persisted() {
+        let out = effective_render_payload(&Value::Null, None);
+        assert_eq!(out, Value::Null);
+        // An empty-object payload is "empty" — with nothing accumulated it collapses
+        // to Null (no fabricated bindings).
+        let empty_obj = Value::Object(HashMap::new());
+        let out2 = effective_render_payload(&empty_obj, None);
+        assert_eq!(out2, Value::Null);
+    }
+
+    /// Payloads accumulate across events: a fetch/emit carries `{data}`, a later
+    /// gesture carries `{row}`; a view referencing `@payload.data` AND `@payload.row`
+    /// on the same frame must see BOTH. Replacement semantics would drop `data` when
+    /// the gesture fires.
+    #[test]
+    fn effective_accumulates_distinct_payload_fields() {
+        let fetch_payload = obj(&[("data", Value::Array(vec![Value::Number(1.0)]))]);
+        let acc = effective_render_payload(&fetch_payload, None);
+        assert_eq!(acc, fetch_payload);
+        let gesture = obj(&[("row", obj(&[("title", Value::String("T".to_string()))]))]);
+        let acc2 = effective_render_payload(&gesture, Some(&acc));
+        let m = acc2.as_object().unwrap();
+        assert!(m.contains_key("data"), "fetch data survives the gesture");
+        assert!(m.contains_key("row"), "gesture row is present");
+        let rerender = effective_render_payload(&Value::Null, Some(&acc2));
+        let m2 = rerender.as_object().unwrap();
+        assert!(m2.contains_key("data") && m2.contains_key("row"));
+    }
+
+    /// Read-modify-write: Set fields override, untouched base fields survive. This
+    /// is the field-retention fix — persisting only the Set-touched partial would
+    /// drop `filterKind`/`current*`/etc. and break the next re-render.
+    #[test]
+    fn merge_entity_preserves_untouched_and_overrides_set() {
+        let base = obj(&[
+            ("id", Value::String("singleton".to_string())),
+            ("filterKind", Value::String("all".to_string())),
+            ("title", Value::String("Activity".to_string())),
+        ]);
+        let set = obj(&[("filterKind", Value::String("created".to_string()))]);
+        let merged = merge_entity(&base, &set);
+        let m = merged.as_object().unwrap();
+        assert_eq!(m["filterKind"], Value::String("created".to_string())); // overridden
+        assert_eq!(m["title"], Value::String("Activity".to_string())); // preserved
+        assert_eq!(m["id"], Value::String("singleton".to_string())); // preserved
+    }
+
+    #[test]
+    fn merge_entity_empty_set_returns_base() {
+        let base = obj(&[("a", Value::Number(1.0))]);
+        assert_eq!(merge_entity(&base, &Value::Object(HashMap::new())), base);
+        assert_eq!(merge_entity(&base, &Value::Null), base);
+    }
+
+    #[test]
+    fn merge_entity_first_write_uses_set_when_no_base() {
+        let set = obj(&[("x", Value::Bool(true))]);
+        assert_eq!(merge_entity(&Value::Null, &set), set);
+    }
+}
+
+#[cfg(test)]
+mod config_forward_tests {
+    use super::*;
+
+    /// Build a minimal `TraitDefinition` with a `config` map of `key → default
+    /// string` from JSON — the kernel only reads `config[k].default` for the
+    /// forward chain, so an empty state machine suffices.
+    fn trait_with_config(name: &str, cfg: &[(&str, &str)]) -> TraitDefinition {
+        let config: serde_json::Map<String, serde_json::Value> = cfg
+            .iter()
+            .map(|(k, v)| {
+                (
+                    (*k).to_string(),
+                    serde_json::json!({ "type": "string", "default": v }),
+                )
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "stateMachine": { "states": [], "transitions": [] },
+            "config": config,
+        }))
+        .expect("trait fixture")
+    }
+
+    fn traits(defs: Vec<TraitDefinition>) -> HashMap<String, TraitDefinition> {
+        defs.into_iter().map(|t| (t.name.clone(), t)).collect()
+    }
+
+    /// A peer's `@config.<key>` forward chains to the host trait's knob default.
+    #[test]
+    fn wrapper_forward_chains_to_host_default() {
+        let button = trait_with_config("Button1", &[("label", "@config.buttonLabel")]);
+        let host = trait_with_config("ExportMenu", &[("buttonLabel", "Export")]);
+        let all = traits(vec![button.clone(), host]);
+        let cfg = config_defaults_value(&button, &all);
+        let o = cfg.as_object().unwrap();
+        // The render-ui reads `@config.buttonLabel` (the collapsed forward token),
+        // so the host knob must be exposed under its own name…
+        assert_eq!(
+            o.get("buttonLabel"),
+            Some(&Value::String("Export".to_string()))
+        );
+        // …and the forwarding field is collapsed too.
+        assert_eq!(o.get("label"), Some(&Value::String("Export".to_string())));
+    }
+
+    /// A host call-site override of the knob flows through to the child — the
+    /// override is folded into the host's `default` by the inline phase, so the
+    /// chain resolves to it, not the atom's own default.
+    #[test]
+    fn wrapper_forward_picks_up_host_override() {
+        let button = trait_with_config("Button1", &[("label", "@config.buttonLabel")]);
+        let host = trait_with_config("ExportMenu", &[("buttonLabel", "Download CSV")]);
+        let all = traits(vec![button.clone(), host]);
+        let cfg = config_defaults_value(&button, &all);
+        assert_eq!(
+            cfg.as_object().unwrap().get("buttonLabel"),
+            Some(&Value::String("Download CSV".to_string())),
+        );
+    }
+
+    /// No host declares the knob → the forward is left live for the binding
+    /// validator to flag (no fabrication).
+    #[test]
+    fn wrapper_forward_unresolved_when_no_host_knob() {
+        let button = trait_with_config("Button1", &[("label", "@config.buttonLabel")]);
+        let all = traits(vec![button.clone()]);
+        let cfg = config_defaults_value(&button, &all);
+        assert_eq!(
+            cfg.as_object().unwrap().get("label"),
+            Some(&Value::String("@config.buttonLabel".to_string())),
+        );
+    }
+
+    /// A self-referential forward (`X = @config.X`) terminates instead of looping.
+    #[test]
+    fn self_forward_terminates() {
+        let t = trait_with_config("Loop", &[("x", "@config.x")]);
+        let all = traits(vec![t.clone()]);
+        let cfg = config_defaults_value(&t, &all);
+        assert_eq!(
+            cfg.as_object().unwrap().get("x"),
+            Some(&Value::String("@config.x".to_string())),
+        );
+    }
+}
+
+/// `EmbedIndex::build` in isolation — no kernel/dispatch involved, just the
+/// `trait_embed_ids` (child id) -> ancestor-chain (names) inversion.
+#[cfg(test)]
+mod embed_index_tests {
+    use super::*;
+
+    /// A trait fixture carrying only what `EmbedIndex::build` reads: its own
+    /// `id` and (optionally) the embed-token -> child-id map a host declares.
+    fn trait_def(name: &str, id: &str, embeds: &[(&str, &str)]) -> TraitDefinition {
+        let mut json = serde_json::json!({
+            "name": name,
+            "id": id,
+            "stateMachine": { "states": [], "transitions": [] },
+        });
+        if !embeds.is_empty() {
+            let map: serde_json::Map<String, serde_json::Value> = embeds
+                .iter()
+                .map(|(token, child_id)| {
+                    (
+                        (*token).to_string(),
+                        serde_json::Value::String((*child_id).to_string()),
+                    )
+                })
+                .collect();
+            json["traitEmbedIds"] = serde_json::Value::Object(map);
+        }
+        serde_json::from_value(json).expect("trait fixture")
+    }
+
+    fn defs(list: Vec<TraitDefinition>) -> HashMap<String, TraitDefinition> {
+        list.into_iter().map(|t| (t.name.clone(), t)).collect()
+    }
+
+    #[test]
+    fn embed_index_inverts_trait_embed_ids() {
+        let child = trait_def("Child", "child-1", &[]);
+        let host = trait_def("Host", "host-1", &[("slot", "child-1")]);
+        let idx = EmbedIndex::build(&defs(vec![child, host]));
+        assert_eq!(idx.ancestors("Child"), &["Host".to_string()]);
+        assert!(idx.ancestors("Host").is_empty());
+        assert!(idx.ancestors("Unknown").is_empty());
+    }
+
+    #[test]
+    fn embed_index_transitive_chain_innermost_first() {
+        let child = trait_def("Child", "child-1", &[]);
+        let host = trait_def("Host", "host-1", &[("slot", "child-1")]);
+        let grandhost = trait_def("Grandhost", "grand-1", &[("slot2", "host-1")]);
+        let idx = EmbedIndex::build(&defs(vec![child, host, grandhost]));
+        assert_eq!(
+            idx.ancestors("Child"),
+            &["Host".to_string(), "Grandhost".to_string()],
+            "innermost host first, outward to the root"
+        );
+        assert_eq!(idx.ancestors("Host"), &["Grandhost".to_string()]);
+    }
+
+    /// A embeds B, B embeds A — malformed input no authoring path produces, but
+    /// the walk must terminate defensively rather than loop forever. Simply
+    /// returning (rather than hanging the test run) is the assertion.
+    #[test]
+    fn embed_index_cycle_guard_terminates() {
+        let a = trait_def("A", "a-1", &[("slot", "b-1")]);
+        let b = trait_def("B", "b-1", &[("slot", "a-1")]);
+        let idx = EmbedIndex::build(&defs(vec![a, b]));
+        assert!(idx.ancestors("A").len() <= 2);
+        assert!(idx.ancestors("B").len() <= 2);
+    }
+}
+
+/// §158 reproduction + regression: the kernel-side twin of the JS runtime's
+/// `TraitScopeProvider` embed-emit bubble (R-EMBEDDED-EMIT-BUBBLE), verified
+/// through real `RuntimeKernel::dispatch` calls (not just `EmbedIndex` in
+/// isolation).
+#[cfg(test)]
+mod embed_bubble_dispatch_tests {
+    use super::*;
+    use crate::runtime::entity_source::InMemoryEntityCache;
+    use crate::schema::ListenSource;
+
+    /// Mirrors the real std-notes reproduction named in the §158 gap:
+    /// `InlineButtonRender3` embedded by `NoteCatalog` (which declares
+    /// `emits CREATE_DRAFT`); `NotePersistor` `listens CREATE_DRAFT` from
+    /// source `NoteCatalog`. Generic names so the fixture stands on its own,
+    /// same shape as the real corpus.
+    fn notes_like_schema() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [
+                    {
+                        "name": "InlineButtonRender3",
+                        "id": "child-btn",
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }],
+                            "transitions": []
+                        }
+                    },
+                    {
+                        "name": "NoteCatalog",
+                        "id": "host-catalog",
+                        "traitEmbedIds": { "createButton": "child-btn" },
+                        "emits": [{ "event": "CREATE_DRAFT" }],
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }],
+                            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }]
+                        }
+                    },
+                    {
+                        "name": "NotePersistor",
+                        "linkedEntity": "Note",
+                        "listens": [{
+                            "event": "CREATE_DRAFT",
+                            "triggers": "DO_CREATE_DRAFT",
+                            "source": { "kind": "trait", "trait": "NoteCatalog" }
+                        }],
+                        "stateMachine": {
+                            "states": [
+                                { "name": "idle", "isInitial": true },
+                                { "name": "created" }
+                            ],
+                            "transitions": [
+                                { "from": "idle", "to": "idle", "event": "INIT" },
+                                { "from": "idle", "to": "created", "event": "DO_CREATE_DRAFT" }
+                            ]
+                        }
+                    }
+                ]
+            }]
+        }))
+        .unwrap()
+    }
+
+    /// A Child embedded by a Host that has its own scoped listener firing off
+    /// the SAME seed event, plus two listeners distinguishing "sourced from
+    /// the emitting trait itself" vs "sourced from its host" — used to prove
+    /// an `Effect::Emit` produced inside a transition does NOT bubble past the
+    /// trait that produced it, only the seed event does.
+    fn internal_emit_schema() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [
+                    {
+                        "name": "Child",
+                        "id": "child-1",
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }],
+                            "transitions": [
+                                { "from": "idle", "to": "idle", "event": "SEED",
+                                  "effects": [["emit", "INTERNAL", {}]] }
+                            ]
+                        }
+                    },
+                    {
+                        "name": "Host",
+                        "id": "host-1",
+                        "traitEmbedIds": { "slot": "child-1" },
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }],
+                            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }]
+                        }
+                    },
+                    {
+                        "name": "ListenerOnChild",
+                        "linkedEntity": "Note",
+                        "listens": [{
+                            "event": "INTERNAL", "triggers": "FIRED_FROM_CHILD",
+                            "source": { "kind": "trait", "trait": "Child" }
+                        }],
+                        "stateMachine": {
+                            "states": [
+                                { "name": "idle", "isInitial": true }, { "name": "fired" }
+                            ],
+                            "transitions": [
+                                { "from": "idle", "to": "idle", "event": "INIT" },
+                                { "from": "idle", "to": "fired", "event": "FIRED_FROM_CHILD" }
+                            ]
+                        }
+                    },
+                    {
+                        "name": "ListenerOnHost",
+                        "linkedEntity": "Note",
+                        "listens": [{
+                            "event": "INTERNAL", "triggers": "FIRED_FROM_HOST",
+                            "source": { "kind": "trait", "trait": "Host" }
+                        }],
+                        "stateMachine": {
+                            "states": [
+                                { "name": "idle", "isInitial": true }, { "name": "fired" }
+                            ],
+                            "transitions": [
+                                { "from": "idle", "to": "idle", "event": "INIT" },
+                                { "from": "idle", "to": "fired", "event": "FIRED_FROM_HOST" }
+                            ]
+                        }
+                    }
+                ]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn kernel_with(schema: OrbitalSchema) -> RuntimeKernel {
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    /// The §158 reproduction, pre-fix: `dispatch` only fanned out from the
+    /// seed trait itself, so `CREATE_DRAFT` sent to the embedded
+    /// `InlineButtonRender3` never reached `NotePersistor` (source
+    /// `NoteCatalog`) — this assertion fails on the pre-bubble `dispatch`.
+    #[test]
+    fn dispatch_bubbles_embedded_emit_to_host_listener() {
+        let kernel = kernel_with(notes_like_schema());
+        let outcomes = kernel
+            .dispatch(
+                "InlineButtonRender3",
+                None,
+                "CREATE_DRAFT",
+                Value::Object(Default::default()),
+            )
+            .unwrap();
+        let persistor = outcomes
+            .iter()
+            .find(|(t, _)| t == "NotePersistor")
+            .expect("NotePersistor (listens CREATE_DRAFT from NoteCatalog) must fire when the embedded button dispatches CREATE_DRAFT");
+        assert_eq!(persistor.1.new_state, "created");
+    }
+
+    /// A trait with no ancestors must dispatch byte-identically to the
+    /// pre-bubble single-scope path: one outcome, the target trait only.
+    #[test]
+    fn dispatch_unembedded_trait_is_single_scope() {
+        let kernel = kernel_with(notes_like_schema());
+        let outcomes = kernel
+            .dispatch("NoteCatalog", None, "INIT", Value::Null)
+            .unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].0, "NoteCatalog");
+    }
+
+    #[test]
+    fn dispatch_does_not_bubble_internal_emit_effects() {
+        let kernel = kernel_with(internal_emit_schema());
+        let outcomes = kernel
+            .dispatch("Child", None, "SEED", Value::Object(Default::default()))
+            .unwrap();
+        assert!(
+            outcomes
+                .iter()
+                .any(|(t, r)| t == "ListenerOnChild" && r.new_state == "fired"),
+            "the emitting trait's own scope must still receive its Effect::Emit: {:?}",
+            outcomes
+                .iter()
+                .map(|(t, r)| (t.clone(), r.new_state.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !outcomes
+                .iter()
+                .any(|(t, r)| t == "ListenerOnHost" && r.new_state == "fired"),
+            "an internal Effect::Emit must not bubble past its emitting trait's own scope: {:?}",
+            outcomes
+                .iter()
+                .map(|(t, r)| (t.clone(), r.new_state.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The Rust twin of `audit_listens` "via host-transition": for every
+    /// declared `listens` whose source S declares (or whose descendant
+    /// declares, transitively — but here checked at S itself, the common
+    /// authoring shape where the composing host carries the `emits`
+    /// metadata for a primitive it embeds) `emits` of that event, dispatching
+    /// the event from EVERY trait embedded (directly or transitively) under S
+    /// must realize the listener in `dispatch`'s outcomes.
+    #[test]
+    fn embed_bubble_realizes_every_declared_host_transition_listener() {
+        let schema = notes_like_schema();
+        let kernel = kernel_with(schema.clone());
+
+        let trait_definitions: HashMap<String, TraitDefinition> = schema.orbitals[0]
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                TraitReference::Inline(def) => Some((def.name.clone(), def.clone())),
+                _ => None,
+            })
+            .collect();
+        let embed_index = EmbedIndex::build(&trait_definitions);
+
+        let mut checked = 0;
+        for listener_def in trait_definitions.values() {
+            let Some(listens) = &listener_def.listens else {
+                continue;
+            };
+            for l in listens {
+                let Some(ListenSource::Trait {
+                    trait_name: source, ..
+                }) = &l.source
+                else {
+                    continue;
+                };
+                let source_emits_event = trait_definitions
+                    .get(source)
+                    .and_then(|d| d.emits.as_ref())
+                    .is_some_and(|es| es.iter().any(|e| e.event == l.event));
+                if !source_emits_event {
+                    continue;
+                }
+                for candidate in trait_definitions.keys() {
+                    if !embed_index.ancestors(candidate).iter().any(|a| a == source) {
+                        continue;
+                    }
+                    checked += 1;
+                    let outcomes = kernel
+                        .dispatch(candidate, None, &l.event, Value::Null)
+                        .unwrap();
+                    assert!(
+                        outcomes.iter().any(|(t, _)| t == &listener_def.name),
+                        "{} (listens {} from {source}) must fire when embedded emitter {candidate} dispatches {}",
+                        listener_def.name, l.event, l.event
+                    );
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "fixture produced no host-transition-listener pairs to check"
+        );
+    }
+
+    /// `Child` is embedded by `Host` (directly, or through `Mid` when `via_mid`); `Host` handles
+    /// `REQUEST` from `idle` AND from `open`, so a second delivery is a real second transition
+    /// (the seed run moves `idle -> open`, which changes the cascade's visit key). `route` is the
+    /// host's `listens` array; `Other` is an unembedded sibling that can emit too.
+    fn double_delivery_schema(route: serde_json::Value, via_mid: bool) -> OrbitalSchema {
+        let host_embed = if via_mid { "mid-1" } else { "child-1" };
+        let mut traits = vec![
+            serde_json::json!({
+                "name": "Child", "id": "child-1",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] }
+            }),
+            serde_json::json!({
+                "name": "Other", "id": "other-1",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] }
+            }),
+            serde_json::json!({
+                "name": "Host", "id": "host-1",
+                "traitEmbedIds": { "slot": host_embed },
+                "listens": route,
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "open" }],
+                    "transitions": [
+                        { "from": "idle", "to": "open", "event": "REQUEST" },
+                        { "from": "open", "to": "open", "event": "REQUEST" },
+                        { "from": "open", "to": "open", "event": "ADMIT" }
+                    ]
+                }
+            }),
+        ];
+        if via_mid {
+            traits.push(serde_json::json!({
+                "name": "Mid", "id": "mid-1",
+                "traitEmbedIds": { "slot": "child-1" },
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] }
+            }));
+        }
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": traits
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn route(source: &str, event: &str, triggers: &str) -> serde_json::Value {
+        serde_json::json!([{
+            "event": event, "triggers": triggers,
+            "source": { "kind": "trait", "trait": source }
+        }])
+    }
+
+    fn deliveries(outcomes: &[(String, ProcessEventResult)], trait_name: &str) -> usize {
+        outcomes.iter().filter(|(t, _)| t == trait_name).count()
+    }
+
+    /// G-RUNTIME-053: the embedded child's action reaches `Host` as its own scope on the embed
+    /// chain AND through `Host`'s same-name listen route; one physical event must run `Host` once.
+    #[test]
+    fn same_name_route_from_embedded_child_delivers_once() {
+        let kernel = kernel_with(double_delivery_schema(
+            route("Child", "REQUEST", "REQUEST"),
+            false,
+        ));
+        let outcomes = kernel
+            .dispatch("Child", None, "REQUEST", Value::Null)
+            .unwrap();
+        assert_eq!(deliveries(&outcomes, "Host"), 1, "{outcomes:?}");
+        let host = outcomes.iter().find(|(t, _)| t == "Host").unwrap();
+        assert_eq!(host.1.new_state, "open");
+    }
+
+    #[test]
+    fn same_name_route_through_a_transitive_embed_delivers_once() {
+        let kernel = kernel_with(double_delivery_schema(
+            route("Child", "REQUEST", "REQUEST"),
+            true,
+        ));
+        let outcomes = kernel
+            .dispatch("Child", None, "REQUEST", Value::Null)
+            .unwrap();
+        assert_eq!(deliveries(&outcomes, "Host"), 1, "{outcomes:?}");
+    }
+
+    /// Control: no route, the host transition alone is one delivery.
+    #[test]
+    fn embedded_child_without_route_delivers_once() {
+        let kernel = kernel_with(double_delivery_schema(serde_json::json!([]), false));
+        let outcomes = kernel
+            .dispatch("Child", None, "REQUEST", Value::Null)
+            .unwrap();
+        assert_eq!(deliveries(&outcomes, "Host"), 1);
+    }
+
+    /// Control: a route from a trait the host does NOT embed is the only path, so it must keep firing.
+    #[test]
+    fn route_from_unembedded_source_still_delivers() {
+        let kernel = kernel_with(double_delivery_schema(
+            route("Other", "REQUEST", "REQUEST"),
+            false,
+        ));
+        let outcomes = kernel
+            .dispatch("Other", None, "REQUEST", Value::Null)
+            .unwrap();
+        assert_eq!(deliveries(&outcomes, "Host"), 1, "{outcomes:?}");
+    }
+
+    /// Control: a route to a DIFFERENT trigger name is a distinct delivery, not a duplicate.
+    #[test]
+    fn differently_named_route_from_embedded_child_is_a_second_delivery() {
+        let kernel = kernel_with(double_delivery_schema(
+            route("Child", "REQUEST", "ADMIT"),
+            false,
+        ));
+        let outcomes = kernel
+            .dispatch("Child", None, "REQUEST", Value::Null)
+            .unwrap();
+        assert_eq!(deliveries(&outcomes, "Host"), 2, "{outcomes:?}");
+    }
+
+    /// Edge: the dedup is per physical event — a second dispatch delivers once more.
+    #[test]
+    fn dedup_does_not_leak_across_dispatches() {
+        let kernel = kernel_with(double_delivery_schema(
+            route("Child", "REQUEST", "REQUEST"),
+            false,
+        ));
+        kernel
+            .dispatch("Child", None, "REQUEST", Value::Null)
+            .unwrap();
+        let second = kernel
+            .dispatch("Child", None, "REQUEST", Value::Null)
+            .unwrap();
+        assert_eq!(deliveries(&second, "Host"), 1);
+    }
+
+    /// Edge: a dispatch seeded on the host itself is unaffected by a route from its own child.
+    #[test]
+    fn host_seeded_dispatch_delivers_once() {
+        let kernel = kernel_with(double_delivery_schema(
+            route("Child", "REQUEST", "REQUEST"),
+            false,
+        ));
+        let outcomes = kernel
+            .dispatch("Host", None, "REQUEST", Value::Null)
+            .unwrap();
+        assert_eq!(deliveries(&outcomes, "Host"), 1);
+    }
+}
+
+/// §B3 client role: `dispatch_with_server_leg` / `snapshot_trait` /
+/// `restore_trait` / `apply_server_response` / `already_delivered_from`.
+#[cfg(test)]
+mod client_dispatch_tests {
+    use super::*;
+    use crate::effects::{BusEventSource, ClientEffect, EmittedEvent};
+    use crate::runtime::entity_source::InMemoryEntityCache;
+    use crate::runtime::server_leg::ServerLegCollector;
+
+    /// `Persistor` (PersistedAwaited: not `local`, linked entity `Persistent`)
+    /// transitions `idle -[CREATE]-> created` via a real `persist` effect —
+    /// the server-only effect that must reach the `ServerLegCollector`.
+    fn persisted_awaited_schema() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Persistor",
+                    "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [
+                            { "name": "idle", "isInitial": true },
+                            { "name": "created" }
+                        ],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            {
+                                "from": "idle", "to": "created", "event": "CREATE",
+                                "effects": [
+                                    ["set", "@entity.title", "Hello"],
+                                    ["persist", "create", "Note", {}]
+                                ]
+                            }
+                        ]
+                    }
+                }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    /// `LocalToggle` declares `local: true` on a Persistent (non-runtime)
+    /// entity but STILL carries a `persist` effect — a schema no validator
+    /// should ever let through (§7: `local` is only legal where nothing needs
+    /// the server), reproduced here deliberately to prove the kernel's
+    /// defensive drop holds even when the collector has something to drain.
+    fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "LocalToggle",
+                    "linkedEntity": "Note",
+                    "local": true,
+                    "stateMachine": {
+                        "states": [
+                            { "name": "idle", "isInitial": true },
+                            { "name": "created" }
+                        ],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            {
+                                "from": "idle", "to": "created", "event": "CREATE",
+                                "effects": [["persist", "create", "Note", {}]]
+                            }
+                        ]
+                    }
+                }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    /// `Move` is linked to `Cursor`, a `[runtime]`-persistence entity —
+    /// RuntimeOptimistic. Its `MOVE` transition is a plain `Set`, no
+    /// server-only effect, so it never produces a leg either (nothing to
+    /// delegate) but DOES snapshot for optimistic rollback.
+    fn runtime_optimistic_schema() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": {
+                    "name": "Cursor", "persistence": "runtime",
+                    "fields": [{ "name": "id", "type": "string" }]
+                },
+                "traits": [{
+                    "name": "Move",
+                    "linkedEntity": "Cursor",
+                    "stateMachine": {
+                        "states": [
+                            { "name": "idle", "isInitial": true },
+                            { "name": "moved" }
+                        ],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            {
+                                "from": "idle", "to": "moved", "event": "MOVE",
+                                // Its own server effect makes it optimistic
+                                // (a `[runtime]` trait with none is client-only).
+                                "effects": [["set", "@entity.x", 5], ["call-service", "telemetry", "move", {}]]
+                            }
+                        ]
+                    }
+                }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    /// `RenderTrait` has NO linked entity, but its `SHOW` transition renders
+    /// `@payload.title` into `main` — proves render-ui resolves live in a
+    /// Client-env kernel (native shells depend on this).
+    fn render_ui_schema() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "RenderTrait",
+                    "stateMachine": {
+                        "states": [
+                            { "name": "idle", "isInitial": true },
+                            { "name": "shown" }
+                        ],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            {
+                                "from": "idle", "to": "shown", "event": "SHOW",
+                                "effects": [["render-ui", "main", { "title": "@payload.title" }]]
+                            }
+                        ]
+                    }
+                }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    /// A listener trait, used by the `apply_server_response` tests: fires
+    /// `LISTENED` when a server-emitted `PING` (source `Emitter`) is folded.
+    fn server_response_schema() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [
+                    {
+                        "name": "Emitter",
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }],
+                            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }]
+                        }
+                    },
+                    {
+                        "name": "Listener",
+                        "linkedEntity": "Note",
+                        "listens": [{
+                            "event": "PING", "triggers": "PONG",
+                            "source": { "kind": "trait", "trait": "Emitter" }
+                        }],
+                        "stateMachine": {
+                            "states": [
+                                { "name": "idle", "isInitial": true },
+                                { "name": "ponged" }
+                            ],
+                            "transitions": [
+                                { "from": "idle", "to": "idle", "event": "INIT" },
+                                { "from": "idle", "to": "ponged", "event": "PONG" }
+                            ]
+                        }
+                    }
+                ]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn client_kernel_with(schema: OrbitalSchema) -> (RuntimeKernel, Arc<ServerLegCollector>) {
+        let collector = Arc::new(ServerLegCollector::new());
+        let config = KernelConfig {
+            environment: RuntimeEnvironment::Client,
+            delegate: Some(collector.clone() as Arc<dyn crate::effects::EffectDelegate>),
+            ..KernelConfig::default()
+        };
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Client,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            config,
+        );
+        kernel.register_schema(schema).unwrap();
+        (kernel, collector)
+    }
+
+    fn server_kernel_with(schema: OrbitalSchema) -> RuntimeKernel {
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    #[test]
+    fn client_env_hybrid_local_trait_never_produces_server_leg() {
+        let (kernel, _collector) = client_kernel_with(hybrid_with_stray_persist_schema());
+        let dispatch = kernel
+            .dispatch_with_server_leg("App", "LocalToggle", None, "CREATE", Value::Null, None)
+            .unwrap();
+        assert_eq!(dispatch.mode, DispatchMode::HybridClientOnly);
+        assert!(
+            dispatch.server_legs.is_empty(),
+            "a HybridClientOnly trait must never produce a server leg, even when its \
+             (deliberately malformed) schema delegates a persist effect"
+        );
+    }
+
+    #[test]
+    fn client_env_delegates_persist_and_collects_server_leg() {
+        let (kernel, _collector) = client_kernel_with(persisted_awaited_schema());
+        let dispatch = kernel
+            .dispatch_with_server_leg("App", "Persistor", None, "CREATE", Value::Null, None)
+            .unwrap();
+        assert_eq!(dispatch.mode, DispatchMode::PersistedAwaited);
+        assert_eq!(dispatch.server_legs.len(), 1);
+        let leg = dispatch.server_legs[0].clone();
+        assert_eq!(leg.event, "CREATE");
+        assert_eq!(leg.target_trait.as_deref(), Some("Persistor"));
+        let traits = leg.traits.expect("executed transitions");
+        assert!(traits
+            .iter()
+            .any(|t| t.r#trait == "Persistor" && t.from == "idle"));
+        // No row before CREATE: the server replays from its own, nothing carried.
+        assert!(leg.entity_by_trait.is_none());
+    }
+
+    #[test]
+    fn a_cascade_leg_names_the_event_each_trait_fired_on() {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [
+                    { "name": "Composer", "local": true, "linkedEntity": "Note", "stateMachine": {
+                        "states": [{ "name": "ready", "isInitial": true }],
+                        "transitions": [{ "from": "ready", "to": "ready", "event": "SEND", "effects": [["emit", "SAVE", {}]] }] } },
+                    { "name": "Persistor", "linkedEntity": "Note",
+                      "listens": [{ "event": "SAVE", "triggers": "DO_CREATE", "source": { "kind": "trait", "trait": "Composer" } }],
+                      "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "DO_CREATE", "effects": [["persist", "create", "Note", {}]] }] } }
+                ]
+            }]
+        }))
+        .unwrap();
+        let (kernel, _collector) = client_kernel_with(schema);
+        let dispatch = kernel
+            .dispatch_with_server_leg("App", "Composer", None, "SEND", Value::Null, None)
+            .unwrap();
+        let leg = dispatch
+            .server_legs
+            .first()
+            .expect("the persistor's write owes a leg");
+        assert_eq!(leg.target_trait.as_deref(), Some("Persistor"));
+        assert_eq!(leg.event, "DO_CREATE");
+        let traits = leg.traits.clone().expect("executed transitions");
+        let event_of = |name: &str| {
+            traits
+                .iter()
+                .find(|t| t.r#trait == name)
+                .and_then(|t| t.event.clone())
+        };
+        assert_eq!(event_of("Composer").as_deref(), Some("SEND"));
+        assert_eq!(event_of("Persistor").as_deref(), Some("DO_CREATE"));
+    }
+
+    #[test]
+    fn a_posted_dispatch_marks_each_non_local_trait_it_fired_as_awaiting() {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [
+                    { "name": "Composer", "local": true, "linkedEntity": "Note", "stateMachine": {
+                        "states": [{ "name": "ready", "isInitial": true }],
+                        "transitions": [{ "from": "ready", "to": "ready", "event": "SEND", "effects": [["emit", "SAVE", {}]] }] } },
+                    { "name": "Persistor", "linkedEntity": "Note",
+                      "listens": [{ "event": "SAVE", "triggers": "DO_CREATE", "source": { "kind": "trait", "trait": "Composer" } }],
+                      "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "saved" }],
+                        "transitions": [{ "from": "idle", "to": "saved", "event": "DO_CREATE", "effects": [["persist", "create", "Note", {}]] }] } }
+                ]
+            }]
+        }))
+        .unwrap();
+        let (kernel, _collector) = client_kernel_with(schema);
+        let dispatch = kernel
+            .dispatch_with_server_leg("App", "Composer", None, "SEND", Value::Null, None)
+            .unwrap();
+        assert_eq!(
+            dispatch.awaiting,
+            vec![AwaitingTrait {
+                trait_name: "Persistor".into(),
+                event: "DO_CREATE".into(),
+                from: "idle".into(),
+            }],
+            "the local Composer never awaits; the Persistor awaits from the state it left"
+        );
+    }
+
+    #[test]
+    fn control_a_local_dispatch_with_no_leg_awaits_nothing() {
+        let (kernel, _collector) = client_kernel_with(hybrid_with_stray_persist_schema());
+        let dispatch = kernel
+            .dispatch_with_server_leg("App", "LocalToggle", None, "CREATE", Value::Null, None)
+            .unwrap();
+        assert!(dispatch.awaiting.is_empty());
+    }
+
+    #[test]
+    fn control_a_trait_entry_without_event_still_deserializes() {
+        let entry: TraitFrom =
+            serde_json::from_value(serde_json::json!({ "trait": "A", "from": "idle" })).unwrap();
+        assert_eq!(entry.event, None);
+        assert_eq!(
+            serde_json::to_value(&entry).unwrap(),
+            serde_json::json!({ "trait": "A", "from": "idle" })
+        );
+    }
+
+    #[test]
+    fn client_env_runtime_optimistic_snapshot_and_restore() {
+        let (kernel, _collector) = client_kernel_with(runtime_optimistic_schema());
+        kernel.dispatch("Move", None, "INIT", Value::Null).unwrap();
+        assert_eq!(
+            kernel
+                .get_state("Move", Some("singleton"))
+                .unwrap()
+                .current_state,
+            "idle"
+        );
+
+        let dispatch = kernel
+            .dispatch_with_server_leg("App", "Move", None, "MOVE", Value::Null, None)
+            .unwrap();
+        assert_eq!(dispatch.mode, DispatchMode::RuntimeOptimistic);
+        let snapshot = dispatch
+            .snapshot
+            .expect("RuntimeOptimistic dispatch must snapshot");
+        assert_eq!(
+            snapshot.state, "idle",
+            "snapshot captured BEFORE the dispatch committed"
+        );
+        assert!(
+            snapshot.entity.is_null(),
+            "no entity existed yet before MOVE"
+        );
+        assert!(
+            !dispatch.server_legs.is_empty(),
+            "MOVE's own call-service is the server work that makes it optimistic"
+        );
+
+        assert_eq!(
+            kernel
+                .get_state("Move", Some("singleton"))
+                .unwrap()
+                .current_state,
+            "moved"
+        );
+        let after = kernel.snapshot_trait("Move", None).entity;
+        assert_eq!(
+            after.as_object().unwrap().get("x"),
+            Some(&Value::Number(5.0))
+        );
+
+        kernel.restore_trait("Move", None, snapshot);
+        assert_eq!(
+            kernel
+                .get_state("Move", Some("singleton"))
+                .unwrap()
+                .current_state,
+            "idle"
+        );
+        assert!(
+            kernel.snapshot_trait("Move", None).entity.is_null(),
+            "rollback must leave the frame absent, matching the pre-dispatch snapshot"
+        );
+    }
+
+    #[test]
+    fn render_ui_runs_locally_in_client_env() {
+        let (kernel, _collector) = client_kernel_with(render_ui_schema());
+        let mut payload = HashMap::new();
+        payload.insert("title".to_string(), Value::String("Hello".to_string()));
+        let outcomes = kernel
+            .dispatch("RenderTrait", None, "SHOW", Value::Object(payload))
+            .unwrap();
+        let response = EventResponse::from_process_results(&outcomes, "RenderTrait", "SHOW");
+        let effects = response
+            .client_effects
+            .expect("render-ui must surface as a client effect");
+        let render = effects
+            .iter()
+            .find(|e| matches!(e, ClientEffect::RenderUi { .. }))
+            .expect("a render-ui client effect");
+        let ClientEffect::RenderUi { config, .. } = render else {
+            unreachable!()
+        };
+        let title = config
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|o| o.get("title"))
+            .cloned();
+        assert_eq!(
+            title,
+            Some(Value::String("Hello".to_string())),
+            "the binding must be RESOLVED (not the literal '@payload.title' token), \
+             even though this kernel is Client-env with no render handler configured"
+        );
+    }
+
+    /// App-level `theme: "clay-light"`, no orbital-level override — the
+    /// `std-notes` shape the live `orb dev` gate checks. `ThemeTrait`'s `SHOW`
+    /// transition renders the bare sigil directly, same as an atom's
+    /// `data-theme: @currentTheme` binding (`std-app-layout.lolo`).
+    fn render_ui_theme_schema() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "theme": "clay-light",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "ThemeTrait",
+                    "stateMachine": {
+                        "states": [
+                            { "name": "idle", "isInitial": true },
+                            { "name": "shown" }
+                        ],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            {
+                                "from": "idle", "to": "shown", "event": "SHOW",
+                                "effects": [["render-ui", "main", { "data-theme": "@currentTheme" }]]
+                            }
+                        ]
+                    }
+                }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn current_theme_binding_resolves_in_render_ui() {
+        let kernel = server_kernel_with(render_ui_theme_schema());
+        let outcomes = kernel
+            .dispatch("ThemeTrait", None, "SHOW", Value::Null)
+            .unwrap();
+        let response = EventResponse::from_process_results(&outcomes, "ThemeTrait", "SHOW");
+        let effects = response
+            .client_effects
+            .expect("render-ui must surface as a client effect");
+        let render = effects
+            .iter()
+            .find(|e| matches!(e, ClientEffect::RenderUi { .. }))
+            .expect("a render-ui client effect");
+        let ClientEffect::RenderUi { config, .. } = render else {
+            unreachable!()
+        };
+        let theme = config
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|o| o.get("data-theme"))
+            .cloned();
+        assert_eq!(
+            theme,
+            Some(Value::String("clay-light".to_string())),
+            "the @currentTheme sigil must resolve to the declared app-level theme key, \
+             not round-trip as the literal '@currentTheme' token"
+        );
+    }
+
+    fn i18n_schema(locales: bool) -> OrbitalSchema {
+        let mut schema = serde_json::json!({
+            "name": "Site",
+            "orbitals": [{
+                "name": "Home",
+                "entity": { "name": "HomeView", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "HomePage",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{
+                            "from": "idle", "to": "idle", "event": "SHOW",
+                            "effects": [["render-ui", "main", {
+                                "title": ["i18n/t", "site:hero.title"],
+                                "count": ["i18n/t", "site:posts.count", { "n": 3 }],
+                                "className": ["if", ["==", ["i18n/t", "site:cta"], ""], "hidden", ""],
+                                "lang": "@locale"
+                            }]]
+                        }]
+                    }
+                }]
+            }]
+        });
+        if locales {
+            schema["locales"] = serde_json::json!(["en", "ar"]);
+        }
+        serde_json::from_value(schema).unwrap()
+    }
+
+    fn i18n_catalogs() -> HashMap<String, HashMap<String, String>> {
+        let catalog = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        HashMap::from([
+            (
+                "en".to_string(),
+                catalog(&[
+                    ("site:hero.title", "Hello"),
+                    ("site:posts.count", "{{n}} posts"),
+                    ("site:cta", "Start"),
+                ]),
+            ),
+            (
+                "ar".to_string(),
+                catalog(&[
+                    ("site:hero.title", "مرحبا"),
+                    ("site:posts.count", "{{n}} منشورات"),
+                    ("site:cta", "ابدأ"),
+                ]),
+            ),
+        ])
+    }
+
+    fn field(config: &Value, key: &str) -> Value {
+        config
+            .as_object()
+            .and_then(|o| o.get(key))
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    fn rendered_config(kernel: &RuntimeKernel) -> Value {
+        let outcomes = kernel
+            .dispatch("HomePage", None, "SHOW", Value::Null)
+            .unwrap();
+        let response = EventResponse::from_process_results(&outcomes, "HomePage", "SHOW");
+        let effects = response.client_effects.expect("render-ui effect");
+        let Some(ClientEffect::RenderUi { config, .. }) = effects
+            .iter()
+            .find(|e| matches!(e, ClientEffect::RenderUi { .. }))
+        else {
+            panic!("no render-ui effect");
+        };
+        config.clone().unwrap_or(Value::Null)
+    }
+
+    #[test]
+    fn i18n_t_renders_the_dispatch_viewers_locale() {
+        let kernel = server_kernel_with(i18n_schema(true));
+        kernel.set_messages(vec!["en".into(), "ar".into()], i18n_catalogs());
+        let _locale = kernel.enter_locale(Some("ar")).unwrap();
+        let config = rendered_config(&kernel);
+        assert_eq!(field(&config, "title"), Value::String("مرحبا".into()));
+        assert_eq!(field(&config, "count"), Value::String("3 منشورات".into()));
+        assert_eq!(field(&config, "className"), Value::String("".into()));
+        assert_eq!(field(&config, "lang"), Value::String("ar".into()));
+    }
+
+    #[test]
+    fn control_i18n_t_without_a_viewer_locale_renders_the_first_declared() {
+        let kernel = server_kernel_with(i18n_schema(true));
+        kernel.set_messages(vec!["en".into(), "ar".into()], i18n_catalogs());
+        let config = rendered_config(&kernel);
+        assert_eq!(field(&config, "title"), Value::String("Hello".into()));
+        assert_eq!(field(&config, "lang"), Value::String("en".into()));
+    }
+
+    #[test]
+    fn edge_a_locale_the_program_does_not_declare_is_refused() {
+        let kernel = server_kernel_with(i18n_schema(true));
+        kernel.set_messages(vec!["en".into(), "ar".into()], i18n_catalogs());
+        let err = kernel
+            .enter_locale(Some("fr"))
+            .err()
+            .expect("undeclared locale");
+        assert!(err.to_string().contains("\"fr\""), "{err}");
+    }
+
+    #[test]
+    fn edge_a_program_without_locales_accepts_any_viewer_locale() {
+        let kernel = server_kernel_with(i18n_schema(false));
+        assert!(kernel.enter_locale(Some("en")).is_ok());
+    }
+
+    #[test]
+    fn apply_server_response_merges_data_and_states() {
+        let kernel = server_kernel_with(server_response_schema());
+        let mut row = HashMap::new();
+        row.insert("id".to_string(), Value::String("n-1".to_string()));
+        row.insert(
+            "title".to_string(),
+            Value::String("From server".to_string()),
+        );
+        let mut data = HashMap::new();
+        data.insert("Note".to_string(), vec![Value::Object(row)]);
+
+        let mut entity_by_trait = HashMap::new();
+        let mut listener_entity = HashMap::new();
+        listener_entity.insert("id".to_string(), Value::String("singleton".to_string()));
+        listener_entity.insert("note".to_string(), Value::String("n-1".to_string()));
+        entity_by_trait.insert("Listener".to_string(), Value::Object(listener_entity));
+
+        let mut states = HashMap::new();
+        states.insert("Listener".to_string(), "ponged".to_string());
+
+        let response = EventResponse {
+            success: true,
+            transitioned: true,
+            states,
+            emitted_events: Vec::new(),
+            data: Some(data),
+            entity_by_trait: Some(entity_by_trait),
+            ..Default::default()
+        };
+
+        kernel
+            .apply_server_response(&response, &HashSet::new())
+            .unwrap();
+
+        let note = kernel.entity_source().read("Note", "n-1").unwrap();
+        assert_eq!(
+            note.as_object().unwrap().get("title"),
+            Some(&Value::String("From server".to_string()))
+        );
+        let listener_frame = kernel.snapshot_trait("Listener", None).entity;
+        assert_eq!(
+            listener_frame.as_object().unwrap().get("note"),
+            Some(&Value::String("n-1".to_string()))
+        );
+        assert_eq!(
+            kernel
+                .get_state("Listener", Some("singleton"))
+                .unwrap()
+                .current_state,
+            "ponged"
+        );
+    }
+
+    #[test]
+    fn apply_server_response_dedupes_locally_delivered_echo() {
+        let kernel = server_kernel_with(server_response_schema());
+        let response = EventResponse {
+            success: true,
+            transitioned: true,
+            states: HashMap::new(),
+            emitted_events: vec![EmittedEvent {
+                event: "PING".to_string(),
+                payload: None,
+                source: Some(BusEventSource::from_trait("Emitter")),
+            }],
+            ..Default::default()
+        };
+
+        // Already delivered locally — must NOT re-fire the listener.
+        let mut already_delivered = HashSet::new();
+        already_delivered.insert(("Emitter".to_string(), "PING".to_string()));
+        let outcomes = kernel
+            .apply_server_response(&response, &already_delivered)
+            .unwrap();
+        assert!(
+            !outcomes.iter().any(|(t, _)| t == "Listener"),
+            "an echo of a locally-delivered event must not re-run its listener"
+        );
+
+        // Nothing delivered locally — the listener must fire.
+        let outcomes = kernel
+            .apply_server_response(&response, &HashSet::new())
+            .unwrap();
+        assert!(
+            outcomes
+                .iter()
+                .any(|(t, r)| t == "Listener" && r.new_state == "ponged"),
+            "an event not already delivered must still cascade through the local listener"
+        );
+    }
+
+    #[test]
+    fn apply_server_response_rolls_back_on_error() {
+        let (kernel, _collector) = client_kernel_with(runtime_optimistic_schema());
+        kernel.dispatch("Move", None, "INIT", Value::Null).unwrap();
+        let dispatch = kernel
+            .dispatch_with_server_leg("App", "Move", None, "MOVE", Value::Null, None)
+            .unwrap();
+        let snapshot = dispatch.snapshot.expect("RuntimeOptimistic snapshot");
+        assert_eq!(
+            kernel
+                .get_state("Move", Some("singleton"))
+                .unwrap()
+                .current_state,
+            "moved"
+        );
+
+        // Caller pattern: the (simulated) server round trip errors/disagrees →
+        // roll back to the pre-dispatch snapshot.
+        kernel.restore_trait("Move", None, snapshot);
+
+        assert_eq!(
+            kernel
+                .get_state("Move", Some("singleton"))
+                .unwrap()
+                .current_state,
+            "idle"
+        );
+        assert!(kernel.entity_source().read("Cursor", "singleton").is_err());
+    }
+
+    #[test]
+    fn already_delivered_from_includes_local_emits_and_seed() {
+        let mut result = ProcessEventResult {
+            event: None,
+            executed: true,
+            previous_state: "idle".to_string(),
+            new_state: "created".to_string(),
+            effects_executed: 1,
+            effect_results: vec![EffectResult::executed(Effect::Emit {
+                event: "DRAFT_CREATED".to_string(),
+                payload: Value::Null,
+            })],
+            entity_data: Value::Null,
+            linked_entity: "Note".to_string(),
+            payload: Value::Null,
+            entry: None,
+        };
+        result.previous_state = "idle".to_string();
+        let outcomes = vec![("Persistor".to_string(), result)];
+        let response = EventResponse::from_process_results(&outcomes, "Persistor", "CREATE");
+        let dispatch = ClientDispatch {
+            response,
+            server_legs: vec![EventRequest {
+                event: "CREATE".to_string(),
+                target_trait: Some("Persistor".to_string()),
+                ..Default::default()
+            }],
+            outcomes,
+            seed: ("Persistor".to_string(), "CREATE".to_string()),
+            mode: DispatchMode::PersistedAwaited,
+            snapshot: None,
+            awaiting: Vec::new(),
+        };
+
+        let delivered = already_delivered_from(&dispatch);
+        assert!(delivered.contains(&("Persistor".to_string(), "DRAFT_CREATED".to_string())));
+        assert!(delivered.contains(&("Persistor".to_string(), "CREATE".to_string())));
+    }
+
+    #[test]
+    fn kernel_concurrent_dispatch_and_apply_no_deadlock() {
+        let kernel = Arc::new(server_kernel_with(server_response_schema()));
+        kernel
+            .dispatch("Emitter", None, "INIT", Value::Null)
+            .unwrap();
+        kernel
+            .dispatch("Listener", None, "INIT", Value::Null)
+            .unwrap();
+
+        let dispatch_kernel = kernel.clone();
+        let dispatcher = std::thread::spawn(move || {
+            for _ in 0..200 {
+                let _ = dispatch_kernel.dispatch("Emitter", None, "PING", Value::Null);
+            }
+        });
+
+        let apply_kernel = kernel.clone();
+        let applier = std::thread::spawn(move || {
+            for _ in 0..200 {
+                let response = EventResponse {
+                    success: true,
+                    emitted_events: vec![EmittedEvent {
+                        event: "PING".to_string(),
+                        payload: None,
+                        source: Some(BusEventSource::from_trait("Emitter")),
+                    }],
+                    ..Default::default()
+                };
+                let _ = apply_kernel.apply_server_response(&response, &HashSet::new());
+            }
+        });
+
+        dispatcher
+            .join()
+            .expect("dispatcher thread must not panic or deadlock");
+        applier
+            .join()
+            .expect("applier thread must not panic or deadlock");
+    }
+
+    /// std-realtime-chat's shape: a `local` composer emits SAVE; a persistor
+    /// listening to it runs the server-bound `persist create`.
+    fn local_seed_downstream_persist_schema() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Message", "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "content", "type": "string" }
+                ] },
+                "traits": [
+                    {
+                        "name": "Composer",
+                        "linkedEntity": "Message",
+                        "local": true,
+                        "stateMachine": {
+                            "states": [{ "name": "ready", "isInitial": true }],
+                            "transitions": [
+                                { "from": "ready", "to": "ready", "event": "DRAFT",
+                                  "effects": [["set", "@entity.content", "@payload.value"]] },
+                                { "from": "ready", "to": "ready", "event": "SEND",
+                                  "effects": [["emit", "SAVE", { "content": "@entity.content" }]] }
+                            ]
+                        }
+                    },
+                    {
+                        "name": "Persistor",
+                        "linkedEntity": "Message",
+                        "listens": [{ "event": "SAVE", "source": { "kind": "trait", "trait": "Composer" }, "triggers": "DO_CREATE" }],
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }],
+                            "transitions": [
+                                { "from": "idle", "to": "idle", "event": "DO_CREATE",
+                                  "effects": [["persist", "create", "Message", { "content": "@payload.content" }]] }
+                            ]
+                        }
+                    }
+                ]
+            }]
+        }))
+        .unwrap()
+    }
+
+    /// A `local` seed never needs the server for its OWN effects, but the
+    /// traits its cascade reached may; that work is posted, not dropped.
+    #[test]
+    fn client_env_local_seed_posts_its_cascade_server_work() {
+        let (kernel, _collector) = client_kernel_with(local_seed_downstream_persist_schema());
+        kernel
+            .dispatch_with_server_leg(
+                "App",
+                "Composer",
+                None,
+                "DRAFT",
+                Value::Object(HashMap::from([("value".to_string(), Value::from("hi"))])),
+                None,
+            )
+            .unwrap();
+        let dispatch = kernel
+            .dispatch_with_server_leg("App", "Composer", None, "SEND", Value::Null, None)
+            .unwrap();
+        assert_eq!(dispatch.mode, DispatchMode::HybridClientOnly);
+        assert_eq!(dispatch.server_legs.len(), 1);
+        let leg = &dispatch.server_legs[0];
+        assert_eq!(leg.event, "DO_CREATE");
+        assert_eq!(leg.target_trait.as_deref(), Some("Persistor"));
+    }
+
+    /// A local `Ticker` whose `beat` tick emits BEAT; `Listener` hears it; `Persistor` hears it
+    /// and persists. `Ticker` renders on INIT and has `ownArm` (an own BEAT arm) when asked.
+    fn tick_emit_schema(own_arm: bool) -> OrbitalSchema {
+        let mut ticker_transitions = vec![serde_json::json!(
+            { "from": "running", "to": "running", "event": "INIT",
+              "effects": [["render-ui", "main", { "type": "typography", "content": "tick" }]] })];
+        if own_arm {
+            ticker_transitions.push(serde_json::json!(
+                { "from": "running", "to": "running", "event": "BEAT", "effects": [] }));
+        }
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "beats", "type": "number" }
+                ] },
+                "traits": [
+                    {
+                        "name": "Ticker", "linkedEntity": "Note", "local": true,
+                        "stateMachine": {
+                            "states": [{ "name": "running", "isInitial": true }],
+                            "transitions": ticker_transitions
+                        },
+                        "ticks": [
+                            { "name": "beat", "interval": 1000,
+                              "effects": [["set", "@entity.beats", 1], ["emit", "BEAT", { "n": 1 }]] },
+                            { "name": "quiet", "interval": 1000,
+                              "effects": [["set", "@entity.beats", 2]] },
+                            { "name": "saver", "interval": 1000,
+                              "effects": [["persist", "create", "Note", { "beats": 3 }]] },
+                            { "name": "never", "interval": 1000,
+                              "guard": ["=", 1, 2],
+                              "effects": [["emit", "BEAT", {}]] }
+                        ]
+                    },
+                    {
+                        "name": "Listener", "linkedEntity": "Note", "local": true,
+                        "listens": [{ "event": "BEAT", "triggers": "HEARD", "source": { "kind": "trait", "trait": "Ticker" } }],
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }, { "name": "heard" }],
+                            "transitions": [{ "from": "idle", "to": "heard", "event": "HEARD", "effects": [] }]
+                        }
+                    },
+                    {
+                        "name": "Persistor", "linkedEntity": "Note",
+                        "listens": [{ "event": "BEAT", "triggers": "DO_CREATE", "source": { "kind": "trait", "trait": "Ticker" } }],
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }],
+                            "transitions": [{ "from": "idle", "to": "idle", "event": "DO_CREATE",
+                                "effects": [["persist", "create", "Note", { "beats": "@payload.n" }]] }]
+                        }
+                    }
+                ]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn booted_ticker(own_arm: bool) -> (RuntimeKernel, Arc<ServerLegCollector>) {
+        let (kernel, collector) = client_kernel_with(tick_emit_schema(own_arm));
+        kernel
+            .dispatch_with_server_leg("App", "Ticker", None, "INIT", Value::Null, None)
+            .unwrap();
+        collector.drain();
+        (kernel, collector)
+    }
+
+    #[test]
+    fn a_tick_emit_reaches_its_listener_through_the_cascade() {
+        let (kernel, _collector) = booted_ticker(false);
+        let tick = kernel
+            .dispatch_tick("Main", "Ticker", None, "beat", Some("c1"))
+            .unwrap();
+        assert!(tick.outcome.executed);
+        assert_eq!(tick.emits.len(), 1, "one emit, one cascade");
+        let emit = &tick.emits[0].dispatch;
+        assert_eq!(
+            emit.response.states.get("Listener").map(String::as_str),
+            Some("heard")
+        );
+        assert!(emit.response.transitioned);
+    }
+
+    #[test]
+    fn the_emitter_is_not_re_seeded_by_its_own_tick_emit() {
+        let (kernel, _collector) = booted_ticker(false);
+        let tick = kernel
+            .dispatch_tick("Main", "Ticker", None, "beat", None)
+            .unwrap();
+        let response = &tick.emits[0].dispatch.response;
+        assert!(
+            response.guard_failed.is_none(),
+            "no guardFailed: {:?}",
+            response.guard_failed
+        );
+        assert!(
+            !response.states.contains_key("Ticker"),
+            "the emitter is not an outcome of its own emit"
+        );
+        assert!(
+            response
+                .client_effects
+                .as_ref()
+                .is_none_or(|e| e.is_empty()),
+            "no repaint of the emitter's last render"
+        );
+    }
+
+    #[test]
+    fn control_dispatching_the_emitted_event_as_a_seed_does_reseed_the_emitter() {
+        let (kernel, _collector) = booted_ticker(false);
+        let seeded = kernel
+            .dispatch_with_server_leg("App", "Ticker", None, "BEAT", Value::Null, None)
+            .unwrap();
+        assert_eq!(
+            seeded.response.guard_failed.as_deref(),
+            Some("Ticker.BEAT"),
+            "the old re-entry path reports the spurious guardFailed"
+        );
+        assert!(
+            seeded
+                .response
+                .client_effects
+                .as_ref()
+                .is_some_and(|e| !e.is_empty()),
+            "and repaints the emitter"
+        );
+    }
+
+    #[test]
+    fn an_emitter_with_its_own_arm_for_the_event_still_runs_it() {
+        let (kernel, _collector) = booted_ticker(true);
+        let tick = kernel
+            .dispatch_tick("Main", "Ticker", None, "beat", None)
+            .unwrap();
+        let response = &tick.emits[0].dispatch.response;
+        assert_eq!(
+            response.states.get("Ticker").map(String::as_str),
+            Some("running")
+        );
+        assert!(
+            response.transitioned,
+            "the same-trait cascade ran the own BEAT arm"
+        );
+    }
+
+    #[test]
+    fn a_listener_s_persist_yields_a_tick_stamped_server_leg() {
+        let (kernel, _collector) = booted_ticker(false);
+        let tick = kernel
+            .dispatch_tick("Main", "Ticker", None, "beat", Some("c1"))
+            .unwrap();
+        let emit = &tick.emits[0].dispatch;
+        assert_eq!(emit.server_legs.len(), 1);
+        let leg = &emit.server_legs[0];
+        assert_eq!(leg.event, "DO_CREATE");
+        assert_eq!(leg.tick.as_deref(), Some("beat"));
+        assert_eq!(leg.target_trait.as_deref(), Some("Persistor"));
+        assert_eq!(leg.client_id.as_deref(), Some("c1"));
+        assert_eq!(emit.mode, DispatchMode::HybridClientOnly);
+    }
+
+    #[test]
+    fn a_tick_cascade_leg_awaits_nothing_but_the_same_cascade_dispatched_does() {
+        let (kernel, _collector) = booted_ticker(false);
+        let tick = kernel
+            .dispatch_tick("Main", "Ticker", None, "beat", None)
+            .unwrap();
+        assert!(
+            tick.emits[0].dispatch.awaiting.is_empty(),
+            "tick legs are latest-state broadcasts"
+        );
+        let dispatch = kernel
+            .dispatch_with_server_leg("App", "Ticker", None, "BEAT", Value::Null, None)
+            .unwrap();
+        assert!(
+            dispatch
+                .awaiting
+                .iter()
+                .any(|a| a.trait_name == "Persistor" && a.event == "DO_CREATE"),
+            "control: {:?}",
+            dispatch.awaiting
+        );
+    }
+
+    #[test]
+    fn control_a_dispatch_leg_carries_no_tick_stamp() {
+        let (kernel, _collector) = booted_ticker(false);
+        let dispatch = kernel
+            .dispatch_with_server_leg("App", "Ticker", None, "BEAT", Value::Null, None)
+            .unwrap();
+        let leg = dispatch
+            .server_legs
+            .first()
+            .expect("same cascade, same leg");
+        assert!(leg.tick.is_none());
+    }
+
+    #[test]
+    fn a_tick_without_an_emit_has_no_cascade_and_no_leg() {
+        let (kernel, _collector) = booted_ticker(false);
+        let tick = kernel
+            .dispatch_tick("Main", "Ticker", None, "quiet", None)
+            .unwrap();
+        assert!(tick.outcome.executed);
+        assert!(tick.emits.is_empty());
+        assert_eq!(
+            tick.discarded_server_effects, 0,
+            "control: nothing server-bound"
+        );
+    }
+
+    #[test]
+    fn a_ticks_own_server_effect_is_discarded_and_never_rides_the_next_leg() {
+        let (kernel, collector) = booted_ticker(false);
+        let tick = kernel
+            .dispatch_tick("Main", "Ticker", None, "saver", None)
+            .unwrap();
+        assert!(tick.emits.is_empty(), "no event to replay it under");
+        assert_eq!(tick.discarded_server_effects, 1, "counted, not silent");
+        assert!(
+            collector.drain().is_empty(),
+            "the collector is clean afterwards"
+        );
+        let next = kernel
+            .dispatch_with_server_leg("App", "Ticker", None, "BEAT", Value::Null, None)
+            .unwrap();
+        assert_eq!(
+            next.server_legs.first().map(|leg| leg.event.as_str()),
+            Some("DO_CREATE"),
+            "the next dispatch's leg is its own"
+        );
+    }
+
+    #[test]
+    fn a_guard_blocked_tick_runs_no_effects_and_no_cascade() {
+        let (kernel, _collector) = booted_ticker(false);
+        let tick = kernel
+            .dispatch_tick("Main", "Ticker", None, "never", None)
+            .unwrap();
+        assert!(!tick.outcome.executed);
+        assert!(tick.emits.is_empty());
+    }
+
+    #[test]
+    fn dispatching_an_unknown_tick_or_trait_is_an_error() {
+        let (kernel, _collector) = booted_ticker(false);
+        assert!(kernel
+            .dispatch_tick("Main", "Ticker", None, "nope", None)
+            .is_err());
+        assert!(kernel
+            .dispatch_tick("Main", "Ghost", None, "beat", None)
+            .is_err());
+    }
+
+    /// std-realtime-chat's composer: SEND persists the draft, then clears it.
+    fn clearing_composer_schema() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "content", "type": "string" }
+                ] },
+                "traits": [{
+                    "name": "Composer",
+                    "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [{ "name": "ready", "isInitial": true }],
+                        "transitions": [
+                            { "from": "ready", "to": "ready", "event": "DRAFT",
+                              "effects": [["set", "@entity.content", "@payload.value"]] },
+                            {
+                                "from": "ready", "to": "ready", "event": "SEND",
+                                "guard": ["!=", ["str/default", "@entity.content", ""], ""],
+                                "effects": [
+                                    ["persist", "create", "Note", { "content": "@entity.content" }],
+                                    ["set", "@entity.content", ""]
+                                ]
+                            }
+                        ]
+                    }
+                }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    /// The leg replays SEND from the pre-dispatch state, so it must carry the
+    /// pre-dispatch row: the post-dispatch one has the draft already cleared
+    /// and fails the replayed guard.
+    #[test]
+    fn client_env_leg_carries_the_row_the_event_was_dispatched_against() {
+        let (kernel, _collector) = client_kernel_with(clearing_composer_schema());
+        kernel
+            .dispatch_with_server_leg(
+                "App",
+                "Composer",
+                None,
+                "DRAFT",
+                Value::Object(HashMap::from([("value".to_string(), Value::from("hi"))])),
+                None,
+            )
+            .unwrap();
+        let dispatch = kernel
+            .dispatch_with_server_leg("App", "Composer", None, "SEND", Value::Null, None)
+            .unwrap();
+        let leg = dispatch
+            .server_legs
+            .first()
+            .expect("persist produces a server leg");
+        let row = leg
+            .entity_by_trait
+            .as_ref()
+            .and_then(|m| m.get("Composer"))
+            .expect("seed row carried");
+        assert_eq!(row.get_path("content").and_then(Value::as_str), Some("hi"));
+    }
+}
+
+#[cfg(test)]
+mod theme_mode_tests {
+    use super::*;
+    use crate::runtime::entity_source::InMemoryEntityCache;
+
+    fn kernel_with(schema: OrbitalSchema) -> RuntimeKernel {
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    fn schema_with_theme(theme_key: &str) -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "theme": theme_key,
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "PanelView",
+                    "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    /// §157/C7 `theme-declaration`: a declared `-dark` theme key must resolve
+    /// as Dark when `set_theme_mode` was NEVER called — the kernel's default
+    /// (unset) toggle must not silently force Light over the key's own
+    /// suffix. `ClientKernel::set_theme_mode` is the passthrough this proves
+    /// exists; here it is exercised directly against `RuntimeKernel`.
+    #[test]
+    fn theme_key_suffix_selects_mode() {
+        let kernel = kernel_with(schema_with_theme("clay-dark"));
+        let resolved = kernel.resolved_theme();
+        assert_eq!(
+            resolved.key, "clay-dark",
+            "an unset toggle must honor the declared key's own -dark suffix, not force Light"
+        );
+        assert_eq!(resolved.mode, ThemeMode::Dark);
+    }
+
+    /// An explicit `set_theme_mode` call still overrides the declared key's
+    /// suffix, exactly as documented on `RuntimeKernel::set_theme_mode`.
+    #[test]
+    fn explicit_theme_mode_overrides_key_suffix() {
+        let kernel = kernel_with(schema_with_theme("clay-dark"));
+        kernel.set_theme_mode(ThemeMode::Light);
+        let resolved = kernel.resolved_theme();
+        assert_eq!(resolved.key, "clay-light");
+        assert_eq!(resolved.mode, ThemeMode::Light);
+    }
+}
+
+#[cfg(test)]
+mod mount_lifecycle_tests {
+    //! A trait never receives a routed event before its own lifecycle event has
+    //! run on the current mount (riya, 2026-09-24: SineLevelData's INIT seeded
+    //! the body's skate curve before SineBody's own INIT reset it). JS twin:
+    //! `evaluation/mount-lifecycle.ts`.
+    use super::*;
+    use crate::runtime::entity_source::InMemoryEntityCache;
+
+    fn kernel() -> RuntimeKernel {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "Boot",
+            "orbitals": [{
+                "name": "Level",
+                "entity": { "name": "World", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [
+                    {
+                        "name": "Seeder",
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }],
+                            "transitions": [
+                                { "from": "idle", "to": "idle", "event": "INIT",
+                                  "effects": [["emit", "SEED", { "v": 1, "echo": "@payload" }]] },
+                                { "from": "idle", "to": "idle", "event": "PING" }
+                            ]
+                        }
+                    },
+                    {
+                        "name": "Body",
+                        "listens": [{ "event": "SEED", "triggers": "SET", "source": { "kind": "trait", "trait": "Seeder" } }],
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }, { "name": "ready" }, { "name": "seeded" }],
+                            "transitions": [
+                                { "from": "idle", "to": "ready", "event": "INIT" },
+                                { "from": "ready", "to": "seeded", "event": "SET" }
+                            ]
+                        }
+                    }
+                ]
+            }]
+        }))
+        .unwrap();
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    fn body_state(kernel: &RuntimeKernel) -> String {
+        // No row yet = never touched = its initial state.
+        kernel
+            .get_state("Body", Some("singleton"))
+            .map_or_else(|| "idle".to_string(), |s| s.current_state)
+    }
+
+    fn seeds(list: &[(&str, &str)]) -> Vec<crate::effects::MountSeed> {
+        list.iter()
+            .map(|(t, e)| crate::effects::MountSeed {
+                r#trait: t.to_string(),
+                event: e.to_string(),
+            })
+            .collect()
+    }
+
+    /// JS twin: `evaluate-mount-batch.test.ts` — one mount request runs each seed's own
+    /// lifecycle event in order; the held SEED reaches Body once Body's own INIT ran.
+    #[test]
+    fn a_mount_batch_runs_every_seed_in_order_and_keeps_the_lifecycle_hold() {
+        let kernel = kernel();
+        kernel.mount_traits(["Seeder", "Body"]);
+        let outcomes = kernel
+            .dispatch_mount(
+                &seeds(&[("Seeder", "INIT"), ("Body", "INIT")]),
+                None,
+                Value::Null,
+            )
+            .unwrap();
+        let ran: Vec<String> = outcomes
+            .iter()
+            .filter(|(_, r)| r.executed)
+            .map(|(t, r)| format!("{t}:{}", r.event.clone().unwrap_or_default()))
+            .collect();
+        assert_eq!(ran, vec!["Seeder:INIT", "Body:INIT", "Body:SET"]);
+        assert_eq!(body_state(&kernel), "seeded");
+    }
+
+    /// A server leg's `_awaitingInit` is synced once against EVERY seed: a later seed's
+    /// held delivery is not released before its own INIT runs here.
+    #[test]
+    fn a_mount_batch_syncs_the_clients_mount_against_every_seed() {
+        let kernel = kernel();
+        kernel.mount_traits(["Seeder", "Body"]);
+        kernel
+            .dispatch_mount(
+                &seeds(&[("Seeder", "INIT"), ("Body", "INIT")]),
+                None,
+                leg(&[]),
+            )
+            .unwrap();
+        assert_eq!(body_state(&kernel), "seeded");
+    }
+
+    #[test]
+    fn control_an_unknown_seed_is_skipped_and_the_others_still_run() {
+        let kernel = kernel();
+        let outcomes = kernel
+            .dispatch_mount(
+                &seeds(&[("Nowhere", "INIT"), ("Body", "INIT")]),
+                None,
+                Value::Null,
+            )
+            .unwrap();
+        assert!(outcomes.iter().any(|(t, r)| t == "Body" && r.executed));
+        assert!(!outcomes.iter().any(|(t, _)| t == "Nowhere"));
+    }
+
+    #[test]
+    fn a_seed_waits_for_the_receivers_own_init() {
+        let kernel = kernel();
+        kernel.mount_traits(["Seeder", "Body"]);
+        kernel
+            .dispatch("Seeder", None, "INIT", Value::Null)
+            .unwrap();
+        assert_eq!(
+            body_state(&kernel),
+            "idle",
+            "held, not delivered before Body's INIT"
+        );
+        kernel.dispatch("Body", None, "INIT", Value::Null).unwrap();
+        assert_eq!(body_state(&kernel), "seeded");
+    }
+
+    /// A server host follows the client's mount from each leg's
+    /// `_awaitingInit` (JS twin: `riya-level-seed-reaches-the-body.test.ts`).
+    fn leg(awaiting: &[&str]) -> Value {
+        Value::Object(HashMap::from([(
+            "_awaitingInit".to_string(),
+            Value::Array(
+                awaiting
+                    .iter()
+                    .map(|t| Value::String(t.to_string()))
+                    .collect(),
+            ),
+        )]))
+    }
+
+    #[test]
+    fn a_server_leg_holds_a_seed_for_a_trait_the_client_still_awaits() {
+        let kernel = kernel();
+        kernel
+            .dispatch_continuing("Seeder", None, "INIT", leg(&["Body"]), None, None)
+            .unwrap();
+        assert_eq!(body_state(&kernel), "idle");
+        kernel
+            .dispatch_continuing("Body", None, "INIT", leg(&[]), None, None)
+            .unwrap();
+        assert_eq!(body_state(&kernel), "seeded");
+    }
+
+    #[test]
+    fn a_server_leg_releases_what_the_client_has_since_initialized() {
+        let kernel = kernel();
+        kernel
+            .dispatch_continuing("Seeder", None, "INIT", leg(&["Body"]), None, None)
+            .unwrap();
+        // Body's INIT stayed client-side; the next leg says nothing awaits.
+        kernel.dispatch("Body", None, "INIT", Value::Null).unwrap();
+        kernel
+            .dispatch_continuing("Seeder", None, "PING", leg(&[]), None, None)
+            .unwrap();
+        assert_eq!(body_state(&kernel), "seeded");
+    }
+
+    #[test]
+    fn the_sidecar_never_reaches_payload_bindings() {
+        let kernel = kernel();
+        let out = kernel
+            .dispatch_continuing("Seeder", None, "INIT", leg(&["Body"]), None, None)
+            .unwrap();
+        let blob = format!(
+            "{:?}",
+            out.iter()
+                .map(|(_, r)| &r.effect_results)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            blob.contains("echo"),
+            "the seed emit echoes @payload: {blob}"
+        );
+        assert!(!blob.contains("_awaitingInit"), "{blob}");
+    }
+
+    #[test]
+    fn control_without_a_declared_mount_nothing_is_held() {
+        let kernel = kernel();
+        kernel
+            .dispatch("Seeder", None, "INIT", Value::Null)
+            .unwrap();
+        kernel.dispatch("Body", None, "INIT", Value::Null).unwrap();
+        assert_eq!(body_state(&kernel), "ready");
+    }
+
+    #[test]
+    fn an_unmounted_trait_keeps_nothing_held() {
+        let kernel = kernel();
+        kernel.mount_traits(["Seeder", "Body"]);
+        kernel
+            .dispatch("Seeder", None, "INIT", Value::Null)
+            .unwrap();
+        kernel.unmount_traits(["Body"]);
+        kernel.dispatch("Body", None, "INIT", Value::Null).unwrap();
+        assert_eq!(body_state(&kernel), "ready");
+    }
+}
+
+#[cfg(test)]
+mod host_entity_tests {
+    //! A schema registered straight into the kernel (no compiler resolve) binds
+    //! an unlinked trait to its host orbital's entity, as the JS runtime does.
+    use super::*;
+    use crate::runtime::entity_source::InMemoryEntityCache;
+
+    fn kernel_with(entity_persistence: &str, linked: Option<&str>) -> RuntimeKernel {
+        let mut t = serde_json::json!({
+            "name": "Pure",
+            "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [["set", "@entity.n", 1]] }]
+            }
+        });
+        if let Some(e) = linked {
+            t["linkedEntity"] = serde_json::json!(e);
+        }
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "Host",
+            "orbitals": [
+                { "name": "Frames",
+                  "entity": { "name": "Frame", "persistence": entity_persistence,
+                              "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },
+                  "traits": [t] },
+                { "name": "Rows",
+                  "entity": { "name": "Row", "fields": [{ "name": "id", "type": "string" }] },
+                  "traits": [] }
+            ]
+        }))
+        .unwrap();
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    fn mode(kernel: &RuntimeKernel) -> DispatchMode {
+        kernel.trait_snapshot(Some("singleton"))["Pure"].1
+    }
+
+    #[test]
+    fn an_unlinked_trait_on_a_runtime_orbital_is_client_only() {
+        assert_eq!(
+            mode(&kernel_with("runtime", None)),
+            DispatchMode::HybridClientOnly
+        );
+    }
+
+    #[test]
+    fn an_unlinked_trait_on_a_persisted_orbital_awaits_the_server() {
+        assert_eq!(
+            mode(&kernel_with("persistent", None)),
+            DispatchMode::PersistedAwaited
+        );
+    }
+
+    #[test]
+    fn a_declared_binding_to_another_orbital_wins() {
+        assert_eq!(
+            mode(&kernel_with("runtime", Some("Row"))),
+            DispatchMode::PersistedAwaited
+        );
+    }
+}
+
+#[cfg(test)]
+mod fetch_payload_tests {
+    //! A fetch's `emit.success` payload is the TS wire's (`EffectExecutor.ts`):
+    //! `{ data, totalCount }`, `totalCount` counted after `@read` + `filter:` and
+    //! before offset/limit; a by-id hit's `data` is the row itself.
+    use super::*;
+    use crate::runtime::entity_source::InMemoryEntityCache;
+
+    fn loaded(fetch: serde_json::Value) -> Option<Value> {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "Fetches",
+            "orbitals": [{
+                "name": "Items",
+                "entity": {
+                    "name": "Item",
+                    "fields": [{ "name": "id", "type": "string" }, { "name": "kind", "type": "string" }],
+                    "instances": [
+                        { "id": "a", "kind": "x" },
+                        { "id": "b", "kind": "y" },
+                        { "id": "c", "kind": "x" }
+                    ]
+                },
+                "traits": [{
+                    "name": "Loader",
+                    "linkedEntity": "Item",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [fetch] }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        kernel.register_schema(schema).unwrap();
+        let out = kernel.dispatch("Loader", None, "GO", Value::Null).unwrap();
+        out.iter().find_map(|(_, r)| {
+            r.effect_results.iter().find_map(|er| match &er.effect {
+                crate::effects::Effect::Emit { event, payload } if event == "LOADED" => {
+                    Some(payload.clone())
+                }
+                _ => None,
+            })
+        })
+    }
+
+    fn field<'a>(payload: &'a Option<Value>, key: &str) -> Option<&'a Value> {
+        match payload {
+            Some(Value::Object(m)) => m.get(key),
+            _ => None,
+        }
+    }
+
+    fn rows(payload: &Option<Value>) -> usize {
+        field(payload, "data")
+            .and_then(Value::as_array)
+            .map_or(usize::MAX, Vec::len)
+    }
+
+    #[test]
+    fn a_collection_fetch_reports_the_total_before_the_page() {
+        let p = loaded(
+            serde_json::json!(["fetch", "Item", { "limit": 2, "emit": { "success": "LOADED" } }]),
+        );
+        assert_eq!(rows(&p), 2);
+        assert_eq!(field(&p, "totalCount"), Some(&Value::Number(3.0)));
+    }
+
+    #[test]
+    fn the_total_counts_the_filtered_rows() {
+        let p = loaded(serde_json::json!(["fetch", "Item", {
+            "filter": ["=", ["object/get", "@entity", "kind"], "x"], "emit": { "success": "LOADED" }
+        }]));
+        assert_eq!(rows(&p), 2);
+        assert_eq!(field(&p, "totalCount"), Some(&Value::Number(2.0)));
+    }
+
+    #[test]
+    fn an_offset_past_the_end_still_reports_the_total() {
+        let p = loaded(
+            serde_json::json!(["fetch", "Item", { "offset": 5, "emit": { "success": "LOADED" } }]),
+        );
+        assert_eq!(rows(&p), 0);
+        assert_eq!(field(&p, "totalCount"), Some(&Value::Number(3.0)));
+    }
+
+    #[test]
+    fn a_by_id_hit_carries_the_row_itself() {
+        let p = loaded(
+            serde_json::json!(["fetch", "Item", { "id": "b", "emit": { "success": "LOADED" } }]),
+        );
+        let row = field(&p, "data").and_then(|d| match d {
+            Value::Object(m) => m.get("id").cloned(),
+            _ => None,
+        });
+        assert_eq!(row, Some(Value::String("b".to_string())));
+        assert_eq!(field(&p, "totalCount"), Some(&Value::Number(1.0)));
+    }
+
+    #[test]
+    fn control_a_by_id_miss_emits_no_success() {
+        let p = loaded(
+            serde_json::json!(["fetch", "Item", { "id": "zz", "emit": { "success": "LOADED" } }]),
+        );
+        assert_eq!(p, None);
+    }
+}
+
+#[cfg(test)]
+mod set_eval_failure_tests {
+    //! A `set` whose value fails to evaluate writes nothing and records a failed
+    //! effect; it never stores the unevaluated expression. JS twin:
+    //! `effect-failure-contained.test.ts`.
+    use super::*;
+    use crate::runtime::entity_source::InMemoryEntityCache;
+
+    fn kernel() -> RuntimeKernel {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "SetFailure",
+            "orbitals": [{
+                "name": "Page",
+                "entity": { "name": "View", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Preview",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
+                            "effects": [
+                                ["set", "@entity.app", ["behavior/ref", "Indigo Pioneer"]],
+                                ["set", "@entity.ok", true]
+                            ] }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    #[test]
+    fn a_set_that_fails_to_evaluate_writes_nothing_and_records_the_failure() {
+        let kernel = kernel();
+        let outcomes = kernel
+            .dispatch("Preview", None, "INIT", Value::Null)
+            .unwrap();
+        let (_, result) = outcomes
+            .iter()
+            .find(|(t, _)| t == "Preview")
+            .expect("Preview ran");
+        let row = result.entity_data.as_object().expect("an entity row");
+        assert!(!row.contains_key("app"), "{row:?}");
+        let failed = result
+            .effect_results
+            .iter()
+            .find(|r| matches!(r.effect, Effect::Set { ref path, .. } if path == "@entity.app"))
+            .expect("the set is recorded");
+        assert!(
+            matches!(failed.outcome, EffectOutcome::Failed),
+            "{:?}",
+            failed.outcome
+        );
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("specifier"),
+            "{:?}",
+            failed.error
+        );
+    }
+
+    #[test]
+    fn control_a_set_that_evaluates_still_writes() {
+        let kernel = kernel();
+        let outcomes = kernel
+            .dispatch("Preview", None, "INIT", Value::Null)
+            .unwrap();
+        let (_, result) = outcomes
+            .iter()
+            .find(|(t, _)| t == "Preview")
+            .expect("Preview ran");
+        let row = result.entity_data.as_object().expect("an entity row");
+        assert_eq!(row.get("ok"), Some(&Value::Bool(true)));
+    }
+}

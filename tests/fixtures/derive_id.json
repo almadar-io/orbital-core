@@ -1,0 +1,27 @@
+[
+  {
+    "parent": "trt_01HZX5AAAAAAAAAAAAAAAAAA",
+    "discriminator": "InlineButtonRender1",
+    "expected": "trt_3NFSHWKN33THHX2NAZ3DP3K0Y4"
+  },
+  {
+    "parent": "trt_01HZX5AAAAAAAAAAAAAAAAAA",
+    "discriminator": "InlineButtonRender2",
+    "expected": "trt_JH72628FEC7Q63MJTQ6TVXEK17"
+  },
+  {
+    "parent": "ent_01HZX5AAAAAAAAAAAAAAAAAA",
+    "discriminator": "NoteImport",
+    "expected": "ent_4P8Q1GNJX7SEKZH9MRKG90XQ6R"
+  },
+  {
+    "parent": "orb_01HZX5AAAAAAAAAAAAAAAAAA",
+    "discriminator": "NotesA",
+    "expected": "orb_12ZJEDZJP8SB44TAB7YYB3HV1G"
+  },
+  {
+    "parent": "zzz_01HZX5AAAAAAAAAAAAAAAAAA",
+    "discriminator": "UnknownPrefixFallback",
+    "expected": "trt_9KJ598VJSCSCPB59SDZNW8QYS8"
+  }
+]

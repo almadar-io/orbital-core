@@ -1,0 +1,387 @@
+{
+  "theme": "almadar-website",
+  "mode": "dark",
+  "preset": {
+    "name": "almadar-website",
+    "displayName": "Almadar Website",
+    "tokens": {
+      "motion": {
+        "durations": {
+          "instant": "0ms",
+          "fast": "var(--transition-fast)",
+          "normal": "var(--transition-normal)",
+          "slow": "var(--transition-slow)",
+          "dramatic": "600ms"
+        },
+        "easings": {
+          "linear": "linear",
+          "standard": "var(--transition-timing)",
+          "emphasized": "cubic-bezier(0.2, 0, 0, 1)",
+          "spring": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+        }
+      },
+      "iconography": {
+        "family": "lucide",
+        "strokeWidth": "1.75",
+        "defaultSize": "16px"
+      },
+      "elevation": {
+        "cardElevation": "var(--shadow-sm)",
+        "popoverElevation": "var(--shadow-main)",
+        "dialogElevation": "var(--shadow-lg)",
+        "toastElevation": "var(--shadow-main)"
+      },
+      "geometry": {
+        "radiusContainer": "var(--radius-md)",
+        "radiusInteractive": "var(--radius-md)",
+        "radiusPill": "var(--radius-full)",
+        "borderHairline": "1px",
+        "borderStandard": "var(--border-width)",
+        "borderHeavy": "var(--border-width-thick)"
+      },
+      "colors": {
+        "primary": "#0f766e",
+        "primary-hover": "#115e59",
+        "primary-foreground": "#ffffff",
+        "secondary": "#f1f5f9",
+        "secondary-hover": "#e2e8f0",
+        "secondary-foreground": "#0f172a",
+        "accent": "#c9a227",
+        "accent-foreground": "#0f172a",
+        "muted": "#f1f5f9",
+        "muted-foreground": "#5c6b80",
+        "background": "#ffffff",
+        "foreground": "#0f172a",
+        "card": "#ffffff",
+        "card-foreground": "#0f172a",
+        "surface": "#f8fafc",
+        "border": "#e2e8f0",
+        "input": "#e2e8f0",
+        "ring": "#14b8a6",
+        "error": "#dc2626",
+        "error-foreground": "#ffffff",
+        "success": "#15803d",
+        "success-foreground": "#ffffff",
+        "warning": "#f59e0b",
+        "warning-foreground": "#000000",
+        "info": "#1d4ed8",
+        "info-foreground": "#ffffff",
+        "scrim": "rgba(0, 0, 0, 0.6)",
+        "series-1": "#0f766e",
+        "series-2": "#b8702a",
+        "series-3": "#1f5dac",
+        "series-4": "#9a3b3b",
+        "series-5": "#6b7d2a",
+        "series-6": "#7c4a8d",
+        "series-7": "#a54803",
+        "series-8": "#484a60",
+        "diagram-ink": "#1e293b",
+        "diagram-label": "#334155",
+        "diagram-guide": "#8590a0",
+        "diagram-axis": "#64748b",
+        "diagram-grid": "#e2e8f0",
+        "diagram-highlight": "#a67c0a",
+        "diagram-fill": "#0f766e"
+      },
+      "radii": {
+        "none": "0px",
+        "sm": "4px",
+        "md": "8px",
+        "lg": "12px",
+        "xl": "16px",
+        "full": "9999px"
+      },
+      "shadows": {
+        "main": "0 4px 14px rgba(15, 23, 42, 0.1), 0 1px 3px rgba(15, 23, 42, 0.06)",
+        "sm": "0 1px 3px rgba(15, 23, 42, 0.08)",
+        "lg": "0 10px 15px rgba(15, 23, 42, 0.15)",
+        "inner": "inset 0 1px 2px rgba(0, 0, 0, 0.05)",
+        "none": "none",
+        "hover": "0 12px 40px rgba(15, 23, 42, 0.15)",
+        "active": "0 2px 8px rgba(15, 23, 42, 0.1)"
+      },
+      "typography": {
+        "border-width": "1px",
+        "border-width-thin": "1px",
+        "border-width-thick": "2px",
+        "icon-color": "#14b8a6",
+        "transition-fast": "150ms",
+        "transition-normal": "250ms",
+        "transition-slow": "400ms",
+        "transition-timing": "cubic-bezier(0.4, 0, 0.2, 1)",
+        "hover-scale": "1.02",
+        "hover-translate-y": "-2px",
+        "hover-translate-x": "0",
+        "active-scale": "0.98",
+        "active-translate-y": "0",
+        "focus-ring-width": "2px",
+        "focus-ring-offset": "2px",
+        "focus-ring-color": "#14b8a6"
+      },
+      "typeScale": {
+        "displayFamily": "\"Crimson Pro\", Georgia, serif",
+        "fontImport": "https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap",
+        "headingWeight": "600",
+        "headingTracking": "-0.01em"
+      },
+      "diagram": {
+        "strokeThin": "0.75px",
+        "strokeNormal": "1.5px",
+        "strokeBold": "2.25px",
+        "lineCap": "round",
+        "lineJoin": "round",
+        "dash": "5 4",
+        "dot": "1 4",
+        "fillStyle": "tint",
+        "fillOpacity": "0.14",
+        "roughness": "0",
+        "glow": "0",
+        "shadow": "none",
+        "marker": "open",
+        "labelFont": "display",
+        "labelSize": "sm",
+        "labelWeight": "500",
+        "labelCase": "none",
+        "corner": "6px"
+      },
+      "scene": {
+        "materialRoughness": "0.7",
+        "materialMetalness": "0.1",
+        "materialFlat": "0",
+        "materialOutline": "0",
+        "lightAmbient": "0.6",
+        "lightKey": "0.9",
+        "lightKeyColor": "#fff6e0",
+        "fog": "0.05"
+      },
+      "surface": {
+        "edgeMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 100' preserveAspectRatio='none'><path d='M0 60 C240 100 480 100 720 60 C960 20 1200 20 1440 60 V100 H0 Z'/></svg>\")",
+        "edgeHeight": "clamp(24px, 6vw, 96px)",
+        "textureMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><circle cx='3' cy='3' r='1.5'/></svg>\")",
+        "textureSize": "24px 24px",
+        "accentImage": "radial-gradient(60% 80% at 15% 20%, color-mix(in oklab, var(--color-primary) 22%, transparent), transparent 70%), radial-gradient(50% 70% at 85% 30%, color-mix(in oklab, var(--color-accent) 20%, transparent), transparent 70%)"
+      }
+    },
+    "variants": {
+      "dark": {
+        "motion": {
+          "durations": {
+            "instant": "0ms",
+            "fast": "var(--transition-fast)",
+            "normal": "var(--transition-normal)",
+            "slow": "var(--transition-slow)",
+            "dramatic": "600ms"
+          },
+          "easings": {
+            "linear": "linear",
+            "standard": "var(--transition-timing)",
+            "emphasized": "cubic-bezier(0.2, 0, 0, 1)",
+            "spring": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+          }
+        },
+        "iconography": {
+          "family": "lucide",
+          "strokeWidth": "1.75",
+          "defaultSize": "16px"
+        },
+        "elevation": {
+          "cardElevation": "var(--shadow-sm)",
+          "popoverElevation": "var(--shadow-main)",
+          "dialogElevation": "var(--shadow-lg)",
+          "toastElevation": "var(--shadow-main)"
+        },
+        "geometry": {
+          "radiusContainer": "var(--radius-md)",
+          "radiusInteractive": "var(--radius-md)",
+          "radiusPill": "var(--radius-full)",
+          "borderHairline": "1px",
+          "borderStandard": "var(--border-width)",
+          "borderHeavy": "var(--border-width-thick)"
+        },
+        "colors": {
+          "primary": "#14b8a6",
+          "primary-hover": "#2dd4bf",
+          "primary-foreground": "#042f2e",
+          "secondary": "#1e293b",
+          "secondary-hover": "#334155",
+          "secondary-foreground": "#f1f5f9",
+          "accent": "#d4b44a",
+          "accent-foreground": "#0f172a",
+          "muted": "#1e293b",
+          "muted-foreground": "#94a3b8",
+          "background": "#0f172a",
+          "foreground": "#f8fafc",
+          "card": "#1e293b",
+          "card-foreground": "#f8fafc",
+          "surface": "#1e293b",
+          "border": "#334155",
+          "input": "#334155",
+          "ring": "#14b8a6",
+          "tertiary": "#c9a227",
+          "tertiary-hover": "#d4b44a",
+          "tertiary-foreground": "#0f172a",
+          "tertiary-muted": "rgba(201, 162, 39, 0.15)",
+          "error": "#f87171",
+          "error-foreground": "#000000",
+          "success": "#4ade80",
+          "success-foreground": "#000000",
+          "warning": "#fbbf24",
+          "warning-foreground": "#000000",
+          "info": "#38bdf8",
+          "info-foreground": "#000000",
+          "scrim": "rgba(0, 0, 0, 0.7)",
+          "series-1": "#1fa399",
+          "series-2": "#b9861a",
+          "series-3": "#5e8ac3",
+          "series-4": "#bb7178",
+          "series-5": "#85993c",
+          "series-6": "#a981b7",
+          "series-7": "#d3782f",
+          "series-8": "#767e95",
+          "diagram-ink": "#e2e8f0",
+          "diagram-label": "#cbd5e1",
+          "diagram-guide": "#7d8aa0",
+          "diagram-axis": "#94a3b8",
+          "diagram-grid": "#334155",
+          "diagram-highlight": "#c3ae41",
+          "diagram-fill": "#14b8a6"
+        },
+        "radii": {
+          "none": "0px",
+          "sm": "4px",
+          "md": "8px",
+          "lg": "12px",
+          "xl": "16px",
+          "full": "9999px"
+        },
+        "shadows": {
+          "main": "0 4px 14px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3)",
+          "sm": "0 1px 3px rgba(0, 0, 0, 0.3)",
+          "lg": "0 10px 15px rgba(0, 0, 0, 0.5)",
+          "inner": "inset 0 1px 2px rgba(0, 0, 0, 0.1)",
+          "none": "none",
+          "hover": "0 12px 40px rgba(0, 0, 0, 0.5)",
+          "active": "0 2px 8px rgba(0, 0, 0, 0.3)"
+        },
+        "typography": {
+          "border-width": "1px",
+          "border-width-thin": "1px",
+          "border-width-thick": "2px",
+          "icon-color": "#14b8a6",
+          "transition-fast": "150ms",
+          "transition-normal": "250ms",
+          "transition-slow": "400ms",
+          "transition-timing": "cubic-bezier(0.4, 0, 0.2, 1)",
+          "hover-scale": "1.02",
+          "hover-translate-y": "-2px",
+          "hover-translate-x": "0",
+          "active-scale": "0.98",
+          "active-translate-y": "0",
+          "focus-ring-width": "2px",
+          "focus-ring-offset": "2px",
+          "focus-ring-color": "#14b8a6"
+        }
+      }
+    }
+  },
+  "canvasTheme": {
+    "ground": "rgb(30, 41, 59)",
+    "surfaces": {
+      "muted": "rgb(30, 41, 59)",
+      "card": "rgb(30, 41, 59)",
+      "onPrimary": "rgb(4, 47, 46)"
+    },
+    "tones": {
+      "ink": "rgb(226, 232, 240)",
+      "label": "rgb(203, 213, 225)",
+      "guide": "rgb(125, 138, 160)",
+      "axis": "rgb(148, 163, 184)",
+      "grid": "rgb(51, 65, 85)",
+      "highlight": "rgb(195, 174, 65)",
+      "fill": "rgb(20, 184, 166)",
+      "series-1": "rgb(31, 163, 153)",
+      "series-2": "rgb(185, 134, 26)",
+      "series-3": "rgb(94, 138, 195)",
+      "series-4": "rgb(187, 113, 120)",
+      "series-5": "rgb(133, 153, 60)",
+      "series-6": "rgb(169, 129, 183)",
+      "series-7": "rgb(211, 120, 47)",
+      "series-8": "rgb(118, 126, 149)",
+      "primary": "rgb(20, 184, 166)",
+      "accent": "rgb(212, 180, 74)",
+      "success": "rgb(74, 222, 128)",
+      "warning": "rgb(251, 191, 36)",
+      "error": "rgb(248, 113, 113)",
+      "info": "rgb(56, 189, 248)",
+      "muted": "rgb(148, 163, 184)"
+    },
+    "series": [
+      "rgb(31, 163, 153)",
+      "rgb(185, 134, 26)",
+      "rgb(94, 138, 195)",
+      "rgb(187, 113, 120)",
+      "rgb(133, 153, 60)",
+      "rgb(169, 129, 183)",
+      "rgb(211, 120, 47)",
+      "rgb(118, 126, 149)"
+    ],
+    "strokes": {
+      "thin": 0.75,
+      "normal": 1.5,
+      "bold": 2.25
+    },
+    "lineCap": "round",
+    "lineJoin": "round",
+    "dash": [
+      5,
+      4
+    ],
+    "dot": [
+      1,
+      4
+    ],
+    "fillStyle": "tint",
+    "fillOpacity": 0.14,
+    "roughness": 0,
+    "glow": 0,
+    "shadow": null,
+    "marker": "open",
+    "faces": {
+      "body": "\"Inter\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+      "display": "\"Crimson Pro\", Georgia, serif",
+      "mono": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, monospace"
+    },
+    "label": {
+      "font": "display",
+      "size": "sm",
+      "weight": "500",
+      "uppercase": false
+    },
+    "text": {
+      "xs": 12,
+      "sm": 14,
+      "base": 16,
+      "lg": 20,
+      "xl": 24,
+      "2xl": 32
+    },
+    "corner": 6,
+    "motion": {
+      "enabled": true,
+      "fastMs": 150,
+      "normalMs": 250,
+      "slowMs": 400,
+      "easing": "cubic-bezier(0.4, 0, 0.2, 1)"
+    },
+    "scene": {
+      "roughness": 0.7,
+      "metalness": 0.1,
+      "flat": false,
+      "outline": 0,
+      "ambient": 0.6,
+      "key": 0.9,
+      "keyColor": "rgb(255, 246, 224)",
+      "fog": 0.05
+    }
+  }
+}

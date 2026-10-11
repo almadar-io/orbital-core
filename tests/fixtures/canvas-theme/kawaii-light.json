@@ -1,0 +1,683 @@
+{
+  "theme": "kawaii",
+  "mode": "light",
+  "preset": {
+    "name": "kawaii",
+    "displayName": "Kawaii",
+    "tokens": {
+      "density": {
+        "spacing": {
+          "space0": "0px",
+          "space1": "4px",
+          "space2": "8px",
+          "space3": "12px",
+          "space4": "16px",
+          "space5": "20px",
+          "space6": "24px",
+          "space7": "28px",
+          "space8": "32px",
+          "space9": "36px",
+          "space10": "40px",
+          "space11": "44px",
+          "space12": "48px"
+        },
+        "buttonHeightSm": "30px",
+        "buttonHeightMd": "40px",
+        "buttonHeightLg": "48px",
+        "inputHeightSm": "30px",
+        "inputHeightMd": "40px",
+        "inputHeightLg": "48px",
+        "rowHeightCompact": "32px",
+        "rowHeightNormal": "40px",
+        "rowHeightSpacious": "48px",
+        "cardPaddingSm": "12px",
+        "cardPaddingMd": "18px",
+        "cardPaddingLg": "24px",
+        "dialogPadding": "24px",
+        "sectionGap": "32px"
+      },
+      "typeScale": {
+        "displayFamily": "\"M PLUS Rounded 1c\", \"Baloo 2\", sans-serif",
+        "bodyFamily": "var(--font-family)",
+        "monoFamily": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        "headingWeight": "800",
+        "headingTransform": "none",
+        "headingTracking": "0.01em",
+        "headingStyle": "normal",
+        "headingShadow": "none",
+        "fontImport": "https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700;800&family=Nunito:wght@400;600;700&display=swap",
+        "scale": {
+          "xs": {
+            "size": "12px",
+            "lineHeight": "16px"
+          },
+          "sm": {
+            "size": "14px",
+            "lineHeight": "20px"
+          },
+          "base": {
+            "size": "16px",
+            "lineHeight": "24px"
+          },
+          "lg": {
+            "size": "18px",
+            "lineHeight": "28px"
+          },
+          "xl": {
+            "size": "20px",
+            "lineHeight": "28px"
+          },
+          "2xl": {
+            "size": "24px",
+            "lineHeight": "32px"
+          },
+          "3xl": {
+            "size": "30px",
+            "lineHeight": "36px"
+          },
+          "4xl": {
+            "size": "36px",
+            "lineHeight": "40px"
+          },
+          "display-1": {
+            "size": "48px",
+            "lineHeight": "52px"
+          },
+          "display-2": {
+            "size": "60px",
+            "lineHeight": "64px"
+          }
+        },
+        "intents": {
+          "headingMajor": {
+            "slot": "display",
+            "size": "2xl",
+            "weight": "bold"
+          },
+          "headingMinor": {
+            "slot": "display",
+            "size": "lg",
+            "weight": "bold"
+          },
+          "bodyEmphasis": {
+            "slot": "body",
+            "size": "base",
+            "weight": "medium"
+          },
+          "bodyDefault": {
+            "slot": "body",
+            "size": "sm",
+            "weight": "normal"
+          },
+          "bodyQuiet": {
+            "slot": "body",
+            "size": "sm",
+            "weight": "normal"
+          },
+          "caption": {
+            "slot": "body",
+            "size": "xs",
+            "weight": "normal"
+          },
+          "numeric": {
+            "slot": "mono",
+            "size": "sm",
+            "weight": "medium"
+          }
+        }
+      },
+      "motion": {
+        "durations": {
+          "instant": "0ms",
+          "fast": "var(--transition-fast)",
+          "normal": "var(--transition-normal)",
+          "slow": "var(--transition-slow)",
+          "dramatic": "600ms"
+        },
+        "easings": {
+          "linear": "linear",
+          "standard": "var(--transition-timing)",
+          "emphasized": "cubic-bezier(0.34, 1.56, 0.64, 1)",
+          "spring": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+        },
+        "shapes": {
+          "modalEnter": "scale(0.8)",
+          "modalExit": "scale(0.8)",
+          "pageEnter": "translateY(16px)",
+          "popoverEnter": "scale(0.85)",
+          "popoverExit": "scale(0.85)",
+          "toastEnter": "translateY(24px) scale(0.9)",
+          "toastExit": "translateY(24px) scale(0.9)"
+        }
+      },
+      "iconography": {
+        "family": "phosphor-fill",
+        "strokeWidth": "1.5",
+        "defaultSize": "20px"
+      },
+      "elevation": {
+        "cardElevation": "var(--shadow-sm)",
+        "popoverElevation": "var(--shadow-main)",
+        "dialogElevation": "var(--shadow-lg)",
+        "toastElevation": "var(--shadow-main)",
+        "interactiveElevation": "var(--shadow-sm)",
+        "pressedElevation": "var(--shadow-active)"
+      },
+      "geometry": {
+        "radiusContainer": "var(--radius-lg)",
+        "radiusInteractive": "var(--radius-full)",
+        "radiusPill": "var(--radius-full)",
+        "cornerShape": "round",
+        "cornerShapePill": "round",
+        "borderStyle": "solid",
+        "borderStyleInteractive": "solid",
+        "borderHairline": "1px",
+        "borderStandard": "var(--border-width)",
+        "borderHeavy": "var(--border-width-thick)"
+      },
+      "surface": {
+        "backdrop": "none",
+        "cardImage": "none",
+        "pageImage": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80' viewBox='0 0 80 80'><circle cx='14' cy='16' r='4' fill='%23ff7eb6' fill-opacity='0.22'/><circle cx='58' cy='52' r='3' fill='%23ff7eb6' fill-opacity='0.22'/><polygon points='56,10 58.4,16 65,16.6 60,21 61.6,27.4 56,24 50.4,27.4 52,21 47,16.6 53.6,16' fill='%23a98bff' fill-opacity='0.25'/><polygon points='20,56 21.6,60 26,60.4 22.6,63.4 23.8,67.6 20,65.2 16.2,67.6 17.4,63.4 14,60.4 18.4,60' fill='%23a98bff' fill-opacity='0.25'/></svg>\")",
+        "pageImageSize": "80px 80px"
+      },
+      "radii": {
+        "none": "0px",
+        "sm": "14px",
+        "md": "20px",
+        "lg": "28px",
+        "xl": "36px",
+        "full": "9999px"
+      },
+      "colors": {
+        "primary": "#c2457f",
+        "primary-hover": "#a93569",
+        "primary-foreground": "#ffffff",
+        "secondary": "#d9c7ff",
+        "secondary-hover": "#cbb5fa",
+        "secondary-foreground": "#3a2366",
+        "accent": "#247a61",
+        "accent-foreground": "#ffffff",
+        "muted": "#ffe6f1",
+        "muted-foreground": "#7a4a6a",
+        "background": "#fff5fa",
+        "foreground": "#4a2c4f",
+        "card": "#ffffff",
+        "card-foreground": "#4a2c4f",
+        "surface": "#ffeaf4",
+        "border": "#ffc2dd",
+        "input": "#e89ac0",
+        "ring": "#5b8cf0",
+        "table-header": "#ffe6f1",
+        "table-border": "#ffc2dd",
+        "table-row-hover": "#fff0f7",
+        "surface-hover": "#ffe0ee",
+        "border-hover": "#c2457f",
+        "placeholder": "#86607d",
+        "error": "#c62a47",
+        "error-foreground": "#ffffff",
+        "success": "#12733f",
+        "success-foreground": "#ffffff",
+        "warning": "#e9a72b",
+        "warning-foreground": "#1a1200",
+        "info": "#1f5fbf",
+        "info-foreground": "#ffffff",
+        "scrim": "rgba(0, 0, 0, 0.6)",
+        "series-1": "#e76183",
+        "series-2": "#7a52d6",
+        "series-3": "#1f8f8a",
+        "series-4": "#d9701f",
+        "series-5": "#3f7fd0",
+        "series-6": "#51946e",
+        "series-7": "#aa4db1",
+        "series-8": "#a8761f",
+        "diagram-ink": "#4a2c4f",
+        "diagram-label": "#7a4a6a",
+        "diagram-guide": "#a06a8f",
+        "diagram-axis": "#7a4a6a",
+        "diagram-grid": "#ffc2dd",
+        "diagram-highlight": "#c2457f",
+        "diagram-fill": "#ffd9ec"
+      },
+      "shadows": {
+        "main": "0 6px 16px -2px rgba(255,110,170,0.30)",
+        "sm": "0 3px 8px -1px rgba(255,110,170,0.25)",
+        "lg": "0 14px 32px -4px rgba(169,139,255,0.35)",
+        "inner": "inset 0 2px 4px rgba(255,110,170,0.18)",
+        "none": "none",
+        "hover": "0 8px 20px -2px rgba(255,110,170,0.40)",
+        "active": "0 1px 3px rgba(255,110,170,0.25)"
+      },
+      "typography": {
+        "border-width": "3px",
+        "border-width-thin": "2px",
+        "border-width-thick": "4px",
+        "font-family": "\"Nunito\", \"Hiragino Maru Gothic ProN\", sans-serif",
+        "font-weight-normal": "400",
+        "font-weight-medium": "500",
+        "font-weight-bold": "700",
+        "letter-spacing": "0em",
+        "line-height": "1.6",
+        "icon-color": "#c2457f",
+        "transition-fast": "150ms",
+        "transition-normal": "280ms",
+        "transition-slow": "420ms",
+        "transition-timing": "cubic-bezier(0.34, 1.56, 0.64, 1)",
+        "hover-scale": "1.05",
+        "hover-translate-y": "-2px",
+        "hover-translate-x": "0px",
+        "active-scale": "0.94",
+        "active-translate-y": "0px",
+        "focus-ring-width": "2px",
+        "focus-ring-offset": "2px",
+        "focus-ring-color": "#5b8cf0"
+      },
+      "diagram": {
+        "strokeThin": "2",
+        "strokeNormal": "3",
+        "strokeBold": "5",
+        "lineCap": "round",
+        "lineJoin": "round",
+        "dash": "3 6",
+        "dot": "0.1 7",
+        "fillStyle": "tint",
+        "fillOpacity": "0.3",
+        "roughness": "0",
+        "glow": "0",
+        "shadow": "0 3px 0 rgba(194,69,127,0.25)",
+        "marker": "dot",
+        "labelFont": "body",
+        "labelSize": "sm",
+        "labelWeight": "600",
+        "labelCase": "none",
+        "corner": "12px"
+      },
+      "scene": {
+        "materialRoughness": "0.7",
+        "materialMetalness": "0",
+        "materialFlat": "0",
+        "materialOutline": "2",
+        "lightAmbient": "0.75",
+        "lightKey": "0.8",
+        "lightKeyColor": "#fff0f8",
+        "fog": "0.1"
+      }
+    },
+    "variants": {
+      "dark": {
+        "density": {
+          "spacing": {
+            "space0": "0px",
+            "space1": "4px",
+            "space2": "8px",
+            "space3": "12px",
+            "space4": "16px",
+            "space5": "20px",
+            "space6": "24px",
+            "space7": "28px",
+            "space8": "32px",
+            "space9": "36px",
+            "space10": "40px",
+            "space11": "44px",
+            "space12": "48px"
+          },
+          "buttonHeightSm": "30px",
+          "buttonHeightMd": "40px",
+          "buttonHeightLg": "48px",
+          "inputHeightSm": "30px",
+          "inputHeightMd": "40px",
+          "inputHeightLg": "48px",
+          "rowHeightCompact": "32px",
+          "rowHeightNormal": "40px",
+          "rowHeightSpacious": "48px",
+          "cardPaddingSm": "12px",
+          "cardPaddingMd": "18px",
+          "cardPaddingLg": "24px",
+          "dialogPadding": "24px",
+          "sectionGap": "32px"
+        },
+        "typeScale": {
+          "displayFamily": "\"M PLUS Rounded 1c\", \"Baloo 2\", sans-serif",
+          "bodyFamily": "var(--font-family)",
+          "monoFamily": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+          "headingWeight": "800",
+          "headingTransform": "none",
+          "headingTracking": "0.01em",
+          "headingStyle": "normal",
+          "headingShadow": "none",
+          "fontImport": "https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700;800&family=Nunito:wght@400;600;700&display=swap",
+          "scale": {
+            "xs": {
+              "size": "12px",
+              "lineHeight": "16px"
+            },
+            "sm": {
+              "size": "14px",
+              "lineHeight": "20px"
+            },
+            "base": {
+              "size": "16px",
+              "lineHeight": "24px"
+            },
+            "lg": {
+              "size": "18px",
+              "lineHeight": "28px"
+            },
+            "xl": {
+              "size": "20px",
+              "lineHeight": "28px"
+            },
+            "2xl": {
+              "size": "24px",
+              "lineHeight": "32px"
+            },
+            "3xl": {
+              "size": "30px",
+              "lineHeight": "36px"
+            },
+            "4xl": {
+              "size": "36px",
+              "lineHeight": "40px"
+            },
+            "display-1": {
+              "size": "48px",
+              "lineHeight": "52px"
+            },
+            "display-2": {
+              "size": "60px",
+              "lineHeight": "64px"
+            }
+          },
+          "intents": {
+            "headingMajor": {
+              "slot": "display",
+              "size": "2xl",
+              "weight": "bold"
+            },
+            "headingMinor": {
+              "slot": "display",
+              "size": "lg",
+              "weight": "bold"
+            },
+            "bodyEmphasis": {
+              "slot": "body",
+              "size": "base",
+              "weight": "medium"
+            },
+            "bodyDefault": {
+              "slot": "body",
+              "size": "sm",
+              "weight": "normal"
+            },
+            "bodyQuiet": {
+              "slot": "body",
+              "size": "sm",
+              "weight": "normal"
+            },
+            "caption": {
+              "slot": "body",
+              "size": "xs",
+              "weight": "normal"
+            },
+            "numeric": {
+              "slot": "mono",
+              "size": "sm",
+              "weight": "medium"
+            }
+          }
+        },
+        "motion": {
+          "durations": {
+            "instant": "0ms",
+            "fast": "var(--transition-fast)",
+            "normal": "var(--transition-normal)",
+            "slow": "var(--transition-slow)",
+            "dramatic": "600ms"
+          },
+          "easings": {
+            "linear": "linear",
+            "standard": "var(--transition-timing)",
+            "emphasized": "cubic-bezier(0.34, 1.56, 0.64, 1)",
+            "spring": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+          },
+          "shapes": {
+            "modalEnter": "scale(0.8)",
+            "modalExit": "scale(0.8)",
+            "pageEnter": "translateY(16px)",
+            "popoverEnter": "scale(0.85)",
+            "popoverExit": "scale(0.85)",
+            "toastEnter": "translateY(24px) scale(0.9)",
+            "toastExit": "translateY(24px) scale(0.9)"
+          }
+        },
+        "iconography": {
+          "family": "phosphor-fill",
+          "strokeWidth": "1.5",
+          "defaultSize": "20px"
+        },
+        "elevation": {
+          "cardElevation": "var(--shadow-sm)",
+          "popoverElevation": "var(--shadow-main)",
+          "dialogElevation": "var(--shadow-lg)",
+          "toastElevation": "var(--shadow-main)",
+          "interactiveElevation": "var(--shadow-sm)",
+          "pressedElevation": "var(--shadow-active)"
+        },
+        "geometry": {
+          "radiusContainer": "var(--radius-lg)",
+          "radiusInteractive": "var(--radius-full)",
+          "radiusPill": "var(--radius-full)",
+          "cornerShape": "round",
+          "cornerShapePill": "round",
+          "borderStyle": "solid",
+          "borderStyleInteractive": "solid",
+          "borderHairline": "1px",
+          "borderStandard": "var(--border-width)",
+          "borderHeavy": "var(--border-width-thick)"
+        },
+        "surface": {
+          "backdrop": "none",
+          "cardImage": "none",
+          "pageImage": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80' viewBox='0 0 80 80'><circle cx='14' cy='16' r='4' fill='%23ff9ccc' fill-opacity='0.22'/><circle cx='58' cy='52' r='3' fill='%23ff9ccc' fill-opacity='0.22'/><polygon points='56,10 58.4,16 65,16.6 60,21 61.6,27.4 56,24 50.4,27.4 52,21 47,16.6 53.6,16' fill='%23b9a2ff' fill-opacity='0.25'/><polygon points='20,56 21.6,60 26,60.4 22.6,63.4 23.8,67.6 20,65.2 16.2,67.6 17.4,63.4 14,60.4 18.4,60' fill='%23b9a2ff' fill-opacity='0.25'/></svg>\")",
+          "pageImageSize": "80px 80px"
+        },
+        "radii": {
+          "none": "0px",
+          "sm": "14px",
+          "md": "20px",
+          "lg": "28px",
+          "xl": "36px",
+          "full": "9999px"
+        },
+        "colors": {
+          "primary": "#ff9ccc",
+          "primary-hover": "#ffb3d8",
+          "primary-foreground": "#3a0f26",
+          "secondary": "#b9a2ff",
+          "secondary-hover": "#ccb9ff",
+          "secondary-foreground": "#1d0f44",
+          "accent": "#8fe8c8",
+          "accent-foreground": "#06261b",
+          "muted": "#3b2748",
+          "muted-foreground": "#dcc3e4",
+          "background": "#2a1b33",
+          "foreground": "#ffe9f4",
+          "card": "#35233f",
+          "card-foreground": "#ffe9f4",
+          "surface": "#30203a",
+          "border": "#6b4a7d",
+          "input": "#c79ad8",
+          "ring": "#8fb0ff",
+          "table-header": "#30203a",
+          "table-border": "#6b4a7d",
+          "table-row-hover": "#3a2746",
+          "surface-hover": "#44304f",
+          "border-hover": "#ff9ccc",
+          "placeholder": "#b596b5",
+          "error": "#ff8a9a",
+          "error-foreground": "#1a0505",
+          "success": "#4ede93",
+          "success-foreground": "#04210f",
+          "warning": "#ffc24c",
+          "warning-foreground": "#1a1200",
+          "info": "#8ab4ff",
+          "info-foreground": "#071b3d",
+          "scrim": "rgba(0, 0, 0, 0.7)",
+          "series-1": "#e964aa",
+          "series-2": "#b79cff",
+          "series-3": "#5fd6c0",
+          "series-4": "#f9a363",
+          "series-5": "#7fb4ff",
+          "series-6": "#a8db76",
+          "series-7": "#e07de8",
+          "series-8": "#efdd6d",
+          "diagram-ink": "#ffe9f4",
+          "diagram-label": "#e0b8d4",
+          "diagram-guide": "#b88aab",
+          "diagram-axis": "#e0b8d4",
+          "diagram-grid": "rgba(255,194,221,0.18)",
+          "diagram-highlight": "#fb9dd5",
+          "diagram-fill": "#4d3358"
+        },
+        "shadows": {
+          "main": "0 6px 16px -2px rgba(255,156,204,0.22)",
+          "sm": "0 3px 8px -1px rgba(0,0,0,0.4)",
+          "lg": "0 14px 32px -4px rgba(185,162,255,0.25)",
+          "inner": "inset 0 2px 4px rgba(0,0,0,0.35)",
+          "none": "none",
+          "hover": "0 8px 20px -2px rgba(255,156,204,0.32)",
+          "active": "0 1px 3px rgba(0,0,0,0.4)"
+        },
+        "typography": {
+          "border-width": "3px",
+          "border-width-thin": "2px",
+          "border-width-thick": "4px",
+          "font-family": "\"Nunito\", \"Hiragino Maru Gothic ProN\", sans-serif",
+          "font-weight-normal": "400",
+          "font-weight-medium": "500",
+          "font-weight-bold": "700",
+          "letter-spacing": "0em",
+          "line-height": "1.6",
+          "icon-color": "#ff9ccc",
+          "transition-fast": "150ms",
+          "transition-normal": "280ms",
+          "transition-slow": "420ms",
+          "transition-timing": "cubic-bezier(0.34, 1.56, 0.64, 1)",
+          "hover-scale": "1.05",
+          "hover-translate-y": "-2px",
+          "hover-translate-x": "0px",
+          "active-scale": "0.94",
+          "active-translate-y": "0px",
+          "focus-ring-width": "2px",
+          "focus-ring-offset": "2px",
+          "focus-ring-color": "#8fb0ff"
+        }
+      }
+    }
+  },
+  "canvasTheme": {
+    "ground": "rgb(255, 255, 255)",
+    "surfaces": {
+      "muted": "rgb(255, 230, 241)",
+      "card": "rgb(255, 255, 255)",
+      "onPrimary": "rgb(255, 255, 255)"
+    },
+    "tones": {
+      "ink": "rgb(74, 44, 79)",
+      "label": "rgb(122, 74, 106)",
+      "guide": "rgb(160, 106, 143)",
+      "axis": "rgb(122, 74, 106)",
+      "grid": "rgb(255, 194, 221)",
+      "highlight": "rgb(194, 69, 127)",
+      "fill": "rgb(255, 217, 236)",
+      "series-1": "rgb(231, 97, 131)",
+      "series-2": "rgb(122, 82, 214)",
+      "series-3": "rgb(31, 143, 138)",
+      "series-4": "rgb(217, 112, 31)",
+      "series-5": "rgb(63, 127, 208)",
+      "series-6": "rgb(81, 148, 110)",
+      "series-7": "rgb(170, 77, 177)",
+      "series-8": "rgb(168, 118, 31)",
+      "primary": "rgb(194, 69, 127)",
+      "accent": "rgb(36, 122, 97)",
+      "success": "rgb(18, 115, 63)",
+      "warning": "rgb(233, 167, 43)",
+      "error": "rgb(198, 42, 71)",
+      "info": "rgb(31, 95, 191)",
+      "muted": "rgb(122, 74, 106)"
+    },
+    "series": [
+      "rgb(231, 97, 131)",
+      "rgb(122, 82, 214)",
+      "rgb(31, 143, 138)",
+      "rgb(217, 112, 31)",
+      "rgb(63, 127, 208)",
+      "rgb(81, 148, 110)",
+      "rgb(170, 77, 177)",
+      "rgb(168, 118, 31)"
+    ],
+    "strokes": {
+      "thin": 2,
+      "normal": 3,
+      "bold": 5
+    },
+    "lineCap": "round",
+    "lineJoin": "round",
+    "dash": [
+      3,
+      6
+    ],
+    "dot": [
+      0.1,
+      7
+    ],
+    "fillStyle": "tint",
+    "fillOpacity": 0.3,
+    "roughness": 0,
+    "glow": 0,
+    "shadow": {
+      "offsetX": 0,
+      "offsetY": 3,
+      "blur": 0,
+      "color": "rgba(194, 69, 127, 0.25)"
+    },
+    "marker": "dot",
+    "faces": {
+      "body": "\"Nunito\", \"Hiragino Maru Gothic ProN\", sans-serif",
+      "display": "\"M PLUS Rounded 1c\", \"Baloo 2\", sans-serif",
+      "mono": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+    },
+    "label": {
+      "font": "body",
+      "size": "sm",
+      "weight": "600",
+      "uppercase": false
+    },
+    "text": {
+      "xs": 12,
+      "sm": 14,
+      "base": 16,
+      "lg": 18,
+      "xl": 20,
+      "2xl": 24
+    },
+    "corner": 12,
+    "motion": {
+      "enabled": true,
+      "fastMs": 150,
+      "normalMs": 280,
+      "slowMs": 420,
+      "easing": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+    },
+    "scene": {
+      "roughness": 0.7,
+      "metalness": 0,
+      "flat": false,
+      "outline": 2,
+      "ambient": 0.75,
+      "key": 0.8,
+      "keyColor": "rgb(255, 240, 248)",
+      "fog": 0.1
+    }
+  }
+}

@@ -1,0 +1,678 @@
+{
+  "theme": "arabesque",
+  "mode": "dark",
+  "preset": {
+    "name": "arabesque",
+    "displayName": "Arabesque",
+    "tokens": {
+      "density": {
+        "spacing": {
+          "space0": "0px",
+          "space1": "4px",
+          "space2": "8px",
+          "space3": "12px",
+          "space4": "16px",
+          "space5": "20px",
+          "space6": "24px",
+          "space7": "28px",
+          "space8": "32px",
+          "space9": "36px",
+          "space10": "40px",
+          "space11": "44px",
+          "space12": "48px"
+        },
+        "buttonHeightSm": "30px",
+        "buttonHeightMd": "40px",
+        "buttonHeightLg": "48px",
+        "inputHeightSm": "30px",
+        "inputHeightMd": "40px",
+        "inputHeightLg": "48px",
+        "rowHeightCompact": "32px",
+        "rowHeightNormal": "40px",
+        "rowHeightSpacious": "48px",
+        "cardPaddingSm": "12px",
+        "cardPaddingMd": "18px",
+        "cardPaddingLg": "24px",
+        "dialogPadding": "24px",
+        "sectionGap": "32px"
+      },
+      "typeScale": {
+        "displayFamily": "\"Reem Kufi\", \"Amiri\", \"Noto Naskh Arabic\", serif",
+        "bodyFamily": "var(--font-family)",
+        "monoFamily": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        "headingWeight": "600",
+        "headingTransform": "none",
+        "headingTracking": "0.02em",
+        "headingStyle": "normal",
+        "headingShadow": "none",
+        "fontImport": "https://fonts.googleapis.com/css2?family=Reem+Kufi:wght@400;500;600;700&family=Amiri:wght@400;700&family=Cairo:wght@300;400;500;600;700&family=Noto+Naskh+Arabic:wght@400;500;700&display=swap",
+        "scale": {
+          "xs": {
+            "size": "12px",
+            "lineHeight": "16px"
+          },
+          "sm": {
+            "size": "14px",
+            "lineHeight": "20px"
+          },
+          "base": {
+            "size": "16px",
+            "lineHeight": "24px"
+          },
+          "lg": {
+            "size": "18px",
+            "lineHeight": "28px"
+          },
+          "xl": {
+            "size": "20px",
+            "lineHeight": "28px"
+          },
+          "2xl": {
+            "size": "24px",
+            "lineHeight": "32px"
+          },
+          "3xl": {
+            "size": "30px",
+            "lineHeight": "36px"
+          },
+          "4xl": {
+            "size": "36px",
+            "lineHeight": "40px"
+          },
+          "display-1": {
+            "size": "48px",
+            "lineHeight": "52px"
+          },
+          "display-2": {
+            "size": "60px",
+            "lineHeight": "64px"
+          }
+        },
+        "intents": {
+          "headingMajor": {
+            "slot": "display",
+            "size": "2xl",
+            "weight": "bold"
+          },
+          "headingMinor": {
+            "slot": "display",
+            "size": "lg",
+            "weight": "bold"
+          },
+          "bodyEmphasis": {
+            "slot": "body",
+            "size": "base",
+            "weight": "medium"
+          },
+          "bodyDefault": {
+            "slot": "body",
+            "size": "sm",
+            "weight": "normal"
+          },
+          "bodyQuiet": {
+            "slot": "body",
+            "size": "sm",
+            "weight": "normal"
+          },
+          "caption": {
+            "slot": "body",
+            "size": "xs",
+            "weight": "normal"
+          },
+          "numeric": {
+            "slot": "mono",
+            "size": "sm",
+            "weight": "medium"
+          }
+        }
+      },
+      "motion": {
+        "durations": {
+          "instant": "0ms",
+          "fast": "var(--transition-fast)",
+          "normal": "var(--transition-normal)",
+          "slow": "var(--transition-slow)",
+          "dramatic": "700ms"
+        },
+        "easings": {
+          "linear": "linear",
+          "standard": "var(--transition-timing)",
+          "emphasized": "cubic-bezier(0.22, 0.61, 0.36, 1)",
+          "spring": "cubic-bezier(0.25, 0.8, 0.25, 1)"
+        },
+        "shapes": {
+          "modalEnter": "scale(0.96)",
+          "modalExit": "scale(0.96)",
+          "pageEnter": "translateY(8px)",
+          "popoverEnter": "scale(0.97)",
+          "popoverExit": "scale(0.97)",
+          "toastEnter": "translateY(-12px)",
+          "toastExit": "translateY(-12px)"
+        }
+      },
+      "iconography": {
+        "family": "phosphor-duotone",
+        "strokeWidth": "1.5",
+        "defaultSize": "18px"
+      },
+      "elevation": {
+        "cardElevation": "var(--shadow-sm)",
+        "popoverElevation": "var(--shadow-main)",
+        "dialogElevation": "var(--shadow-lg)",
+        "toastElevation": "var(--shadow-main)",
+        "interactiveElevation": "var(--shadow-sm)",
+        "pressedElevation": "var(--shadow-active)"
+      },
+      "geometry": {
+        "radiusContainer": "var(--radius-md)",
+        "radiusInteractive": "var(--radius-sm)",
+        "radiusPill": "var(--radius-full)",
+        "cornerShape": "scoop",
+        "cornerShapePill": "round",
+        "borderStyle": "double",
+        "borderStyleInteractive": "double",
+        "borderHairline": "1px",
+        "borderStandard": "var(--border-width)",
+        "borderHeavy": "var(--border-width-thick)"
+      },
+      "surface": {
+        "backdrop": "none",
+        "cardImage": "none",
+        "pageImage": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'><g fill='none' stroke='%23b8892b' stroke-opacity='0.14' stroke-width='1'><rect x='14' y='14' width='36' height='36'/><rect x='14' y='14' width='36' height='36' transform='rotate(45 32 32)'/><circle cx='32' cy='32' r='12'/><path d='M0 0L14 14M64 0L50 14M0 64L14 50M64 64L50 50'/><circle cx='0' cy='0' r='6'/><circle cx='64' cy='0' r='6'/><circle cx='0' cy='64' r='6'/><circle cx='64' cy='64' r='6'/></g></svg>\")",
+        "pageImageSize": "64px 64px"
+      },
+      "radii": {
+        "none": "0px",
+        "sm": "4px",
+        "md": "8px",
+        "lg": "12px",
+        "xl": "16px",
+        "full": "9999px"
+      },
+      "colors": {
+        "primary": "#1f3f8f",
+        "primary-hover": "#183275",
+        "primary-foreground": "#fff8e7",
+        "secondary": "#247a74",
+        "secondary-hover": "#1d6964",
+        "secondary-foreground": "#fff8e7",
+        "accent": "#7d5a0c",
+        "accent-foreground": "#fff8e7",
+        "muted": "#ebe0c6",
+        "muted-foreground": "#5c4a22",
+        "background": "#f8f1e0",
+        "foreground": "#1b2a4a",
+        "card": "#fffaf0",
+        "card-foreground": "#1b2a4a",
+        "surface": "#f1e7cf",
+        "border": "#b8892b",
+        "input": "#8a6410",
+        "ring": "#1f3f8f",
+        "table-header": "#ebe0c6",
+        "table-border": "#b8892b",
+        "table-row-hover": "#f4ead2",
+        "surface-hover": "#ede2c8",
+        "border-hover": "#1f3f8f",
+        "placeholder": "#75653f",
+        "error": "#b3261e",
+        "error-foreground": "#ffffff",
+        "success": "#12733f",
+        "success-foreground": "#ffffff",
+        "warning": "#e9a72b",
+        "warning-foreground": "#1a1200",
+        "info": "#1f5fbf",
+        "info-foreground": "#ffffff",
+        "scrim": "rgba(0, 0, 0, 0.6)",
+        "series-1": "#1e3f90",
+        "series-2": "#247a74",
+        "series-3": "#9b8432",
+        "series-4": "#ab5221",
+        "series-5": "#537622",
+        "series-6": "#6b3a7a",
+        "series-7": "#a3365a",
+        "series-8": "#4a5568",
+        "diagram-ink": "#1b2a4a",
+        "diagram-label": "#1b2a4a",
+        "diagram-guide": "#8f8268",
+        "diagram-axis": "#7d5a0c",
+        "diagram-grid": "#e6d9b8",
+        "diagram-highlight": "#8a6410",
+        "diagram-fill": "#1f3f8f"
+      },
+      "shadows": {
+        "main": "0 4px 14px rgba(31,63,143,0.14)",
+        "sm": "0 1px 3px rgba(31,63,143,0.10)",
+        "lg": "0 12px 32px rgba(31,63,143,0.18)",
+        "inner": "inset 0 1px 3px rgba(31,63,143,0.12)",
+        "none": "none",
+        "hover": "0 6px 18px rgba(184,137,43,0.25)",
+        "active": "0 1px 2px rgba(31,63,143,0.15)"
+      },
+      "typography": {
+        "border-width": "3px",
+        "border-width-thin": "2px",
+        "border-width-thick": "4px",
+        "font-family": "\"Cairo\", \"Noto Naskh Arabic\", \"Segoe UI\", sans-serif",
+        "font-weight-normal": "400",
+        "font-weight-medium": "500",
+        "font-weight-bold": "700",
+        "letter-spacing": "0em",
+        "line-height": "1.6",
+        "icon-color": "#1f3f8f",
+        "transition-fast": "200ms",
+        "transition-normal": "350ms",
+        "transition-slow": "550ms",
+        "transition-timing": "cubic-bezier(0.4, 0, 0.2, 1)",
+        "hover-scale": "1",
+        "hover-translate-y": "0px",
+        "hover-translate-x": "0px",
+        "active-scale": "1",
+        "active-translate-y": "0px",
+        "focus-ring-width": "2px",
+        "focus-ring-offset": "2px",
+        "focus-ring-color": "#1f3f8f"
+      },
+      "diagram": {
+        "strokeThin": "1.5px",
+        "strokeNormal": "2.5px",
+        "strokeBold": "4px",
+        "lineCap": "round",
+        "lineJoin": "miter",
+        "dash": "8 3",
+        "dot": "1 3",
+        "fillStyle": "hatch",
+        "fillOpacity": "0.25",
+        "roughness": "0",
+        "glow": "0",
+        "shadow": "none",
+        "marker": "open",
+        "labelFont": "display",
+        "labelSize": "sm",
+        "labelWeight": "600",
+        "labelCase": "none",
+        "corner": "4px"
+      },
+      "scene": {
+        "materialRoughness": "0.5",
+        "materialMetalness": "0.4",
+        "materialFlat": "0",
+        "materialOutline": "0",
+        "lightAmbient": "0.5",
+        "lightKey": "1",
+        "lightKeyColor": "#ffe9b0",
+        "fog": "0.05"
+      }
+    },
+    "variants": {
+      "dark": {
+        "density": {
+          "spacing": {
+            "space0": "0px",
+            "space1": "4px",
+            "space2": "8px",
+            "space3": "12px",
+            "space4": "16px",
+            "space5": "20px",
+            "space6": "24px",
+            "space7": "28px",
+            "space8": "32px",
+            "space9": "36px",
+            "space10": "40px",
+            "space11": "44px",
+            "space12": "48px"
+          },
+          "buttonHeightSm": "30px",
+          "buttonHeightMd": "40px",
+          "buttonHeightLg": "48px",
+          "inputHeightSm": "30px",
+          "inputHeightMd": "40px",
+          "inputHeightLg": "48px",
+          "rowHeightCompact": "32px",
+          "rowHeightNormal": "40px",
+          "rowHeightSpacious": "48px",
+          "cardPaddingSm": "12px",
+          "cardPaddingMd": "18px",
+          "cardPaddingLg": "24px",
+          "dialogPadding": "24px",
+          "sectionGap": "32px"
+        },
+        "typeScale": {
+          "displayFamily": "\"Reem Kufi\", \"Amiri\", \"Noto Naskh Arabic\", serif",
+          "bodyFamily": "var(--font-family)",
+          "monoFamily": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+          "headingWeight": "600",
+          "headingTransform": "none",
+          "headingTracking": "0.02em",
+          "headingStyle": "normal",
+          "headingShadow": "none",
+          "fontImport": "https://fonts.googleapis.com/css2?family=Reem+Kufi:wght@400;500;600;700&family=Amiri:wght@400;700&family=Cairo:wght@300;400;500;600;700&family=Noto+Naskh+Arabic:wght@400;500;700&display=swap",
+          "scale": {
+            "xs": {
+              "size": "12px",
+              "lineHeight": "16px"
+            },
+            "sm": {
+              "size": "14px",
+              "lineHeight": "20px"
+            },
+            "base": {
+              "size": "16px",
+              "lineHeight": "24px"
+            },
+            "lg": {
+              "size": "18px",
+              "lineHeight": "28px"
+            },
+            "xl": {
+              "size": "20px",
+              "lineHeight": "28px"
+            },
+            "2xl": {
+              "size": "24px",
+              "lineHeight": "32px"
+            },
+            "3xl": {
+              "size": "30px",
+              "lineHeight": "36px"
+            },
+            "4xl": {
+              "size": "36px",
+              "lineHeight": "40px"
+            },
+            "display-1": {
+              "size": "48px",
+              "lineHeight": "52px"
+            },
+            "display-2": {
+              "size": "60px",
+              "lineHeight": "64px"
+            }
+          },
+          "intents": {
+            "headingMajor": {
+              "slot": "display",
+              "size": "2xl",
+              "weight": "bold"
+            },
+            "headingMinor": {
+              "slot": "display",
+              "size": "lg",
+              "weight": "bold"
+            },
+            "bodyEmphasis": {
+              "slot": "body",
+              "size": "base",
+              "weight": "medium"
+            },
+            "bodyDefault": {
+              "slot": "body",
+              "size": "sm",
+              "weight": "normal"
+            },
+            "bodyQuiet": {
+              "slot": "body",
+              "size": "sm",
+              "weight": "normal"
+            },
+            "caption": {
+              "slot": "body",
+              "size": "xs",
+              "weight": "normal"
+            },
+            "numeric": {
+              "slot": "mono",
+              "size": "sm",
+              "weight": "medium"
+            }
+          }
+        },
+        "motion": {
+          "durations": {
+            "instant": "0ms",
+            "fast": "var(--transition-fast)",
+            "normal": "var(--transition-normal)",
+            "slow": "var(--transition-slow)",
+            "dramatic": "700ms"
+          },
+          "easings": {
+            "linear": "linear",
+            "standard": "var(--transition-timing)",
+            "emphasized": "cubic-bezier(0.22, 0.61, 0.36, 1)",
+            "spring": "cubic-bezier(0.25, 0.8, 0.25, 1)"
+          },
+          "shapes": {
+            "modalEnter": "scale(0.96)",
+            "modalExit": "scale(0.96)",
+            "pageEnter": "translateY(8px)",
+            "popoverEnter": "scale(0.97)",
+            "popoverExit": "scale(0.97)",
+            "toastEnter": "translateY(-12px)",
+            "toastExit": "translateY(-12px)"
+          }
+        },
+        "iconography": {
+          "family": "phosphor-duotone",
+          "strokeWidth": "1.5",
+          "defaultSize": "18px"
+        },
+        "elevation": {
+          "cardElevation": "var(--shadow-sm)",
+          "popoverElevation": "var(--shadow-main)",
+          "dialogElevation": "var(--shadow-lg)",
+          "toastElevation": "var(--shadow-main)",
+          "interactiveElevation": "var(--shadow-sm)",
+          "pressedElevation": "var(--shadow-active)"
+        },
+        "geometry": {
+          "radiusContainer": "var(--radius-md)",
+          "radiusInteractive": "var(--radius-sm)",
+          "radiusPill": "var(--radius-full)",
+          "cornerShape": "scoop",
+          "cornerShapePill": "round",
+          "borderStyle": "double",
+          "borderStyleInteractive": "double",
+          "borderHairline": "1px",
+          "borderStandard": "var(--border-width)",
+          "borderHeavy": "var(--border-width-thick)"
+        },
+        "surface": {
+          "backdrop": "none",
+          "cardImage": "none",
+          "pageImage": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'><g fill='none' stroke='%23e0b64a' stroke-opacity='0.12' stroke-width='1'><rect x='14' y='14' width='36' height='36'/><rect x='14' y='14' width='36' height='36' transform='rotate(45 32 32)'/><circle cx='32' cy='32' r='12'/><path d='M0 0L14 14M64 0L50 14M0 64L14 50M64 64L50 50'/><circle cx='0' cy='0' r='6'/><circle cx='64' cy='0' r='6'/><circle cx='0' cy='64' r='6'/><circle cx='64' cy='64' r='6'/></g></svg>\")",
+          "pageImageSize": "64px 64px"
+        },
+        "radii": {
+          "none": "0px",
+          "sm": "4px",
+          "md": "8px",
+          "lg": "12px",
+          "xl": "16px",
+          "full": "9999px"
+        },
+        "colors": {
+          "primary": "#e0b64a",
+          "primary-hover": "#efc866",
+          "primary-foreground": "#1a1200",
+          "secondary": "#4fb3a9",
+          "secondary-hover": "#66c1b8",
+          "secondary-foreground": "#04201d",
+          "accent": "#8fb0ff",
+          "accent-foreground": "#0a1530",
+          "muted": "#1b2b50",
+          "muted-foreground": "#c5cde6",
+          "background": "#0e1a33",
+          "foreground": "#f3ead2",
+          "card": "#14244a",
+          "card-foreground": "#f3ead2",
+          "surface": "#122040",
+          "border": "#c9a13a",
+          "input": "#c9a13a",
+          "ring": "#4fb3a9",
+          "table-header": "#122040",
+          "table-border": "#c9a13a",
+          "table-row-hover": "#1a2c55",
+          "surface-hover": "#1f3262",
+          "border-hover": "#e0b64a",
+          "placeholder": "#98a3c6",
+          "error": "#ff8a80",
+          "error-foreground": "#1a0505",
+          "success": "#4ede93",
+          "success-foreground": "#04210f",
+          "warning": "#ffc24c",
+          "warning-foreground": "#1a1200",
+          "info": "#8ab4ff",
+          "info-foreground": "#071b3d",
+          "scrim": "rgba(0, 0, 0, 0.7)",
+          "series-1": "#6c8ad6",
+          "series-2": "#369b94",
+          "series-3": "#b28520",
+          "series-4": "#c06e5c",
+          "series-5": "#24a45f",
+          "series-6": "#ab7ab9",
+          "series-7": "#c8728e",
+          "series-8": "#838ca1",
+          "diagram-ink": "#f3ead2",
+          "diagram-label": "#e0d6b8",
+          "diagram-guide": "#9aa6c8",
+          "diagram-axis": "#b8a878",
+          "diagram-grid": "#26386a",
+          "diagram-highlight": "#c8b337",
+          "diagram-fill": "#8fb0ff"
+        },
+        "shadows": {
+          "main": "0 4px 14px rgba(0,0,0,0.45)",
+          "sm": "0 1px 3px rgba(0,0,0,0.4)",
+          "lg": "0 12px 32px rgba(0,0,0,0.55)",
+          "inner": "inset 0 1px 3px rgba(0,0,0,0.4)",
+          "none": "none",
+          "hover": "0 6px 18px rgba(224,182,74,0.22)",
+          "active": "0 1px 2px rgba(0,0,0,0.5)"
+        },
+        "typography": {
+          "border-width": "3px",
+          "border-width-thin": "2px",
+          "border-width-thick": "4px",
+          "font-family": "\"Cairo\", \"Noto Naskh Arabic\", \"Segoe UI\", sans-serif",
+          "font-weight-normal": "400",
+          "font-weight-medium": "500",
+          "font-weight-bold": "700",
+          "letter-spacing": "0em",
+          "line-height": "1.6",
+          "icon-color": "#e0b64a",
+          "transition-fast": "200ms",
+          "transition-normal": "350ms",
+          "transition-slow": "550ms",
+          "transition-timing": "cubic-bezier(0.4, 0, 0.2, 1)",
+          "hover-scale": "1",
+          "hover-translate-y": "0px",
+          "hover-translate-x": "0px",
+          "active-scale": "1",
+          "active-translate-y": "0px",
+          "focus-ring-width": "2px",
+          "focus-ring-offset": "2px",
+          "focus-ring-color": "#4fb3a9"
+        }
+      }
+    }
+  },
+  "canvasTheme": {
+    "ground": "rgb(20, 36, 74)",
+    "surfaces": {
+      "muted": "rgb(27, 43, 80)",
+      "card": "rgb(20, 36, 74)",
+      "onPrimary": "rgb(26, 18, 0)"
+    },
+    "tones": {
+      "ink": "rgb(243, 234, 210)",
+      "label": "rgb(224, 214, 184)",
+      "guide": "rgb(154, 166, 200)",
+      "axis": "rgb(184, 168, 120)",
+      "grid": "rgb(38, 56, 106)",
+      "highlight": "rgb(200, 179, 55)",
+      "fill": "rgb(143, 176, 255)",
+      "series-1": "rgb(108, 138, 214)",
+      "series-2": "rgb(54, 155, 148)",
+      "series-3": "rgb(178, 133, 32)",
+      "series-4": "rgb(192, 110, 92)",
+      "series-5": "rgb(36, 164, 95)",
+      "series-6": "rgb(171, 122, 185)",
+      "series-7": "rgb(200, 114, 142)",
+      "series-8": "rgb(131, 140, 161)",
+      "primary": "rgb(224, 182, 74)",
+      "accent": "rgb(143, 176, 255)",
+      "success": "rgb(78, 222, 147)",
+      "warning": "rgb(255, 194, 76)",
+      "error": "rgb(255, 138, 128)",
+      "info": "rgb(138, 180, 255)",
+      "muted": "rgb(197, 205, 230)"
+    },
+    "series": [
+      "rgb(108, 138, 214)",
+      "rgb(54, 155, 148)",
+      "rgb(178, 133, 32)",
+      "rgb(192, 110, 92)",
+      "rgb(36, 164, 95)",
+      "rgb(171, 122, 185)",
+      "rgb(200, 114, 142)",
+      "rgb(131, 140, 161)"
+    ],
+    "strokes": {
+      "thin": 1.5,
+      "normal": 2.5,
+      "bold": 4
+    },
+    "lineCap": "round",
+    "lineJoin": "miter",
+    "dash": [
+      8,
+      3
+    ],
+    "dot": [
+      1,
+      3
+    ],
+    "fillStyle": "hatch",
+    "fillOpacity": 0.25,
+    "roughness": 0,
+    "glow": 0,
+    "shadow": null,
+    "marker": "open",
+    "faces": {
+      "body": "\"Cairo\", \"Noto Naskh Arabic\", \"Segoe UI\", sans-serif",
+      "display": "\"Reem Kufi\", \"Amiri\", \"Noto Naskh Arabic\", serif",
+      "mono": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+    },
+    "label": {
+      "font": "display",
+      "size": "sm",
+      "weight": "600",
+      "uppercase": false
+    },
+    "text": {
+      "xs": 12,
+      "sm": 14,
+      "base": 16,
+      "lg": 18,
+      "xl": 20,
+      "2xl": 24
+    },
+    "corner": 4,
+    "motion": {
+      "enabled": true,
+      "fastMs": 200,
+      "normalMs": 350,
+      "slowMs": 550,
+      "easing": "cubic-bezier(0.4, 0, 0.2, 1)"
+    },
+    "scene": {
+      "roughness": 0.5,
+      "metalness": 0.4,
+      "flat": false,
+      "outline": 0,
+      "ambient": 0.5,
+      "key": 1,
+      "keyColor": "rgb(255, 233, 176)",
+      "fog": 0.05
+    }
+  }
+}

@@ -1,0 +1,508 @@
+{
+  "theme": "bauhaus",
+  "mode": "light",
+  "preset": {
+    "name": "bauhaus",
+    "displayName": "Bauhaus",
+    "tokens": {
+      "density": {
+        "spacing": {
+          "space0": "0px",
+          "space1": "4px",
+          "space2": "8px",
+          "space3": "12px",
+          "space4": "16px",
+          "space5": "20px",
+          "space6": "24px",
+          "space7": "28px",
+          "space8": "32px",
+          "space9": "36px",
+          "space10": "40px",
+          "space11": "44px",
+          "space12": "48px"
+        },
+        "buttonHeightSm": "32px",
+        "buttonHeightMd": "42px",
+        "buttonHeightLg": "52px",
+        "inputHeightSm": "32px",
+        "inputHeightMd": "42px",
+        "inputHeightLg": "52px",
+        "rowHeightCompact": "34px",
+        "rowHeightNormal": "44px",
+        "rowHeightSpacious": "54px",
+        "cardPaddingSm": "14px",
+        "cardPaddingMd": "20px",
+        "cardPaddingLg": "28px",
+        "dialogPadding": "28px",
+        "sectionGap": "36px"
+      },
+      "typeScale": {
+        "displayFamily": "\"Jost\", \"Futura\", \"Century Gothic\", sans-serif",
+        "bodyFamily": "\"Jost\", \"Futura\", \"Century Gothic\", sans-serif",
+        "monoFamily": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        "fontImport": "https://fonts.googleapis.com/css2?family=Jost:wght@400;500;700;800&display=swap",
+        "headingWeight": "800",
+        "headingTransform": "lowercase",
+        "headingTracking": "-0.01em",
+        "headingStyle": "normal",
+        "headingShadow": "none",
+        "scale": {
+          "xs": {
+            "size": "12px",
+            "lineHeight": "16px"
+          },
+          "sm": {
+            "size": "14px",
+            "lineHeight": "20px"
+          },
+          "base": {
+            "size": "16px",
+            "lineHeight": "24px"
+          },
+          "lg": {
+            "size": "18px",
+            "lineHeight": "28px"
+          },
+          "xl": {
+            "size": "20px",
+            "lineHeight": "28px"
+          },
+          "2xl": {
+            "size": "24px",
+            "lineHeight": "32px"
+          },
+          "3xl": {
+            "size": "30px",
+            "lineHeight": "36px"
+          },
+          "4xl": {
+            "size": "36px",
+            "lineHeight": "40px"
+          },
+          "display-1": {
+            "size": "48px",
+            "lineHeight": "52px"
+          },
+          "display-2": {
+            "size": "60px",
+            "lineHeight": "64px"
+          }
+        },
+        "intents": {
+          "headingMajor": {
+            "slot": "display",
+            "size": "2xl",
+            "weight": "bold"
+          },
+          "headingMinor": {
+            "slot": "display",
+            "size": "lg",
+            "weight": "bold"
+          },
+          "bodyEmphasis": {
+            "slot": "body",
+            "size": "base",
+            "weight": "medium"
+          },
+          "bodyDefault": {
+            "slot": "body",
+            "size": "sm",
+            "weight": "normal"
+          },
+          "bodyQuiet": {
+            "slot": "body",
+            "size": "sm",
+            "weight": "normal"
+          },
+          "caption": {
+            "slot": "body",
+            "size": "xs",
+            "weight": "normal"
+          },
+          "numeric": {
+            "slot": "mono",
+            "size": "sm",
+            "weight": "medium"
+          }
+        }
+      },
+      "motion": {
+        "durations": {
+          "instant": "0ms",
+          "fast": "var(--transition-fast)",
+          "normal": "var(--transition-normal)",
+          "slow": "var(--transition-slow)",
+          "dramatic": "240ms"
+        },
+        "easings": {
+          "linear": "linear",
+          "standard": "var(--transition-timing)",
+          "emphasized": "linear",
+          "spring": "linear"
+        },
+        "shapes": {
+          "modalEnter": "translateX(-32px)",
+          "modalExit": "translateX(-32px)",
+          "pageEnter": "translateX(24px)",
+          "popoverEnter": "translateY(-8px)",
+          "popoverExit": "translateY(-8px)",
+          "toastEnter": "translateX(32px)",
+          "toastExit": "translateX(32px)"
+        }
+      },
+      "iconography": {
+        "family": "tabler",
+        "strokeWidth": "2.5",
+        "defaultSize": "18px"
+      },
+      "elevation": {
+        "cardElevation": "none",
+        "popoverElevation": "none",
+        "dialogElevation": "none",
+        "toastElevation": "none",
+        "interactiveElevation": "none",
+        "pressedElevation": "none"
+      },
+      "geometry": {
+        "radiusContainer": "var(--radius-none)",
+        "radiusInteractive": "var(--radius-none)",
+        "radiusPill": "var(--radius-full)",
+        "cornerShape": "round",
+        "cornerShapePill": "round",
+        "borderHairline": "2px",
+        "borderStandard": "var(--border-width)",
+        "borderHeavy": "var(--border-width-thick)",
+        "borderStyle": "solid",
+        "borderStyleInteractive": "solid"
+      },
+      "colors": {
+        "primary": "#d21f26",
+        "primary-hover": "#b0181e",
+        "primary-foreground": "#ffffff",
+        "secondary": "#0f4fa8",
+        "secondary-hover": "#0c3f87",
+        "secondary-foreground": "#ffffff",
+        "accent": "#ffd21f",
+        "accent-foreground": "#111111",
+        "muted": "#e8e4d8",
+        "muted-foreground": "#4a4a4a",
+        "background": "#f4f1e8",
+        "foreground": "#111111",
+        "card": "#ffffff",
+        "card-foreground": "#111111",
+        "surface": "#ece8dc",
+        "border": "#111111",
+        "input": "#111111",
+        "ring": "#0f4fa8",
+        "table-header": "#ece8dc",
+        "table-border": "#111111",
+        "table-row-hover": "#f4f1e8",
+        "surface-hover": "#e2ddce",
+        "border-hover": "#d21f26",
+        "placeholder": "#6a6a6a",
+        "error": "#c4161c",
+        "error-foreground": "#ffffff",
+        "success": "#0f7a3a",
+        "success-foreground": "#ffffff",
+        "warning": "#ffd21f",
+        "warning-foreground": "#111111",
+        "info": "#0f4fa8",
+        "info-foreground": "#ffffff",
+        "scrim": "rgba(0, 0, 0, 0.6)",
+        "series-1": "#fd5437",
+        "series-2": "#0f4fa8",
+        "series-3": "#a67c00",
+        "series-4": "#000a22",
+        "series-5": "#51933a",
+        "series-6": "#c8500a",
+        "series-7": "#747474",
+        "series-8": "#6a2c91",
+        "diagram-ink": "#111111",
+        "diagram-label": "#111111",
+        "diagram-guide": "#6b6b6b",
+        "diagram-axis": "#111111",
+        "diagram-grid": "#cfcabd",
+        "diagram-highlight": "#e7384c",
+        "diagram-fill": "#0f4fa8"
+      },
+      "radii": {
+        "none": "0px",
+        "sm": "0px",
+        "md": "0px",
+        "lg": "0px",
+        "xl": "0px",
+        "full": "9999px"
+      },
+      "shadows": {
+        "main": "none",
+        "sm": "none",
+        "lg": "none",
+        "inner": "none",
+        "none": "none",
+        "hover": "none",
+        "active": "none"
+      },
+      "typography": {
+        "border-width": "3px",
+        "border-width-thin": "2px",
+        "border-width-thick": "4px",
+        "font-family": "\"Jost\", \"Futura\", \"Century Gothic\", sans-serif",
+        "font-weight-normal": "400",
+        "font-weight-medium": "500",
+        "font-weight-bold": "700",
+        "letter-spacing": "0em",
+        "line-height": "1.5",
+        "icon-color": "#d21f26",
+        "transition-fast": "80ms",
+        "transition-normal": "140ms",
+        "transition-slow": "200ms",
+        "transition-timing": "linear",
+        "hover-scale": "1.0",
+        "hover-translate-y": "0",
+        "hover-translate-x": "0",
+        "active-scale": "1.0",
+        "active-translate-y": "0",
+        "focus-ring-width": "3px",
+        "focus-ring-offset": "2px",
+        "focus-ring-color": "#0f4fa8"
+      },
+      "diagram": {
+        "strokeThin": "3px",
+        "strokeNormal": "5px",
+        "strokeBold": "8px",
+        "lineCap": "square",
+        "lineJoin": "miter",
+        "dash": "10 6",
+        "dot": "1 6",
+        "fillStyle": "solid",
+        "fillOpacity": "0.35",
+        "roughness": "0",
+        "glow": "0",
+        "shadow": "3px 3px 0 #111111",
+        "marker": "triangle",
+        "labelFont": "display",
+        "labelSize": "sm",
+        "labelWeight": "700",
+        "labelCase": "uppercase",
+        "corner": "0px"
+      },
+      "scene": {
+        "materialRoughness": "1",
+        "materialMetalness": "0",
+        "materialFlat": "1",
+        "materialOutline": "0",
+        "lightAmbient": "0.7",
+        "lightKey": "1",
+        "lightKeyColor": "#ffffff",
+        "fog": "0"
+      },
+      "surface": {
+        "edgeMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 100' preserveAspectRatio='none'><path d='M0 100 Q720 0 1440 100 Z'/></svg>\")",
+        "edgeHeight": "clamp(24px, 6vw, 96px)",
+        "textureMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><path d='M0 .5H40M.5 0V40' stroke='black' stroke-width='1' fill='none'/></svg>\")",
+        "textureSize": "40px 40px",
+        "accentImage": "radial-gradient(60% 80% at 15% 20%, color-mix(in oklab, var(--color-primary) 22%, transparent), transparent 70%), radial-gradient(50% 70% at 85% 30%, color-mix(in oklab, var(--color-accent) 20%, transparent), transparent 70%)"
+      }
+    },
+    "variants": {
+      "dark": {
+        "colors": {
+          "primary": "#ff5a5f",
+          "primary-hover": "#ff7478",
+          "primary-foreground": "#140202",
+          "secondary": "#5b96ee",
+          "secondary-hover": "#79aaf3",
+          "secondary-foreground": "#04132b",
+          "accent": "#ffd21f",
+          "accent-foreground": "#111111",
+          "muted": "#2a2a2a",
+          "muted-foreground": "#cfcfcf",
+          "background": "#121212",
+          "foreground": "#f4f1e8",
+          "card": "#1c1c1c",
+          "card-foreground": "#f4f1e8",
+          "surface": "#181818",
+          "border": "#f4f1e8",
+          "input": "#f4f1e8",
+          "ring": "#ffd21f",
+          "table-header": "#181818",
+          "table-border": "#f4f1e8",
+          "table-row-hover": "#222222",
+          "surface-hover": "#2a2a2a",
+          "border-hover": "#ff5a5f",
+          "placeholder": "#9a9a9a",
+          "error": "#ff6b70",
+          "error-foreground": "#190204",
+          "success": "#4ed68a",
+          "success-foreground": "#03170b",
+          "warning": "#ffd21f",
+          "warning-foreground": "#111111",
+          "info": "#5b96ee",
+          "info-foreground": "#04132b",
+          "scrim": "rgba(0, 0, 0, 0.7)",
+          "series-1": "#d14c61",
+          "series-2": "#4084e2",
+          "series-3": "#a67e0b",
+          "series-4": "#848484",
+          "series-5": "#1d9a4f",
+          "series-6": "#d85f19",
+          "series-7": "#5e8da2",
+          "series-8": "#a66dca",
+          "diagram-ink": "#fcf2c4",
+          "diagram-label": "#f4f1e8",
+          "diagram-guide": "#8a8780",
+          "diagram-axis": "#c8c4b8",
+          "diagram-grid": "#333333",
+          "diagram-highlight": "#e7ea41",
+          "diagram-fill": "#ff5a5f"
+        },
+        "shadows": {
+          "main": "none",
+          "sm": "none",
+          "lg": "none",
+          "inner": "none",
+          "none": "none",
+          "hover": "none",
+          "active": "none"
+        },
+        "typography": {
+          "border-width": "3px",
+          "border-width-thin": "2px",
+          "border-width-thick": "4px",
+          "font-family": "\"Jost\", \"Futura\", \"Century Gothic\", sans-serif",
+          "font-weight-normal": "400",
+          "font-weight-medium": "500",
+          "font-weight-bold": "700",
+          "letter-spacing": "0em",
+          "line-height": "1.5",
+          "icon-color": "#ff5a5f",
+          "transition-fast": "80ms",
+          "transition-normal": "140ms",
+          "transition-slow": "200ms",
+          "transition-timing": "linear",
+          "hover-scale": "1.0",
+          "hover-translate-y": "0",
+          "hover-translate-x": "0",
+          "active-scale": "1.0",
+          "active-translate-y": "0",
+          "focus-ring-width": "3px",
+          "focus-ring-offset": "2px",
+          "focus-ring-color": "#ffd21f"
+        },
+        "radii": {
+          "none": "0px",
+          "sm": "0px",
+          "md": "0px",
+          "lg": "0px",
+          "xl": "0px",
+          "full": "9999px"
+        }
+      }
+    }
+  },
+  "canvasTheme": {
+    "ground": "rgb(255, 255, 255)",
+    "surfaces": {
+      "muted": "rgb(232, 228, 216)",
+      "card": "rgb(255, 255, 255)",
+      "onPrimary": "rgb(255, 255, 255)"
+    },
+    "tones": {
+      "ink": "rgb(17, 17, 17)",
+      "label": "rgb(17, 17, 17)",
+      "guide": "rgb(107, 107, 107)",
+      "axis": "rgb(17, 17, 17)",
+      "grid": "rgb(207, 202, 189)",
+      "highlight": "rgb(231, 56, 76)",
+      "fill": "rgb(15, 79, 168)",
+      "series-1": "rgb(253, 84, 55)",
+      "series-2": "rgb(15, 79, 168)",
+      "series-3": "rgb(166, 124, 0)",
+      "series-4": "rgb(0, 10, 34)",
+      "series-5": "rgb(81, 147, 58)",
+      "series-6": "rgb(200, 80, 10)",
+      "series-7": "rgb(116, 116, 116)",
+      "series-8": "rgb(106, 44, 145)",
+      "primary": "rgb(210, 31, 38)",
+      "accent": "rgb(255, 210, 31)",
+      "success": "rgb(15, 122, 58)",
+      "warning": "rgb(255, 210, 31)",
+      "error": "rgb(196, 22, 28)",
+      "info": "rgb(15, 79, 168)",
+      "muted": "rgb(74, 74, 74)"
+    },
+    "series": [
+      "rgb(253, 84, 55)",
+      "rgb(15, 79, 168)",
+      "rgb(166, 124, 0)",
+      "rgb(0, 10, 34)",
+      "rgb(81, 147, 58)",
+      "rgb(200, 80, 10)",
+      "rgb(116, 116, 116)",
+      "rgb(106, 44, 145)"
+    ],
+    "strokes": {
+      "thin": 3,
+      "normal": 5,
+      "bold": 8
+    },
+    "lineCap": "square",
+    "lineJoin": "miter",
+    "dash": [
+      10,
+      6
+    ],
+    "dot": [
+      1,
+      6
+    ],
+    "fillStyle": "solid",
+    "fillOpacity": 0.35,
+    "roughness": 0,
+    "glow": 0,
+    "shadow": {
+      "offsetX": 3,
+      "offsetY": 3,
+      "blur": 0,
+      "color": "rgb(17, 17, 17)"
+    },
+    "marker": "triangle",
+    "faces": {
+      "body": "\"Jost\", \"Futura\", \"Century Gothic\", sans-serif",
+      "display": "\"Jost\", \"Futura\", \"Century Gothic\", sans-serif",
+      "mono": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+    },
+    "label": {
+      "font": "display",
+      "size": "sm",
+      "weight": "700",
+      "uppercase": true
+    },
+    "text": {
+      "xs": 12,
+      "sm": 14,
+      "base": 16,
+      "lg": 18,
+      "xl": 20,
+      "2xl": 24
+    },
+    "corner": 0,
+    "motion": {
+      "enabled": true,
+      "fastMs": 80,
+      "normalMs": 140,
+      "slowMs": 200,
+      "easing": "linear"
+    },
+    "scene": {
+      "roughness": 1,
+      "metalness": 0,
+      "flat": true,
+      "outline": 0,
+      "ambient": 0.7,
+      "key": 1,
+      "keyColor": "rgb(255, 255, 255)",
+      "fog": 0
+    }
+  }
+}

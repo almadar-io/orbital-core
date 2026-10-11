@@ -1,0 +1,977 @@
+{
+  "comment": "Shared seeded mock-dataset parity vector. The whole seeded store for one schema: the [identity] entity first, then every orbital's entity and auxiliaries in declaration order, one LCG stream (seed 42), '<Entity> Id N' ids, timestamps drawn against nowMs, the viewer stamped on owner columns through the @create gate, deterministic relation links, authored instances created as-is. Produced by @almadar/runtime's OrbitalServerRuntime in mock mode; read by @almadar/runtime's mock-dataset-parity.test.ts and orbital-core's mock_seed_parity.rs. Regenerating it is a deliberate spec change on every path.",
+  "schema": {
+    "name": "SeedParity",
+    "version": "1.0.0",
+    "orbitals": [
+      {
+        "name": "TicketOrbital",
+        "entity": {
+          "name": "Ticket",
+          "collection": "tickets",
+          "persistence": "persistent",
+          "create_policy": [
+            "=",
+            "@user.role",
+            "agent"
+          ],
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "title",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "description",
+              "type": "string"
+            },
+            {
+              "name": "points",
+              "type": "number",
+              "required": true
+            },
+            {
+              "name": "amount",
+              "type": "money",
+              "required": true
+            },
+            {
+              "name": "done",
+              "type": "boolean",
+              "required": true
+            },
+            {
+              "name": "dueAt",
+              "type": "datetime",
+              "required": true
+            },
+            {
+              "name": "dueDay",
+              "type": "date",
+              "required": true
+            },
+            {
+              "name": "contact",
+              "type": "email",
+              "required": true
+            },
+            {
+              "name": "site",
+              "type": "url",
+              "required": true
+            },
+            {
+              "name": "phone",
+              "type": "phone",
+              "required": true
+            },
+            {
+              "name": "ref",
+              "type": "uuid",
+              "required": true
+            },
+            {
+              "name": "photo",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "status",
+              "type": "string",
+              "required": true,
+              "values": [
+                "open",
+                "closed",
+                "blocked"
+              ]
+            },
+            {
+              "name": "priority",
+              "type": "string",
+              "required": true,
+              "values": [
+                "low",
+                "high"
+              ],
+              "default": "low"
+            },
+            {
+              "name": "vendor",
+              "type": "string",
+              "required": true,
+              "mock": "Acme, Globex"
+            },
+            {
+              "name": "tags",
+              "type": "array",
+              "required": true,
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "meta",
+              "type": "object",
+              "required": true,
+              "properties": {
+                "zeta": {
+                  "type": "number"
+                },
+                "alpha": {
+                  "type": "string",
+                  "required": true
+                }
+              }
+            },
+            {
+              "name": "attachment",
+              "type": "file",
+              "required": true
+            },
+            {
+              "name": "assignee",
+              "type": "relation",
+              "required": true,
+              "relation": {
+                "entity": "Person",
+                "cardinality": "one"
+              }
+            },
+            {
+              "name": "watchers",
+              "type": "relation",
+              "relation": {
+                "entity": "Tag",
+                "cardinality": "many"
+              }
+            }
+          ]
+        },
+        "auxiliaryEntities": [
+          {
+            "name": "TicketCard",
+            "collection": "tickets",
+            "persistence": "persistent",
+            "fields": [
+              {
+                "name": "id",
+                "type": "string",
+                "required": true
+              },
+              {
+                "name": "label",
+                "type": "string",
+                "required": true
+              },
+              {
+                "name": "score",
+                "type": "number"
+              }
+            ]
+          }
+        ],
+        "traits": [],
+        "pages": []
+      },
+      {
+        "name": "PersonOrbital",
+        "entity": {
+          "name": "Person",
+          "collection": "people",
+          "persistence": "persistent",
+          "identity": true,
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "email",
+              "type": "email",
+              "required": true
+            },
+            {
+              "name": "role",
+              "type": "string",
+              "required": true,
+              "values": [
+                "supervisor",
+                "agent",
+                "customer"
+              ]
+            }
+          ]
+        },
+        "traits": [],
+        "pages": []
+      },
+      {
+        "name": "TagOrbital",
+        "entity": {
+          "name": "Tag",
+          "persistence": "persistent",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "label",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "parentId",
+              "type": "relation",
+              "relation": {
+                "entity": "Tag",
+                "cardinality": "one"
+              }
+            },
+            {
+              "name": "children",
+              "type": "relation",
+              "relation": {
+                "entity": "Tag",
+                "cardinality": "many"
+              }
+            }
+          ]
+        },
+        "traits": [],
+        "pages": []
+      },
+      {
+        "name": "CounterOrbital",
+        "entity": {
+          "name": "Counter",
+          "persistence": "runtime",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "value",
+              "type": "number",
+              "default": 0
+            },
+            {
+              "name": "label",
+              "type": "string",
+              "default": "Counter"
+            },
+            {
+              "name": "mode",
+              "type": "string",
+              "values": [
+                "a",
+                "b"
+              ],
+              "default": "b"
+            }
+          ]
+        },
+        "traits": [],
+        "pages": []
+      },
+      {
+        "name": "NoteOrbital",
+        "entity": {
+          "name": "Note",
+          "persistence": "persistent",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "text",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "instances": [
+            {
+              "id": "n-authored",
+              "text": "hello"
+            },
+            {
+              "text": "no id"
+            }
+          ]
+        },
+        "traits": [],
+        "pages": []
+      }
+    ]
+  },
+  "viewer": {
+    "id": "Person Id 1",
+    "name": "Person 1",
+    "email": "person1@example.com",
+    "role": "supervisor"
+  },
+  "nowMs": 1780272000000,
+  "count": 6,
+  "rows": {
+    "Person": [
+      {
+        "name": "Heath Keystone",
+        "email": "timber@summit.com",
+        "role": "supervisor",
+        "id": "Person Id 1",
+        "createdAt": "2026-02-28T21:27:22.569Z",
+        "updatedAt": "2026-03-02T21:27:22.569Z"
+      },
+      {
+        "name": "Brook Isle",
+        "email": "aspen@canyon.com",
+        "role": "agent",
+        "id": "Person Id 2",
+        "createdAt": "2025-12-19T17:48:57.369Z",
+        "updatedAt": "2025-12-22T17:48:57.369Z"
+      },
+      {
+        "name": "Inlet Cedar",
+        "email": "falcon@glen.com",
+        "role": "customer",
+        "id": "Person Id 3",
+        "createdAt": "2025-10-09T16:04:18.153Z",
+        "updatedAt": "2025-11-04T16:04:18.153Z"
+      },
+      {
+        "name": "Grove Horizon",
+        "email": "grove@meadow.com",
+        "role": "supervisor",
+        "id": "Person Id 4",
+        "createdAt": "2025-06-28T12:53:39.462Z",
+        "updatedAt": "2025-07-25T12:53:39.462Z"
+      },
+      {
+        "name": "Garnet Wharf",
+        "email": "basalt@atlas.com",
+        "role": "agent",
+        "id": "Person Id 5",
+        "createdAt": "2025-06-21T18:15:15.249Z",
+        "updatedAt": "2025-07-16T18:15:15.249Z"
+      },
+      {
+        "name": "Wharf Yonder",
+        "email": "north@timber.com",
+        "role": "customer",
+        "id": "Person Id 6",
+        "createdAt": "2026-05-23T19:17:31.687Z",
+        "updatedAt": "2026-06-01T00:00:00.000Z"
+      }
+    ],
+    "Ticket": [
+      {
+        "title": "Prairie Quartz",
+        "description": "Isle Zenith",
+        "points": 25,
+        "amount": 180,
+        "done": true,
+        "dueAt": "2026-03-03T11:31:35.142Z",
+        "dueDay": "2026-08-04",
+        "contact": "inlet@valley.com",
+        "site": "https://example.com/umber-juniper",
+        "phone": "+1 (417) 215-2779",
+        "ref": "5ef3d955-2f1e-4c6b-4181-39b733bedbd6",
+        "photo": "https://picsum.photos/seed/Ticket-photo-153/400/400",
+        "status": "open",
+        "priority": "low",
+        "vendor": "Acme",
+        "tags": [
+          "Fjord Mesa",
+          "Isle Willow",
+          "Ridge Willow"
+        ],
+        "meta": {
+          "alpha": "Meridian Beacon",
+          "zeta": 207
+        },
+        "attachment": {
+          "name": "attachment-1.pdf",
+          "url": "https://example.com/files/attachment/1.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 1024
+        },
+        "assignee": "Person Id 2",
+        "watchers": [
+          "Tag Id 1",
+          "Tag Id 2"
+        ],
+        "id": "Ticket Id 1",
+        "createdAt": "2025-10-30T05:38:45.729Z",
+        "updatedAt": "2025-11-20T05:38:45.729Z",
+        "label": "Upland Basalt",
+        "score": 162
+      },
+      {
+        "title": "Horizon Umber",
+        "points": 71,
+        "amount": 446,
+        "done": false,
+        "dueAt": "2026-09-08T07:18:16.752Z",
+        "dueDay": "2026-03-20",
+        "contact": "pioneer@estuary.com",
+        "site": "https://example.com/meadow-vista",
+        "phone": "+1 (209) 718-3666",
+        "ref": "749b8936-6e3e-4f9e-0488-ffbd49a057cf",
+        "photo": "https://picsum.photos/seed/Ticket-photo-38/400/400",
+        "status": "closed",
+        "priority": "high",
+        "vendor": "Globex",
+        "tags": [
+          "Pioneer Lagoon",
+          "North Basalt",
+          "Meadow Quartz",
+          "Drift Meridian"
+        ],
+        "meta": {
+          "alpha": "Yonder Quartz",
+          "zeta": 227
+        },
+        "attachment": {
+          "name": "attachment-2.pdf",
+          "url": "https://example.com/files/attachment/2.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 2048
+        },
+        "assignee": "Person Id 5",
+        "watchers": [
+          "Tag Id 2",
+          "Tag Id 3",
+          "Tag Id 4"
+        ],
+        "id": "Ticket Id 2",
+        "createdAt": "2025-06-08T18:18:52.632Z",
+        "updatedAt": "2025-07-02T18:18:52.632Z",
+        "label": "Prairie Ember"
+      },
+      {
+        "title": "Isle Haven",
+        "description": "Knoll Upland",
+        "points": 14,
+        "amount": 494,
+        "done": false,
+        "dueAt": "2026-04-01T21:16:01.743Z",
+        "dueDay": "2026-07-30",
+        "contact": "summit@fern.com",
+        "site": "https://example.com/zenith-sierra",
+        "phone": "+1 (660) 656-0306",
+        "ref": "69121448-6fa9-45b4-ee8a-b9423157cad4",
+        "photo": "https://picsum.photos/seed/Ticket-photo-693/400/400",
+        "status": "blocked",
+        "priority": "low",
+        "vendor": "Acme",
+        "tags": [
+          "Sierra Quartz",
+          "Estuary Slate",
+          "Onyx Nimbus",
+          "Valley Glen"
+        ],
+        "meta": {
+          "alpha": "Upland Brook",
+          "zeta": 41
+        },
+        "attachment": {
+          "name": "attachment-3.pdf",
+          "url": "https://example.com/files/attachment/3.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 3072
+        },
+        "assignee": "Person Id 2",
+        "watchers": [
+          "Tag Id 3",
+          "Tag Id 4"
+        ],
+        "id": "Ticket Id 3",
+        "createdAt": "2025-09-04T09:45:47.854Z",
+        "updatedAt": "2025-09-20T09:45:47.854Z",
+        "label": "Meridian Grove",
+        "score": 183
+      },
+      {
+        "title": "Onyx Harbor",
+        "points": 110,
+        "amount": 56,
+        "done": false,
+        "dueAt": "2026-03-27T14:38:28.457Z",
+        "dueDay": "2026-05-04",
+        "contact": "haven@north.com",
+        "site": "https://example.com/jade-ember",
+        "phone": "+1 (599) 657-9288",
+        "ref": "22dfc13c-ddd1-4ae9-9ecc-7c3793262ca3",
+        "photo": "https://picsum.photos/seed/Ticket-photo-230/400/400",
+        "status": "open",
+        "priority": "high",
+        "vendor": "Globex",
+        "tags": [
+          "Valley Haven",
+          "Umber Zenith",
+          "Ember Delta"
+        ],
+        "meta": {
+          "alpha": "Yonder Meadow",
+          "zeta": 113
+        },
+        "attachment": {
+          "name": "attachment-4.pdf",
+          "url": "https://example.com/files/attachment/4.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 4096
+        },
+        "assignee": "Person Id 5",
+        "watchers": [
+          "Tag Id 4",
+          "Tag Id 5",
+          "Tag Id 6"
+        ],
+        "id": "Ticket Id 4",
+        "createdAt": "2025-10-29T06:38:17.465Z",
+        "updatedAt": "2025-11-14T06:38:17.465Z",
+        "label": "Aspen Redwood"
+      },
+      {
+        "title": "Quartz Orchard",
+        "description": "Keystone Glen",
+        "points": 191,
+        "amount": 54,
+        "done": false,
+        "dueAt": "2026-03-17T03:06:53.771Z",
+        "dueDay": "2026-04-15",
+        "contact": "quarry@elm.com",
+        "site": "https://example.com/valley-anchor",
+        "phone": "+1 (239) 827-4367",
+        "ref": "e0b1b44d-b0d2-43b2-6fc7-8b308af36e94",
+        "photo": "https://picsum.photos/seed/Ticket-photo-929/400/400",
+        "status": "closed",
+        "priority": "low",
+        "vendor": "Acme",
+        "tags": [
+          "Mesa Lagoon",
+          "Isle Redwood",
+          "Juniper Terrace",
+          "Fjord Cedar",
+          "Beacon Prairie"
+        ],
+        "meta": {
+          "alpha": "Brook Lagoon",
+          "zeta": 193
+        },
+        "attachment": {
+          "name": "attachment-5.pdf",
+          "url": "https://example.com/files/attachment/5.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 5120
+        },
+        "assignee": "Person Id 2",
+        "watchers": [
+          "Tag Id 5",
+          "Tag Id 6"
+        ],
+        "id": "Ticket Id 5",
+        "createdAt": "2025-10-27T15:59:40.264Z",
+        "updatedAt": "2025-11-07T15:59:40.264Z",
+        "label": "Timber Isle",
+        "score": 72
+      },
+      {
+        "title": "Ember Falcon",
+        "points": 95,
+        "amount": 465,
+        "done": true,
+        "dueAt": "2026-03-25T19:48:23.871Z",
+        "dueDay": "2026-02-10",
+        "contact": "meridian@slate.com",
+        "site": "https://example.com/sierra-basalt",
+        "phone": "+1 (554) 864-3923",
+        "ref": "8d492837-4f6c-4f8d-46e9-384f52bcf8a2",
+        "photo": "https://picsum.photos/seed/Ticket-photo-810/400/400",
+        "status": "blocked",
+        "priority": "high",
+        "vendor": "Globex",
+        "tags": [
+          "Sierra Cove",
+          "Yonder North",
+          "Orchard Jade",
+          "Garnet Falcon"
+        ],
+        "meta": {
+          "alpha": "Atlas Ridge",
+          "zeta": 50
+        },
+        "attachment": {
+          "name": "attachment-6.pdf",
+          "url": "https://example.com/files/attachment/6.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 6144
+        },
+        "assignee": "Person Id 5",
+        "watchers": [
+          "Tag Id 6",
+          "Tag Id 1",
+          "Tag Id 2"
+        ],
+        "id": "Ticket Id 6",
+        "createdAt": "2025-12-18T15:16:01.914Z",
+        "updatedAt": "2026-01-10T15:16:01.914Z",
+        "label": "Upland Juniper"
+      }
+    ],
+    "TicketCard": [
+      {
+        "title": "Prairie Quartz",
+        "description": "Isle Zenith",
+        "points": 25,
+        "amount": 180,
+        "done": true,
+        "dueAt": "2026-03-03T11:31:35.142Z",
+        "dueDay": "2026-08-04",
+        "contact": "inlet@valley.com",
+        "site": "https://example.com/umber-juniper",
+        "phone": "+1 (417) 215-2779",
+        "ref": "5ef3d955-2f1e-4c6b-4181-39b733bedbd6",
+        "photo": "https://picsum.photos/seed/Ticket-photo-153/400/400",
+        "status": "open",
+        "priority": "low",
+        "vendor": "Acme",
+        "tags": [
+          "Fjord Mesa",
+          "Isle Willow",
+          "Ridge Willow"
+        ],
+        "meta": {
+          "alpha": "Meridian Beacon",
+          "zeta": 207
+        },
+        "attachment": {
+          "name": "attachment-1.pdf",
+          "url": "https://example.com/files/attachment/1.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 1024
+        },
+        "assignee": "Person Id 2",
+        "watchers": [
+          "Tag Id 1",
+          "Tag Id 2"
+        ],
+        "id": "Ticket Id 1",
+        "createdAt": "2025-10-30T05:38:45.729Z",
+        "updatedAt": "2025-11-20T05:38:45.729Z",
+        "label": "Upland Basalt",
+        "score": 162
+      },
+      {
+        "title": "Horizon Umber",
+        "points": 71,
+        "amount": 446,
+        "done": false,
+        "dueAt": "2026-09-08T07:18:16.752Z",
+        "dueDay": "2026-03-20",
+        "contact": "pioneer@estuary.com",
+        "site": "https://example.com/meadow-vista",
+        "phone": "+1 (209) 718-3666",
+        "ref": "749b8936-6e3e-4f9e-0488-ffbd49a057cf",
+        "photo": "https://picsum.photos/seed/Ticket-photo-38/400/400",
+        "status": "closed",
+        "priority": "high",
+        "vendor": "Globex",
+        "tags": [
+          "Pioneer Lagoon",
+          "North Basalt",
+          "Meadow Quartz",
+          "Drift Meridian"
+        ],
+        "meta": {
+          "alpha": "Yonder Quartz",
+          "zeta": 227
+        },
+        "attachment": {
+          "name": "attachment-2.pdf",
+          "url": "https://example.com/files/attachment/2.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 2048
+        },
+        "assignee": "Person Id 5",
+        "watchers": [
+          "Tag Id 2",
+          "Tag Id 3",
+          "Tag Id 4"
+        ],
+        "id": "Ticket Id 2",
+        "createdAt": "2025-06-08T18:18:52.632Z",
+        "updatedAt": "2025-07-02T18:18:52.632Z",
+        "label": "Prairie Ember"
+      },
+      {
+        "title": "Isle Haven",
+        "description": "Knoll Upland",
+        "points": 14,
+        "amount": 494,
+        "done": false,
+        "dueAt": "2026-04-01T21:16:01.743Z",
+        "dueDay": "2026-07-30",
+        "contact": "summit@fern.com",
+        "site": "https://example.com/zenith-sierra",
+        "phone": "+1 (660) 656-0306",
+        "ref": "69121448-6fa9-45b4-ee8a-b9423157cad4",
+        "photo": "https://picsum.photos/seed/Ticket-photo-693/400/400",
+        "status": "blocked",
+        "priority": "low",
+        "vendor": "Acme",
+        "tags": [
+          "Sierra Quartz",
+          "Estuary Slate",
+          "Onyx Nimbus",
+          "Valley Glen"
+        ],
+        "meta": {
+          "alpha": "Upland Brook",
+          "zeta": 41
+        },
+        "attachment": {
+          "name": "attachment-3.pdf",
+          "url": "https://example.com/files/attachment/3.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 3072
+        },
+        "assignee": "Person Id 2",
+        "watchers": [
+          "Tag Id 3",
+          "Tag Id 4"
+        ],
+        "id": "Ticket Id 3",
+        "createdAt": "2025-09-04T09:45:47.854Z",
+        "updatedAt": "2025-09-20T09:45:47.854Z",
+        "label": "Meridian Grove",
+        "score": 183
+      },
+      {
+        "title": "Onyx Harbor",
+        "points": 110,
+        "amount": 56,
+        "done": false,
+        "dueAt": "2026-03-27T14:38:28.457Z",
+        "dueDay": "2026-05-04",
+        "contact": "haven@north.com",
+        "site": "https://example.com/jade-ember",
+        "phone": "+1 (599) 657-9288",
+        "ref": "22dfc13c-ddd1-4ae9-9ecc-7c3793262ca3",
+        "photo": "https://picsum.photos/seed/Ticket-photo-230/400/400",
+        "status": "open",
+        "priority": "high",
+        "vendor": "Globex",
+        "tags": [
+          "Valley Haven",
+          "Umber Zenith",
+          "Ember Delta"
+        ],
+        "meta": {
+          "alpha": "Yonder Meadow",
+          "zeta": 113
+        },
+        "attachment": {
+          "name": "attachment-4.pdf",
+          "url": "https://example.com/files/attachment/4.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 4096
+        },
+        "assignee": "Person Id 5",
+        "watchers": [
+          "Tag Id 4",
+          "Tag Id 5",
+          "Tag Id 6"
+        ],
+        "id": "Ticket Id 4",
+        "createdAt": "2025-10-29T06:38:17.465Z",
+        "updatedAt": "2025-11-14T06:38:17.465Z",
+        "label": "Aspen Redwood"
+      },
+      {
+        "title": "Quartz Orchard",
+        "description": "Keystone Glen",
+        "points": 191,
+        "amount": 54,
+        "done": false,
+        "dueAt": "2026-03-17T03:06:53.771Z",
+        "dueDay": "2026-04-15",
+        "contact": "quarry@elm.com",
+        "site": "https://example.com/valley-anchor",
+        "phone": "+1 (239) 827-4367",
+        "ref": "e0b1b44d-b0d2-43b2-6fc7-8b308af36e94",
+        "photo": "https://picsum.photos/seed/Ticket-photo-929/400/400",
+        "status": "closed",
+        "priority": "low",
+        "vendor": "Acme",
+        "tags": [
+          "Mesa Lagoon",
+          "Isle Redwood",
+          "Juniper Terrace",
+          "Fjord Cedar",
+          "Beacon Prairie"
+        ],
+        "meta": {
+          "alpha": "Brook Lagoon",
+          "zeta": 193
+        },
+        "attachment": {
+          "name": "attachment-5.pdf",
+          "url": "https://example.com/files/attachment/5.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 5120
+        },
+        "assignee": "Person Id 2",
+        "watchers": [
+          "Tag Id 5",
+          "Tag Id 6"
+        ],
+        "id": "Ticket Id 5",
+        "createdAt": "2025-10-27T15:59:40.264Z",
+        "updatedAt": "2025-11-07T15:59:40.264Z",
+        "label": "Timber Isle",
+        "score": 72
+      },
+      {
+        "title": "Ember Falcon",
+        "points": 95,
+        "amount": 465,
+        "done": true,
+        "dueAt": "2026-03-25T19:48:23.871Z",
+        "dueDay": "2026-02-10",
+        "contact": "meridian@slate.com",
+        "site": "https://example.com/sierra-basalt",
+        "phone": "+1 (554) 864-3923",
+        "ref": "8d492837-4f6c-4f8d-46e9-384f52bcf8a2",
+        "photo": "https://picsum.photos/seed/Ticket-photo-810/400/400",
+        "status": "blocked",
+        "priority": "high",
+        "vendor": "Globex",
+        "tags": [
+          "Sierra Cove",
+          "Yonder North",
+          "Orchard Jade",
+          "Garnet Falcon"
+        ],
+        "meta": {
+          "alpha": "Atlas Ridge",
+          "zeta": 50
+        },
+        "attachment": {
+          "name": "attachment-6.pdf",
+          "url": "https://example.com/files/attachment/6.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": 6144
+        },
+        "assignee": "Person Id 5",
+        "watchers": [
+          "Tag Id 6",
+          "Tag Id 1",
+          "Tag Id 2"
+        ],
+        "id": "Ticket Id 6",
+        "createdAt": "2025-12-18T15:16:01.914Z",
+        "updatedAt": "2026-01-10T15:16:01.914Z",
+        "label": "Upland Juniper"
+      }
+    ],
+    "Tag": [
+      {
+        "label": "Quarry Orchard",
+        "parentId": "",
+        "children": [
+          "Tag Id 2",
+          "Tag Id 3"
+        ],
+        "id": "Tag Id 1",
+        "createdAt": "2025-06-27T20:30:51.884Z",
+        "updatedAt": "2025-07-06T20:30:51.884Z"
+      },
+      {
+        "label": "Orchard Mesa",
+        "parentId": "Tag Id 1",
+        "children": [
+          "Tag Id 4",
+          "Tag Id 5"
+        ],
+        "id": "Tag Id 2",
+        "createdAt": "2025-07-16T16:58:02.460Z",
+        "updatedAt": "2025-08-09T16:58:02.460Z"
+      },
+      {
+        "label": "Meridian Brook",
+        "parentId": "Tag Id 1",
+        "children": [
+          "Tag Id 6"
+        ],
+        "id": "Tag Id 3",
+        "createdAt": "2026-01-16T16:55:44.225Z",
+        "updatedAt": "2026-01-18T16:55:44.225Z"
+      },
+      {
+        "label": "Dune Umber",
+        "parentId": "Tag Id 2",
+        "children": [],
+        "id": "Tag Id 4",
+        "createdAt": "2025-11-21T22:27:51.388Z",
+        "updatedAt": "2025-12-05T22:27:51.388Z"
+      },
+      {
+        "label": "Willow Canyon",
+        "parentId": "Tag Id 2",
+        "children": [],
+        "id": "Tag Id 5",
+        "createdAt": "2025-07-22T06:53:13.432Z",
+        "updatedAt": "2025-07-26T06:53:13.432Z"
+      },
+      {
+        "label": "Pioneer Isle",
+        "parentId": "Tag Id 3",
+        "children": [],
+        "id": "Tag Id 6",
+        "createdAt": "2026-03-23T10:58:09.219Z",
+        "updatedAt": "2026-04-19T10:58:09.219Z"
+      }
+    ],
+    "Counter": [
+      {
+        "value": 0,
+        "label": "Counter",
+        "mode": "b",
+        "id": "Counter Id 1",
+        "createdAt": "2026-01-28T08:41:21.713Z",
+        "updatedAt": "2026-02-15T08:41:21.713Z"
+      }
+    ],
+    "Note": [
+      {
+        "id": "n-authored",
+        "text": "hello",
+        "createdAt": "2026-06-01T00:00:00.000Z",
+        "updatedAt": "2026-06-01T00:00:00.000Z"
+      },
+      {
+        "text": "no id",
+        "id": "Note Id 1",
+        "createdAt": "2026-06-01T00:00:00.000Z",
+        "updatedAt": "2026-06-01T00:00:00.000Z"
+      }
+    ]
+  }
+}

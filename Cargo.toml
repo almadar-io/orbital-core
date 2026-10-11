@@ -1,0 +1,37 @@
+[package]
+name = "orbital-core"
+version = "18.0.0"
+edition = "2021"
+license = "BUSL-1.1"
+repository = "https://github.com/almadar-io/orbital-core"
+description = "Core types and runtime for Orbital schema execution"
+
+[features]
+default = []
+async = ["tokio"]
+
+[dependencies]
+indexmap = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_path_to_error = "0.1"
+thiserror = "1.0"
+lru = "0.12"
+lazy_static = "1.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+semver = "1"
+sha2 = "0.10"
+tokio = { version = "1.0", features = ["full"], optional = true }
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+tokio = { version = "1.0", features = ["full", "rt", "macros"] }
+syn = { version = "2", features = ["full"] }
+
+# `std::time::SystemTime::now()` / `chrono::Utc::now()` panic on bare wasm32; the wasm
+# build reads the clock through `js_sys::Date` (see `time_util`). wasm32-only.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"

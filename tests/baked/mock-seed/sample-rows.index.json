@@ -1,0 +1,635 @@
+{
+  "entity": {
+    "name": "Member",
+    "persistence": "persistent",
+    "fields": [
+      {
+        "name": "plainString",
+        "type": "string"
+      },
+      {
+        "name": "emptyDefault",
+        "type": "string",
+        "default": ""
+      },
+      {
+        "name": "realDefault",
+        "type": "string",
+        "default": "Kept"
+      },
+      {
+        "name": "tierAtFirst",
+        "type": "string",
+        "values": [
+          "basic",
+          "premium",
+          "unlimited"
+        ],
+        "default": "basic"
+      },
+      {
+        "name": "tierAtThird",
+        "type": "string",
+        "values": [
+          "a",
+          "b",
+          "c"
+        ],
+        "default": "c"
+      },
+      {
+        "name": "vocabWithEmpty",
+        "type": "string",
+        "values": [
+          "approved",
+          "rejected",
+          ""
+        ],
+        "default": ""
+      },
+      {
+        "name": "vocabNoDefault",
+        "type": "string",
+        "values": [
+          "x",
+          "y"
+        ]
+      },
+      {
+        "name": "enumTyped",
+        "type": "enum",
+        "values": [
+          "one",
+          "two"
+        ],
+        "default": "one"
+      },
+      {
+        "name": "zeroNumber",
+        "type": "number",
+        "default": 0
+      },
+      {
+        "name": "plainNumber",
+        "type": "number"
+      },
+      {
+        "name": "falseBool",
+        "type": "boolean",
+        "default": false
+      },
+      {
+        "name": "plainBool",
+        "type": "boolean"
+      },
+      {
+        "name": "dateOnly",
+        "type": "date"
+      },
+      {
+        "name": "withTime",
+        "type": "datetime"
+      },
+      {
+        "name": "stampish",
+        "type": "timestamp"
+      },
+      {
+        "name": "emptyArray",
+        "type": "array",
+        "default": []
+      },
+      {
+        "name": "scalarItems",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "objectItems",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "count": {
+              "type": "number"
+            }
+          }
+        }
+      },
+      {
+        "name": "emptyObject",
+        "type": "object",
+        "default": {}
+      },
+      {
+        "name": "propObject",
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "rank": {
+            "type": "number"
+          }
+        }
+      },
+      {
+        "name": "bareObject",
+        "type": "object"
+      },
+      {
+        "name": "relOne",
+        "type": "relation",
+        "relation": {
+          "entity": "User",
+          "cardinality": "one"
+        }
+      },
+      {
+        "name": "relMany",
+        "type": "relation",
+        "relation": {
+          "entity": "Tag",
+          "cardinality": "many"
+        }
+      },
+      {
+        "name": "intrinsicNoDefault",
+        "type": "array",
+        "intrinsic": true
+      },
+      {
+        "name": "intrinsicWithDefault",
+        "type": "number",
+        "intrinsic": true,
+        "default": 7
+      },
+      {
+        "name": "contactEmail",
+        "type": "email"
+      },
+      {
+        "name": "homepage",
+        "type": "url"
+      },
+      {
+        "name": "mobile",
+        "type": "phone"
+      },
+      {
+        "name": "externalId",
+        "type": "uuid"
+      },
+      {
+        "name": "heroShot",
+        "type": "image"
+      },
+      {
+        "name": "traitField",
+        "type": "trait"
+      },
+      {
+        "name": "orbitalField",
+        "type": "orbital"
+      },
+      {
+        "name": "moneyField",
+        "type": "money",
+        "required": true
+      },
+      {
+        "name": "fileField",
+        "type": "file",
+        "required": true
+      }
+    ]
+  },
+  "count": 7,
+  "rows": [
+    {
+      "plainString": "Plain String 1",
+      "emptyDefault": "Empty Default 1",
+      "realDefault": "Kept",
+      "tierAtFirst": "basic",
+      "tierAtThird": "a",
+      "vocabWithEmpty": "",
+      "vocabNoDefault": "x",
+      "enumTyped": "one",
+      "zeroNumber": 10,
+      "plainNumber": 10,
+      "falseBool": false,
+      "plainBool": false,
+      "dateOnly": "2026-02-15",
+      "withTime": "2026-02-15T00:00:00.000Z",
+      "stampish": "2026-02-15T00:00:00.000Z",
+      "emptyArray": [],
+      "scalarItems": [
+        "Scalar Items[0] 10",
+        "Scalar Items[1] 11",
+        "Scalar Items[2] 12"
+      ],
+      "objectItems": [
+        {
+          "label": "Label 10",
+          "count": 100
+        },
+        {
+          "label": "Label 11",
+          "count": 110
+        },
+        {
+          "label": "Label 12",
+          "count": 120
+        }
+      ],
+      "emptyObject": {},
+      "propObject": {
+        "title": "Title 1",
+        "rank": 10
+      },
+      "bareObject": null,
+      "relOne": "",
+      "relMany": [],
+      "intrinsicWithDefault": 7,
+      "contactEmail": "contactemail1@example.com",
+      "homepage": "https://example.com/homepage/1",
+      "mobile": "+1-555-1001",
+      "externalId": "00000000-0000-4000-8000-000000000001",
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-1/400/400",
+      "moneyField": 10,
+      "fileField": {
+        "name": "filefield-1.pdf",
+        "url": "https://example.com/files/filefield/1.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 1024
+      },
+      "traitField": null,
+      "orbitalField": null
+    },
+    {
+      "plainString": "Plain String 2",
+      "emptyDefault": "Empty Default 2",
+      "realDefault": "Kept",
+      "tierAtFirst": "premium",
+      "tierAtThird": "b",
+      "vocabWithEmpty": "",
+      "vocabNoDefault": "y",
+      "enumTyped": "two",
+      "zeroNumber": 20,
+      "plainNumber": 20,
+      "falseBool": true,
+      "plainBool": true,
+      "dateOnly": "2026-03-15",
+      "withTime": "2026-03-15T00:00:00.000Z",
+      "stampish": "2026-03-15T00:00:00.000Z",
+      "emptyArray": [],
+      "scalarItems": [
+        "Scalar Items[0] 20",
+        "Scalar Items[1] 21",
+        "Scalar Items[2] 22"
+      ],
+      "objectItems": [
+        {
+          "label": "Label 20",
+          "count": 200
+        },
+        {
+          "label": "Label 21",
+          "count": 210
+        },
+        {
+          "label": "Label 22",
+          "count": 220
+        }
+      ],
+      "emptyObject": {},
+      "propObject": {
+        "title": "Title 2",
+        "rank": 20
+      },
+      "bareObject": null,
+      "relOne": "",
+      "relMany": [],
+      "intrinsicWithDefault": 7,
+      "contactEmail": "contactemail2@example.com",
+      "homepage": "https://example.com/homepage/2",
+      "mobile": "+1-555-1002",
+      "externalId": "00000000-0000-4000-8000-000000000002",
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-2/400/400",
+      "moneyField": 20,
+      "fileField": {
+        "name": "filefield-2.pdf",
+        "url": "https://example.com/files/filefield/2.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 2048
+      },
+      "traitField": null,
+      "orbitalField": null
+    },
+    {
+      "plainString": "Plain String 3",
+      "emptyDefault": "Empty Default 3",
+      "realDefault": "Kept",
+      "tierAtFirst": "unlimited",
+      "tierAtThird": "c",
+      "vocabWithEmpty": "",
+      "vocabNoDefault": "x",
+      "enumTyped": "one",
+      "zeroNumber": 30,
+      "plainNumber": 30,
+      "falseBool": false,
+      "plainBool": false,
+      "dateOnly": "2026-04-15",
+      "withTime": "2026-04-15T00:00:00.000Z",
+      "stampish": "2026-04-15T00:00:00.000Z",
+      "emptyArray": [],
+      "scalarItems": [
+        "Scalar Items[0] 30",
+        "Scalar Items[1] 31",
+        "Scalar Items[2] 32"
+      ],
+      "objectItems": [
+        {
+          "label": "Label 30",
+          "count": 300
+        },
+        {
+          "label": "Label 31",
+          "count": 310
+        },
+        {
+          "label": "Label 32",
+          "count": 320
+        }
+      ],
+      "emptyObject": {},
+      "propObject": {
+        "title": "Title 3",
+        "rank": 30
+      },
+      "bareObject": null,
+      "relOne": "",
+      "relMany": [],
+      "intrinsicWithDefault": 7,
+      "contactEmail": "contactemail3@example.com",
+      "homepage": "https://example.com/homepage/3",
+      "mobile": "+1-555-1003",
+      "externalId": "00000000-0000-4000-8000-000000000003",
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-3/400/400",
+      "moneyField": 30,
+      "fileField": {
+        "name": "filefield-3.pdf",
+        "url": "https://example.com/files/filefield/3.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 3072
+      },
+      "traitField": null,
+      "orbitalField": null
+    },
+    {
+      "plainString": "Plain String 4",
+      "emptyDefault": "Empty Default 4",
+      "realDefault": "Kept",
+      "tierAtFirst": "basic",
+      "tierAtThird": "a",
+      "vocabWithEmpty": "",
+      "vocabNoDefault": "y",
+      "enumTyped": "two",
+      "zeroNumber": 40,
+      "plainNumber": 40,
+      "falseBool": true,
+      "plainBool": true,
+      "dateOnly": "2026-05-15",
+      "withTime": "2026-05-15T00:00:00.000Z",
+      "stampish": "2026-05-15T00:00:00.000Z",
+      "emptyArray": [],
+      "scalarItems": [
+        "Scalar Items[0] 40",
+        "Scalar Items[1] 41",
+        "Scalar Items[2] 42"
+      ],
+      "objectItems": [
+        {
+          "label": "Label 40",
+          "count": 400
+        },
+        {
+          "label": "Label 41",
+          "count": 410
+        },
+        {
+          "label": "Label 42",
+          "count": 420
+        }
+      ],
+      "emptyObject": {},
+      "propObject": {
+        "title": "Title 4",
+        "rank": 40
+      },
+      "bareObject": null,
+      "relOne": "",
+      "relMany": [],
+      "intrinsicWithDefault": 7,
+      "contactEmail": "contactemail4@example.com",
+      "homepage": "https://example.com/homepage/4",
+      "mobile": "+1-555-1004",
+      "externalId": "00000000-0000-4000-8000-000000000004",
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-4/400/400",
+      "moneyField": 40,
+      "fileField": {
+        "name": "filefield-4.pdf",
+        "url": "https://example.com/files/filefield/4.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 4096
+      },
+      "traitField": null,
+      "orbitalField": null
+    },
+    {
+      "plainString": "Plain String 5",
+      "emptyDefault": "Empty Default 5",
+      "realDefault": "Kept",
+      "tierAtFirst": "premium",
+      "tierAtThird": "b",
+      "vocabWithEmpty": "",
+      "vocabNoDefault": "x",
+      "enumTyped": "one",
+      "zeroNumber": 50,
+      "plainNumber": 50,
+      "falseBool": false,
+      "plainBool": false,
+      "dateOnly": "2026-06-15",
+      "withTime": "2026-06-15T00:00:00.000Z",
+      "stampish": "2026-06-15T00:00:00.000Z",
+      "emptyArray": [],
+      "scalarItems": [
+        "Scalar Items[0] 50",
+        "Scalar Items[1] 51",
+        "Scalar Items[2] 52"
+      ],
+      "objectItems": [
+        {
+          "label": "Label 50",
+          "count": 500
+        },
+        {
+          "label": "Label 51",
+          "count": 510
+        },
+        {
+          "label": "Label 52",
+          "count": 520
+        }
+      ],
+      "emptyObject": {},
+      "propObject": {
+        "title": "Title 5",
+        "rank": 50
+      },
+      "bareObject": null,
+      "relOne": "",
+      "relMany": [],
+      "intrinsicWithDefault": 7,
+      "contactEmail": "contactemail5@example.com",
+      "homepage": "https://example.com/homepage/5",
+      "mobile": "+1-555-1005",
+      "externalId": "00000000-0000-4000-8000-000000000005",
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-5/400/400",
+      "moneyField": 50,
+      "fileField": {
+        "name": "filefield-5.pdf",
+        "url": "https://example.com/files/filefield/5.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 5120
+      },
+      "traitField": null,
+      "orbitalField": null
+    },
+    {
+      "plainString": "Plain String 6",
+      "emptyDefault": "Empty Default 6",
+      "realDefault": "Kept",
+      "tierAtFirst": "unlimited",
+      "tierAtThird": "c",
+      "vocabWithEmpty": "",
+      "vocabNoDefault": "y",
+      "enumTyped": "two",
+      "zeroNumber": 60,
+      "plainNumber": 60,
+      "falseBool": true,
+      "plainBool": true,
+      "dateOnly": "2026-07-15",
+      "withTime": "2026-07-15T00:00:00.000Z",
+      "stampish": "2026-07-15T00:00:00.000Z",
+      "emptyArray": [],
+      "scalarItems": [
+        "Scalar Items[0] 60",
+        "Scalar Items[1] 61",
+        "Scalar Items[2] 62"
+      ],
+      "objectItems": [
+        {
+          "label": "Label 60",
+          "count": 600
+        },
+        {
+          "label": "Label 61",
+          "count": 610
+        },
+        {
+          "label": "Label 62",
+          "count": 620
+        }
+      ],
+      "emptyObject": {},
+      "propObject": {
+        "title": "Title 6",
+        "rank": 60
+      },
+      "bareObject": null,
+      "relOne": "",
+      "relMany": [],
+      "intrinsicWithDefault": 7,
+      "contactEmail": "contactemail6@example.com",
+      "homepage": "https://example.com/homepage/6",
+      "mobile": "+1-555-1006",
+      "externalId": "00000000-0000-4000-8000-000000000006",
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-6/400/400",
+      "moneyField": 60,
+      "fileField": {
+        "name": "filefield-6.pdf",
+        "url": "https://example.com/files/filefield/6.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 6144
+      },
+      "traitField": null,
+      "orbitalField": null
+    },
+    {
+      "plainString": "Plain String 7",
+      "emptyDefault": "Empty Default 7",
+      "realDefault": "Kept",
+      "tierAtFirst": "basic",
+      "tierAtThird": "a",
+      "vocabWithEmpty": "",
+      "vocabNoDefault": "x",
+      "enumTyped": "one",
+      "zeroNumber": 70,
+      "plainNumber": 70,
+      "falseBool": false,
+      "plainBool": false,
+      "dateOnly": "2026-08-15",
+      "withTime": "2026-08-15T00:00:00.000Z",
+      "stampish": "2026-08-15T00:00:00.000Z",
+      "emptyArray": [],
+      "scalarItems": [
+        "Scalar Items[0] 70",
+        "Scalar Items[1] 71",
+        "Scalar Items[2] 72"
+      ],
+      "objectItems": [
+        {
+          "label": "Label 70",
+          "count": 700
+        },
+        {
+          "label": "Label 71",
+          "count": 710
+        },
+        {
+          "label": "Label 72",
+          "count": 720
+        }
+      ],
+      "emptyObject": {},
+      "propObject": {
+        "title": "Title 7",
+        "rank": 70
+      },
+      "bareObject": null,
+      "relOne": "",
+      "relMany": [],
+      "intrinsicWithDefault": 7,
+      "contactEmail": "contactemail7@example.com",
+      "homepage": "https://example.com/homepage/7",
+      "mobile": "+1-555-1007",
+      "externalId": "00000000-0000-4000-8000-000000000007",
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-7/400/400",
+      "moneyField": 70,
+      "fileField": {
+        "name": "filefield-7.pdf",
+        "url": "https://example.com/files/filefield/7.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 7168
+      },
+      "traitField": null,
+      "orbitalField": null
+    }
+  ]
+}

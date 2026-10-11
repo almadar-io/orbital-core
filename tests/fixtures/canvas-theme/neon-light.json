@@ -1,0 +1,491 @@
+{
+  "theme": "neon",
+  "mode": "light",
+  "preset": {
+    "name": "neon",
+    "displayName": "Neon",
+    "tokens": {
+      "density": {
+        "spacing": {
+          "space0": "0px",
+          "space1": "4px",
+          "space2": "8px",
+          "space3": "12px",
+          "space4": "16px",
+          "space5": "20px",
+          "space6": "24px",
+          "space7": "28px",
+          "space8": "32px",
+          "space9": "36px",
+          "space10": "40px",
+          "space11": "44px",
+          "space12": "48px"
+        },
+        "buttonHeightSm": "28px",
+        "buttonHeightMd": "36px",
+        "buttonHeightLg": "44px",
+        "inputHeightSm": "28px",
+        "inputHeightMd": "36px",
+        "inputHeightLg": "44px",
+        "rowHeightCompact": "32px",
+        "rowHeightNormal": "40px",
+        "rowHeightSpacious": "48px",
+        "cardPaddingSm": "12px",
+        "cardPaddingMd": "16px",
+        "cardPaddingLg": "24px",
+        "dialogPadding": "24px",
+        "sectionGap": "32px"
+      },
+      "typeScale": {
+        "displayFamily": "\"Tilt Neon\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+        "bodyFamily": "\"Exo 2\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+        "monoFamily": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        "scale": {
+          "xs": {
+            "size": "12px",
+            "lineHeight": "16px"
+          },
+          "sm": {
+            "size": "14px",
+            "lineHeight": "20px"
+          },
+          "base": {
+            "size": "16px",
+            "lineHeight": "24px"
+          },
+          "lg": {
+            "size": "18px",
+            "lineHeight": "28px"
+          },
+          "xl": {
+            "size": "20px",
+            "lineHeight": "28px"
+          },
+          "2xl": {
+            "size": "24px",
+            "lineHeight": "32px"
+          },
+          "3xl": {
+            "size": "30px",
+            "lineHeight": "36px"
+          },
+          "4xl": {
+            "size": "36px",
+            "lineHeight": "40px"
+          },
+          "display-1": {
+            "size": "48px",
+            "lineHeight": "52px"
+          },
+          "display-2": {
+            "size": "60px",
+            "lineHeight": "64px"
+          }
+        },
+        "intents": {
+          "headingMajor": {
+            "slot": "display",
+            "size": "2xl",
+            "weight": "bold"
+          },
+          "headingMinor": {
+            "slot": "display",
+            "size": "lg",
+            "weight": "bold"
+          },
+          "bodyEmphasis": {
+            "slot": "body",
+            "size": "base",
+            "weight": "medium"
+          },
+          "bodyDefault": {
+            "slot": "body",
+            "size": "sm",
+            "weight": "normal"
+          },
+          "bodyQuiet": {
+            "slot": "body",
+            "size": "sm",
+            "weight": "normal"
+          },
+          "caption": {
+            "slot": "body",
+            "size": "xs",
+            "weight": "normal"
+          },
+          "numeric": {
+            "slot": "mono",
+            "size": "sm",
+            "weight": "medium"
+          }
+        },
+        "fontImport": "https://fonts.googleapis.com/css2?family=Tilt+Neon&family=Exo+2:wght@300;400;500;600;700&display=swap",
+        "headingWeight": "400",
+        "headingTransform": "uppercase",
+        "headingTracking": "0.08em",
+        "headingStyle": "normal",
+        "headingShadow": "0 0 2px rgba(255,255,255,0.8), 0 0 10px rgba(34,211,238,0.55)"
+      },
+      "motion": {
+        "durations": {
+          "instant": "0ms",
+          "fast": "var(--transition-fast)",
+          "normal": "var(--transition-normal)",
+          "slow": "var(--transition-slow)",
+          "dramatic": "400ms"
+        },
+        "easings": {
+          "linear": "linear",
+          "standard": "cubic-bezier(0.4, 0, 0.6, 1)",
+          "emphasized": "cubic-bezier(0.2, 0, 0, 1)",
+          "spring": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+        },
+        "shapes": {
+          "modalEnter": "scale(1.04)",
+          "modalExit": "scale(1.04)",
+          "pageEnter": "none",
+          "popoverEnter": "scale(1.02)",
+          "popoverExit": "scale(1.02)",
+          "toastEnter": "translateX(16px)",
+          "toastExit": "translateX(16px)"
+        }
+      },
+      "iconography": {
+        "family": "lucide",
+        "strokeWidth": "2",
+        "defaultSize": "16px"
+      },
+      "elevation": {
+        "cardElevation": "var(--shadow-sm)",
+        "popoverElevation": "var(--shadow-main)",
+        "dialogElevation": "var(--shadow-lg)",
+        "toastElevation": "var(--shadow-main)",
+        "interactiveElevation": "var(--shadow-sm)",
+        "pressedElevation": "var(--shadow-active)"
+      },
+      "geometry": {
+        "radiusContainer": "var(--radius-md)",
+        "radiusInteractive": "var(--radius-sm)",
+        "radiusPill": "var(--radius-full)",
+        "borderHairline": "1px",
+        "borderStandard": "var(--border-width)",
+        "borderHeavy": "var(--border-width-thick)",
+        "cornerShape": "round",
+        "cornerShapePill": "round",
+        "borderStyle": "solid",
+        "borderStyleInteractive": "solid"
+      },
+      "colors": {
+        "primary": "#0e7490",
+        "primary-hover": "#155e75",
+        "primary-foreground": "#ffffff",
+        "secondary": "#ccfbf1",
+        "secondary-hover": "#99f6e4",
+        "secondary-foreground": "#134e4a",
+        "accent": "#be185d",
+        "accent-foreground": "#ffffff",
+        "muted": "#ccfbf1",
+        "muted-foreground": "#475569",
+        "background": "#f0fdfa",
+        "foreground": "#134e4a",
+        "card": "#ffffff",
+        "card-foreground": "#134e4a",
+        "surface": "#ccfbf1",
+        "border": "rgba(34, 211, 238, 0.3)",
+        "input": "rgba(34, 211, 238, 0.35)",
+        "ring": "#22d3ee",
+        "error": "#dc2626",
+        "error-foreground": "#ffffff",
+        "success": "#15803d",
+        "success-foreground": "#ffffff",
+        "warning": "#ca8a04",
+        "warning-foreground": "#000000",
+        "info": "#2563eb",
+        "info-foreground": "#ffffff",
+        "scrim": "rgba(0, 0, 0, 0.6)",
+        "series-1": "#0e7490",
+        "series-2": "#d74291",
+        "series-3": "#6d28d9",
+        "series-4": "#b45309",
+        "series-5": "#618305",
+        "series-6": "#1d4ed8",
+        "series-7": "#a914a4",
+        "series-8": "#0f766e",
+        "diagram-ink": "#134e4a",
+        "diagram-label": "#475569",
+        "diagram-guide": "#7a8aa0",
+        "diagram-axis": "#134e4a",
+        "diagram-grid": "rgba(34,211,238,0.3)",
+        "diagram-highlight": "#be185d",
+        "diagram-fill": "#ccfbf1"
+      },
+      "radii": {
+        "none": "0px",
+        "sm": "3px",
+        "md": "6px",
+        "lg": "10px",
+        "xl": "14px",
+        "full": "9999px"
+      },
+      "shadows": {
+        "main": "0 0 8px rgba(34,211,238,0.6), 0 0 22px rgba(34,211,238,0.35), inset 0 0 10px rgba(34,211,238,0.15)",
+        "sm": "0 0 5px rgba(34,211,238,0.6), 0 0 12px rgba(34,211,238,0.3)",
+        "lg": "0 0 12px rgba(34,211,238,0.75), 0 0 40px rgba(34,211,238,0.45), 0 0 80px rgba(244,114,182,0.25)",
+        "inner": "inset 0 0 12px rgba(34,211,238,0.25)",
+        "none": "none",
+        "hover": "0 0 12px rgba(244,114,182,0.75), 0 0 30px rgba(244,114,182,0.45)",
+        "active": "0 0 4px rgba(34,211,238,0.8), inset 0 0 14px rgba(34,211,238,0.35)"
+      },
+      "typography": {
+        "border-width": "2px",
+        "border-width-thin": "1px",
+        "border-width-thick": "3px",
+        "font-family": "\"Exo 2\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+        "font-weight-normal": "500",
+        "font-weight-medium": "600",
+        "font-weight-bold": "800",
+        "letter-spacing": "0.03em",
+        "line-height": "1.5",
+        "icon-color": "#22d3ee",
+        "transition-fast": "80ms",
+        "transition-normal": "160ms",
+        "transition-slow": "150ms",
+        "transition-timing": "cubic-bezier(0.4, 0, 0.6, 1)",
+        "hover-scale": "1.0",
+        "hover-translate-y": "0",
+        "hover-translate-x": "0",
+        "active-scale": "0.98",
+        "active-translate-y": "0",
+        "focus-ring-width": "2px",
+        "focus-ring-offset": "2px",
+        "focus-ring-color": "#22d3ee"
+      },
+      "surface": {
+        "pageImage": "radial-gradient(circle at 20% 10%, rgba(34,211,238,0.10), transparent 45%), radial-gradient(circle at 80% 90%, rgba(244,114,182,0.10), transparent 45%)",
+        "edgeMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 100' preserveAspectRatio='none'><path d='M0 100 L1440 0 V100 Z'/></svg>\")",
+        "edgeHeight": "clamp(24px, 6vw, 96px)",
+        "textureMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='80'><path d='M0 20 C40 0 80 40 120 20 S160 0 160 20 M0 60 C40 40 80 80 120 60 S160 40 160 60' fill='none' stroke='black' stroke-width='1.5'/></svg>\")",
+        "textureSize": "160px 80px",
+        "accentImage": "radial-gradient(60% 80% at 15% 20%, color-mix(in oklab, var(--color-primary) 22%, transparent), transparent 70%), radial-gradient(50% 70% at 85% 30%, color-mix(in oklab, var(--color-accent) 20%, transparent), transparent 70%)"
+      },
+      "diagram": {
+        "strokeThin": "1",
+        "strokeNormal": "2",
+        "strokeBold": "3",
+        "lineCap": "round",
+        "lineJoin": "round",
+        "dash": "8 5",
+        "dot": "1 5",
+        "fillStyle": "outline",
+        "fillOpacity": "0.15",
+        "roughness": "0",
+        "glow": "4",
+        "shadow": "none",
+        "marker": "triangle",
+        "labelFont": "mono",
+        "labelSize": "xs",
+        "labelWeight": "500",
+        "labelCase": "uppercase",
+        "corner": "4px"
+      },
+      "scene": {
+        "materialRoughness": "0.25",
+        "materialMetalness": "0.4",
+        "materialFlat": "0",
+        "materialOutline": "0",
+        "lightAmbient": "0.45",
+        "lightKey": "1.2",
+        "lightKeyColor": "#c4f8ff",
+        "fog": "0.2"
+      }
+    },
+    "variants": {
+      "dark": {
+        "colors": {
+          "primary": "#22d3ee",
+          "primary-hover": "#06b6d4",
+          "primary-foreground": "#042f2e",
+          "secondary": "#0f172a",
+          "secondary-hover": "#1e293b",
+          "secondary-foreground": "#e2e8f0",
+          "accent": "#f472b6",
+          "accent-foreground": "#4a044e",
+          "muted": "#1e293b",
+          "muted-foreground": "#67e8f9",
+          "background": "#020617",
+          "foreground": "#e2e8f0",
+          "card": "#0f172a",
+          "card-foreground": "#e2e8f0",
+          "surface": "#1e293b",
+          "border": "rgba(34, 211, 238, 0.85)",
+          "input": "rgba(34, 211, 238, 0.35)",
+          "ring": "#22d3ee",
+          "error": "#ff6b6b",
+          "error-foreground": "#000000",
+          "success": "#4ade80",
+          "success-foreground": "#000000",
+          "warning": "#fbbf24",
+          "warning-foreground": "#000000",
+          "info": "#38bdf8",
+          "info-foreground": "#000000",
+          "scrim": "rgba(0, 0, 0, 0.7)",
+          "series-1": "#00cec2",
+          "series-2": "#f472b6",
+          "series-3": "#a78bfa",
+          "series-4": "#fb9e21",
+          "series-5": "#a8f470",
+          "series-6": "#60a5fa",
+          "series-7": "#e879f9",
+          "series-8": "#6cf2c8",
+          "diagram-ink": "#e2e8f0",
+          "diagram-label": "#94a3b8",
+          "diagram-guide": "#64748b",
+          "diagram-axis": "#94a3b8",
+          "diagram-grid": "rgba(34,211,238,0.18)",
+          "diagram-highlight": "#1abbe7",
+          "diagram-fill": "#0c2a3a"
+        },
+        "surface": {
+          "pageImage": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='60' height='30'><path d='M0 .5h60M0 15.5h60M30 .5v15M0 15.5v15M60 15.5v15' stroke='%23ffffff' stroke-opacity='.06' fill='none'/></svg>\")",
+          "pageImageSize": "60px 30px",
+          "diagram": "#050a1a",
+          "edgeMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 100' preserveAspectRatio='none'><path d='M0 100 L1440 0 V100 Z'/></svg>\")",
+          "edgeHeight": "clamp(24px, 6vw, 96px)",
+          "textureMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='80'><path d='M0 20 C40 0 80 40 120 20 S160 0 160 20 M0 60 C40 40 80 80 120 60 S160 40 160 60' fill='none' stroke='black' stroke-width='1.5'/></svg>\")",
+          "textureSize": "160px 80px",
+          "accentImage": "radial-gradient(60% 80% at 15% 20%, color-mix(in oklab, var(--color-primary) 22%, transparent), transparent 70%), radial-gradient(50% 70% at 85% 30%, color-mix(in oklab, var(--color-accent) 20%, transparent), transparent 70%)"
+        },
+        "diagram": {
+          "strokeThin": "1",
+          "strokeNormal": "2",
+          "strokeBold": "3",
+          "lineCap": "round",
+          "lineJoin": "round",
+          "dash": "8 5",
+          "dot": "1 5",
+          "fillStyle": "outline",
+          "fillOpacity": "0.2",
+          "roughness": "0",
+          "glow": "10",
+          "shadow": "none",
+          "marker": "triangle",
+          "labelFont": "mono",
+          "labelSize": "xs",
+          "labelWeight": "500",
+          "labelCase": "uppercase",
+          "corner": "4px"
+        },
+        "scene": {
+          "materialRoughness": "0.2",
+          "materialMetalness": "0.5",
+          "materialFlat": "0",
+          "materialOutline": "0",
+          "lightAmbient": "0.3",
+          "lightKey": "1.3",
+          "lightKeyColor": "#9defff",
+          "fog": "0.3"
+        }
+      }
+    }
+  },
+  "canvasTheme": {
+    "ground": "rgb(255, 255, 255)",
+    "surfaces": {
+      "muted": "rgb(204, 251, 241)",
+      "card": "rgb(255, 255, 255)",
+      "onPrimary": "rgb(255, 255, 255)"
+    },
+    "tones": {
+      "ink": "rgb(19, 78, 74)",
+      "label": "rgb(71, 85, 105)",
+      "guide": "rgb(122, 138, 160)",
+      "axis": "rgb(19, 78, 74)",
+      "grid": "rgba(34, 211, 238, 0.3)",
+      "highlight": "rgb(190, 24, 93)",
+      "fill": "rgb(204, 251, 241)",
+      "series-1": "rgb(14, 116, 144)",
+      "series-2": "rgb(215, 66, 145)",
+      "series-3": "rgb(109, 40, 217)",
+      "series-4": "rgb(180, 83, 9)",
+      "series-5": "rgb(97, 131, 5)",
+      "series-6": "rgb(29, 78, 216)",
+      "series-7": "rgb(169, 20, 164)",
+      "series-8": "rgb(15, 118, 110)",
+      "primary": "rgb(14, 116, 144)",
+      "accent": "rgb(190, 24, 93)",
+      "success": "rgb(21, 128, 61)",
+      "warning": "rgb(202, 138, 4)",
+      "error": "rgb(220, 38, 38)",
+      "info": "rgb(37, 99, 235)",
+      "muted": "rgb(71, 85, 105)"
+    },
+    "series": [
+      "rgb(14, 116, 144)",
+      "rgb(215, 66, 145)",
+      "rgb(109, 40, 217)",
+      "rgb(180, 83, 9)",
+      "rgb(97, 131, 5)",
+      "rgb(29, 78, 216)",
+      "rgb(169, 20, 164)",
+      "rgb(15, 118, 110)"
+    ],
+    "strokes": {
+      "thin": 1,
+      "normal": 2,
+      "bold": 3
+    },
+    "lineCap": "round",
+    "lineJoin": "round",
+    "dash": [
+      8,
+      5
+    ],
+    "dot": [
+      1,
+      5
+    ],
+    "fillStyle": "outline",
+    "fillOpacity": 0.15,
+    "roughness": 0,
+    "glow": 4,
+    "shadow": null,
+    "marker": "triangle",
+    "faces": {
+      "body": "\"Exo 2\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+      "display": "\"Tilt Neon\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+      "mono": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+    },
+    "label": {
+      "font": "mono",
+      "size": "xs",
+      "weight": "500",
+      "uppercase": true
+    },
+    "text": {
+      "xs": 12,
+      "sm": 14,
+      "base": 16,
+      "lg": 18,
+      "xl": 20,
+      "2xl": 24
+    },
+    "corner": 4,
+    "motion": {
+      "enabled": true,
+      "fastMs": 80,
+      "normalMs": 160,
+      "slowMs": 150,
+      "easing": "cubic-bezier(0.4, 0, 0.6, 1)"
+    },
+    "scene": {
+      "roughness": 0.25,
+      "metalness": 0.4,
+      "flat": false,
+      "outline": 0,
+      "ambient": 0.45,
+      "key": 1.2,
+      "keyColor": "rgb(196, 248, 255)",
+      "fog": 0.2
+    }
+  }
+}

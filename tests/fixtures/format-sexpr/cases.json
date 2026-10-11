@@ -1,0 +1,238 @@
+[
+  {
+    "expr": null,
+    "text": "null"
+  },
+  {
+    "expr": true,
+    "text": "true"
+  },
+  {
+    "expr": false,
+    "text": "false"
+  },
+  {
+    "expr": 0,
+    "text": "0"
+  },
+  {
+    "expr": 3,
+    "text": "3"
+  },
+  {
+    "expr": -2,
+    "text": "-2"
+  },
+  {
+    "expr": 3.5,
+    "text": "3.5"
+  },
+  {
+    "expr": 0.25,
+    "text": "0.25"
+  },
+  {
+    "expr": 1e-7,
+    "text": "1e-7"
+  },
+  {
+    "expr": "admin",
+    "text": "\"admin\""
+  },
+  {
+    "expr": "",
+    "text": "\"\""
+  },
+  {
+    "expr": "say \"hi\"",
+    "text": "\"say \\\"hi\\\"\""
+  },
+  {
+    "expr": "línea\nnueva",
+    "text": "\"línea\\nnueva\""
+  },
+  {
+    "expr": "emoji ✓",
+    "text": "\"emoji ✓\""
+  },
+  {
+    "expr": "@entity.qty",
+    "text": "@entity.qty"
+  },
+  {
+    "expr": "@payload.id",
+    "text": "@payload.id"
+  },
+  {
+    "expr": "@user",
+    "text": "@user"
+  },
+  {
+    "expr": "@config.max",
+    "text": "@config.max"
+  },
+  {
+    "expr": [
+      ">",
+      "@entity.qty",
+      0
+    ],
+    "text": "(> @entity.qty 0)"
+  },
+  {
+    "expr": [
+      "and",
+      [
+        ">",
+        "@entity.qty",
+        0
+      ],
+      [
+        "=",
+        "@user.role",
+        "admin"
+      ]
+    ],
+    "text": "(and (> @entity.qty 0) (= @user.role \"admin\"))"
+  },
+  {
+    "expr": [
+      "or",
+      [
+        "not",
+        "@entity.done"
+      ],
+      [
+        "array/includes",
+        [
+          "a",
+          "b"
+        ],
+        "@entity.tag"
+      ]
+    ],
+    "text": "(or (not @entity.done) (array/includes (a \"b\") @entity.tag))"
+  },
+  {
+    "expr": [
+      "main"
+    ],
+    "text": "(main)"
+  },
+  {
+    "expr": [],
+    "text": "[]"
+  },
+  {
+    "expr": {},
+    "text": "{}"
+  },
+  {
+    "expr": [
+      1,
+      2,
+      3
+    ],
+    "text": "[1 2 3]"
+  },
+  {
+    "expr": [
+      [
+        1,
+        2
+      ],
+      [
+        3
+      ]
+    ],
+    "text": "[[1 2] [3]]"
+  },
+  {
+    "expr": [
+      null,
+      true,
+      "x"
+    ],
+    "text": "[null true \"x\"]"
+  },
+  {
+    "expr": [
+      "emit",
+      "SAVED",
+      {
+        "n": 1,
+        "id": "@entity.id"
+      }
+    ],
+    "text": "(emit \"SAVED\" { id: @entity.id, n: 1 })"
+  },
+  {
+    "expr": [
+      "set",
+      "@entity.meta",
+      {
+        "z": {
+          "b": 2,
+          "a": [
+            1
+          ]
+        },
+        "a": null
+      }
+    ],
+    "text": "(set @entity.meta { a: null, z: { a: [1], b: 2 } })"
+  },
+  {
+    "expr": [
+      "array/len",
+      [
+        1,
+        2,
+        3
+      ]
+    ],
+    "text": "(array/len [1 2 3])"
+  },
+  {
+    "expr": [
+      "str/concat",
+      "a@b",
+      "@entity.name"
+    ],
+    "text": "(str/concat \"a@b\" @entity.name)"
+  },
+  {
+    "expr": [
+      "quote",
+      "[\"+\",\"\\u0040entity.x\",1]"
+    ],
+    "text": "(quote (+ @entity.x 1))"
+  },
+  {
+    "expr": [
+      "quote",
+      "{\"x\":[1,\"\\u0040entity.z\"],\"y\":\"p\\u0040q\"}"
+    ],
+    "text": "(quote { x: [1 @entity.z], y: \"p@q\" })"
+  },
+  {
+    "expr": [
+      "quasiquote",
+      "[\"+\",[\"unquote\",0],1]",
+      "@entity.x"
+    ],
+    "text": "(quasiquote (+ (unquote @entity.x) 1))"
+  },
+  {
+    "expr": [
+      "quasiquote",
+      "{\"a\":\"lit\",\"b\":[\"unquote\",0]}",
+      [
+        "*",
+        "@entity.n",
+        2
+      ]
+    ],
+    "text": "(quasiquote { a: \"lit\", b: (unquote (* @entity.n 2)) })"
+  }
+]

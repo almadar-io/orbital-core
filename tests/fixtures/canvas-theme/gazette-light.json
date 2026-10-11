@@ -1,0 +1,474 @@
+{
+  "theme": "gazette",
+  "mode": "light",
+  "preset": {
+    "name": "gazette",
+    "displayName": "Gazette",
+    "tokens": {
+      "density": {
+        "spacing": {
+          "space0": "0px",
+          "space1": "4px",
+          "space2": "8px",
+          "space3": "12px",
+          "space4": "16px",
+          "space5": "20px",
+          "space6": "24px",
+          "space7": "32px",
+          "space8": "40px",
+          "space9": "48px",
+          "space10": "56px",
+          "space11": "64px",
+          "space12": "80px"
+        },
+        "buttonHeightSm": "36px",
+        "buttonHeightMd": "40px",
+        "buttonHeightLg": "44px",
+        "inputHeightSm": "36px",
+        "inputHeightMd": "40px",
+        "inputHeightLg": "44px",
+        "rowHeightCompact": "44px",
+        "rowHeightNormal": "56px",
+        "rowHeightSpacious": "64px",
+        "cardPaddingSm": "16px",
+        "cardPaddingMd": "28px",
+        "cardPaddingLg": "32px",
+        "dialogPadding": "32px",
+        "sectionGap": "48px"
+      },
+      "typeScale": {
+        "displayFamily": "\"Fraunces\", Georgia, \"Times New Roman\", serif",
+        "bodyFamily": "\"Newsreader\", Georgia, \"Times New Roman\", serif",
+        "monoFamily": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        "scale": {
+          "xs": {
+            "size": "13px",
+            "lineHeight": "18px"
+          },
+          "sm": {
+            "size": "14px",
+            "lineHeight": "22px"
+          },
+          "base": {
+            "size": "16px",
+            "lineHeight": "28px"
+          },
+          "lg": {
+            "size": "19px",
+            "lineHeight": "30px"
+          },
+          "xl": {
+            "size": "22px",
+            "lineHeight": "32px"
+          },
+          "2xl": {
+            "size": "26px",
+            "lineHeight": "34px"
+          },
+          "3xl": {
+            "size": "30px",
+            "lineHeight": "38px"
+          },
+          "4xl": {
+            "size": "38px",
+            "lineHeight": "46px"
+          },
+          "display-1": {
+            "size": "52px",
+            "lineHeight": "60px"
+          },
+          "display-2": {
+            "size": "68px",
+            "lineHeight": "76px"
+          }
+        },
+        "intents": {
+          "headingMajor": {
+            "slot": "display",
+            "size": "3xl",
+            "weight": "bold"
+          },
+          "headingMinor": {
+            "slot": "display",
+            "size": "xl",
+            "weight": "bold"
+          },
+          "bodyEmphasis": {
+            "slot": "body",
+            "size": "base",
+            "weight": "medium"
+          },
+          "bodyDefault": {
+            "slot": "body",
+            "size": "base",
+            "weight": "normal"
+          },
+          "bodyQuiet": {
+            "slot": "body",
+            "size": "sm",
+            "weight": "normal"
+          },
+          "caption": {
+            "slot": "body",
+            "size": "xs",
+            "weight": "normal"
+          },
+          "numeric": {
+            "slot": "mono",
+            "size": "sm",
+            "weight": "medium"
+          }
+        },
+        "fontImport": "https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,600;0,700;1,400;1,600;1,700&family=Newsreader:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap",
+        "headingWeight": "600",
+        "headingTransform": "none",
+        "headingTracking": "-0.02em",
+        "headingStyle": "italic",
+        "headingShadow": "none"
+      },
+      "motion": {
+        "durations": {
+          "instant": "0ms",
+          "fast": "250ms",
+          "normal": "400ms",
+          "slow": "600ms",
+          "dramatic": "900ms"
+        },
+        "easings": {
+          "linear": "linear",
+          "standard": "cubic-bezier(0.2, 0, 0, 1)",
+          "emphasized": "cubic-bezier(0.2, 0, 0, 1)",
+          "spring": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+        },
+        "shapes": {
+          "modalEnter": "translateY(10px)",
+          "modalExit": "translateY(10px)",
+          "pageEnter": "translateY(8px)",
+          "popoverEnter": "translateY(4px)",
+          "popoverExit": "translateY(4px)",
+          "toastEnter": "translateY(10px)",
+          "toastExit": "translateY(10px)"
+        }
+      },
+      "iconography": {
+        "family": "phosphor-duotone",
+        "strokeWidth": "1.5",
+        "defaultSize": "20px"
+      },
+      "elevation": {
+        "cardElevation": "none",
+        "popoverElevation": "none",
+        "dialogElevation": "none",
+        "toastElevation": "none",
+        "interactiveElevation": "none",
+        "pressedElevation": "none"
+      },
+      "geometry": {
+        "radiusContainer": "0px",
+        "radiusInteractive": "0px",
+        "radiusPill": "var(--radius-full)",
+        "borderHairline": "1px",
+        "borderStandard": "1px",
+        "borderHeavy": "2px",
+        "cornerShape": "round",
+        "cornerShapePill": "round",
+        "borderStyle": "solid",
+        "borderStyleInteractive": "solid"
+      },
+      "colors": {
+        "primary": "#1f3a5a",
+        "primary-hover": "#172c45",
+        "primary-foreground": "#fdfbf6",
+        "secondary": "#5c7a4d",
+        "secondary-hover": "#4f6c41",
+        "secondary-foreground": "#fdfbf6",
+        "accent": "#a85436",
+        "accent-foreground": "#fdfbf6",
+        "muted": "#f3eee3",
+        "muted-foreground": "#6b5f55",
+        "background": "#fdfbf6",
+        "foreground": "#1a1614",
+        "card": "#ffffff",
+        "card-foreground": "#1a1614",
+        "surface": "#f8f3e8",
+        "border": "#e6dccb",
+        "input": "#e6dccb",
+        "ring": "#1f3a5a",
+        "error": "#b3402c",
+        "error-foreground": "#fdfbf6",
+        "success": "#5a7a4b",
+        "success-foreground": "#fdfbf6",
+        "warning": "#c08a2e",
+        "warning-foreground": "#1a1614",
+        "info": "#4a6b8a",
+        "info-foreground": "#fdfbf6",
+        "scrim": "rgba(0, 0, 0, 0.6)",
+        "series-1": "#1f3a5a",
+        "series-2": "#669875",
+        "series-3": "#e15637",
+        "series-4": "#8e7600",
+        "series-5": "#6a3a5a",
+        "series-6": "#2a6a6a",
+        "series-7": "#614726",
+        "series-8": "#4a6a8a",
+        "diagram-ink": "#1a1614",
+        "diagram-label": "#3a322c",
+        "diagram-guide": "#8a8070",
+        "diagram-axis": "#5a5046",
+        "diagram-grid": "#e6dccb",
+        "diagram-highlight": "#ae612e",
+        "diagram-fill": "#1f3a5a"
+      },
+      "radii": {
+        "none": "0px",
+        "sm": "0px",
+        "md": "0px",
+        "lg": "0px",
+        "xl": "0px",
+        "full": "9999px"
+      },
+      "shadows": {
+        "main": "none",
+        "sm": "none",
+        "lg": "none",
+        "inner": "none",
+        "none": "none",
+        "hover": "none",
+        "active": "none"
+      },
+      "typography": {
+        "border-width": "1px",
+        "border-width-thin": "1px",
+        "border-width-thick": "2px",
+        "font-family": "\"Newsreader\", Georgia, \"Times New Roman\", serif",
+        "font-weight-normal": "400",
+        "font-weight-medium": "500",
+        "font-weight-bold": "700",
+        "letter-spacing": "0",
+        "line-height": "1.7",
+        "icon-color": "#1a1614",
+        "transition-fast": "250ms",
+        "transition-normal": "400ms",
+        "transition-slow": "600ms",
+        "transition-timing": "cubic-bezier(0.2, 0, 0, 1)",
+        "hover-scale": "1",
+        "hover-translate-y": "-2px",
+        "hover-translate-x": "0",
+        "active-scale": "0.99",
+        "active-translate-y": "0",
+        "focus-ring-width": "2px",
+        "focus-ring-offset": "3px",
+        "focus-ring-color": "#1f3a5a"
+      },
+      "diagram": {
+        "strokeThin": "0.75px",
+        "strokeNormal": "1px",
+        "strokeBold": "2px",
+        "lineCap": "butt",
+        "lineJoin": "miter",
+        "dash": "4 3",
+        "dot": "1 3",
+        "fillStyle": "hatch",
+        "fillOpacity": "0.2",
+        "roughness": "0",
+        "glow": "0",
+        "shadow": "none",
+        "marker": "open",
+        "labelFont": "display",
+        "labelSize": "sm",
+        "labelWeight": "500",
+        "labelCase": "none",
+        "corner": "0px"
+      },
+      "scene": {
+        "materialRoughness": "0.8",
+        "materialMetalness": "0",
+        "materialFlat": "0",
+        "materialOutline": "0",
+        "lightAmbient": "0.65",
+        "lightKey": "0.9",
+        "lightKeyColor": "#fff6e0",
+        "fog": "0.05"
+      },
+      "surface": {
+        "edgeMask": "none",
+        "edgeHeight": "0px",
+        "textureMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><path d='M0 31.5H32' stroke='black' stroke-width='1'/></svg>\")",
+        "textureSize": "32px 32px",
+        "accentImage": "none"
+      }
+    },
+    "variants": {
+      "dark": {
+        "colors": {
+          "primary": "#8fb0d0",
+          "primary-hover": "#a5c0db",
+          "primary-foreground": "#14110d",
+          "secondary": "#8aac76",
+          "secondary-hover": "#9dbf89",
+          "secondary-foreground": "#14110d",
+          "accent": "#c0664a",
+          "accent-foreground": "#14110d",
+          "muted": "#1f1a16",
+          "muted-foreground": "#a89e91",
+          "background": "#14110d",
+          "foreground": "#f5efe6",
+          "card": "#1f1a16",
+          "card-foreground": "#f5efe6",
+          "surface": "#1a1612",
+          "border": "#2e2620",
+          "input": "#2e2620",
+          "ring": "#8fb0d0",
+          "error": "#d96650",
+          "error-foreground": "#14110d",
+          "success": "#8aac76",
+          "success-foreground": "#14110d",
+          "warning": "#d9a85a",
+          "warning-foreground": "#14110d",
+          "info": "#7a9ec0",
+          "info-foreground": "#14110d",
+          "scrim": "rgba(0, 0, 0, 0.7)",
+          "series-1": "#5a87bd",
+          "series-2": "#658455",
+          "series-3": "#d88e61",
+          "series-4": "#ac7d25",
+          "series-5": "#ac7299",
+          "series-6": "#419090",
+          "series-7": "#8b7763",
+          "series-8": "#47798c",
+          "diagram-ink": "#f5efe6",
+          "diagram-label": "#d8cfc0",
+          "diagram-guide": "#8a8070",
+          "diagram-axis": "#a89e8c",
+          "diagram-grid": "#342e28",
+          "diagram-highlight": "#b2612f",
+          "diagram-fill": "#8fb0d0"
+        },
+        "typography": {
+          "border-width": "1px",
+          "border-width-thin": "1px",
+          "border-width-thick": "2px",
+          "font-family": "\"Newsreader\", Georgia, \"Times New Roman\", serif",
+          "font-weight-normal": "400",
+          "font-weight-medium": "500",
+          "font-weight-bold": "700",
+          "letter-spacing": "0",
+          "line-height": "1.7",
+          "icon-color": "#f5efe6",
+          "transition-fast": "250ms",
+          "transition-normal": "400ms",
+          "transition-slow": "600ms",
+          "transition-timing": "cubic-bezier(0.2, 0, 0, 1)",
+          "hover-scale": "1",
+          "hover-translate-y": "-2px",
+          "hover-translate-x": "0",
+          "active-scale": "0.99",
+          "active-translate-y": "0",
+          "focus-ring-width": "2px",
+          "focus-ring-offset": "3px",
+          "focus-ring-color": "#8fb0d0"
+        }
+      }
+    }
+  },
+  "canvasTheme": {
+    "ground": "rgb(255, 255, 255)",
+    "surfaces": {
+      "muted": "rgb(243, 238, 227)",
+      "card": "rgb(255, 255, 255)",
+      "onPrimary": "rgb(253, 251, 246)"
+    },
+    "tones": {
+      "ink": "rgb(26, 22, 20)",
+      "label": "rgb(58, 50, 44)",
+      "guide": "rgb(138, 128, 112)",
+      "axis": "rgb(90, 80, 70)",
+      "grid": "rgb(230, 220, 203)",
+      "highlight": "rgb(174, 97, 46)",
+      "fill": "rgb(31, 58, 90)",
+      "series-1": "rgb(31, 58, 90)",
+      "series-2": "rgb(102, 152, 117)",
+      "series-3": "rgb(225, 86, 55)",
+      "series-4": "rgb(142, 118, 0)",
+      "series-5": "rgb(106, 58, 90)",
+      "series-6": "rgb(42, 106, 106)",
+      "series-7": "rgb(97, 71, 38)",
+      "series-8": "rgb(74, 106, 138)",
+      "primary": "rgb(31, 58, 90)",
+      "accent": "rgb(168, 84, 54)",
+      "success": "rgb(90, 122, 75)",
+      "warning": "rgb(192, 138, 46)",
+      "error": "rgb(179, 64, 44)",
+      "info": "rgb(74, 107, 138)",
+      "muted": "rgb(107, 95, 85)"
+    },
+    "series": [
+      "rgb(31, 58, 90)",
+      "rgb(102, 152, 117)",
+      "rgb(225, 86, 55)",
+      "rgb(142, 118, 0)",
+      "rgb(106, 58, 90)",
+      "rgb(42, 106, 106)",
+      "rgb(97, 71, 38)",
+      "rgb(74, 106, 138)"
+    ],
+    "strokes": {
+      "thin": 0.75,
+      "normal": 1,
+      "bold": 2
+    },
+    "lineCap": "butt",
+    "lineJoin": "miter",
+    "dash": [
+      4,
+      3
+    ],
+    "dot": [
+      1,
+      3
+    ],
+    "fillStyle": "hatch",
+    "fillOpacity": 0.2,
+    "roughness": 0,
+    "glow": 0,
+    "shadow": null,
+    "marker": "open",
+    "faces": {
+      "body": "\"Newsreader\", Georgia, \"Times New Roman\", serif",
+      "display": "\"Fraunces\", Georgia, \"Times New Roman\", serif",
+      "mono": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+    },
+    "label": {
+      "font": "display",
+      "size": "sm",
+      "weight": "500",
+      "uppercase": false
+    },
+    "text": {
+      "xs": 13,
+      "sm": 14,
+      "base": 16,
+      "lg": 19,
+      "xl": 22,
+      "2xl": 26
+    },
+    "corner": 0,
+    "motion": {
+      "enabled": true,
+      "fastMs": 250,
+      "normalMs": 400,
+      "slowMs": 600,
+      "easing": "cubic-bezier(0.2, 0, 0, 1)"
+    },
+    "scene": {
+      "roughness": 0.8,
+      "metalness": 0,
+      "flat": false,
+      "outline": 0,
+      "ambient": 0.65,
+      "key": 0.9,
+      "keyColor": "rgb(255, 246, 224)",
+      "fog": 0.05
+    }
+  }
+}

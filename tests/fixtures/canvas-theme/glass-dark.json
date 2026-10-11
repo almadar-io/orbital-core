@@ -1,0 +1,503 @@
+{
+  "theme": "glass",
+  "mode": "dark",
+  "preset": {
+    "name": "glass",
+    "displayName": "Glass",
+    "tokens": {
+      "density": {
+        "spacing": {
+          "space0": "0px",
+          "space1": "4px",
+          "space2": "8px",
+          "space3": "12px",
+          "space4": "16px",
+          "space5": "20px",
+          "space6": "24px",
+          "space7": "28px",
+          "space8": "32px",
+          "space9": "36px",
+          "space10": "40px",
+          "space11": "44px",
+          "space12": "48px"
+        },
+        "buttonHeightSm": "32px",
+        "buttonHeightMd": "40px",
+        "buttonHeightLg": "48px",
+        "inputHeightSm": "32px",
+        "inputHeightMd": "40px",
+        "inputHeightLg": "48px",
+        "rowHeightCompact": "36px",
+        "rowHeightNormal": "44px",
+        "rowHeightSpacious": "52px",
+        "cardPaddingSm": "16px",
+        "cardPaddingMd": "20px",
+        "cardPaddingLg": "28px",
+        "dialogPadding": "28px",
+        "sectionGap": "40px"
+      },
+      "typeScale": {
+        "displayFamily": "\"Sora\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+        "bodyFamily": "\"Outfit\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+        "monoFamily": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        "scale": {
+          "xs": {
+            "size": "12px",
+            "lineHeight": "16px"
+          },
+          "sm": {
+            "size": "14px",
+            "lineHeight": "20px"
+          },
+          "base": {
+            "size": "16px",
+            "lineHeight": "24px"
+          },
+          "lg": {
+            "size": "18px",
+            "lineHeight": "28px"
+          },
+          "xl": {
+            "size": "20px",
+            "lineHeight": "28px"
+          },
+          "2xl": {
+            "size": "24px",
+            "lineHeight": "32px"
+          },
+          "3xl": {
+            "size": "30px",
+            "lineHeight": "36px"
+          },
+          "4xl": {
+            "size": "36px",
+            "lineHeight": "40px"
+          },
+          "display-1": {
+            "size": "48px",
+            "lineHeight": "52px"
+          },
+          "display-2": {
+            "size": "60px",
+            "lineHeight": "64px"
+          }
+        },
+        "intents": {
+          "headingMajor": {
+            "slot": "display",
+            "size": "2xl",
+            "weight": "bold"
+          },
+          "headingMinor": {
+            "slot": "display",
+            "size": "lg",
+            "weight": "medium"
+          },
+          "bodyEmphasis": {
+            "slot": "body",
+            "size": "base",
+            "weight": "medium"
+          },
+          "bodyDefault": {
+            "slot": "body",
+            "size": "sm",
+            "weight": "normal"
+          },
+          "bodyQuiet": {
+            "slot": "body",
+            "size": "sm",
+            "weight": "normal"
+          },
+          "caption": {
+            "slot": "body",
+            "size": "xs",
+            "weight": "normal"
+          },
+          "numeric": {
+            "slot": "mono",
+            "size": "sm",
+            "weight": "medium"
+          }
+        },
+        "fontImport": "https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=Outfit:wght@300;400;500;600&display=swap",
+        "headingWeight": "600",
+        "headingTransform": "none",
+        "headingTracking": "-0.02em",
+        "headingStyle": "normal",
+        "headingShadow": "none"
+      },
+      "motion": {
+        "durations": {
+          "instant": "0ms",
+          "fast": "var(--transition-fast)",
+          "normal": "var(--transition-normal)",
+          "slow": "var(--transition-slow)",
+          "dramatic": "700ms"
+        },
+        "easings": {
+          "linear": "linear",
+          "standard": "cubic-bezier(0.22, 1, 0.36, 1)",
+          "emphasized": "cubic-bezier(0.2, 0, 0, 1)",
+          "spring": "cubic-bezier(0.34, 1.56, 0.64, 1)"
+        },
+        "shapes": {
+          "modalEnter": "scale(0.92) translateY(12px)",
+          "modalExit": "scale(0.92) translateY(12px)",
+          "pageEnter": "translateY(12px)",
+          "popoverEnter": "scale(0.95)",
+          "popoverExit": "scale(0.95)",
+          "toastEnter": "translateY(16px)",
+          "toastExit": "translateY(16px)"
+        }
+      },
+      "iconography": {
+        "family": "phosphor-duotone",
+        "strokeWidth": "1.5",
+        "defaultSize": "16px"
+      },
+      "elevation": {
+        "cardElevation": "var(--shadow-main)",
+        "popoverElevation": "var(--shadow-lg)",
+        "dialogElevation": "var(--shadow-lg)",
+        "toastElevation": "var(--shadow-main)",
+        "interactiveElevation": "var(--shadow-sm)",
+        "pressedElevation": "var(--shadow-inner)"
+      },
+      "geometry": {
+        "radiusContainer": "var(--radius-xl)",
+        "radiusInteractive": "var(--radius-lg)",
+        "radiusPill": "var(--radius-full)",
+        "borderHairline": "1px",
+        "borderStandard": "var(--border-width)",
+        "borderHeavy": "var(--border-width-thick)",
+        "cornerShape": "round",
+        "cornerShapePill": "round",
+        "borderStyle": "solid",
+        "borderStyleInteractive": "solid"
+      },
+      "colors": {
+        "primary": "#4058d6",
+        "primary-hover": "#3448b8",
+        "primary-foreground": "#ffffff",
+        "secondary": "rgba(255, 255, 255, 0.55)",
+        "secondary-hover": "rgba(255, 255, 255, 0.7)",
+        "secondary-foreground": "#3f3d56",
+        "accent": "#c2417a",
+        "accent-foreground": "#ffffff",
+        "muted": "rgba(255, 255, 255, 0.5)",
+        "muted-foreground": "#5d6a7f",
+        "background": "#eef1f8",
+        "foreground": "#1e2235",
+        "card": "rgba(255, 255, 255, 0.62)",
+        "card-foreground": "#1e2235",
+        "surface": "rgba(255, 255, 255, 0.55)",
+        "border": "rgba(255, 255, 255, 0.35)",
+        "input": "rgba(64, 88, 214, 0.25)",
+        "ring": "#4058d6",
+        "error": "#e11d48",
+        "error-foreground": "#ffffff",
+        "success": "#047857",
+        "success-foreground": "#ffffff",
+        "warning": "#d97706",
+        "warning-foreground": "#000000",
+        "info": "#0270ae",
+        "info-foreground": "#ffffff",
+        "scrim": "rgba(0, 0, 0, 0.6)",
+        "series-1": "#4479f5",
+        "series-2": "#c2417a",
+        "series-3": "#1f8aa8",
+        "series-4": "#834bca",
+        "series-5": "#2e9c7b",
+        "series-6": "#b05b0a",
+        "series-7": "#0e6ba2",
+        "series-8": "#974890",
+        "diagram-ink": "#1e2235",
+        "diagram-label": "#44506a",
+        "diagram-guide": "#7c88a2",
+        "diagram-axis": "#5d6a7f",
+        "diagram-grid": "rgba(30,34,53,0.10)",
+        "diagram-highlight": "#4058d6",
+        "diagram-fill": "#c9d3f5"
+      },
+      "radii": {
+        "none": "0px",
+        "sm": "12px",
+        "md": "16px",
+        "lg": "22px",
+        "xl": "28px",
+        "full": "9999px"
+      },
+      "shadows": {
+        "main": "0 8px 32px rgba(31,38,135,0.14)",
+        "sm": "0 4px 16px rgba(31,38,135,0.10)",
+        "lg": "0 16px 48px rgba(31,38,135,0.20)",
+        "inner": "inset 0 1px 0 rgba(255,255,255,0.6)",
+        "none": "none",
+        "hover": "0 12px 40px rgba(31,38,135,0.22)",
+        "active": "0 2px 8px rgba(31,38,135,0.12)"
+      },
+      "typography": {
+        "border-width": "1px",
+        "border-width-thin": "1px",
+        "border-width-thick": "2px",
+        "font-family": "\"Outfit\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+        "font-weight-normal": "400",
+        "font-weight-medium": "500",
+        "font-weight-bold": "650",
+        "letter-spacing": "-0.005em",
+        "line-height": "1.6",
+        "icon-color": "#4058d6",
+        "transition-fast": "120ms",
+        "transition-normal": "300ms",
+        "transition-slow": "500ms",
+        "transition-timing": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "hover-scale": "1.01",
+        "hover-translate-y": "-1px",
+        "hover-translate-x": "0",
+        "active-scale": "0.99",
+        "active-translate-y": "0",
+        "focus-ring-width": "2px",
+        "focus-ring-offset": "2px",
+        "focus-ring-color": "#4058d6"
+      },
+      "surface": {
+        "backdrop": "blur(20px) saturate(1.6)",
+        "cardImage": "linear-gradient(135deg, rgba(255,255,255,0.45), rgba(255,255,255,0.05))",
+        "pageImage": "radial-gradient(60% 50% at 15% 10%, rgba(64,88,214,0.22), transparent 70%), radial-gradient(50% 45% at 85% 20%, rgba(194,65,122,0.14), transparent 70%), radial-gradient(55% 50% at 70% 90%, rgba(56,160,190,0.16), transparent 70%), radial-gradient(45% 40% at 10% 85%, rgba(64,88,214,0.12), transparent 70%)",
+        "pageImageSize": "100% 100%",
+        "edgeMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 100' preserveAspectRatio='none'><path d='M0 60 C240 100 480 100 720 60 C960 20 1200 20 1440 60 V100 H0 Z'/></svg>\")",
+        "edgeHeight": "clamp(24px, 6vw, 96px)",
+        "textureMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><circle cx='3' cy='3' r='1.5'/></svg>\")",
+        "textureSize": "24px 24px",
+        "accentImage": "radial-gradient(60% 80% at 15% 20%, color-mix(in oklab, var(--color-primary) 22%, transparent), transparent 70%), radial-gradient(50% 70% at 85% 30%, color-mix(in oklab, var(--color-accent) 20%, transparent), transparent 70%)"
+      },
+      "diagram": {
+        "strokeThin": "1",
+        "strokeNormal": "1.5",
+        "strokeBold": "2.5",
+        "lineCap": "round",
+        "lineJoin": "round",
+        "dash": "6 5",
+        "dot": "1 5",
+        "fillStyle": "tint",
+        "fillOpacity": "0.22",
+        "roughness": "0",
+        "glow": "0",
+        "shadow": "0 6px 18px rgba(64,88,214,0.18)",
+        "marker": "open",
+        "labelFont": "body",
+        "labelSize": "sm",
+        "labelWeight": "500",
+        "labelCase": "none",
+        "corner": "12px"
+      },
+      "scene": {
+        "materialRoughness": "0.15",
+        "materialMetalness": "0.1",
+        "materialFlat": "0",
+        "materialOutline": "0",
+        "lightAmbient": "0.6",
+        "lightKey": "1",
+        "lightKeyColor": "#f0f4ff",
+        "fog": "0.15"
+      }
+    },
+    "variants": {
+      "dark": {
+        "colors": {
+          "primary": "#8aa0ff",
+          "primary-hover": "#a0b2ff",
+          "primary-foreground": "#0b1020",
+          "secondary": "rgba(30, 36, 66, 0.55)",
+          "secondary-hover": "rgba(38, 45, 80, 0.65)",
+          "secondary-foreground": "#e2e5f4",
+          "accent": "#f08cb0",
+          "accent-foreground": "#160b2e",
+          "muted": "rgba(30, 36, 66, 0.55)",
+          "muted-foreground": "#8f96b8",
+          "background": "#0b1020",
+          "foreground": "#e7e9f5",
+          "card": "rgba(22, 27, 51, 0.58)",
+          "card-foreground": "#e7e9f5",
+          "surface": "rgba(30, 36, 66, 0.55)",
+          "border": "rgba(255, 255, 255, 0.35)",
+          "input": "rgba(255, 255, 255, 0.2)",
+          "ring": "#8aa0ff",
+          "error": "#fb7185",
+          "error-foreground": "#000000",
+          "success": "#34d399",
+          "success-foreground": "#000000",
+          "warning": "#fbbf24",
+          "warning-foreground": "#000000",
+          "info": "#38bdf8",
+          "info-foreground": "#000000",
+          "scrim": "rgba(0, 0, 0, 0.7)",
+          "series-1": "#459ae6",
+          "series-2": "#ff8fc0",
+          "series-3": "#5fd0e8",
+          "series-4": "#c099fa",
+          "series-5": "#6bffe1",
+          "series-6": "#ffb36a",
+          "series-7": "#0aa6cb",
+          "series-8": "#e273d4",
+          "diagram-ink": "#e7e9f5",
+          "diagram-label": "#aab2cc",
+          "diagram-guide": "#7f8aad",
+          "diagram-axis": "#aab2cc",
+          "diagram-grid": "rgba(231,233,245,0.12)",
+          "diagram-highlight": "#8aa0ff",
+          "diagram-fill": "#2a3263"
+        },
+        "typography": {
+          "border-width": "1px",
+          "border-width-thin": "1px",
+          "border-width-thick": "2px",
+          "font-family": "\"Outfit\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+          "font-weight-normal": "400",
+          "font-weight-medium": "500",
+          "font-weight-bold": "650",
+          "letter-spacing": "-0.005em",
+          "line-height": "1.6",
+          "icon-color": "#8aa0ff",
+          "transition-fast": "120ms",
+          "transition-normal": "300ms",
+          "transition-slow": "500ms",
+          "transition-timing": "cubic-bezier(0.22, 1, 0.36, 1)",
+          "hover-scale": "1.01",
+          "hover-translate-y": "-1px",
+          "hover-translate-x": "0",
+          "active-scale": "0.99",
+          "active-translate-y": "0",
+          "focus-ring-width": "2px",
+          "focus-ring-offset": "2px",
+          "focus-ring-color": "#8aa0ff"
+        },
+        "shadows": {
+          "main": "0 8px 32px rgba(0,0,0,0.40)",
+          "sm": "0 4px 16px rgba(0,0,0,0.30)",
+          "lg": "0 16px 48px rgba(0,0,0,0.55)",
+          "inner": "inset 0 1px 0 rgba(255,255,255,0.10)",
+          "none": "none",
+          "hover": "0 12px 40px rgba(0,0,0,0.50)",
+          "active": "0 2px 8px rgba(0,0,0,0.35)"
+        },
+        "surface": {
+          "backdrop": "blur(20px) saturate(1.6)",
+          "cardImage": "linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.01))",
+          "pageImage": "radial-gradient(60% 50% at 15% 10%, rgba(138,160,255,0.28), transparent 70%), radial-gradient(50% 45% at 85% 20%, rgba(240,140,176,0.16), transparent 70%), radial-gradient(55% 50% at 70% 90%, rgba(56,160,190,0.16), transparent 70%), radial-gradient(45% 40% at 10% 85%, rgba(138,160,255,0.14), transparent 70%)",
+          "pageImageSize": "100% 100%",
+          "edgeMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 100' preserveAspectRatio='none'><path d='M0 60 C240 100 480 100 720 60 C960 20 1200 20 1440 60 V100 H0 Z'/></svg>\")",
+          "edgeHeight": "clamp(24px, 6vw, 96px)",
+          "textureMask": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><circle cx='3' cy='3' r='1.5'/></svg>\")",
+          "textureSize": "24px 24px",
+          "accentImage": "radial-gradient(60% 80% at 15% 20%, color-mix(in oklab, var(--color-primary) 22%, transparent), transparent 70%), radial-gradient(50% 70% at 85% 30%, color-mix(in oklab, var(--color-accent) 20%, transparent), transparent 70%)"
+        }
+      }
+    }
+  },
+  "canvasTheme": {
+    "ground": "rgba(22, 27, 51, 0.58)",
+    "surfaces": {
+      "muted": "rgba(30, 36, 66, 0.55)",
+      "card": "rgba(22, 27, 51, 0.58)",
+      "onPrimary": "rgb(11, 16, 32)"
+    },
+    "tones": {
+      "ink": "rgb(231, 233, 245)",
+      "label": "rgb(170, 178, 204)",
+      "guide": "rgb(127, 138, 173)",
+      "axis": "rgb(170, 178, 204)",
+      "grid": "rgba(231, 233, 245, 0.12)",
+      "highlight": "rgb(138, 160, 255)",
+      "fill": "rgb(42, 50, 99)",
+      "series-1": "rgb(69, 154, 230)",
+      "series-2": "rgb(255, 143, 192)",
+      "series-3": "rgb(95, 208, 232)",
+      "series-4": "rgb(192, 153, 250)",
+      "series-5": "rgb(107, 255, 225)",
+      "series-6": "rgb(255, 179, 106)",
+      "series-7": "rgb(10, 166, 203)",
+      "series-8": "rgb(226, 115, 212)",
+      "primary": "rgb(138, 160, 255)",
+      "accent": "rgb(240, 140, 176)",
+      "success": "rgb(52, 211, 153)",
+      "warning": "rgb(251, 191, 36)",
+      "error": "rgb(251, 113, 133)",
+      "info": "rgb(56, 189, 248)",
+      "muted": "rgb(143, 150, 184)"
+    },
+    "series": [
+      "rgb(69, 154, 230)",
+      "rgb(255, 143, 192)",
+      "rgb(95, 208, 232)",
+      "rgb(192, 153, 250)",
+      "rgb(107, 255, 225)",
+      "rgb(255, 179, 106)",
+      "rgb(10, 166, 203)",
+      "rgb(226, 115, 212)"
+    ],
+    "strokes": {
+      "thin": 1,
+      "normal": 1.5,
+      "bold": 2.5
+    },
+    "lineCap": "round",
+    "lineJoin": "round",
+    "dash": [
+      6,
+      5
+    ],
+    "dot": [
+      1,
+      5
+    ],
+    "fillStyle": "tint",
+    "fillOpacity": 0.22,
+    "roughness": 0,
+    "glow": 0,
+    "shadow": {
+      "offsetX": 0,
+      "offsetY": 6,
+      "blur": 18,
+      "color": "rgba(64, 88, 214, 0.18)"
+    },
+    "marker": "open",
+    "faces": {
+      "body": "\"Outfit\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+      "display": "\"Sora\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+      "mono": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+    },
+    "label": {
+      "font": "body",
+      "size": "sm",
+      "weight": "500",
+      "uppercase": false
+    },
+    "text": {
+      "xs": 12,
+      "sm": 14,
+      "base": 16,
+      "lg": 18,
+      "xl": 20,
+      "2xl": 24
+    },
+    "corner": 12,
+    "motion": {
+      "enabled": true,
+      "fastMs": 120,
+      "normalMs": 300,
+      "slowMs": 500,
+      "easing": "cubic-bezier(0.22, 1, 0.36, 1)"
+    },
+    "scene": {
+      "roughness": 0.15,
+      "metalness": 0.1,
+      "flat": false,
+      "outline": 0,
+      "ambient": 0.6,
+      "key": 1,
+      "keyColor": "rgb(240, 244, 255)",
+      "fog": 0.15
+    }
+  }
+}
