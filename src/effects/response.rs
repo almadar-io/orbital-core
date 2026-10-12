@@ -189,6 +189,20 @@ pub struct ServerEffectResult {
     pub error: Option<String>,
 }
 
+/// `EventRequest.run_tick`: which trait's tick the data authority runs once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunTick {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub tick: String,
+}
+
+/// The event a tick firing carries on the wire (a `runTick` leg's `event`). Twin of
+/// `@almadar/runtime` `tickEventKey`.
+pub fn tick_event_key(tick: &str) -> String {
+    format!("$TICK_{tick}")
+}
+
 /// Client → server event dispatch request. Mirror of `OrbitalEventRequest` (`bus.ts`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -213,6 +227,11 @@ pub struct EventRequest {
     pub tick: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_trait: Option<String>,
+    /// Run one firing of this trait's tick at the data authority (`@almadar/core`
+    /// `OrbitalEventRequest.runTick`): a browser-run tick's data effects on browser-stored
+    /// entities travel here, since a tick has no event to replay under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_tick: Option<RunTick>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traits: Option<Vec<TraitFrom>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -818,6 +837,9 @@ mod tests {
             linked_entity: "Note".to_string(),
             payload: Value::Null,
             entry: None,
+            fired_arm: None,
+            guards: Vec::new(),
+            effect_runs: Vec::new(),
         }
     }
 

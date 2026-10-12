@@ -513,6 +513,12 @@ pub struct EmbeddedPayloadField {
     /// the SAME `resolve_payload_type_when` the inline narrowing pass uses.
     #[serde(rename = "typeWhen", default)]
     pub type_when: Option<Vec<PayloadTypeWhen>>,
+    /// `event` when the member's TS type is `EventKey`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// `@payloadFor <sibling>`: the event-kind sibling this member carries the payload of.
+    #[serde(rename = "payloadFor", default)]
+    pub payload_for: Option<String>,
 }
 
 /// A single positional arg of a React callback prop. Used by L2 to verify
@@ -742,8 +748,7 @@ fn installed_behavior_index_contains(name: &str) -> bool {
     let Ok(cwd) = std::env::current_dir() else {
         return false;
     };
-    let user_store =
-        crate::behavior_packages::user_store_dir().unwrap_or_else(|| cwd.clone());
+    let user_store = crate::behavior_packages::user_store_dir().unwrap_or_else(|| cwd.clone());
     let Ok(packages) = crate::behavior_packages::discover(&cwd, &user_store) else {
         return false;
     };

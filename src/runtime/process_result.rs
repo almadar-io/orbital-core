@@ -3,7 +3,8 @@
 use super::dispatch_memory::DispatchView;
 use crate::effects::EffectResult;
 use crate::evaluator::Value;
-use crate::schema::{EntityRef, PageRef};
+use crate::schema::{EntityRef, PageRef, SExpression};
+use crate::state_machine::ArmGuard;
 
 /// Result of processing an event through the runtime kernel.
 #[derive(Debug, Clone)]
@@ -37,6 +38,32 @@ pub struct ProcessEventResult {
 
     /// What the delivery looked like going in; `None` for a delivery that did not execute and for a tick.
     pub entry: Option<DeliveryEntry>,
+
+    /// Position of the arm that fired among the state's `from --event-->` arms.
+    pub fired_arm: Option<usize>,
+
+    /// Every guarded arm evaluated while choosing the arm, in order.
+    pub guards: Vec<ArmGuard>,
+
+    /// One run per authored effect of the fired arm, in order.
+    pub effect_runs: Vec<EffectRun>,
+}
+
+/// How one authored effect ran: failed when any effect it expanded to failed, executed when
+/// any ran (here or delegated), skipped when none did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectRunStatus {
+    Executed,
+    Failed,
+    Skipped,
+}
+
+/// One authored effect of a fired arm and how it ran.
+#[derive(Debug, Clone)]
+pub struct EffectRun {
+    pub effect: SExpression,
+    pub status: EffectRunStatus,
+    pub error: Option<String>,
 }
 
 /// The state a transition ran against: the trait's `@entity` frame before its effects, and the dispatch's `@event` / `@prevEvents` / `@prevStates` view.

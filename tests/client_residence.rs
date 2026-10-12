@@ -151,6 +151,44 @@ fn control_with_no_browser_stored_entity_no_event_takes_a_browser_leg() {
     assert!(ir_trait().browser_leg_events(&Residence::none()).is_empty());
 }
 
+fn ticking_trait() -> orbital_core::ir::OirTrait {
+    use orbital_core::ir::{OirEffect, OirExpr, OirInterval, OirTick, OirTrait};
+    let mut t = OirTrait::new("Editor");
+    let tick = |name: &str, effect: OirEffect, background: bool| {
+        let mut tick = OirTick::new(name, OirInterval::Milliseconds { value: 1000 });
+        tick.effects = vec![OirExpr::effect(effect)];
+        tick.background = background;
+        tick
+    };
+    t.ticks.push(tick("autosave", OirEffect::create("LocalInvoice", OirExpr::Null), false));
+    t.ticks.push(tick("sync", OirEffect::fetch("Invoice"), false));
+    t.ticks.push(tick("nightly", OirEffect::create("LocalInvoice", OirExpr::Null), true));
+    t
+}
+
+#[test]
+fn a_client_tick_writing_browser_data_takes_a_run_tick_leg() {
+    let events: Vec<String> = ticking_trait()
+        .browser_leg_events(&residence())
+        .into_iter()
+        .collect();
+    assert_eq!(
+        events,
+        vec![orbital_core::effects::tick_event_key("autosave")]
+    );
+    assert_eq!(
+        orbital_core::effects::tick_event_key("autosave"),
+        "$TICK_autosave"
+    );
+}
+
+#[test]
+fn control_with_no_browser_stored_entity_no_tick_takes_a_browser_leg() {
+    assert!(ticking_trait()
+        .browser_leg_events(&Residence::none())
+        .is_empty());
+}
+
 fn localized_invoice() -> EntityDefinition {
     entity(json!({
         "name": "LocalInvoice", "persistence": "persistent", "collection": "invoices", "local": true,
@@ -211,4 +249,30 @@ fn a_batch_of_browser_rows_is_not_server_work() {
     let r = residence();
     assert!(!sexpr_runs_server_effect(&sexpr(json!(["persist", "batch", [["create", "LocalInvoice", {}]]])), &r));
     assert!(sexpr_runs_server_effect(&sexpr(json!(["persist", "batch", [["create", "Invoice", {}]]])), &r));
+}
+
+fn oir_entity(name: &str, persistence: orbital_core::ir::OirPersistence, local: bool) -> orbital_core::ir::OirEntity {
+    let mut e = orbital_core::ir::OirEntity::new(name);
+    e.persistence = persistence;
+    e.local = local;
+    e
+}
+
+/// Where a tick runs (drift D-1): on the server when it is `[background]` or its trait is
+/// server-awaited, in the client otherwise. One rule for the validator, the kernel and every shell.
+#[test]
+fn a_tick_runs_on_the_server_only_when_background_or_server_awaited() {
+    use orbital_core::ir::{OirInterval, OirPersistence, OirTick, OirTrait};
+    let r = residence();
+    let t = OirTrait::new("T");
+    let tick = OirTick::new("beat", OirInterval::Milliseconds { value: 1000 });
+    let mut background = tick.clone();
+    background.background = true;
+    let runtime = oir_entity("Scene", OirPersistence::Runtime, false);
+    let browser = oir_entity("LocalInvoice", OirPersistence::Persistent, true);
+    let server = oir_entity("Invoice", OirPersistence::Persistent, false);
+    assert!(t.tick_runs_on_client(&tick, Some(&runtime), &r));
+    assert!(t.tick_runs_on_client(&tick, Some(&browser), &r), "browser-stored rows tick in the browser");
+    assert!(!t.tick_runs_on_client(&tick, Some(&server), &r), "a server-awaited trait ticks on the server");
+    assert!(!t.tick_runs_on_client(&background, Some(&runtime), &r), "[background] runs with no tab open");
 }

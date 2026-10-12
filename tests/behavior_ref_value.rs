@@ -73,3 +73,26 @@ fn behavior_is_a_field_type() {
     let ft: FieldType = serde_json::from_str(r#""behavior""#).expect("field type");
     assert_eq!(ft, FieldType::Behavior);
 }
+
+#[test]
+fn behavior_apply_records_a_bridge_on_a_whole_behavior_value() {
+    let out = eval_expr(
+        &sx(r#"["behavior/apply", {"behavior":"almadar-behaviors/vim-mode"}, {"bridge":{"listens":["SHELL_KEY"],"emits":["STATUS"]}}]"#),
+        &ctx(),
+    )
+    .expect("applies");
+    assert_eq!(out, val(r#"{"behavior":"almadar-behaviors/vim-mode","bridge":{"listens":["SHELL_KEY"],"emits":["STATUS"]}}"#));
+    assert!(is_behavior_ref_value(&out));
+}
+
+#[test]
+fn control_a_whole_behavior_value_takes_no_other_override() {
+    assert!(eval_expr(&sx(r#"["behavior/apply", {"behavior":"almadar-behaviors/vim-mode"}, {"config":{}}]"#), &ctx()).is_err());
+}
+
+#[test]
+fn edge_a_malformed_bridge_is_refused_and_not_a_behavior_value() {
+    assert!(eval_expr(&sx(r#"["behavior/apply", {"behavior":"almadar-behaviors/vim-mode"}, {"bridge":{"listens":["A"]}}]"#), &ctx()).is_err());
+    assert!(!is_behavior_ref_value(&val(r#"{"behavior":"./orbitals/shop","bridge":{"listens":["A"]}}"#)));
+    assert!(!is_behavior_ref_value(&val(r#"{"behavior":"./orbitals/shop","bridge":{"listens":[1],"emits":[]}}"#)));
+}

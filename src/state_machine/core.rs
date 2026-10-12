@@ -2,7 +2,7 @@
 //!
 //! The core state machine engine that processes events through transitions.
 
-use super::types::{EventPayload, GuardResult, TransitionResult};
+use super::types::{ArmGuard, EventPayload, GuardResult, TransitionResult};
 use crate::error::OrbitalError;
 use crate::evaluator::{BindingContext, Evaluator};
 use crate::schema::{StateMachine, TraitDefinition, TransitionDefinition};
@@ -81,39 +81,73 @@ impl StateMachineCore {
         let mut eval_ctx = self.build_context(ctx, payload);
         eval_ctx.from_state = Some(current_state.to_string());
 
-        // Keep track of the last transition for guard failure reporting
-        let mut last_guarded_transition: Option<&TransitionDefinition> = None;
-
-        // Try each matching transition (first one with passing guard wins)
-        for transition in &matching_transitions {
-            if transition.guard.is_some() {
-                last_guarded_transition = Some(transition);
-            }
+        // First arm whose guard passes (or that has none) fires; every guard tried is recorded.
+        let mut guards: Vec<ArmGuard> = Vec::new();
+        for (arm, transition) in matching_transitions.iter().enumerate() {
             eval_ctx.to_state = Some(transition.to.clone());
-            match self.try_transition(transition, current_state, &eval_ctx)? {
-                Some(result) => return Ok(result),
-                None => continue, // Guard failed, try next transition
+            let effects = || transition.effects.clone().unwrap_or_default();
+            let Some(guard) = &transition.guard else {
+                let mut result =
+                    TransitionResult::success(current_state, &transition.to, effects());
+                result.fired_arm = Some(arm);
+                result.guards = guards;
+                return Ok(result);
+            };
+            // A guard that cannot be evaluated blocks its arm exactly like a false one; the
+            // next arm is tried (same rule on every path).
+            let value = match self.evaluator.evaluate(guard, &eval_ctx) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::warn!(
+                        target: crate::logging::ns::RUNTIME_KERNEL,
+                        event = %payload.event,
+                        from = %current_state,
+                        to = %transition.to,
+                        %error,
+                        "guard:error-blocks-arm",
+                    );
+                    guards.push(ArmGuard {
+                        arm,
+                        guard: GuardResult::error(guard.clone(), error.to_string()),
+                    });
+                    continue;
+                }
+            };
+            if !value.is_truthy() {
+                guards.push(ArmGuard {
+                    arm,
+                    guard: GuardResult::failed(guard.clone(), value),
+                });
+                continue;
             }
+            let passed = GuardResult::passed(guard.clone(), value);
+            guards.push(ArmGuard {
+                arm,
+                guard: passed.clone(),
+            });
+            let mut result = TransitionResult::success_with_guard(
+                current_state,
+                &transition.to,
+                effects(),
+                passed,
+            );
+            result.fired_arm = Some(arm);
+            result.guards = guards;
+            return Ok(result);
         }
 
-        // No transition had a passing guard
-        // Return the last transition's guard failure
-        if let Some(last_transition) = last_guarded_transition {
-            if let Some(guard) = &last_transition.guard {
-                let result = self.evaluator.evaluate(guard, &eval_ctx)?;
-                return Ok(TransitionResult::guard_blocked(
-                    current_state,
-                    &last_transition.to,
-                    &payload.event,
-                    GuardResult::failed(guard.clone(), result),
-                ));
-            }
-        }
-
-        Ok(TransitionResult::no_transition(
-            current_state,
-            &payload.event,
-        ))
+        // No arm fired: report the last guarded arm's failure.
+        let Some(last) = guards.last().cloned() else {
+            return Ok(TransitionResult::no_transition(
+                current_state,
+                &payload.event,
+            ));
+        };
+        let target = &matching_transitions[last.arm].to;
+        let mut result =
+            TransitionResult::guard_blocked(current_state, target, &payload.event, last.guard);
+        result.guards = guards;
+        Ok(result)
     }
 
     /// Whether a transition matches the fired event, id-primary.
@@ -130,45 +164,6 @@ impl StateMachineCore {
             return fired_id == transition_id;
         }
         transition.event == fired_name
-    }
-
-    /// Try to execute a single transition
-    ///
-    /// Returns Some(TransitionResult) if the transition executes (guard passes),
-    /// None if the guard fails.
-    fn try_transition(
-        &self,
-        transition: &TransitionDefinition,
-        current_state: &str,
-        ctx: &BindingContext,
-    ) -> Result<Option<TransitionResult>, OrbitalError> {
-        // Evaluate guard if present
-        if let Some(guard) = &transition.guard {
-            let result = self.evaluator.evaluate(guard, ctx)?;
-            let passed = result.is_truthy();
-
-            if !passed {
-                // Guard failed - return None so we try next transition
-                return Ok(None);
-            }
-
-            // Guard passed - execute transition
-            let effects = transition.effects.clone().unwrap_or_default();
-            return Ok(Some(TransitionResult::success_with_guard(
-                current_state,
-                &transition.to,
-                effects,
-                GuardResult::passed(guard.clone(), result),
-            )));
-        }
-
-        // No guard - transition executes unconditionally
-        let effects = transition.effects.clone().unwrap_or_default();
-        Ok(Some(TransitionResult::success(
-            current_state,
-            &transition.to,
-            effects,
-        )))
     }
 
     /// Build evaluation context with payload
@@ -328,6 +323,165 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn modal_machine() -> StateMachine {
+        let arm = |to: &str, guard: Option<&str>| TransitionDefinition {
+            from: StringOrArray::Single("NORMAL".to_string()),
+            to: to.to_string(),
+            event: "KEY".to_string(),
+            event_id: None,
+            guard: guard.map(|g| serde_json::from_str(g).unwrap()),
+            effects: None,
+        };
+        StateMachine {
+            states: vec![
+                StateDefinition {
+                    name: "NORMAL".to_string(),
+                    is_initial: Some(true),
+                    is_terminal: None,
+                    description: None,
+                    time_bound_ms: None,
+                },
+                StateDefinition {
+                    name: "INSERT".to_string(),
+                    is_initial: None,
+                    is_terminal: None,
+                    description: None,
+                    time_bound_ms: None,
+                },
+                StateDefinition {
+                    name: "VISUAL".to_string(),
+                    is_initial: None,
+                    is_terminal: None,
+                    description: None,
+                    time_bound_ms: None,
+                },
+            ],
+            events: None,
+            transitions: vec![
+                arm("INSERT", Some(r#"["=", "@payload.key", "i"]"#)),
+                arm("VISUAL", Some(r#"["=", "@payload.key", "v"]"#)),
+            ],
+        }
+    }
+
+    fn key(k: &str) -> EventPayload {
+        let mut data = HashMap::new();
+        data.insert("key".to_string(), Value::String(k.to_string()));
+        EventPayload::new("KEY", Value::Object(data))
+    }
+
+    /// `modal_machine` with its first guard replaced by one the evaluator cannot run.
+    fn machine_with_a_throwing_first_guard(second_guard: &str) -> StateMachine {
+        let mut machine = modal_machine();
+        machine.transitions[0].guard = Some(serde_json::from_str(r#"["=", 1]"#).unwrap());
+        machine.transitions[1].guard = Some(serde_json::from_str(second_guard).unwrap());
+        machine
+    }
+
+    #[test]
+    fn a_guard_that_throws_blocks_its_arm_like_a_false_guard_and_the_next_arm_is_tried() {
+        let result = StateMachineCore::new()
+            .process_event(
+                &machine_with_a_throwing_first_guard(r#"["=", "@payload.key", "v"]"#),
+                "NORMAL",
+                &key("v"),
+                &BindingContext::new(),
+            )
+            .expect("a throwing guard must not abort the dispatch");
+        assert!(result.executed);
+        assert_eq!(result.fired_arm, Some(1));
+        assert!(!result.guards[0].guard.passed);
+        assert!(result.guards[0].guard.error.is_some(), "the guard's error is recorded");
+    }
+
+    #[test]
+    fn control_when_every_guard_throws_or_fails_nothing_fires_and_the_result_is_a_rejection() {
+        let result = StateMachineCore::new()
+            .process_event(
+                &machine_with_a_throwing_first_guard(r#"["=", "@payload.key", "v"]"#),
+                "NORMAL",
+                &key("x"),
+                &BindingContext::new(),
+            )
+            .expect("a throwing guard must not abort the dispatch");
+        assert!(!result.executed);
+        assert_eq!(result.fired_arm, None);
+        assert_eq!(result.guards.len(), 2);
+    }
+
+    #[test]
+    fn fired_arm_is_the_winning_arm_and_every_guard_tried_is_recorded() {
+        let result = StateMachineCore::new()
+            .process_event(
+                &modal_machine(),
+                "NORMAL",
+                &key("v"),
+                &BindingContext::new(),
+            )
+            .unwrap();
+        assert!(result.executed);
+        assert_eq!(result.fired_arm, Some(1));
+        assert_eq!(
+            result
+                .guards
+                .iter()
+                .map(|g| (g.arm, g.guard.passed))
+                .collect::<Vec<_>>(),
+            vec![(0, false), (1, true)]
+        );
+    }
+
+    #[test]
+    fn control_no_guard_passes_no_arm_fires_but_the_guards_are_recorded() {
+        let result = StateMachineCore::new()
+            .process_event(
+                &modal_machine(),
+                "NORMAL",
+                &key("x"),
+                &BindingContext::new(),
+            )
+            .unwrap();
+        assert!(!result.executed);
+        assert_eq!(result.fired_arm, None);
+        assert_eq!(
+            result
+                .guards
+                .iter()
+                .map(|g| (g.arm, g.guard.passed))
+                .collect::<Vec<_>>(),
+            vec![(0, false), (1, false)]
+        );
+        assert!(!result.guard_result.unwrap().passed);
+    }
+
+    #[test]
+    fn edge_an_unguarded_arm_fires_with_no_guards_recorded() {
+        let result = StateMachineCore::new()
+            .process_event(
+                &create_test_state_machine(),
+                "browsing",
+                &EventPayload::new("REGISTER", Value::Object(HashMap::new())),
+                &BindingContext::new(),
+            )
+            .unwrap();
+        assert_eq!(result.fired_arm, Some(0));
+        assert!(result.guards.is_empty());
+    }
+
+    #[test]
+    fn edge_no_matching_arm_has_no_fired_arm_and_no_guards() {
+        let result = StateMachineCore::new()
+            .process_event(
+                &modal_machine(),
+                "INSERT",
+                &key("i"),
+                &BindingContext::new(),
+            )
+            .unwrap();
+        assert_eq!(result.fired_arm, None);
+        assert!(result.guards.is_empty());
     }
 
     #[test]

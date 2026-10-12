@@ -49,7 +49,7 @@ pub use persona::{
     PERSONA_ENV,
 };
 pub use projected_payload::projected_payload;
-pub use process_result::{DeliveryEntry, OrbitalDetail, OrbitalInfo, ProcessEventResult, RuntimeStats};
+pub use process_result::{DeliveryEntry, EffectRun, EffectRunStatus, OrbitalDetail, OrbitalInfo, ProcessEventResult, RuntimeStats};
 pub use seed::{
     cross_relation_value, identity_entity_def, identity_entity_name, identity_roster_rows,
     instance_rows, mock_row_id, owner_columns_from_policy, owner_fields_from_schema, sample_rows,

@@ -101,6 +101,20 @@ pub struct TransitionResult {
 
     /// Reason for not executing (if not executed)
     pub reason: Option<TransitionFailureReason>,
+
+    /// Position of the arm that fired among the state's `from --event-->` arms, in declaration order.
+    pub fired_arm: Option<usize>,
+
+    /// Every guarded arm evaluated while choosing the arm, in order.
+    pub guards: Vec<ArmGuard>,
+}
+
+/// One guarded arm evaluated during arm selection.
+#[derive(Debug, Clone)]
+pub struct ArmGuard {
+    /// Position of the arm among the state's `from --event-->` arms.
+    pub arm: usize,
+    pub guard: GuardResult,
 }
 
 impl TransitionResult {
@@ -113,6 +127,8 @@ impl TransitionResult {
             effects,
             guard_result: None,
             reason: None,
+            fired_arm: None,
+            guards: Vec::new(),
         }
     }
 
@@ -130,6 +146,8 @@ impl TransitionResult {
             effects,
             guard_result: Some(guard_result),
             reason: None,
+            fired_arm: None,
+            guards: Vec::new(),
         }
     }
 
@@ -145,6 +163,8 @@ impl TransitionResult {
                 state: current_state.to_string(),
                 event: event.to_string(),
             }),
+            fired_arm: None,
+            guards: Vec::new(),
         }
     }
 
@@ -166,6 +186,8 @@ impl TransitionResult {
                 target_state: target_state.to_string(),
                 event: event.to_string(),
             }),
+            fired_arm: None,
+            guards: Vec::new(),
         }
     }
 }

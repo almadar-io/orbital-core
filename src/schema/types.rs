@@ -3954,7 +3954,7 @@ pub struct TickDefinition {
     /// Effects to execute
     pub effects: Vec<SExpression>,
 
-    /// Apply to specific entity IDs
+    /// The trait states the tick runs in; absent or empty = every state.
     #[serde(rename = "appliesTo", skip_serializing_if = "Option::is_none")]
     pub applies_to: Option<Vec<String>>,
 

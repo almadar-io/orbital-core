@@ -4,8 +4,8 @@
 
 use crate::schema::{FieldDefinition, FieldType, ServiceRef, ThemeDefinition};
 use crate::str_utils::to_snake_case;
-use serde::{Deserialize, Serialize};
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Config field type declaration, preserving enum `values` alongside the
@@ -1058,6 +1058,19 @@ impl OirTrait {
         )
     }
 
+    /// Where `tick` runs: on the server when it is `[background]` or this trait is
+    /// server-awaited (`PersistedAwaited`), in the client otherwise. The one placement rule
+    /// the validator (`ORB_T_CLIENT_TICK_SERVER_EFFECT`), the kernel and the shells share.
+    pub fn tick_runs_on_client(
+        &self,
+        tick: &OirTick,
+        entity: Option<&OirEntity>,
+        residence: &crate::effects::Residence,
+    ) -> bool {
+        !tick.background
+            && self.dispatch_mode(entity, residence) != OirDispatchMode::PersistedAwaited
+    }
+
     /// Whether this trait's own effects reach the server: any transition, or
     /// any client tick (a `[background]` tick runs on the host, not a dispatch).
     /// A data effect on a client-resident entity (`residence`) is client work.
@@ -1074,12 +1087,15 @@ impl OirTrait {
     }
 
     /// The events whose live transitions run a data effect on a browser-stored
-    /// entity: their leg goes to the browser store, not the server.
+    /// entity: their leg goes to the browser store, not the server. A client tick
+    /// that does is listed as its `runTick` event ([`crate::effects::tick_event_key`]).
+    /// Twin of `@almadar/runtime` `browserLegEvents`.
     pub fn browser_leg_events(
         &self,
         residence: &crate::effects::Residence,
     ) -> std::collections::BTreeSet<String> {
-        self.transitions
+        let transitions = self
+            .transitions
             .iter()
             .filter(|t| !t.guard.as_ref().is_some_and(|g| g.is_statically_false()))
             .filter(|t| {
@@ -1087,8 +1103,18 @@ impl OirTrait {
                     .iter()
                     .any(|e| e.runs_browser_data_effect(residence))
             })
-            .map(|t| t.event.clone())
-            .collect()
+            .map(|t| t.event.clone());
+        let ticks = self
+            .ticks
+            .iter()
+            .filter(|t| !t.background)
+            .filter(|t| {
+                t.effects
+                    .iter()
+                    .any(|e| e.runs_browser_data_effect(residence))
+            })
+            .map(|t| crate::effects::tick_event_key(&t.name));
+        transitions.chain(ticks).collect()
     }
 
     /// Find an event by key
@@ -1478,6 +1504,9 @@ pub struct OirTick {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub background: bool,
+    /// The trait states the tick runs in; empty = every state.
+    #[serde(rename = "appliesTo", default, skip_serializing_if = "Vec::is_empty")]
+    pub applies_to: Vec<String>,
 }
 
 impl OirTick {
@@ -1490,6 +1519,7 @@ impl OirTick {
             effects: vec![],
             priority: 0,
             background: false,
+            applies_to: vec![],
         }
     }
 }

@@ -9,7 +9,10 @@ use super::{
     },
     entity_source::EntitySource,
     listener::{ListenerManager, TriggerCallback},
-    process_result::{DeliveryEntry, OrbitalDetail, OrbitalInfo, ProcessEventResult, RuntimeStats},
+    process_result::{
+        DeliveryEntry, EffectRun, EffectRunStatus, OrbitalDetail, OrbitalInfo, ProcessEventResult,
+        RuntimeStats,
+    },
     render_store::RenderStore,
     server_leg::ServerLegCollector,
     theme::{resolve_theme, resolve_theme_default, ResolvedTheme, ThemeMode, ThemePresets},
@@ -190,14 +193,6 @@ pub struct RuntimeKernel {
     /// `EffectExecutor` (write side) and `EntitySourceHandler` (read side) so
     /// every entity mutation/fetch is checked no matter which trait issues it.
     entity_policies: Arc<RwLock<EntityAccessTable>>,
-    /// Last non-empty event payload seen per `"{trait}:{entity_id}"`. Render-ui
-    /// `@payload.*` bindings must survive the originating event: a fetch/emit
-    /// completion fires once carrying `{ data: rows }`, but the state's render-ui
-    /// is re-resolved on later empty-payload events/ticks. Mirroring the JS runtime,
-    /// we persist the last payload and fall back to it when an event carries none,
-    /// so `@payload.data` (and `@payload.row`, once interaction lands) keep
-    /// resolving across re-renders instead of reverting to a literal token.
-    last_payloads: Arc<RwLock<HashMap<String, Value>>>,
     /// Inverse of every registered trait's `trait_embed_ids` (§158), rebuilt
     /// from the full accumulated `trait_definitions` at the end of each
     /// `register_schema` call so it stays additive across registrations like
@@ -299,6 +294,9 @@ pub struct Rerender {
 pub struct TickDispatch {
     pub outcome: ProcessEventResult,
     pub discarded_server_effects: usize,
+    /// The `runTick` leg for the tick's own data effects on browser-stored entities: the data
+    /// authority runs the tick once (a tick has no event for an event leg to replay under).
+    pub browser_leg: Option<EventRequest>,
     pub emits: Vec<TickEmit>,
     /// Traits repainted for the entity the tick and its cascade left behind.
     pub rerenders: Vec<Rerender>,
@@ -510,7 +508,6 @@ impl RuntimeKernel {
             i18n: Arc::new(RwLock::new(KernelI18n::default())),
             dispatch_locale: Arc::new(RwLock::new(None)),
             entity_policies,
-            last_payloads: Arc::new(RwLock::new(HashMap::new())),
             embed_index: Arc::new(RwLock::new(EmbedIndex::default())),
             entity_definitions: Arc::new(RwLock::new(HashMap::new())),
             frames: Arc::new(RwLock::new(HashMap::new())),
@@ -811,23 +808,12 @@ impl RuntimeKernel {
             .map_err(|e| KernelError::Internal(e.to_string()))?
             .clone();
 
-        // Effective payload for BINDING resolution: a re-render (empty-payload event
-        // or a tick) still sees the last meaningful payload for this trait+entity,
-        // so render-ui `@payload.*` keeps resolving instead of reverting to a literal
-        // token. The STATE MACHINE still sees the real `payload` (event_payload.data
-        // below) — only the binding ctx falls back to the persisted payload. Persist
-        // non-empty payloads so the next re-render can reuse them.
-        let payload_key = format!("{trait_name}:{entity_id}");
-        let persisted = self.last_payloads.read().get(&payload_key).cloned();
-        let effective_payload = effective_render_payload(&payload, persisted.as_ref());
-        // Accumulate: store the merged payload so a later gesture/event still sees
-        // fields from an earlier fetch/emit (e.g. @payload.data) alongside its own
-        // (e.g. @payload.row). Only non-empty incoming payloads extend the store.
-        if !is_empty_payload(&payload) {
-            self.last_payloads
-                .write()
-                .insert(payload_key.clone(), effective_payload.clone());
-        }
+        // `@payload` is this event's own payload; an absent one reads `{}` (drift D-2).
+        let effective_payload = if payload.is_null() {
+            Value::Object(HashMap::new())
+        } else {
+            payload.clone()
+        };
 
         let ctx = BindingContextBuilder::new()
             .payload(effective_payload.clone())
@@ -885,12 +871,13 @@ impl RuntimeKernel {
             ctx.set_state(Value::String(new_state.clone()));
             ctx.from_state = Some(current_state.current_state.clone());
             ctx.to_state = Some(new_state.clone());
-            let (effect_results, captured_entity_data) = match self.server_leg_collector() {
-                Some(collector) => collector.attribute(trait_name, || {
-                    self.execute_effects_with_entity(&result.effects, &ctx)
-                }),
-                None => self.execute_effects_with_entity(&result.effects, &ctx),
-            };
+            let (effect_results, captured_entity_data, effect_runs) =
+                match self.server_leg_collector() {
+                    Some(collector) => collector.attribute(trait_name, || {
+                        self.execute_effects_traced(&result.effects, &ctx)
+                    }),
+                    None => self.execute_effects_traced(&result.effects, &ctx),
+                };
 
             // Effective entity = read entity with Set-effect fields merged in. Persist
             // the MERGED entity (read-modify-write), never the partial
@@ -948,6 +935,9 @@ impl RuntimeKernel {
                     entity_before: entity_data,
                     view: view.cloned().unwrap_or_default(),
                 }),
+                fired_arm: result.fired_arm,
+                guards: result.guards.clone(),
+                effect_runs,
             })
         } else {
             debug!(
@@ -988,6 +978,9 @@ impl RuntimeKernel {
                 linked_entity: entity_type.to_string(),
                 payload: payload.clone(),
                 entry: None,
+                fired_arm: None,
+                guards: result.guards.clone(),
+                effect_runs: Vec::new(),
             })
         }
     }
@@ -1054,15 +1047,14 @@ impl RuntimeKernel {
                     .unwrap_or_else(|| trait_name.to_string()),
                 payload: Value::Null,
                 entry: None,
+                fired_arm: None,
+                guards: Vec::new(),
+                effect_runs: Vec::new(),
             });
         }
 
-        // Ticks carry no event payload; the render-ui they (re)resolve should still
-        // see the last meaningful payload for this trait+entity (same fallback as
-        // process_event's re-render path).
-        let tick_payload_key = format!("{trait_name}:{entity_id}");
-        let tick_persisted = self.last_payloads.read().get(&tick_payload_key).cloned();
-        let tick_payload = effective_render_payload(&Value::Null, tick_persisted.as_ref());
+        // A tick has no payload (drift D-2).
+        let tick_payload = Value::Object(HashMap::new());
 
         let ctx = BindingContextBuilder::new()
             .payload(tick_payload)
@@ -1100,6 +1092,9 @@ impl RuntimeKernel {
                     linked_entity: entity_type.to_string(),
                     payload: Value::Null,
                     entry: None,
+                    fired_arm: None,
+                    guards: Vec::new(),
+                    effect_runs: Vec::new(),
                 });
             }
         }
@@ -1143,6 +1138,9 @@ impl RuntimeKernel {
             linked_entity: entity_type.to_string(),
             payload: Value::Null,
             entry: None,
+            fired_arm: None,
+            guards: Vec::new(),
+            effect_runs: Vec::new(),
         })
     }
 
@@ -1716,21 +1714,52 @@ impl RuntimeKernel {
             .cloned()
             .ok_or_else(|| KernelError::TraitNotFound(trait_name.to_string()))?;
         let mode = self.dispatch_mode_of(&trait_def);
+        // The leg replays the tick from the pre-tick row, so the store applies its writes once.
+        let pre_tick_row = self.snapshot_trait(trait_name, Some(&eid)).entity;
 
         let outcome = self.process_tick(trait_name, Some(&eid), tick_name)?;
         let (tick_own, _) = self.drain_server_leg_collector();
-        let discarded_server_effects = tick_own.len();
-        if !tick_own.is_empty() {
-            debug!(
-                target: "almadar::kernel",
-                trait_name = %trait_name, tick = %tick_name, discarded = tick_own.len(),
-                "tick's own server effects have no event to replay under — discarded (web parity)",
+        // The tick's own delegated effects, by where their data lives: browser-stored data
+        // leaves as one `runTick` leg; server-owned work in a browser-run tick is an
+        // `orb validate` error (ORB_T_CLIENT_TICK_SERVER_EFFECT), so reaching here is a bug.
+        let residence =
+            crate::effects::Residence::of_entities(self.entity_definitions.read().values());
+        let (browser_own, server_own): (Vec<Effect>, Vec<Effect>) = tick_own
+            .into_iter()
+            .partition(|effect| browser_data_effect(effect, &residence));
+        let discarded_server_effects = server_own.len();
+        if !server_own.is_empty() {
+            tracing::error!(
+                target: crate::logging::ns::RUNTIME_KERNEL,
+                trait_name = %trait_name, tick = %tick_name, discarded = server_own.len(),
+                "browser-run tick reached the server — orb validate should have rejected it (ORB_T_CLIENT_TICK_SERVER_EFFECT)",
             );
         }
+        let browser_leg = (!browser_own.is_empty()).then(|| EventRequest {
+            event: crate::effects::tick_event_key(tick_name),
+            run_tick: Some(crate::effects::RunTick {
+                trait_name: trait_name.to_string(),
+                tick: tick_name.to_string(),
+            }),
+            tick: Some(tick_name.to_string()),
+            entity_id: Some(eid.clone()),
+            target_trait: Some(trait_name.to_string()),
+            client_id: client_id.map(str::to_string),
+            source_trait: Some(trait_name.to_string()),
+            traits: Some(vec![TraitFrom {
+                r#trait: trait_name.to_string(),
+                from: outcome.previous_state.clone(),
+                event: None,
+            }]),
+            entity_by_trait: (!pre_tick_row.is_null())
+                .then(|| HashMap::from([(trait_name.to_string(), pre_tick_row.clone())])),
+            ..Default::default()
+        });
         if !outcome.executed {
             return Ok(TickDispatch {
                 outcome,
                 discarded_server_effects,
+                browser_leg,
                 emits: Vec::new(),
                 rerenders: Vec::new(),
             });
@@ -1802,6 +1831,7 @@ impl RuntimeKernel {
         Ok(TickDispatch {
             outcome,
             discarded_server_effects,
+            browser_leg,
             emits,
             rerenders: self.rerender_stale(),
         })
@@ -2270,11 +2300,23 @@ impl RuntimeKernel {
         effects: &[SExpression],
         ctx: &BindingContext,
     ) -> (Vec<EffectResult>, Value) {
+        let (effect_results, entity_data, _) = self.execute_effects_traced(effects, ctx);
+        (effect_results, entity_data)
+    }
+
+    /// `execute_effects_with_entity`, also reporting how each authored effect ran.
+    fn execute_effects_traced(
+        &self,
+        effects: &[SExpression],
+        ctx: &BindingContext,
+    ) -> (Vec<EffectResult>, Value, Vec<EffectRun>) {
         let evaluator = Evaluator::new();
         let mut effect_results = Vec::new();
         let mut entity_data: HashMap<String, Value> = HashMap::new();
+        let mut runs = Vec::with_capacity(effects.len());
 
         for effect_expr in effects {
+            let before = effect_results.len();
             self.exec_effect_expr(
                 effect_expr,
                 ctx,
@@ -2282,9 +2324,23 @@ impl RuntimeKernel {
                 &mut effect_results,
                 &mut entity_data,
             );
+            let ran = &effect_results[before..];
+            let failed = ran.iter().find(|r| r.is_failed());
+            let status = if failed.is_some() {
+                EffectRunStatus::Failed
+            } else if ran.iter().any(|r| r.is_executed() || r.is_delegated()) {
+                EffectRunStatus::Executed
+            } else {
+                EffectRunStatus::Skipped
+            };
+            runs.push(EffectRun {
+                effect: effect_expr.clone(),
+                status,
+                error: failed.and_then(|r| r.error.clone()),
+            });
         }
 
-        (effect_results, Value::Object(entity_data))
+        (effect_results, Value::Object(entity_data), runs)
     }
 
     /// Execute a single top-level effect expression.
@@ -3101,24 +3157,6 @@ fn resolve_forward_key(
 /// renders); on failure, fire `emit.failure`. This is what advances a data-loading
 /// trait from its `loading` state to its `loaded` state. Returns `None` when the fetch
 /// was delegated/no-op (the real fetch — and its emit — happens in the other environment).
-/// A payload carries nothing a render-ui can bind: `Null` or an empty object `{}`.
-/// Used to decide when to fall back to the trait's last meaningful payload on a
-/// re-render (event with no payload, or a tick). A non-empty object / scalar / array
-/// is real payload data and replaces the persisted one.
-fn is_empty_payload(v: &Value) -> bool {
-    match v {
-        Value::Null => true,
-        Value::Object(m) => m.is_empty(),
-        _ => false,
-    }
-}
-
-/// Pick the payload the BINDING context should resolve `@payload.*` against. Payloads
-/// ACCUMULATE: a view can reference `@payload.data` (from an earlier fetch/emit) AND
-/// `@payload.row` (from a later gesture) on the same frame, so the persisted payload
-/// is the merge of every non-empty payload seen for the trait+entity, with the latest
-/// incoming winning on conflict. An empty incoming payload (a re-render / no-op event
-/// / tick) sees the full accumulated payload; with nothing accumulated it stays empty.
 /// The `render-ui` effects among `results`, as `(slot, unresolved content)` in run order.
 fn render_sources(results: &[EffectResult]) -> Vec<(String, Value)> {
     results
@@ -3151,9 +3189,14 @@ fn state_render_sources(trait_def: &TraitDefinition, state_name: &str) -> Vec<(S
         .collect()
 }
 
-fn effective_render_payload(incoming: &Value, persisted: Option<&Value>) -> Value {
-    let base = persisted.cloned().unwrap_or(Value::Null);
-    merge_entity(&base, incoming)
+/// A data effect on a browser-stored entity: a browser-run tick sends it as its `runTick` leg.
+fn browser_data_effect(effect: &Effect, residence: &crate::effects::Residence) -> bool {
+    match effect {
+        Effect::Persist { entity_type, .. } | Effect::Fetch { entity_type, .. } => {
+            residence.is_client(entity_type)
+        }
+        _ => false,
+    }
 }
 
 /// Merge the Set-effect `set` fields into the `base` entity (read-modify-write).
@@ -3413,7 +3456,7 @@ fn persist_completion_emit(
 }
 
 #[cfg(test)]
-mod payload_persistence_tests {
+mod merge_entity_tests {
     use super::*;
     use std::collections::HashMap;
 
@@ -3425,77 +3468,22 @@ mod payload_persistence_tests {
         Value::Object(m)
     }
 
-    #[test]
-    fn empty_payload_detection() {
-        assert!(is_empty_payload(&Value::Null));
-        assert!(is_empty_payload(&Value::Object(HashMap::new())));
-        assert!(!is_empty_payload(&obj(&[("data", Value::Array(vec![]))])));
-        assert!(!is_empty_payload(&Value::Array(vec![])));
-        assert!(!is_empty_payload(&Value::String("x".to_string())));
-    }
-
     /// Non-empty incoming payload always wins (and is what gets persisted by the
     /// caller) — even when a prior payload exists.
-    #[test]
-    fn effective_prefers_real_incoming_over_persisted() {
-        let incoming = obj(&[("data", Value::String("new".to_string()))]);
-        let persisted = obj(&[("data", Value::String("old".to_string()))]);
-        let out = effective_render_payload(&incoming, Some(&persisted));
-        assert_eq!(out, incoming);
-    }
-
     /// Empty incoming payload falls back to the last meaningful payload — the
     /// render-ui re-render case (no-op event / tick) that used to revert
     /// `@payload.data` to a literal token.
-    #[test]
-    fn effective_falls_back_to_persisted_on_empty_incoming() {
-        let persisted = obj(&[(
-            "data",
-            Value::Array(vec![Value::Number(1.0), Value::Number(2.0)]),
-        )]);
-        let out = effective_render_payload(&Value::Null, Some(&persisted));
-        assert_eq!(out, persisted);
-
-        let empty_obj = Value::Object(HashMap::new());
-        let out2 = effective_render_payload(&empty_obj, Some(&persisted));
-        assert_eq!(out2, persisted);
-    }
-
     /// With nothing persisted, an empty incoming payload stays empty (no
     /// fabrication — there is genuinely nothing to bind).
-    #[test]
-    fn effective_stays_empty_when_nothing_persisted() {
-        let out = effective_render_payload(&Value::Null, None);
-        assert_eq!(out, Value::Null);
-        // An empty-object payload is "empty" — with nothing accumulated it collapses
-        // to Null (no fabricated bindings).
-        let empty_obj = Value::Object(HashMap::new());
-        let out2 = effective_render_payload(&empty_obj, None);
-        assert_eq!(out2, Value::Null);
-    }
-
     /// Payloads accumulate across events: a fetch/emit carries `{data}`, a later
     /// gesture carries `{row}`; a view referencing `@payload.data` AND `@payload.row`
     /// on the same frame must see BOTH. Replacement semantics would drop `data` when
     /// the gesture fires.
-    #[test]
-    fn effective_accumulates_distinct_payload_fields() {
-        let fetch_payload = obj(&[("data", Value::Array(vec![Value::Number(1.0)]))]);
-        let acc = effective_render_payload(&fetch_payload, None);
-        assert_eq!(acc, fetch_payload);
-        let gesture = obj(&[("row", obj(&[("title", Value::String("T".to_string()))]))]);
-        let acc2 = effective_render_payload(&gesture, Some(&acc));
-        let m = acc2.as_object().unwrap();
-        assert!(m.contains_key("data"), "fetch data survives the gesture");
-        assert!(m.contains_key("row"), "gesture row is present");
-        let rerender = effective_render_payload(&Value::Null, Some(&acc2));
-        let m2 = rerender.as_object().unwrap();
-        assert!(m2.contains_key("data") && m2.contains_key("row"));
-    }
-
     /// Read-modify-write: Set fields override, untouched base fields survive. This
     /// is the field-retention fix — persisting only the Set-touched partial would
     /// drop `filterKind`/`current*`/etc. and break the next re-render.
+    /// Drift D-2: an empty `@payload` (no event payload, nothing remembered) reads `{}` on every
+    /// path, as in the JS runtime, never `null`.
     #[test]
     fn merge_entity_preserves_untouched_and_overrides_set() {
         let base = obj(&[
@@ -4854,6 +4842,9 @@ mod client_dispatch_tests {
             linked_entity: "Note".to_string(),
             payload: Value::Null,
             entry: None,
+            fired_arm: None,
+            guards: Vec::new(),
+            effect_runs: Vec::new(),
         };
         result.previous_state = "idle".to_string();
         let outcomes = vec![("Persistor".to_string(), result)];
@@ -5854,5 +5845,87 @@ mod set_eval_failure_tests {
             .expect("Preview ran");
         let row = result.entity_data.as_object().expect("an entity row");
         assert_eq!(row.get("ok"), Some(&Value::Bool(true)));
+    }
+}
+
+#[cfg(test)]
+mod circuit_step_tests {
+    //! One dispatch reports the circuit it ran: which `from --event-->` arm fired, every
+    //! guard tried, and one status per authored effect of the fired arm (what
+    //! `orb execute --steps` and the cosmic zoom's Step read).
+    use super::*;
+    use crate::runtime::entity_source::InMemoryEntityCache;
+
+    fn kernel() -> RuntimeKernel {
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "EditorApp",
+            "orbitals": [{
+                "name": "Editor",
+                "entity": { "name": "Doc", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "mode", "type": "string", "default": "normal" }] },
+                "traits": [{
+                    "name": "Modes",
+                    "linkedEntity": "Doc",
+                    "stateMachine": {
+                        "states": [{ "name": "NORMAL", "isInitial": true }, { "name": "INSERT" }, { "name": "VISUAL" }],
+                        "transitions": [
+                            { "from": "NORMAL", "to": "INSERT", "event": "KEY", "guard": ["=", "@payload.key", "i"], "effects": [["set", "@entity.mode", "insert"]] },
+                            { "from": "NORMAL", "to": "VISUAL", "event": "KEY", "guard": ["=", "@payload.key", "v"],
+                              "effects": [["set", "@entity.mode", "visual"], ["if", true, ["set", "@entity.mode", "visual"], ["set", "@entity.mode", "never"]]] }
+                        ]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    fn key(k: &str) -> Value {
+        let mut data = HashMap::new();
+        data.insert("key".to_string(), Value::String(k.to_string()));
+        Value::Object(data)
+    }
+
+    #[test]
+    fn a_fired_dispatch_reports_its_arm_its_guards_and_one_status_per_authored_effect() {
+        let result = kernel()
+            .process_event("Modes", None, "KEY", key("v"))
+            .unwrap();
+        assert!(result.executed);
+        assert_eq!(result.fired_arm, Some(1));
+        assert_eq!(
+            result
+                .guards
+                .iter()
+                .map(|g| (g.arm, g.guard.passed))
+                .collect::<Vec<_>>(),
+            vec![(0, false), (1, true)]
+        );
+        assert_eq!(
+            result.effect_runs.len(),
+            2,
+            "one run per authored effect, the compound `if` included"
+        );
+        assert!(result
+            .effect_runs
+            .iter()
+            .all(|r| r.status == EffectRunStatus::Executed));
+    }
+
+    #[test]
+    fn control_a_blocked_dispatch_has_no_arm_and_no_effect_runs_but_keeps_its_guards() {
+        let result = kernel()
+            .process_event("Modes", None, "KEY", key("x"))
+            .unwrap();
+        assert!(!result.executed);
+        assert_eq!(result.fired_arm, None);
+        assert_eq!(result.guards.len(), 2);
+        assert!(result.effect_runs.is_empty());
     }
 }

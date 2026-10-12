@@ -26,7 +26,7 @@ mod manager;
 mod types;
 
 pub use types::{
-    EventPayload, GuardResult, TraitInstanceId, TraitState, TransitionFailureReason,
+    ArmGuard, EventPayload, GuardResult, TraitInstanceId, TraitState, TransitionFailureReason,
     TransitionResult,
 };
 
