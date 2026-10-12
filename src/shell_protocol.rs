@@ -315,7 +315,13 @@ pub fn find_program(program: &Program, beside: Option<&Path>, start_dir: &Path, 
         }
     }
     let package = format!("{}-{}", program.package, platform());
-    if let Some(installed) = crate::behavior_packages::find_npm_package(&package, start_dir, user_store) {
+    // A dependency resolves from its dependent's real location (pnpm keeps the platform
+    // package beside the meta package inside its store, not at the project's top level).
+    let meta = crate::behavior_packages::find_npm_package(&program.package, start_dir, user_store);
+    let platform_package = meta
+        .and_then(|meta| crate::behavior_packages::find_npm_package(&package, &meta.root, user_store))
+        .or_else(|| crate::behavior_packages::find_npm_package(&package, start_dir, user_store));
+    if let Some(installed) = platform_package {
         return installed.bin.get(&program.binary).filter(|p| p.is_file()).cloned().ok_or_else(|| {
             ShellFailure::new(CODE_NOT_INSTALLED, format!("{package} at {} declares no {} binary", installed.root.display(), program.binary))
         });
@@ -513,6 +519,46 @@ mod tests {
         std::fs::create_dir_all(&beside).unwrap();
         std::fs::write(beside.join(shell_binary("zzbeside")), "").unwrap();
         assert_eq!(find_shell("zzbeside", Some(&beside), &root, &root).unwrap(), beside.join(shell_binary("zzbeside")));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn pnpm_project(root: &Path, name: &str, link_meta: bool) -> PathBuf {
+        let store = root.join("node_modules/.pnpm").join(format!("orb-shell-{name}@1.0.0"));
+        let binary = installed(&store, name);
+        let meta = store.join("node_modules/@almadar").join(format!("orb-shell-{name}"));
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(
+            meta.join("package.json"),
+            serde_json::json!({"name": format!("@almadar/orb-shell-{name}"), "version": "1.0.0"}).to_string(),
+        )
+        .unwrap();
+        if link_meta {
+            std::fs::create_dir_all(root.join("node_modules/@almadar")).unwrap();
+            std::os::unix::fs::symlink(&meta, root.join("node_modules/@almadar").join(format!("orb-shell-{name}"))).unwrap();
+        }
+        binary
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_platform_package_resolves_from_its_meta_package_in_a_pnpm_project() {
+        let root = std::env::temp_dir().join(format!("orb-find-pnpm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let binary = pnpm_project(&root, "zzpnpm", true);
+        let found = find_shell("zzpnpm", None, &root, &root.join("no-store")).unwrap();
+        assert_eq!(found.canonicalize().unwrap(), binary.canonicalize().unwrap());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn control_a_platform_package_stranded_in_the_store_is_not_installed() {
+        let root = std::env::temp_dir().join(format!("orb-find-stranded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        pnpm_project(&root, "zzstranded", false);
+        let err = find_shell("zzstranded", None, &root, &root.join("no-store")).unwrap_err();
+        assert_eq!(err.code, CODE_NOT_INSTALLED);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
