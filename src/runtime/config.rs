@@ -1,6 +1,6 @@
 //! Runtime kernel configuration.
 
-use crate::effects::{EffectDelegate, RuntimeEnvironment};
+use crate::effects::{EffectDelegate, RuntimeEnvironment, ServiceHandler, SubstrateHandler};
 use std::sync::Arc;
 
 /// Configuration for the runtime kernel.
@@ -25,6 +25,12 @@ pub struct KernelConfig {
     /// ServerLegCollector`; `None` (the default) for a Server-env kernel,
     /// which never delegates.
     pub delegate: Option<Arc<dyn EffectDelegate>>,
+
+    /// Runs `call-service` (the integrations); `None` leaves every call a no-op.
+    pub service_handler: Option<Arc<dyn ServiceHandler>>,
+
+    /// Runs substrate operators (`program/*`, `behavior/*`, …); `None` fails them.
+    pub substrate_handler: Option<Arc<dyn SubstrateHandler>>,
 }
 
 impl std::fmt::Debug for KernelConfig {
@@ -41,6 +47,8 @@ impl std::fmt::Debug for KernelConfig {
             .field("enable_event_history", &self.enable_event_history)
             .field("max_event_history", &self.max_event_history)
             .field("delegate", &self.delegate.is_some())
+            .field("service_handler", &self.service_handler.is_some())
+            .field("substrate_handler", &self.substrate_handler.is_some())
             .finish()
     }
 }
@@ -53,6 +61,8 @@ impl Default for KernelConfig {
             enable_event_history: true,
             max_event_history: 1000,
             delegate: None,
+            service_handler: None,
+            substrate_handler: None,
         }
     }
 }

@@ -473,6 +473,12 @@ impl RuntimeKernel {
         if let Some(delegate) = config.delegate.clone() {
             executor = executor.with_delegate(delegate);
         }
+        if let Some(handler) = config.service_handler.clone() {
+            executor = executor.with_service_handler(handler);
+        }
+        if let Some(handler) = config.substrate_handler.clone() {
+            executor = executor.with_substrate_handler(handler);
+        }
         let effect_executor = Arc::new(executor);
 
         let listener_manager = ListenerManager::new(event_bus.clone());
@@ -2557,6 +2563,25 @@ impl RuntimeKernel {
                     effect_results.push(result);
                     effect_results.extend(completion);
                 }
+                Effect::CallService {
+                    emit: Some(call_emit),
+                    ..
+                } if !call_emit.is_empty() => {
+                    let resolved = resolve_effect_bindings(effect.clone(), ctx);
+                    let result = self.effect_executor.execute(&resolved, ctx);
+                    let completion = call_service_completion_emit(call_emit, &result);
+                    effect_results.push(result);
+                    effect_results.extend(completion);
+                }
+                Effect::Custom {
+                    emit: Some(op_emit),
+                    ..
+                } if !op_emit.is_empty() => {
+                    let result = self.effect_executor.execute(&effect, ctx);
+                    let completion = substrate_completion_emit(op_emit, &result);
+                    effect_results.push(result);
+                    effect_results.extend(completion);
+                }
                 Effect::CancelCall { .. } | Effect::CallService { key: Some(_), .. } => {
                     let resolved = resolve_effect_bindings(effect.clone(), ctx);
                     effect_results.push(self.effect_executor.execute(&resolved, ctx));
@@ -3280,11 +3305,13 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Effect {
             method,
             args,
             key,
+            emit,
         } => Effect::CallService {
             service,
             method,
             args,
             key: key.map(|k| resolve_key(&k, ctx)),
+            emit,
         },
         Effect::CancelCall { key } => Effect::CancelCall {
             key: resolve_key(&key, ctx),
@@ -3353,6 +3380,7 @@ mod call_key_tests {
             method: "classifyMany".into(),
             args: Value::Null,
             key: Some("@entity.batchId".into()),
+            emit: None,
         };
         let Effect::CallService { key, .. } = resolve_effect_bindings(effect, &ctx_with_batch())
         else {
@@ -3382,6 +3410,41 @@ mod call_key_tests {
         };
         assert_eq!(key, "fixed");
     }
+}
+
+/// A `call-service`'s declared completion — JS `EffectExecutor.ts`: `emit.success` carries the
+/// service's result as the payload, `emit.failure` `{ error }`. A delegated or no-op call fires nothing.
+fn call_service_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<EffectResult> {
+    let (event, payload) = match &result.outcome {
+        EffectOutcome::Executed => (emit.success.clone()?, result.return_value.clone().unwrap_or(Value::Null)),
+        EffectOutcome::Failed => (emit.failure.clone()?, error_payload(result, None)),
+        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
+    };
+    Some(EffectResult::executed(Effect::Emit { event, payload }))
+}
+
+/// A substrate op's declared completion — JS `runSubstrate`/`runProgramEffectArm`: `emit.success`
+/// carries `{ result }`, `emit.failure` `{ error }` plus `errors` (a program's validator issues).
+fn substrate_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<EffectResult> {
+    let (event, payload) = match &result.outcome {
+        EffectOutcome::Executed => {
+            let mut payload = HashMap::new();
+            payload.insert("result".to_string(), result.return_value.clone().unwrap_or(Value::Null));
+            (emit.success.clone()?, Value::Object(payload))
+        }
+        EffectOutcome::Failed => (emit.failure.clone()?, error_payload(result, result.return_value.clone())),
+        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
+    };
+    Some(EffectResult::executed(Effect::Emit { event, payload }))
+}
+
+fn error_payload(result: &EffectResult, errors: Option<Value>) -> Value {
+    let mut payload = HashMap::new();
+    payload.insert("error".to_string(), Value::String(result.error.clone().unwrap_or_default()));
+    if let Some(errors) = errors {
+        payload.insert("errors".to_string(), errors);
+    }
+    Value::Object(payload)
 }
 
 fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<EffectResult> {

@@ -24,6 +24,7 @@ fn custom(name: &str) -> Effect {
     Effect::Custom {
         name: name.into(),
         args: vec![],
+        emit: None,
     }
 }
 
@@ -61,6 +62,7 @@ fn server_ops() -> Vec<Effect> {
             method: "m".into(),
             args: Value::Null,
             key: None,
+            emit: None,
         },
         Effect::CancelCall { key: "k".into() },
     ];

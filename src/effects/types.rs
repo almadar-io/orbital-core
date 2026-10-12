@@ -92,6 +92,9 @@ pub enum Effect {
         /// Evaluated `key:` option naming the call for `cancel-call`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
+        /// Completion events: `success` carries the service's result, `failure` `{ error }`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
     },
 
     /// Abort the in-flight keyed call-service started with `key`
@@ -161,8 +164,14 @@ pub enum Effect {
         emit: Option<FetchEmit>,
     },
 
-    /// Generic/unknown effect (for extensibility)
-    Custom { name: String, args: Vec<Value> },
+    /// Generic/unknown effect (for extensibility). A substrate op's trailing `{ emit }`
+    /// object is split into `emit`: `success` carries `{ result }`, `failure` `{ error }`.
+    Custom {
+        name: String,
+        args: Vec<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
 }
 
 /// All client-targeted effect wire kinds, in `kebab-case`. Every client shell MUST handle
@@ -418,10 +427,18 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
         // 2026-09-11), desugared away at lowering; the `.orb` IR never
         // carries this kind, so a stale tuple falls through to `Custom`
         // below rather than a dedicated variant — never crashes the parser.
-        _ => Some(Effect::Custom {
-            name: op.to_string(),
-            args: args.iter().map(|e| Value::from(e.clone())).collect(),
-        }),
+        _ => {
+            let mut values: Vec<Value> = args.iter().map(|e| Value::from(e.clone())).collect();
+            let emit = values.last().and_then(parse_emit_config);
+            if emit.is_some() {
+                values.pop();
+            }
+            Some(Effect::Custom {
+                name: op.to_string(),
+                args: values,
+                emit,
+            })
+        }
     }
 }
 
@@ -649,11 +666,15 @@ fn parse_call_service(args: &[SExpression]) -> Option<Effect> {
             .map(str::to_string),
         _ => None,
     };
+    let emit = args
+        .get(3)
+        .and_then(|options| parse_emit_config(&Value::from(options.clone())));
     Some(Effect::CallService {
         service,
         method,
         args: call_args,
         key,
+        emit,
     })
 }
 
@@ -1044,7 +1065,7 @@ mod tests {
 
         let effect = parse_effect(&expr).unwrap();
         match effect {
-            Effect::Custom { name, args } => {
+            Effect::Custom { name, args, .. } => {
                 assert_eq!(name, "custom-effect");
                 assert_eq!(args.len(), 2);
             }
@@ -1102,6 +1123,65 @@ mod tests {
                 assert!(offset.is_none());
             }
             _ => panic!("Expected Fetch effect"),
+        }
+    }
+
+    /// A `call-service` options object carries its completion events beside `key:` — JS
+    /// `EffectExecutor.ts` reads `emit` from `args[3]` (drift D20).
+    #[test]
+    fn a_call_service_options_object_carries_its_completion_events() {
+        let expr: SExpression = serde_json::from_str(
+            r#"["call-service", "llm", "embed", {"texts": ["a"]}, {"key": "k1", "emit": {"success": "EMBEDDED", "failure": "EMBED_FAILED"}}]"#,
+        )
+        .unwrap();
+        match parse_effect(&expr).unwrap() {
+            Effect::CallService { key, emit, .. } => {
+                assert_eq!(key.as_deref(), Some("k1"));
+                let emit = emit.expect("emit parsed");
+                assert_eq!(emit.success.as_deref(), Some("EMBEDDED"));
+                assert_eq!(emit.failure.as_deref(), Some("EMBED_FAILED"));
+            }
+            other => panic!("expected CallService, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn control_a_call_service_without_options_declares_no_completion() {
+        let expr: SExpression = serde_json::from_str(r#"["call-service", "llm", "embed", {}]"#).unwrap();
+        match parse_effect(&expr).unwrap() {
+            Effect::CallService { emit, .. } => assert!(emit.is_none()),
+            other => panic!("expected CallService, got {other:?}"),
+        }
+    }
+
+    /// A substrate/program op's trailing `{ emit }` object is its completion config, not a
+    /// positional argument — JS `splitSubstrateEmit` (drift D20).
+    #[test]
+    fn a_substrate_ops_trailing_emit_object_is_split_from_its_arguments() {
+        let expr: SExpression = serde_json::from_str(
+            r#"["program/eval", {"name": "App", "orbitals": []}, {"final": true}, {"emit": {"success": "EVALUATED", "failure": "EVAL_FAILED"}}]"#,
+        )
+        .unwrap();
+        match parse_effect(&expr).unwrap() {
+            Effect::Custom { name, args, emit } => {
+                assert_eq!(name, "program/eval");
+                assert_eq!(args.len(), 2, "the emit object is not an argument");
+                assert_eq!(emit.expect("emit parsed").success.as_deref(), Some("EVALUATED"));
+            }
+            other => panic!("expected Custom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edge_a_trailing_object_without_emit_stays_an_argument() {
+        let expr: SExpression =
+            serde_json::from_str(r#"["program/eval", {"name": "App", "orbitals": []}, {"final": true}]"#).unwrap();
+        match parse_effect(&expr).unwrap() {
+            Effect::Custom { args, emit, .. } => {
+                assert_eq!(args.len(), 2);
+                assert!(emit.is_none());
+            }
+            other => panic!("expected Custom, got {other:?}"),
         }
     }
 

@@ -24,7 +24,8 @@ pub use effect_row::{EffectRow, EffectRowBuilder, EffectSite, EffectUse, TICKS_K
 pub use emit_contract::{success_emit_key, success_payload, undeclared_reads, ProducedPayload};
 pub use executor::{
     EffectDelegate, EffectExecutor, FetchHandler, FetchPage, GameEntityHandler, InMemoryPersistence,
-    NavigationHandler, PersistenceHandler, RenderHandler, ServiceHandler,
+    NavigationHandler, PersistenceHandler, RenderHandler, ServiceHandler, SubstrateFailure,
+    SubstrateHandler,
 };
 pub use live_push::{LiveBroadcastItem, StreamItem};
 pub use response::{

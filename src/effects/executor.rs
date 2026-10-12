@@ -85,6 +85,22 @@ pub trait ServiceHandler: Send + Sync {
     fn cancel(&self, key: &str) -> Result<(), String>;
 }
 
+/// A substrate operator's failure: the message, plus any structured issues (a program's
+/// validator issues for `program/eval`) carried on the failure event as `errors`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubstrateFailure {
+    pub message: String,
+    pub errors: Vec<Value>,
+}
+
+/// Host for substrate operators (`program/*`, `behavior/*`, `llm/*`, …): the effects the
+/// installed operator table routes to a host (`ir::is_substrate_operator`). The JS twin is
+/// `@almadar/integrations/program` `runProgramEffect` behind `EffectExecutor.ts`.
+pub trait SubstrateHandler: Send + Sync {
+    /// Run one op with its positional arguments (the trailing `{ emit }` already split off).
+    fn run(&self, op: &str, args: &[Value]) -> Result<Value, SubstrateFailure>;
+}
+
 /// Handler for UI rendering (client-only)
 pub trait RenderHandler: Send + Sync {
     fn render(&self, slot: &str, content: &Value) -> Result<(), String>;
@@ -330,6 +346,7 @@ pub struct EffectExecutor {
 
     /// Service handler
     service_handler: Option<Arc<dyn ServiceHandler>>,
+    substrate_handler: Option<Arc<dyn SubstrateHandler>>,
 
     /// Render handler (client-only)
     render_handler: Option<Arc<dyn RenderHandler>>,
@@ -369,6 +386,7 @@ impl EffectExecutor {
             fetch_handler: None,
             stream_fetch_handler: None,
             service_handler: None,
+            substrate_handler: None,
             render_handler: None,
             navigation_handler: None,
             game_handler: None,
@@ -412,6 +430,11 @@ impl EffectExecutor {
     }
 
     /// Set the service handler
+    pub fn with_substrate_handler(mut self, handler: Arc<dyn SubstrateHandler>) -> Self {
+        self.substrate_handler = Some(handler);
+        self
+    }
+
     pub fn with_service_handler(mut self, handler: Arc<dyn ServiceHandler>) -> Self {
         self.service_handler = Some(handler);
         self
@@ -501,6 +524,7 @@ impl EffectExecutor {
                 method,
                 args,
                 key,
+                ..
             } => self.do_call_service(service, method, args, key.as_deref()),
             Effect::CancelCall { key } => self.do_cancel_call(key),
             Effect::RenderUi { slot, content } => self.do_render_ui(slot, content),
@@ -517,7 +541,7 @@ impl EffectExecutor {
                 message,
                 data,
             } => self.do_log(*level, message, data.as_ref()),
-            Effect::Custom { name, args } => self.do_custom(name, args),
+            Effect::Custom { name, args, .. } => self.do_custom(name, args),
         }
     }
 
@@ -1132,6 +1156,7 @@ impl EffectExecutor {
             method: method.to_string(),
             args: args.clone(),
             key: key.map(str::to_string),
+            emit: None,
         };
 
         if let Some(handler) = &self.service_handler {
@@ -1290,9 +1315,28 @@ impl EffectExecutor {
         let effect = Effect::Custom {
             name: name.to_string(),
             args: args.to_vec(),
+            emit: None,
         };
 
-        // Custom effects are logged but not executed
+        if crate::ir::is_substrate_operator(name) {
+            if let Some(handler) = &self.substrate_handler {
+                return match handler.run(name, args) {
+                    Ok(value) => EffectResult::executed_with_value(effect, value),
+                    Err(failure) => {
+                        let mut result = EffectResult::failed(effect, &failure.message);
+                        if !failure.errors.is_empty() {
+                            result.return_value = Some(Value::Array(failure.errors));
+                        }
+                        result
+                    }
+                };
+            }
+            if self.environment.is_server() {
+                return EffectResult::failed(effect, &format!("no substrate host configured for {name}"));
+            }
+            return EffectResult::noop(effect, "substrate operators run on the server leg");
+        }
+
         debug!(name = name, args = ?args, "Custom effect (not handled)");
         EffectResult::noop(effect, "custom effects require specific handlers")
     }
@@ -1380,6 +1424,7 @@ mod tests {
             method: "classifyMany".into(),
             args: Value::Null,
             key: Some("batch-1".into()),
+            emit: None,
         };
         assert!(executor
             .execute(&effect, &BindingContext::new())
@@ -1800,6 +1845,7 @@ mod tests {
         let effect = Effect::Custom {
             name: "my-custom-effect".to_string(),
             args: vec![Value::Number(42.0)],
+            emit: None,
         };
 
         let result = executor.execute(&effect, &BindingContext::new());
