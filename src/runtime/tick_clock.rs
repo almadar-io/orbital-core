@@ -186,13 +186,29 @@ impl TickClock {
     pub fn due(
         &mut self,
         now_ms: u64,
+        calendar: impl FnMut() -> Calendar,
+    ) -> Vec<(String, String)> {
+        self.due_among(now_ms, calendar, None)
+    }
+
+    /// [`Self::due`] over the ticks of `mounted` traits only (`None`: every trait). An unmounted
+    /// trait's ticks neither fire nor accumulate; its timestamp is cleared, so a remount only
+    /// captures it on the next pass.
+    pub fn due_among(
+        &mut self,
+        now_ms: u64,
         mut calendar: impl FnMut() -> Calendar,
+        mounted: Option<&BTreeSet<String>>,
     ) -> Vec<(String, String)> {
         if self.paused {
             return Vec::new();
         }
         let mut due = Vec::new();
         for entry in &mut self.entries {
+            if mounted.is_some_and(|m| !m.contains(&entry.trait_name)) {
+                entry.last_ms = None;
+                continue;
+            }
             let fire = match &mut entry.schedule {
                 Schedule::EveryPass => true,
                 Schedule::Interval {

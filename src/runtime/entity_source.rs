@@ -13,6 +13,15 @@ pub trait EntitySource: Send + Sync {
     /// Read an entity by type and ID.
     fn read(&self, entity_type: &str, id: &str) -> Result<Value, String>;
 
+    /// The row, or `None` when no such row exists. A store that tracks absence says so here; the default
+    /// reads the row and takes `Ok(Null)` as absent, so an `Err` stays a failure rather than a miss.
+    fn find(&self, entity_type: &str, id: &str) -> Result<Option<Value>, String> {
+        match self.read(entity_type, id)? {
+            Value::Null => Ok(None),
+            row => Ok(Some(row)),
+        }
+    }
+
     /// Write entity data, creating or updating as needed.
     fn write(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String>;
 
@@ -72,6 +81,15 @@ impl EntitySource for InMemoryEntityCache {
             .and_then(|type_cache| type_cache.get(id))
             .cloned()
             .ok_or_else(|| format!("Entity not found in cache: {}:{}", entity_type, id))
+    }
+
+    fn find(&self, entity_type: &str, id: &str) -> Result<Option<Value>, String> {
+        Ok(self
+            .data
+            .read()
+            .get(&self.store_key(entity_type))
+            .and_then(|type_cache| type_cache.get(id))
+            .cloned())
     }
 
     fn write(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String> {

@@ -47,6 +47,22 @@ pub struct ProcessEventResult {
 
     /// One run per authored effect of the fired arm, in order.
     pub effect_runs: Vec<EffectRun>,
+
+    /// Traits the dispatch's cross-trait worklist dropped when it hit `CROSS_TRAIT_CASCADE_CAP`,
+    /// in first-dropped order; carried on the last outcome processed before the cap. Empty when the
+    /// whole worklist ran.
+    pub cascade_dropped: Vec<String>,
+
+    /// Positions in `effect_results` of the `emit`s this dispatch consumed itself: the emitter's own
+    /// arm for the event, or a listener target. The response marks them `source.dispatched`.
+    pub consumed_emits: Vec<usize>,
+
+    /// The message of the first effect that failed the way the JS executor throws (an unevaluable `set`,
+    /// a `call-service` or substrate operator with no `emit.failure` route). The new state stands.
+    pub failure: Option<String>,
+
+    /// The payload this trait's `@callsitePayload` read during the step (its composer's), when it has one.
+    pub callsite_payload: Option<Value>,
 }
 
 /// How one authored effect ran: failed when any effect it expanded to failed, executed when

@@ -34,6 +34,7 @@ fn declared(collection: &str, read: &str) -> EntityAccessPolicies {
         collection: Some(collection.to_string()),
         inherited: false,
         required_create_fields: Vec::new(),
+        intrinsic_fields: Vec::new(),
     }
 }
 
@@ -46,6 +47,7 @@ fn undeclared(collection: Option<&str>) -> EntityAccessPolicies {
         collection: collection.map(str::to_string),
         inherited: false,
         required_create_fields: Vec::new(),
+        intrinsic_fields: Vec::new(),
     }
 }
 

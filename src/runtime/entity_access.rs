@@ -220,6 +220,8 @@ pub struct EntityAccessPolicies {
     /// [`required_create_field_names`]. A property of the entity's OWN field
     /// declarations, never inherited from a sibling on the same collection.
     pub required_create_fields: Vec<String>,
+    /// Names of this entity's `@intrinsic` fields — the trait's own frame, never a persisted column.
+    pub intrinsic_fields: Vec<String>,
 }
 
 impl EntityAccessPolicies {
@@ -411,6 +413,16 @@ pub fn check_mutation_access(
             ))
         }
     }
+}
+
+/// Names of the entity's `@intrinsic` fields.
+pub fn intrinsic_field_names(entity: &EntityDefinition) -> Vec<String> {
+    entity
+        .fields
+        .iter()
+        .filter(|f| f.intrinsic == Some(true))
+        .filter_map(|f| f.name.clone())
+        .collect()
 }
 
 /// Names of `entity`'s `persist create`-required columns: a field declaring

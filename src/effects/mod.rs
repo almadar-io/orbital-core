@@ -24,15 +24,15 @@ pub use effect_row::{EffectRow, EffectRowBuilder, EffectSite, EffectUse, TICKS_K
 pub use emit_contract::{success_emit_key, success_payload, undeclared_reads, ProducedPayload};
 pub use executor::{
     EffectDelegate, EffectExecutor, FetchHandler, FetchPage, GameEntityHandler, InMemoryPersistence,
-    NavigationHandler, PersistenceHandler, RenderHandler, ServiceHandler, SubstrateFailure,
+    NavigationHandler, PersistenceHandler, RenderHandler, ServiceCaller, ServiceHandler, SubstrateFailure,
     SubstrateHandler,
 };
 pub use live_push::{LiveBroadcastItem, StreamItem};
 pub use response::{
     delivery_record_value, tick_event_key, BusEventSource, ClientEffectByTrait, DeliveryRecord,
-    DispatchLog, EmittedEvent, EventRequest, EventResponse, ExternalInputRequest, MountSeed,
-    RunTick, ServerEffectKind, ServerEffectResult, TraitFrom, TransitionRejection,
-    TransitionRejectionCode, BUS_EVENT_SOURCE_FIELDS,
+    DispatchLog, EmittedEvent, EventRequest, EventResponse, ExternalInputRequest, LifecycleEvent, MountSeed,
+    HopEffect, HopEffectStatus, RunTick, ServerEffectCode, ServerEffectKind, ServerEffectResult, TraitFrom,
+    TransitionRejection, TransitionRejectionCode, TransitionHop, BUS_EVENT_SOURCE_FIELDS,
 };
 pub use runs_on::{
     effect_operator, effect_runs_on, effect_site, entity_arg, ir_effect_site, runs_on, sexpr_runs_server_effect, Residence, RunsOn, EFFECT_SITES, ENTITY_ARGS,

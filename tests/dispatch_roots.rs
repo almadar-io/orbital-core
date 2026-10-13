@@ -205,4 +205,9 @@ fn without_them_the_request_is_a_direct_dispatch() {
     assert_eq!(acks.len(), 1);
     assert_eq!(acks[0]["srcEvent"], json!("GOT"));
     assert_eq!(acks[0]["seen"], json!(0));
+    assert!(
+        acks[0].get("srcTrait").is_none(),
+        "a direct dispatch has no source trait: the prop is absent, not the literal token ({})",
+        acks[0]
+    );
 }

@@ -217,7 +217,7 @@ impl ClientCore {
                 .iter()
                 .map(|t| crate::effects::MountSeed {
                     r#trait: t.clone(),
-                    event: "INIT".to_string(),
+                    event: crate::effects::LifecycleEvent::Init,
                 })
                 .collect();
             let settled = client_kernel

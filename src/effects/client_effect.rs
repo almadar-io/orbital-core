@@ -17,6 +17,7 @@ use std::fmt;
 use super::Effect;
 
 /// `{ crumb?: string }` — the optional fourth element of a `navigate` tuple.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NavigateOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]

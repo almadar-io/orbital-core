@@ -13,6 +13,7 @@ pub mod sidecar_store;
 pub mod cron;
 pub mod drawable;
 pub mod effects;
+pub mod embed;
 pub mod error;
 pub mod expects;
 pub mod evaluator;

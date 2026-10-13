@@ -26,7 +26,7 @@ fn kernel() -> (RuntimeKernel, Arc<InMemoryEntityCache>) {
         "name": "frames",
         "orbitals": [{
             "name": "Main",
-            "entity": { "name": "Doc", "shared": true, "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "v", "type": "string" }] },
+            "entity": { "name": "Doc", "shared": true, "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "v", "type": "string" }, { "name": "w", "type": "string", "default": "doc-w" }] },
             "auxiliaryEntities": [{ "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "v", "type": "string", "default": "none" }] }],
             "traits": [
                 listener("Starter", "Doc", json!([]), json!([arm("GO", json!([
@@ -38,7 +38,7 @@ fn kernel() -> (RuntimeKernel, Arc<InMemoryEntityCache>) {
                     arm("READ", json!([["emit", "OWN_SEEN", { "v": "@entity.v" }]]))
                 ])),
                 listener("OwnC", "Note", json!([from("Starter", "PING", "WRITE")]), json!([arm("WRITE", json!([["set", "@entity.v", "c"], ["emit", "OWN_C", {}]]))])),
-                listener("OwnD", "Note", json!([from("OwnC", "OWN_C", "READ")]), json!([arm("READ", json!([["emit", "D_SEEN", { "v": "@entity.v" }]]))]))
+                listener("OwnD", "Note", json!([from("OwnC", "OWN_C", "READ")]), json!([arm("READ", json!([["emit", "D_SEEN", { "v": "@entity.v", "w": "@entity.w" }]]))]))
             ]
         }]
     }))
@@ -140,4 +140,39 @@ fn snapshot_and_restore_round_trip_a_private_frame() {
 fn an_unwritten_private_field_reads_its_declared_default_not_a_siblings_write() {
     let (k, _) = kernel();
     assert_eq!(seen(&k, "D_SEEN"), vec![json!("none")]);
+}
+
+#[test]
+fn the_primary_entitys_defaults_never_reach_a_trait_bound_to_another_entity() {
+    let (k, _) = kernel();
+    let payload = k
+        .dispatch("Starter", None, "GO", Value::Null)
+        .unwrap()
+        .iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .find_map(|er| match &er.effect {
+            Effect::Emit { event, payload } if event == "D_SEEN" => {
+                Some(serde_json::to_value(payload).unwrap())
+            }
+            _ => None,
+        })
+        .expect("D_SEEN");
+    assert!(payload.get("w").is_none(), "an unset `@entity.w` is an absent prop: {payload}");
+    assert_eq!(payload["v"], json!("none"));
+}
+
+#[test]
+fn control_a_trait_bound_to_the_primary_entity_reads_its_default() {
+    let (k, _) = kernel();
+    let payload = k
+        .dispatch("Starter", None, "GO", Value::Null)
+        .unwrap()
+        .iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .find_map(|er| match &er.effect {
+            Effect::Emit { event, payload } if event == "SEEN" => Some(serde_json::to_value(payload).unwrap()),
+            _ => None,
+        })
+        .expect("SEEN");
+    assert_eq!(payload["v"], json!("start"));
 }

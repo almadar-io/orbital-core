@@ -1,0 +1,3272 @@
+{
+  "cases": [
+    {
+      "service": "llm",
+      "action": "generate",
+      "params": {},
+      "success": true,
+      "data": {
+        "content": "mock_content",
+        "usage": {
+          "promptTokens": 42,
+          "completionTokens": 42,
+          "totalTokens": 42
+        }
+      }
+    },
+    {
+      "service": "llm",
+      "action": "classify",
+      "params": {},
+      "success": true,
+      "data": {
+        "category": "mock_category",
+        "confidence": 42,
+        "reasoning": "mock_reasoning"
+      }
+    },
+    {
+      "service": "llm",
+      "action": "classifyMany",
+      "params": {},
+      "success": true,
+      "data": {
+        "verdicts": [
+          {
+            "id": "mock_id",
+            "category": "mock_category",
+            "confidence": 42
+          }
+        ]
+      }
+    },
+    {
+      "service": "llm",
+      "action": "extract",
+      "params": {},
+      "success": true,
+      "data": {
+        "data": {},
+        "confidence": 42
+      }
+    },
+    {
+      "service": "llm",
+      "action": "summarize",
+      "params": {},
+      "success": true,
+      "data": {
+        "summary": "mock_summary",
+        "keyPoints": []
+      }
+    },
+    {
+      "service": "llm",
+      "action": "call-tools",
+      "params": {},
+      "success": true,
+      "data": {
+        "reply": "mock_reply",
+        "steps": [],
+        "usage": {
+          "promptTokens": 42,
+          "completionTokens": 42,
+          "totalTokens": 42,
+          "modelCalls": 42
+        }
+      }
+    },
+    {
+      "service": "llm",
+      "action": "embed",
+      "params": {},
+      "success": true,
+      "data": {
+        "embeddings": []
+      }
+    },
+    {
+      "service": "ml",
+      "action": "infer",
+      "params": {},
+      "success": true,
+      "data": {
+        "output": "mock_output",
+        "confidence": 42,
+        "violations": []
+      }
+    },
+    {
+      "service": "data",
+      "action": "list",
+      "params": {},
+      "success": true,
+      "data": {
+        "items": []
+      }
+    },
+    {
+      "service": "data",
+      "action": "getById",
+      "params": {},
+      "success": true,
+      "data": {
+        "item": "mock_item"
+      }
+    },
+    {
+      "service": "data",
+      "action": "create",
+      "params": {},
+      "success": true,
+      "data": {
+        "item": "mock_item"
+      }
+    },
+    {
+      "service": "data",
+      "action": "update",
+      "params": {},
+      "success": true,
+      "data": {
+        "item": "mock_item"
+      }
+    },
+    {
+      "service": "data",
+      "action": "delete",
+      "params": {},
+      "success": true,
+      "data": {
+        "deleted": true
+      }
+    },
+    {
+      "service": "eventbus",
+      "action": "emit",
+      "params": {},
+      "success": true,
+      "data": {
+        "delivered": 42
+      }
+    },
+    {
+      "service": "eventbus",
+      "action": "getListenerCounts",
+      "params": {},
+      "success": true,
+      "data": {
+        "counts": {
+          "sample": 42
+        }
+      }
+    },
+    {
+      "service": "discovery",
+      "action": "register",
+      "params": {},
+      "success": true,
+      "data": {
+        "registered": true
+      }
+    },
+    {
+      "service": "discovery",
+      "action": "findListeners",
+      "params": {},
+      "success": true,
+      "data": {
+        "services": [
+          {
+            "name": "mock_name",
+            "instanceId": "mock_instanceId",
+            "host": "mock_host",
+            "port": 42
+          }
+        ]
+      }
+    },
+    {
+      "service": "discovery",
+      "action": "findEmitters",
+      "params": {},
+      "success": true,
+      "data": {
+        "services": [
+          {
+            "name": "mock_name",
+            "instanceId": "mock_instanceId",
+            "host": "mock_host",
+            "port": 42
+          }
+        ]
+      }
+    },
+    {
+      "service": "migration",
+      "action": "listDocuments",
+      "params": {},
+      "success": true,
+      "data": {
+        "documents": [
+          {
+            "sample": "mock_sample"
+          }
+        ]
+      }
+    },
+    {
+      "service": "migration",
+      "action": "fetchDocument",
+      "params": {},
+      "success": true,
+      "data": {
+        "document": {
+          "sample": "mock_sample"
+        }
+      }
+    },
+    {
+      "service": "migration",
+      "action": "stage",
+      "params": {},
+      "success": true,
+      "data": {
+        "stats": {
+          "sample": "mock_sample"
+        },
+        "units": [
+          {
+            "sample": "mock_sample"
+          }
+        ],
+        "skipped": [
+          {
+            "sample": "mock_sample"
+          }
+        ],
+        "validationErrors": [
+          {
+            "sample": "mock_sample"
+          }
+        ]
+      }
+    },
+    {
+      "service": "migration",
+      "action": "commit",
+      "params": {},
+      "success": true,
+      "data": {
+        "committed": 42,
+        "failed": [
+          {
+            "sample": "mock_sample"
+          }
+        ]
+      }
+    },
+    {
+      "service": "skills",
+      "action": "generateOrbitals",
+      "params": {},
+      "success": true,
+      "data": {
+        "skill": {
+          "name": "mock_name",
+          "content": "mock_content"
+        }
+      }
+    },
+    {
+      "service": "skills",
+      "action": "generateFix",
+      "params": {},
+      "success": true,
+      "data": {
+        "skill": {
+          "name": "mock_name",
+          "content": "mock_content"
+        }
+      }
+    },
+    {
+      "service": "skills",
+      "action": "generateDomainLanguage",
+      "params": {},
+      "success": true,
+      "data": {
+        "skill": {
+          "name": "mock_name",
+          "content": "mock_content"
+        }
+      }
+    },
+    {
+      "service": "skills",
+      "action": "generateAll",
+      "params": {},
+      "success": true,
+      "data": {
+        "skills": [
+          {
+            "name": "mock_name",
+            "content": "mock_content"
+          }
+        ]
+      }
+    },
+    {
+      "service": "github",
+      "action": "cloneRepo",
+      "params": {},
+      "success": true,
+      "data": {
+        "message": "mock_message"
+      }
+    },
+    {
+      "service": "github",
+      "action": "createBranch",
+      "params": {},
+      "success": true,
+      "data": {
+        "message": "mock_message"
+      }
+    },
+    {
+      "service": "github",
+      "action": "commit",
+      "params": {},
+      "success": true,
+      "data": {
+        "message": "mock_message"
+      }
+    },
+    {
+      "service": "github",
+      "action": "push",
+      "params": {},
+      "success": true,
+      "data": {
+        "message": "mock_message"
+      }
+    },
+    {
+      "service": "github",
+      "action": "createPR",
+      "params": {},
+      "success": true,
+      "data": {
+        "number": 42,
+        "url": "mock_url",
+        "title": "mock_title"
+      }
+    },
+    {
+      "service": "github",
+      "action": "getPRComments",
+      "params": {},
+      "success": true,
+      "data": {
+        "comments": [
+          {
+            "id": 42,
+            "body": "mock_body",
+            "user": "mock_user"
+          }
+        ]
+      }
+    },
+    {
+      "service": "github",
+      "action": "listIssues",
+      "params": {},
+      "success": true,
+      "data": {
+        "issues": [
+          {
+            "number": 42,
+            "title": "mock_title",
+            "state": "mock_state"
+          }
+        ]
+      }
+    },
+    {
+      "service": "github",
+      "action": "getIssue",
+      "params": {},
+      "success": true,
+      "data": {
+        "number": 42,
+        "title": "mock_title",
+        "body": "mock_body",
+        "state": "mock_state"
+      }
+    },
+    {
+      "service": "github",
+      "action": "getFile",
+      "params": {},
+      "success": true,
+      "data": {
+        "path": "mock_path",
+        "content": "mock_content",
+        "sha": "mock_sha",
+        "size": 42
+      }
+    },
+    {
+      "service": "github",
+      "action": "listCommits",
+      "params": {},
+      "success": true,
+      "data": {
+        "commits": [
+          {
+            "sha": "mock_sha",
+            "message": "mock_message",
+            "author": "mock_author",
+            "date": "mock_date"
+          }
+        ]
+      }
+    },
+    {
+      "service": "github",
+      "action": "createIssue",
+      "params": {},
+      "success": true,
+      "data": {
+        "number": 42,
+        "title": "mock_title",
+        "url": "mock_url"
+      }
+    },
+    {
+      "service": "stripe",
+      "action": "createPaymentIntent",
+      "params": {},
+      "success": true,
+      "data": {
+        "id": "mock_id",
+        "clientSecret": "mock_clientSecret",
+        "status": "mock_status",
+        "amount": 42,
+        "currency": "mock_currency"
+      }
+    },
+    {
+      "service": "stripe",
+      "action": "confirmPayment",
+      "params": {},
+      "success": true,
+      "data": {
+        "id": "mock_id",
+        "status": "mock_status"
+      }
+    },
+    {
+      "service": "stripe",
+      "action": "refund",
+      "params": {},
+      "success": true,
+      "data": {
+        "id": "mock_id",
+        "status": "mock_status",
+        "amount": 42
+      }
+    },
+    {
+      "service": "stripe",
+      "action": "createCustomer",
+      "params": {},
+      "success": true,
+      "data": {
+        "customerId": "mock_customerId",
+        "email": "mock_email",
+        "almadarUid": "mock_almadarUid"
+      }
+    },
+    {
+      "service": "stripe",
+      "action": "createCheckoutSession",
+      "params": {},
+      "success": true,
+      "data": {
+        "url": "mock_url",
+        "sessionId": "mock_sessionId",
+        "customerId": "mock_customerId"
+      }
+    },
+    {
+      "service": "stripe",
+      "action": "createPortalSession",
+      "params": {},
+      "success": true,
+      "data": {
+        "url": "mock_url",
+        "customerId": "mock_customerId"
+      }
+    },
+    {
+      "service": "stripe",
+      "action": "getSubscription",
+      "params": {},
+      "success": true,
+      "data": {
+        "success": true,
+        "_mock": true,
+        "_action": "getSubscription"
+      }
+    },
+    {
+      "service": "stripe",
+      "action": "createSubscription",
+      "params": {},
+      "success": true,
+      "data": {
+        "success": true,
+        "_mock": true,
+        "_action": "createSubscription"
+      }
+    },
+    {
+      "service": "stripe",
+      "action": "updateSubscription",
+      "params": {},
+      "success": true,
+      "data": {
+        "success": true,
+        "_mock": true,
+        "_action": "updateSubscription"
+      }
+    },
+    {
+      "service": "stripe",
+      "action": "cancelSubscription",
+      "params": {},
+      "success": true,
+      "data": {
+        "success": true,
+        "_mock": true,
+        "_action": "cancelSubscription"
+      }
+    },
+    {
+      "service": "llm-integration",
+      "action": "generate",
+      "params": {},
+      "success": true,
+      "data": {
+        "content": "mock_content",
+        "usage": {
+          "promptTokens": 42,
+          "completionTokens": 42,
+          "totalTokens": 42
+        }
+      }
+    },
+    {
+      "service": "llm-integration",
+      "action": "classify",
+      "params": {},
+      "success": true,
+      "data": {
+        "category": "mock_category",
+        "confidence": 42,
+        "reasoning": "mock_reasoning"
+      }
+    },
+    {
+      "service": "llm-integration",
+      "action": "classifyMany",
+      "params": {},
+      "success": true,
+      "data": {
+        "verdicts": [
+          {
+            "id": "mock_id",
+            "category": "mock_category",
+            "confidence": 42
+          }
+        ]
+      }
+    },
+    {
+      "service": "llm-integration",
+      "action": "extract",
+      "params": {},
+      "success": true,
+      "data": {
+        "data": {},
+        "confidence": 42
+      }
+    },
+    {
+      "service": "llm-integration",
+      "action": "summarize",
+      "params": {},
+      "success": true,
+      "data": {
+        "summary": "mock_summary",
+        "keyPoints": []
+      }
+    },
+    {
+      "service": "llm-integration",
+      "action": "call-tools",
+      "params": {},
+      "success": true,
+      "data": {
+        "reply": "mock_reply",
+        "steps": [],
+        "usage": {
+          "promptTokens": 42,
+          "completionTokens": 42,
+          "totalTokens": 42,
+          "modelCalls": 42
+        }
+      }
+    },
+    {
+      "service": "llm-integration",
+      "action": "embed",
+      "params": {},
+      "success": true,
+      "data": {
+        "embeddings": []
+      }
+    },
+    {
+      "service": "youtube",
+      "action": "search",
+      "params": {},
+      "success": true,
+      "data": {
+        "success": true,
+        "_mock": true,
+        "_action": "search"
+      }
+    },
+    {
+      "service": "youtube",
+      "action": "getVideo",
+      "params": {},
+      "success": true,
+      "data": {
+        "title": "mock_title",
+        "description": "mock_description",
+        "viewCount": "mock_viewCount",
+        "likeCount": "mock_likeCount"
+      }
+    },
+    {
+      "service": "youtube",
+      "action": "getChannel",
+      "params": {},
+      "success": true,
+      "data": {
+        "name": "mock_name",
+        "description": "mock_description",
+        "subscriberCount": "mock_subscriberCount"
+      }
+    },
+    {
+      "service": "twilio",
+      "action": "sendSMS",
+      "params": {},
+      "success": true,
+      "data": {
+        "sid": "mock_sid",
+        "status": "mock_status"
+      }
+    },
+    {
+      "service": "twilio",
+      "action": "sendWhatsApp",
+      "params": {},
+      "success": true,
+      "data": {
+        "sid": "mock_sid",
+        "status": "mock_status"
+      }
+    },
+    {
+      "service": "email",
+      "action": "send",
+      "params": {},
+      "success": true,
+      "data": {
+        "id": "mock_id",
+        "status": "mock_status"
+      }
+    },
+    {
+      "service": "webhook",
+      "action": "send",
+      "params": {},
+      "success": true,
+      "data": {
+        "status": 42,
+        "ok": true,
+        "durationMs": 42
+      }
+    },
+    {
+      "service": "push",
+      "action": "send",
+      "params": {},
+      "success": true,
+      "data": {
+        "statusCode": 42,
+        "ok": true,
+        "expired": true
+      }
+    },
+    {
+      "service": "calendar",
+      "action": "listEvents",
+      "params": {},
+      "success": true,
+      "data": {
+        "events": [
+          {
+            "id": "mock_id",
+            "summary": "mock_summary",
+            "description": "mock_description",
+            "location": "mock_location",
+            "start": "mock_start",
+            "end": "mock_end",
+            "status": "mock_status",
+            "updated": "mock_updated"
+          }
+        ],
+        "nextSyncToken": "mock_nextSyncToken"
+      }
+    },
+    {
+      "service": "calendar",
+      "action": "createEvent",
+      "params": {},
+      "success": true,
+      "data": {
+        "id": "mock_id",
+        "status": "mock_status",
+        "htmlLink": "mock_htmlLink"
+      }
+    },
+    {
+      "service": "calendar",
+      "action": "updateEvent",
+      "params": {},
+      "success": true,
+      "data": {
+        "id": "mock_id",
+        "status": "mock_status"
+      }
+    },
+    {
+      "service": "calendar",
+      "action": "deleteEvent",
+      "params": {},
+      "success": true,
+      "data": {
+        "id": "mock_id",
+        "deleted": true
+      }
+    },
+    {
+      "service": "calendar",
+      "action": "freeBusy",
+      "params": {},
+      "success": true,
+      "data": {
+        "busy": [
+          {
+            "start": "mock_start",
+            "end": "mock_end"
+          }
+        ]
+      }
+    },
+    {
+      "service": "calendar",
+      "action": "watch",
+      "params": {},
+      "success": true,
+      "data": {
+        "channelId": "mock_channelId",
+        "resourceId": "mock_resourceId",
+        "expiration": "mock_expiration"
+      }
+    },
+    {
+      "service": "calendar",
+      "action": "stopWatch",
+      "params": {},
+      "success": true,
+      "data": {
+        "stopped": true
+      }
+    },
+    {
+      "service": "drive",
+      "action": "listFiles",
+      "params": {},
+      "success": true,
+      "data": {
+        "files": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "mimeType": "mock_mimeType",
+            "size": 42,
+            "modifiedTime": "mock_modifiedTime",
+            "webViewLink": "mock_webViewLink"
+          }
+        ]
+      }
+    },
+    {
+      "service": "drive",
+      "action": "getFile",
+      "params": {},
+      "success": true,
+      "data": {
+        "id": "mock_id",
+        "name": "mock_name",
+        "mimeType": "mock_mimeType",
+        "content": "mock_content",
+        "size": 42
+      }
+    },
+    {
+      "service": "drive",
+      "action": "uploadFile",
+      "params": {},
+      "success": true,
+      "data": {
+        "id": "mock_id",
+        "name": "mock_name",
+        "webViewLink": "mock_webViewLink"
+      }
+    },
+    {
+      "service": "drive",
+      "action": "createFolder",
+      "params": {},
+      "success": true,
+      "data": {
+        "id": "mock_id",
+        "name": "mock_name"
+      }
+    },
+    {
+      "service": "drive",
+      "action": "shareFile",
+      "params": {},
+      "success": true,
+      "data": {
+        "shared": true,
+        "permissionId": "mock_permissionId"
+      }
+    },
+    {
+      "service": "metaAds",
+      "action": "getSpend",
+      "params": {},
+      "success": true,
+      "data": {
+        "spend": 42,
+        "currency": "mock_currency",
+        "impressions": 42,
+        "clicks": 42
+      }
+    },
+    {
+      "service": "metaAds",
+      "action": "listCampaigns",
+      "params": {},
+      "success": true,
+      "data": {
+        "campaigns": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "status": "mock_status",
+            "dailyBudget": 42
+          }
+        ]
+      }
+    },
+    {
+      "service": "accounting",
+      "action": "exportInvoices",
+      "params": {},
+      "success": true,
+      "data": {
+        "content": "mock_content",
+        "filename": "mock_filename",
+        "count": 42
+      }
+    },
+    {
+      "service": "accounting",
+      "action": "exportJournal",
+      "params": {},
+      "success": true,
+      "data": {
+        "content": "mock_content",
+        "filename": "mock_filename",
+        "count": 42
+      }
+    },
+    {
+      "service": "banking",
+      "action": "createRequisition",
+      "params": {},
+      "success": true,
+      "data": {
+        "requisitionId": "mock_requisitionId",
+        "link": "mock_link"
+      }
+    },
+    {
+      "service": "banking",
+      "action": "listAccounts",
+      "params": {},
+      "success": true,
+      "data": {
+        "accounts": []
+      }
+    },
+    {
+      "service": "banking",
+      "action": "listTransactions",
+      "params": {},
+      "success": true,
+      "data": {
+        "transactions": [
+          {
+            "id": "mock_id",
+            "amount": 42,
+            "currency": "mock_currency",
+            "date": "mock_date",
+            "description": "mock_description",
+            "counterparty": "mock_counterparty"
+          }
+        ]
+      }
+    },
+    {
+      "service": "esign",
+      "action": "sendEnvelope",
+      "params": {},
+      "success": true,
+      "data": {
+        "envelopeId": "mock_envelopeId",
+        "status": "mock_status"
+      }
+    },
+    {
+      "service": "esign",
+      "action": "getEnvelopeStatus",
+      "params": {},
+      "success": true,
+      "data": {
+        "status": "mock_status",
+        "completedAt": "mock_completedAt"
+      }
+    },
+    {
+      "service": "esign",
+      "action": "downloadDocument",
+      "params": {},
+      "success": true,
+      "data": {
+        "content": "mock_content",
+        "documentName": "mock_documentName"
+      }
+    },
+    {
+      "service": "docker",
+      "action": "build",
+      "params": {},
+      "success": true,
+      "data": {
+        "imageId": "mock_imageId",
+        "tag": "mock_tag",
+        "size": 42,
+        "buildTime": 42
+      }
+    },
+    {
+      "service": "docker",
+      "action": "run",
+      "params": {},
+      "success": true,
+      "data": {
+        "containerId": "mock_containerId",
+        "name": "mock_name",
+        "status": "mock_status",
+        "ports": [
+          {
+            "host": 42,
+            "container": 42,
+            "protocol": "mock_protocol"
+          }
+        ]
+      }
+    },
+    {
+      "service": "docker",
+      "action": "stop",
+      "params": {},
+      "success": true,
+      "data": {
+        "containerId": "mock_containerId",
+        "status": "mock_status",
+        "stoppedAt": 42
+      }
+    },
+    {
+      "service": "docker",
+      "action": "remove",
+      "params": {},
+      "success": true,
+      "data": {
+        "containerId": "mock_containerId",
+        "removed": true
+      }
+    },
+    {
+      "service": "docker",
+      "action": "logs",
+      "params": {},
+      "success": true,
+      "data": {
+        "containerId": "mock_containerId",
+        "logs": [],
+        "lineCount": 42
+      }
+    },
+    {
+      "service": "docker",
+      "action": "status",
+      "params": {},
+      "success": true,
+      "data": {
+        "containerId": "mock_containerId",
+        "name": "mock_name",
+        "image": "mock_image",
+        "status": "mock_status",
+        "ports": [
+          {
+            "host": 42,
+            "container": 42,
+            "protocol": "mock_protocol"
+          }
+        ],
+        "createdAt": 42,
+        "startedAt": "mock_startedAt",
+        "stoppedAt": "mock_stoppedAt"
+      }
+    },
+    {
+      "service": "docker",
+      "action": "list",
+      "params": {},
+      "success": true,
+      "data": {
+        "containers": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "image": "mock_image",
+            "status": "mock_status",
+            "ports": [
+              {
+                "host": 42,
+                "container": 42,
+                "protocol": "mock_protocol"
+              }
+            ],
+            "createdAt": 42
+          }
+        ],
+        "total": 42
+      }
+    },
+    {
+      "service": "database",
+      "action": "query",
+      "params": {},
+      "success": true,
+      "data": {
+        "rows": {},
+        "rowCount": 42
+      }
+    },
+    {
+      "service": "storage",
+      "action": "upload",
+      "params": {},
+      "success": true,
+      "data": {
+        "key": "mock_key",
+        "bucket": "mock_bucket",
+        "size": 42,
+        "etag": "mock_etag",
+        "id": "mock_id",
+        "url": "mock_url"
+      }
+    },
+    {
+      "service": "storage",
+      "action": "uploadMany",
+      "params": {},
+      "success": true,
+      "data": {
+        "items": [
+          {
+            "id": "mock_id",
+            "key": "mock_key",
+            "url": "mock_url",
+            "name": "mock_name",
+            "sizeBytes": 42,
+            "mimeType": "mock_mimeType"
+          }
+        ],
+        "count": 42
+      }
+    },
+    {
+      "service": "storage",
+      "action": "download",
+      "params": {},
+      "success": true,
+      "data": {
+        "content": "mock_content",
+        "contentType": "mock_contentType",
+        "size": 42,
+        "metadata": {
+          "sample": "mock_sample"
+        }
+      }
+    },
+    {
+      "service": "storage",
+      "action": "list",
+      "params": {},
+      "success": true,
+      "data": {
+        "keys": [
+          {
+            "key": "mock_key",
+            "size": 42,
+            "lastModified": 42
+          }
+        ],
+        "truncated": true,
+        "nextToken": "mock_nextToken"
+      }
+    },
+    {
+      "service": "storage",
+      "action": "delete",
+      "params": {},
+      "success": true,
+      "data": {
+        "deleted": true
+      }
+    },
+    {
+      "service": "storage",
+      "action": "getSignedUrl",
+      "params": {},
+      "success": true,
+      "data": {
+        "url": "mock_url",
+        "expiresAt": 42
+      }
+    },
+    {
+      "service": "queue",
+      "action": "enqueue",
+      "params": {},
+      "success": true,
+      "data": {
+        "jobId": "mock_jobId",
+        "position": 42
+      }
+    },
+    {
+      "service": "queue",
+      "action": "dequeue",
+      "params": {},
+      "success": true,
+      "data": {
+        "job": {
+          "id": "mock_id",
+          "payload": {},
+          "enqueuedAt": 42,
+          "priority": 42
+        }
+      }
+    },
+    {
+      "service": "queue",
+      "action": "status",
+      "params": {},
+      "success": true,
+      "data": {
+        "status": "mock_status",
+        "job": {
+          "id": "mock_id",
+          "payload": {},
+          "enqueuedAt": 42,
+          "priority": 42
+        }
+      }
+    },
+    {
+      "service": "queue",
+      "action": "complete",
+      "params": {},
+      "success": true,
+      "data": {
+        "completed": true
+      }
+    },
+    {
+      "service": "queue",
+      "action": "fail",
+      "params": {},
+      "success": true,
+      "data": {
+        "failed": true
+      }
+    },
+    {
+      "service": "queue",
+      "action": "cancel",
+      "params": {},
+      "success": true,
+      "data": {
+        "cancelled": true
+      }
+    },
+    {
+      "service": "queue",
+      "action": "size",
+      "params": {},
+      "success": true,
+      "data": {
+        "size": 42,
+        "pending": 42,
+        "processing": 42
+      }
+    },
+    {
+      "service": "redis",
+      "action": "get",
+      "params": {},
+      "success": true,
+      "data": {
+        "value": {}
+      }
+    },
+    {
+      "service": "redis",
+      "action": "set",
+      "params": {},
+      "success": true,
+      "data": {
+        "ok": true
+      }
+    },
+    {
+      "service": "redis",
+      "action": "delete",
+      "params": {},
+      "success": true,
+      "data": {
+        "deleted": true
+      }
+    },
+    {
+      "service": "redis",
+      "action": "lock",
+      "params": {},
+      "success": true,
+      "data": {
+        "acquired": true,
+        "lockId": "mock_lockId"
+      }
+    },
+    {
+      "service": "redis",
+      "action": "unlock",
+      "params": {},
+      "success": true,
+      "data": {
+        "released": true
+      }
+    },
+    {
+      "service": "redis",
+      "action": "increment",
+      "params": {},
+      "success": true,
+      "data": {
+        "value": 42
+      }
+    },
+    {
+      "service": "redis",
+      "action": "expire",
+      "params": {},
+      "success": true,
+      "data": {
+        "set": true
+      }
+    },
+    {
+      "service": "redis",
+      "action": "publish",
+      "params": {},
+      "success": true,
+      "data": {
+        "receivers": 42
+      }
+    },
+    {
+      "service": "redis",
+      "action": "subscribe",
+      "params": {},
+      "success": true,
+      "data": {
+        "subscribed": true
+      }
+    },
+    {
+      "service": "oauth",
+      "action": "authorize",
+      "params": {},
+      "success": true,
+      "data": {
+        "authUrl": "mock_authUrl",
+        "state": "mock_state"
+      }
+    },
+    {
+      "service": "oauth",
+      "action": "token",
+      "params": {},
+      "success": true,
+      "data": {
+        "accessToken": "mock_accessToken",
+        "refreshToken": "mock_refreshToken",
+        "expiresIn": 42,
+        "tokenType": "mock_tokenType",
+        "scope": [],
+        "subject": "mock_subject"
+      }
+    },
+    {
+      "service": "oauth",
+      "action": "refresh",
+      "params": {},
+      "success": true,
+      "data": {
+        "accessToken": "mock_accessToken",
+        "expiresIn": 42
+      }
+    },
+    {
+      "service": "oauth",
+      "action": "revoke",
+      "params": {},
+      "success": true,
+      "data": {
+        "revoked": true
+      }
+    },
+    {
+      "service": "oauth",
+      "action": "userinfo",
+      "params": {},
+      "success": true,
+      "data": {
+        "sub": "mock_sub",
+        "email": "mock_email",
+        "name": "mock_name",
+        "picture": "mock_picture"
+      }
+    },
+    {
+      "service": "oauth",
+      "action": "connect",
+      "params": {},
+      "success": true,
+      "data": {
+        "success": true,
+        "_mock": true,
+        "_action": "connect"
+      }
+    },
+    {
+      "service": "oauth",
+      "action": "connection",
+      "params": {},
+      "success": true,
+      "data": {
+        "success": true,
+        "_mock": true,
+        "_action": "connection"
+      }
+    },
+    {
+      "service": "oauth",
+      "action": "disconnect",
+      "params": {},
+      "success": true,
+      "data": {
+        "success": true,
+        "_mock": true,
+        "_action": "disconnect"
+      }
+    },
+    {
+      "service": "otel",
+      "action": "startSpan",
+      "params": {},
+      "success": true,
+      "data": {
+        "spanId": "mock_spanId",
+        "traceId": "mock_traceId"
+      }
+    },
+    {
+      "service": "otel",
+      "action": "endSpan",
+      "params": {},
+      "success": true,
+      "data": {
+        "ended": true
+      }
+    },
+    {
+      "service": "otel",
+      "action": "addEvent",
+      "params": {},
+      "success": true,
+      "data": {
+        "added": true
+      }
+    },
+    {
+      "service": "otel",
+      "action": "recordMetric",
+      "params": {},
+      "success": true,
+      "data": {
+        "recorded": true
+      }
+    },
+    {
+      "service": "otel",
+      "action": "getSpan",
+      "params": {},
+      "success": true,
+      "data": {
+        "success": true,
+        "_mock": true,
+        "_action": "getSpan"
+      }
+    },
+    {
+      "service": "otel",
+      "action": "getMetrics",
+      "params": {},
+      "success": true,
+      "data": {
+        "success": true,
+        "_mock": true,
+        "_action": "getMetrics"
+      }
+    },
+    {
+      "service": "cli",
+      "action": "validate",
+      "params": {},
+      "success": true,
+      "data": {
+        "valid": true,
+        "errors": [],
+        "warnings": [],
+        "summary": "mock_summary"
+      }
+    },
+    {
+      "service": "apikeys",
+      "action": "mint",
+      "params": {},
+      "success": true,
+      "data": {
+        "plaintext": "mock_plaintext",
+        "keyHash": "mock_keyHash",
+        "lastFour": "mock_lastFour"
+      }
+    },
+    {
+      "service": "hosting",
+      "action": "deploy",
+      "params": {},
+      "success": true,
+      "data": {
+        "ok": true,
+        "failedStep": "mock_failedStep",
+        "findings": [],
+        "version": 42,
+        "uses": "mock_uses",
+        "packageVersion": "mock_packageVersion",
+        "liveUrl": "mock_liveUrl"
+      }
+    },
+    {
+      "service": "hosting",
+      "action": "status",
+      "params": {},
+      "success": true,
+      "data": {
+        "published": true,
+        "handle": "mock_handle",
+        "name": "mock_name",
+        "teamOnly": true,
+        "liveUrl": "mock_liveUrl",
+        "hasActive": true,
+        "active": {
+          "id": "mock_id",
+          "version": 42,
+          "commit": "mock_commit",
+          "target": "mock_target",
+          "packageVersion": "mock_packageVersion",
+          "publishedBy": "mock_publishedBy",
+          "recordedAt": 42
+        },
+        "history": [
+          {
+            "id": "mock_id",
+            "version": 42,
+            "commit": "mock_commit",
+            "target": "mock_target",
+            "packageVersion": "mock_packageVersion",
+            "publishedBy": "mock_publishedBy",
+            "recordedAt": 42
+          }
+        ],
+        "credentials": [
+          {
+            "id": "mock_id",
+            "service": "mock_service",
+            "envVar": "mock_envVar",
+            "last4": "mock_last4",
+            "updatedAt": 42
+          }
+        ],
+        "credentialsEnabled": true
+      }
+    },
+    {
+      "service": "hosting",
+      "action": "setCredential",
+      "params": {},
+      "success": true,
+      "data": {
+        "saved": true,
+        "last4": "mock_last4"
+      }
+    },
+    {
+      "service": "hosting",
+      "action": "rollback",
+      "params": {},
+      "success": true,
+      "data": {
+        "hasActive": true,
+        "active": {
+          "id": "mock_id",
+          "version": 42,
+          "commit": "mock_commit",
+          "target": "mock_target",
+          "packageVersion": "mock_packageVersion",
+          "publishedBy": "mock_publishedBy",
+          "recordedAt": 42
+        }
+      }
+    },
+    {
+      "service": "hosting",
+      "action": "topology",
+      "params": {},
+      "success": true,
+      "data": {
+        "sinceMs": 42,
+        "units": [
+          {
+            "id": "mock_id",
+            "column": "mock_column",
+            "label": "mock_label",
+            "status": "mock_status",
+            "metric": "mock_metric"
+          }
+        ],
+        "edges": [
+          {
+            "id": "mock_id",
+            "source": "mock_source",
+            "target": "mock_target",
+            "label": "mock_label",
+            "status": "mock_status",
+            "calls": 42,
+            "errors": 42,
+            "p50Ms": 42
+          }
+        ],
+        "dashboardUrl": "mock_dashboardUrl"
+      }
+    },
+    {
+      "service": "hosting",
+      "action": "logs",
+      "params": {},
+      "success": true,
+      "data": {
+        "lines": [
+          {
+            "id": "mock_id",
+            "time": "mock_time",
+            "severity": "mock_severity",
+            "message": "mock_message",
+            "op": "mock_op",
+            "ok": true,
+            "durationMs": 42,
+            "error": "mock_error"
+          }
+        ]
+      }
+    },
+    {
+      "service": "hosting",
+      "action": "export",
+      "params": {},
+      "success": true,
+      "data": {
+        "ok": true,
+        "failedStep": "mock_failedStep",
+        "findings": [],
+        "url": "mock_url",
+        "filename": "mock_filename"
+      }
+    },
+    {
+      "service": "registry",
+      "action": "handles",
+      "params": {},
+      "success": true,
+      "data": {
+        "handle": "mock_handle",
+        "teams": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "handle": "mock_handle"
+          }
+        ]
+      }
+    },
+    {
+      "service": "registry",
+      "action": "claimHandle",
+      "params": {},
+      "success": true,
+      "data": {
+        "claimed": true,
+        "refusal": "mock_refusal",
+        "message": "mock_message"
+      }
+    },
+    {
+      "service": "registry",
+      "action": "packages",
+      "params": {},
+      "success": true,
+      "data": {
+        "handle": "mock_handle",
+        "version": "mock_version",
+        "behaviors": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "description": "mock_description",
+            "uses": "mock_uses"
+          }
+        ]
+      }
+    },
+    {
+      "service": "registry",
+      "action": "publishBehavior",
+      "params": {},
+      "success": true,
+      "data": {
+        "name": "mock_name",
+        "prUrl": "mock_prUrl"
+      }
+    },
+    {
+      "service": "registry",
+      "action": "teamBehaviors",
+      "params": {},
+      "success": true,
+      "data": {
+        "behaviors": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "handle": "mock_handle",
+            "version": "mock_version",
+            "description": "mock_description",
+            "tags": [],
+            "enabled": true,
+            "createdAt": 42,
+            "createdBy": "mock_createdBy",
+            "orbitalCount": 42
+          }
+        ]
+      }
+    },
+    {
+      "service": "registry",
+      "action": "setTeamBehaviorEnabled",
+      "params": {},
+      "success": true,
+      "data": {
+        "found": true,
+        "enabled": true
+      }
+    },
+    {
+      "service": "registry",
+      "action": "removeTeamBehavior",
+      "params": {},
+      "success": true,
+      "data": {
+        "removed": true
+      }
+    },
+    {
+      "service": "wikimedia",
+      "action": "getPage",
+      "params": {},
+      "success": true,
+      "data": {
+        "title": "mock_title",
+        "description": "mock_description",
+        "portraitUrl": "mock_portraitUrl",
+        "extract": "mock_extract"
+      }
+    },
+    {
+      "service": "iconify",
+      "action": "svgExists",
+      "params": {},
+      "success": true,
+      "data": {
+        "exists": true
+      }
+    },
+    {
+      "service": "iconify",
+      "action": "search",
+      "params": {},
+      "success": true,
+      "data": {
+        "icons": []
+      }
+    },
+    {
+      "service": "iconify",
+      "action": "getIconBody",
+      "params": {},
+      "success": true,
+      "data": {
+        "body": "mock_body"
+      }
+    },
+    {
+      "service": "arxiv",
+      "action": "search",
+      "params": {},
+      "success": true,
+      "data": {
+        "results": [
+          {
+            "id": "mock_id",
+            "title": "mock_title",
+            "summary": "mock_summary",
+            "authors": [],
+            "published": "mock_published",
+            "url": "mock_url"
+          }
+        ]
+      }
+    },
+    {
+      "service": "rigger",
+      "action": "health",
+      "params": {},
+      "success": true,
+      "data": {
+        "ok": true
+      }
+    },
+    {
+      "service": "rigger",
+      "action": "buildMesh",
+      "params": {},
+      "success": true,
+      "data": {
+        "bundlePath": "mock_bundlePath",
+        "boneCount": 42,
+        "vertexCount": 42,
+        "triangleCount": 42,
+        "clips": []
+      }
+    },
+    {
+      "service": "rigger",
+      "action": "render",
+      "params": {},
+      "success": true,
+      "data": {
+        "outdir": "mock_outdir",
+        "frames": 42,
+        "framePaths": [],
+        "sheet": "mock_sheet",
+        "gif": "mock_gif",
+        "atlas": "mock_atlas"
+      }
+    },
+    {
+      "service": "rigger",
+      "action": "listPresets",
+      "params": {},
+      "success": true,
+      "data": {
+        "presets": [
+          {
+            "name": "mock_name",
+            "path": "mock_path",
+            "fps": 42,
+            "frames": 42,
+            "bones": []
+          }
+        ]
+      }
+    },
+    {
+      "service": "rigger",
+      "action": "loadRig",
+      "params": {},
+      "success": true,
+      "data": {
+        "rig": {},
+        "resolved": {}
+      }
+    },
+    {
+      "service": "rigger",
+      "action": "saveRig",
+      "params": {},
+      "success": true,
+      "data": {
+        "rigPath": "mock_rigPath",
+        "parts": 42
+      }
+    },
+    {
+      "service": "rigger",
+      "action": "ownership",
+      "params": {},
+      "success": true,
+      "data": {
+        "outPath": "mock_outPath",
+        "legend": [
+          {
+            "name": "mock_name",
+            "color": "mock_color"
+          }
+        ]
+      }
+    },
+    {
+      "service": "rigger",
+      "action": "buildLayers",
+      "params": {},
+      "success": true,
+      "data": {
+        "layers": [
+          {
+            "name": "mock_name",
+            "path": "mock_path",
+            "x": 42,
+            "y": 42,
+            "w": 42,
+            "h": 42,
+            "z": 42,
+            "pivot": "mock_pivot",
+            "isRest": true
+          }
+        ]
+      }
+    },
+    {
+      "service": "rigger",
+      "action": "pose",
+      "params": {},
+      "success": true,
+      "data": {
+        "fps": 42,
+        "frames": [
+          {
+            "sample": {
+              "angle": 42,
+              "bx": 42,
+              "by": 42
+            }
+          }
+        ]
+      }
+    },
+    {
+      "service": "rigger",
+      "action": "generate",
+      "params": {},
+      "success": true,
+      "data": {
+        "outPath": "mock_outPath",
+        "model": "mock_model",
+        "prompt": "mock_prompt",
+        "seed": "mock_seed",
+        "size": "mock_size",
+        "sourcePath": "mock_sourcePath",
+        "elapsedMs": 42
+      }
+    },
+    {
+      "service": "page",
+      "action": "listTabs",
+      "params": {},
+      "success": true,
+      "data": {
+        "tabs": [
+          {
+            "tab": 42,
+            "url": "mock_url",
+            "title": "mock_title",
+            "active": true
+          }
+        ]
+      }
+    },
+    {
+      "service": "page",
+      "action": "openTab",
+      "params": {},
+      "success": true,
+      "data": {
+        "tab": 42
+      }
+    },
+    {
+      "service": "page",
+      "action": "closeTab",
+      "params": {},
+      "success": true,
+      "data": {
+        "closed": true
+      }
+    },
+    {
+      "service": "page",
+      "action": "navigate",
+      "params": {},
+      "success": true,
+      "data": {
+        "url": "mock_url"
+      }
+    },
+    {
+      "service": "page",
+      "action": "query",
+      "params": {},
+      "success": true,
+      "data": {
+        "tab": 42,
+        "elements": [
+          {
+            "elementId": "mock_elementId",
+            "fields": {
+              "sample": "mock_sample"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "service": "page",
+      "action": "watch",
+      "params": {},
+      "success": true,
+      "data": {
+        "watchId": "mock_watchId"
+      }
+    },
+    {
+      "service": "page",
+      "action": "unwatch",
+      "params": {},
+      "success": true,
+      "data": {
+        "stopped": true
+      }
+    },
+    {
+      "service": "page",
+      "action": "apply",
+      "params": {},
+      "success": true,
+      "data": {
+        "applied": true,
+        "tab": 42,
+        "elementId": "mock_elementId",
+        "treatment": "mock_treatment"
+      }
+    },
+    {
+      "service": "page",
+      "action": "applyMany",
+      "params": {},
+      "success": true,
+      "data": {
+        "applied": [
+          {
+            "tab": 42,
+            "elementId": "mock_elementId"
+          }
+        ],
+        "missing": [
+          {
+            "tab": 42,
+            "elementId": "mock_elementId"
+          }
+        ]
+      }
+    },
+    {
+      "service": "page",
+      "action": "act",
+      "params": {},
+      "success": true,
+      "data": {
+        "done": true,
+        "tab": 42,
+        "elementId": "mock_elementId"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "status",
+      "params": {},
+      "success": true,
+      "data": {
+        "connected": true,
+        "account": "mock_account"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "connect",
+      "params": {},
+      "success": true,
+      "data": {
+        "connected": true,
+        "account": "mock_account"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "currentTopics",
+      "params": {},
+      "success": true,
+      "data": {
+        "topics": [
+          {
+            "label": "mock_label",
+            "keywords": [],
+            "weight": 42
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "listPaths",
+      "params": {},
+      "success": true,
+      "data": {
+        "items": [
+          {
+            "id": "mock_id",
+            "title": "mock_title",
+            "description": "mock_description",
+            "conceptCount": 42,
+            "learnedCount": 42,
+            "levelCount": 42,
+            "seedConcept": "mock_seedConcept",
+            "clusterId": "mock_clusterId",
+            "createdAt": 42,
+            "updatedAt": 42
+          }
+        ],
+        "total": 42,
+        "page": 42,
+        "totalPages": 42,
+        "clusters": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "size": 42
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "pathMap",
+      "params": {},
+      "success": true,
+      "data": {
+        "paths": [
+          {
+            "id": "mock_id",
+            "title": "mock_title",
+            "description": "mock_description",
+            "conceptCount": 42,
+            "learnedCount": 42,
+            "levelCount": 42,
+            "seedConcept": "mock_seedConcept",
+            "clusterId": "mock_clusterId",
+            "createdAt": 42,
+            "updatedAt": 42
+          }
+        ],
+        "similarity": [
+          {
+            "source": "mock_source",
+            "target": "mock_target",
+            "weight": 42
+          }
+        ],
+        "sharedConcepts": [
+          {
+            "source": "mock_source",
+            "target": "mock_target",
+            "weight": 42,
+            "shared": [],
+            "linked": true
+          }
+        ],
+        "clusters": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "size": 42
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "deletePath",
+      "params": {},
+      "success": true,
+      "data": {
+        "deleted": true
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "conceptsByLayer",
+      "params": {},
+      "success": true,
+      "data": {
+        "graphId": "mock_graphId",
+        "title": "mock_title",
+        "goal": "mock_goal",
+        "seedConcept": "mock_seedConcept",
+        "layers": [
+          {
+            "layerNumber": 42,
+            "goal": "mock_goal",
+            "review": "mock_review",
+            "concepts": [
+              {
+                "id": "mock_id",
+                "name": "mock_name",
+                "description": "mock_description",
+                "layer": 42,
+                "isSeed": true,
+                "sequence": 42,
+                "prerequisites": [],
+                "parents": [],
+                "masteryLevel": 42,
+                "hasLesson": true,
+                "canonicalKey": "mock_canonicalKey",
+                "routeKey": "mock_routeKey"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "expand",
+      "params": {},
+      "success": true,
+      "data": {
+        "levelName": "mock_levelName",
+        "added": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "description": "mock_description",
+            "layer": 42,
+            "isSeed": true,
+            "sequence": 42,
+            "prerequisites": [],
+            "parents": [],
+            "masteryLevel": 42,
+            "hasLesson": true,
+            "canonicalKey": "mock_canonicalKey",
+            "routeKey": "mock_routeKey"
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "layerPractice",
+      "params": {},
+      "success": true,
+      "data": {
+        "review": "mock_review"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "conceptDetail",
+      "params": {},
+      "success": true,
+      "data": {
+        "concept": {
+          "id": "mock_id",
+          "name": "mock_name",
+          "description": "mock_description",
+          "layer": 42,
+          "isSeed": true,
+          "sequence": 42,
+          "prerequisites": [],
+          "parents": [],
+          "masteryLevel": 42,
+          "hasLesson": true,
+          "canonicalKey": "mock_canonicalKey",
+          "routeKey": "mock_routeKey"
+        },
+        "pathTitle": "mock_pathTitle",
+        "lessonId": "mock_lessonId",
+        "lesson": "mock_lesson",
+        "prerequisites": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "routeKey": "mock_routeKey"
+          }
+        ],
+        "parents": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "routeKey": "mock_routeKey"
+          }
+        ],
+        "previous": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "routeKey": "mock_routeKey"
+          }
+        ],
+        "next": [
+          {
+            "id": "mock_id",
+            "name": "mock_name",
+            "routeKey": "mock_routeKey"
+          }
+        ],
+        "notes": [
+          {
+            "id": "mock_id",
+            "text": "mock_text",
+            "selectedText": "mock_selectedText",
+            "timestamp": 42
+          }
+        ],
+        "questions": [
+          {
+            "id": "mock_id",
+            "question": "mock_question",
+            "answer": "mock_answer",
+            "selectedText": "mock_selectedText",
+            "timestamp": 42
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "explain",
+      "params": {},
+      "success": true,
+      "data": {
+        "lessonId": "mock_lessonId",
+        "lesson": "mock_lesson"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "saveLesson",
+      "params": {},
+      "success": true,
+      "data": {
+        "saved": true
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "answerQuestion",
+      "params": {},
+      "success": true,
+      "data": {
+        "question": {
+          "id": "mock_id",
+          "question": "mock_question",
+          "answer": "mock_answer",
+          "selectedText": "mock_selectedText",
+          "timestamp": 42
+        },
+        "relatedConcepts": [
+          {
+            "graphId": "mock_graphId",
+            "conceptId": "mock_conceptId",
+            "routeKey": "mock_routeKey",
+            "name": "mock_name",
+            "text": "mock_text"
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "addNote",
+      "params": {},
+      "success": true,
+      "data": {
+        "note": {
+          "id": "mock_id",
+          "text": "mock_text",
+          "selectedText": "mock_selectedText",
+          "timestamp": 42
+        }
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "deleteNote",
+      "params": {},
+      "success": true,
+      "data": {
+        "deleted": true
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "deleteQuestion",
+      "params": {},
+      "success": true,
+      "data": {
+        "deleted": true
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "recordLessonProgress",
+      "params": {},
+      "success": true,
+      "data": {
+        "masteryLevel": 42
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "markLearned",
+      "params": {},
+      "success": true,
+      "data": {
+        "masteryLevel": 42
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "createGoalWithGraph",
+      "params": {},
+      "success": true,
+      "data": {
+        "graphId": "mock_graphId",
+        "goalTitle": "mock_goalTitle",
+        "description": "mock_description",
+        "milestones": [],
+        "difficulty": "mock_difficulty"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "importPreview",
+      "params": {},
+      "success": true,
+      "data": {
+        "units": [
+          {
+            "ref": "mock_ref",
+            "targetEntity": "mock_targetEntity",
+            "title": "mock_title",
+            "parentRef": "mock_parentRef"
+          }
+        ],
+        "errors": [
+          {
+            "ref": "mock_ref",
+            "message": "mock_message"
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "importCommit",
+      "params": {},
+      "success": true,
+      "data": {
+        "graphId": "mock_graphId",
+        "committed": 42,
+        "failed": [
+          {
+            "ref": "mock_ref",
+            "reason": "mock_reason"
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "importItems",
+      "params": {},
+      "success": true,
+      "data": {
+        "graphId": "mock_graphId",
+        "committed": 42,
+        "failed": [
+          {
+            "ref": "mock_ref",
+            "reason": "mock_reason"
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "peers",
+      "params": {},
+      "success": true,
+      "data": {
+        "peers": [
+          {
+            "peerRef": "mock_peerRef",
+            "handle": "mock_handle",
+            "conceptsCompleted": 42,
+            "convergencePct": 42,
+            "activeNow": true
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "touchNode",
+      "params": {},
+      "success": true,
+      "data": {
+        "touched": true
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "openConnection",
+      "params": {},
+      "success": true,
+      "data": {
+        "connectionId": "mock_connectionId"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "connection",
+      "params": {},
+      "success": true,
+      "data": {
+        "status": "mock_status",
+        "peerHandle": "mock_peerHandle",
+        "originKind": "mock_originKind",
+        "originLabel": "mock_originLabel",
+        "badges": [
+          {
+            "id": "mock_id",
+            "label": "mock_label",
+            "kind": "mock_kind",
+            "active": true
+          }
+        ],
+        "messages": [
+          {
+            "id": "mock_id",
+            "fromViewer": true,
+            "content": "mock_content",
+            "createdAt": 42,
+            "flagged": true,
+            "moderationReason": "mock_moderationReason"
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "setActiveBadge",
+      "params": {},
+      "success": true,
+      "data": {
+        "saved": true
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "sendMessage",
+      "params": {},
+      "success": true,
+      "data": {
+        "messageId": "mock_messageId"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "conceptPersona",
+      "params": {},
+      "success": true,
+      "data": {
+        "name": "mock_name",
+        "description": "mock_description",
+        "portraitUrl": "mock_portraitUrl",
+        "greeting": "mock_greeting",
+        "instructions": "mock_instructions"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "conceptIcon",
+      "params": {},
+      "success": true,
+      "data": {
+        "icon": "mock_icon",
+        "tone": "mock_tone"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "getPreferences",
+      "params": {},
+      "success": true,
+      "data": {
+        "expandModel": "mock_expandModel",
+        "explainModel": "mock_explainModel"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "setPreferences",
+      "params": {},
+      "success": true,
+      "data": {
+        "saved": true
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "feed",
+      "params": {},
+      "success": true,
+      "data": {
+        "cards": [
+          {
+            "id": "mock_id",
+            "source": "mock_source",
+            "graphId": "mock_graphId",
+            "pathTitle": "mock_pathTitle",
+            "conceptId": "mock_conceptId",
+            "routeKey": "mock_routeKey",
+            "name": "mock_name",
+            "masteryLevel": 42,
+            "liked": true,
+            "content": "mock_content"
+          }
+        ],
+        "nextCursor": "mock_nextCursor"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "cardContent",
+      "params": {},
+      "success": true,
+      "data": {
+        "content": "mock_content"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "exploreContent",
+      "params": {},
+      "success": true,
+      "data": {
+        "content": "mock_content"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "feedSignal",
+      "params": {},
+      "success": true,
+      "data": {
+        "saved": true
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "addExplore",
+      "params": {},
+      "success": true,
+      "data": {
+        "conceptId": "mock_conceptId",
+        "routeKey": "mock_routeKey"
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "listCourses",
+      "params": {},
+      "success": true,
+      "data": {
+        "courses": [
+          {
+            "id": "mock_id",
+            "graphId": "mock_graphId",
+            "title": "mock_title",
+            "description": "mock_description",
+            "modules": [
+              {
+                "title": "mock_title",
+                "conceptRefs": [
+                  {
+                    "nodeId": "mock_nodeId",
+                    "sourceGraphId": "mock_sourceGraphId"
+                  }
+                ]
+              }
+            ],
+            "publishStatus": "mock_publishStatus",
+            "updatedAt": 42
+          }
+        ]
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "courseDetail",
+      "params": {},
+      "success": true,
+      "data": {
+        "course": {
+          "id": "mock_id",
+          "graphId": "mock_graphId",
+          "title": "mock_title",
+          "description": "mock_description",
+          "modules": [
+            {
+              "title": "mock_title",
+              "conceptRefs": [
+                {
+                  "nodeId": "mock_nodeId",
+                  "sourceGraphId": "mock_sourceGraphId"
+                }
+              ]
+            }
+          ],
+          "publishStatus": "mock_publishStatus",
+          "updatedAt": 42
+        }
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "createCourse",
+      "params": {},
+      "success": true,
+      "data": {
+        "course": {
+          "id": "mock_id",
+          "graphId": "mock_graphId",
+          "title": "mock_title",
+          "description": "mock_description",
+          "modules": [
+            {
+              "title": "mock_title",
+              "conceptRefs": [
+                {
+                  "nodeId": "mock_nodeId",
+                  "sourceGraphId": "mock_sourceGraphId"
+                }
+              ]
+            }
+          ],
+          "publishStatus": "mock_publishStatus",
+          "updatedAt": 42
+        }
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "updateCourse",
+      "params": {},
+      "success": true,
+      "data": {
+        "course": {
+          "id": "mock_id",
+          "graphId": "mock_graphId",
+          "title": "mock_title",
+          "description": "mock_description",
+          "modules": [
+            {
+              "title": "mock_title",
+              "conceptRefs": [
+                {
+                  "nodeId": "mock_nodeId",
+                  "sourceGraphId": "mock_sourceGraphId"
+                }
+              ]
+            }
+          ],
+          "publishStatus": "mock_publishStatus",
+          "updatedAt": 42
+        }
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "deleteCourse",
+      "params": {},
+      "success": true,
+      "data": {
+        "deleted": true
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "coursePackage",
+      "params": {},
+      "success": true,
+      "data": {
+        "package": {
+          "title": "mock_title",
+          "description": "mock_description",
+          "modules": [
+            {
+              "title": "mock_title",
+              "concepts": [
+                {
+                  "name": "mock_name",
+                  "description": "mock_description",
+                  "lesson": "mock_lesson",
+                  "layer": 42
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "enrichPreview",
+      "params": {},
+      "success": true,
+      "data": {
+        "items": []
+      }
+    },
+    {
+      "service": "knowledge",
+      "action": "enrichApply",
+      "params": {},
+      "success": true,
+      "data": {
+        "applied": 42,
+        "failed": [
+          {
+            "ref": "mock_ref",
+            "reason": "mock_reason"
+          }
+        ]
+      }
+    },
+    {
+      "service": "analytics",
+      "action": "pageview",
+      "params": {},
+      "success": true,
+      "data": {
+        "sent": true
+      }
+    },
+    {
+      "service": "analytics",
+      "action": "track",
+      "params": {},
+      "success": true,
+      "data": {
+        "sent": true
+      }
+    },
+    {
+      "service": "llm",
+      "action": "extract",
+      "params": {
+        "text": "x",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "score": {
+              "type": "number"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "continue",
+                "review"
+              ]
+            }
+          },
+          "required": [
+            "title"
+          ]
+        }
+      },
+      "success": true,
+      "data": {
+        "data": {
+          "title": "mock_title",
+          "score": 42,
+          "tags": [
+            "mock_tagsItem"
+          ],
+          "kind": "continue"
+        },
+        "confidence": 42
+      }
+    },
+    {
+      "service": "llm",
+      "action": "extract",
+      "params": {
+        "text": "x"
+      },
+      "success": true,
+      "data": {
+        "data": {},
+        "confidence": 42
+      }
+    },
+    {
+      "service": "llm",
+      "action": "extract",
+      "params": {
+        "text": "x",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "when": {
+              "type": "weird"
+            },
+            "mode": {
+              "enum": [
+                1,
+                2
+              ]
+            },
+            "open": {
+              "type": "array"
+            },
+            "nullItems": {
+              "type": "array",
+              "items": null
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "hits": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "bare": {
+              "type": "object"
+            },
+            "notAnObject": {
+              "type": "object",
+              "properties": 5
+            }
+          }
+        }
+      },
+      "success": true,
+      "data": {
+        "data": {
+          "id": 42,
+          "ok": true,
+          "when": {},
+          "mode": {},
+          "open": [],
+          "nullItems": [
+            {}
+          ],
+          "rows": [
+            {
+              "name": "mock_name",
+              "hits": 42
+            }
+          ],
+          "bare": {},
+          "notAnObject": {}
+        },
+        "confidence": 42
+      }
+    },
+    {
+      "service": "llm",
+      "action": "extract",
+      "params": {
+        "text": "x",
+        "schema": "not-a-schema"
+      },
+      "success": true,
+      "data": {
+        "data": {},
+        "confidence": 42
+      }
+    },
+    {
+      "service": "llm",
+      "action": "extract",
+      "params": {
+        "text": "x",
+        "schema": [
+          1
+        ]
+      },
+      "success": true,
+      "data": {
+        "data": {},
+        "confidence": 42
+      }
+    },
+    {
+      "service": "llm",
+      "action": "extract",
+      "params": {
+        "text": "x",
+        "schema": {
+          "enum": [
+            "a"
+          ],
+          "type": "number"
+        }
+      },
+      "success": true,
+      "data": {
+        "data": "a",
+        "confidence": 42
+      }
+    },
+    {
+      "service": "llm-integration",
+      "action": "extract",
+      "params": {
+        "text": "x",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "score": {
+              "type": "number"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "continue",
+                "review"
+              ]
+            }
+          },
+          "required": [
+            "title"
+          ]
+        }
+      },
+      "success": true,
+      "data": {
+        "data": {
+          "title": "mock_title",
+          "score": 42,
+          "tags": [
+            "mock_tagsItem"
+          ],
+          "kind": "continue"
+        },
+        "confidence": 42
+      }
+    },
+    {
+      "service": "database",
+      "action": "query",
+      "params": {
+        "rows": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "score": {
+              "type": "number"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "continue",
+                "review"
+              ]
+            }
+          },
+          "required": [
+            "title"
+          ]
+        }
+      },
+      "success": true,
+      "data": {
+        "rows": {
+          "title": "mock_title",
+          "score": 42,
+          "tags": [
+            "mock_tagsItem"
+          ],
+          "kind": "continue"
+        },
+        "rowCount": 42
+      }
+    },
+    {
+      "service": "redis",
+      "action": "get",
+      "params": {
+        "value": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "when": {
+              "type": "weird"
+            },
+            "mode": {
+              "enum": [
+                1,
+                2
+              ]
+            },
+            "open": {
+              "type": "array"
+            },
+            "nullItems": {
+              "type": "array",
+              "items": null
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "hits": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "bare": {
+              "type": "object"
+            },
+            "notAnObject": {
+              "type": "object",
+              "properties": 5
+            }
+          }
+        }
+      },
+      "success": true,
+      "data": {
+        "value": {
+          "id": 42,
+          "ok": true,
+          "when": {},
+          "mode": {},
+          "open": [],
+          "nullItems": [
+            {}
+          ],
+          "rows": [
+            {
+              "name": "mock_name",
+              "hits": 42
+            }
+          ],
+          "bare": {},
+          "notAnObject": {}
+        }
+      }
+    },
+    {
+      "service": "queue",
+      "action": "dequeue",
+      "params": {
+        "payload": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "score": {
+              "type": "number"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "continue",
+                "review"
+              ]
+            }
+          },
+          "required": [
+            "title"
+          ]
+        }
+      },
+      "success": true,
+      "data": {
+        "job": {
+          "id": "mock_id",
+          "payload": {},
+          "enqueuedAt": 42,
+          "priority": 42
+        }
+      }
+    }
+  ]
+}

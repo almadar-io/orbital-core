@@ -5,6 +5,7 @@
 //! listener wiring — so that `orbital-client` and `orbital-server` become thin
 //! wrappers around a single source of truth.
 
+pub mod callsite_capture;
 pub mod canvas_theme;
 pub mod config;
 pub mod dispatch_memory;
@@ -14,15 +15,22 @@ pub mod entity_access;
 pub mod entity_source;
 pub mod external_inputs;
 pub mod kernel;
+pub mod key_chord;
 pub mod listener;
+pub mod mock_answer;
 pub mod mock_random;
 pub mod motion;
+pub mod payload_validation;
 pub mod persona;
 pub mod process_result;
 pub mod projected_payload;
+pub mod relations;
+pub mod relay;
+pub mod resumable;
 pub(crate) mod render_store;
 pub mod seed;
 pub mod server_leg;
+pub mod service_params;
 pub mod theme;
 pub mod tick_clock;
 pub mod trait_owners;
@@ -37,7 +45,7 @@ pub use entity_access::{
 };
 pub use entity_source::{EntitySource, InMemoryEntityCache};
 pub use kernel::{
-    already_delivered_from, AwaitingTrait, ClientDispatch, KernelError, Rerender, RuntimeKernel, TickDispatch, TickEmit, TraitSnapshot,
+    already_delivered_from, AwaitingTrait, ClientDispatch, KernelError, Rerender, RuntimeKernel, StatefulLeg, TickDispatch, TickEmit, TraitSnapshot,
     CROSS_TRAIT_CASCADE_CAP,
 };
 pub use tick_clock::{Calendar, TickClock};

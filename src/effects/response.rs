@@ -14,7 +14,8 @@ use std::collections::HashMap;
 
 use super::{ClientEffect, Effect, EffectOutcome, EffectResult};
 
-/// Wire keys of [`BusEventSource`], the `source` of an `@event` delivery record.
+/// The `@event.source` keys of [`BusEventSource`] (core's `deliveryRecordValue`); the wire struct
+/// also carries `pendingKey` and `persistSuccess`, which a delivery record's value leaves out.
 pub const BUS_EVENT_SOURCE_FIELDS: [&str; 10] = [
     "orbital",
     "orbitalId",
@@ -31,18 +32,22 @@ pub const BUS_EVENT_SOURCE_FIELDS: [&str; 10] = [
 /// Mirror of `BusEventSource` (`bus.ts`). Identifies the origin of an emitted event —
 /// cross-trait listeners filter on `orbital`/`trait`; the rest are debugging/dedup aids
 /// the client-side bridge uses and the Rust kernel does not populate yet.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusEventSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orbital: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "OrbitalId"))]
     pub orbital_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "trait")]
     pub r#trait: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "TraitId"))]
     pub trait_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "EventId"))]
     pub event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<String>,
@@ -54,6 +59,13 @@ pub struct BusEventSource {
     pub dispatched: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_client_id: Option<String>,
+    /// Per-activation key a UI control stamps on the event it emits; never set by the kernel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_key: Option<String>,
+    /// Set on a `persist` effect's `emit.success` envelope: the emit a live-push host fans out to the
+    /// other connected clients. On the wire, not an `@event.source` binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persist_success: Option<bool>,
 }
 
 impl BusEventSource {
@@ -98,11 +110,13 @@ pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSour
 
 /// One event a transition's effects emitted, carried back to the client to re-dispatch
 /// in order. Mirror of `EmittedEvent` (`bus.ts`).
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmittedEvent {
     pub event: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "EventPayload"))]
     pub payload: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<BusEventSource>,
@@ -111,6 +125,7 @@ pub struct EmittedEvent {
 /// `Array<{ trait: string; from: string; event?: string }>` — stateless
 /// addressing (`bus.ts` `OrbitalEventRequest.traits`). `event` is the event the
 /// trait fired on in a cascade; residence routing judges the trait by it.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitFrom {
     #[serde(rename = "trait")]
@@ -123,6 +138,7 @@ pub struct TraitFrom {
 /// One `{ traitName, effect }` pairing — the per-trait attribution twin of the flat
 /// `clientEffects` array (same length/order, 1:1 by index). Mirror of
 /// `OrbitalEventResponse.clientEffectsByTrait`.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientEffectByTrait {
@@ -136,6 +152,7 @@ pub struct ClientEffectByTrait {
     pub from_state: Option<String>,
     /// The payload an embedded `@callsitePayload` child was composed with (sticky).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "EventPayload"))]
     pub callsite_payload: Option<Value>,
 }
 
@@ -143,6 +160,7 @@ pub struct ClientEffectByTrait {
 /// `SERVER_REPORTED_EFFECTS` (`effect.ts`, derived from the effect union) plus the
 /// `substrate` grouping for namespaced operators (head rides `name`). Kept in sync by
 /// `tests/events_wire_fixtures.rs` (the `effect-results-every-kind` case).
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServerEffectKind {
@@ -167,6 +185,7 @@ fn is_not_denied(denied: &Option<bool>) -> bool {
 /// Mirror of `ServerEffectResult` (`effect-result.ts`) — the wire shape a server-side
 /// effect (persist/set/fetch/call-service/...) reports back on
 /// `OrbitalEventResponse.effectResults`.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerEffectResult {
@@ -177,19 +196,35 @@ pub struct ServerEffectResult {
     pub entity_type: Option<String>,
     /// The namespaced operator (`memory/store`) — only on `ServerEffectKind::Substrate`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "NamespacedEffectName"))]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "EntityRow | ServerBatchSummary | EventPayloadValue"))]
     pub data: Option<Value>,
     pub success: bool,
     /// `true` when a persist failed because an access policy rejected it — never
     /// serialized as `false` (the wire type is the TS literal `true`, not `bool`).
     #[serde(default, skip_serializing_if = "is_not_denied")]
+    #[cfg_attr(test, ts(type = "true"))]
     pub denied: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Coded failure reason for a persist that resolved no target row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<ServerEffectCode>,
+}
+
+/// `ServerEffectResult.code` — mirror of core's `"not-found" | "no-row-key"`.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServerEffectCode {
+    NotFound,
+    NoRowKey,
 }
 
 /// `EventRequest.run_tick`: which trait's tick the data authority runs once.
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunTick {
     #[serde(rename = "trait")]
@@ -204,19 +239,23 @@ pub fn tick_event_key(tick: &str) -> String {
 }
 
 /// Client → server event dispatch request. Mirror of `OrbitalEventRequest` (`bus.ts`).
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventRequest {
     pub event: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "EventId"))]
     pub event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "EventPayload"))]
     pub payload: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_trait: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "RawUserClaims"))]
     pub user: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
@@ -235,6 +274,7 @@ pub struct EventRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traits: Option<Vec<TraitFrom>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "{ [key in string]: EntityRow }"))]
     pub entity_by_trait: Option<HashMap<String, Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<String>,
@@ -251,19 +291,53 @@ pub struct EventRequest {
 }
 
 /// One trait of a mount batch and the lifecycle event (`INIT`/`LOAD`/`$MOUNT`) it runs.
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MountSeed {
     #[serde(rename = "trait")]
     pub r#trait: String,
-    pub event: String,
+    pub event: LifecycleEvent,
+}
+
+/// The lifecycle events a trait runs when it enters a page; twin of `LifecycleEvent` in `bus.ts`.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LifecycleEvent {
+    #[serde(rename = "INIT")]
+    Init,
+    #[serde(rename = "LOAD")]
+    Load,
+    #[serde(rename = "$MOUNT")]
+    Mount,
+}
+
+impl LifecycleEvent {
+    pub fn parse(event: &str) -> Option<Self> {
+        match event {
+            "INIT" => Some(Self::Init),
+            "LOAD" => Some(Self::Load),
+            "$MOUNT" => Some(Self::Mount),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Init => "INIT",
+            Self::Load => "LOAD",
+            Self::Mount => "$MOUNT",
+        }
+    }
 }
 
 /// Mirror of `DeliveryRecord` (`bus.ts`): the delivery a transition is processing.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliveryRecord {
     pub event: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "EventPayload"))]
     pub payload: Option<Value>,
     #[serde(default)]
     pub source: BusEventSource,
@@ -287,6 +361,7 @@ impl DeliveryRecord {
 }
 
 /// Mirror of `DispatchLog` (`bus.ts`): a trait's log so far in a dispatch that began elsewhere.
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DispatchLog {
@@ -313,6 +388,7 @@ pub struct DispatchLog {
 ///   "clientEffects": [["render-ui", "main", {"type": "entity-cards"}]]
 /// }
 /// ```
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventResponse {
@@ -327,8 +403,10 @@ pub struct EventResponse {
     #[serde(default)]
     pub emitted_events: Vec<EmittedEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "{ [key in string]: Array<EntityRow> }"))]
     pub data: Option<HashMap<String, Vec<Value>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "{ [key in string]: EntityRow }"))]
     pub entity_by_trait: Option<HashMap<String, Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_effects: Option<Vec<ClientEffect>>,
@@ -341,6 +419,13 @@ pub struct EventResponse {
     pub guard_failed: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejections: Option<Vec<TransitionRejection>>,
+    /// Traits dropped from the cascade when the cross-trait worklist hit its cap; their states,
+    /// effects and rows in this response are incomplete. Absent when the whole worklist ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade_truncated: Option<Vec<String>>,
+    /// Every executed hop of the dispatch, in order (the server role's trace); absent when none ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transitions: Option<Vec<TransitionHop>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -362,6 +447,7 @@ pub struct ExternalInputRequest {
 }
 
 /// Mirrors `@almadar/core` `TransitionRejectionCode`.
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TransitionRejectionCode {
@@ -375,6 +461,7 @@ pub enum TransitionRejectionCode {
 
 /// Mirrors `@almadar/core` `TransitionRejection`: why a trait (or the whole request)
 /// did not transition.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransitionRejection {
@@ -390,13 +477,139 @@ pub struct TransitionRejection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "unknown"))]
     pub guard: Option<Value>,
     /// `effect-failed`: the failure's message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
+/// How one authored effect of a hop ran.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HopEffectStatus {
+    Executed,
+    Failed,
+    Skipped,
+}
+
+/// One authored effect of a hop: its operator head, its arguments as authored, and how it ran.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HopEffect {
+    #[serde(rename = "type")]
+    pub effect_type: String,
+    pub args: Vec<Value>,
+    pub status: HopEffectStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// One executed hop of a dispatch (the seed's, a same-trait cascade step's, a listener delivery's), in
+/// dispatch order. Mirrors the JS runtime's `TransitionObserver.onTransition` trace.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitionHop {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub from: String,
+    pub to: String,
+    pub event: String,
+    /// `true` when the fired arm's guard held; absent for an unguarded arm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_result: Option<bool>,
+    pub effects: Vec<HopEffect>,
+}
+
+impl TransitionHop {
+    /// The executed hops among `outcomes`, in order.
+    pub fn of_outcomes(outcomes: &[(String, crate::runtime::ProcessEventResult)]) -> Vec<Self> {
+        outcomes
+            .iter()
+            .filter(|(_, result)| result.executed)
+            .filter_map(|(trait_name, result)| {
+                let event = result.event.clone()?;
+                let guard_result = result
+                    .fired_arm
+                    .and_then(|arm| result.guards.iter().find(|g| g.arm == arm))
+                    .map(|_| true);
+                Some(Self {
+                    trait_name: trait_name.clone(),
+                    from: result.previous_state.clone(),
+                    to: result.new_state.clone(),
+                    event,
+                    guard_result,
+                    effects: result
+                        .effect_runs
+                        .iter()
+                        .map(HopEffect::of_run)
+                        .collect(),
+                })
+            })
+            .collect()
+    }
+}
+
+impl HopEffect {
+    fn of_run(run: &crate::runtime::EffectRun) -> Self {
+        use crate::runtime::EffectRunStatus;
+        let (head, args) = match &run.effect {
+            crate::schema::SExpression::Array(items) => match items.split_first() {
+                Some((crate::schema::SExpression::String(head), rest)) => {
+                    (head.clone(), rest.iter().cloned().map(Value::from).collect())
+                }
+                _ => (String::new(), items.iter().cloned().map(Value::from).collect()),
+            },
+            other => (String::new(), vec![Value::from(other.clone())]),
+        };
+        Self {
+            effect_type: head,
+            args,
+            status: match run.status {
+                EffectRunStatus::Executed => HopEffectStatus::Executed,
+                EffectRunStatus::Failed => HopEffectStatus::Failed,
+                EffectRunStatus::Skipped => HopEffectStatus::Skipped,
+            },
+            error: run.error.clone(),
+        }
+    }
+}
+
 impl EventResponse {
+    /// The answer to a request that named no trait: the merged outcomes of the `handlers` it was
+    /// delivered to, with `held` (the held state of every trait of the orbital) echoed under `states`.
+    /// No handler is a `no-dispatchable-traits` rejection. JS twin: `evaluateOrbitalEvent`'s discovery.
+    pub fn from_discovery(
+        outcomes: &[(String, crate::runtime::ProcessEventResult)],
+        handlers: &[String],
+        event_name: &str,
+        held: HashMap<String, String>,
+    ) -> Self {
+        let mut response = match handlers.first() {
+            Some(first) => Self::from_process_results(outcomes, first, event_name),
+            None => EventResponse {
+                success: true,
+                rejections: Some(vec![TransitionRejection {
+                    code: TransitionRejectionCode::NoDispatchableTraits,
+                    trait_name: None,
+                    from: None,
+                    event: Some(event_name.to_string()),
+                    states_declaring_event: None,
+                    transition: None,
+                    guard: None,
+                    error: None,
+                }]),
+                ..Default::default()
+            },
+        };
+        for (trait_name, state) in held {
+            response.states.entry(trait_name).or_insert(state);
+        }
+        response
+    }
+
     /// Minimal successful response with no cascade — used as the `ServerBridge::tick`
     /// default (no server-side ticking to report) and by tests that don't need a full
     /// `states{}` snapshot.
@@ -489,12 +702,32 @@ impl EventResponse {
         let mut client_effects_by_trait: Vec<ClientEffectByTrait> = Vec::new();
         let mut effect_results: Vec<ServerEffectResult> = Vec::new();
         let mut emitted_events: Vec<EmittedEvent> = Vec::new();
+        let mut cascade_truncated: Vec<String> = Vec::new();
 
+        let mut rejections: Vec<TransitionRejection> = Vec::new();
         for (trait_name, result) in outcomes {
+            if let (Some(error), Some(event)) = (&result.failure, &result.event) {
+                rejections.push(TransitionRejection {
+                    code: TransitionRejectionCode::EffectFailed,
+                    trait_name: Some(trait_name.clone()),
+                    from: Some(result.previous_state.clone()),
+                    event: Some(event.clone()),
+                    states_declaring_event: None,
+                    transition: None,
+                    guard: None,
+                    error: Some(error.clone()),
+                });
+            }
+            for dropped in &result.cascade_dropped {
+                if !cascade_truncated.contains(dropped) {
+                    cascade_truncated.push(dropped.clone());
+                }
+            }
             merged
                 .states
                 .insert(trait_name.clone(), result.new_state.clone());
-            merged.transitioned = merged.transitioned || result.executed;
+            merged.transitioned =
+                merged.transitioned || (result.executed && result.failure.is_none());
 
             if trait_name == seed_trait && !result.executed {
                 merged
@@ -511,14 +744,14 @@ impl EventResponse {
                 entity_by_trait.insert(trait_name.clone(), result.entity_data.clone());
             }
 
-            for er in &result.effect_results {
+            for (index, er) in result.effect_results.iter().enumerate() {
                 if let Some(ce) = ClientEffect::from_effect(&er.effect) {
                     client_effects_by_trait.push(ClientEffectByTrait {
                         trait_name: trait_name.clone(),
                         effect: ce.clone(),
                         event: result.event.clone(),
                         from_state: result.event.as_ref().map(|_| result.previous_state.clone()),
-                        callsite_payload: None,
+                        callsite_payload: result.callsite_payload.clone(),
                     });
                     client_effects.push(ce);
                     continue;
@@ -531,7 +764,11 @@ impl EventResponse {
                         } else {
                             Some(payload.clone())
                         },
-                        source: Some(BusEventSource::from_trait(trait_name.clone())),
+                        source: Some(BusEventSource {
+                            dispatched: result.consumed_emits.contains(&index).then_some(true),
+                            persist_success: er.persist_success.then_some(true),
+                            ..BusEventSource::from_trait(trait_name.clone())
+                        }),
                     });
                     continue;
                 }
@@ -574,6 +811,8 @@ impl EventResponse {
             Some(effect_results)
         };
         merged.emitted_events = emitted_events;
+        merged.rejections = (!rejections.is_empty()).then_some(rejections);
+        merged.cascade_truncated = (!cascade_truncated.is_empty()).then_some(cascade_truncated);
         merged
     }
 
@@ -667,11 +906,34 @@ fn server_effect_result(er: &EffectResult) -> Option<ServerEffectResult> {
         success,
         denied: if denied { Some(true) } else { None },
         error: er.error.clone(),
+        code: er.code,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_bus_event_source_round_trips_pending_key() {
+        let wire = serde_json::json!({ "trait": "Form", "pendingKey": "k-1" });
+        let parsed: super::BusEventSource = serde_json::from_value(wire.clone()).expect("parses");
+        assert_eq!(parsed.pending_key.as_deref(), Some("k-1"));
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+        let bare = serde_json::to_value(super::BusEventSource::from_trait("Form")).unwrap();
+        assert_eq!(bare, serde_json::json!({ "trait": "Form" }));
+    }
+
+    #[test]
+    fn a_mount_seed_accepts_only_lifecycle_events() {
+        for e in ["INIT", "LOAD", "$MOUNT"] {
+            let wire = serde_json::json!({ "trait": "T", "event": e });
+            let seed: super::MountSeed = serde_json::from_value(wire.clone()).expect("lifecycle parses");
+            assert_eq!(seed.event.as_str(), e);
+            assert_eq!(serde_json::to_value(&seed).unwrap(), wire);
+        }
+        let bad = serde_json::json!({ "trait": "T", "event": "SAVE" });
+        assert!(serde_json::from_value::<super::MountSeed>(bad).is_err());
+    }
+
     #[test]
     fn an_effect_failed_rejection_has_the_core_wire_shape() {
         let wire = serde_json::json!({ "code": "effect-failed", "trait": "Preview", "from": "idle", "event": "INIT", "error": "boom" });
@@ -747,6 +1009,8 @@ mod tests {
             from_bridge: Some(true),
             dispatched: Some(true),
             origin_client_id: Some(String::new()),
+            pending_key: Some(String::new()),
+            persist_success: Some(true),
         };
         let json = serde_json::to_value(full).unwrap();
         let mut keys: Vec<&str> = json
@@ -756,7 +1020,11 @@ mod tests {
             .map(String::as_str)
             .collect();
         keys.sort_unstable();
+        // `pendingKey` is a UI activation key and `persistSuccess` a live-push mark: on the wire, but not
+        // `@event.source` bindings.
         let mut declared = super::BUS_EVENT_SOURCE_FIELDS.to_vec();
+        declared.push("pendingKey");
+        declared.push("persistSuccess");
         declared.sort_unstable();
         assert_eq!(keys, declared);
     }
@@ -793,6 +1061,7 @@ mod tests {
             success: false,
             denied: Some(true),
             error: Some("access denied".into()),
+            code: None,
         }
     }
 
@@ -840,6 +1109,10 @@ mod tests {
             fired_arm: None,
             guards: Vec::new(),
             effect_runs: Vec::new(),
+            cascade_dropped: Vec::new(),
+            consumed_emits: Vec::new(),
+            failure: None,
+            callsite_payload: None,
         }
     }
 
@@ -954,6 +1227,17 @@ mod tests {
     }
 
     #[test]
+    fn a_server_effect_result_code_round_trips_both_core_values() {
+        for code in ["not-found", "no-row-key"] {
+            let wire = serde_json::json!({ "effect": "persist", "success": false, "code": code });
+            let parsed: ServerEffectResult = serde_json::from_value(wire.clone()).expect("parses");
+            assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+        }
+        let bad = serde_json::json!({ "effect": "persist", "success": false, "code": "denied" });
+        assert!(serde_json::from_value::<ServerEffectResult>(bad).is_err());
+    }
+
+    #[test]
     fn server_effect_kind_is_kebab_case() {
         let result = ServerEffectResult {
             effect: ServerEffectKind::CallService,
@@ -964,8 +1248,10 @@ mod tests {
             success: true,
             denied: None,
             error: None,
+            code: None,
         };
         let json = serde_json::to_value(&result).unwrap();
+        assert!(json.get("code").is_none(), "code omitted when unset");
         assert_eq!(json.get("effect"), Some(&serde_json::json!("call-service")));
         assert!(json.get("denied").is_none(), "denied omitted when not true");
     }

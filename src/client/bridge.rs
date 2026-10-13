@@ -175,22 +175,46 @@ impl KernelBridge {
         self.kernel.set_current_user(user);
     }
 
-    /// Resolve the trait to dispatch to: an explicit one, else the named orbital's first
-    /// trait (mirrors the server route's selection).
-    fn resolve_trait(&self, orbital: &str, trait_name: Option<&str>) -> Option<String> {
+    /// The inline trait names of `orbital`, in declaration order.
+    fn orbital_traits(&self, orbital: &str) -> Vec<String> {
         use crate::TraitReference;
-        if let Some(t) = trait_name {
-            return Some(t.to_string());
-        }
         self.schema
             .orbitals
             .iter()
             .find(|o| o.name == orbital)
-            .and_then(|o| o.traits.first())
-            .and_then(|tr| match tr {
-                TraitReference::Inline(td) => Some(td.name.clone()),
-                _ => None,
+            .map(|o| {
+                o.traits
+                    .iter()
+                    .filter_map(|tr| match tr {
+                        TraitReference::Inline(td) => Some(td.name.clone()),
+                        _ => None,
+                    })
+                    .collect()
             })
+            .unwrap_or_default()
+    }
+
+    /// A request that names no trait: every trait of `orbital` whose held state handles the event
+    /// runs it (the server route's discovery); none handling it is a `no-dispatchable-traits`
+    /// rejection.
+    fn send_discovered_event(
+        &self,
+        orbital: &str,
+        event: &str,
+        entity_id: Option<&str>,
+        payload: Value,
+    ) -> Result<EventResponse, BridgeError> {
+        let candidates = self.orbital_traits(orbital);
+        let handlers = self.kernel.discover_handlers(&candidates, entity_id, event);
+        let held = self.kernel.held_states(&candidates, entity_id);
+        let outcomes = if handlers.is_empty() {
+            Vec::new()
+        } else {
+            self.kernel
+                .dispatch_each(&handlers, entity_id, event, payload)
+                .map_err(|e| BridgeError::Server(e.to_string()))?
+        };
+        Ok(EventResponse::from_discovery(&outcomes, &handlers, event, held))
     }
 }
 
@@ -222,7 +246,7 @@ impl ServerBridge for KernelBridge {
         Ok(EventResponse::from_process_results(
             &outcomes,
             &seeds[0].r#trait,
-            &seeds[0].event,
+            seeds[0].event.as_str(),
         ))
     }
 
@@ -234,9 +258,9 @@ impl ServerBridge for KernelBridge {
         trait_name: Option<&str>,
         payload: Value,
     ) -> Result<EventResponse, BridgeError> {
-        let trait_name = self.resolve_trait(orbital, trait_name).ok_or_else(|| {
-            BridgeError::InvalidRequest(format!("no dispatchable trait for orbital '{orbital}'"))
-        })?;
+        let Some(trait_name) = trait_name.map(str::to_string) else {
+            return self.send_discovered_event(orbital, event, entity_id, payload);
+        };
         // Full cross-trait dispatch: the target trait plus every trait that listens for
         // this event (and any it emits) — so a button's CREATE reaches the modal trait
         // that listens for it. `dispatch` is the canonical fan-out in orbital-core.

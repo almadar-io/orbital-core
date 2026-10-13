@@ -27,9 +27,11 @@ impl EmbedIndex {
     /// one host — same first-referrer-per-hop contract as the compiler's
     /// `embed_graph::embedder_chain`), then walks each trait's transitive
     /// chain innermost-first with a visited guard bounded by the map size.
-    pub fn build(trait_definitions: &HashMap<String, TraitDefinition>) -> Self {
+    pub fn build<T: std::borrow::Borrow<TraitDefinition>>(
+        trait_definitions: &HashMap<String, T>,
+    ) -> Self {
         let mut id_to_name: HashMap<&str, &str> = HashMap::new();
-        for def in trait_definitions.values() {
+        for def in trait_definitions.values().map(std::borrow::Borrow::borrow) {
             if let Some(id) = &def.id {
                 id_to_name.insert(id.as_str(), def.name.as_str());
             }
@@ -42,7 +44,7 @@ impl EmbedIndex {
         for host_name in host_names {
             let Some(embed_ids) = trait_definitions
                 .get(host_name)
-                .and_then(|def| def.trait_embed_ids.as_ref())
+                .and_then(|def| def.borrow().trait_embed_ids.as_ref())
             else {
                 continue;
             };

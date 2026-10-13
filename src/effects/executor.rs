@@ -2,6 +2,7 @@
 //!
 //! Environment-aware effect execution with routing logic.
 
+use super::response::ServerEffectCode;
 use super::runs_on::{runs_on, RunsOn};
 use super::types::{Effect, EffectResult, LogLevel, PersistOperation, RuntimeEnvironment};
 use crate::evaluator::{BindingContext, Evaluator, Value};
@@ -15,10 +16,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+/// A persist update/delete that resolved no row key.
+const NO_ROW_KEY: &str = "persist update/delete resolved no row key — the id was neither \
+     supplied as the operation's id argument nor present on the row \
+     being written. Bind it before the write, e.g. \
+     `(set @entity.id ?row.id)` on the transition that selects the row.";
+
 /// Handler for persist operations
 pub trait PersistenceHandler: Send + Sync {
     fn create(&self, entity_type: &str, data: &Value) -> Result<Value, String>;
     fn read(&self, entity_type: &str, id: &str) -> Result<Value, String>;
+    /// The row, or `None` when no such row exists; an `Err` is a failure, not a miss. The default
+    /// reads the row and takes `Ok(Null)` as absent; a store that tracks absence overrides it.
+    fn find(&self, entity_type: &str, id: &str) -> Result<Option<Value>, String> {
+        match self.read(entity_type, id)? {
+            Value::Null => Ok(None),
+            row => Ok(Some(row)),
+        }
+    }
     fn update(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String>;
     fn delete(&self, entity_type: &str, id: &str) -> Result<(), String>;
     /// List all entities of a type (for fetch without ID)
@@ -68,6 +83,34 @@ pub struct FetchPage {
     pub total: usize,
 }
 
+/// Who a `call-service` runs for: the dispatch's `@user` (`{ principal: id, role }`, as the JS runtime
+/// passes it). `None` when nobody is signed in or the viewer has no id.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceCaller {
+    pub principal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+}
+
+impl ServiceCaller {
+    pub fn of_user(user: &Value) -> Option<Self> {
+        let Value::Object(fields) = user else {
+            return None;
+        };
+        let Some(Value::String(principal)) = fields.get("id") else {
+            return None;
+        };
+        let role = match fields.get("role") {
+            Some(Value::String(role)) => Some(role.clone()),
+            _ => None,
+        };
+        Some(Self {
+            principal: principal.clone(),
+            role,
+        })
+    }
+}
+
 /// Handler for service calls
 pub trait ServiceHandler: Send + Sync {
     /// Run one call. `key` is the call's declared `key:` — the name `cancel`
@@ -78,6 +121,7 @@ pub trait ServiceHandler: Send + Sync {
         method: &str,
         args: &Value,
         key: Option<&str>,
+        caller: Option<&ServiceCaller>,
     ) -> Result<Value, String>;
 
     /// Abort the in-flight call started with `key`. A call that already
@@ -214,6 +258,10 @@ impl PersistenceHandler for InMemoryPersistence {
             .ok_or_else(|| format!("Entity not found: {}:{}", entity_type, id))
     }
 
+    fn find(&self, entity_type: &str, id: &str) -> Result<Option<Value>, String> {
+        Ok(self.data.read().get(entity_type).and_then(|c| c.get(id)).cloned())
+    }
+
     fn update(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String> {
         let mut store = self.data.write();
         let collection = store
@@ -309,6 +357,15 @@ fn interpolate_filter_trait_refs(value: &Value, ctx: &BindingContext) -> Value {
         Value::String(s) => {
             if s == "@entity" || s.starts_with("@entity.") {
                 ctx.resolve_binding(s).unwrap_or(Value::Null)
+            } else if s.starts_with("@config.") {
+                // A knob whose value IS an `@entity` binding (a list-detail pair's `initialFilterValue`)
+                // reads the issuing trait's entity, not the candidate row the filter runs over.
+                match ctx.resolve_binding(s) {
+                    Some(Value::String(inner)) if inner == "@entity" || inner.starts_with("@entity.") => {
+                        ctx.resolve_binding(&inner).unwrap_or(Value::Null)
+                    }
+                    _ => value.clone(),
+                }
             } else {
                 value.clone()
             }
@@ -525,7 +582,7 @@ impl EffectExecutor {
                 args,
                 key,
                 ..
-            } => self.do_call_service(service, method, args, key.as_deref()),
+            } => self.do_call_service(service, method, args, key.as_deref(), ctx),
             Effect::CancelCall { key } => self.do_cancel_call(key),
             Effect::RenderUi { slot, content } => self.do_render_ui(slot, content),
             Effect::Navigate {
@@ -771,13 +828,7 @@ impl EffectExecutor {
             // `success: true` — two paths, two different wrong answers, both
             // silent. `ORB_BINDING_PERSIST_ROW_ID_NEVER_SET` is the compile-time
             // half of this; this is the runtime half.
-            return Err(
-                "persist update/delete resolved no row key — the id was neither \
-                 supplied as the operation's id argument nor present on the row \
-                 being written. Bind it before the write, e.g. \
-                 `(set @entity.id ?row.id)` on the transition that selects the row."
-                    .to_string(),
-            );
+            return Err(NO_ROW_KEY.to_string());
         }
         Ok(from_data.to_string())
     }
@@ -804,6 +855,23 @@ impl EffectExecutor {
             self.persist_resolved(operation, entity_type, resolved_data.as_ref(), id, ctx, effect)
         } else {
             EffectResult::noop(effect, "no persistence handler configured")
+        }
+    }
+
+    /// The row a persist update/delete addresses. An absent row is a failed write coded
+    /// `not-found`; a store failure is a plain failure.
+    fn existing_row(
+        persistence: &dyn PersistenceHandler,
+        entity_type: &str,
+        entity_id: &str,
+        code: &mut Option<ServerEffectCode>,
+    ) -> Result<Value, String> {
+        match persistence.find(entity_type, entity_id)? {
+            Some(row) => Ok(row),
+            None => {
+                *code = Some(ServerEffectCode::NotFound);
+                Err(format!("{entity_type} {entity_id} not found"))
+            }
         }
     }
 
@@ -841,6 +909,27 @@ impl EffectExecutor {
                 })
                 .unwrap_or_default();
 
+            // `@intrinsic` fields are the trait's frame, never a column: a write leaves them out.
+            let intrinsic: Vec<String> = self
+                .entity_policies
+                .as_ref()
+                .and_then(|table| Some(table.read().get(entity_type)?.intrinsic_fields.clone()))
+                .unwrap_or_default();
+            let without_intrinsic = match resolved_data {
+                Value::Object(fields) if fields.keys().any(|k| intrinsic.contains(k)) => {
+                    Value::Object(
+                        fields
+                            .iter()
+                            .filter(|(k, _)| !intrinsic.contains(k))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                    )
+                }
+                other => other.clone(),
+            };
+            let resolved_data = &without_intrinsic;
+
+            let mut code: Option<ServerEffectCode> = None;
             let result = match operation {
                 PersistOperation::Create => {
                     let missing = missing_required_fields(&required_fields, resolved_data);
@@ -869,52 +958,46 @@ impl EffectExecutor {
                     Ok(entity_id) => persistence.read(entity_type, entity_id.as_str()),
                 },
                 PersistOperation::Update => match self.resolve_update_id(id, resolved_data, ctx) {
-                    Err(e) => Err(e),
-                    Ok(entity_id) => {
-                        let entity_id = entity_id.as_str();
-                        match policy {
-                            Some(_) => match persistence.read(entity_type, entity_id) {
-                                Ok(existing) => check_mutation_access(
+                    Err(e) => {
+                        code = Some(ServerEffectCode::NoRowKey);
+                        Err(e)
+                    }
+                    Ok(entity_id) => Self::existing_row(persistence.as_ref(), entity_type, &entity_id, &mut code)
+                        .and_then(|existing| {
+                            if policy.is_some() {
+                                check_mutation_access(
                                     operation,
                                     &existing,
                                     policy.as_ref(),
                                     ctx,
                                     entity_type,
-                                )
-                                .and_then(|()| {
-                                    persistence.update(entity_type, entity_id, resolved_data)
-                                }),
-                                Err(e) => Err(e),
-                            },
-                            None => persistence.update(entity_type, entity_id, resolved_data),
-                        }
-                    }
+                                )?;
+                            }
+                            persistence.update(entity_type, &entity_id, resolved_data)
+                        }),
                 },
                 PersistOperation::Delete => match self.resolve_id(id, ctx) {
-                    Err(e) => Err(e),
-                    Ok(entity_id) => {
-                        let entity_id = entity_id.as_str();
-                        match policy {
-                            Some(_) => match persistence.read(entity_type, entity_id) {
-                                Ok(existing) => check_mutation_access(
+                    Err(e) => {
+                        code = Some(ServerEffectCode::NoRowKey);
+                        Err(e)
+                    }
+                    Ok(entity_id) if entity_id.is_empty() => {
+                        code = Some(ServerEffectCode::NoRowKey);
+                        Err(NO_ROW_KEY.to_string())
+                    }
+                    Ok(entity_id) => Self::existing_row(persistence.as_ref(), entity_type, &entity_id, &mut code)
+                        .and_then(|existing| {
+                            if policy.is_some() {
+                                check_mutation_access(
                                     operation,
                                     &existing,
                                     policy.as_ref(),
                                     ctx,
                                     entity_type,
-                                )
-                                .and_then(|()| {
-                                    persistence
-                                        .delete(entity_type, entity_id)
-                                        .map(|()| Value::Null)
-                                }),
-                                Err(e) => Err(e),
-                            },
-                            None => persistence
-                                .delete(entity_type, entity_id)
-                                .map(|_| Value::Null),
-                        }
-                    }
+                                )?;
+                            }
+                            persistence.delete(entity_type, &entity_id).map(|()| Value::Null)
+                        }),
                 },
             };
 
@@ -925,7 +1008,11 @@ impl EffectExecutor {
                 }
                 Err(e) => {
                     error!(entity_type = entity_type, error = %e, "Persist effect failed");
-                    EffectResult::failed(effect, &e)
+                    let failed = EffectResult::failed(effect, &e);
+                    match code {
+                        Some(code) => failed.with_code(code),
+                        None => failed,
+                    }
                 }
             }
         } else {
@@ -1150,6 +1237,7 @@ impl EffectExecutor {
         method: &str,
         args: &Value,
         key: Option<&str>,
+        ctx: &BindingContext,
     ) -> EffectResult {
         let effect = Effect::CallService {
             service: service.to_string(),
@@ -1160,7 +1248,7 @@ impl EffectExecutor {
         };
 
         if let Some(handler) = &self.service_handler {
-            match handler.call(service, method, args, key) {
+            match handler.call(service, method, args, key, ServiceCaller::of_user(&ctx.user).as_ref()) {
                 Ok(value) => EffectResult::executed_with_value(effect, value),
                 Err(e) => EffectResult::failed(effect, &e),
             }
@@ -1402,6 +1490,7 @@ mod tests {
             method: &str,
             _args: &Value,
             key: Option<&str>,
+            _caller: Option<&ServiceCaller>,
         ) -> Result<Value, String> {
             self.calls
                 .lock()
@@ -2488,7 +2577,7 @@ mod tests {
                 serde_json::from_value(json!(["fetch", "Row", options])).unwrap();
             let effect = crate::effects::parse_effect(&raw).expect("fetch parses");
             let mut ctx = BindingContext::new();
-            ctx.payload = v(payload);
+            ctx.payload = Arc::new(v(payload));
             ctx.set_entity(v(entity));
             executor.execute(&effect, &ctx)
         }

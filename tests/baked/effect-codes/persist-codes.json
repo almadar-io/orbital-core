@@ -1,0 +1,64 @@
+{
+  "description": "ServerEffectResult.code on a persist update/delete: `no-row-key` when no row key resolves, `not-found` when the keyed row is absent, none when it lands. Read by orbital-core tests/persist_effect_codes.rs and @almadar/runtime persist-effect-codes.test.ts.",
+  "schema": {
+    "name": "persist-codes",
+    "version": "1.0.0",
+    "orbitals": [
+      {
+        "name": "Notes",
+        "pages": [],
+        "entity": {
+          "name": "Note",
+          "persistence": "persistent",
+          "fields": [
+            { "name": "id", "type": "string" },
+            { "name": "title", "type": "string" }
+          ],
+          "instances": [{ "id": "n1", "title": "one" }]
+        },
+        "traits": [
+          {
+            "name": "Editor",
+            "linkedEntity": "Note",
+            "stateMachine": {
+              "states": [{ "name": "idle", "isInitial": true }],
+              "events": [
+                { "key": "UPDATE_BY_ID", "name": "UPDATE_BY_ID" },
+                { "key": "UPDATE_OWN_KEY", "name": "UPDATE_OWN_KEY" },
+                { "key": "DELETE_BY_ID", "name": "DELETE_BY_ID" }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "UPDATE_BY_ID",
+                  "effects": [["persist", "update", "Note", { "id": "@payload.id", "title": "changed" }]]
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "UPDATE_OWN_KEY",
+                  "effects": [["persist", "update", "Note", { "title": "changed" }]]
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "DELETE_BY_ID",
+                  "effects": [["persist", "delete", "Note", "@payload.id"]]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "cases": [
+    { "name": "update of a missing row", "event": "UPDATE_BY_ID", "payload": { "id": "zz" }, "expect": { "success": false, "code": "not-found" } },
+    { "name": "control: update of a present row", "event": "UPDATE_BY_ID", "payload": { "id": "n1" }, "expect": { "success": true } },
+    { "name": "update with no row key", "event": "UPDATE_OWN_KEY", "payload": {}, "expect": { "success": false, "code": "no-row-key" } },
+    { "name": "delete of a missing row", "event": "DELETE_BY_ID", "payload": { "id": "zz" }, "expect": { "success": false, "code": "not-found" } },
+    { "name": "control: delete of a present row", "event": "DELETE_BY_ID", "payload": { "id": "n1" }, "expect": { "success": true } },
+    { "name": "delete with no row key", "event": "DELETE_BY_ID", "payload": {}, "expect": { "success": false, "code": "no-row-key" } }
+  ]
+}

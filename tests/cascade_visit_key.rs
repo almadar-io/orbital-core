@@ -3,7 +3,7 @@
 use orbital_core::runtime::{
     EntitySource, InMemoryEntityCache, RuntimeKernel, CROSS_TRAIT_CASCADE_CAP,
 };
-use orbital_core::{OrbitalSchema, RuntimeEnvironment, Value};
+use orbital_core::{EventResponse, OrbitalSchema, RuntimeEnvironment, Value};
 use serde_json::{json, Value as Json};
 use std::sync::Arc;
 
@@ -90,6 +90,40 @@ fn a_chain_that_never_repeats_stops_at_the_cap() {
         steps > 1 && steps <= CROSS_TRAIT_CASCADE_CAP + 1,
         "must terminate at the cap, ran {steps}"
     );
+}
+
+fn fanner_response(kernel: &RuntimeKernel, payload: Json) -> EventResponse {
+    let payload: Value = serde_json::from_value(payload).unwrap();
+    let outcomes = kernel.dispatch("Fanner", None, "STEP", payload).unwrap();
+    EventResponse::from_process_results(&outcomes, "Fanner", "STEP")
+}
+
+/// JS twin: `cascade-visit-key.test.ts` "a chain that never repeats stops at the cap and says so".
+#[test]
+fn a_chain_stopped_at_the_cap_names_the_dropped_trait_on_the_response() {
+    let kernel = fanner(
+        json!([{ "from": "searching", "to": "searching", "event": "STEP",
+                 "effects": [["emit", "STEP_NEXT", { "n": ["+", "@payload.n", 1] }]] }]),
+        one_state(),
+    );
+    let response = fanner_response(&kernel, json!({ "n": 0 }));
+    assert_eq!(response.cascade_truncated, Some(vec!["Fanner".to_string()]));
+    assert_eq!(
+        serde_json::to_value(&response).unwrap()["cascadeTruncated"],
+        json!(["Fanner"])
+    );
+}
+
+#[test]
+fn control_an_exact_repeat_cycle_is_not_truncation() {
+    let kernel = fanner(
+        json!([{ "from": "searching", "to": "searching", "event": "STEP",
+                 "effects": [["emit", "STEP_NEXT", { "k": 1 }]] }]),
+        one_state(),
+    );
+    let response = fanner_response(&kernel, json!({ "k": 1 }));
+    assert_eq!(response.cascade_truncated, None);
+    assert!(serde_json::to_value(&response).unwrap().get("cascadeTruncated").is_none());
 }
 
 /// `Fanner` with an entity counter `n` the guard bounds; `set` is the effect that moves the frame.
@@ -327,4 +361,20 @@ fn a_traits_own_endless_loop_stops_at_the_dispatch_budget() {
         looper_steps(&self_looper(false)),
         CROSS_TRAIT_CASCADE_CAP + 1
     );
+}
+
+/// JS twin: "edge: a trait's own endless loop stops at the dispatch budget and says so".
+#[test]
+fn a_traits_own_endless_loop_names_itself_as_truncated() {
+    let kernel = self_looper(false);
+    let outcomes = kernel
+        .dispatch("Looper", None, "TICK", serde_json::from_value(json!({})).unwrap())
+        .unwrap();
+    let response = EventResponse::from_process_results(&outcomes, "Looper", "TICK");
+    assert_eq!(response.cascade_truncated, Some(vec!["Looper".to_string()]));
+    let bounded = self_looper(true);
+    let outcomes = bounded
+        .dispatch("Looper", None, "TICK", serde_json::from_value(json!({})).unwrap())
+        .unwrap();
+    assert_eq!(EventResponse::from_process_results(&outcomes, "Looper", "TICK").cascade_truncated, None);
 }

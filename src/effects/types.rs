@@ -43,12 +43,18 @@ pub struct FetchEmit {
     pub success: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
+    /// A keyed `call-service` aborted by `cancel-call`: fires with `{ key }`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled: Option<String>,
+    /// A running `call-service`'s live messages; delivered by the host, never in-band.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_message: Option<String>,
 }
 
 impl FetchEmit {
-    /// True when neither a success nor a failure event is declared (nothing to emit).
+    /// True when no completion event is declared (nothing to emit when the effect finishes).
     pub fn is_empty(&self) -> bool {
-        self.success.is_none() && self.failure.is_none()
+        self.success.is_none() && self.failure.is_none() && self.cancelled.is_none()
     }
 }
 
@@ -274,6 +280,13 @@ pub struct EffectResult {
 
     /// A fetch's row count before offset/limit (the success payload's `totalCount`).
     pub total_count: Option<usize>,
+
+    /// This `emit` is a `persist` effect's `emit.success` envelope: the one emit a live-push host also
+    /// fans out to every other connected client.
+    pub persist_success: bool,
+
+    /// Why a failed persist resolved no target row (`ServerEffectResult.code`).
+    pub code: Option<super::response::ServerEffectCode>,
 }
 
 impl EffectResult {
@@ -286,6 +299,8 @@ impl EffectResult {
             error: None,
             entity_type: None,
             total_count: None,
+            persist_success: false,
+            code: None,
         }
     }
 
@@ -298,6 +313,8 @@ impl EffectResult {
             error: None,
             entity_type: None,
             total_count: None,
+            persist_success: false,
+            code: None,
         }
     }
 
@@ -317,6 +334,8 @@ impl EffectResult {
             error: None,
             entity_type: Some(entity_type.to_string()),
             total_count: Some(total),
+            persist_success: false,
+            code: None,
         }
     }
 
@@ -329,6 +348,8 @@ impl EffectResult {
             error: None,
             entity_type: None,
             total_count: None,
+            persist_success: false,
+            code: None,
         }
     }
 
@@ -341,7 +362,21 @@ impl EffectResult {
             error: None,
             entity_type: None,
             total_count: None,
+            persist_success: false,
+            code: None,
         }
+    }
+
+    /// This result, marked as a `persist` effect's success envelope.
+    pub fn as_persist_success(mut self) -> Self {
+        self.persist_success = true;
+        self
+    }
+
+    /// This failed result, with the coded reason its persist resolved no target row.
+    pub fn with_code(mut self, code: super::response::ServerEffectCode) -> Self {
+        self.code = Some(code);
+        self
     }
 
     /// Create a failed result
@@ -353,6 +388,8 @@ impl EffectResult {
             error: Some(error.to_string()),
             entity_type: None,
             total_count: None,
+            persist_success: false,
+            code: None,
         }
     }
 
@@ -544,8 +581,19 @@ fn parse_emit_config(obj: &Value) -> Option<FetchEmit> {
             .get("failure")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let fe = FetchEmit { success, failure };
-        (!fe.is_empty()).then_some(fe)
+        let route = |snake: &str, camel: &str| {
+            e.get(snake)
+                .or_else(|| e.get(camel))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        };
+        let fe = FetchEmit {
+            success,
+            failure,
+            cancelled: route("cancelled", "cancelled"),
+            on_message: route("on_message", "onMessage"),
+        };
+        (!fe.is_empty() || fe.on_message.is_some()).then_some(fe)
     })
 }
 

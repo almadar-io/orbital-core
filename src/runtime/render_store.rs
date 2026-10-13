@@ -69,7 +69,7 @@ impl RenderStore {
                 slot,
                 source,
                 flushed: flushed.clone(),
-                entity: flushed.entity.clone(),
+                entity: (*flushed.entity).clone(),
                 resolved,
             });
         }
@@ -77,6 +77,17 @@ impl RenderStore {
             self.instances
                 .remove(&(trait_name.to_string(), entity_id.to_string()));
         }
+    }
+
+    /// A newer paint of `slot` by `trait_name` (the host's) replaces whatever the kernel last rendered
+    /// there: that older source must not repaint over it.
+    pub(crate) fn forget_slot(&mut self, trait_name: &str, slot: &str) {
+        for ((t, _), slots) in &mut self.instances {
+            if t == trait_name {
+                slots.retain(|s| s.slot != slot);
+            }
+        }
+        self.instances.retain(|_, slots| !slots.is_empty());
     }
 
     pub(crate) fn forget_traits<'a>(&mut self, traits: impl IntoIterator<Item = &'a str>) {
@@ -189,13 +200,20 @@ pub(crate) fn resolve_deferred(
                 _ => Value::Array(
                     items
                         .iter()
-                        .map(|item| resolve_deferred(item, flushed, live, hops))
+                        .map(|item| {
+                            if flushed.is_unset_config_binding(item) {
+                                Value::Null
+                            } else {
+                                resolve_deferred(item, flushed, live, hops)
+                            }
+                        })
                         .collect(),
                 ),
             }
         }
         Value::Object(map) => Value::Object(
             map.iter()
+                .filter(|(_, v)| !flushed.is_unset_config_binding(v))
                 .map(|(k, v)| (k.clone(), resolve_deferred(v, flushed, live, hops)))
                 .collect(),
         ),
@@ -241,6 +259,24 @@ mod tests {
             resolve_deferred(&source, &c, &c, 0),
             c.resolve_value(&source).into_owned()
         );
+    }
+
+    #[test]
+    fn an_unset_config_knob_is_an_absent_prop_in_a_repaint_as_in_the_first_paint() {
+        let mut c = ctx(json!({ "n": 1 }), json!({}));
+        c.set_config(val(json!({ "title": "T" })));
+        let source = val(json!({ "title": "@config.title", "asset": "@config.asset", "rows": ["@config.asset", "@entity.n"] }));
+        let plain = c.resolve_value(&source).into_owned();
+        assert_eq!(plain, val(json!({ "title": "T", "rows": [null, 1] })));
+        assert_eq!(resolve_deferred(&source, &c, &c, 0), plain);
+    }
+
+    #[test]
+    fn control_a_set_config_knob_still_resolves_in_a_repaint() {
+        let mut c = ctx(json!({ "n": 1 }), json!({}));
+        c.set_config(val(json!({ "asset": { "src": "a.png" } })));
+        let source = val(json!({ "asset": "@config.asset" }));
+        assert_eq!(resolve_deferred(&source, &c, &c, 0), val(json!({ "asset": { "src": "a.png" } })));
     }
 
     #[test]

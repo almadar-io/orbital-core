@@ -482,11 +482,7 @@ pub struct ArraySumOp;
 impl Operator for ArraySumOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "sum", 1);
-        let arr = eval_expr(&args[0], ctx)?;
-
-        let array = require_array!(arr);
-
-        let sum: f64 = array.iter().filter_map(|v| v.to_number()).sum();
+        let sum: f64 = numbers_of(args, ctx, "array/sum")?.into_iter().sum();
 
         Ok(Value::Number(sum))
     }
@@ -653,15 +649,7 @@ pub struct ArrayAvgOp;
 impl Operator for ArrayAvgOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "avg", 1);
-        let arr = eval_expr(&args[0], ctx)?;
-
-        let array = require_array!(arr);
-
-        if array.is_empty() {
-            return Ok(Value::Null);
-        }
-
-        let nums: Vec<f64> = array.iter().filter_map(|v| v.to_number()).collect();
+        let nums = numbers_of(args, ctx, "array/avg")?;
         if nums.is_empty() {
             return Ok(Value::Null);
         }

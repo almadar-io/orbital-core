@@ -2,7 +2,7 @@
 // service result (call-service) or `{ result }` (substrate), `failure` carries `{ error }`, as JS
 // `EffectExecutor.ts` does. Twin of the JS runtime's call-service / program-effect emit tests.
 
-use orbital_core::effects::{ServiceHandler, SubstrateFailure, SubstrateHandler};
+use orbital_core::effects::{ServiceCaller, ServiceHandler, SubstrateFailure, SubstrateHandler};
 use orbital_core::runtime::{EntitySource, InMemoryEntityCache, KernelConfig, RuntimeKernel};
 use orbital_core::{OrbitalSchema, RuntimeEnvironment, Value};
 use serde_json::json;
@@ -14,7 +14,7 @@ struct Llm {
 }
 
 impl ServiceHandler for Llm {
-    fn call(&self, _service: &str, _method: &str, _args: &Value, _key: Option<&str>) -> Result<Value, String> {
+    fn call(&self, _service: &str, _method: &str, _args: &Value, _key: Option<&str>, _caller: Option<&ServiceCaller>) -> Result<Value, String> {
         if self.fail {
             return Err("rate limited".to_string());
         }

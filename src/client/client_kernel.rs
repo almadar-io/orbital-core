@@ -34,10 +34,10 @@
 
 use crate::client::bridge::{seed_into, ServerBridge};
 use crate::client::http::BridgeError;
+use crate::embed::EmbeddedKernel;
 use crate::{
-    already_delivered_from, ClientDispatch, DispatchMode, EntitySource, EventResponse,
-    InMemoryEntityCache, KernelConfig, OrbitalSchema, RuntimeEnvironment, RuntimeKernel,
-    ServerLegCollector, TraitOwners, TraitSnapshot, Value,
+    already_delivered_from, ClientDispatch, DispatchMode, EventResponse, OrbitalSchema,
+    TraitSnapshot, Value,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -53,17 +53,8 @@ fn next_client_id() -> String {
 /// In-process client-role kernel: Client env, the one `ServerLegCollector`
 /// delegate, and an optional transport for the server leg.
 pub struct ClientKernel {
-    kernel: RuntimeKernel,
-    /// Same instance as `kernel`'s own `KernelConfig.delegate` (cloned at
-    /// construction) — `kernel.dispatch_with_server_leg` is the only drainer, so
-    /// this field is never read directly; kept for identity/debug access (e.g. a
-    /// future `pending_server_leg_len` probe) rather than dropped and rebuilt.
-    #[allow(dead_code)]
-    collector: Arc<ServerLegCollector>,
+    embedded: EmbeddedKernel,
     bridge: Option<Arc<dyn ServerBridge>>,
-    owners: TraitOwners,
-    client_id: String,
-    entities: Arc<InMemoryEntityCache>,
 }
 
 /// A dispatch whose local cascade ran ([`ClientKernel::begin`]) and whose server legs, if any,
@@ -125,53 +116,31 @@ impl ClientKernel {
         schema: OrbitalSchema,
         bridge: Option<Arc<dyn ServerBridge>>,
     ) -> Result<Self, BridgeError> {
-        let entities = Arc::new(InMemoryEntityCache::new());
-        let collector = Arc::new(ServerLegCollector::new());
-        let config = KernelConfig {
-            environment: RuntimeEnvironment::Client,
-            delegate: Some(collector.clone() as Arc<dyn crate::EffectDelegate>),
-            ..KernelConfig::default()
-        };
-        let kernel = RuntimeKernel::new(
-            RuntimeEnvironment::Client,
-            Arc::clone(&entities) as Arc<dyn EntitySource>,
-            config,
-        );
-        kernel
-            .register_schema(schema)
-            .map_err(|e| BridgeError::Server(format!("register_schema: {e}")))?;
-        let owners = TraitOwners::from_kernel(&kernel);
-        Ok(Self {
-            kernel,
-            collector,
-            bridge,
-            owners,
-            client_id: next_client_id(),
-            entities,
-        })
+        let embedded = EmbeddedKernel::new(schema, next_client_id()).map_err(BridgeError::Server)?;
+        Ok(Self { embedded, bridge })
     }
 
     /// Seed entity rows so a subsequent INIT `fetch`/`list` on `entity_type` returns
     /// them (mirrors `KernelBridge::seed`, sharing the same [`seed_into`] body).
     pub fn seed(&self, entity_type: &str, rows: Vec<Value>) {
-        seed_into(self.entities.as_ref(), entity_type, &rows);
+        seed_into(self.embedded.entities().as_ref(), entity_type, &rows);
     }
 
     /// Seed synthesized sample rows via the canonical `crate::seed_sample_data`
     /// (mirrors `KernelBridge::seed_sample`).
     pub fn seed_sample(&self, schema: &OrbitalSchema, count: usize) {
-        crate::seed_sample_data(self.entities.as_ref(), schema, count);
+        crate::seed_sample_data(self.embedded.entities().as_ref(), schema, count);
     }
 
     /// [`seed_sample`](Self::seed_sample) stamping owner columns with an explicit
     /// viewer (mirrors `KernelBridge::seed_sample_as`).
     pub fn seed_sample_as(&self, schema: &OrbitalSchema, count: usize, viewer_id: Option<String>) {
-        crate::seed_sample_data_as(self.entities.as_ref(), schema, count, viewer_id);
+        crate::seed_sample_data_as(self.embedded.entities().as_ref(), schema, count, viewer_id);
     }
 
     /// Bind `@user` for every subsequent dispatch.
     pub fn set_current_user(&self, user: Value) {
-        self.kernel.set_current_user(user);
+        self.embedded.kernel().set_current_user(user);
     }
 
     /// Set the client's tracked light/dark toggle for every subsequent
@@ -182,13 +151,13 @@ impl ClientKernel {
     /// the toggle unset to let a declared theme key's own `-light`/`-dark`
     /// suffix win.
     pub fn set_theme_mode(&self, mode: crate::ThemeMode) {
-        self.kernel.set_theme_mode(mode);
+        self.embedded.kernel().set_theme_mode(mode);
     }
 
     /// The resolved theme's `canvasTheme` (orbital-core `canvas_theme`): what the Rust-drawn scenes
     /// paint with, as the mobile hosts read it from the kernel snapshot.
     pub fn canvas_theme(&self) -> serde_json::Value {
-        let theme = self.kernel.resolved_theme();
+        let theme = self.embedded.kernel().resolved_theme();
         serde_json::to_value(crate::runtime::canvas_theme::canvas_theme(
             &theme.tokens,
         ))
@@ -198,7 +167,7 @@ impl ClientKernel {
     /// The theme's busy delay for awaiting skeletons, or `None` when the theme leaves them off
     /// (`motion.awaitingSkeleton`, default off as on the web).
     pub fn awaiting_motion(&self) -> Option<std::time::Duration> {
-        let theme = self.kernel.resolved_theme();
+        let theme = self.embedded.kernel().resolved_theme();
         let motion = theme.tokens.motion.as_ref();
         if !motion.and_then(|m| m.awaiting_skeleton).unwrap_or(false) {
             return None;
@@ -232,13 +201,14 @@ impl ClientKernel {
     ) -> Result<EventResponse, BridgeError> {
         let orbital = self.owning_orbital(trait_name)?;
         let ticked = self
-            .kernel
+            .embedded
+            .kernel()
             .dispatch_tick(
                 orbital,
                 trait_name,
                 entity_id,
                 tick_name,
-                Some(self.client_id.as_str()),
+                Some(self.embedded.client_id()),
             )
             .map_err(|e| BridgeError::Server(e.to_string()))?;
         if ticked.discarded_server_effects > 0 {
@@ -267,7 +237,7 @@ impl ClientKernel {
     }
 
     fn owning_orbital(&self, trait_name: &str) -> Result<&str, BridgeError> {
-        self.owners
+        self.embedded
             .owning_orbital(trait_name)
             .map_err(BridgeError::Server)
     }
@@ -277,7 +247,7 @@ impl ClientKernel {
     /// exposed for a caller that needs to snapshot outside a dispatch, e.g. before
     /// a batch of local-only edits).
     pub fn snapshot_trait(&self, trait_name: &str, entity_id: Option<&str>) -> TraitSnapshot {
-        self.kernel.snapshot_trait(trait_name, entity_id)
+        self.embedded.kernel().snapshot_trait(trait_name, entity_id)
     }
 
     /// Roll a trait instance back to a prior [`TraitSnapshot`]. Bound traits still painting the
@@ -289,7 +259,7 @@ impl ClientKernel {
         entity_id: Option<&str>,
         snapshot: TraitSnapshot,
     ) {
-        self.kernel.restore_trait(trait_name, entity_id, snapshot)
+        self.embedded.kernel().restore_trait(trait_name, entity_id, snapshot)
     }
 
     /// Dispatch one event through the seed trait's declared [`DispatchMode`] — the
@@ -301,7 +271,7 @@ impl ClientKernel {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.kernel.remount_traits(traits);
+        self.embedded.kernel().remount_traits(traits);
     }
 
     pub fn dispatch(
@@ -334,14 +304,15 @@ impl ClientKernel {
     ) -> Result<BegunDispatch, BridgeError> {
         let orbital = self.owning_orbital(trait_name)?;
         let dispatch = self
-            .kernel
+            .embedded
+            .kernel()
             .dispatch_with_server_leg(
                 orbital,
                 trait_name,
                 entity_id,
                 event,
                 payload,
-                Some(self.client_id.as_str()),
+                Some(self.embedded.client_id()),
             )
             .map_err(|e| BridgeError::Server(e.to_string()))?;
         let mut local = dispatch.response.clone();
@@ -387,7 +358,7 @@ impl ClientKernel {
             .map(|seed| {
                 Ok((
                     seed.clone(),
-                    self.begin(&seed.r#trait, None, &seed.event, payload.clone())?,
+                    self.begin(&seed.r#trait, None, seed.event.as_str(), payload.clone())?,
                 ))
             })
             .collect::<Result<Vec<_>, BridgeError>>()?;
@@ -425,11 +396,11 @@ impl ClientKernel {
             return Ok(settled);
         };
         for (orbital, group) in groups {
-            let request = mount_request(&group, &self.client_id);
+            let request = mount_request(&group, self.embedded.client_id());
             let rollback = || {
                 for (seed, b) in &group {
                     if let Some(snapshot) = b.dispatch.snapshot.clone() {
-                        self.kernel.restore_trait(&seed.r#trait, None, snapshot);
+                        self.embedded.kernel().restore_trait(&seed.r#trait, None, snapshot);
                     }
                 }
             };
@@ -443,18 +414,18 @@ impl ClientKernel {
             if !response.success {
                 rollback();
                 let mut rejected = response;
-                rejected.fold_rerenders(&self.kernel.rerender_stale());
+                rejected.fold_rerenders(&self.embedded.kernel().rerender_stale());
                 return Ok(rejected);
             }
             let already = group
                 .iter()
                 .flat_map(|(_, b)| already_delivered_from(&b.dispatch))
                 .collect();
-            self.kernel
+            self.embedded.kernel()
                 .apply_server_response(&response, &already)
                 .map_err(|e| BridgeError::Server(e.to_string()))?;
             settled = settled.with_server_effect_results(&response);
-            settled.fold_rerenders(&self.kernel.rerender_stale());
+            settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
         }
         Ok(settled)
     }
@@ -489,7 +460,7 @@ impl ClientKernel {
         let already = already_delivered_from(dispatch);
         let mut settled = base;
         let repainted =
-            |settled: &mut EventResponse| settled.fold_rerenders(&self.kernel.rerender_stale());
+            |settled: &mut EventResponse| settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
         for leg in &dispatch.server_legs {
             let leg_orbital =
                 self.owning_orbital(leg.target_trait.as_deref().unwrap_or_default())?;
@@ -497,7 +468,7 @@ impl ClientKernel {
             match dispatch.mode {
                 DispatchMode::RuntimeOptimistic => match posted {
                     Ok(server_response) if server_response.success => {
-                        self.kernel
+                        self.embedded.kernel()
                             .apply_server_response(&server_response, &already)
                             .map_err(|e| BridgeError::Server(e.to_string()))?;
                         settled = settled.with_server_effect_results(&server_response);
@@ -505,14 +476,14 @@ impl ClientKernel {
                     }
                     Ok(mut server_response) => {
                         if let Some(snapshot) = dispatch.snapshot.clone() {
-                            self.kernel.restore_trait(trait_name, entity_id, snapshot);
+                            self.embedded.kernel().restore_trait(trait_name, entity_id, snapshot);
                             repainted(&mut server_response);
                         }
                         return Ok(server_response);
                     }
                     Err(e) => {
                         if let Some(snapshot) = dispatch.snapshot.clone() {
-                            self.kernel.restore_trait(trait_name, entity_id, snapshot);
+                            self.embedded.kernel().restore_trait(trait_name, entity_id, snapshot);
                         }
                         return Err(e);
                     }
@@ -523,7 +494,7 @@ impl ClientKernel {
                     // propagate rather than silently presenting the unconfirmed local
                     // response.
                     let server_response = posted?;
-                    self.kernel
+                    self.embedded.kernel()
                         .apply_server_response(&server_response, &already)
                         .map_err(|e| BridgeError::Server(e.to_string()))?;
                     settled = settled.with_server_effect_results(&server_response);
@@ -541,42 +512,23 @@ fn mount_request(
     group: &[&(crate::effects::MountSeed, BegunDispatch)],
     client_id: &str,
 ) -> crate::EventRequest {
-    let legs = || {
-        group
-            .iter()
-            .flat_map(|(_, b)| b.dispatch.server_legs.iter())
-    };
-    let mut traits: Vec<crate::TraitFrom> = Vec::new();
-    let mut entity_by_trait: std::collections::HashMap<String, Value> = Default::default();
-    for leg in legs() {
-        for t in leg.traits.iter().flatten() {
-            if !traits.iter().any(|seen| seen.r#trait == t.r#trait) {
-                traits.push(t.clone());
-            }
-        }
-        for (name, row) in leg.entity_by_trait.iter().flatten() {
-            entity_by_trait
-                .entry(name.clone())
-                .or_insert_with(|| row.clone());
-        }
-    }
-    let first = legs().next();
-    crate::EventRequest {
-        event: group[0].0.event.clone(),
-        // The first leg's payload carries the client's mount (`_awaitingInit`).
-        payload: first.and_then(|leg| leg.payload.clone()),
-        entity_id: first.and_then(|leg| leg.entity_id.clone()),
-        client_id: Some(client_id.to_string()),
-        mount: Some(group.iter().map(|(seed, _)| seed.clone()).collect()),
-        traits: (!traits.is_empty()).then_some(traits),
-        entity_by_trait: (!entity_by_trait.is_empty()).then_some(entity_by_trait),
-        ..Default::default()
-    }
+    let legs: Vec<&crate::EventRequest> = group
+        .iter()
+        .flat_map(|(_, b)| b.dispatch.server_legs.iter())
+        .collect();
+    crate::embed::mount_leg_request(
+        group.iter().map(|(seed, _)| seed.clone()).collect(),
+        &legs,
+        legs.first().copied(),
+        legs.first().and_then(|leg| leg.entity_id.clone()),
+        client_id,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::EntitySource;
     use crate::{BusEventSource, EmittedEvent, EventResponse};
     use parking_lot::Mutex;
     use std::collections::HashMap;
@@ -900,7 +852,7 @@ mod tests {
         );
 
         // The fold landed the server's data into the entity source.
-        let folded = kernel.entities.read("Note", "n-1").unwrap();
+        let folded = kernel.embedded.entities().read("Note", "n-1").unwrap();
         assert_eq!(
             folded.as_object().and_then(|o| o.get("title")),
             Some(&Value::String("From server".to_string()))
@@ -910,7 +862,8 @@ mod tests {
         // as part of the SAME local dispatch that built the leg) — the fold must
         // not re-fire Watcher's listener a second time.
         let watcher_state = kernel
-            .kernel
+            .embedded
+            .kernel()
             .get_state("Watcher", Some("singleton"))
             .unwrap();
         assert_eq!(
@@ -978,6 +931,7 @@ mod tests {
             success: false,
             denied: Some(true),
             error: Some("access denied".into()),
+            code: None,
         };
         let results = settled_effect_results(EventResponse {
             success: true,
@@ -1017,7 +971,8 @@ mod tests {
         );
         assert_eq!(
             kernel
-                .kernel
+                .embedded
+                .kernel()
                 .get_state("Move", Some("singleton"))
                 .unwrap()
                 .current_state,
@@ -1025,7 +980,7 @@ mod tests {
             "RuntimeOptimistic must restore the pre-dispatch snapshot on a disagreeing response"
         );
         assert!(
-            kernel.entities.read("Cursor", "singleton").is_err(),
+            kernel.embedded.entities().read("Cursor", "singleton").is_err(),
             "rollback must leave the entity absent, matching the pre-dispatch snapshot"
         );
     }
@@ -1105,7 +1060,7 @@ mod tests {
         let kernel = mounted_optimistic(Err("down".into()));
         assert!(kernel.dispatch("Move", None, "MOVE", Value::Null).is_err());
         let mut next = EventResponse::default();
-        next.fold_rerenders(&kernel.kernel.rerender_stale());
+        next.fold_rerenders(&kernel.embedded.kernel().rerender_stale());
         assert_eq!(
             hud_paints(&next),
             vec![0.0],
@@ -1126,7 +1081,7 @@ mod tests {
             vec![5.0],
             "one repaint, the committed value"
         );
-        assert!(kernel.kernel.rerender_stale().is_empty());
+        assert!(kernel.embedded.kernel().rerender_stale().is_empty());
     }
 
     #[test]
@@ -1141,7 +1096,7 @@ mod tests {
             Some(&"created".to_string())
         );
         // Offline: nothing was ever posted, so the server-assigned row never lands.
-        assert!(kernel.entities.read("Note", "n-1").is_err());
+        assert!(kernel.embedded.entities().read("Note", "n-1").is_err());
     }
 
     struct RecordingBridge {
@@ -1208,7 +1163,7 @@ mod tests {
     fn persistor_trait() -> serde_json::Value {
         serde_json::json!({
             "name": "Persistor", "linkedEntity": "Task",
-            "listens": [{ "event": "BEAT", "triggers": "DO_CREATE", "source": { "kind": "trait", "trait": "Ticker" } }],
+            "listens": [{ "event": "BEAT", "triggers": "DO_CREATE", "source": { "kind": "orbital", "orbital": "Alpha", "trait": "Ticker" } }],
             "stateMachine": {
                 "states": [{ "name": "idle", "isInitial": true }],
                 "transitions": [{ "from": "idle", "to": "idle", "event": "DO_CREATE",
@@ -1260,7 +1215,8 @@ mod tests {
         );
         assert_eq!(
             kernel
-                .kernel
+                .embedded
+                .kernel()
                 .get_state("Listener", Some("singleton"))
                 .unwrap()
                 .current_state,
@@ -1279,7 +1235,8 @@ mod tests {
         assert!(response.transitioned);
         assert!(!response.states.contains_key("Listener"));
         assert!(kernel
-            .kernel
+            .embedded
+            .kernel()
             .get_state("Listener", Some("singleton"))
             .is_none_or(|s| s.current_state == "idle"));
     }
@@ -1498,7 +1455,7 @@ mod tests {
     fn seed(t: &str, e: &str) -> crate::effects::MountSeed {
         crate::effects::MountSeed {
             r#trait: t.to_string(),
-            event: e.to_string(),
+            event: crate::effects::LifecycleEvent::parse(e).expect("a lifecycle event"),
         }
     }
 

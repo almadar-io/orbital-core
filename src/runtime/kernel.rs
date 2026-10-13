@@ -14,6 +14,7 @@ use super::{
         RuntimeStats,
     },
     render_store::RenderStore,
+    resumable::{CallRoutes, CallSite, CallVerdict, IoPort},
     server_leg::ServerLegCollector,
     theme::{resolve_theme, resolve_theme_default, ResolvedTheme, ThemeMode, ThemePresets},
     KernelConfig,
@@ -49,6 +50,9 @@ pub enum KernelError {
     Internal(String),
 }
 
+mod dispatch_run;
+pub(crate) use dispatch_run::{DispatchRun, Fault};
+
 /// Circuit breaker for one dispatch's cross-trait worklist; twin of the JS `CROSS_TRAIT_CASCADE_CAP`.
 pub const CROSS_TRAIT_CASCADE_CAP: usize = 2000;
 
@@ -62,6 +66,25 @@ struct CascadeItem {
     source_payload: Value,
     /// Evaluated when the delivery is processed, so it sees the listener's log.
     listen_guard: Option<SExpression>,
+    /// Whether processing this item offers its event to the listeners of that event. A listener's
+    /// delivery runs its `triggers` event privately: only the seed and `emit`s reach listeners.
+    fans_out: bool,
+    /// Set for a re-render of an embedded child under its composer's payload, not a delivery.
+    repaint: Option<RepaintJob>,
+}
+
+/// An embedded child to re-render under the payload of the transition that composed it
+/// ([`callsite_capture`](super::callsite_capture)); `CascadeItem::trait_name` is the child.
+#[derive(Clone)]
+struct RepaintJob {
+    /// The composing transition's payload.
+    composed_with: Value,
+    /// Walking through a child that was not repainted: its children keep the payload they were last composed with.
+    keep_composed: bool,
+    /// The children the firing transition composes; `None` = every capture child.
+    composed_by: Option<Vec<String>>,
+    /// The children this walk has repainted, shared by every job of one walk.
+    visited: Arc<parking_lot::Mutex<HashSet<String>>>,
 }
 
 /// A trait never receives a routed event before its own lifecycle event
@@ -179,9 +202,13 @@ pub struct RuntimeKernel {
     event_bus: SharedEventBus,
     listener_manager: ListenerManager,
     schemas: Arc<RwLock<HashMap<String, OrbitalSchema>>>,
-    trait_definitions: Arc<RwLock<HashMap<String, TraitDefinition>>>,
+    trait_definitions: Arc<RwLock<HashMap<String, Arc<TraitDefinition>>>>,
     entity_source: Arc<dyn EntitySource>,
+    /// The door every read, write, service call and substrate operator goes through; `entity_source` is it.
+    io: Arc<IoPort>,
     current_user: Arc<RwLock<Value>>,
+    /// The host runs an emit's listeners whenever it marks the emit `dispatched`, so a fold runs only the client-only ones.
+    host_fans_out: std::sync::atomic::AtomicBool,
     /// The in-flight dispatch's one `now` stamp; set by the outermost entry, reused by nested steps.
     dispatch_now: Arc<RwLock<Option<f64>>>,
     /// The program's declared locales (the first is the default) and merged message catalogs.
@@ -206,6 +233,13 @@ pub struct RuntimeKernel {
     /// trait's linked entity here to decide `DispatchMode` (declared
     /// `[runtime]` persistence, never inferred).
     entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
+    /// The trait whose effects are running and whether its step is a follow-on of the dispatch:
+    /// what a `call-service` is stamped with.
+    step_site: Arc<RwLock<Option<(String, bool)>>>,
+    /// Referrer trait -> the embedded children to re-render under its payload (`callsite_capture`).
+    capture_children: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    /// Trait -> the payload its composer last composed it with: what its own `@callsitePayload` reads.
+    composed_callsite: Arc<RwLock<HashMap<String, Value>>>,
     /// Trait frames (`(set @entity.X)` writes), keyed `(frame key, entity id)`: a `[shared]`
     /// entity's frame is `$shared::<Entity>` for every trait bound to it, any other trait's is
     /// its own name (Runtime Spec Clause 2.3). `@entity` is the row with the frame over it.
@@ -222,6 +256,9 @@ pub struct RuntimeKernel {
     /// Light (§157/C7 `theme-declaration`: a `-dark` key must not be
     /// overridden by an ambient default no one asked for).
     theme_mode: Arc<RwLock<Option<ThemeMode>>>,
+    /// `@pages`: the app's root nav entries over every registered program (`Value::Null` while none
+    /// declares a labeled root page, which leaves the token unresolved, as the JS stage does).
+    nav_pages: Arc<RwLock<Value>>,
     /// The current mount's lifecycle (see [`MountLifecycle`]).
     mount: Arc<RwLock<MountLifecycle>>,
     /// Each mounted trait's last `render-ui`, kept to repaint it when the entity it reads changes.
@@ -239,6 +276,7 @@ impl std::fmt::Debug for RuntimeKernel {
             .field("schemas", &self.schemas)
             .field("trait_definitions", &self.trait_definitions)
             .field("current_user", &self.current_user)
+            .field("host_fans_out", &self.host_fans_out)
             .finish()
     }
 }
@@ -263,6 +301,17 @@ pub struct ClientDispatch {
     pub mode: DispatchMode,
     pub snapshot: Option<TraitSnapshot>,
     /// The traits awaiting this dispatch's server legs (empty when nothing is posted).
+    pub awaiting: Vec<AwaitingTrait>,
+    /// The plain leg a stateful host is posted when no effect was delegated.
+    pub stateful_leg: Option<StatefulLeg>,
+}
+
+/// The leg of a server-backed dispatch that delegated nothing: the host holds the circuit state,
+/// so the event itself is posted for it to advance its copy (`postServerLeg`'s stateful branch).
+#[derive(Debug, Clone)]
+pub struct StatefulLeg {
+    pub leg: EventRequest,
+    /// The traits awaiting the host's answer.
     pub awaiting: Vec<AwaitingTrait>,
 }
 
@@ -311,12 +360,21 @@ pub struct TickEmit {
     pub dispatch: ClientDispatch,
 }
 
+/// What a processed step queues next: the same-trait cascade items, the listener deliveries, and the
+/// positions of the `emit` results those consumed.
+pub(super) struct StepFollowups {
+    own: Vec<CascadeItem>,
+    fanned: Vec<CascadeItem>,
+    consumed_emits: Vec<usize>,
+}
+
 /// What [`RuntimeKernel::finish_client_dispatch`] needs to build a dispatch's server leg.
 struct LegSeed<'a> {
     trait_name: &'a str,
     event: &'a str,
     payload: Value,
-    eid: &'a str,
+    /// The entity id as the caller gave it.
+    entity_id: Option<&'a str>,
     client_id: Option<&'a str>,
     tick: Option<&'a str>,
     mode: DispatchMode,
@@ -343,7 +401,9 @@ pub struct TraitSnapshot {
 /// source so list views resolve real data and mutations actually land.
 struct EntitySourceHandler {
     source: Arc<dyn EntitySource>,
+    io: Arc<IoPort>,
     entity_policies: Arc<RwLock<EntityAccessTable>>,
+    entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
 }
 
 impl PersistenceHandler for EntitySourceHandler {
@@ -352,6 +412,9 @@ impl PersistenceHandler for EntitySourceHandler {
     }
     fn read(&self, entity_type: &str, id: &str) -> Result<Value, String> {
         self.source.read(entity_type, id)
+    }
+    fn find(&self, entity_type: &str, id: &str) -> Result<Option<Value>, String> {
+        self.source.find(entity_type, id)
     }
     fn update(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String> {
         self.source.write(entity_type, id, data)
@@ -373,7 +436,7 @@ impl FetchHandler for EntitySourceHandler {
         filter: Option<&Value>,
         limit: Option<usize>,
         offset: Option<usize>,
-        _include: Option<&Vec<String>>,
+        include: Option<&Vec<String>>,
         ctx: &BindingContext,
     ) -> Result<FetchPage, String> {
         let mut entities = match id {
@@ -411,6 +474,20 @@ impl FetchHandler for EntitySourceHandler {
             ctx,
             entity_type,
         );
+        if let Some(include) = include.filter(|i| !i.is_empty()) {
+            super::relations::populate_relations(
+                &*self.source,
+                &self.entity_definitions.read(),
+                &mut entities,
+                entity_type,
+                include,
+                0,
+                &mut HashSet::new(),
+            );
+            if self.io.suspended() {
+                return Err(super::resumable::AWAITING_HOST.to_string());
+            }
+        }
         Ok(FetchPage {
             rows: entities,
             total,
@@ -459,9 +536,19 @@ impl RuntimeKernel {
         let event_bus = shared_bus();
         let state_manager = Arc::new(RwLock::new(StateMachineManager::new()));
         let entity_policies: Arc<RwLock<EntityAccessTable>> = Arc::new(RwLock::new(HashMap::new()));
+        let io = Arc::new(IoPort::new(
+            entity_source,
+            config.service_handler.clone(),
+            config.substrate_handler.clone(),
+        ));
+        let entity_source: Arc<dyn EntitySource> = io.clone();
+        let entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>> =
+            Arc::new(RwLock::new(HashMap::new()));
         let entity_handler = Arc::new(EntitySourceHandler {
             source: entity_source.clone(),
+            io: io.clone(),
             entity_policies: entity_policies.clone(),
+            entity_definitions: entity_definitions.clone(),
         });
         let mut executor = EffectExecutor::new(environment)
             .with_fetch_handler(entity_handler.clone())
@@ -473,11 +560,11 @@ impl RuntimeKernel {
         if let Some(delegate) = config.delegate.clone() {
             executor = executor.with_delegate(delegate);
         }
-        if let Some(handler) = config.service_handler.clone() {
-            executor = executor.with_service_handler(handler);
+        if io.has_service() {
+            executor = executor.with_service_handler(io.clone());
         }
-        if let Some(handler) = config.substrate_handler.clone() {
-            executor = executor.with_substrate_handler(handler);
+        if io.has_substrate() {
+            executor = executor.with_substrate_handler(io.clone());
         }
         let effect_executor = Arc::new(executor);
 
@@ -509,16 +596,22 @@ impl RuntimeKernel {
             schemas: Arc::new(RwLock::new(HashMap::new())),
             trait_definitions: Arc::new(RwLock::new(HashMap::new())),
             entity_source,
+            io,
             current_user: Arc::new(RwLock::new(current_user)),
+            host_fans_out: std::sync::atomic::AtomicBool::new(false),
             dispatch_now: Arc::new(RwLock::new(None)),
             i18n: Arc::new(RwLock::new(KernelI18n::default())),
             dispatch_locale: Arc::new(RwLock::new(None)),
             entity_policies,
             embed_index: Arc::new(RwLock::new(EmbedIndex::default())),
-            entity_definitions: Arc::new(RwLock::new(HashMap::new())),
+            entity_definitions,
+            step_site: Arc::new(RwLock::new(None)),
+            capture_children: Arc::new(RwLock::new(HashMap::new())),
+            composed_callsite: Arc::new(RwLock::new(HashMap::new())),
             frames: Arc::new(RwLock::new(HashMap::new())),
             theme_presets: Arc::new(RwLock::new(ThemePresets::new())),
             theme_mode: Arc::new(RwLock::new(None)),
+            nav_pages: Arc::new(RwLock::new(Value::Null)),
             mount: Arc::new(RwLock::new(MountLifecycle::default())),
             renders: Arc::new(RwLock::new(RenderStore::default())),
         }
@@ -627,6 +720,8 @@ impl RuntimeKernel {
                                 inherited: false,
                                 required_create_fields:
                                     crate::runtime::entity_access::required_create_field_names(def),
+                                intrinsic_fields:
+                                    crate::runtime::entity_access::intrinsic_field_names(def),
                             },
                         );
                     }
@@ -675,12 +770,19 @@ impl RuntimeKernel {
         }
 
         for orbital in &schema.orbitals {
+            let mut registered = Vec::new();
             for trait_ref in &orbital.traits {
                 if let Some(trait_def) = self.resolve_trait_definition(trait_ref, &schema) {
                     self.register_trait(&trait_def)?;
-                    self.register_trait_listeners(&trait_def)?;
+                    self.register_trait_listeners(&trait_def, &orbital.name)?;
+                    registered.push(trait_def);
                 }
             }
+            self.capture_children
+                .write()
+                .extend(super::callsite_capture::capture_children(
+                    &registered.iter().collect::<Vec<_>>(),
+                ));
 
             // Seed entity instances from inline entity definitions.
             if let EntityRef::Inline(entity_def) = &orbital.entity {
@@ -700,6 +802,10 @@ impl RuntimeKernel {
         self.schemas
             .write()
             .insert(schema_name.clone(), schema.clone());
+        {
+            let mut nav = self.nav_pages.write();
+            *nav = merge_nav_items(&nav, app_nav_items(&schema));
+        }
 
         // Additive rebuild over the FULL accumulated trait set, not just this
         // schema's — an embed spanning two registrations must still resolve
@@ -744,17 +850,17 @@ impl RuntimeKernel {
         self.state_manager.write().register_trait(trait_def.clone());
         self.trait_definitions
             .write()
-            .insert(trait_name.clone(), trait_def.clone());
+            .insert(trait_name.clone(), Arc::new(trait_def.clone()));
 
         Ok(())
     }
 
     /// Register listeners declared on a trait.
-    fn register_trait_listeners(&self, trait_def: &TraitDefinition) -> Result<(), KernelError> {
+    fn register_trait_listeners(&self, trait_def: &TraitDefinition, orbital: &str) -> Result<(), KernelError> {
         if let Some(listens) = &trait_def.listens {
             for listen in listens {
                 self.listener_manager
-                    .register(&trait_def.name, listen)
+                    .register(&trait_def.name, orbital, listen)
                     .map_err(KernelError::Internal)?;
             }
         }
@@ -769,7 +875,8 @@ impl RuntimeKernel {
         event_name: &str,
         payload: Value,
     ) -> Result<ProcessEventResult, KernelError> {
-        self.process_event_in_dispatch(trait_name, entity_id, event_name, payload, None)
+        self.process_event_in_dispatch(trait_name, entity_id, event_name, payload, None, false)
+            .map_err(Fault::into_kernel)
     }
 
     /// `process_event` inside a dispatch: `view` supplies `@event`/`@prevEvents`/`@prevStates`.
@@ -781,7 +888,24 @@ impl RuntimeKernel {
         event_name: &str,
         payload: Value,
         view: Option<&DispatchView>,
-    ) -> Result<ProcessEventResult, KernelError> {
+        follow_on: bool,
+    ) -> Result<ProcessEventResult, Fault> {
+        self.process_event_composed(trait_name, entity_id, event_name, payload, view, follow_on, None)
+    }
+
+    /// [`Self::process_event_in_dispatch`] with an explicit `@callsitePayload` (a repaint of an embedded
+    /// child under its composer's payload); `None` reads the payload the trait was last composed with.
+    #[allow(clippy::too_many_arguments)]
+    fn process_event_composed(
+        &self,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event_name: &str,
+        payload: Value,
+        view: Option<&DispatchView>,
+        follow_on: bool,
+        callsite: Option<&Value>,
+    ) -> Result<ProcessEventResult, Fault> {
         // An id-less event (`entity_id: None`) still needs somewhere to keep
         // `@entity` writes across transitions, so the kernel keys a per-trait
         // frame under the literal id "singleton" — one frame per (trait,
@@ -828,18 +952,28 @@ impl RuntimeKernel {
             .now(stamp.now)
             .current_theme(Value::String(
                 self.resolve_current_theme_for_trait(trait_name).key,
-            ));
+            ))
+            .pages(self.nav_pages.read().clone());
         let mut ctx = self.with_viewer_i18n(ctx).build();
-        ctx.set_config(config_defaults_value(
-            &trait_def,
-            &self.trait_definitions.read(),
+        ctx.set_config(bind_user_forwards(
+            config_defaults_value(&trait_def, &self.trait_definitions.read()),
+            &self.current_user.read(),
         ));
         if let Some(view) = view {
             view.apply(&mut ctx);
         }
+        let capture = callsite
+            .cloned()
+            .or_else(|| self.composed_callsite.read().get(trait_name).cloned());
+        if let Some(capture) = &capture {
+            ctx.set_callsite_payload(capture.clone());
+        }
 
         let entity_type = trait_def.linked_entity.as_deref().unwrap_or(trait_name);
         let entity_data = self.read_trait_entity(trait_name, entity_type, entity_id);
+        if self.io.suspended() {
+            return Err(Fault::Suspended);
+        }
         if !entity_data.is_null() {
             ctx.set_entity(entity_data.clone());
         }
@@ -877,13 +1011,15 @@ impl RuntimeKernel {
             ctx.set_state(Value::String(new_state.clone()));
             ctx.from_state = Some(current_state.current_state.clone());
             ctx.to_state = Some(new_state.clone());
-            let (effect_results, captured_entity_data, effect_runs) =
+            *self.step_site.write() = Some((trait_name.to_string(), follow_on));
+            let (effect_results, captured_entity_data, effect_runs, failure) =
                 match self.server_leg_collector() {
                     Some(collector) => collector.attribute(trait_name, || {
                         self.execute_effects_traced(&result.effects, &ctx)
                     }),
                     None => self.execute_effects_traced(&result.effects, &ctx),
                 };
+            *self.step_site.write() = None;
 
             // Effective entity = read entity with Set-effect fields merged in. Persist
             // the MERGED entity (read-modify-write), never the partial
@@ -893,6 +1029,27 @@ impl RuntimeKernel {
             // `current*` card fields, …) reverts to a literal token. The merged value is
             // also what render-ui resolves against below and what the client receives.
             let effective_entity = merge_entity(&entity_data, &captured_entity_data);
+
+            // Resolve EVERY binding (@payload.X / @entity.X / @config.X / @state / @user)
+            // in the client-facing effects against the full context, through the ONE
+            // canonical resolver — `@payload` is a typed payload so `X` is arbitrary; no
+            // per-field special-cases. The entity is the post-Set effective entity.
+            ctx.set_entity(effective_entity.clone());
+            let sources = render_sources(&effect_results);
+            let mut effect_results = effect_results
+                .into_iter()
+                .map(|mut er| {
+                    er.effect = resolve_effect_bindings(er.effect, &ctx);
+                    er
+                })
+                .collect::<Vec<_>>();
+            self.inject_relation_options(trait_name, &mut effect_results);
+            if self.io.suspended() {
+                if let Some(state) = state_manager.get_state_mut(trait_name, Some(entity_id)) {
+                    *state = current_state;
+                }
+                return Err(Fault::Suspended);
+            }
 
             if !captured_entity_data.is_null()
                 && captured_entity_data
@@ -912,19 +1069,6 @@ impl RuntimeKernel {
                 "Event processed successfully"
             );
 
-            // Resolve EVERY binding (@payload.X / @entity.X / @config.X / @state / @user)
-            // in the client-facing effects against the full context, through the ONE
-            // canonical resolver — `@payload` is a typed payload so `X` is arbitrary; no
-            // per-field special-cases. The entity is the post-Set effective entity.
-            ctx.set_entity(effective_entity.clone());
-            let sources = render_sources(&effect_results);
-            let effect_results = effect_results
-                .into_iter()
-                .map(|mut er| {
-                    er.effect = resolve_effect_bindings(er.effect, &ctx);
-                    er
-                })
-                .collect::<Vec<_>>();
             self.record_renders(trait_name, entity_id, sources, &effect_results, &ctx);
 
             Ok(ProcessEventResult {
@@ -944,6 +1088,10 @@ impl RuntimeKernel {
                 fired_arm: result.fired_arm,
                 guards: result.guards.clone(),
                 effect_runs,
+                cascade_dropped: Vec::new(),
+                consumed_emits: Vec::new(),
+                failure,
+                callsite_payload: capture,
             })
         } else {
             debug!(
@@ -956,7 +1104,7 @@ impl RuntimeKernel {
             let entity_data = if ctx.entity.is_null() {
                 Value::Object(HashMap::new())
             } else {
-                ctx.entity.clone()
+                (*ctx.entity).clone()
             };
 
             let state_effects = self.get_state_render_effects(
@@ -987,8 +1135,42 @@ impl RuntimeKernel {
                 fired_arm: None,
                 guards: result.guards.clone(),
                 effect_runs: Vec::new(),
+                cascade_dropped: Vec::new(),
+                consumed_emits: Vec::new(),
+                failure: None,
+                callsite_payload: None,
             })
         }
+    }
+
+    /// The payload `payloadSchema` `trait_name` declares for `event`, when it declares one.
+    pub fn event_payload_schema(
+        &self,
+        trait_name: &str,
+        event: &str,
+    ) -> Option<Vec<crate::schema::PayloadField>> {
+        self.trait_definitions
+            .read()
+            .get(trait_name)?
+            .state_machine
+            .events
+            .as_ref()?
+            .iter()
+            .find(|e| e.key == event)?
+            .payload_schema
+            .clone()
+    }
+
+    /// The declared tick `tick_name` of `trait_name`.
+    pub fn tick_of(&self, trait_name: &str, tick_name: &str) -> Option<crate::schema::TickDefinition> {
+        self.trait_definitions
+            .read()
+            .get(trait_name)?
+            .ticks
+            .as_ref()?
+            .iter()
+            .find(|tick| tick.name == tick_name)
+            .cloned()
     }
 
     /// Run one scheduled tick of `trait_name` against `entity_id` through the **same**
@@ -1006,6 +1188,19 @@ impl RuntimeKernel {
         tick_name: &str,
     ) -> Result<ProcessEventResult, KernelError> {
         let entity_id = entity_id.unwrap_or("singleton");
+        self.process_tick_in_dispatch(trait_name, entity_id, entity_id, tick_name)
+            .map_err(Fault::into_kernel)
+    }
+
+    /// [`Self::process_tick`] inside a dispatch: the tick reads the row `entity_id` while the trait's
+    /// state is held under `state_entity` (a server tick runs over every row against the one trait state).
+    fn process_tick_in_dispatch(
+        &self,
+        trait_name: &str,
+        entity_id: &str,
+        state_entity: &str,
+        tick_name: &str,
+    ) -> Result<ProcessEventResult, Fault> {
         let stamp = self.begin_dispatch();
 
         let trait_def = self
@@ -1027,7 +1222,7 @@ impl RuntimeKernel {
         let current_state = {
             let mut state_manager = self.state_manager.write();
             state_manager
-                .get_or_create_state(trait_name, Some(entity_id))
+                .get_or_create_state(trait_name, Some(state_entity))
                 .map_err(|e| KernelError::Internal(e.to_string()))?
                 .current_state
                 .clone()
@@ -1056,6 +1251,10 @@ impl RuntimeKernel {
                 fired_arm: None,
                 guards: Vec::new(),
                 effect_runs: Vec::new(),
+                cascade_dropped: Vec::new(),
+                consumed_emits: Vec::new(),
+                failure: None,
+                callsite_payload: None,
             });
         }
 
@@ -1069,15 +1268,19 @@ impl RuntimeKernel {
             .now(stamp.now)
             .current_theme(Value::String(
                 self.resolve_current_theme_for_trait(trait_name).key,
-            ));
+            ))
+            .pages(self.nav_pages.read().clone());
         let mut ctx = self.with_viewer_i18n(ctx).build();
-        ctx.set_config(config_defaults_value(
-            &trait_def,
-            &self.trait_definitions.read(),
+        ctx.set_config(bind_user_forwards(
+            config_defaults_value(&trait_def, &self.trait_definitions.read()),
+            &self.current_user.read(),
         ));
 
         let entity_type = trait_def.linked_entity.as_deref().unwrap_or(trait_name);
         let entity_data = self.read_trait_entity(trait_name, entity_type, entity_id);
+        if self.io.suspended() {
+            return Err(Fault::Suspended);
+        }
         if !entity_data.is_null() {
             ctx.set_entity(entity_data.clone());
         }
@@ -1101,18 +1304,38 @@ impl RuntimeKernel {
                     fired_arm: None,
                     guards: Vec::new(),
                     effect_runs: Vec::new(),
+                    cascade_dropped: Vec::new(),
+                    consumed_emits: Vec::new(),
+                    failure: None,
+                    callsite_payload: None,
                 });
             }
         }
 
+        *self.step_site.write() = Some((trait_name.to_string(), false));
         let (effect_results, captured_entity_data) =
             self.execute_effects_with_entity(&tick.effects, &ctx);
+        *self.step_site.write() = None;
 
         // Effective entity = base entity with the tick's `set` fields merged in.
         // Persist the MERGED entity (read-modify-write), not the partial — same
         // reasoning as process_event: a replace-write of only the tick's Set fields
         // would drop every untouched field on the next render.
         let effective_entity = merge_entity(&entity_data, &captured_entity_data);
+
+        ctx.set_entity(effective_entity.clone());
+        let sources = render_sources(&effect_results);
+        let mut effect_results = effect_results
+            .into_iter()
+            .map(|mut er| {
+                er.effect = resolve_effect_bindings(er.effect, &ctx);
+                er
+            })
+            .collect::<Vec<_>>();
+        self.inject_relation_options(trait_name, &mut effect_results);
+        if self.io.suspended() {
+            return Err(Fault::Suspended);
+        }
 
         if captured_entity_data
             .as_object()
@@ -1122,15 +1345,6 @@ impl RuntimeKernel {
             self.write_trait_frame(trait_name, entity_type, entity_id, &captured_entity_data);
         }
 
-        ctx.set_entity(effective_entity.clone());
-        let sources = render_sources(&effect_results);
-        let effect_results = effect_results
-            .into_iter()
-            .map(|mut er| {
-                er.effect = resolve_effect_bindings(er.effect, &ctx);
-                er
-            })
-            .collect::<Vec<_>>();
         self.record_renders(trait_name, entity_id, sources, &effect_results, &ctx);
 
         Ok(ProcessEventResult {
@@ -1147,288 +1361,11 @@ impl RuntimeKernel {
             fired_arm: None,
             guards: Vec::new(),
             effect_runs: Vec::new(),
+            cascade_dropped: Vec::new(),
+            consumed_emits: Vec::new(),
+            failure: None,
+            callsite_payload: None,
         })
-    }
-
-    /// Dispatch an event with full cross-trait listener fan-out, mirroring the canonical
-    /// runtime's EventBus. The target trait processes the event; then every trait whose
-    /// `listens` matches `(event, source-trait)` processes its triggered event, and any
-    /// `emit` effect fans out the same way. Returns one outcome per processed trait, in
-    /// dispatch order, so the caller merges their effects into a single response. A
-    /// `(trait, event, from, payload, frame)` visited-set bounds cycles (`DispatchVisits`).
-    ///
-    /// This is the single dispatch entry point the client bridge and server route call —
-    /// `process_event` is the single-trait primitive it builds on. Without this, a user
-    /// event sent to one trait (e.g. a "New Item" button's `CREATE`) never reaches the
-    /// modal trait that *listens* for it, so nothing happens (RS-G20).
-    pub fn dispatch(
-        &self,
-        trait_name: &str,
-        entity_id: Option<&str>,
-        event_name: &str,
-        payload: Value,
-    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        self.dispatch_continuing(trait_name, entity_id, event_name, payload, None, None)
-    }
-
-    /// [`Self::dispatch`] for a request that continues a client-begun dispatch: `delivery` is the
-    /// target's `@event` and `log` its `@prevEvents`/`@prevStates` so far (`EventRequest.delivery`
-    /// / `.dispatch_log`). `None` for both is a direct dispatch.
-    pub fn dispatch_continuing(
-        &self,
-        trait_name: &str,
-        entity_id: Option<&str>,
-        event_name: &str,
-        payload: Value,
-        delivery: Option<&DeliveryRecord>,
-        log: Option<&DispatchLog>,
-    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        let target: Vec<&str> = crate::events::is_bus_excluded_event(event_name)
-            .then_some(trait_name)
-            .into_iter()
-            .collect();
-        self.dispatch_seed(
-            trait_name, entity_id, event_name, payload, delivery, log, &target,
-        )
-    }
-
-    /// A mount batch (`EventRequest.mount`): each seed runs its own lifecycle event, in
-    /// order, with the shared `payload`. The client's mount (`_awaitingInit`) is synced
-    /// once against every seed, so no seed's held delivery leaves before its own step.
-    /// A seed naming no registered trait is skipped. JS twin: `evaluateOrbitalEvent`'s
-    /// `request.mount` branch.
-    pub fn dispatch_mount(
-        &self,
-        seeds: &[crate::effects::MountSeed],
-        entity_id: Option<&str>,
-        payload: Value,
-    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        let targets: Vec<&str> = seeds.iter().map(|s| s.r#trait.as_str()).collect();
-        let (payload, awaiting) = take_awaiting_sidecar(payload);
-        let mut first = true;
-        let mut outcomes = Vec::new();
-        for seed in seeds {
-            if !self.trait_definitions.read().contains_key(&seed.r#trait) {
-                continue;
-            }
-            // Only the first seed carries the client's mount, synced against all seeds.
-            let seed_payload = match (&awaiting, first) {
-                (Some(list), true) => with_awaiting_sidecar(payload.clone(), list),
-                _ => payload.clone(),
-            };
-            first = false;
-            outcomes.extend(self.dispatch_seed(
-                &seed.r#trait,
-                entity_id,
-                &seed.event,
-                seed_payload,
-                None,
-                None,
-                &targets,
-            )?);
-        }
-        Ok(outcomes)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn dispatch_seed(
-        &self,
-        trait_name: &str,
-        entity_id: Option<&str>,
-        event_name: &str,
-        payload: Value,
-        delivery: Option<&DeliveryRecord>,
-        log: Option<&DispatchLog>,
-        lifecycle_targets: &[&str],
-    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        let _stamp = self.begin_dispatch();
-        let eid = entity_id.unwrap_or("singleton").to_string();
-        let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
-        let mut visited = DispatchVisits::default();
-        // A server leg carries the client's mount (`_awaitingInit`, never a
-        // payload binding): deliveries held for a trait the client has since
-        // initialized go out first, ahead of this request's seed.
-        let (payload, awaiting) = take_awaiting_sidecar(payload);
-        let released = match awaiting {
-            Some(awaiting) => self.mount.write().sync(awaiting, lifecycle_targets),
-            None => Vec::new(),
-        };
-
-        // Seed bubble (§158): the JS runtime fans a UI-originated emit to
-        // every scope on the embed chain, innermost first (`TraitScopeProvider`
-        // R-EMBEDDED-EMIT-BUBBLE) — a host with no transition for the event is
-        // a tolerated no-op, same as `TraitNotFound` below, but it still serves
-        // as a listener source. Only the SEED event bubbles this way; anything
-        // this loop queues afterwards (cascaded listens/emits) keeps the
-        // single-scope semantics `useEventBus.ts` reserves for machine-
-        // originated emits. A trait with no ancestors runs this loop exactly
-        // once, byte-identical to the pre-bubble single-scope dispatch.
-        let mut seed_scopes = vec![trait_name.to_string()];
-        seed_scopes.extend(
-            self.embed_index
-                .read()
-                .ancestors(trait_name)
-                .iter()
-                .cloned(),
-        );
-        let mut memory = DispatchMemory::default();
-        if let Some(log) = log {
-            memory.seed(trait_name, log);
-        }
-        if !released.is_empty() {
-            self.run_cascade(
-                &eid,
-                released.into(),
-                &mut visited,
-                &HashSet::new(),
-                &mut memory,
-                &mut outcomes,
-            )?;
-        }
-        let seed_delivery = match delivery {
-            Some(d) => d.value(),
-            None => delivery_record_value(event_name, &payload, &BusEventSource::default()),
-        };
-        let mut seed_own: Vec<CascadeItem> = Vec::new();
-        let mut seed_fanned: Vec<CascadeItem> = Vec::new();
-        for scope in &seed_scopes {
-            let from = self.current_state_name(scope, Some(&eid));
-            let frame = self.step_entity_view(scope, &eid);
-            if !visited.insert(scope, event_name, &from, payload.clone(), frame) {
-                continue;
-            }
-            let view = memory.view(scope, &seed_delivery);
-            let result = match self.process_event_in_dispatch(
-                scope,
-                Some(&eid),
-                event_name,
-                payload.clone(),
-                Some(&view),
-            ) {
-                Ok(r) => Some(r),
-                Err(KernelError::TraitNotFound(_)) => None,
-                Err(e) => return Err(e),
-            };
-            if result.is_some() {
-                seed_fanned.extend(self.mount.write().release_after(scope, event_name));
-            }
-            let (own, fanned) =
-                self.step_followups(scope, event_name, &payload, result.as_ref(), &seed_scopes);
-            seed_own.extend(own);
-            seed_fanned.extend(fanned);
-            if let Some(result) = &result {
-                memory.record_delivery(scope, &seed_delivery);
-                if result.executed {
-                    memory.record_transition(scope, &result.previous_state, &result.new_state);
-                }
-            }
-            if let Some(result) = result {
-                outcomes.push((scope.clone(), result));
-            }
-        }
-        let queue: VecDeque<CascadeItem> = seed_own.into_iter().chain(seed_fanned).collect();
-
-        self.run_cascade(
-            &eid,
-            queue,
-            &mut visited,
-            &HashSet::new(),
-            &mut memory,
-            &mut outcomes,
-        )?;
-        Ok(outcomes)
-    }
-
-    /// Shared BFS body: drain `queue`, processing each `(trait, event, payload)`
-    /// through `process_event` and fanning out its own emits + declared listeners.
-    /// The single owner of cross-trait cascade fan-out — `dispatch` (seeded from the
-    /// target trait's own bubble scopes) and `apply_server_response` (seeded from
-    /// un-delivered server-emitted events) both build on this, so there is ONE BFS,
-    /// not two independently-maintained copies that could drift apart.
-    fn run_cascade(
-        &self,
-        eid: &str,
-        mut queue: VecDeque<CascadeItem>,
-        visited: &mut DispatchVisits,
-        already_delivered: &HashSet<(String, String)>,
-        memory: &mut DispatchMemory,
-        outcomes: &mut Vec<(String, ProcessEventResult)>,
-    ) -> Result<(), KernelError> {
-        let mut steps = 0usize;
-        while let Some(item) = queue.pop_front() {
-            if already_delivered.contains(&(item.trait_name.clone(), item.event.clone())) {
-                continue;
-            }
-            {
-                let mut mount = self.mount.write();
-                if mount.holds(&item) {
-                    debug!(trait_name = %item.trait_name, event = %item.event, "fanout:held-until-init");
-                    mount.hold(item);
-                    continue;
-                }
-            }
-            let CascadeItem {
-                trait_name: t,
-                event: ev,
-                payload: pl,
-                delivery,
-                source_payload,
-                listen_guard,
-            } = item;
-            let from = self.current_state_name(&t, Some(eid));
-            let frame = self.step_entity_view(&t, eid);
-            if visited.contains(&t, &ev, &from, &pl, &frame) {
-                continue;
-            }
-            let view = memory.view(&t, &delivery);
-            if let Some(guard) = &listen_guard {
-                if !listen_guard_passes(guard, &source_payload, &from, &view) {
-                    debug!(trait_name = %t, event = %ev, "fanout:listen-guard-blocked");
-                    continue;
-                }
-            }
-            visited.insert(&t, &ev, &from, pl.clone(), frame);
-            if steps >= CROSS_TRAIT_CASCADE_CAP {
-                let dropped: BTreeSet<String> = std::iter::once(t)
-                    .chain(queue.into_iter().map(|item| item.trait_name))
-                    .collect();
-                tracing::warn!(
-                    target: crate::logging::ns::RUNTIME_KERNEL,
-                    cap = CROSS_TRAIT_CASCADE_CAP,
-                    dropped = ?dropped,
-                    "cascade:truncated",
-                );
-                return Ok(());
-            }
-            steps += 1;
-            // A source trait may not exist as a processable trait (e.g. a render-only
-            // layout that only emits) — skip its own processing but still fan out.
-            let result =
-                match self.process_event_in_dispatch(&t, Some(eid), &ev, pl.clone(), Some(&view)) {
-                    Ok(r) => Some(r),
-                    Err(KernelError::TraitNotFound(_)) => None,
-                    Err(e) => return Err(e),
-                };
-
-            // Fan out from the trait that just handled this event (source = `t`):
-            // the dispatched event itself, plus any events it emitted.
-            let (own, fanned) = self.step_followups(&t, &ev, &pl, result.as_ref(), &[]);
-            if let Some(result) = &result {
-                memory.record_delivery(&t, &delivery);
-                if result.executed {
-                    memory.record_transition(&t, &result.previous_state, &result.new_state);
-                }
-            }
-            if let Some(result) = result {
-                queue.extend(self.mount.write().release_after(&t, &ev));
-                outcomes.push((t, result));
-            }
-            for item in own.into_iter().rev() {
-                queue.push_front(item);
-            }
-            queue.extend(fanned);
-        }
-        Ok(())
     }
 
     /// Dispatch through the SEED trait's declared [`DispatchMode`], collecting
@@ -1497,7 +1434,7 @@ impl RuntimeKernel {
             trait_name,
             event,
             payload,
-            eid: &eid,
+            entity_id,
             client_id,
             tick: None,
             mode,
@@ -1516,7 +1453,7 @@ impl RuntimeKernel {
             trait_name,
             event,
             payload,
-            eid,
+            entity_id: raw_entity_id,
             client_id,
             tick,
             mode,
@@ -1531,12 +1468,27 @@ impl RuntimeKernel {
         // traits its cascade reached (a persistor, a refetching list) may.
         let downstream_needs_server = delegating_traits.iter().any(|t| t != trait_name);
 
+        // The client's mount rides every leg so the host holds a seed
+        // for a trait this client has not initialized yet.
+        let awaiting = self.awaiting_init_value();
+        let with_awaiting = |payload: Value| match payload {
+            Value::Object(mut map) => {
+                map.insert("_awaitingInit".to_string(), awaiting.clone());
+                Some(Value::Object(map))
+            }
+            Value::Null => Some(Value::Object(HashMap::from([(
+                "_awaitingInit".to_string(),
+                awaiting.clone(),
+            )]))),
+            other => Some(other),
+        };
         let server_legs = if self.effect_executor.environment().is_client() && !drained.is_empty() {
-            if hybrid && !downstream_needs_server {
+            if hybrid && !downstream_needs_server && !self.all_browser_data(&drained) {
                 // A `local` trait's OWN effects should be client-only by construction;
                 // a server-only effect the seed itself delegated is a validator bug
                 // (§7 declares `local` legal only where nothing needs the server), not
-                // something to silently ship as a leg. Report and drop.
+                // something to silently ship as a leg. Report and drop. Data in the
+                // browser store is the exception: the host runs that leg against the store.
                 tracing::error!(
                     trait_name = %trait_name, event = %event, drained = drained.len(),
                     "HybridClientOnly trait delegated server-only effects — dropping the server leg",
@@ -1552,28 +1504,6 @@ impl RuntimeKernel {
                         event: r.event.clone(),
                     })
                     .collect();
-                // The client's mount rides every leg so the host holds a seed
-                // for a trait this client has not initialized yet.
-                let awaiting = Value::Array(
-                    self.mount
-                        .read()
-                        .awaiting
-                        .iter()
-                        .cloned()
-                        .map(Value::String)
-                        .collect(),
-                );
-                let with_awaiting = |payload: Value| match payload {
-                    Value::Object(mut map) => {
-                        map.insert("_awaitingInit".to_string(), awaiting.clone());
-                        Some(Value::Object(map))
-                    }
-                    Value::Null => Some(Value::Object(HashMap::from([(
-                        "_awaitingInit".to_string(),
-                        awaiting.clone(),
-                    )]))),
-                    other => Some(other),
-                };
                 let traits = (!traits.is_empty()).then_some(traits);
                 if delegating_traits.contains(trait_name) {
                     // The seed's own arm needs the server: it replays from its
@@ -1584,7 +1514,7 @@ impl RuntimeKernel {
                         event: event.to_string(),
                         tick: tick.map(str::to_string),
                         payload: with_awaiting(payload.clone()),
-                        entity_id: Some(eid.to_string()),
+                        entity_id: raw_entity_id.map(str::to_string),
                         target_trait: Some(trait_name.to_string()),
                         client_id: client_id.map(|s| s.to_string()),
                         source_trait: Some(trait_name.to_string()),
@@ -1615,22 +1545,12 @@ impl RuntimeKernel {
                         let Some(delivered) = r.event.clone() else {
                             continue;
                         };
-                        let dispatch_log = (!entry.view.prev_events.is_empty()
-                            || !entry.view.prev_states.is_empty())
-                        .then(|| DispatchLog {
-                            prev_events: entry
-                                .view
-                                .prev_events
-                                .iter()
-                                .filter_map(DeliveryRecord::from_value)
-                                .collect(),
-                            prev_states: entry.view.prev_states.clone(),
-                        });
+                        let dispatch_log = dispatch_log_of(entry);
                         legs.push(EventRequest {
                             event: delivered,
                             tick: tick.map(str::to_string),
                             payload: with_awaiting(r.payload.clone()),
-                            entity_id: Some(eid.to_string()),
+                            entity_id: raw_entity_id.map(str::to_string),
                             target_trait: Some(t.clone()),
                             client_id: client_id.map(|s| s.to_string()),
                             source_trait: emitter.map(str::to_string),
@@ -1649,6 +1569,25 @@ impl RuntimeKernel {
             Vec::new()
         };
 
+        let stateful_leg = (server_legs.is_empty()
+            && !hybrid
+            && self.effect_executor.environment().is_client())
+        .then(|| StatefulLeg {
+            leg: EventRequest {
+                event: event.to_string(),
+                payload: with_awaiting(payload.clone()),
+                entity_id: raw_entity_id.map(str::to_string),
+                target_trait: Some(trait_name.to_string()),
+                client_id: client_id.map(str::to_string),
+                source_trait: Some(trait_name.to_string()),
+                ..Default::default()
+            },
+            awaiting: if tick.is_some() {
+                Vec::new()
+            } else {
+                self.awaiting_of(outcomes)
+            },
+        });
         let awaiting = if tick.is_some() || server_legs.is_empty() {
             Vec::new()
         } else {
@@ -1662,7 +1601,88 @@ impl RuntimeKernel {
             mode,
             snapshot,
             awaiting,
+            stateful_leg,
         }
+    }
+
+    /// The server-backed traits of the client's mount still awaiting their lifecycle event, as the
+    /// `_awaitingInit` a leg carries: a client-only trait's INIT never posts, so the host would hold its
+    /// deliveries forever (twin of `withMountedSet`, `almadar-runtime/src/evaluation/client-role.ts`).
+    pub fn awaiting_init_value(&self) -> Value {
+        let defs = self.trait_definitions.read();
+        let mut names: Vec<String> = self
+            .mount
+            .read()
+            .awaiting
+            .iter()
+            .filter(|name| {
+                defs.get(name.as_str())
+                    .is_none_or(|def| !matches!(self.dispatch_mode_of(def), DispatchMode::HybridClientOnly))
+            })
+            .cloned()
+            .collect();
+        names.sort();
+        Value::Array(names.into_iter().map(Value::String).collect())
+    }
+
+    /// The legs a fold's own arms owe the host, one per trait whose arm delegated an effect: a trait
+    /// continuing its own unconsumed emit, or one whose delegated data lives in the browser store. A
+    /// listener's server work is the host's own cascade, so it is dropped, as the JS fold drops it
+    /// (`applyOrbitalEventResponse`). Drains the collector, so the fold's effects never ride a later dispatch.
+    pub fn fold_follow_on_legs(
+        &self,
+        outcomes: &[(String, ProcessEventResult)],
+        client_id: Option<&str>,
+    ) -> Vec<EventRequest> {
+        let _ = self.drain_server_leg_collector();
+        let residence =
+            crate::effects::Residence::of_entities(self.entity_definitions.read().values());
+        outcomes
+            .iter()
+            .filter_map(|(trait_name, result)| {
+                let entry = result.entry.as_ref().filter(|_| result.executed)?;
+                let delegated: Vec<&Effect> = result
+                    .effect_results
+                    .iter()
+                    .filter(|r| matches!(r.outcome, EffectOutcome::Delegated(_)))
+                    .map(|r| &r.effect)
+                    .collect();
+                if delegated.is_empty() {
+                    return None;
+                }
+                let delivery = DeliveryRecord::from_value(&entry.view.event);
+                let emitter = delivery.as_ref().and_then(|d| d.source.r#trait.as_deref());
+                let own = emitter == Some(trait_name.as_str());
+                if !own && !delegated.iter().all(|e| browser_data_effect(e, &residence)) {
+                    return None;
+                }
+                let event = result.event.clone()?;
+                Some(EventRequest {
+                    event: event.clone(),
+                    payload: (!result.payload.is_null()).then(|| result.payload.clone()),
+                    target_trait: Some(trait_name.clone()),
+                    source_trait: Some(emitter.unwrap_or(trait_name).to_string()),
+                    client_id: client_id.map(str::to_string),
+                    traits: Some(vec![TraitFrom {
+                        r#trait: trait_name.clone(),
+                        from: result.previous_state.clone(),
+                        event: Some(event),
+                    }]),
+                    entity_by_trait: (!entry.entity_before.is_null())
+                        .then(|| HashMap::from([(trait_name.clone(), entry.entity_before.clone())])),
+                    delivery,
+                    dispatch_log: dispatch_log_of(entry),
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
+    /// Whether every effect is a data effect on a browser-stored entity (the host's store holds the data).
+    fn all_browser_data(&self, effects: &[Effect]) -> bool {
+        let residence =
+            crate::effects::Residence::of_entities(self.entity_definitions.read().values());
+        effects.iter().all(|e| browser_data_effect(e, &residence))
     }
 
     /// Each non-local trait a dispatch's local run executed, by its first firing (the web
@@ -1819,7 +1839,7 @@ impl RuntimeKernel {
                 trait_name,
                 event: emitted,
                 payload: ep.clone(),
-                eid: &eid,
+                entity_id,
                 client_id,
                 tick: Some(tick_name),
                 mode,
@@ -1859,6 +1879,17 @@ impl RuntimeKernel {
             .delegate()
             .and_then(|d| d.as_any())
             .and_then(|a| a.downcast_ref::<ServerLegCollector>())
+    }
+
+    /// The key of the frame `trait_name` reads: its own name, or the shared entity's group key.
+    pub fn trait_frame_key(&self, trait_name: &str) -> String {
+        let entity_type = self
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .and_then(|d| d.linked_entity.clone())
+            .unwrap_or_else(|| trait_name.to_string());
+        self.frame_slot(trait_name, &entity_type, "").0
     }
 
     /// `(frame key, entity id)` of `trait_name`'s frame (Runtime Spec Clause 2.3).
@@ -2049,10 +2080,32 @@ impl RuntimeKernel {
             }
         }
 
+        // The host's paint of a slot is newer than the kernel's own render of it.
+        {
+            let mut renders = self.renders.write();
+            for painted in response.client_effects_by_trait.iter().flatten() {
+                if let crate::effects::ClientEffect::RenderUi { slot, .. } = &painted.effect {
+                    renders.forget_slot(&painted.trait_name, slot);
+                }
+            }
+        }
+
+        let client_only: HashSet<String> = {
+            let defs: Vec<Arc<TraitDefinition>> =
+                self.trait_definitions.read().values().cloned().collect();
+            defs.iter()
+                .filter(|d| self.dispatch_mode_of(d) == DispatchMode::HybridClientOnly)
+                .map(|d| d.name.clone())
+                .collect()
+        };
+
         let mut trait_entity_ids: HashMap<String, String> = HashMap::new();
         if let Some(entity_by_trait) = &response.entity_by_trait {
             let trait_defs = self.trait_definitions.read();
             for (trait_name, entity_val) in entity_by_trait {
+                if client_only.contains(trait_name) {
+                    continue;
+                }
                 let entity_type = trait_defs
                     .get(trait_name)
                     .and_then(|d| d.linked_entity.clone())
@@ -2071,6 +2124,9 @@ impl RuntimeKernel {
         {
             let mut state_manager = self.state_manager.write();
             for (trait_name, state_name) in &response.states {
+                if client_only.contains(trait_name) {
+                    continue;
+                }
                 let entity_id = Some(
                     trait_entity_ids
                         .get(trait_name)
@@ -2111,9 +2167,12 @@ impl RuntimeKernel {
                     source_payload: payload.clone(),
                     payload,
                     listen_guard: None,
+                    fans_out: true,
+                    repaint: None,
                 });
                 continue;
             }
+            let before = fanned.len();
             self.collect_listener_targets(
                 &source,
                 &source_trait,
@@ -2122,6 +2181,13 @@ impl RuntimeKernel {
                 &[],
                 &mut fanned,
             );
+            // The host's own fan-out already ran this emit's listeners (their rows and renders are in
+            // this response); a client-only listener is the exception, its host run being dropped.
+            if host_ran && self.host_fans_out.load(std::sync::atomic::Ordering::Relaxed) {
+                let mut reached = fanned.split_off(before);
+                reached.retain(|item| client_only.contains(&item.trait_name));
+                fanned.extend(reached);
+            }
         }
 
         let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
@@ -2152,19 +2218,27 @@ impl RuntimeKernel {
         payload: &Value,
         result: Option<&ProcessEventResult>,
         direct_scopes: &[String],
-    ) -> (Vec<CascadeItem>, Vec<CascadeItem>) {
+        fans_out: bool,
+    ) -> StepFollowups {
         let source = self.emit_source(trait_name);
-        let mut own = Vec::new();
+        let mut own: Vec<CascadeItem> = Vec::new();
         let mut fanned = Vec::new();
-        self.collect_listener_targets(
-            &source,
-            trait_name,
-            event,
-            payload,
-            direct_scopes,
-            &mut fanned,
-        );
-        for er in result.map_or(&[][..], |r| &r.effect_results[..]) {
+        let mut consumed_emits = Vec::new();
+        if fans_out {
+            self.collect_listener_targets(
+                &source,
+                trait_name,
+                event,
+                payload,
+                direct_scopes,
+                &mut fanned,
+            );
+        }
+        for (index, er) in result
+            .map_or(&[][..], |r| &r.effect_results[..])
+            .iter()
+            .enumerate()
+        {
             if let Effect::Emit {
                 event: emitted,
                 payload: ep,
@@ -2173,6 +2247,7 @@ impl RuntimeKernel {
                 let handled = result.is_some_and(|r| {
                     r.executed && self.trait_handles(trait_name, &r.new_state, emitted)
                 });
+                let (own_before, fanned_before) = (own.len(), fanned.len());
                 self.emit_followup(
                     trait_name,
                     &source,
@@ -2182,9 +2257,69 @@ impl RuntimeKernel {
                     &mut own,
                     &mut fanned,
                 );
+                if own.len() > own_before || fanned.len() > fanned_before {
+                    consumed_emits.push(index);
+                }
             }
         }
-        (own, fanned)
+        if let Some(result) = result.filter(|r| r.executed) {
+            let mut repaints = self.first_repaints(trait_name, result);
+            repaints.append(&mut own);
+            own = repaints;
+        }
+        StepFollowups {
+            own,
+            fanned,
+            consumed_emits,
+        }
+    }
+
+    /// The re-renders a step's composition calls for: each capture child of `trait_name` that the fired
+    /// arm's effects compose, to be re-fired under the step's payload (server role only: a client renders
+    /// its own children).
+    fn first_repaints(&self, trait_name: &str, result: &ProcessEventResult) -> Vec<CascadeItem> {
+        if !self.config.environment.is_server() {
+            return Vec::new();
+        }
+        let Some(children) = self.capture_children.read().get(trait_name).cloned() else {
+            return Vec::new();
+        };
+        let Some(def) = self.trait_definitions.read().get(trait_name).cloned() else {
+            return Vec::new();
+        };
+        let authored: Vec<&SExpression> = result.effect_runs.iter().map(|run| &run.effect).collect();
+        let composed = super::callsite_capture::embedded_by_effects(&def, &authored);
+        let payload = match &result.payload {
+            Value::Null => Value::Object(HashMap::new()),
+            other => other.clone(),
+        };
+        let visited = Arc::new(parking_lot::Mutex::new(HashSet::new()));
+        children
+            .into_iter()
+            .filter(|child| composed.contains(child))
+            .map(|child| Self::repaint_item(
+                child,
+                RepaintJob {
+                    composed_with: payload.clone(),
+                    keep_composed: false,
+                    composed_by: None,
+                    visited: Arc::clone(&visited),
+                },
+            ))
+            .collect()
+    }
+
+    fn repaint_item(child: String, job: RepaintJob) -> CascadeItem {
+        CascadeItem {
+            trait_name: child,
+            event: String::new(),
+            payload: Value::Null,
+            delivery: Value::Null,
+            source_payload: Value::Null,
+            listen_guard: None,
+            fans_out: false,
+            repaint: Some(job),
+        }
     }
 
     /// What one `emit` queues: the emitter's own arm for it (when `handled`, the same-trait
@@ -2208,6 +2343,8 @@ impl RuntimeKernel {
                 delivery: delivery_record_value(emitted, payload, source),
                 source_payload: payload.clone(),
                 listen_guard: None,
+                fans_out: false,
+                repaint: None,
             });
         }
         self.collect_listener_targets(source, trait_name, emitted, payload, &[], fanned);
@@ -2235,7 +2372,7 @@ impl RuntimeKernel {
         direct_scopes: &[String],
         out: &mut Vec<CascadeItem>,
     ) {
-        let listeners = self.listener_manager.matching(event, source_trait);
+        let listeners = self.listener_manager.matching(event, source);
         if listeners.is_empty() {
             return;
         }
@@ -2274,7 +2411,74 @@ impl RuntimeKernel {
                 delivery: delivery.clone(),
                 source_payload: source_payload.clone(),
                 listen_guard: l.guard,
+                fans_out: false,
+                repaint: None,
             });
+        }
+    }
+
+    /// Bring the response's rows to the frames as they stand when the dispatch ends: a trait's row is its
+    /// FINAL row (a sibling sharing its frame may have written after it stepped), and every non-empty frame
+    /// is echoed to every trait bound to it, so a bound trait that never ran still converges its row.
+    /// JS twin: the final-row and frame-echo passes at the end of `evaluateOrbitalEvent`.
+    pub fn echo_frames(&self, response: &mut EventResponse, entity_id: Option<&str>) {
+        let eid = entity_id.unwrap_or("singleton");
+        let defs = self.trait_definitions.read();
+        let frames = self.frames.read();
+        let mut rows = response.entity_by_trait.take().unwrap_or_default();
+        for ((key, frame_eid), frame) in frames.iter() {
+            let Some(frame_fields) = frame.as_object().filter(|f| !f.is_empty()) else {
+                continue;
+            };
+            if frame_eid != eid {
+                continue;
+            }
+            let bound: Vec<&str> = match key.strip_prefix("$shared::") {
+                Some(entity) => defs
+                    .values()
+                    .filter(|def| def.linked_entity.as_deref() == Some(entity))
+                    .map(|def| def.name.as_str())
+                    .collect(),
+                None => defs.get(key).map(|def| def.name.as_str()).into_iter().collect(),
+            };
+            for trait_name in bound {
+                let row = rows
+                    .entry(trait_name.to_string())
+                    .or_insert_with(|| Value::Object(HashMap::new()));
+                if let Value::Object(fields) = row {
+                    fields.extend(frame_fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+            }
+        }
+        response.entity_by_trait = (!rows.is_empty()).then_some(rows);
+    }
+
+    /// The orbital that declares `trait_name`.
+    pub fn orbital_of_trait(&self, trait_name: &str) -> Option<String> {
+        self.emit_source(trait_name).orbital
+    }
+
+    /// Complete the source of each event `response` carries with the emitter's identity: orbital, the ids
+    /// the schema carries, and the id of the emit contract. A client matches a `listens` source on these.
+    pub fn stamp_emitted_sources(&self, response: &mut EventResponse) {
+        for emitted in &mut response.emitted_events {
+            let Some(source) = emitted.source.as_mut() else {
+                continue;
+            };
+            let Some(trait_name) = source.r#trait.clone() else {
+                continue;
+            };
+            let identity = self.emit_source(&trait_name);
+            source.orbital = identity.orbital;
+            source.orbital_id = identity.orbital_id;
+            source.trait_id = identity.trait_id;
+            source.event_id = self
+                .trait_definitions
+                .read()
+                .get(&trait_name)
+                .and_then(|def| def.emits.as_ref())
+                .and_then(|emits| emits.iter().find(|e| e.event == emitted.event))
+                .and_then(|contract| contract.event_id.clone());
         }
     }
 
@@ -2306,7 +2510,7 @@ impl RuntimeKernel {
         effects: &[SExpression],
         ctx: &BindingContext,
     ) -> (Vec<EffectResult>, Value) {
-        let (effect_results, entity_data, _) = self.execute_effects_traced(effects, ctx);
+        let (effect_results, entity_data, _, _) = self.execute_effects_traced(effects, ctx);
         (effect_results, entity_data)
     }
 
@@ -2315,13 +2519,22 @@ impl RuntimeKernel {
         &self,
         effects: &[SExpression],
         ctx: &BindingContext,
-    ) -> (Vec<EffectResult>, Value, Vec<EffectRun>) {
+    ) -> (Vec<EffectResult>, Value, Vec<EffectRun>, Option<String>) {
         let evaluator = Evaluator::new();
         let mut effect_results = Vec::new();
         let mut entity_data: HashMap<String, Value> = HashMap::new();
         let mut runs = Vec::with_capacity(effects.len());
+        let mut failure = None;
 
         for effect_expr in effects {
+            if failure.is_some() {
+                runs.push(EffectRun {
+                    effect: effect_expr.clone(),
+                    status: EffectRunStatus::Skipped,
+                    error: None,
+                });
+                continue;
+            }
             let before = effect_results.len();
             self.exec_effect_expr(
                 effect_expr,
@@ -2344,9 +2557,19 @@ impl RuntimeKernel {
                 status,
                 error: failed.and_then(|r| r.error.clone()),
             });
+            if failure.is_none() {
+                failure = ran
+                    .iter()
+                    .find(|r| is_thrown_failure(r))
+                    .map(|thrown| thrown.error.clone().unwrap_or_default());
+            }
         }
 
-        (effect_results, Value::Object(entity_data), runs)
+        if failure.is_some() {
+            effect_results.retain(is_thrown_failure);
+        }
+
+        (effect_results, Value::Object(entity_data), runs, failure)
     }
 
     /// Execute a single top-level effect expression.
@@ -2398,6 +2621,9 @@ impl RuntimeKernel {
                                 effect_results,
                                 entity_data,
                             );
+                            if effect_results.iter().any(is_thrown_failure) {
+                                break;
+                            }
                         }
                     }
                     "do" => {
@@ -2409,6 +2635,9 @@ impl RuntimeKernel {
                                 effect_results,
                                 entity_data,
                             );
+                            if effect_results.iter().any(is_thrown_failure) {
+                                break;
+                            }
                         }
                     }
                     "if" => {
@@ -2446,6 +2675,9 @@ impl RuntimeKernel {
                                         effect_results,
                                         entity_data,
                                     );
+                                    if effect_results.iter().any(is_thrown_failure) {
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -2478,41 +2710,24 @@ impl RuntimeKernel {
         effect_results: &mut Vec<EffectResult>,
         entity_data: &mut HashMap<String, Value>,
     ) {
-        // Mirror the `(set @entity.…)` writes made EARLIER IN THIS TRANSITION into
-        // `@entity` before running the next effect. `entity_data` is only merged back
-        // into the stored entity after the whole effect list finishes, so without this
-        // every later effect read a pre-set `@entity`: the dominant list-mutation idiom
-        // `(set @entity.id ?id)` → `(persist update E @entity)` resolved an EMPTY row id
-        // and 404'd, while the same event fired from a state whose preamble had already
-        // set the id passed — the tell that the write was invisible only WITHIN a
-        // transition. `@almadar/runtime` already mirrors (`EffectExecutor.ts`, "so later
-        // effects in the same transition … observe the new value"); this is the missing
-        // Rust twin, not a new behavior (C-KERNEL-INTRA-TRANSITION-SET-INVISIBLE).
-        let mirrored = with_pending_sets(ctx, entity_data);
-        let ctx: &BindingContext = &mirrored;
+        // `ctx` arrives with this transition's earlier `(set @entity.…)` writes already mirrored
+        // into `@entity` by `exec_effect_expr` (the same `entity_data`, unchanged since).
         if let Some(effect) = crate::effects::parse_effect(effect_expr) {
             match &effect {
                 Effect::Set { path, value } => {
                     let evaluated_value = if value.as_array().is_some() {
-                        if let Ok(json_value) = serde_json::to_value(value.clone()) {
-                            if let Ok(sexpr) = serde_json::from_value::<SExpression>(json_value) {
-                                match evaluator.evaluate(&sexpr, ctx) {
-                                    Ok(v) => v,
-                                    Err(err) => {
-                                        // A value that fails to evaluate is a failed effect, never stored raw.
-                                        tracing::error!(path = %path, error = %err, "kernel: set value failed to evaluate");
-                                        effect_results.push(EffectResult::failed(
-                                            effect.clone(),
-                                            &err.to_string(),
-                                        ));
-                                        return;
-                                    }
-                                }
-                            } else {
-                                value.clone()
+                        let sexpr = value_to_sexpr(value);
+                        match evaluator.evaluate(&sexpr, ctx) {
+                            Ok(v) => v,
+                            Err(err) => {
+                                // A value that fails to evaluate is a failed effect, never stored raw.
+                                tracing::error!(path = %path, error = %err, "kernel: set value failed to evaluate");
+                                effect_results.push(EffectResult::failed(
+                                    effect.clone(),
+                                    &err.to_string(),
+                                ));
+                                return;
                             }
-                        } else {
-                            value.clone()
                         }
                     } else if let Some(s) = value.as_str() {
                         if s.starts_with('@') {
@@ -2563,13 +2778,24 @@ impl RuntimeKernel {
                     effect_results.push(result);
                     effect_results.extend(completion);
                 }
-                Effect::CallService {
-                    emit: Some(call_emit),
-                    ..
-                } if !call_emit.is_empty() => {
+                Effect::CallService { emit, .. } => {
                     let resolved = resolve_effect_bindings(effect.clone(), ctx);
-                    let result = self.effect_executor.execute(&resolved, ctx);
-                    let completion = call_service_completion_emit(call_emit, &result);
+                    self.io.set_call_site(self.call_site_of(emit.as_ref()));
+                    let mut result = self.effect_executor.execute(&resolved, ctx);
+                    let verdict = self.io.take_call_verdict();
+                    self.io.set_call_site(None);
+                    let key = match &resolved {
+                        Effect::CallService { key, .. } => key.clone(),
+                        _ => None,
+                    };
+                    if verdict == Some(CallVerdict::Cancelled) {
+                        result = EffectResult::executed(resolved);
+                    } else if let Effect::CallService { emit: routes, .. } = &mut result.effect {
+                        routes.clone_from(emit);
+                    }
+                    let completion = emit
+                        .as_ref()
+                        .and_then(|e| call_service_completion_emit(e, &result, verdict, key.as_deref()));
                     effect_results.push(result);
                     effect_results.extend(completion);
                 }
@@ -2577,12 +2803,15 @@ impl RuntimeKernel {
                     emit: Some(op_emit),
                     ..
                 } if !op_emit.is_empty() => {
-                    let result = self.effect_executor.execute(&effect, ctx);
+                    let mut result = self.effect_executor.execute(&effect, ctx);
+                    if let Effect::Custom { emit: routes, .. } = &mut result.effect {
+                        *routes = Some(op_emit.clone());
+                    }
                     let completion = substrate_completion_emit(op_emit, &result);
                     effect_results.push(result);
                     effect_results.extend(completion);
                 }
-                Effect::CancelCall { .. } | Effect::CallService { key: Some(_), .. } => {
+                Effect::CancelCall { .. } => {
                     let resolved = resolve_effect_bindings(effect.clone(), ctx);
                     effect_results.push(self.effect_executor.execute(&resolved, ctx));
                 }
@@ -2596,6 +2825,44 @@ impl RuntimeKernel {
                 }
             }
         }
+    }
+
+    /// Give each form/detail/column-bearing node of a server-role `render-ui` the options of its relation
+    /// fields (`relationsData`); the browser role reads its own store.
+    fn inject_relation_options(&self, trait_name: &str, results: &mut [EffectResult]) {
+        if !self.config.environment.is_server() {
+            return;
+        }
+        let linked = self
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .and_then(|def| def.linked_entity.clone())
+            .unwrap_or_else(|| trait_name.to_string());
+        let defs = self.entity_definitions.read();
+        for result in results {
+            if let Effect::RenderUi { content, .. } = &mut result.effect {
+                super::relations::inject_relation_options(&*self.entity_source, &defs, &linked, content);
+            }
+        }
+    }
+
+    /// The call site of a `call-service` made by the step in flight.
+    fn call_site_of(&self, emit: Option<&FetchEmit>) -> Option<CallSite> {
+        let (trait_name, follow_on) = self.step_site.read().clone()?;
+        let orbital = self.emit_source(&trait_name).orbital;
+        let routes = emit.map_or_else(CallRoutes::default, |e| CallRoutes {
+            success: e.success.clone(),
+            failure: e.failure.clone(),
+            cancelled: e.cancelled.clone(),
+            on_message: e.on_message.clone(),
+        });
+        Some(CallSite {
+            orbital,
+            trait_name,
+            follow_on,
+            emit: routes,
+        })
     }
 
     /// Get render-ui effects for a state to show UI when no transition happens.
@@ -2698,7 +2965,7 @@ impl RuntimeKernel {
         self.trait_definitions
             .read()
             .get(trait_name)
-            .and_then(crate::state_machine::StateMachineCore::get_trait_initial_state)
+            .and_then(|d| crate::state_machine::StateMachineCore::get_trait_initial_state(d))
             .map(str::to_string)
             .unwrap_or_default()
     }
@@ -2719,7 +2986,7 @@ impl RuntimeKernel {
         &self,
         entity_id: Option<&str>,
     ) -> BTreeMap<String, (String, DispatchMode)> {
-        let defs: Vec<TraitDefinition> = self.trait_definitions.read().values().cloned().collect();
+        let defs: Vec<Arc<TraitDefinition>> = self.trait_definitions.read().values().cloned().collect();
         defs.iter()
             .map(|def| {
                 let state = self.current_state_name(&def.name, entity_id);
@@ -2732,8 +2999,46 @@ impl RuntimeKernel {
     pub fn get_state(&self, trait_name: &str, entity_id: Option<&str>) -> Option<TraitState> {
         self.state_manager
             .read()
-            .get_state(trait_name, entity_id)
+            .get_state(trait_name, Some(entity_id.unwrap_or("singleton")))
             .cloned()
+    }
+
+    /// Seed a delegated server leg with the client's circuit state: each carried trait is held at its
+    /// `from` state, and each carried row is folded into its trait's frame (`@entity`), so the leg replays
+    /// from where the client was. JS twin: `evaluateOrbitalEvent`'s `manager.seedState` + frame fold.
+    pub fn seed_leg(
+        &self,
+        traits: &[TraitFrom],
+        entity_by_trait: Option<&HashMap<String, Value>>,
+        entity_id: Option<&str>,
+    ) {
+        let eid = entity_id.unwrap_or("singleton");
+        for carried in traits {
+            if !self.trait_definitions.read().contains_key(&carried.r#trait) {
+                continue;
+            }
+            let mut state_manager = self.state_manager.write();
+            if state_manager
+                .get_or_create_state(&carried.r#trait, Some(eid))
+                .is_ok()
+            {
+                if let Some(state) = state_manager.get_state_mut(&carried.r#trait, Some(eid)) {
+                    state.transition_to(&carried.from);
+                }
+            }
+        }
+        for (trait_name, row) in entity_by_trait.into_iter().flatten() {
+            let entity_type = match self.trait_definitions.read().get(trait_name) {
+                Some(def) => def
+                    .linked_entity
+                    .clone()
+                    .unwrap_or_else(|| trait_name.clone()),
+                None => continue,
+            };
+            if row.as_object().is_some_and(|o| !o.is_empty()) {
+                self.write_trait_frame(trait_name, &entity_type, eid, row);
+            }
+        }
     }
 
     /// Reset a trait instance to its initial state.
@@ -2745,6 +3050,14 @@ impl RuntimeKernel {
     }
 
     /// Set the current user.
+    /// Declare that the host runs the listeners of every emit it marks `dispatched` (a worklist host:
+    /// the JS runtime, `orbital-server`). Default `false`: a generated server delivers no listener, so
+    /// the fold runs them all.
+    pub fn set_host_fans_out(&self, fans_out: bool) {
+        self.host_fans_out
+            .store(fans_out, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn set_current_user(&self, user: Value) {
         *self.current_user.write() = user;
     }
@@ -3047,6 +3360,22 @@ pub fn already_delivered_from(dispatch: &ClientDispatch) -> HashSet<(String, Str
     set
 }
 
+/// A runtime value as the expression it denotes. Equals the JSON round trip this replaces:
+/// JSON has no NaN or infinity, so a non-finite number reads back as `null`.
+fn value_to_sexpr(value: &Value) -> SExpression {
+    fn finite(expr: &mut SExpression) {
+        match expr {
+            SExpression::Number(n) if !n.is_finite() => *expr = SExpression::Null,
+            SExpression::Array(items) => items.iter_mut().for_each(finite),
+            SExpression::Object(obj) => obj.values_mut().for_each(finite),
+            _ => {}
+        }
+    }
+    let mut expr: SExpression = value.clone().into();
+    finite(&mut expr);
+    expr
+}
+
 /// Convert an SExpression to a runtime Value for instance seeding. Shared with
 /// `persona::identity_roster`, which materializes the same authored `instances`.
 pub(crate) fn sexpr_to_value(sexpr: &SExpression) -> Value {
@@ -3070,23 +3399,47 @@ pub(crate) fn sexpr_to_value(sexpr: &SExpression) -> Value {
 /// config field defaults. Mirrors the JS runtime, where `@config.X` resolves against
 /// the trait's config defaults (and instance overrides). Std behaviors rendered
 /// standalone rely on defaults only — instance/call-site overrides are a deeper
-/// composition concern (follow-up). Fields with no `default` seed to `Null`.
-fn config_defaults_value(
+/// composition concern (follow-up). A field with no `default` is left out: its `@config.<knob>` is unset.
+fn config_defaults_value<T: std::borrow::Borrow<TraitDefinition>>(
     trait_def: &TraitDefinition,
-    all_traits: &HashMap<String, TraitDefinition>,
+    all_traits: &HashMap<String, T>,
 ) -> Value {
     let mut map: HashMap<String, Value> = HashMap::new();
     if let Some(cfg) = &trait_def.config {
         for (k, field) in cfg {
-            let v = field
-                .default
-                .as_ref()
-                .map(sexpr_to_value)
-                .unwrap_or(Value::Null);
-            map.insert(k.clone(), v);
+            if let Some(default) = field.default.as_ref() {
+                map.insert(k.clone(), sexpr_to_value(default));
+            }
         }
     }
     resolve_config_forwards(&mut map, all_traits);
+    Value::Object(map)
+}
+
+/// A config value that is exactly a `@user.<path>` binding reads the viewer one hop; a field the viewer
+/// lacks, or one that is not a string, number or boolean, becomes `""`, never the sigil (twin of
+/// `buildConfigBinding`, `almadar-runtime/src/traits/config-defaults.ts`).
+fn bind_user_forwards(config: Value, user: &Value) -> Value {
+    let Value::Object(mut map) = config else {
+        return config;
+    };
+    for value in map.values_mut() {
+        let Value::String(s) = value else { continue };
+        let Some(path) = s.strip_prefix("@user.") else {
+            continue;
+        };
+        if path.is_empty()
+            || !path.split('.').all(|seg| {
+                !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        {
+            continue;
+        }
+        *value = match user.get_path(path) {
+            Some(read @ (Value::String(_) | Value::Number(_) | Value::Bool(_))) => read.clone(),
+            _ => Value::String(String::new()),
+        };
+    }
     Value::Object(map)
 }
 
@@ -3108,9 +3461,9 @@ fn config_defaults_value(
 /// collapsed too, so both `@config.<key>` and `@config.<field>` resolve. The
 /// forward stays in the trait's declared config + render-ui; only the LIVE render
 /// context is chained, so the knob remains overridable.
-fn resolve_config_forwards(
+fn resolve_config_forwards<T: std::borrow::Borrow<TraitDefinition>>(
     map: &mut HashMap<String, Value>,
-    all_traits: &HashMap<String, TraitDefinition>,
+    all_traits: &HashMap<String, T>,
 ) {
     let forwards: Vec<(String, String)> = map
         .iter()
@@ -3144,9 +3497,9 @@ fn forward_key(s: &str) -> Option<String> {
 /// traits (deterministic name order) for the one that declares it. Prefers a
 /// concrete default; if the only declarations are themselves forwards, chains
 /// transitively. `visited` guards against forward cycles.
-fn resolve_forward_key(
+fn resolve_forward_key<T: std::borrow::Borrow<TraitDefinition>>(
     key: &str,
-    all_traits: &HashMap<String, TraitDefinition>,
+    all_traits: &HashMap<String, T>,
     visited: &mut HashSet<String>,
 ) -> Option<Value> {
     if !visited.insert(key.to_string()) {
@@ -3156,7 +3509,7 @@ fn resolve_forward_key(
     names.sort();
     let mut chained_next: Option<String> = None;
     for name in names {
-        let Some(cfg) = &all_traits[name].config else {
+        let Some(cfg) = &all_traits[name].borrow().config else {
             continue;
         };
         let Some(field) = cfg.get(key) else { continue };
@@ -3215,6 +3568,18 @@ fn state_render_sources(trait_def: &TraitDefinition, state_name: &str) -> Vec<(S
 }
 
 /// A data effect on a browser-stored entity: a browser-run tick sends it as its `runTick` leg.
+fn dispatch_log_of(entry: &DeliveryEntry) -> Option<DispatchLog> {
+    (!entry.view.prev_events.is_empty() || !entry.view.prev_states.is_empty()).then(|| DispatchLog {
+        prev_events: entry
+            .view
+            .prev_events
+            .iter()
+            .filter_map(DeliveryRecord::from_value)
+            .collect(),
+        prev_states: entry.view.prev_states.to_vec(),
+    })
+}
+
 fn browser_data_effect(effect: &Effect, residence: &crate::effects::Residence) -> bool {
     match effect {
         Effect::Persist { entity_type, .. } | Effect::Fetch { entity_type, .. } => {
@@ -3241,7 +3606,14 @@ fn with_pending_sets<'a>(
         return std::borrow::Cow::Borrowed(ctx);
     }
     let mut c = ctx.clone();
-    c.entity = merge_entity(&ctx.entity, &Value::Object(entity_data.clone()));
+    c.entity = Arc::new(match ctx.entity.as_object() {
+        Some(base) => {
+            let mut merged = base.clone();
+            merged.extend(entity_data.iter().map(|(k, v)| (k.clone(), v.clone())));
+            Value::Object(merged)
+        }
+        None => Value::Object(entity_data.clone()),
+    });
     std::borrow::Cow::Owned(c)
 }
 
@@ -3279,7 +3651,7 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Effect {
         }
         Effect::Emit { event, payload } => Effect::Emit {
             event,
-            payload: ctx.resolve_value(&payload).into_owned(),
+            payload: ctx.resolve_dropping_unset(&payload),
         },
         Effect::Navigate {
             path,
@@ -3412,13 +3784,91 @@ mod call_key_tests {
     }
 }
 
+/// `@pages`: the root pages of a program's orbitals that declare a nav `@label`, deduped by path, in
+/// orbital order, as `{ href, label, icon?, roles? }`. A page reference (resolved before it reaches a
+/// stage) and a `:param` page are not entries. Twin of `appNavItems` in `@almadar/runtime`
+/// `render-sigils.ts`; empty when there is none.
+fn app_nav_items(schema: &OrbitalSchema) -> Vec<Value> {
+    let mut seen = std::collections::HashSet::new();
+    let mut items = Vec::new();
+    for orbital in &schema.orbitals {
+        for page in orbital.pages.iter().flatten().filter_map(crate::schema::PageRef::as_inline) {
+            let Some(label) = &page.label else { continue };
+            if page.path.contains(':') || !seen.insert(page.path.clone()) {
+                continue;
+            }
+            let mut item = HashMap::from([
+                ("href".to_string(), Value::String(page.path.clone())),
+                ("label".to_string(), Value::String(label.clone())),
+            ]);
+            if let Some(icon) = &page.icon {
+                item.insert("icon".to_string(), Value::String(icon.clone()));
+            }
+            if let Some(roles) = &page.roles {
+                item.insert(
+                    "roles".to_string(),
+                    Value::Array(roles.iter().cloned().map(Value::String).collect()),
+                );
+            }
+            items.push(Value::Object(item));
+        }
+    }
+    items
+}
+
+/// The app-wide `@pages` after registering another program: earlier entries first, a later entry whose
+/// path is already listed dropped. `Value::Null` while no program declares one.
+fn merge_nav_items(current: &Value, added: Vec<Value>) -> Value {
+    let mut items = current.as_array().cloned().unwrap_or_default();
+    let href = |item: &Value| item.get_path("href").and_then(Value::as_str).map(str::to_string);
+    let mut listed: std::collections::HashSet<String> = items.iter().filter_map(href).collect();
+    items.extend(added.into_iter().filter(|item| href(item).is_some_and(|h| listed.insert(h))));
+    if items.is_empty() {
+        Value::Null
+    } else {
+        Value::Array(items)
+    }
+}
+
+/// Whether a failed effect is one the JS executor throws, the failure a response reports as `effect-failed`.
+/// A `set` that cannot evaluate, and a `call-service` or substrate operator with no declared `emit.failure`
+/// route, are; a `persist` refusal (policy, required column) and a `fetch` miss are handled outcomes. A thrown
+/// failure stops its transition: no later effect runs and the step reports no client effect or emit.
+fn is_thrown_failure(result: &EffectResult) -> bool {
+    if !result.is_failed() {
+        return false;
+    }
+    let routed = |emit: &Option<FetchEmit>| emit.as_ref().is_some_and(|e| e.failure.is_some());
+    match &result.effect {
+        Effect::Set { .. } | Effect::CancelCall { .. } => true,
+        Effect::CallService { emit, .. } | Effect::Custom { emit, .. } => !routed(emit),
+        _ => false,
+    }
+}
+
 /// A `call-service`'s declared completion — JS `EffectExecutor.ts`: `emit.success` carries the
 /// service's result as the payload, `emit.failure` `{ error }`. A delegated or no-op call fires nothing.
-fn call_service_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<EffectResult> {
-    let (event, payload) = match &result.outcome {
-        EffectOutcome::Executed => (emit.success.clone()?, result.return_value.clone().unwrap_or(Value::Null)),
-        EffectOutcome::Failed => (emit.failure.clone()?, error_payload(result, None)),
-        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
+fn call_service_completion_emit(
+    emit: &FetchEmit,
+    result: &EffectResult,
+    verdict: Option<CallVerdict>,
+    key: Option<&str>,
+) -> Option<EffectResult> {
+    let (event, payload) = match (verdict, &result.outcome) {
+        (Some(CallVerdict::Deferred), _) => return None,
+        (Some(CallVerdict::Cancelled), _) => {
+            let key = key?;
+            (
+                emit.cancelled.clone()?,
+                Value::Object(HashMap::from([(
+                    "key".to_string(),
+                    Value::String(key.to_string()),
+                )])),
+            )
+        }
+        (None, EffectOutcome::Executed) => (emit.success.clone()?, result.return_value.clone().unwrap_or(Value::Null)),
+        (None, EffectOutcome::Failed) => (emit.failure.clone()?, error_payload(result, None)),
+        (None, EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_)) => return None,
     };
     Some(EffectResult::executed(Effect::Emit { event, payload }))
 }
@@ -3515,7 +3965,11 @@ fn persist_completion_emit(
         }
         EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
     };
-    Some(EffectResult::executed(Effect::Emit { event, payload }))
+    let envelope = EffectResult::executed(Effect::Emit { event, payload });
+    Some(match result.outcome {
+        EffectOutcome::Executed => envelope.as_persist_success(),
+        _ => envelope,
+    })
 }
 
 #[cfg(test)]
@@ -4650,6 +5104,144 @@ mod client_dispatch_tests {
         );
     }
 
+    fn pages_schema(extra_shell_pages: serde_json::Value) -> OrbitalSchema {
+        let mut shell_pages = vec![
+            serde_json::json!({ "name": "HomePage", "path": "/", "traits": [{ "ref": "Layout" }] }),
+            serde_json::json!({ "name": "DetailPage", "path": "/items/:id", "label": "Detail", "traits": [] }),
+        ];
+        shell_pages.extend(extra_shell_pages.as_array().cloned().unwrap_or_default());
+        serde_json::from_value(serde_json::json!({
+            "name": "SigilApp",
+            "orbitals": [
+                {
+                    "name": "ShellOrbital",
+                    "entity": { "name": "Shell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                    "traits": [{
+                        "name": "Layout",
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }],
+                            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
+                                "effects": [["render-ui", "main", { "type": "stack", "items": "@pages" }]] }]
+                        }
+                    }],
+                    "pages": shell_pages
+                },
+                {
+                    "name": "ItemsOrbital",
+                    "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                    "traits": [],
+                    "pages": [
+                        { "name": "ItemsPage", "path": "/items", "label": "Items", "icon": "list", "roles": ["admin", "staff"], "traits": [] },
+                        { "name": "DuplicatePage", "path": "/items", "label": "Items again", "traits": [] }
+                    ]
+                }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn rendered_items(schema: OrbitalSchema) -> Option<Value> {
+        let kernel = server_kernel_with(schema);
+        let outcomes = kernel.dispatch("Layout", None, "INIT", Value::Null).unwrap();
+        let response = EventResponse::from_process_results(&outcomes, "Layout", "INIT");
+        response
+            .client_effects?
+            .iter()
+            .find_map(|e| match e {
+                ClientEffect::RenderUi { config, .. } => config
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|o| o.get("items"))
+                    .cloned(),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn pages_binding_resolves_to_the_app_wide_root_nav_entries() {
+        let items = rendered_items(pages_schema(serde_json::json!([])));
+        let expected: Value = serde_json::from_value(serde_json::json!([
+            { "href": "/items", "label": "Items", "icon": "list", "roles": ["admin", "staff"] }
+        ]))
+        .unwrap();
+        assert_eq!(items, Some(expected));
+    }
+
+    #[test]
+    fn pages_binding_lists_entries_in_orbital_order_without_duplicates_params_or_unlabeled_pages() {
+        let items = rendered_items(pages_schema(serde_json::json!([
+            { "name": "AboutPage", "path": "/about", "label": "About", "traits": [] }
+        ])));
+        let hrefs: Vec<String> = items
+            .as_ref()
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.get_path("href").and_then(Value::as_str).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(hrefs, ["/about", "/items"]);
+    }
+
+    #[test]
+    fn a_second_registered_program_adds_its_entries_after_the_first_and_skips_a_listed_path() {
+        let kernel = server_kernel_with(pages_schema(serde_json::json!([])));
+        let second: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "Second",
+            "orbitals": [{
+                "name": "ExtraOrbital",
+                "entity": { "name": "Extra", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [],
+                "pages": [
+                    { "name": "Again", "path": "/items", "label": "Again", "traits": [] },
+                    { "name": "Zeta", "path": "/zeta", "label": "Zeta", "traits": [] }
+                ]
+            }]
+        }))
+        .unwrap();
+        kernel.register_schema(second).unwrap();
+        let outcomes = kernel.dispatch("Layout", None, "INIT", Value::Null).unwrap();
+        let response = EventResponse::from_process_results(&outcomes, "Layout", "INIT");
+        let hrefs: Vec<String> = response
+            .client_effects
+            .unwrap()
+            .iter()
+            .find_map(|e| match e {
+                ClientEffect::RenderUi { config, .. } => config
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|o| o.get("items"))
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(|i| i.get_path("href").and_then(Value::as_str).map(str::to_string)).collect()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(hrefs, ["/items", "/zeta"]);
+    }
+
+    #[test]
+    fn control_a_program_with_no_labeled_root_page_leaves_the_pages_token() {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "NoNav",
+            "orbitals": [{
+                "name": "ShellOrbital",
+                "entity": { "name": "Shell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Layout",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
+                            "effects": [["render-ui", "main", { "type": "stack", "items": "@pages" }]] }]
+                    }
+                }],
+                "pages": [{ "name": "HomePage", "path": "/", "traits": [] }]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(rendered_items(schema), Some(Value::String("@pages".to_string())));
+    }
+
     fn i18n_schema(locales: bool) -> OrbitalSchema {
         let mut schema = serde_json::json!({
             "name": "Site",
@@ -4831,7 +5423,10 @@ mod client_dispatch_tests {
             emitted_events: vec![EmittedEvent {
                 event: "PING".to_string(),
                 payload: None,
-                source: Some(BusEventSource::from_trait("Emitter")),
+                source: Some(BusEventSource {
+                    orbital: Some("Main".to_string()),
+                    ..BusEventSource::from_trait("Emitter")
+                }),
             }],
             ..Default::default()
         };
@@ -4908,6 +5503,10 @@ mod client_dispatch_tests {
             fired_arm: None,
             guards: Vec::new(),
             effect_runs: Vec::new(),
+            cascade_dropped: Vec::new(),
+            consumed_emits: Vec::new(),
+            failure: None,
+            callsite_payload: None,
         };
         result.previous_state = "idle".to_string();
         let outcomes = vec![("Persistor".to_string(), result)];
@@ -4924,6 +5523,7 @@ mod client_dispatch_tests {
             mode: DispatchMode::PersistedAwaited,
             snapshot: None,
             awaiting: Vec::new(),
+            stateful_leg: None,
         };
 
         let delivered = already_delivered_from(&dispatch);
@@ -5489,7 +6089,7 @@ mod mount_lifecycle_tests {
         list.iter()
             .map(|(t, e)| crate::effects::MountSeed {
                 r#trait: t.to_string(),
-                event: e.to_string(),
+                event: crate::effects::LifecycleEvent::parse(e).expect("a lifecycle event"),
             })
             .collect()
     }
@@ -5828,13 +6428,15 @@ mod fetch_payload_tests {
 
 #[cfg(test)]
 mod set_eval_failure_tests {
-    //! A `set` whose value fails to evaluate writes nothing and records a failed
-    //! effect; it never stores the unevaluated expression. JS twin:
-    //! `effect-failure-contained.test.ts`.
+    //! A `set` whose value fails to evaluate writes nothing, records a failed
+    //! effect and stops its transition: no later effect runs, and the step reports
+    //! none of its client effects or emits. Writes made before the failure stand.
+    //! JS twin: `effect-failure-contained.test.ts`.
     use super::*;
     use crate::runtime::entity_source::InMemoryEntityCache;
 
     fn kernel() -> RuntimeKernel {
+        let broken = serde_json::json!(["set", "@entity.app", ["behavior/ref", "Indigo Pioneer"]]);
         let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
             "name": "SetFailure",
             "orbitals": [{
@@ -5844,11 +6446,27 @@ mod set_eval_failure_tests {
                     "name": "Preview",
                     "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }],
-                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
-                            "effects": [
-                                ["set", "@entity.app", ["behavior/ref", "Indigo Pioneer"]],
-                                ["set", "@entity.ok", true]
-                            ] }]
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT",
+                              "effects": [
+                                ["set", "@entity.before", true],
+                                ["render-ui", "main", { "type": "typography", "content": "loading" }],
+                                broken.clone(),
+                                ["set", "@entity.ok", true],
+                                ["render-ui", "main", { "type": "typography", "content": "after" }],
+                                ["emit", "AFTER"]
+                              ] },
+                            { "from": "idle", "to": "idle", "event": "NESTED",
+                              "effects": [["do", broken.clone(), ["set", "@entity.ok", true]]] },
+                            { "from": "idle", "to": "idle", "event": "PLAIN",
+                              "effects": [
+                                ["set", "@entity.before", true],
+                                ["render-ui", "main", { "type": "typography", "content": "loading" }],
+                                ["set", "@entity.ok", true],
+                                ["render-ui", "main", { "type": "typography", "content": "after" }],
+                                ["emit", "AFTER"]
+                              ] }
+                        ]
                     }
                 }]
             }]
@@ -5863,16 +6481,28 @@ mod set_eval_failure_tests {
         kernel
     }
 
+    fn run(event: &str) -> ProcessEventResult {
+        let outcomes = kernel()
+            .dispatch("Preview", None, event, Value::Null)
+            .unwrap();
+        outcomes
+            .into_iter()
+            .find(|(t, _)| t == "Preview")
+            .expect("Preview ran")
+            .1
+    }
+
+    fn has_set(result: &ProcessEventResult, field: &str) -> bool {
+        let path = format!("@entity.{field}");
+        result
+            .effect_results
+            .iter()
+            .any(|r| matches!(&r.effect, Effect::Set { path: p, .. } if *p == path))
+    }
+
     #[test]
     fn a_set_that_fails_to_evaluate_writes_nothing_and_records_the_failure() {
-        let kernel = kernel();
-        let outcomes = kernel
-            .dispatch("Preview", None, "INIT", Value::Null)
-            .unwrap();
-        let (_, result) = outcomes
-            .iter()
-            .find(|(t, _)| t == "Preview")
-            .expect("Preview ran");
+        let result = run("INIT");
         let row = result.entity_data.as_object().expect("an entity row");
         assert!(!row.contains_key("app"), "{row:?}");
         let failed = result
@@ -5897,17 +6527,70 @@ mod set_eval_failure_tests {
     }
 
     #[test]
-    fn control_a_set_that_evaluates_still_writes() {
-        let kernel = kernel();
-        let outcomes = kernel
-            .dispatch("Preview", None, "INIT", Value::Null)
-            .unwrap();
-        let (_, result) = outcomes
-            .iter()
-            .find(|(t, _)| t == "Preview")
-            .expect("Preview ran");
+    fn a_failed_effect_stops_the_remaining_effects_of_its_transition() {
+        let result = run("INIT");
+        let row = result.entity_data.as_object().expect("an entity row");
+        assert!(!row.contains_key("ok"), "{row:?}");
+        assert!(!has_set(&result, "ok"));
+        assert_eq!(result.effect_runs.len(), 6, "one run per authored effect");
+        assert!(
+            result.effect_runs[3..]
+                .iter()
+                .all(|r| r.status == EffectRunStatus::Skipped),
+            "{:?}",
+            result.effect_runs
+        );
+    }
+
+    #[test]
+    fn writes_before_the_failure_stand() {
+        let row = run("INIT").entity_data;
+        assert_eq!(
+            row.as_object().and_then(|o| o.get("before")),
+            Some(&Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn the_failing_step_reports_no_client_effect_and_no_emit() {
+        let result = run("INIT");
+        assert!(
+            result.effect_results.iter().all(|r| !matches!(
+                r.effect,
+                Effect::RenderUi { .. } | Effect::Emit { .. }
+            )),
+            "{:?}",
+            result.effect_results
+        );
+    }
+
+    #[test]
+    fn a_failure_inside_a_do_stops_the_rest_of_the_block() {
+        let result = run("NESTED");
+        assert!(!has_set(&result, "ok"));
+        assert!(result.failure.is_some());
+    }
+
+    #[test]
+    fn control_a_transition_with_no_failure_runs_every_effect() {
+        let result = run("PLAIN");
+        assert!(result.failure.is_none());
         let row = result.entity_data.as_object().expect("an entity row");
         assert_eq!(row.get("ok"), Some(&Value::Bool(true)));
+        let renders = result
+            .effect_results
+            .iter()
+            .filter(|r| matches!(r.effect, Effect::RenderUi { .. }))
+            .count();
+        assert_eq!(renders, 2);
+        assert!(result
+            .effect_results
+            .iter()
+            .any(|r| matches!(r.effect, Effect::Emit { .. })));
+        assert!(result
+            .effect_runs
+            .iter()
+            .all(|r| r.status != EffectRunStatus::Failed));
     }
 }
 

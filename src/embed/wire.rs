@@ -1,0 +1,546 @@
+//! The embedded kernel's wire: what every host (C ABI, JNI, WASM) hands across its boundary as
+//! JSON. Field names are the hosts' contract; `tests/fixtures/embed/golden` pins them.
+
+use crate::effects::{ServiceCaller, SubstrateFailure};
+use crate::runtime::resumable::{
+    CallRoutes, CallSite, IoAnswer, IoReply, IoRequest, PendingRequest, RequestId,
+};
+use crate::runtime::{AwaitingTrait, DispatchMode, ResolvedTheme, TraitSnapshot};
+use crate::{EventRequest, EventResponse, Value};
+use serde::{Deserialize, Serialize};
+
+/// A server leg and the orbital that owns the trait it is addressed to (the route it posts to).
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+pub struct RoutedLeg {
+    pub orbital: String,
+    pub leg: EventRequest,
+}
+
+/// The `(trait, event)` that began a dispatch; a leg failure is reported against its event.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+pub struct SeedWire {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub event: String,
+}
+
+/// One dispatch: the local response, the legs to post, the mode, the pre-dispatch snapshot
+/// (`RuntimeOptimistic` only), the `(trait, event)` pairs already realized locally and the
+/// traits awaiting the legs.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatchWire {
+    pub orbital: String,
+    pub seed: SeedWire,
+    pub response: EventResponse,
+    pub server_legs: Vec<RoutedLeg>,
+    pub mode: DispatchMode,
+    pub snapshot: Option<TraitSnapshot>,
+    pub already_delivered: Vec<(String, String)>,
+    pub awaiting: Vec<AwaitingTrait>,
+    /// The plain leg a stateful host is posted when the dispatch delegated no effect.
+    pub stateful_leg: Option<StatefulLegWire>,
+    /// The traits whose pre-dispatch frame is the base a posted answer is folded against (`foldBase`).
+    pub fold_seeded: Vec<String>,
+}
+
+/// The leg of a server-backed dispatch that delegated nothing, and the traits awaiting its answer.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatefulLegWire {
+    pub orbital: String,
+    pub leg: EventRequest,
+    pub awaiting: Vec<AwaitingTrait>,
+}
+
+/// One `mount` leg: the seeds of one owning orbital that need the host, posted together.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountLegWire {
+    pub orbital: String,
+    pub seeds: Vec<SeedWire>,
+    pub leg: EventRequest,
+    /// The union of the seeds' already-realized `(trait, event)` pairs.
+    pub already_delivered: Vec<(String, String)>,
+    pub awaiting: Vec<AwaitingTrait>,
+    /// The seeds whose pre-dispatch frame is the fold base (`foldBase`).
+    pub fold_seeded: Vec<String>,
+}
+
+/// A mount batch: each seed's local dispatch and the legs to post, per host topology.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountWire {
+    pub seeds: Vec<DispatchWire>,
+    /// For a host that carries the circuit state (stateless): a leg per orbital whose seeds delegated effects.
+    pub legs: Vec<MountLegWire>,
+    /// For a host that holds it (stateful): the legs of every server-backed seed, delegated effect or not.
+    pub stateful_legs: Vec<MountLegWire>,
+    /// The seed that failed to dispatch; the batch stopped there and carries no legs.
+    pub failed: Option<MountFailure>,
+}
+
+/// The seed a mount batch stopped at, and why.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+pub struct MountFailure {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub event: String,
+    pub message: String,
+}
+
+/// A folded server response: each applied `(trait, newState)` and the merged response.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppliedWire {
+    pub applied: Vec<(String, String)>,
+    pub response: EventResponse,
+    /// The legs the fold's own arms owe the host (a refetch after a browser-stored write), to post and fold in turn.
+    pub server_legs: Vec<RoutedLeg>,
+}
+
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+pub struct FiredTick {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub tick: String,
+}
+
+/// The listener cascade of one tick `emit`.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+pub struct FrameDispatch {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    #[serde(flatten)]
+    pub dispatch: DispatchWire,
+}
+
+/// One host frame of the tick clock.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameWire {
+    pub fired: Vec<FiredTick>,
+    pub response: EventResponse,
+    pub dispatches: Vec<FrameDispatch>,
+    /// The `runTick` legs of fired ticks that write browser-stored data, for the host that owns the store.
+    pub browser_legs: Vec<RoutedLeg>,
+    pub dropped_server_effects: usize,
+    pub errors: Vec<String>,
+}
+
+/// A trait name more than one orbital declares; never listed under `states`.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+pub struct AmbiguousTrait {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub orbitals: Vec<String>,
+}
+
+/// Every trait state plus the resolved theme and what it derives.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotWire {
+    #[cfg_attr(test, ts(type = "JsonObject"))]
+    pub states: serde_json::Map<String, serde_json::Value>,
+    pub ambiguous_traits: Vec<AmbiguousTrait>,
+    pub theme: ResolvedTheme,
+    pub canvas_theme: crate::runtime::canvas_theme::CanvasTheme,
+    pub motion: crate::runtime::motion::ResolvedMotion,
+}
+
+/// Who a `call-service` runs for.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallerWire {
+    pub principal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+}
+
+/// The events a `call-service` call site routes its outcome and live messages to.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallRoutesWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_message: Option<String>,
+}
+
+/// Where a `call-service` is made from: the trait (and orbital) whose transition runs it, its routes,
+/// and whether the step is a follow-on of the dispatch.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallSiteWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orbital: Option<String>,
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub follow_on: bool,
+    pub emit: CallRoutesWire,
+}
+
+/// A substrate operator's failure.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubstrateFailureWire {
+    pub message: String,
+    pub errors: Vec<Value>,
+}
+
+/// A host's result for one request: the value, or the message it failed with.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Settled<T, E> {
+    Ok(T),
+    Error(E),
+}
+
+impl<T, E> From<Result<T, E>> for Settled<T, E> {
+    fn from(result: Result<T, E>) -> Self {
+        match result {
+            Ok(value) => Settled::Ok(value),
+            Err(error) => Settled::Error(error),
+        }
+    }
+}
+
+impl<T, E> From<Settled<T, E>> for Result<T, E> {
+    fn from(settled: Settled<T, E>) -> Self {
+        match settled {
+            Settled::Ok(value) => Ok(value),
+            Settled::Error(error) => Err(error),
+        }
+    }
+}
+
+/// The I/O a dispatch needs the host to do (`IoRequest` on the wire).
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum IoRequestWire {
+    #[serde(rename_all = "camelCase")]
+    ReadRow { entity_type: String, id: String },
+    #[serde(rename_all = "camelCase")]
+    ListRows { entity_type: String },
+    #[serde(rename_all = "camelCase")]
+    CreateRow { entity_type: String, data: Value },
+    #[serde(rename_all = "camelCase")]
+    WriteRow {
+        entity_type: String,
+        id: String,
+        data: Value,
+    },
+    #[serde(rename_all = "camelCase")]
+    DeleteRow { entity_type: String, id: String },
+    #[serde(rename_all = "camelCase")]
+    CallService {
+        service: String,
+        method: String,
+        args: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<CallerWire>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<CallSiteWire>,
+    },
+    #[serde(rename_all = "camelCase")]
+    CancelCall { key: String },
+    #[serde(rename_all = "camelCase")]
+    Substrate { op: String, args: Vec<Value> },
+}
+
+/// A host's answer to one request; `kind` must be the one the request calls for.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum IoAnswerWire {
+    Row {
+        result: Settled<Value, String>,
+    },
+    Rows {
+        result: Settled<Vec<Value>, String>,
+    },
+    Deleted {
+        result: Settled<(), String>,
+    },
+    Service {
+        result: Settled<Value, String>,
+    },
+    /// The call was aborted by `cancel-call` while it ran: the call site's cancelled route fires.
+    ServiceCancelled,
+    /// The call was started and its outcome arrives later as a dispatch of its own.
+    ServiceDeferred,
+    Cancelled {
+        result: Settled<(), String>,
+    },
+    Substrate {
+        result: Settled<Value, SubstrateFailureWire>,
+    },
+}
+
+/// A request a dispatch is waiting on, named by `id`.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingRequestWire {
+    pub id: u64,
+    pub request: IoRequestWire,
+}
+
+/// The host's answer to the request `id`.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IoReplyWire {
+    pub id: u64,
+    pub answer: IoAnswerWire,
+}
+
+/// Where a server dispatch stands: finished with its response, or waiting on `requests` (answer them
+/// in any order, concurrently, and `resume` the `flight`).
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum ServerProgressWire {
+    Done {
+        response: EventResponse,
+    },
+    Await {
+        flight: u64,
+        requests: Vec<PendingRequestWire>,
+    },
+}
+
+impl From<&ServiceCaller> for CallerWire {
+    fn from(caller: &ServiceCaller) -> Self {
+        Self {
+            principal: caller.principal.clone(),
+            role: caller.role.clone(),
+        }
+    }
+}
+
+impl From<CallerWire> for ServiceCaller {
+    fn from(caller: CallerWire) -> Self {
+        Self {
+            principal: caller.principal,
+            role: caller.role,
+        }
+    }
+}
+
+impl From<&CallSite> for CallSiteWire {
+    fn from(site: &CallSite) -> Self {
+        Self {
+            orbital: site.orbital.clone(),
+            trait_name: site.trait_name.clone(),
+            follow_on: site.follow_on,
+            emit: CallRoutesWire {
+                success: site.emit.success.clone(),
+                failure: site.emit.failure.clone(),
+                cancelled: site.emit.cancelled.clone(),
+                on_message: site.emit.on_message.clone(),
+            },
+        }
+    }
+}
+
+impl From<CallSiteWire> for CallSite {
+    fn from(site: CallSiteWire) -> Self {
+        Self {
+            orbital: site.orbital,
+            trait_name: site.trait_name,
+            follow_on: site.follow_on,
+            emit: CallRoutes {
+                success: site.emit.success,
+                failure: site.emit.failure,
+                cancelled: site.emit.cancelled,
+                on_message: site.emit.on_message,
+            },
+        }
+    }
+}
+
+impl From<IoRequestWire> for IoRequest {
+    fn from(request: IoRequestWire) -> Self {
+        match request {
+            IoRequestWire::ReadRow { entity_type, id } => Self::ReadRow { entity_type, id },
+            IoRequestWire::ListRows { entity_type } => Self::ListRows { entity_type },
+            IoRequestWire::CreateRow { entity_type, data } => Self::CreateRow { entity_type, data },
+            IoRequestWire::WriteRow {
+                entity_type,
+                id,
+                data,
+            } => Self::WriteRow {
+                entity_type,
+                id,
+                data,
+            },
+            IoRequestWire::DeleteRow { entity_type, id } => Self::DeleteRow { entity_type, id },
+            IoRequestWire::CallService {
+                service,
+                method,
+                args,
+                key,
+                caller,
+                site,
+            } => Self::CallService {
+                service,
+                method,
+                args,
+                key,
+                caller: caller.map(ServiceCaller::from),
+                site: site.map(CallSite::from),
+            },
+            IoRequestWire::CancelCall { key } => Self::CancelCall { key },
+            IoRequestWire::Substrate { op, args } => Self::Substrate { op, args },
+        }
+    }
+}
+
+impl From<&IoRequest> for IoRequestWire {
+    fn from(request: &IoRequest) -> Self {
+        match request {
+            IoRequest::ReadRow { entity_type, id } => Self::ReadRow {
+                entity_type: entity_type.clone(),
+                id: id.clone(),
+            },
+            IoRequest::ListRows { entity_type } => Self::ListRows {
+                entity_type: entity_type.clone(),
+            },
+            IoRequest::CreateRow { entity_type, data } => Self::CreateRow {
+                entity_type: entity_type.clone(),
+                data: data.clone(),
+            },
+            IoRequest::WriteRow {
+                entity_type,
+                id,
+                data,
+            } => Self::WriteRow {
+                entity_type: entity_type.clone(),
+                id: id.clone(),
+                data: data.clone(),
+            },
+            IoRequest::DeleteRow { entity_type, id } => Self::DeleteRow {
+                entity_type: entity_type.clone(),
+                id: id.clone(),
+            },
+            IoRequest::CallService {
+                service,
+                method,
+                args,
+                key,
+                caller,
+                site,
+            } => Self::CallService {
+                service: service.clone(),
+                method: method.clone(),
+                args: args.clone(),
+                key: key.clone(),
+                caller: caller.as_ref().map(CallerWire::from),
+                site: site.as_ref().map(CallSiteWire::from),
+            },
+            IoRequest::CancelCall { key } => Self::CancelCall { key: key.clone() },
+            IoRequest::Substrate { op, args } => Self::Substrate {
+                op: op.clone(),
+                args: args.clone(),
+            },
+        }
+    }
+}
+
+impl From<&PendingRequest> for PendingRequestWire {
+    fn from(pending: &PendingRequest) -> Self {
+        Self {
+            id: pending.id.raw(),
+            request: IoRequestWire::from(&pending.request),
+        }
+    }
+}
+
+impl From<&IoAnswer> for IoAnswerWire {
+    fn from(answer: &IoAnswer) -> Self {
+        match answer {
+            IoAnswer::Row(r) => Self::Row {
+                result: r.clone().into(),
+            },
+            IoAnswer::Rows(r) => Self::Rows {
+                result: r.clone().into(),
+            },
+            IoAnswer::Deleted(r) => Self::Deleted {
+                result: r.clone().into(),
+            },
+            IoAnswer::Service(r) => Self::Service {
+                result: r.clone().into(),
+            },
+            IoAnswer::ServiceCancelled => Self::ServiceCancelled,
+            IoAnswer::ServiceDeferred => Self::ServiceDeferred,
+            IoAnswer::Cancelled(r) => Self::Cancelled {
+                result: r.clone().into(),
+            },
+            IoAnswer::Substrate(r) => Self::Substrate {
+                result: r
+                    .clone()
+                    .map_err(|f| SubstrateFailureWire {
+                        message: f.message,
+                        errors: f.errors,
+                    })
+                    .into(),
+            },
+        }
+    }
+}
+
+impl From<IoAnswerWire> for IoAnswer {
+    fn from(answer: IoAnswerWire) -> Self {
+        match answer {
+            IoAnswerWire::Row { result } => Self::Row(result.into()),
+            IoAnswerWire::Rows { result } => Self::Rows(result.into()),
+            IoAnswerWire::Deleted { result } => Self::Deleted(result.into()),
+            IoAnswerWire::Service { result } => Self::Service(result.into()),
+            IoAnswerWire::ServiceCancelled => Self::ServiceCancelled,
+            IoAnswerWire::ServiceDeferred => Self::ServiceDeferred,
+            IoAnswerWire::Cancelled { result } => Self::Cancelled(result.into()),
+            IoAnswerWire::Substrate { result } => {
+                let result: Result<Value, SubstrateFailureWire> = result.into();
+                Self::Substrate(result.map_err(|f| SubstrateFailure {
+                    message: f.message,
+                    errors: f.errors,
+                }))
+            }
+        }
+    }
+}
+
+impl From<IoReplyWire> for IoReply {
+    fn from(reply: IoReplyWire) -> Self {
+        Self {
+            id: RequestId::from_raw(reply.id),
+            answer: reply.answer.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "ts_export.rs"]
+mod ts_export;

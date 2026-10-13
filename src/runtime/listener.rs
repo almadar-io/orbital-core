@@ -1,5 +1,6 @@
 //! Cross-orbital event listener wiring for the runtime kernel.
 
+use crate::effects::BusEventSource;
 use crate::schema::{ListenSource, SExpression};
 use crate::{
     BindingContextBuilder, Evaluator, ListenDefinition, SharedEventBus, SubscriptionId, Value,
@@ -16,6 +17,9 @@ pub struct ListenerInfo {
 
     /// Target trait name.
     pub trait_name: String,
+
+    /// The orbital that owns the listening trait: a name-only `trait` source hears only this orbital.
+    pub orbital: String,
 
     /// Internal event to trigger.
     pub triggers: String,
@@ -35,12 +39,35 @@ pub struct ListenerInfo {
 }
 
 impl ListenerInfo {
-    /// Whether this listener's declared source matches an event emitted by `source_trait`.
-    pub fn matches_source(&self, source_trait: &str) -> bool {
+    /// Whether this listener's declared source matches an event stamped `source`. Id-first: a source that
+    /// carries the ids for its scope compares ids only (rename-proof, and an id on one side only is a
+    /// mismatch); otherwise names, where a name-only `trait` source is confined to the listener's own orbital
+    /// and an `orbital` source names the emitter's orbital. JS twin: `buildSourceMatcher`.
+    pub fn matches_source(&self, source: &BusEventSource) -> bool {
         match &self.source {
             None | Some(ListenSource::Any) => true,
-            Some(ListenSource::Trait { trait_name, .. })
-            | Some(ListenSource::Orbital { trait_name, .. }) => trait_name == source_trait,
+            Some(ListenSource::Trait { trait_name, trait_id }) => match trait_id {
+                Some(id) => source.trait_id.as_deref() == Some(id.as_str()),
+                None => {
+                    source.orbital.as_deref() == Some(self.orbital.as_str())
+                        && source.r#trait.as_deref() == Some(trait_name.as_str())
+                }
+            },
+            Some(ListenSource::Orbital {
+                orbital,
+                orbital_id,
+                trait_name,
+                trait_id,
+            }) => match (orbital_id, trait_id) {
+                (Some(orbital_id), Some(trait_id)) => {
+                    source.orbital_id.as_deref() == Some(orbital_id.as_str())
+                        && source.trait_id.as_deref() == Some(trait_id.as_str())
+                }
+                _ => {
+                    source.orbital.as_deref() == Some(orbital.as_str())
+                        && source.r#trait.as_deref() == Some(trait_name.as_str())
+                }
+            },
         }
     }
 }
@@ -90,13 +117,17 @@ impl ListenerManager {
     pub fn register(
         &self,
         trait_name: &str,
+        orbital: &str,
         listen: &ListenDefinition,
     ) -> Result<SubscriptionId, String> {
-        let event_pattern = listen.event.clone();
+        let (event_pattern, source) = match &listen.source {
+            Some(source) => (listen.event.clone(), Some(source.clone())),
+            None => crate::schema::split_event_address(&listen.event),
+        };
         let triggers = listen
             .triggers
             .clone()
-            .unwrap_or_else(|| listen.event.clone());
+            .unwrap_or_else(|| event_pattern.clone());
         let payload_mapping = listen.payload_mapping.clone();
         let guard = listen.guard.clone();
         let trait_name_owned = trait_name.to_string();
@@ -146,8 +177,9 @@ impl ListenerManager {
         let info = ListenerInfo {
             event_pattern: event_pattern.clone(),
             trait_name: trait_name_owned.clone(),
+            orbital: orbital.to_string(),
             triggers,
-            source: listen.source.clone(),
+            source,
             payload_mapping: listen.payload_mapping.clone(),
             guard: listen.guard.clone(),
             subscription_id,
@@ -170,11 +202,12 @@ impl ListenerManager {
     pub fn register_all(
         &self,
         trait_name: &str,
+        orbital: &str,
         listens: &[ListenDefinition],
     ) -> Vec<Result<SubscriptionId, String>> {
         listens
             .iter()
-            .map(|listen| self.register(trait_name, listen))
+            .map(|listen| self.register(trait_name, orbital, listen))
             .collect()
     }
 
@@ -212,14 +245,14 @@ impl ListenerManager {
     /// `source_trait`. This is the synchronous fan-out query the kernel's cascade
     /// dispatch uses (the bus-subscription path needs a `trigger_callback`, which
     /// the wrapping client/server don't set).
-    pub fn matching(&self, event: &str, source_trait: &str) -> Vec<ListenerInfo> {
+    pub fn matching(&self, event: &str, source: &BusEventSource) -> Vec<ListenerInfo> {
         let listeners = self.listeners.read();
         self.order
             .read()
             .iter()
             .filter_map(|name| listeners.get(name))
             .flatten()
-            .filter(|l| l.event_pattern == event && l.matches_source(source_trait))
+            .filter(|l| l.event_pattern == event && l.matches_source(source))
             .cloned()
             .collect()
     }
@@ -258,7 +291,7 @@ mod tests {
             triggers_id: None,
         };
 
-        let result = manager.register("ProfileManagement", &listen);
+        let result = manager.register("ProfileManagement", "Orb", &listen);
         assert!(result.is_ok());
 
         let listeners = manager.get_listeners("ProfileManagement");
@@ -288,20 +321,20 @@ mod tests {
             triggers_id: None,
         };
         for name in names {
-            manager.register(name, &listen).unwrap();
+            manager.register(name, "Orb", &listen).unwrap();
         }
         for _ in 0..20 {
             let order: Vec<String> = manager
-                .matching("X", "Src")
+                .matching("X", &BusEventSource::from_trait("Src"))
                 .into_iter()
                 .map(|l| l.trait_name)
                 .collect();
             assert_eq!(order, names);
         }
         manager.unregister_trait("Twin");
-        manager.register("Twin", &listen).unwrap();
+        manager.register("Twin", "Orb", &listen).unwrap();
         let order: Vec<String> = manager
-            .matching("X", "Src")
+            .matching("X", &BusEventSource::from_trait("Src"))
             .into_iter()
             .map(|l| l.trait_name)
             .collect();
@@ -340,7 +373,7 @@ mod tests {
             triggers_id: None,
         };
 
-        manager.register("ProfileManagement", &listen).unwrap();
+        manager.register("ProfileManagement", "Orb", &listen).unwrap();
 
         bus.emit(Event::new("USER_REGISTERED", Value::Null));
 
@@ -372,7 +405,7 @@ mod tests {
             triggers_id: None,
         };
 
-        manager.register("ProfileManagement", &listen).unwrap();
+        manager.register("ProfileManagement", "Orb", &listen).unwrap();
 
         let mut payload1 = HashMap::new();
         payload1.insert("status".to_string(), Value::String("pending".to_string()));
@@ -419,7 +452,7 @@ mod tests {
             triggers_id: None,
         };
 
-        manager.register("ProfileManagement", &listen).unwrap();
+        manager.register("ProfileManagement", "Orb", &listen).unwrap();
 
         let mut payload = HashMap::new();
         payload.insert("id".to_string(), Value::String("user-123".to_string()));
@@ -465,8 +498,8 @@ mod tests {
             triggers_id: None,
         };
 
-        manager.register("TestTrait", &listen1).unwrap();
-        manager.register("TestTrait", &listen2).unwrap();
+        manager.register("TestTrait", "Orb", &listen1).unwrap();
+        manager.register("TestTrait", "Orb", &listen2).unwrap();
 
         assert_eq!(manager.listener_count(), 2);
 
@@ -509,7 +542,7 @@ mod tests {
             },
         ];
 
-        let results = manager.register_all("TestTrait", &listens);
+        let results = manager.register_all("TestTrait", "Orb", &listens);
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|r| r.is_ok()));
         assert_eq!(manager.listener_count(), 2);

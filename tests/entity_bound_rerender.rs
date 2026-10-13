@@ -398,3 +398,64 @@ fn control_a_committed_dispatch_repaints_once_and_leaves_nothing_pending() {
     assert_eq!(painted_by(&r, "Hud").len(), 1);
     assert!(k.rerender_stale().is_empty());
 }
+
+fn host_backed_kernel() -> RuntimeKernel {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "hosted",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Board", "persistence": "runtime",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "score", "type": "number", "default": 0 }] },
+            "traits": [{
+                "name": "Hud", "linkedEntity": "Board",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    arm("INIT", json!([render("hud", text("@entity.score"))])),
+                    arm("LOAD", json!([["fetch", "Board", {}]]))
+                ] }
+            }]
+        }]
+    }))
+    .unwrap();
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Client,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig::for_environment(RuntimeEnvironment::Client),
+    );
+    k.register_schema(schema).unwrap();
+    k.dispatch_with_server_leg("Main", "Hud", None, "INIT", Value::Null, None)
+        .unwrap();
+    k
+}
+
+fn host_answer(paints_hud: bool) -> EventResponse {
+    let painted = json!({ "type": "typography", "content": "from the host" });
+    serde_json::from_value(json!({
+        "success": true, "transitioned": true, "states": {}, "emittedEvents": [],
+        "entityByTrait": { "Hud": { "id": "singleton", "score": 7 } },
+        "clientEffects": if paints_hud { json!([["render-ui", "hud", painted]]) } else { json!([]) },
+        "clientEffectsByTrait": if paints_hud { json!([{ "traitName": "Hud", "effect": ["render-ui", "hud", painted] }]) } else { json!([]) }
+    }))
+    .unwrap()
+}
+
+#[test]
+fn the_hosts_paint_of_a_slot_is_not_repainted_over_by_the_clients_older_render() {
+    let k = host_backed_kernel();
+    k.apply_server_response(&host_answer(true), &Default::default())
+        .unwrap();
+    let mut folded = EventResponse::default();
+    folded.fold_rerenders(&k.rerender_stale());
+    assert!(painted_by(&folded, "Hud").is_empty(), "{:?}", paints(&folded));
+}
+
+#[test]
+fn control_a_host_answer_that_paints_nothing_leaves_the_bound_render_to_follow_the_entity() {
+    let k = host_backed_kernel();
+    k.apply_server_response(&host_answer(false), &Default::default())
+        .unwrap();
+    let mut folded = EventResponse::default();
+    folded.fold_rerenders(&k.rerender_stale());
+    let hud = painted_by(&folded, "Hud");
+    assert_eq!(hud.len(), 1, "{:?}", paints(&folded));
+    assert_eq!(hud[0]["content"].as_f64(), Some(7.0));
+}

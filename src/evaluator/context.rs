@@ -9,6 +9,7 @@
 //! - `@user` - the authenticated viewer
 //! - `@now` - current timestamp
 //! - `@currentTheme` - render-resolved `data-theme` key (kernel-populated)
+//! - `@pages` - render-resolved app nav entries (kernel-populated)
 //!
 //! Nested paths are supported: `@entity.address.city`
 
@@ -22,31 +23,37 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Default)]
 pub struct BindingContext {
     /// Entity data (`@entity`)
-    pub entity: Value,
+    pub entity: Arc<Value>,
     /// Event payload (`@payload`)
-    pub payload: Value,
+    pub payload: Arc<Value>,
     /// Current state (`@state`)
-    pub state: Value,
+    pub state: Arc<Value>,
     /// Configuration (`@config`)
-    pub config: Value,
+    pub config: Arc<Value>,
     /// Current user (`@user`)
-    pub user: Value,
+    pub user: Arc<Value>,
     /// Render-resolved `@currentTheme` — the host orbital's active `data-theme`
     /// key, set by the kernel from `resolve_theme` (precedence: orbital theme
     /// → app theme → default). `Value::Null` until populated.
-    pub current_theme: Value,
+    pub current_theme: Arc<Value>,
+    /// Render-resolved `@pages` — the app's root nav entries (`NavItem[]`). `Value::Null` until the
+    /// kernel sets it; the token then stays unresolved.
+    pub pages: Arc<Value>,
     /// The dispatch's one `now` stamp (ms epoch); `None` = unstamped, read the wall clock.
     pub now: Option<f64>,
     /// `@locale`: the active locale code (`Value::Null` until the host sets it).
-    pub locale: Value,
+    pub locale: Arc<Value>,
     /// The active locale's merged catalog (qualified key → message) for `i18n/t`.
     messages: Arc<HashMap<String, String>>,
     /// `@event`: the delivery being processed (`delivery_record_value`, Runtime Spec Clause 5.5).
-    pub event: Value,
+    pub event: Arc<Value>,
     /// `@prevEvents`: deliveries this trait already received this dispatch.
-    pub prev_events: Vec<Value>,
+    pub prev_events: Arc<Vec<Value>>,
     /// `@prevStates`: states this trait left this dispatch.
-    pub prev_states: Vec<String>,
+    pub prev_states: Arc<Vec<String>>,
+    /// `@callsitePayload`: the payload of the transition that composed this trait into its embedder
+    /// (`Value::Null` until composed).
+    pub callsite_payload: Arc<Value>,
     /// `@fromState` / `@toState`: the transition's ends.
     pub from_state: Option<String>,
     pub to_state: Option<String>,
@@ -57,6 +64,9 @@ pub struct BindingContext {
     /// Shared via `Arc` so cloning a child context (hot path in map/filter/reduce)
     /// is a refcount bump rather than a deep clone of every entity collection.
     entity_stores: Arc<HashMap<String, Vec<Value>>>,
+    /// Resolve a whole-string binding that holds no value to an absent prop (see
+    /// [`Self::resolve_dropping_unset`]) instead of leaving its token for a later resolver.
+    drop_unset: bool,
 }
 
 impl BindingContext {
@@ -78,44 +88,56 @@ impl BindingContext {
     /// Create a context with entity data
     pub fn with_entity(entity: Value) -> Self {
         Self {
-            entity,
+            entity: Arc::new(entity),
             ..Default::default()
         }
     }
 
     /// Set the entity value
     pub fn set_entity(&mut self, entity: Value) -> &mut Self {
-        self.entity = entity;
+        self.entity = Arc::new(entity);
         self
     }
 
     /// Set the payload value
     pub fn set_payload(&mut self, payload: Value) -> &mut Self {
-        self.payload = payload;
+        self.payload = Arc::new(payload);
         self
     }
 
     /// Set the state value
     pub fn set_state(&mut self, state: Value) -> &mut Self {
-        self.state = state;
+        self.state = Arc::new(state);
         self
     }
 
     /// Set the config value
     pub fn set_config(&mut self, config: Value) -> &mut Self {
-        self.config = config;
+        self.config = Arc::new(config);
+        self
+    }
+
+    /// Set the `@callsitePayload` root.
+    pub fn set_callsite_payload(&mut self, payload: Value) -> &mut Self {
+        self.callsite_payload = Arc::new(payload);
         self
     }
 
     /// Set the user value
     pub fn set_user(&mut self, user: Value) -> &mut Self {
-        self.user = user;
+        self.user = Arc::new(user);
         self
     }
 
     /// Set the render-resolved `@currentTheme` key.
     pub fn set_current_theme(&mut self, current_theme: Value) -> &mut Self {
-        self.current_theme = current_theme;
+        self.current_theme = Arc::new(current_theme);
+        self
+    }
+
+    /// Set the render-resolved `@pages` nav entries.
+    pub fn set_pages(&mut self, pages: Value) -> &mut Self {
+        self.pages = Arc::new(pages);
         self
     }
 
@@ -175,9 +197,12 @@ impl BindingContext {
             "config" => &self.config,
             "user" => &self.user,
             "currentTheme" => &self.current_theme,
+            "pages" if self.pages.is_null() => return None,
+            "pages" => &self.pages,
             "locale" => &self.locale,
             "event" => &self.event,
-            "prevEvents" if rest.is_none() => return Some(Value::Array(self.prev_events.clone())),
+            "callsitePayload" => &self.callsite_payload,
+            "prevEvents" if rest.is_none() => return Some(Value::Array(self.prev_events.to_vec())),
             "prevStates" if rest.is_none() => {
                 return Some(Value::Array(
                     self.prev_states
@@ -423,6 +448,10 @@ impl BindingContext {
             Value::Object(map) => {
                 let mut resolved_map: Option<std::collections::HashMap<String, Value>> = None;
                 for (key, val) in map {
+                    if self.is_unset_config_binding(val) {
+                        resolved_map.get_or_insert_with(|| map.clone()).remove(key);
+                        continue;
+                    }
                     if let Cow::Owned(new_val) = self.resolve_value_guarded(val, expanding) {
                         resolved_map
                             .get_or_insert_with(|| map.clone())
@@ -472,6 +501,10 @@ impl BindingContext {
                 }
                 let mut resolved_arr: Option<Vec<Value>> = None;
                 for (i, val) in arr.iter().enumerate() {
+                    if self.is_unset_config_binding(val) {
+                        resolved_arr.get_or_insert_with(|| arr.clone())[i] = Value::Null;
+                        continue;
+                    }
                     if let Cow::Owned(new_val) = self.resolve_value_guarded(val, expanding) {
                         resolved_arr.get_or_insert_with(|| arr.clone())[i] = new_val;
                     }
@@ -485,6 +518,43 @@ impl BindingContext {
         }
     }
 
+    /// A whole-string binding that holds no value, which an object leaves out as the JS runtime's `undefined`:
+    /// an `@config.<knob>` that is unset (declared without a default, or never declared) or forwards to an
+    /// unset `@callsitePayload.<path>`, an `@callsitePayload.<path>` of a trait not yet composed, an
+    /// `@event.<path>` the delivery in flight does not carry, and (when `drop_unset`) any other.
+    pub(crate) fn is_unset_config_binding(&self, value: &Value) -> bool {
+        let Value::String(s) = value else {
+            return false;
+        };
+        if Self::binding_token_end(s, 0) != Some(s.len()) {
+            return false;
+        }
+        let rooted = s.starts_with("@config.")
+            || s.starts_with("@callsitePayload.")
+            || (s.starts_with("@event.") && matches!(&*self.event, Value::Object(_)))
+            || (self.drop_unset && s.starts_with('@') && !s.starts_with("@trait."));
+        rooted && self.resolves_to_nothing(s)
+    }
+
+    /// Whether the whole-string binding `token` ends in no value, following knobs that forward to another
+    /// `@config.` / `@callsitePayload.` binding.
+    fn resolves_to_nothing(&self, token: &str) -> bool {
+        let mut current = token.to_string();
+        for _ in 0..8 {
+            match self.resolve_binding(&current) {
+                None => return true,
+                Some(Value::String(next))
+                    if Self::binding_token_end(&next, 0) == Some(next.len())
+                        && (next.starts_with("@config.") || next.starts_with("@callsitePayload.")) =>
+                {
+                    current = next;
+                }
+                Some(_) => return false,
+            }
+        }
+        false
+    }
+
     /// Create a child context with additional local bindings
     ///
     /// Useful for `let` expressions and lambda scopes.
@@ -496,17 +566,29 @@ impl BindingContext {
             config: self.config.clone(),
             user: self.user.clone(),
             current_theme: self.current_theme.clone(),
+            pages: self.pages.clone(),
             now: self.now,
             locale: self.locale.clone(),
             messages: Arc::clone(&self.messages),
             event: self.event.clone(),
+            callsite_payload: self.callsite_payload.clone(),
             prev_events: self.prev_events.clone(),
             prev_states: self.prev_states.clone(),
             from_state: self.from_state.clone(),
             to_state: self.to_state.clone(),
             locals: self.locals.clone(),
             entity_stores: Arc::clone(&self.entity_stores),
+            drop_unset: self.drop_unset,
         }
+    }
+
+    /// [`Self::resolve_value`] for a value no later layer resolves (an `emit` payload, read only by the
+    /// listeners it reaches): a whole-string binding with no value is an absent prop, as `undefined` is
+    /// in the JS runtime. A client-resolved `@trait.*` token stays.
+    pub fn resolve_dropping_unset(&self, value: &Value) -> Value {
+        let mut ctx = self.clone();
+        ctx.drop_unset = true;
+        ctx.resolve_value(value).into_owned()
     }
 
     /// Create a child context with a specific item bound (for map/filter)
@@ -542,37 +624,42 @@ impl BindingContextBuilder {
     }
 
     pub fn entity(mut self, entity: Value) -> Self {
-        self.context.entity = entity;
+        self.context.entity = Arc::new(entity);
         self
     }
 
     pub fn payload(mut self, payload: Value) -> Self {
-        self.context.payload = payload;
+        self.context.payload = Arc::new(payload);
         self
     }
 
     pub fn state(mut self, state: Value) -> Self {
-        self.context.state = state;
+        self.context.state = Arc::new(state);
         self
     }
 
     pub fn config(mut self, config: Value) -> Self {
-        self.context.config = config;
+        self.context.config = Arc::new(config);
         self
     }
 
     pub fn user(mut self, user: Value) -> Self {
-        self.context.user = user;
+        self.context.user = Arc::new(user);
         self
     }
 
     pub fn current_theme(mut self, current_theme: Value) -> Self {
-        self.context.current_theme = current_theme;
+        self.context.current_theme = Arc::new(current_theme);
+        self
+    }
+
+    pub fn pages(mut self, pages: Value) -> Self {
+        self.context.pages = Arc::new(pages);
         self
     }
 
     pub fn locale(mut self, locale: Value) -> Self {
-        self.context.locale = locale;
+        self.context.locale = Arc::new(locale);
         self
     }
 
