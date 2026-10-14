@@ -308,13 +308,13 @@ fn get_volume() -> Result<Value, OrbitalError> {
                     muted = mute_str.contains("yes");
                 }
 
-                let mut result = HashMap::new();
+                let mut result = ValueMap::new();
                 result.insert("volume".to_string(), Value::Number(volume));
                 result.insert("muted".to_string(), Value::Bool(muted));
                 Ok(Value::Object(result))
             }
             Err(_) => {
-                let mut result = HashMap::new();
+                let mut result = ValueMap::new();
                 result.insert("volume".to_string(), Value::Number(50.0));
                 result.insert("muted".to_string(), Value::Bool(false));
                 Ok(Value::Object(result))

@@ -64,7 +64,7 @@ fn get_network_interfaces() -> Result<Value, OrbitalError> {
                 let is_up = (flags & 0x1) != 0; // IFF_UP
                 let is_running = (flags & 0x40) != 0; // IFF_RUNNING
 
-                let mut iface = HashMap::new();
+                let mut iface = ValueMap::new();
                 iface.insert("name".to_string(), Value::String(name_str));
                 iface.insert("mac".to_string(), Value::String(mac));
                 iface.insert("up".to_string(), Value::Bool(is_up));
@@ -126,7 +126,7 @@ fn get_network_stats() -> Result<Value, OrbitalError> {
             )))
         })?;
 
-        let mut stats = HashMap::new();
+        let mut stats = ValueMap::new();
 
         // Skip header lines
         for line in netdev.lines().skip(2) {
@@ -146,7 +146,7 @@ fn get_network_stats() -> Result<Value, OrbitalError> {
                 let tx_packets: u64 = parts[10].parse().unwrap_or(0);
                 let tx_errors: u64 = parts[11].parse().unwrap_or(0);
 
-                let mut iface_stats = HashMap::new();
+                let mut iface_stats = ValueMap::new();
                 iface_stats.insert("rxBytes".to_string(), Value::Number(rx_bytes as f64));
                 iface_stats.insert("txBytes".to_string(), Value::Number(tx_bytes as f64));
                 iface_stats.insert("rxPackets".to_string(), Value::Number(rx_packets as f64));

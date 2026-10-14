@@ -35,7 +35,7 @@ fn get_battery_status() -> Result<Value, OrbitalError> {
 
         let power_supply_path = Path::new("/sys/class/power_supply");
         let mut battery_found = false;
-        let mut result = HashMap::new();
+        let mut result = ValueMap::new();
 
         if let Ok(entries) = fs::read_dir(power_supply_path) {
             for entry in entries.flatten() {
@@ -147,7 +147,7 @@ fn get_thermal_zones() -> Result<Value, OrbitalError> {
                         .map(|s| s.trim().to_string())
                         .unwrap_or_else(|| "unknown".to_string());
 
-                    let mut zone = HashMap::new();
+                    let mut zone = ValueMap::new();
                     zone.insert("name".to_string(), Value::String(name_str.to_string()));
                     zone.insert("temperature".to_string(), Value::Number(temp_c));
                     zone.insert("type".to_string(), Value::String(zone_type));

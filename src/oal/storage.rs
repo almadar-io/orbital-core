@@ -90,7 +90,7 @@ fn get_disk_usage(path: &str) -> Result<Value, OrbitalError> {
             0.0
         };
 
-        let mut result = HashMap::new();
+        let mut result = ValueMap::new();
         result.insert("path".to_string(), Value::String(path.to_string()));
         result.insert("total".to_string(), Value::Number(total));
         result.insert("used".to_string(), Value::Number(used));
@@ -164,7 +164,7 @@ fn get_mounts() -> Result<Value, OrbitalError> {
                         .map(|s| Value::String(s.to_string()))
                         .collect();
 
-                    let mut mount = HashMap::new();
+                    let mut mount = ValueMap::new();
                     mount.insert("device".to_string(), Value::String(device.to_string()));
                     mount.insert(
                         "mountPoint".to_string(),
@@ -274,7 +274,7 @@ fn get_disk_io_stats() -> Result<Value, OrbitalError> {
                     let read_bytes = sectors_read * 512;
                     let write_bytes = sectors_written * 512;
 
-                    let mut stat = HashMap::new();
+                    let mut stat = ValueMap::new();
                     stat.insert("device".to_string(), Value::String(device_name.to_string()));
                     stat.insert(
                         "readsCompleted".to_string(),

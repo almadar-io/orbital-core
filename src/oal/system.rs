@@ -177,7 +177,7 @@ fn get_memory_info() -> Result<Value, OrbitalError> {
             0.0
         };
 
-        let mut result = HashMap::new();
+        let mut result = ValueMap::new();
         result.insert("total".to_string(), Value::Number(total as f64));
         result.insert("available".to_string(), Value::Number(available as f64));
         result.insert("used".to_string(), Value::Number(used as f64));
@@ -303,7 +303,7 @@ fn get_load_avg() -> Result<Value, OrbitalError> {
         let five: f64 = parts[1].parse().unwrap_or(0.0);
         let fifteen: f64 = parts[2].parse().unwrap_or(0.0);
 
-        let mut result = HashMap::new();
+        let mut result = ValueMap::new();
         result.insert("one".to_string(), Value::Number(one));
         result.insert("five".to_string(), Value::Number(five));
         result.insert("fifteen".to_string(), Value::Number(fifteen));
