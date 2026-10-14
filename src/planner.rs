@@ -463,6 +463,9 @@ fn synth_field(
         _ if field_name == "id" => {
             seed_id.map(serde_json::Value::from).unwrap_or_else(|| serde_json::json!("verify"))
         }
+        // A named type that is not an entity (a union of record variants) has no placeholder: a string would
+        // stand where a record is declared.
+        t if t.chars().next().is_some_and(char::is_uppercase) => serde_json::Value::Null,
         // string + other entity-typed fields → a placeholder string id.
         _ => serde_json::json!("verify"),
     }

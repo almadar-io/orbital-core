@@ -167,16 +167,17 @@ pub fn persona_from_env_for_schema(schema: &OrbitalSchema) -> Result<Value, Stri
 
 #[cfg(test)]
 mod tests {
+    use crate::evaluator::ValueMap;
     use super::*;
     use serde_json::json;
-    use std::collections::HashMap;
+    
 
     fn roster3() -> Vec<Value> {
         ["member", "moderator", "admin"]
             .iter()
             .enumerate()
             .map(|(i, role)| {
-                let mut m = HashMap::new();
+                let mut m = ValueMap::new();
                 m.insert("id".to_string(), Value::String(format!("Person-{}", i + 1)));
                 m.insert("role".to_string(), Value::String((*role).to_string()));
                 Value::Object(m)

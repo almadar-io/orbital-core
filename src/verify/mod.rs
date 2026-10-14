@@ -9,9 +9,9 @@ pub mod report;
 
 pub use report::Report;
 
+use crate::evaluator::ValueMap;
 use crate::planner;
 use crate::{OrbitalSchema, Value};
-use std::collections::HashMap;
 
 /// Verify a resolved schema: plan every trait's transitions, drive the kernel, observe.
 ///
@@ -131,7 +131,7 @@ fn verify_with_harness(
 fn persona_with_field(base: &Value, field: &str, value: &str) -> Value {
     let mut obj = match base {
         Value::Object(m) => m.clone(),
-        _ => HashMap::new(),
+        _ => ValueMap::new(),
     };
     obj.insert(field.to_string(), Value::String(value.to_string()));
     Value::Object(obj)

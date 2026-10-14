@@ -58,7 +58,7 @@ fn host_answer() -> EventResponse {
 fn host_row() -> EventResponse {
     EventResponse {
         success: true,
-        entity_by_trait: Some(HashMap::from([(
+        entity_by_trait: Some(orbital_core::ValueMap::from([(
             "Searcher".to_string(),
             serde_json::from_value::<Value>(json!({ "id": "q1", "text": "from the host" }))
                 .unwrap(),
@@ -106,7 +106,7 @@ fn a_host_row_for_a_trait_that_awaits_the_host_is_still_folded() {
         serde_json::from_value::<Value>(json!({ "id": "t1", "text": "from the host" })).unwrap();
     let response = EventResponse {
         success: true,
-        entity_by_trait: Some(HashMap::from([("Responder".to_string(), row.clone())])),
+        entity_by_trait: Some(orbital_core::ValueMap::from([("Responder".to_string(), row.clone())])),
         ..EventResponse::default()
     };
     k.apply_server_response(&response, &Default::default())

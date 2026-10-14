@@ -3,6 +3,7 @@
 // the correctness scenarios of persist_success_emit, client_fetch_success_emit, same_trait_cascade,
 // dispatch_roots, cross_trait_dispatch and completion_events.
 
+use orbital_core::evaluator::ValueMap;
 use orbital_core::effects::{LifecycleEvent, MountSeed, ServiceHandler, SubstrateFailure, SubstrateHandler};
 use orbital_core::runtime::resumable::{
     drive_blocking, BlockingHost, DispatchContinuation, DispatchError, DispatchOutcomes,
@@ -11,7 +12,6 @@ use orbital_core::runtime::resumable::{
 use orbital_core::runtime::{EntitySource, InMemoryEntityCache, KernelConfig, RuntimeKernel};
 use orbital_core::{OrbitalSchema, RuntimeEnvironment, Value};
 use serde_json::{json, Value as Json};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------------------------
@@ -320,7 +320,7 @@ impl ServiceHandler for Llm {
         if self.fail {
             return Err("rate limited".to_string());
         }
-        let mut out = HashMap::new();
+        let mut out = ValueMap::new();
         out.insert(
             "embeddings".to_string(),
             Value::Array(vec![Value::Number(1.0)]),

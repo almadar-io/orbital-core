@@ -13,9 +13,19 @@
 //!
 //! Nested paths are supported: `@entity.address.city`
 
+use crate::evaluator::ValueMap;
 use super::value::Value;
+use crate::error::{EvalError, OrbitalError};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// State of one `resolve_value` walk: the binding tokens being expanded (cycle bound) and the first typed
+/// argument mismatch an embedded operator call raised.
+#[derive(Default)]
+struct Walk {
+    expanding: Vec<String>,
+    fault: Option<EvalError>,
+}
 
 /// Binding context for S-expression evaluation
 ///
@@ -58,7 +68,7 @@ pub struct BindingContext {
     pub from_state: Option<String>,
     pub to_state: Option<String>,
     /// Local bindings (from `let` expressions)
-    locals: HashMap<String, Value>,
+    locals: ValueMap,
     /// Custom bindings for entity types (for `count` queries).
     ///
     /// Shared via `Arc` so cloning a child context (hot path in map/filter/reduce)
@@ -149,7 +159,7 @@ impl BindingContext {
 
     /// Remove a local binding
     pub fn remove_local(&mut self, name: &str) -> Option<Value> {
-        self.locals.remove(name)
+        self.locals.shift_remove(name)
     }
 
     /// Register an entity store for count queries
@@ -327,7 +337,22 @@ impl BindingContext {
     /// payloads) must be run through this — never special-case one binding downstream.
     /// Binding-free subtrees are borrowed, not cloned.
     pub fn resolve_value<'v>(&self, value: &'v Value) -> std::borrow::Cow<'v, Value> {
-        self.resolve_value_guarded(value, &mut Vec::new())
+        self.resolve_value_guarded(value, &mut Walk::default())
+    }
+
+    /// [`Self::resolve_value`] that reports a typed argument mismatch (D-12) raised by an operator call
+    /// embedded in the value, as the JS runtime's `interpolateArray` does by letting it throw. Any other
+    /// evaluation failure keeps the value, as `resolve_value` does.
+    pub fn resolve_value_checked<'v>(
+        &self,
+        value: &'v Value,
+    ) -> Result<std::borrow::Cow<'v, Value>, EvalError> {
+        let mut walk = Walk::default();
+        let resolved = self.resolve_value_guarded(value, &mut walk);
+        match walk.fault {
+            Some(fault) => Err(fault),
+            None => Ok(resolved),
+        }
     }
 
     /// Resolve only `@config.*` leaves inside a render-time lambda body, mirror
@@ -377,7 +402,7 @@ impl BindingContext {
     fn resolve_value_guarded<'v>(
         &self,
         value: &'v Value,
-        expanding: &mut Vec<String>,
+        walk: &mut Walk,
     ) -> std::borrow::Cow<'v, Value> {
         use std::borrow::Cow;
         match value {
@@ -390,7 +415,7 @@ impl BindingContext {
                 // whole string as one path and leaves it literal.
                 let is_pure = Self::binding_token_end(s, 0) == Some(s.len());
                 if is_pure {
-                    if expanding.iter().any(|t| t == s) {
+                    if walk.expanding.iter().any(|t| t == s) {
                         // Self-referential value: this token is already being
                         // expanded higher up the same chain. Leave it literal.
                         return Cow::Borrowed(value);
@@ -406,24 +431,21 @@ impl BindingContext {
                         // both shapes.
                         Some(resolved) => match resolved {
                             Value::Object(_) | Value::Array(_) => {
-                                expanding.push(s.clone());
-                                let out = self
-                                    .resolve_value_guarded(&resolved, expanding)
-                                    .into_owned();
-                                expanding.pop();
+                                walk.expanding.push(s.clone());
+                                let out = self.resolve_value_guarded(&resolved, walk).into_owned();
+                                walk.expanding.pop();
                                 Cow::Owned(out)
                             }
                             Value::String(ref rs)
                                 if Self::binding_token_end(rs, 0) == Some(rs.len()) =>
                             {
-                                if expanding.iter().any(|t| t == s) {
+                                if walk.expanding.iter().any(|t| t == s) {
                                     Cow::Borrowed(value)
                                 } else {
-                                    expanding.push(s.clone());
-                                    let out = self
-                                        .resolve_value_guarded(&resolved, expanding)
-                                        .into_owned();
-                                    expanding.pop();
+                                    walk.expanding.push(s.clone());
+                                    let out =
+                                        self.resolve_value_guarded(&resolved, walk).into_owned();
+                                    walk.expanding.pop();
                                     Cow::Owned(out)
                                 }
                             }
@@ -446,13 +468,13 @@ impl BindingContext {
                 }
             }
             Value::Object(map) => {
-                let mut resolved_map: Option<std::collections::HashMap<String, Value>> = None;
+                let mut resolved_map: Option<ValueMap> = None;
                 for (key, val) in map {
                     if self.is_unset_config_binding(val) {
-                        resolved_map.get_or_insert_with(|| map.clone()).remove(key);
+                        resolved_map.get_or_insert_with(|| map.clone()).shift_remove(key);
                         continue;
                     }
-                    if let Cow::Owned(new_val) = self.resolve_value_guarded(val, expanding) {
+                    if let Cow::Owned(new_val) = self.resolve_value_guarded(val, walk) {
                         resolved_map
                             .get_or_insert_with(|| map.clone())
                             .insert(key.clone(), new_val);
@@ -492,8 +514,12 @@ impl BindingContext {
                     }
                     if super::operators::get_operator(op).is_some() {
                         let sexpr: crate::schema::SExpression = value.clone().into();
-                        if let Ok(result) = super::operators::eval_expr(&sexpr, self) {
-                            return Cow::Owned(result);
+                        match super::operators::eval_expr(&sexpr, self) {
+                            Ok(result) => return Cow::Owned(result),
+                            Err(OrbitalError::Eval(fault @ EvalError::TypeMismatch { .. })) => {
+                                walk.fault.get_or_insert(fault);
+                            }
+                            Err(_) => {}
                         }
                         // Evaluation failed (e.g. malformed args) — fall through to
                         // per-element binding resolution rather than losing the value.
@@ -505,7 +531,7 @@ impl BindingContext {
                         resolved_arr.get_or_insert_with(|| arr.clone())[i] = Value::Null;
                         continue;
                     }
-                    if let Cow::Owned(new_val) = self.resolve_value_guarded(val, expanding) {
+                    if let Cow::Owned(new_val) = self.resolve_value_guarded(val, walk) {
                         resolved_arr.get_or_insert_with(|| arr.clone())[i] = new_val;
                     }
                 }
@@ -545,7 +571,8 @@ impl BindingContext {
                 None => return true,
                 Some(Value::String(next))
                     if Self::binding_token_end(&next, 0) == Some(next.len())
-                        && (next.starts_with("@config.") || next.starts_with("@callsitePayload.")) =>
+                        && (next.starts_with("@config.")
+                            || next.starts_with("@callsitePayload.")) =>
                 {
                     current = next;
                 }
@@ -589,6 +616,14 @@ impl BindingContext {
         let mut ctx = self.clone();
         ctx.drop_unset = true;
         ctx.resolve_value(value).into_owned()
+    }
+
+    /// [`Self::resolve_dropping_unset`] with [`Self::resolve_value_checked`]'s typed-mismatch report.
+    pub fn resolve_dropping_unset_checked(&self, value: &Value) -> Result<Value, EvalError> {
+        let mut ctx = self.clone();
+        ctx.drop_unset = true;
+        ctx.resolve_value_checked(value)
+            .map(std::borrow::Cow::into_owned)
     }
 
     /// Create a child context with a specific item bound (for map/filter)
@@ -688,7 +723,7 @@ mod tests {
     use super::*;
 
     fn sample_payload() -> Value {
-        let mut data = HashMap::new();
+        let mut data = ValueMap::new();
         data.insert(
             "email".to_string(),
             Value::String("test@example.com".to_string()),
@@ -696,7 +731,7 @@ mod tests {
         data.insert("name".to_string(), Value::String("Test User".to_string()));
         data.insert("connectionSlots".to_string(), Value::Number(10.0));
 
-        let mut payload = HashMap::new();
+        let mut payload = ValueMap::new();
         payload.insert("data".to_string(), Value::Object(data));
         payload.insert("id".to_string(), Value::String("user-123".to_string()));
 
@@ -704,7 +739,7 @@ mod tests {
     }
 
     fn sample_user() -> Value {
-        let mut user = HashMap::new();
+        let mut user = ValueMap::new();
         user.insert(
             "id".to_string(),
             Value::String("current-user-id".to_string()),
@@ -740,9 +775,9 @@ mod tests {
     fn test_resolve_value_every_root() {
         // THE canonical value-walker resolves any `@payload.X` / `@entity.X` / `@config.X`
         // inside a tree — no per-binding special-casing. (Effects run through this.)
-        let mut entity = HashMap::new();
+        let mut entity = ValueMap::new();
         entity.insert("title".to_string(), Value::String("Ticket #1".to_string()));
-        let mut config = HashMap::new();
+        let mut config = ValueMap::new();
         config.insert("look".to_string(), Value::String("striped".to_string()));
         let ctx = BindingContextBuilder::new()
             .payload(sample_payload())
@@ -750,7 +785,7 @@ mod tests {
             .config(Value::Object(config))
             .build();
 
-        let content = Value::Object(HashMap::from([
+        let content = Value::Object(ValueMap::from([
             // a data table bound to the loaded collection — resolves to the payload value
             (
                 "rows".to_string(),
@@ -787,7 +822,7 @@ mod tests {
     /// (the dispatch viewer's), params included.
     #[test]
     fn resolve_value_evaluates_a_translate_call_with_the_contexts_catalog() {
-        let mut entity = HashMap::new();
+        let mut entity = ValueMap::new();
         entity.insert("count".to_string(), Value::Number(3.0));
         let ctx = BindingContextBuilder::new()
             .entity(Value::Object(entity))
@@ -800,13 +835,13 @@ mod tests {
         let call = Value::Array(vec![
             Value::String("i18n/t".to_string()),
             Value::String("home:posts.count".to_string()),
-            Value::Object(HashMap::from([(
+            Value::Object(ValueMap::from([(
                 "n".to_string(),
                 Value::String("@entity.count".to_string()),
             )])),
         ]);
         let resolved = ctx
-            .resolve_value(&Value::Object(HashMap::from([("label".to_string(), call)])))
+            .resolve_value(&Value::Object(ValueMap::from([("label".to_string(), call)])))
             .into_owned();
         assert_eq!(
             resolved.as_object().unwrap()["label"],
@@ -836,12 +871,12 @@ mod tests {
         // hop resolves `@config.theme` to the STRING `"@currentTheme"`; without a
         // second hop that scalar round-trips literal on the wire (the exact §155.1
         // gap: `box.data-theme` arriving as `"@currentTheme"`).
-        let mut config = HashMap::new();
+        let mut config = ValueMap::new();
         config.insert(
             "theme".to_string(),
             Value::String("@currentTheme".to_string()),
         );
-        let mut user = HashMap::new();
+        let mut user = ValueMap::new();
         user.insert("name".to_string(), Value::String("Ada".to_string()));
         let ctx = BindingContextBuilder::new()
             .config(Value::Object(config))
@@ -863,7 +898,7 @@ mod tests {
         // A config default that forwards to itself (`x = @config.x`, an authoring
         // bug) must not recurse forever — the same occurs-check that already
         // guards structural (Object/Array) re-expansion covers the scalar hop.
-        let mut config = HashMap::new();
+        let mut config = ValueMap::new();
         config.insert("x".to_string(), Value::String("@config.x".to_string()));
         let ctx = BindingContextBuilder::new()
             .config(Value::Object(config))
@@ -882,7 +917,7 @@ mod tests {
         // longer string ("Count: @entity.count") interpolates, while a pure-binding
         // string ("@entity.count") resolves to its typed value. Locks the runtime/
         // codegen parity for prefixed bindings (the "Count: @entity.count" bug).
-        let mut entity = HashMap::new();
+        let mut entity = ValueMap::new();
         entity.insert("count".to_string(), Value::Number(0.0));
         entity.insert("name".to_string(), Value::String("Counter".to_string()));
         let ctx = BindingContextBuilder::new()
@@ -1003,7 +1038,7 @@ mod tests {
     fn test_entity_stores() {
         let connections = vec![
             {
-                let mut c = HashMap::new();
+                let mut c = ValueMap::new();
                 c.insert(
                     "requesterId".to_string(),
                     Value::String("user-1".to_string()),
@@ -1012,7 +1047,7 @@ mod tests {
                 Value::Object(c)
             },
             {
-                let mut c = HashMap::new();
+                let mut c = ValueMap::new();
                 c.insert(
                     "requesterId".to_string(),
                     Value::String("user-1".to_string()),
@@ -1039,9 +1074,9 @@ mod tests {
     /// leave the self-token literal instead of recursing forever.
     #[test]
     fn resolve_value_self_referential_structure_terminates() {
-        let mut entry = HashMap::new();
+        let mut entry = ValueMap::new();
         entry.insert("action".to_string(), Value::String("restarted".to_string()));
-        let mut entity = HashMap::new();
+        let mut entity = ValueMap::new();
         entity.insert(
             "audit".to_string(),
             Value::Array(vec![
@@ -1072,7 +1107,7 @@ mod tests {
     /// resolve normally.
     #[test]
     fn resolve_value_mutual_cycle_terminates_and_siblings_still_resolve() {
-        let mut entity = HashMap::new();
+        let mut entity = ValueMap::new();
         entity.insert(
             "a".to_string(),
             Value::Array(vec![Value::String("@entity.b".to_string())]),
@@ -1114,7 +1149,7 @@ mod tests {
     /// (`isSExpression` ~533-543) does on the JS side.
     #[test]
     fn render_ui_operator_forms_are_evaluated() {
-        let mut entity = HashMap::new();
+        let mut entity = ValueMap::new();
         entity.insert("status".to_string(), Value::String("draft".to_string()));
         let ctx = BindingContextBuilder::new()
             .entity(Value::Object(entity))

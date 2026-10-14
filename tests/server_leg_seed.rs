@@ -3,12 +3,12 @@
 // `targetTrait` runs every declared trait. JS twins: `client-kernel-seeded-leg-fold`,
 // `client-role-leg-carries-pre-dispatch-row`, `client-role-local-seed-downstream-leg`.
 
+use orbital_core::ValueMap;
 use orbital_core::effects::TraitFrom;
 use orbital_core::embed::{EmbeddedServer, ServerProgress};
 use orbital_core::runtime::resumable::{IoAnswer, IoReply, IoRequest};
 use orbital_core::{EventRequest, EventResponse, OrbitalSchema, TransitionRejectionCode, Value};
 use serde_json::{json, Value as Json};
-use std::collections::HashMap;
 
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
@@ -97,7 +97,7 @@ fn send(row_json: Option<Json>) -> EventRequest {
             carried("Composer", "ready"),
             carried("Persistor", "idle"),
         ]),
-        entity_by_trait: row_json.map(|r| HashMap::from([("Composer".to_string(), row(r))])),
+        entity_by_trait: row_json.map(|r| ValueMap::from([("Composer".to_string(), row(r))])),
         ..Default::default()
     }
 }

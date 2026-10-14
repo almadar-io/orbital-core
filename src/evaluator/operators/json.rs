@@ -1,6 +1,6 @@
 //! JSON operators.
 //!
-//! `(json/parse s)` — pure, deterministic: string → parsed `Value`. Invalid
+//! `(json/parse s Shape)` — pure, deterministic: string → parsed `Value`; `Shape` names the type the value has (checked by `orb validate`, never evaluated). Invalid
 //! JSON or non-string input → `Value::Null` (JS `null`), never throws —
 //! guards can branch on null. No reviver, no prototype access, no side
 //! effects. `(json/stringify v)` is the inverse: any `Value` → JSON string.
@@ -56,7 +56,7 @@ fn value_to_json(value: &Value) -> serde_json::Value {
 pub struct JsonParseOp;
 impl Operator for JsonParseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "json/parse", 1);
+        require_arity!(args, "json/parse", >= 2);
         let val = eval_expr(&args[0], ctx)?;
         let Value::String(s) = val else {
             return Ok(Value::Null);

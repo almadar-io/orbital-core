@@ -121,18 +121,6 @@ pub trait TargetTypeRenderer {
         self.struct_ty(&file_value_fields())
     }
     fn json(&self) -> Self::Out;
-    /// A CLOSED primitive union: `string | number | boolean | null`. Defaults
-    /// to the target's `json` rendering (same posture as the semantic string
-    /// domains above); every shell with a union facility — TS (`string |
-    /// number | boolean | null`), Kotlin (`JsonPrimitive`), Swift (4-case
-    /// Codable enum), Python (`Union[str, float, bool, None]`), Rust
-    /// (`#[serde(untagged)]` enum) — overrides to emit the real one. The
-    /// default is deliberately the widest legal supertype, never a narrowing
-    /// to `string`, which would make a number-valued field a type error in a
-    /// generated app.
-    fn scalar(&self) -> Self::Out {
-        self.json()
-    }
     /// Renderable UI content (`node`). Defaults to the target's `json`
     /// rendering — only targets with a canonical pattern-tree type (the TS
     /// shell's `PatternValue`) override.
@@ -201,7 +189,7 @@ pub trait TargetTypeRenderer {
     fn struct_ty(&self, fields: &[OirField]) -> Self::Out;
     /// A tagged union of struct variants. Defaults to the target's `json`
     /// rendering so backends that cannot spell a union compile untouched (the
-    /// same posture as `scalar` and the semantic string domains); shells with
+    /// same posture as the semantic string domains); shells with
     /// a real union facility override both render and classification in the
     /// same change — TS (discriminated union), Kotlin (sealed class),
     /// Swift (associated-value enum), Python (`typing.Union` of named
@@ -230,7 +218,7 @@ pub trait TargetTypeRenderer {
     //   semantics erased), even where `number` itself is `Faithful`.
     // - Arms defaulting to `json()` classify as the classification of `json`
     //   (usually `Lossy`); a shell overriding the rendering must override the
-    //   classification in the same commit (TS `scalar`/`node`/`type_ref`/
+    //   classification in the same commit (TS `node`/`type_ref`/
     //   `union_ty` are the worked example).
 
     /// Class of [`TargetTypeRenderer::string`]. `enum_values: Some` (a
@@ -292,13 +280,6 @@ pub trait TargetTypeRenderer {
     }
     /// Class of [`TargetTypeRenderer::json`].
     fn classify_json(&self) -> TypeMappingClass;
-    /// Pair decision: the default renders via `json()`, so the default
-    /// classifies as `json()`; a shell that overrides `scalar()` to spell the
-    /// closed union (every shell today — TS in Phase 1, Kotlin/Swift/Python/
-    /// Rust in Phase 3) overrides this to `Faithful` in the same breath.
-    fn classify_scalar(&self) -> TypeMappingClass {
-        self.classify_json()
-    }
     /// Pair decision: the default renders via `json()`, which preserves the
     /// pattern tree's STRUCTURE and erases only the pattern TYPE — the shells
     /// keeping the json carrier classify this `Widening` (structure kept,
@@ -410,7 +391,6 @@ pub fn render_type<R: TargetTypeRenderer + ?Sized>(
         OirType::Money => r.money(),
         OirType::File => r.file(),
         OirType::Json => r.json(),
-        OirType::Scalar => r.scalar(),
         OirType::Node => r.node(),
         OirType::Reference { entity } => r.reference(entity),
         OirType::Row { entity } => r.row(entity),
@@ -466,7 +446,6 @@ pub fn classify_type<R: TargetTypeRenderer + ?Sized>(
         OirType::Money => r.classify_money(),
         OirType::File => r.classify_file(),
         OirType::Json => r.classify_json(),
-        OirType::Scalar => r.classify_scalar(),
         OirType::Node => r.classify_node(),
         OirType::Reference { entity } => r.classify_reference(entity),
         OirType::Row { entity } => r.classify_row(entity),

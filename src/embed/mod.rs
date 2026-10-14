@@ -8,6 +8,7 @@ pub mod wire;
 
 pub use server::{EmbeddedServer, ServerProgress};
 
+use crate::evaluator::ValueMap;
 use crate::effects::{MountSeed, TransitionHop};
 use crate::runtime::{
     already_delivered_from, Calendar, ClientDispatch, DispatchMode, InMemoryEntityCache,
@@ -60,13 +61,13 @@ fn with_awaiting_init(payload: Value, awaiting: Value) -> Value {
             map.insert("_awaitingInit".to_string(), awaiting);
             Value::Object(map)
         }
-        Value::Null => Value::Object(HashMap::from([("_awaitingInit".to_string(), awaiting)])),
+        Value::Null => Value::Object(ValueMap::from([("_awaitingInit".to_string(), awaiting)])),
         other => other,
     }
 }
 
 /// The rows a posted leg is folded against, by trait ([`EmbeddedKernel::fold_base`]).
-pub type FoldBase = HashMap<String, Value>;
+pub type FoldBase = ValueMap;
 
 /// One `mount` leg for `seeds`: the seeds in order, and the union of the carried legs' stateless
 /// addressing (`traits`, `entityByTrait`), each trait at its first occurrence. The payload is that
@@ -79,7 +80,7 @@ pub fn mount_leg_request(
     client_id: &str,
 ) -> crate::EventRequest {
     let mut traits: Vec<crate::TraitFrom> = Vec::new();
-    let mut entity_by_trait: HashMap<String, Value> = HashMap::new();
+    let mut entity_by_trait: ValueMap = ValueMap::new();
     for leg in carried {
         for t in leg.traits.iter().flatten() {
             if !traits.iter().any(|seen| seen.r#trait == t.r#trait) {
@@ -418,7 +419,7 @@ impl EmbeddedKernel {
     /// the client already shows the arm's result). `None` when the leg carried no rows.
     pub fn fold_base(
         &self,
-        carried: Option<&HashMap<String, Value>>,
+        carried: Option<&ValueMap>,
         seeded: &[String],
         entity_id: Option<&str>,
     ) -> Option<FoldBase> {

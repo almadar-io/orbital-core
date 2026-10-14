@@ -35,10 +35,10 @@ mod value;
 
 pub use context::{BindingContext, BindingContextBuilder};
 pub use operators::{
-    eval_expr, get_operator, raw_callback_params, EvalResult, Operator, TimeUnit,
-    TIME_UNIT_VOCABULARY,
+    actual_of, callback_index_position, eval_expr, get_operator, operator_signature, raw_callback_params, EvalResult, Operator,
+    TimeUnit, TIME_UNIT_VOCABULARY,
 };
-pub use value::Value;
+pub use value::{Value, ValueMap};
 
 use crate::error::OrbitalError;
 use crate::schema::SExpression;
@@ -174,14 +174,23 @@ impl std::fmt::Debug for Evaluator {
 
 #[cfg(test)]
 mod tests {
+    use crate::evaluator::ValueMap;
     use super::*;
-    use std::collections::HashMap;
+    
 
     fn eval(json: &str) -> Value {
         let expr: SExpression = serde_json::from_str(json).unwrap();
         let evaluator = Evaluator::new();
         let ctx = BindingContext::new();
         evaluator.evaluate(&expr, &ctx).unwrap()
+    }
+
+    fn eval_err(json: &str) -> String {
+        let expr: SExpression = serde_json::from_str(json).unwrap();
+        Evaluator::new()
+            .evaluate(&expr, &BindingContext::new())
+            .unwrap_err()
+            .to_string()
     }
 
     fn eval_with_ctx(json: &str, ctx: &BindingContext) -> Value {
@@ -267,8 +276,10 @@ mod tests {
         assert_eq!(eval(r#"["=", 5, 5]"#), Value::Bool(true));
         assert_eq!(eval(r#"["=", 5, 6]"#), Value::Bool(false));
         assert_eq!(eval(r#"["=", "hello", "hello"]"#), Value::Bool(true));
-        // Loose equality
-        assert_eq!(eval(r#"["=", 1, "1"]"#), Value::Bool(true));
+        // Both operands share one type: no loose equality across kinds.
+        let err = eval_err(r#"["=", 1, "1"]"#);
+        assert_eq!(err, "Evaluation error: Type mismatch: expected number, got string");
+        assert_eq!(eval(r#"["=", 1, null]"#), Value::Bool(false));
     }
 
     #[test]
@@ -327,15 +338,24 @@ mod tests {
     // Twin of almadar-evaluator/__tests__/lisp-audit-parity.test.ts (R-OR-AND-RETURN-BOOLEAN).
     #[test]
     fn test_and_or_return_operand_values() {
-        assert_eq!(eval(r#"["or", false, 42]"#), Value::Number(42.0));
+        assert_eq!(eval(r#"["or", 0, 42]"#), Value::Number(42.0));
         assert_eq!(
-            eval(r#"["and", true, "x"]"#),
+            eval(r#"["and", "y", "x"]"#),
             Value::String("x".to_string())
         );
         assert_eq!(eval(r#"["or", 0, null, 7]"#), Value::Number(7.0));
         assert_eq!(eval(r#"["and", 1, 0, 5]"#), Value::Number(0.0));
         assert_eq!(eval(r#"["or", 0, null]"#), Value::Null);
         assert_eq!(eval(r#"["and", 1, 2]"#), Value::Number(2.0));
+    }
+
+    #[test]
+    fn test_and_or_operands_share_one_type() {
+        for expr in [r#"["or", false, 42]"#, r#"["and", true, "x"]"#] {
+            let err = eval_err(expr);
+            assert!(err.contains("Type mismatch"), "{expr}: {err}");
+        }
+        assert_eq!(eval(r#"["or", false, true]"#), Value::Bool(true));
     }
 
     #[test]
@@ -348,8 +368,9 @@ mod tests {
     fn test_not() {
         assert_eq!(eval(r#"["not", true]"#), Value::Bool(false));
         assert_eq!(eval(r#"["not", false]"#), Value::Bool(true));
-        assert_eq!(eval(r#"["not", 0]"#), Value::Bool(true)); // 0 is falsy
-        assert_eq!(eval(r#"["not", 1]"#), Value::Bool(false));
+        // `not` takes a boolean: a number is not coerced.
+        let err = eval_err(r#"["not", 0]"#);
+        assert_eq!(err, "Evaluation error: Type mismatch: expected boolean, got number");
     }
 
     #[test]
@@ -372,7 +393,10 @@ mod tests {
     #[test]
     fn test_count() {
         assert_eq!(eval(r#"["count", [1, 2, 3]]"#), Value::Number(3.0));
-        assert_eq!(eval(r#"["count", "hello"]"#), Value::Number(5.0));
+        assert_eq!(
+            eval_err(r#"["count", "hello"]"#),
+            "Evaluation error: Type mismatch: expected array, got string"
+        );
     }
 
     #[test]
@@ -392,7 +416,10 @@ mod tests {
     fn test_includes() {
         assert_eq!(eval(r#"["includes", [1, 2, 3], 2]"#), Value::Bool(true));
         assert_eq!(eval(r#"["includes", [1, 2, 3], 5]"#), Value::Bool(false));
-        assert_eq!(eval(r#"["includes", "hello", "ell"]"#), Value::Bool(true));
+        assert_eq!(
+            eval_err(r#"["includes", "hello", "ell"]"#),
+            "Evaluation error: Type mismatch: expected array, got string"
+        );
     }
 
     // ========================================================================
@@ -460,16 +487,16 @@ mod tests {
 
     #[test]
     fn json_parse_object_array_scalar_nested() {
-        let mut obj = std::collections::HashMap::new();
+        let mut obj = ValueMap::new();
         obj.insert("a".to_string(), Value::Number(1.0));
         obj.insert("b".to_string(), Value::String("x".to_string()));
         assert_eq!(
-            eval(r#"["json/parse", "{\"a\": 1, \"b\": \"x\"}"]"#),
+            eval(r#"["json/parse", "{\"a\": 1, \"b\": \"x\"}", "Row"]"#),
             Value::Object(obj)
         );
 
         assert_eq!(
-            eval(r#"["json/parse", "[1, 2, 3]"]"#),
+            eval(r#"["json/parse", "[1, 2, 3]", "Row"]"#),
             Value::Array(vec![
                 Value::Number(1.0),
                 Value::Number(2.0),
@@ -477,36 +504,42 @@ mod tests {
             ])
         );
 
-        assert_eq!(eval(r#"["json/parse", "42"]"#), Value::Number(42.0));
+        assert_eq!(eval(r#"["json/parse", "42", "Row"]"#), Value::Number(42.0));
         assert_eq!(
-            eval(r#"["json/parse", "\"hello\""]"#),
+            eval(r#"["json/parse", "\"hello\"", "Row"]"#),
             Value::String("hello".to_string())
         );
-        assert_eq!(eval(r#"["json/parse", "true"]"#), Value::Bool(true));
-        assert_eq!(eval(r#"["json/parse", "null"]"#), Value::Null);
+        assert_eq!(eval(r#"["json/parse", "true", "Row"]"#), Value::Bool(true));
+        assert_eq!(eval(r#"["json/parse", "null", "Row"]"#), Value::Null);
 
         let tags = Value::Array(vec![
             Value::String("a".to_string()),
             Value::String("b".to_string()),
         ]);
-        let mut row = std::collections::HashMap::new();
+        let mut row = ValueMap::new();
         row.insert("id".to_string(), Value::Number(1.0));
         row.insert("tags".to_string(), tags);
-        let mut rows = std::collections::HashMap::new();
+        let mut rows = ValueMap::new();
         rows.insert("rows".to_string(), Value::Array(vec![Value::Object(row)]));
         assert_eq!(
-            eval(r#"["json/parse", "{\"rows\": [{\"id\": 1, \"tags\": [\"a\", \"b\"]}]}"]"#),
+            eval(r#"["json/parse", "{\"rows\": [{\"id\": 1, \"tags\": [\"a\", \"b\"]}]}", "Row"]"#),
             Value::Object(rows)
         );
     }
 
     #[test]
-    fn json_parse_invalid_or_non_string_is_null_never_error() {
-        assert_eq!(eval(r#"["json/parse", "{not json"]"#), Value::Null);
-        assert_eq!(eval(r#"["json/parse", ""]"#), Value::Null);
-        assert_eq!(eval(r#"["json/parse", 42]"#), Value::Null);
-        assert_eq!(eval(r#"["json/parse", null]"#), Value::Null);
-        assert_eq!(eval(r#"["json/parse", [1, 2]]"#), Value::Null);
+    fn json_parse_invalid_text_or_absent_input_is_null_a_non_string_is_a_type_error() {
+        assert_eq!(eval(r#"["json/parse", "{not json", "Row"]"#), Value::Null);
+        assert_eq!(eval(r#"["json/parse", "", "Row"]"#), Value::Null);
+        assert_eq!(eval(r#"["json/parse", null, "Row"]"#), Value::Null);
+        assert_eq!(
+            eval_err(r#"["json/parse", 42, "Row"]"#),
+            "Evaluation error: Type mismatch: expected string, got number"
+        );
+        assert_eq!(
+            eval_err(r#"["json/parse", [1, 2], "Row"]"#),
+            "Evaluation error: Type mismatch: expected string, got array"
+        );
     }
 
     #[test]
@@ -520,12 +553,12 @@ mod tests {
             other => panic!("expected string, got {other:?}"),
         };
         let reparsed = eval(&format!(
-            r#"["json/parse", {}]"#,
+            r#"["json/parse", {}, "Row"]"#,
             serde_json::to_string(&s).unwrap()
         ));
         assert_eq!(
             reparsed,
-            eval(r#"["json/parse", "{\"id\": 7, \"flags\": [true, false]}"]"#)
+            eval(r#"["json/parse", "{\"id\": 7, \"flags\": [true, false]}", "Row"]"#)
         );
     }
 
@@ -621,8 +654,8 @@ mod tests {
 
     #[test]
     fn test_binding_resolution() {
-        let mut payload = HashMap::new();
-        let mut data = HashMap::new();
+        let mut payload = ValueMap::new();
+        let mut data = ValueMap::new();
         data.insert(
             "email".to_string(),
             Value::String("test@example.com".to_string()),
@@ -652,8 +685,8 @@ mod tests {
     #[test]
     fn test_complex_guard_from_orbital_pattern() {
         // Guard: ["and", ["!=", "@payload.data.email", ""], ["!=", "@payload.data.name", ""]]
-        let mut payload = HashMap::new();
-        let mut data = HashMap::new();
+        let mut payload = ValueMap::new();
+        let mut data = ValueMap::new();
         data.insert(
             "email".to_string(),
             Value::String("test@example.com".to_string()),
@@ -670,8 +703,8 @@ mod tests {
         assert_eq!(eval_with_ctx(guard, &ctx), Value::Bool(true));
 
         // Test with empty email
-        let mut payload2 = HashMap::new();
-        let mut data2 = HashMap::new();
+        let mut payload2 = ValueMap::new();
+        let mut data2 = ValueMap::new();
         data2.insert("email".to_string(), Value::String("".to_string()));
         data2.insert("name".to_string(), Value::String("Test User".to_string()));
         payload2.insert("data".to_string(), Value::Object(data2));
@@ -687,8 +720,8 @@ mod tests {
     fn test_connection_slots_guard() {
         // Guard: [">=", "@payload.data.connectionSlots", 1]
         // Guard: ["<=", "@payload.data.connectionSlots", 100]
-        let mut payload = HashMap::new();
-        let mut data = HashMap::new();
+        let mut payload = ValueMap::new();
+        let mut data = ValueMap::new();
         data.insert("connectionSlots".to_string(), Value::Number(50.0));
         payload.insert("data".to_string(), Value::Object(data));
 
@@ -713,7 +746,7 @@ mod tests {
 
         let connections: Vec<Value> = (0..50)
             .map(|i| {
-                let mut c = HashMap::new();
+                let mut c = ValueMap::new();
                 c.insert(
                     "requesterId".to_string(),
                     Value::String("user-1".to_string()),
@@ -726,7 +759,7 @@ mod tests {
             })
             .collect();
 
-        let mut user = HashMap::new();
+        let mut user = ValueMap::new();
         user.insert("id".to_string(), Value::String("user-1".to_string()));
 
         let ctx = BindingContextBuilder::new()
@@ -2304,23 +2337,50 @@ mod tests {
     #[test]
     fn map_fn_lambda_also_binds_index_like_the_ts_evaluator() {
         // std-stats maps metrics with `(fn metric { position: @index … })`.
-        let out = eval(r#"["array/map", [10, 20], ["fn", "m", {"v": "@m", "position": "@index"}]]"#);
+        let out =
+            eval(r#"["array/map", [10, 20], ["fn", "m", {"v": "@m", "position": "@index"}]]"#);
         let rows = out.as_array().expect("array");
-        assert_eq!(rows[0].as_object().and_then(|o| o.get("position")), Some(&Value::Number(0.0)));
-        assert_eq!(rows[1].as_object().and_then(|o| o.get("position")), Some(&Value::Number(1.0)));
+        assert_eq!(
+            rows[0].as_object().and_then(|o| o.get("position")),
+            Some(&Value::Number(0.0))
+        );
+        assert_eq!(
+            rows[1].as_object().and_then(|o| o.get("position")),
+            Some(&Value::Number(1.0))
+        );
         // Controls: a named index param and the raw-body form still bind as before.
-        assert_eq!(eval(r#"["array/map", [10, 20], ["fn", ["m", "i"], ["+", "@m", "@i"]]]"#), nums(&[10.0, 21.0]));
-        assert_eq!(eval(r#"["array/map", [10, 20], ["+", "@item", "@index"]]"#), nums(&[10.0, 21.0]));
+        assert_eq!(
+            eval(r#"["array/map", [10, 20], ["fn", ["m", "i"], ["+", "@m", "@i"]]]"#),
+            nums(&[10.0, 21.0])
+        );
+        assert_eq!(
+            eval(r#"["array/map", [10, 20], ["+", "@item", "@index"]]"#),
+            nums(&[10.0, 21.0])
+        );
     }
 
     #[test]
     fn group_by_a_field_name_like_the_ts_evaluator() {
         // std-graphs groups rows by a declared field (`["array/groupBy", @rows, "stage"]`).
-        let out = eval(r#"["array/groupBy", [{"stage": "a"}, {"stage": "b"}, {"stage": "a"}, {"x": 1}], "stage"]"#);
+        let out = eval(
+            r#"["array/groupBy", [{"stage": "a"}, {"stage": "b"}, {"stage": "a"}, {"x": 1}], "stage"]"#,
+        );
         let groups = out.as_object().expect("object");
-        assert_eq!(groups.get("a").and_then(|v| v.as_array()).map(|v| v.len()), Some(2));
-        assert_eq!(groups.get("b").and_then(|v| v.as_array()).map(|v| v.len()), Some(1));
-        assert_eq!(groups.get("undefined").and_then(|v| v.as_array()).map(|v| v.len()), Some(1));
+        assert_eq!(
+            groups.get("a").and_then(|v| v.as_array()).map(|v| v.len()),
+            Some(2)
+        );
+        assert_eq!(
+            groups.get("b").and_then(|v| v.as_array()).map(|v| v.len()),
+            Some(1)
+        );
+        assert_eq!(
+            groups
+                .get("undefined")
+                .and_then(|v| v.as_array())
+                .map(|v| v.len()),
+            Some(1)
+        );
     }
 
     #[test]
@@ -2342,10 +2402,25 @@ mod tests {
             nums(&[10.0, 21.0])
         );
 
-        assert_eq!(raw_callback_params("array/filter"), Some(&["item"][..]));
+        assert_eq!(raw_callback_params("array/filter"), Some(&["item", "index"][..]));
         assert_eq!(
             eval(r#"["array/filter", [1, 2, 3], [">", "@item", 1]]"#),
             nums(&[2.0, 3.0])
+        );
+        // The index is bound whether the predicate is a raw body or a `(fn …)` that names only the element, as
+        // the JS evaluator's `evalWithItem` always does.
+        assert_eq!(
+            eval(r#"["array/filter", [10, 20, 30], ["<", "@index", 2]]"#),
+            nums(&[10.0, 20.0])
+        );
+        assert_eq!(
+            eval(r#"["array/filter", [10, 20, 30], ["fn", "b", ["<", "@index", 2]]]"#),
+            nums(&[10.0, 20.0])
+        );
+        assert_eq!(
+            eval(r#"["array/filter", [10, 20, 30], ["fn", ["b", "i"], ["<", "@i", 2]]]"#),
+            nums(&[10.0, 20.0]),
+            "a second named parameter is the index too"
         );
 
         assert_eq!(
@@ -2401,6 +2476,18 @@ mod tests {
     }
 
     #[test]
+    fn the_callback_index_is_the_parameter_the_evaluator_binds_as_index() {
+        use super::operators::{callback_index_position, raw_callback_params};
+        for op in ["array/map", "map", "array/filter", "filter", "array/count", "count", "array/find", "find", "array/every", "array/some"] {
+            let at = callback_index_position(op).unwrap_or_else(|| panic!("{op} has an index"));
+            assert_eq!(raw_callback_params(op).map(|names| names[at]), Some("index"), "{op}");
+        }
+        for op in ["array/reduce", "object/filter", "array/findIndex", "array/len"] {
+            assert_eq!(callback_index_position(op), None, "control: {op} hands its callback no numeric index");
+        }
+    }
+
+    #[test]
     fn raw_callback_params_follow_operator_aliases() {
         use super::operators::raw_callback_params;
         assert_eq!(raw_callback_params("map"), raw_callback_params("array/map"));
@@ -2450,12 +2537,28 @@ mod tests {
     /// optional field form reading `item[key]`, and `null` when nothing counts.
     #[test]
     fn array_max_and_min_follow_the_one_contract() {
-        assert_eq!(eval(r#"["array/max", [3, "7", true, "x"]]"#), Value::Number(7.0));
-        assert_eq!(eval(r#"["array/min", [3, "7", false, "x"]]"#), Value::Number(0.0));
+        assert_eq!(
+            eval(r#"["array/max", [3, "7", true, "x"]]"#),
+            Value::Number(7.0)
+        );
+        assert_eq!(
+            eval(r#"["array/min", [3, "7", false, "x"]]"#),
+            Value::Number(0.0)
+        );
         assert_eq!(eval(r#"["array/max", []]"#), Value::Null);
         assert_eq!(eval(r#"["array/min", ["x"]]"#), Value::Null);
-        assert_eq!(eval(r#"["array/max", [{"price": 3}, {"price": "9"}, {"name": "n"}], "price"]"#), Value::Number(9.0));
-        assert_eq!(eval(r#"["array/min", [{"price": 3}, {"price": 9}], "price"]"#), Value::Number(3.0));
-        assert_eq!(eval(r#"["array/max", [{"name": "n"}], "price"]"#), Value::Null, "an absent field doesn't count");
+        assert_eq!(
+            eval(r#"["array/max", [{"price": 3}, {"price": "9"}, {"name": "n"}], "price"]"#),
+            Value::Number(9.0)
+        );
+        assert_eq!(
+            eval(r#"["array/min", [{"price": 3}, {"price": 9}], "price"]"#),
+            Value::Number(3.0)
+        );
+        assert_eq!(
+            eval(r#"["array/max", [{"name": "n"}], "price"]"#),
+            Value::Null,
+            "an absent field doesn't count"
+        );
     }
 }

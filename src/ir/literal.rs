@@ -77,7 +77,6 @@ fn type_tag(ty: &OirType) -> String {
         OirType::Money => "money".to_string(),
         OirType::File => "file".to_string(),
         OirType::Json => "json".to_string(),
-        OirType::Scalar => "scalar".to_string(),
         OirType::Node => "node".to_string(),
         OirType::Array { .. } => "array".to_string(),
         OirType::Tuple { .. } => "tuple".to_string(),
@@ -156,7 +155,6 @@ pub fn render_default<R: TargetLiteralRenderer>(
             | OirType::Map { .. }
             | OirType::Json
             | OirType::Node
-            | OirType::Scalar
             | OirType::Row { .. },
             OirValue::Object(_),
         ) => Ok(r.object()),
@@ -361,7 +359,6 @@ mod tests {
             OirType::map(OirType::String, OirType::Number),
             OirType::Json,
             OirType::Node,
-            OirType::Scalar,
         ] {
             // The default `TargetLiteralRenderer::object` declines.
             assert_eq!(render_default(&r(), &value, &ty, None), Ok(None), "{ty:?}");

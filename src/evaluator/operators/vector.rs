@@ -5,23 +5,23 @@
 //! Missing `z` reads as 0. All ops are pure and total (degenerate input never
 //! errors — e.g. normalize of a zero-length vector returns the zero vector).
 
+use crate::evaluator::ValueMap;
 use super::macros::*;
 use super::*;
-use std::collections::HashMap;
 
 /// Read a vector field, defaulting to 0 when absent.
-pub(super) fn vget(obj: &HashMap<String, Value>, key: &str) -> f64 {
+pub(super) fn vget(obj: &ValueMap, key: &str) -> f64 {
     obj.get(key).and_then(|v| v.as_number()).unwrap_or(0.0)
 }
 
 /// Whether a vector object declares a `z` component (drives 2D vs 3D output).
-pub(super) fn has_z(obj: &HashMap<String, Value>) -> bool {
+pub(super) fn has_z(obj: &ValueMap) -> bool {
     obj.contains_key("z")
 }
 
 /// Build a vector object; includes `z` only when `with_z` is true.
 pub(super) fn make_vec(x: f64, y: f64, z: f64, with_z: bool) -> Value {
-    let mut m = HashMap::new();
+    let mut m = ValueMap::new();
     m.insert("x".to_string(), Value::Number(x));
     m.insert("y".to_string(), Value::Number(y));
     if with_z {
@@ -34,15 +34,15 @@ pub(super) fn make_vec(x: f64, y: f64, z: f64, with_z: bool) -> Value {
 pub(super) fn eval_obj(
     arg: &SExpression,
     ctx: &BindingContext,
-) -> Result<HashMap<String, Value>, OrbitalError> {
+) -> Result<ValueMap, OrbitalError> {
     let v = eval_expr(arg, ctx)?;
     match v {
         Value::Object(o) => Ok(o),
-        _ => Ok(HashMap::new()),
+        _ => Ok(ValueMap::new()),
     }
 }
 
-fn dot3(a: &HashMap<String, Value>, b: &HashMap<String, Value>) -> f64 {
+fn dot3(a: &ValueMap, b: &ValueMap) -> f64 {
     vget(a, "x") * vget(b, "x") + vget(a, "y") * vget(b, "y") + vget(a, "z") * vget(b, "z")
 }
 

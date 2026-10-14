@@ -197,10 +197,11 @@ impl EntitySource for InMemoryEntityCache {
 
 #[cfg(test)]
 mod tests {
+    use crate::evaluator::ValueMap;
     use super::*;
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
-        let mut m = HashMap::new();
+        let mut m = ValueMap::new();
         for (k, v) in pairs {
             m.insert((*k).to_string(), v.clone());
         }
@@ -338,7 +339,7 @@ mod tests {
         let cache = InMemoryEntityCache::new();
         let ids = ["e", "a", "d", "b", "c", "f", "h", "g"];
         for id in ids {
-            let mut row = HashMap::new();
+            let mut row = ValueMap::new();
             row.insert("id".to_string(), Value::String(id.to_string()));
             cache.create("Item", &Value::Object(row)).unwrap();
         }
@@ -352,7 +353,7 @@ mod tests {
         };
         assert_eq!(listed(&cache), ids);
 
-        let mut patch = HashMap::new();
+        let mut patch = ValueMap::new();
         patch.insert("n".to_string(), Value::Number(1.0));
         cache.write("Item", "d", &Value::Object(patch)).unwrap();
         cache.delete("Item", "b").unwrap();

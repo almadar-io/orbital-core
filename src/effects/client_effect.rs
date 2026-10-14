@@ -241,8 +241,9 @@ impl<'de> Deserialize<'de> for ClientEffect {
 
 #[cfg(test)]
 mod tests {
+    use crate::evaluator::ValueMap;
     use super::*;
-    use std::collections::HashMap;
+    
 
     fn roundtrip(effect: &ClientEffect, expected_json: &str) {
         let json = serde_json::to_string(effect).unwrap();
@@ -258,7 +259,7 @@ mod tests {
     fn render_ui_arity_3() {
         let effect = ClientEffect::RenderUi {
             slot: "main".to_string(),
-            config: Some(Value::Object(HashMap::from([(
+            config: Some(Value::Object(ValueMap::from([(
                 "type".to_string(),
                 Value::String("card".to_string()),
             )]))),
@@ -283,11 +284,11 @@ mod tests {
     fn render_ui_arity_4() {
         let effect = ClientEffect::RenderUi {
             slot: "detail".to_string(),
-            config: Some(Value::Object(HashMap::from([(
+            config: Some(Value::Object(ValueMap::from([(
                 "type".to_string(),
                 Value::String("detail-panel".to_string()),
             )]))),
-            props: Some(Value::Object(HashMap::from([(
+            props: Some(Value::Object(ValueMap::from([(
                 "title".to_string(),
                 Value::String("Note".to_string()),
             )]))),
@@ -303,7 +304,7 @@ mod tests {
     fn render_ui_arity_5() {
         let effect = ClientEffect::RenderUi {
             slot: "toast".to_string(),
-            config: Some(Value::Object(HashMap::from([(
+            config: Some(Value::Object(ValueMap::from([(
                 "type".to_string(),
                 Value::String("toast".to_string()),
             )]))),
@@ -317,8 +318,8 @@ mod tests {
     fn render_ui_arity_5_with_props() {
         let effect = ClientEffect::RenderUi {
             slot: "toast".to_string(),
-            config: Some(Value::Object(HashMap::new())),
-            props: Some(Value::Object(HashMap::from([(
+            config: Some(Value::Object(ValueMap::new())),
+            props: Some(Value::Object(ValueMap::from([(
                 "message".to_string(),
                 Value::String("Saved".to_string()),
             )]))),
@@ -344,7 +345,7 @@ mod tests {
     fn navigate_arity_3() {
         let effect = ClientEffect::Navigate {
             path: "/notes/:id".to_string(),
-            params: Some(Value::Object(HashMap::from([(
+            params: Some(Value::Object(ValueMap::from([(
                 "id".to_string(),
                 Value::String("42".to_string()),
             )]))),
@@ -372,7 +373,7 @@ mod tests {
     fn navigate_arity_4() {
         let effect = ClientEffect::Navigate {
             path: "/notes/:id".to_string(),
-            params: Some(Value::Object(HashMap::from([(
+            params: Some(Value::Object(ValueMap::from([(
                 "id".to_string(),
                 Value::String("42".to_string()),
             )]))),
@@ -403,7 +404,7 @@ mod tests {
     fn from_effect_render_ui() {
         let effect = Effect::RenderUi {
             slot: "main".to_string(),
-            content: Value::Object(HashMap::from([(
+            content: Value::Object(ValueMap::from([(
                 "type".to_string(),
                 Value::String("card".to_string()),
             )])),
@@ -413,7 +414,7 @@ mod tests {
             client,
             ClientEffect::RenderUi {
                 slot: "main".to_string(),
-                config: Some(Value::Object(HashMap::from([(
+                config: Some(Value::Object(ValueMap::from([(
                     "type".to_string(),
                     Value::String("card".to_string())
                 )]))),
@@ -463,11 +464,11 @@ mod tests {
     fn render_ui_value_merges_props_over_config() {
         let effect = ClientEffect::RenderUi {
             slot: "modal".to_string(),
-            config: Some(Value::Object(HashMap::from([
+            config: Some(Value::Object(ValueMap::from([
                 ("type".to_string(), Value::String("form".to_string())),
                 ("title".to_string(), Value::String("stale".to_string())),
             ]))),
-            props: Some(Value::Object(HashMap::from([(
+            props: Some(Value::Object(ValueMap::from([(
                 "title".to_string(),
                 Value::String("fresh".to_string()),
             )]))),

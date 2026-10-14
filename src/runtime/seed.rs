@@ -9,6 +9,7 @@
 //! This is the single owner of field→row synthesis; consumers (the Layer-2 render
 //! probe, the screenshot probe) call [`seed_sample_data`] rather than rolling their own.
 
+use crate::evaluator::ValueMap;
 use crate::schema::{
     Cardinality, EntityDefinition, EntityRef, FieldDefinition, FieldType, Persistence, SExpression,
 };
@@ -86,8 +87,8 @@ pub fn sample_row(
     persistence: Option<&Persistence>,
     identity: bool,
     entropy: &mut Entropy,
-) -> HashMap<String, Value> {
-    let mut row: HashMap<String, Value> = HashMap::new();
+) -> ValueMap {
+    let mut row: ValueMap = ValueMap::new();
     for f in fields {
         let Some(name) = f.name.as_ref() else {
             continue;
@@ -356,7 +357,7 @@ fn sample_value(
             let candidates = mock_candidates(declared);
             return Some(
                 match candidates.get((ordinal - 1) % candidates.len().max(1)) {
-                    Some(spec) => Value::Object(HashMap::from([(
+                    Some(spec) => Value::Object(ValueMap::from([(
                         "behavior".to_string(),
                         Value::String(spec.to_string()),
                     )])),
@@ -396,7 +397,7 @@ fn sample_value(
 
     let name = field.name.as_deref().unwrap_or("field");
     match field.field_type {
-        FieldType::String | FieldType::Scalar => {
+        FieldType::String => {
             Some(sample_text(name, entity_name, index, entropy))
         }
         // Semantic domains synthesize a value that SATISFIES their own validator
@@ -436,7 +437,7 @@ fn sample_value(
         })),
         // File seeds the canonical struct value (satisfies its own
         // type-compat validity rule, like the semantic domains above).
-        FieldType::File => Some(Value::Object(HashMap::from([
+        FieldType::File => Some(Value::Object(ValueMap::from([
             (
                 "name".to_string(),
                 Value::String(format!("{}-{}.pdf", slug(name), index)),
@@ -579,7 +580,7 @@ fn sample_object(
     // Sorted, so seeded draws do not depend on the map's order (the JS owner sorts too).
     let mut names: Vec<&String> = properties.keys().collect();
     names.sort();
-    let mut out: HashMap<String, Value> = HashMap::new();
+    let mut out: ValueMap = ValueMap::new();
     for prop_name in names {
         let mut child = properties[prop_name].clone();
         child.name = Some(prop_name.clone());
@@ -1014,7 +1015,7 @@ pub fn seed_sample_data_as(
             .into_iter()
             .find(|row| row.get_path("id").and_then(|v| v.as_str()) == Some(id.as_str()))
             .unwrap_or_else(|| {
-                Value::Object(HashMap::from([("id".to_string(), Value::String(id))]))
+                Value::Object(ValueMap::from([("id".to_string(), Value::String(id))]))
             })
     });
     seed_mock_dataset(
@@ -1084,7 +1085,7 @@ pub fn instance_rows(
     instances
         .iter()
         .map(|instance| {
-            let mut row: HashMap<String, Value> = instance
+            let mut row: ValueMap = instance
                 .iter()
                 .map(|(key, sexpr)| (key.clone(), super::kernel::sexpr_to_value(sexpr)))
                 .collect();
@@ -1226,8 +1227,8 @@ struct MockSeeder<'a> {
     rng: MockRandom,
     viewer: Option<&'a Value>,
     owner_fields: Vec<(String, String)>,
-    create_policies: HashMap<String, Value>,
-    read_policies: HashMap<String, Value>,
+    create_policies: ValueMap,
+    read_policies: ValueMap,
     /// Registered definitions in first-registration order (one per entity name).
     registered: Vec<&'a EntityDefinition>,
     store_of_entity: HashMap<String, String>,
@@ -1251,8 +1252,8 @@ impl<'a> MockSeeder<'a> {
         owner_fields.extend(owner_fields_from_env());
         // First entity on a collection that declares any directive owns its policies
         // (`entityAccessPoliciesByStoreKey`).
-        let mut create_policies: HashMap<String, Value> = HashMap::new();
-        let mut read_policies: HashMap<String, Value> = HashMap::new();
+        let mut create_policies: ValueMap = ValueMap::new();
+        let mut read_policies: ValueMap = ValueMap::new();
         let mut decided: std::collections::HashSet<String> = std::collections::HashSet::new();
         for def in inline_entity_defs(schema) {
             let declared = def.read_policy.is_some()
@@ -1505,7 +1506,7 @@ impl<'a> MockSeeder<'a> {
         &self,
         store: &str,
         column: &str,
-        row: &HashMap<String, Value>,
+        row: &ValueMap,
     ) -> Option<Vec<String>> {
         if column == "id" || !self.read_policies.contains_key(store) {
             return None;
@@ -1541,7 +1542,7 @@ impl<'a> MockSeeder<'a> {
         &self,
         store: &str,
         column: &str,
-        row: &HashMap<String, Value>,
+        row: &ValueMap,
         viewer_id: &str,
         candidate: &Value,
     ) -> bool {
@@ -1572,7 +1573,7 @@ impl<'a> MockSeeder<'a> {
         &self,
         store: &str,
         column: &str,
-        row: &HashMap<String, Value>,
+        row: &ValueMap,
     ) -> Option<String> {
         if let Some(readers) = self.read_owners(store, column, row) {
             return readers.into_iter().next();
@@ -1711,7 +1712,7 @@ impl<'a> MockSeeder<'a> {
                     let _ = self.source.write(
                         &entity,
                         &id,
-                        &Value::Object(HashMap::from([(name.to_string(), value)])),
+                        &Value::Object(ValueMap::from([(name.to_string(), value)])),
                     );
                 }
             }
@@ -1765,7 +1766,7 @@ impl<'a> MockSeeder<'a> {
                     let _ = self.source.write(
                         &entity,
                         &id,
-                        &Value::Object(HashMap::from([(name.to_string(), value)])),
+                        &Value::Object(ValueMap::from([(name.to_string(), value)])),
                     );
                 }
             }
@@ -1990,7 +1991,7 @@ mod policy_tests {
     }
 
     fn behavior_value(spec: &str) -> Value {
-        Value::Object(std::collections::HashMap::from([(
+        Value::Object(ValueMap::from([(
             "behavior".to_string(),
             Value::String(spec.to_string()),
         )]))
@@ -2084,13 +2085,14 @@ mod policy_tests {
 
 #[cfg(test)]
 mod tests {
+    use crate::evaluator::ValueMap;
     use super::*;
-    use std::collections::HashMap;
+    
 
     fn rows(n: usize) -> Vec<Value> {
         (0..n)
             .map(|i| {
-                let mut m = HashMap::new();
+                let mut m = ValueMap::new();
                 m.insert("id".to_string(), Value::String(format!("r{}", i)));
                 m.insert(
                     "memberId".to_string(),
@@ -2981,7 +2983,7 @@ mod read_owner_tests {
             ("s3", "hr"),
             ("s4", "employee"),
         ] {
-            let row = Value::Object(HashMap::from([
+            let row = Value::Object(ValueMap::from([
                 ("id".to_string(), Value::String(id.to_string())),
                 ("role".to_string(), Value::String(role.to_string())),
             ]));

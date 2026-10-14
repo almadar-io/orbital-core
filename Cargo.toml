@@ -43,6 +43,10 @@ ts-rs = "12.0.1"
 name = "parity_fixtures"
 harness = false
 
+[[bench]]
+name = "floor_native"
+harness = false
+
 # `std::time::SystemTime::now()` / `chrono::Utc::now()` panic on bare wasm32; the wasm
 # build reads the clock through `js_sys::Date` (see `time_util`). wasm32-only.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

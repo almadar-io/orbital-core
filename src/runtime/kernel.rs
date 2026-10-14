@@ -1,5 +1,6 @@
 //! Runtime kernel — canonical runtime lifecycle for Orbital applications.
 
+use crate::evaluator::ValueMap;
 use super::{
     dispatch_memory::{DispatchMemory, DispatchView},
     dispatch_mode::DispatchMode,
@@ -22,6 +23,7 @@ use super::{
 use crate::effects::{
     delivery_record_value, BusEventSource, DeliveryRecord, DispatchLog, PersistOperation,
 };
+use crate::error::{EvalError, OrbitalError};
 use crate::util::DispatchVisits;
 use crate::{
     effects::{
@@ -143,7 +145,7 @@ fn take_awaiting_sidecar(payload: Value) -> (Value, Option<HashSet<String>>) {
     let Value::Object(mut map) = payload else {
         return (payload, None);
     };
-    let awaiting = map.remove("_awaitingInit").map(|v| {
+    let awaiting = map.shift_remove("_awaitingInit").map(|v| {
         v.as_array()
             .map(|a| {
                 a.iter()
@@ -164,7 +166,7 @@ fn take_awaiting_sidecar(payload: Value) -> (Value, Option<HashSet<String>>) {
 fn with_awaiting_sidecar(payload: Value, awaiting: &HashSet<String>) -> Value {
     let mut map = match payload {
         Value::Object(map) => map,
-        _ => HashMap::new(),
+        _ => ValueMap::new(),
     };
     let mut list: Vec<&String> = awaiting.iter().collect();
     list.sort();
@@ -239,7 +241,7 @@ pub struct RuntimeKernel {
     /// Referrer trait -> the embedded children to re-render under its payload (`callsite_capture`).
     capture_children: Arc<RwLock<HashMap<String, Vec<String>>>>,
     /// Trait -> the payload its composer last composed it with: what its own `@callsitePayload` reads.
-    composed_callsite: Arc<RwLock<HashMap<String, Value>>>,
+    composed_callsite: Arc<RwLock<ValueMap>>,
     /// Trait frames (`(set @entity.X)` writes), keyed `(frame key, entity id)`: a `[shared]`
     /// entity's frame is `$shared::<Entity>` for every trait bound to it, any other trait's is
     /// its own name (Runtime Spec Clause 2.3). `@entity` is the row with the frame over it.
@@ -607,7 +609,7 @@ impl RuntimeKernel {
             entity_definitions,
             step_site: Arc::new(RwLock::new(None)),
             capture_children: Arc::new(RwLock::new(HashMap::new())),
-            composed_callsite: Arc::new(RwLock::new(HashMap::new())),
+            composed_callsite: Arc::new(RwLock::new(ValueMap::new())),
             frames: Arc::new(RwLock::new(HashMap::new())),
             theme_presets: Arc::new(RwLock::new(ThemePresets::new())),
             theme_mode: Arc::new(RwLock::new(None)),
@@ -856,7 +858,11 @@ impl RuntimeKernel {
     }
 
     /// Register listeners declared on a trait.
-    fn register_trait_listeners(&self, trait_def: &TraitDefinition, orbital: &str) -> Result<(), KernelError> {
+    fn register_trait_listeners(
+        &self,
+        trait_def: &TraitDefinition,
+        orbital: &str,
+    ) -> Result<(), KernelError> {
         if let Some(listens) = &trait_def.listens {
             for listen in listens {
                 self.listener_manager
@@ -890,7 +896,9 @@ impl RuntimeKernel {
         view: Option<&DispatchView>,
         follow_on: bool,
     ) -> Result<ProcessEventResult, Fault> {
-        self.process_event_composed(trait_name, entity_id, event_name, payload, view, follow_on, None)
+        self.process_event_composed(
+            trait_name, entity_id, event_name, payload, view, follow_on, None,
+        )
     }
 
     /// [`Self::process_event_in_dispatch`] with an explicit `@callsitePayload` (a repaint of an embedded
@@ -940,7 +948,7 @@ impl RuntimeKernel {
 
         // `@payload` is this event's own payload; an absent one reads `{}` (drift D-2).
         let effective_payload = if payload.is_null() {
-            Value::Object(HashMap::new())
+            Value::Object(ValueMap::new())
         } else {
             payload.clone()
         };
@@ -1038,11 +1046,18 @@ impl RuntimeKernel {
             let sources = render_sources(&effect_results);
             let mut effect_results = effect_results
                 .into_iter()
-                .map(|mut er| {
-                    er.effect = resolve_effect_bindings(er.effect, &ctx);
-                    er
-                })
+                .map(|er| resolve_effect_result(er, &ctx))
                 .collect::<Vec<_>>();
+            let mut failure = failure;
+            if failure.is_none() {
+                failure = effect_results
+                    .iter()
+                    .find(|r| is_thrown_failure(r))
+                    .map(|thrown| thrown.error.clone().unwrap_or_default());
+                if failure.is_some() {
+                    effect_results.retain(is_thrown_failure);
+                }
+            }
             self.inject_relation_options(trait_name, &mut effect_results);
             if self.io.suspended() {
                 if let Some(state) = state_manager.get_state_mut(trait_name, Some(entity_id)) {
@@ -1102,7 +1117,7 @@ impl RuntimeKernel {
             );
 
             let entity_data = if ctx.entity.is_null() {
-                Value::Object(HashMap::new())
+                Value::Object(ValueMap::new())
             } else {
                 (*ctx.entity).clone()
             };
@@ -1162,7 +1177,11 @@ impl RuntimeKernel {
     }
 
     /// The declared tick `tick_name` of `trait_name`.
-    pub fn tick_of(&self, trait_name: &str, tick_name: &str) -> Option<crate::schema::TickDefinition> {
+    pub fn tick_of(
+        &self,
+        trait_name: &str,
+        tick_name: &str,
+    ) -> Option<crate::schema::TickDefinition> {
         self.trait_definitions
             .read()
             .get(trait_name)?
@@ -1259,7 +1278,7 @@ impl RuntimeKernel {
         }
 
         // A tick has no payload (drift D-2).
-        let tick_payload = Value::Object(HashMap::new());
+        let tick_payload = Value::Object(ValueMap::new());
 
         let ctx = BindingContextBuilder::new()
             .payload(tick_payload)
@@ -1327,10 +1346,7 @@ impl RuntimeKernel {
         let sources = render_sources(&effect_results);
         let mut effect_results = effect_results
             .into_iter()
-            .map(|mut er| {
-                er.effect = resolve_effect_bindings(er.effect, &ctx);
-                er
-            })
+            .map(|er| resolve_effect_result(er, &ctx))
             .collect::<Vec<_>>();
         self.inject_relation_options(trait_name, &mut effect_results);
         if self.io.suspended() {
@@ -1476,7 +1492,7 @@ impl RuntimeKernel {
                 map.insert("_awaitingInit".to_string(), awaiting.clone());
                 Some(Value::Object(map))
             }
-            Value::Null => Some(Value::Object(HashMap::from([(
+            Value::Null => Some(Value::Object(ValueMap::from([(
                 "_awaitingInit".to_string(),
                 awaiting.clone(),
             )]))),
@@ -1509,7 +1525,7 @@ impl RuntimeKernel {
                     // The seed's own arm needs the server: it replays from its
                     // pre-dispatch row and the server cascades the rest itself.
                     let entity_by_trait = (!seed_row.is_null())
-                        .then(|| HashMap::from([(trait_name.to_string(), seed_row.clone())]));
+                        .then(|| ValueMap::from([(trait_name.to_string(), seed_row.clone())]));
                     vec![EventRequest {
                         event: event.to_string(),
                         tick: tick.map(str::to_string),
@@ -1556,7 +1572,7 @@ impl RuntimeKernel {
                             source_trait: emitter.map(str::to_string),
                             traits: traits.clone(),
                             entity_by_trait: (!entry.entity_before.is_null())
-                                .then(|| HashMap::from([(t.clone(), entry.entity_before.clone())])),
+                                .then(|| ValueMap::from([(t.clone(), entry.entity_before.clone())])),
                             delivery,
                             dispatch_log,
                             ..Default::default()
@@ -1569,25 +1585,24 @@ impl RuntimeKernel {
             Vec::new()
         };
 
-        let stateful_leg = (server_legs.is_empty()
-            && !hybrid
-            && self.effect_executor.environment().is_client())
-        .then(|| StatefulLeg {
-            leg: EventRequest {
-                event: event.to_string(),
-                payload: with_awaiting(payload.clone()),
-                entity_id: raw_entity_id.map(str::to_string),
-                target_trait: Some(trait_name.to_string()),
-                client_id: client_id.map(str::to_string),
-                source_trait: Some(trait_name.to_string()),
-                ..Default::default()
-            },
-            awaiting: if tick.is_some() {
-                Vec::new()
-            } else {
-                self.awaiting_of(outcomes)
-            },
-        });
+        let stateful_leg =
+            (server_legs.is_empty() && !hybrid && self.effect_executor.environment().is_client())
+                .then(|| StatefulLeg {
+                    leg: EventRequest {
+                        event: event.to_string(),
+                        payload: with_awaiting(payload.clone()),
+                        entity_id: raw_entity_id.map(str::to_string),
+                        target_trait: Some(trait_name.to_string()),
+                        client_id: client_id.map(str::to_string),
+                        source_trait: Some(trait_name.to_string()),
+                        ..Default::default()
+                    },
+                    awaiting: if tick.is_some() {
+                        Vec::new()
+                    } else {
+                        self.awaiting_of(outcomes)
+                    },
+                });
         let awaiting = if tick.is_some() || server_legs.is_empty() {
             Vec::new()
         } else {
@@ -1616,8 +1631,9 @@ impl RuntimeKernel {
             .awaiting
             .iter()
             .filter(|name| {
-                defs.get(name.as_str())
-                    .is_none_or(|def| !matches!(self.dispatch_mode_of(def), DispatchMode::HybridClientOnly))
+                defs.get(name.as_str()).is_none_or(|def| {
+                    !matches!(self.dispatch_mode_of(def), DispatchMode::HybridClientOnly)
+                })
             })
             .cloned()
             .collect();
@@ -1668,8 +1684,9 @@ impl RuntimeKernel {
                         from: result.previous_state.clone(),
                         event: Some(event),
                     }]),
-                    entity_by_trait: (!entry.entity_before.is_null())
-                        .then(|| HashMap::from([(trait_name.clone(), entry.entity_before.clone())])),
+                    entity_by_trait: (!entry.entity_before.is_null()).then(|| {
+                        ValueMap::from([(trait_name.clone(), entry.entity_before.clone())])
+                    }),
                     delivery,
                     dispatch_log: dispatch_log_of(entry),
                     ..Default::default()
@@ -1778,7 +1795,7 @@ impl RuntimeKernel {
                 event: None,
             }]),
             entity_by_trait: (!pre_tick_row.is_null())
-                .then(|| HashMap::from([(trait_name.to_string(), pre_tick_row.clone())])),
+                .then(|| ValueMap::from([(trait_name.to_string(), pre_tick_row.clone())])),
             ..Default::default()
         });
         if !outcome.executed {
@@ -1909,7 +1926,7 @@ impl RuntimeKernel {
 
     /// A trait's `@entity`: declared field defaults, then its row, then its frame.
     fn read_trait_entity(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> Value {
-        let defaults: HashMap<String, Value> = self
+        let defaults: ValueMap = self
             .entity_definitions
             .read()
             .get(entity_type)
@@ -2183,7 +2200,11 @@ impl RuntimeKernel {
             );
             // The host's own fan-out already ran this emit's listeners (their rows and renders are in
             // this response); a client-only listener is the exception, its host run being dropped.
-            if host_ran && self.host_fans_out.load(std::sync::atomic::Ordering::Relaxed) {
+            if host_ran
+                && self
+                    .host_fans_out
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 let mut reached = fanned.split_off(before);
                 reached.retain(|item| client_only.contains(&item.trait_name));
                 fanned.extend(reached);
@@ -2287,25 +2308,28 @@ impl RuntimeKernel {
         let Some(def) = self.trait_definitions.read().get(trait_name).cloned() else {
             return Vec::new();
         };
-        let authored: Vec<&SExpression> = result.effect_runs.iter().map(|run| &run.effect).collect();
+        let authored: Vec<&SExpression> =
+            result.effect_runs.iter().map(|run| &run.effect).collect();
         let composed = super::callsite_capture::embedded_by_effects(&def, &authored);
         let payload = match &result.payload {
-            Value::Null => Value::Object(HashMap::new()),
+            Value::Null => Value::Object(ValueMap::new()),
             other => other.clone(),
         };
         let visited = Arc::new(parking_lot::Mutex::new(HashSet::new()));
         children
             .into_iter()
             .filter(|child| composed.contains(child))
-            .map(|child| Self::repaint_item(
-                child,
-                RepaintJob {
-                    composed_with: payload.clone(),
-                    keep_composed: false,
-                    composed_by: None,
-                    visited: Arc::clone(&visited),
-                },
-            ))
+            .map(|child| {
+                Self::repaint_item(
+                    child,
+                    RepaintJob {
+                        composed_with: payload.clone(),
+                        keep_composed: false,
+                        composed_by: None,
+                        visited: Arc::clone(&visited),
+                    },
+                )
+            })
             .collect()
     }
 
@@ -2389,7 +2413,7 @@ impl RuntimeKernel {
             }
             let mapped = match &l.payload_mapping {
                 Some(mapping) => {
-                    let mut m = HashMap::new();
+                    let mut m = ValueMap::new();
                     for (k, expr) in mapping {
                         if let Ok(v) = evaluator.evaluate(expr, &ctx) {
                             m.insert(k.clone(), v);
@@ -2439,12 +2463,16 @@ impl RuntimeKernel {
                     .filter(|def| def.linked_entity.as_deref() == Some(entity))
                     .map(|def| def.name.as_str())
                     .collect(),
-                None => defs.get(key).map(|def| def.name.as_str()).into_iter().collect(),
+                None => defs
+                    .get(key)
+                    .map(|def| def.name.as_str())
+                    .into_iter()
+                    .collect(),
             };
             for trait_name in bound {
                 let row = rows
                     .entry(trait_name.to_string())
-                    .or_insert_with(|| Value::Object(HashMap::new()));
+                    .or_insert_with(|| Value::Object(ValueMap::new()));
                 if let Value::Object(fields) = row {
                     fields.extend(frame_fields.iter().map(|(k, v)| (k.clone(), v.clone())));
                 }
@@ -2522,7 +2550,7 @@ impl RuntimeKernel {
     ) -> (Vec<EffectResult>, Value, Vec<EffectRun>, Option<String>) {
         let evaluator = Evaluator::new();
         let mut effect_results = Vec::new();
-        let mut entity_data: HashMap<String, Value> = HashMap::new();
+        let mut entity_data: ValueMap = ValueMap::new();
         let mut runs = Vec::with_capacity(effects.len());
         let mut failure = None;
 
@@ -2588,7 +2616,7 @@ impl RuntimeKernel {
         ctx: &BindingContext,
         evaluator: &Evaluator,
         effect_results: &mut Vec<EffectResult>,
-        entity_data: &mut HashMap<String, Value>,
+        entity_data: &mut ValueMap,
     ) {
         let mirrored = with_pending_sets(ctx, entity_data);
         let ctx: &BindingContext = &mirrored;
@@ -2708,7 +2736,7 @@ impl RuntimeKernel {
         ctx: &BindingContext,
         evaluator: &Evaluator,
         effect_results: &mut Vec<EffectResult>,
-        entity_data: &mut HashMap<String, Value>,
+        entity_data: &mut ValueMap,
     ) {
         // `ctx` arrives with this transition's earlier `(set @entity.…)` writes already mirrored
         // into `@entity` by `exec_effect_expr` (the same `entity_data`, unchanged since).
@@ -2722,10 +2750,8 @@ impl RuntimeKernel {
                             Err(err) => {
                                 // A value that fails to evaluate is a failed effect, never stored raw.
                                 tracing::error!(path = %path, error = %err, "kernel: set value failed to evaluate");
-                                effect_results.push(EffectResult::failed(
-                                    effect.clone(),
-                                    &err.to_string(),
-                                ));
+                                effect_results
+                                    .push(EffectResult::failed(effect.clone(), &err.to_string()));
                                 return;
                             }
                         }
@@ -2779,7 +2805,9 @@ impl RuntimeKernel {
                     effect_results.extend(completion);
                 }
                 Effect::CallService { emit, .. } => {
-                    let resolved = resolve_effect_bindings(effect.clone(), ctx);
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
                     self.io.set_call_site(self.call_site_of(emit.as_ref()));
                     let mut result = self.effect_executor.execute(&resolved, ctx);
                     let verdict = self.io.take_call_verdict();
@@ -2793,9 +2821,9 @@ impl RuntimeKernel {
                     } else if let Effect::CallService { emit: routes, .. } = &mut result.effect {
                         routes.clone_from(emit);
                     }
-                    let completion = emit
-                        .as_ref()
-                        .and_then(|e| call_service_completion_emit(e, &result, verdict, key.as_deref()));
+                    let completion = emit.as_ref().and_then(|e| {
+                        call_service_completion_emit(e, &result, verdict, key.as_deref())
+                    });
                     effect_results.push(result);
                     effect_results.extend(completion);
                 }
@@ -2812,13 +2840,16 @@ impl RuntimeKernel {
                     effect_results.extend(completion);
                 }
                 Effect::CancelCall { .. } => {
-                    let resolved = resolve_effect_bindings(effect.clone(), ctx);
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
                     effect_results.push(self.effect_executor.execute(&resolved, ctx));
                 }
                 Effect::Emit { .. } => {
                     // Resolve now, against this leaf's scope (`let` locals, earlier sets), as JS does at emit time.
-                    let resolved = resolve_effect_bindings(effect.clone(), ctx);
-                    effect_results.push(self.effect_executor.execute(&resolved, ctx));
+                    if let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) {
+                        effect_results.push(self.effect_executor.execute(&resolved, ctx));
+                    }
                 }
                 _ => {
                     effect_results.push(self.effect_executor.execute(&effect, ctx));
@@ -2842,7 +2873,12 @@ impl RuntimeKernel {
         let defs = self.entity_definitions.read();
         for result in results {
             if let Effect::RenderUi { content, .. } = &mut result.effect {
-                super::relations::inject_relation_options(&*self.entity_source, &defs, &linked, content);
+                super::relations::inject_relation_options(
+                    &*self.entity_source,
+                    &defs,
+                    &linked,
+                    content,
+                );
             }
         }
     }
@@ -2878,10 +2914,10 @@ impl RuntimeKernel {
         state_render_sources(trait_def, state_name)
             .into_iter()
             .map(|(slot, content)| {
-                EffectResult::executed(resolve_effect_bindings(
-                    Effect::RenderUi { slot, content },
+                resolve_effect_result(
+                    EffectResult::executed(Effect::RenderUi { slot, content }),
                     ctx,
-                ))
+                )
             })
             .collect()
     }
@@ -2986,7 +3022,8 @@ impl RuntimeKernel {
         &self,
         entity_id: Option<&str>,
     ) -> BTreeMap<String, (String, DispatchMode)> {
-        let defs: Vec<Arc<TraitDefinition>> = self.trait_definitions.read().values().cloned().collect();
+        let defs: Vec<Arc<TraitDefinition>> =
+            self.trait_definitions.read().values().cloned().collect();
         defs.iter()
             .map(|def| {
                 let state = self.current_state_name(&def.name, entity_id);
@@ -3009,7 +3046,7 @@ impl RuntimeKernel {
     pub fn seed_leg(
         &self,
         traits: &[TraitFrom],
-        entity_by_trait: Option<&HashMap<String, Value>>,
+        entity_by_trait: Option<&ValueMap>,
         entity_id: Option<&str>,
     ) {
         let eid = entity_id.unwrap_or("singleton");
@@ -3386,7 +3423,7 @@ pub(crate) fn sexpr_to_value(sexpr: &SExpression) -> Value {
         SExpression::Null => Value::Null,
         SExpression::Array(items) => Value::Array(items.iter().map(sexpr_to_value).collect()),
         SExpression::Object(obj) => {
-            let map: HashMap<String, Value> = obj
+            let map: ValueMap = obj
                 .iter()
                 .map(|(k, v)| (k.clone(), sexpr_to_value(v)))
                 .collect();
@@ -3404,7 +3441,7 @@ fn config_defaults_value<T: std::borrow::Borrow<TraitDefinition>>(
     trait_def: &TraitDefinition,
     all_traits: &HashMap<String, T>,
 ) -> Value {
-    let mut map: HashMap<String, Value> = HashMap::new();
+    let mut map: ValueMap = ValueMap::new();
     if let Some(cfg) = &trait_def.config {
         for (k, field) in cfg {
             if let Some(default) = field.default.as_ref() {
@@ -3462,7 +3499,7 @@ fn bind_user_forwards(config: Value, user: &Value) -> Value {
 /// forward stays in the trait's declared config + render-ui; only the LIVE render
 /// context is chained, so the knob remains overridable.
 fn resolve_config_forwards<T: std::borrow::Borrow<TraitDefinition>>(
-    map: &mut HashMap<String, Value>,
+    map: &mut ValueMap,
     all_traits: &HashMap<String, T>,
 ) {
     let forwards: Vec<(String, String)> = map
@@ -3569,14 +3606,16 @@ fn state_render_sources(trait_def: &TraitDefinition, state_name: &str) -> Vec<(S
 
 /// A data effect on a browser-stored entity: a browser-run tick sends it as its `runTick` leg.
 fn dispatch_log_of(entry: &DeliveryEntry) -> Option<DispatchLog> {
-    (!entry.view.prev_events.is_empty() || !entry.view.prev_states.is_empty()).then(|| DispatchLog {
-        prev_events: entry
-            .view
-            .prev_events
-            .iter()
-            .filter_map(DeliveryRecord::from_value)
-            .collect(),
-        prev_states: entry.view.prev_states.to_vec(),
+    (!entry.view.prev_events.is_empty() || !entry.view.prev_states.is_empty()).then(|| {
+        DispatchLog {
+            prev_events: entry
+                .view
+                .prev_events
+                .iter()
+                .filter_map(DeliveryRecord::from_value)
+                .collect(),
+            prev_states: entry.view.prev_states.to_vec(),
+        }
     })
 }
 
@@ -3600,7 +3639,7 @@ fn browser_data_effect(effect: &Effect, residence: &crate::effects::Residence) -
 /// `let` values (JS twin: `EffectExecutor`'s bindings mirror).
 fn with_pending_sets<'a>(
     ctx: &'a BindingContext,
-    entity_data: &HashMap<String, Value>,
+    entity_data: &ValueMap,
 ) -> std::borrow::Cow<'a, BindingContext> {
     if entity_data.is_empty() {
         return std::borrow::Cow::Borrowed(ctx);
@@ -3633,10 +3672,10 @@ fn merge_entity(base: &Value, set: &Value) -> Value {
 
 /// Resolve every `@`-binding in a client-facing effect's content/payload against `ctx`,
 /// via the canonical `BindingContext::resolve_value`. Non-client effects pass through.
-fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Effect {
-    match effect {
+fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effect, EvalError> {
+    Ok(match effect {
         Effect::RenderUi { slot, content } => {
-            let resolved = ctx.resolve_value(&content).into_owned();
+            let resolved = ctx.resolve_value_checked(&content)?.into_owned();
             debug!(
                 target: "almadar::kernel",
                 slot = %slot,
@@ -3651,7 +3690,7 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Effect {
         }
         Effect::Emit { event, payload } => Effect::Emit {
             event,
-            payload: ctx.resolve_dropping_unset(&payload),
+            payload: ctx.resolve_dropping_unset_checked(&payload)?,
         },
         Effect::Navigate {
             path,
@@ -3659,11 +3698,13 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Effect {
             options,
         } => Effect::Navigate {
             path,
-            params: params.map(|p| {
-                p.iter()
-                    .map(|(k, v)| (k.clone(), ctx.resolve_value(v).into_owned()))
-                    .collect()
-            }),
+            params: params
+                .map(|p| {
+                    p.iter()
+                        .map(|(k, v)| Ok((k.clone(), ctx.resolve_value_checked(v)?.into_owned())))
+                        .collect::<Result<_, EvalError>>()
+                })
+                .transpose()?,
             options: options.map(|o| crate::effects::NavigateOptions {
                 crumb: o.crumb.map(|c| {
                     ctx.resolve_value(&Value::String(c))
@@ -3689,6 +3730,37 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Effect {
             key: resolve_key(&key, ctx),
         },
         other => other,
+    })
+}
+
+/// `effect` with its bindings resolved, or `None` after recording the typed argument mismatch as the effect's failure.
+fn resolved_or_failed(
+    effect: &Effect,
+    ctx: &BindingContext,
+    effect_results: &mut Vec<EffectResult>,
+) -> Option<Effect> {
+    match resolve_effect_bindings(effect.clone(), ctx) {
+        Ok(resolved) => Some(resolved),
+        Err(fault) => {
+            effect_results.push(EffectResult::failed(
+                effect.clone(),
+                &OrbitalError::Eval(fault).to_string(),
+            ));
+            None
+        }
+    }
+}
+
+/// The effect with its bindings resolved; a typed argument mismatch in an embedded operator call is the
+/// effect's failure, as it is when the JS executor throws.
+fn resolve_effect_result(result: EffectResult, ctx: &BindingContext) -> EffectResult {
+    let mut result = result;
+    match resolve_effect_bindings(result.effect.clone(), ctx) {
+        Ok(effect) => {
+            result.effect = effect;
+            result
+        }
+        Err(fault) => EffectResult::failed(result.effect, &OrbitalError::Eval(fault).to_string()),
     }
 }
 
@@ -3707,7 +3779,7 @@ mod navigate_options_tests {
     /// unresolved `@payload.title` literal.
     #[test]
     fn navigate_carries_crumb_options() {
-        let mut payload = HashMap::new();
+        let mut payload = ValueMap::new();
         payload.insert("title".to_string(), Value::String("My Note".to_string()));
         let ctx = BindingContextBuilder::new()
             .payload(Value::Object(payload))
@@ -3721,7 +3793,7 @@ mod navigate_options_tests {
             }),
         };
 
-        let resolved = resolve_effect_bindings(effect, &ctx);
+        let resolved = resolve_effect_bindings(effect, &ctx).expect("resolves");
         let Effect::Navigate { options, .. } = resolved else {
             panic!("expected Navigate effect");
         };
@@ -3738,7 +3810,7 @@ mod call_key_tests {
     use super::*;
 
     fn ctx_with_batch() -> BindingContext {
-        let mut entity = HashMap::new();
+        let mut entity = ValueMap::new();
         entity.insert("batchId".to_string(), Value::String("b-7".to_string()));
         BindingContextBuilder::new()
             .entity(Value::Object(entity))
@@ -3754,7 +3826,8 @@ mod call_key_tests {
             key: Some("@entity.batchId".into()),
             emit: None,
         };
-        let Effect::CallService { key, .. } = resolve_effect_bindings(effect, &ctx_with_batch())
+        let Ok(Effect::CallService { key, .. }) =
+            resolve_effect_bindings(effect, &ctx_with_batch())
         else {
             panic!("expected CallService");
         };
@@ -3766,7 +3839,8 @@ mod call_key_tests {
         let effect = Effect::CancelCall {
             key: "@entity.batchId".into(),
         };
-        let Effect::CancelCall { key } = resolve_effect_bindings(effect, &ctx_with_batch()) else {
+        let Ok(Effect::CancelCall { key }) = resolve_effect_bindings(effect, &ctx_with_batch())
+        else {
             panic!("expected CancelCall");
         };
         assert_eq!(key, "b-7");
@@ -3777,7 +3851,8 @@ mod call_key_tests {
         let effect = Effect::CancelCall {
             key: "fixed".into(),
         };
-        let Effect::CancelCall { key } = resolve_effect_bindings(effect, &ctx_with_batch()) else {
+        let Ok(Effect::CancelCall { key }) = resolve_effect_bindings(effect, &ctx_with_batch())
+        else {
             panic!("expected CancelCall");
         };
         assert_eq!(key, "fixed");
@@ -3792,12 +3867,17 @@ fn app_nav_items(schema: &OrbitalSchema) -> Vec<Value> {
     let mut seen = std::collections::HashSet::new();
     let mut items = Vec::new();
     for orbital in &schema.orbitals {
-        for page in orbital.pages.iter().flatten().filter_map(crate::schema::PageRef::as_inline) {
+        for page in orbital
+            .pages
+            .iter()
+            .flatten()
+            .filter_map(crate::schema::PageRef::as_inline)
+        {
             let Some(label) = &page.label else { continue };
             if page.path.contains(':') || !seen.insert(page.path.clone()) {
                 continue;
             }
-            let mut item = HashMap::from([
+            let mut item = ValueMap::from([
                 ("href".to_string(), Value::String(page.path.clone())),
                 ("label".to_string(), Value::String(label.clone())),
             ]);
@@ -3820,9 +3900,17 @@ fn app_nav_items(schema: &OrbitalSchema) -> Vec<Value> {
 /// path is already listed dropped. `Value::Null` while no program declares one.
 fn merge_nav_items(current: &Value, added: Vec<Value>) -> Value {
     let mut items = current.as_array().cloned().unwrap_or_default();
-    let href = |item: &Value| item.get_path("href").and_then(Value::as_str).map(str::to_string);
+    let href = |item: &Value| {
+        item.get_path("href")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
     let mut listed: std::collections::HashSet<String> = items.iter().filter_map(href).collect();
-    items.extend(added.into_iter().filter(|item| href(item).is_some_and(|h| listed.insert(h))));
+    items.extend(
+        added
+            .into_iter()
+            .filter(|item| href(item).is_some_and(|h| listed.insert(h))),
+    );
     if items.is_empty() {
         Value::Null
     } else {
@@ -3840,7 +3928,10 @@ fn is_thrown_failure(result: &EffectResult) -> bool {
     }
     let routed = |emit: &Option<FetchEmit>| emit.as_ref().is_some_and(|e| e.failure.is_some());
     match &result.effect {
-        Effect::Set { .. } | Effect::CancelCall { .. } => true,
+        Effect::Set { .. }
+        | Effect::CancelCall { .. }
+        | Effect::RenderUi { .. }
+        | Effect::Emit { .. } => true,
         Effect::CallService { emit, .. } | Effect::Custom { emit, .. } => !routed(emit),
         _ => false,
     }
@@ -3860,13 +3951,16 @@ fn call_service_completion_emit(
             let key = key?;
             (
                 emit.cancelled.clone()?,
-                Value::Object(HashMap::from([(
+                Value::Object(ValueMap::from([(
                     "key".to_string(),
                     Value::String(key.to_string()),
                 )])),
             )
         }
-        (None, EffectOutcome::Executed) => (emit.success.clone()?, result.return_value.clone().unwrap_or(Value::Null)),
+        (None, EffectOutcome::Executed) => (
+            emit.success.clone()?,
+            result.return_value.clone().unwrap_or(Value::Null),
+        ),
         (None, EffectOutcome::Failed) => (emit.failure.clone()?, error_payload(result, None)),
         (None, EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_)) => return None,
     };
@@ -3878,19 +3972,28 @@ fn call_service_completion_emit(
 fn substrate_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<EffectResult> {
     let (event, payload) = match &result.outcome {
         EffectOutcome::Executed => {
-            let mut payload = HashMap::new();
-            payload.insert("result".to_string(), result.return_value.clone().unwrap_or(Value::Null));
+            let mut payload = ValueMap::new();
+            payload.insert(
+                "result".to_string(),
+                result.return_value.clone().unwrap_or(Value::Null),
+            );
             (emit.success.clone()?, Value::Object(payload))
         }
-        EffectOutcome::Failed => (emit.failure.clone()?, error_payload(result, result.return_value.clone())),
+        EffectOutcome::Failed => (
+            emit.failure.clone()?,
+            error_payload(result, result.return_value.clone()),
+        ),
         EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
     };
     Some(EffectResult::executed(Effect::Emit { event, payload }))
 }
 
 fn error_payload(result: &EffectResult, errors: Option<Value>) -> Value {
-    let mut payload = HashMap::new();
-    payload.insert("error".to_string(), Value::String(result.error.clone().unwrap_or_default()));
+    let mut payload = ValueMap::new();
+    payload.insert(
+        "error".to_string(),
+        Value::String(result.error.clone().unwrap_or_default()),
+    );
     if let Some(errors) = errors {
         payload.insert("errors".to_string(), errors);
     }
@@ -3911,7 +4014,7 @@ fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<Effe
                 Value::Array(mut r) if by_id && r.len() == 1 => r.remove(0),
                 other => other,
             };
-            let mut payload = HashMap::new();
+            let mut payload = ValueMap::new();
             payload.insert("data".to_string(), data);
             payload.insert(
                 "totalCount".to_string(),
@@ -3919,7 +4022,7 @@ fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<Effe
             );
             (event, Value::Object(payload))
         }
-        EffectOutcome::Failed => (emit.failure.clone()?, Value::Object(HashMap::new())),
+        EffectOutcome::Failed => (emit.failure.clone()?, Value::Object(ValueMap::new())),
         EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
     };
     Some(EffectResult::executed(Effect::Emit { event, payload }))
@@ -3937,7 +4040,7 @@ fn persist_completion_emit(
 ) -> Option<EffectResult> {
     let (event, payload) = match result.outcome {
         EffectOutcome::Failed => {
-            let mut payload = HashMap::new();
+            let mut payload = ValueMap::new();
             if let Some(err) = &result.error {
                 payload.insert("error".to_string(), Value::String(err.clone()));
             }
@@ -3951,7 +4054,7 @@ fn persist_completion_emit(
                     id,
                     ..
                 } => {
-                    let mut payload = HashMap::new();
+                    let mut payload = ValueMap::new();
                     payload.insert(
                         "id".to_string(),
                         id.clone().map_or(Value::Null, Value::String),
@@ -3975,10 +4078,10 @@ fn persist_completion_emit(
 #[cfg(test)]
 mod merge_entity_tests {
     use super::*;
-    use std::collections::HashMap;
+    
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
-        let mut m = HashMap::new();
+        let mut m = ValueMap::new();
         for (k, v) in pairs {
             m.insert((*k).to_string(), v.clone());
         }
@@ -4019,7 +4122,7 @@ mod merge_entity_tests {
     #[test]
     fn merge_entity_empty_set_returns_base() {
         let base = obj(&[("a", Value::Number(1.0))]);
-        assert_eq!(merge_entity(&base, &Value::Object(HashMap::new())), base);
+        assert_eq!(merge_entity(&base, &Value::Object(ValueMap::new())), base);
         assert_eq!(merge_entity(&base, &Value::Null), base);
     }
 
@@ -5013,7 +5116,7 @@ mod client_dispatch_tests {
     #[test]
     fn render_ui_runs_locally_in_client_env() {
         let (kernel, _collector) = client_kernel_with(render_ui_schema());
-        let mut payload = HashMap::new();
+        let mut payload = ValueMap::new();
         payload.insert("title".to_string(), Value::String("Hello".to_string()));
         let outcomes = kernel
             .dispatch("RenderTrait", None, "SHOW", Value::Object(payload))
@@ -5142,19 +5245,18 @@ mod client_dispatch_tests {
 
     fn rendered_items(schema: OrbitalSchema) -> Option<Value> {
         let kernel = server_kernel_with(schema);
-        let outcomes = kernel.dispatch("Layout", None, "INIT", Value::Null).unwrap();
+        let outcomes = kernel
+            .dispatch("Layout", None, "INIT", Value::Null)
+            .unwrap();
         let response = EventResponse::from_process_results(&outcomes, "Layout", "INIT");
-        response
-            .client_effects?
-            .iter()
-            .find_map(|e| match e {
-                ClientEffect::RenderUi { config, .. } => config
-                    .as_ref()
-                    .and_then(Value::as_object)
-                    .and_then(|o| o.get("items"))
-                    .cloned(),
-                _ => None,
-            })
+        response.client_effects?.iter().find_map(|e| match e {
+            ClientEffect::RenderUi { config, .. } => config
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|o| o.get("items"))
+                .cloned(),
+            _ => None,
+        })
     }
 
     #[test]
@@ -5177,7 +5279,11 @@ mod client_dispatch_tests {
             .and_then(Value::as_array)
             .map(|a| {
                 a.iter()
-                    .filter_map(|e| e.get_path("href").and_then(Value::as_str).map(str::to_string))
+                    .filter_map(|e| {
+                        e.get_path("href")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -5201,7 +5307,9 @@ mod client_dispatch_tests {
         }))
         .unwrap();
         kernel.register_schema(second).unwrap();
-        let outcomes = kernel.dispatch("Layout", None, "INIT", Value::Null).unwrap();
+        let outcomes = kernel
+            .dispatch("Layout", None, "INIT", Value::Null)
+            .unwrap();
         let response = EventResponse::from_process_results(&outcomes, "Layout", "INIT");
         let hrefs: Vec<String> = response
             .client_effects
@@ -5213,7 +5321,15 @@ mod client_dispatch_tests {
                     .and_then(Value::as_object)
                     .and_then(|o| o.get("items"))
                     .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(|i| i.get_path("href").and_then(Value::as_str).map(str::to_string)).collect()),
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|i| {
+                                i.get_path("href")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                            })
+                            .collect()
+                    }),
                 _ => None,
             })
             .unwrap();
@@ -5239,7 +5355,10 @@ mod client_dispatch_tests {
             }]
         }))
         .unwrap();
-        assert_eq!(rendered_items(schema), Some(Value::String("@pages".to_string())));
+        assert_eq!(
+            rendered_items(schema),
+            Some(Value::String("@pages".to_string()))
+        );
     }
 
     fn i18n_schema(locales: bool) -> OrbitalSchema {
@@ -5362,7 +5481,7 @@ mod client_dispatch_tests {
     #[test]
     fn apply_server_response_merges_data_and_states() {
         let kernel = server_kernel_with(server_response_schema());
-        let mut row = HashMap::new();
+        let mut row = ValueMap::new();
         row.insert("id".to_string(), Value::String("n-1".to_string()));
         row.insert(
             "title".to_string(),
@@ -5371,8 +5490,8 @@ mod client_dispatch_tests {
         let mut data = HashMap::new();
         data.insert("Note".to_string(), vec![Value::Object(row)]);
 
-        let mut entity_by_trait = HashMap::new();
-        let mut listener_entity = HashMap::new();
+        let mut entity_by_trait = ValueMap::new();
+        let mut listener_entity = ValueMap::new();
         listener_entity.insert("id".to_string(), Value::String("singleton".to_string()));
         listener_entity.insert("note".to_string(), Value::String("n-1".to_string()));
         entity_by_trait.insert("Listener".to_string(), Value::Object(listener_entity));
@@ -5627,7 +5746,7 @@ mod client_dispatch_tests {
                 "Composer",
                 None,
                 "DRAFT",
-                Value::Object(HashMap::from([("value".to_string(), Value::from("hi"))])),
+                Value::Object(ValueMap::from([("value".to_string(), Value::from("hi"))])),
                 None,
             )
             .unwrap();
@@ -5944,7 +6063,7 @@ mod client_dispatch_tests {
                 "Composer",
                 None,
                 "DRAFT",
-                Value::Object(HashMap::from([("value".to_string(), Value::from("hi"))])),
+                Value::Object(ValueMap::from([("value".to_string(), Value::from("hi"))])),
                 None,
             )
             .unwrap();
@@ -6165,7 +6284,7 @@ mod mount_lifecycle_tests {
     /// A server host follows the client's mount from each leg's
     /// `_awaitingInit` (JS twin: `riya-level-seed-reaches-the-body.test.ts`).
     fn leg(awaiting: &[&str]) -> Value {
-        Value::Object(HashMap::from([(
+        Value::Object(ValueMap::from([(
             "_awaitingInit".to_string(),
             Value::Array(
                 awaiting
@@ -6555,10 +6674,10 @@ mod set_eval_failure_tests {
     fn the_failing_step_reports_no_client_effect_and_no_emit() {
         let result = run("INIT");
         assert!(
-            result.effect_results.iter().all(|r| !matches!(
-                r.effect,
-                Effect::RenderUi { .. } | Effect::Emit { .. }
-            )),
+            result
+                .effect_results
+                .iter()
+                .all(|r| !matches!(r.effect, Effect::RenderUi { .. } | Effect::Emit { .. })),
             "{:?}",
             result.effect_results
         );
@@ -6633,7 +6752,7 @@ mod circuit_step_tests {
     }
 
     fn key(k: &str) -> Value {
-        let mut data = HashMap::new();
+        let mut data = ValueMap::new();
         data.insert("key".to_string(), Value::String(k.to_string()));
         Value::Object(data)
     }

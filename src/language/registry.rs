@@ -25,28 +25,60 @@ pub(crate) fn operators_json() -> &'static str {
         .as_str()
 }
 
-/// Operator type reference, mirror of `OperatorTypeRef` in
-/// `packages/almadar-std/types.ts:148`.
+/// Operator type reference, mirror of `OperatorTypeRef` in `packages/almadar-std/types.ts`.
 ///
-/// The TS definition accepts either a bare primitive string (`'number'`,
-/// `'string'`, `'boolean'`, `'any'`, `'void'`, `'array'`, matching `FieldType`
-/// in `@almadar/core`) or a tagged object shape. `#[serde(untagged)]` handles
-/// both cases: serde first tries the tagged variants by shape and falls back
-/// to `Primitive(String)` for bare strings.
-#[derive(Debug, Clone, Deserialize)]
+/// A bare string names a concrete type (`"number"`, `"string"`, `"boolean"`, `"void"`, a std struct such as
+/// `"tensor"`); everything else is a kind-discriminated object. There are no generic types: polymorphism is by
+/// type variables ([`OperatorTypeRefKind::Var`]) bound per call. `#[serde(untagged)]` tries the tagged variants
+/// by shape and falls back to `Primitive(String)` for bare strings.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
 pub enum OperatorTypeRef {
     /// Tagged shape (kind-discriminated object).
     Tagged(OperatorTypeRefKind),
-    /// Bare string primitive, e.g. `"number"`, `"string"`, `"void"`.
+    /// A concrete type named by a bare string, e.g. `"number"`, `"string"`, `"void"`, `"tensor"`.
     Primitive(String),
+}
+
+impl OperatorTypeRef {
+    /// The coarse kind the signature declares, for readers that only branch on it: a primitive's own name, `array`
+    /// (lists and tuples), `object` (records, shapes and maps), `function` (a function type), `union`, `var`,
+    /// and the kind tag of everything else.
+    pub fn kind_name(&self) -> &str {
+        match self {
+            OperatorTypeRef::Primitive(name) => name,
+            OperatorTypeRef::Tagged(kind) => match kind {
+                OperatorTypeRefKind::Union { .. } => "union",
+                OperatorTypeRefKind::Literal { .. } => "literal",
+                OperatorTypeRefKind::Array { .. } | OperatorTypeRefKind::Tuple { .. } => "array",
+                OperatorTypeRefKind::Map { .. }
+                | OperatorTypeRefKind::Object { .. }
+                | OperatorTypeRefKind::Record
+                | OperatorTypeRefKind::PickOf { .. }
+                | OperatorTypeRefKind::OmitOf { .. }
+                | OperatorTypeRefKind::MergeOf { .. } => "object",
+                OperatorTypeRefKind::Entity { .. } => "entity",
+                OperatorTypeRefKind::EntityRef => "entityRef",
+                OperatorTypeRefKind::EventKey { .. } => "eventKey",
+                OperatorTypeRefKind::UiSlot => "uiSlot",
+                OperatorTypeRefKind::PatternType => "patternType",
+                OperatorTypeRefKind::Binding { .. } => "binding",
+                OperatorTypeRefKind::Sexpr { .. } => "sexpr",
+                OperatorTypeRefKind::Var { .. } => "var",
+                OperatorTypeRefKind::Fn { .. } => "function",
+                OperatorTypeRefKind::KeyOf { .. } => "keyOf",
+                OperatorTypeRefKind::FieldOf { .. } => "fieldOf",
+                OperatorTypeRefKind::Shape => "shape",
+            },
+        }
+    }
 }
 
 /// Tagged variants of `OperatorTypeRef`. Split from the outer enum so serde's
 /// internally-tagged discriminator (`tag = "kind"`) has a fixed shape to match
 /// against. The outer `#[serde(untagged)]` enum uses this for tagged input and
 /// falls back to `Primitive` for bare strings.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum OperatorTypeRefKind {
     Union {
@@ -55,8 +87,18 @@ pub enum OperatorTypeRefKind {
     Literal {
         value: serde_json::Value,
     },
+    /// `[T]`
     Array {
         of: Box<OperatorTypeRef>,
+    },
+    /// `[A, B]`: a fixed-length array with a type per slot.
+    Tuple {
+        items: Vec<OperatorTypeRef>,
+    },
+    /// `Map K V`
+    Map {
+        key: Box<OperatorTypeRef>,
+        value: Box<OperatorTypeRef>,
     },
     Object {
         #[serde(default)]
@@ -83,7 +125,54 @@ pub enum OperatorTypeRefKind {
         #[serde(default)]
         shape: Option<Box<OperatorTypeRef>>,
     },
-    Sexpr,
+    /// An unevaluated expression; `of` is the type its value has once evaluated.
+    Sexpr {
+        #[serde(default)]
+        of: Option<Box<OperatorTypeRef>>,
+    },
+    /// A type variable, bound per call. `bound` restricts what it may bind to; `each` binds it afresh at every
+    /// argument it covers (a rest parameter).
+    Var {
+        name: String,
+        #[serde(default)]
+        bound: Option<Box<OperatorTypeRef>>,
+        #[serde(default)]
+        each: bool,
+    },
+    /// The constraint "a record" (a struct, a `Map K V` or an entity row); only valid as a variable `bound`.
+    Record,
+    /// `(P…) -> R`: a lambda parameter, or the value of `fn`.
+    Fn {
+        params: Vec<OperatorTypeRef>,
+        returns: Box<OperatorTypeRef>,
+    },
+    /// `key-of R`: an argument naming a field of record variable `of` (a dot path through nested records).
+    #[serde(rename = "keyOf")]
+    KeyOf {
+        of: String,
+    },
+    /// `field-of R`: the type of the field of `of` the call's `key-of` argument names.
+    #[serde(rename = "fieldOf")]
+    FieldOf {
+        of: String,
+    },
+    /// `pick-of R`: `of` restricted to the fields the call's `[key-of R]` argument names.
+    #[serde(rename = "pickOf")]
+    PickOf {
+        of: String,
+    },
+    /// `omit-of R`: `of` without the fields the call's `[key-of R]` argument names.
+    #[serde(rename = "omitOf")]
+    OmitOf {
+        of: String,
+    },
+    /// `merge-of R`: the record whose fields are those of every binding of the `each` variable `of`, later winning.
+    #[serde(rename = "mergeOf")]
+    MergeOf {
+        of: String,
+    },
+    /// The declared target shape of the call: an argument naming a type, which is also the result type.
+    Shape,
 }
 
 /// Effect-specific metadata on an operator, mirror of `OperatorEffectMeta` in
@@ -101,6 +190,14 @@ pub struct EmbeddedOperatorEffect {
     pub config: Option<HashMap<String, OperatorTypeRef>>,
 }
 
+/// One declared parameter of an operator: the type the evaluators check a present argument against.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbeddedOperatorParam {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: OperatorTypeRef,
+}
+
 /// Metadata for a single operator parsed from `operators.json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbeddedOperator {
@@ -109,8 +206,11 @@ pub struct EmbeddedOperator {
     pub min_arity: u32,
     #[serde(rename = "maxArity", default)]
     pub max_arity: Option<u32>,
-    #[serde(rename = "returnType", default)]
-    pub return_type: String,
+    /// Declared parameters, by argument position; a last parameter named `...x` (or an unbounded `maxArity`) covers every further argument.
+    #[serde(default)]
+    pub params: Vec<EmbeddedOperatorParam>,
+    #[serde(rename = "returnType")]
+    pub return_type: OperatorTypeRef,
     #[serde(default)]
     pub description: String,
     #[serde(rename = "hasSideEffects", default)]
@@ -311,6 +411,12 @@ pub struct EmbeddedServiceParam {
     /// An array param's element shape: its members' declared types.
     #[serde(default)]
     pub items: Option<EmbeddedParamItems>,
+    /// A struct param's members.
+    #[serde(default)]
+    pub properties: Option<HashMap<String, EmbeddedParamMember>>,
+    /// A dictionary param's value type.
+    #[serde(default, rename = "mapValue")]
+    pub map_value: Option<EmbeddedParamMember>,
 }
 
 /// The element shape of an array service param.

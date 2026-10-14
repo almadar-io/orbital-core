@@ -17,6 +17,7 @@
 //! - **overlay_slots_render**: every modal/drawer open transition fills its slot
 //!   with real renderers.
 
+use crate::evaluator::ValueMap;
 use crate::client::bridge::{KernelBridge, ServerBridge};
 use crate::client::client_core::ClientCore;
 use crate::client::recurse::trait_ref_name;
@@ -149,7 +150,7 @@ where
     // Pass 1 — init every orbital and accumulate a UNION of trait_content. A `@trait.X`
     // defined in orbital A but referenced in orbital B's render-ui (a valid cross-orbital
     // composition) must still resolve. First write wins.
-    let mut trait_union: HashMap<String, Value> = HashMap::new();
+    let mut trait_union: ValueMap = ValueMap::new();
     for idx in 0..orbital_count {
         let app = build_app(idx)?;
         for (name, content) in &app.trait_content {
@@ -389,7 +390,7 @@ impl<'a> AccessScope<'a> {
 #[allow(clippy::too_many_arguments)]
 fn walk(
     content: &Value,
-    trait_content: &HashMap<String, Value>,
+    trait_content: &ValueMap,
     target: &dyn RenderTarget,
     entities_cache: &HashMap<String, Vec<Value>>,
     visited_traits: &mut HashSet<String>,

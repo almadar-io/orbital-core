@@ -2,10 +2,10 @@
 //!
 //! Core types for effect execution.
 
+use crate::evaluator::ValueMap;
 use crate::evaluator::Value;
 use crate::schema::SExpression;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Runtime environment for effect execution
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -112,7 +112,7 @@ pub enum Effect {
     /// Navigate to a route (client-only)
     Navigate {
         path: String,
-        params: Option<HashMap<String, Value>>,
+        params: Option<ValueMap>,
         /// `{ crumb?: string }` — the optional third `navigate` argument
         /// (`(navigate path params { crumb: ... })`). Mirrors the wire's
         /// `NavigateOptions` (`super::client_effect`).

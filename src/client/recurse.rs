@@ -6,9 +6,9 @@
 //! "how to render a single pattern" step stays backend-specific (different `ui`
 //! types) and is supplied via `RenderContext::child_render`.
 
+use crate::evaluator::ValueMap;
 use crate::ir::{OirBinding, OirBindingRoot};
 use crate::Value;
-use std::collections::HashMap;
 
 /// Return the ordered child pattern specs to render for a layout/container
 /// pattern: the entries of its `children` array (empty if none).
@@ -23,7 +23,7 @@ use std::collections::HashMap;
 /// source).
 pub fn child_patterns(
     props: &Value,
-    trait_content: &HashMap<String, Value>,
+    trait_content: &ValueMap,
 ) -> Vec<(Value, Option<String>)> {
     let Some(arr) = props
         .as_object()
@@ -83,7 +83,7 @@ mod tests {
                 ]),
             ),
         ]);
-        let kids = child_patterns(&props, &HashMap::new());
+        let kids = child_patterns(&props, &ValueMap::new());
         assert_eq!(kids.len(), 2);
         assert_eq!(
             kids[0].0.as_object().and_then(|o| o.get("type")),
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn no_children_is_empty() {
-        let empty = HashMap::new();
+        let empty = ValueMap::new();
         assert!(
             child_patterns(&obj(vec![("type", Value::String("button".into()))]), &empty).is_empty()
         );
@@ -105,7 +105,7 @@ mod tests {
     // current render content from the index; an unresolved one is dropped.
     #[test]
     fn resolves_trait_ref() {
-        let mut index = HashMap::new();
+        let mut index = ValueMap::new();
         index.insert(
             "Search".to_string(),
             obj(vec![("type", Value::String("table-view".into()))]),
@@ -143,7 +143,7 @@ mod tests {
     // irrelevant here (the index is a flat trait→content map).
     #[test]
     fn resolves_overlay_sourced_peer() {
-        let mut index = HashMap::new();
+        let mut index = ValueMap::new();
         index.insert(
             "Popover1".to_string(),
             obj(vec![("type", Value::String("popover".into()))]),
@@ -174,7 +174,7 @@ mod tests {
         };
 
         let entities = HashMap::new();
-        let tc = HashMap::new();
+        let tc = ValueMap::new();
         let editing = None;
         let mut form = HashMap::new();
         let mut pending = Vec::new();
@@ -221,7 +221,7 @@ mod tests {
             seen.borrow_mut().push(ctx.source_trait.clone());
         };
 
-        let mut tc = HashMap::new();
+        let mut tc = ValueMap::new();
         tc.insert("Catalog".to_string(), obj(vec![("type", Value::String("stack".into()))]));
 
         let entities = HashMap::new();

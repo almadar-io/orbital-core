@@ -7,7 +7,6 @@ use crate::scenario_bench::{Driver, Fixture, Scenario, Session, Step};
 use orbital_core::runtime::{EntitySource, InMemoryEntityCache, RuntimeKernel};
 use orbital_core::{EventResponse, OrbitalSchema, RuntimeEnvironment, Value};
 use serde_json::{json, Map, Value as Json};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// The viewer `@almadar/core`'s `DEFAULT_VIEWER` names, which B1 runs as.
@@ -60,7 +59,7 @@ impl Session for KernelSession {
     fn dispatch(&self, step: &Step) -> Result<Json, String> {
         let payload: Value = match &step.payload {
             Some(p) => serde_json::from_value(p.clone()).map_err(|e| format!("payload: {e}"))?,
-            None => Value::Object(HashMap::new()),
+            None => Value::Object(Default::default()),
         };
         let outcomes = self
             .kernel

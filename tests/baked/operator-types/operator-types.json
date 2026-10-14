@@ -1,0 +1,8990 @@
+{
+  "description": "Operator argument types (D-12) and type-variable consistency. A present argument that contradicts the signature the installed operator table declares for its call raises the typed TypeMismatch on every path: a declared concrete type, a variable's bound, and the agreement of every argument bound to one type variable (`= : T, T`, `array/append : [T], T`). null is absent and passes; a nominal std type is not checked; there are no generic types. Read by orbital-core tests/operator_types.rs and @almadar/evaluator operator-types.test.ts (canonical source @almadar-io/parity fixtures/operator-types, mirrored into each test dir).",
+  "cases": [
+    {
+      "name": "!=: [\"!=\",5,3]",
+      "expr": [
+        "!=",
+        5,
+        3
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "%: [\"%\",10,3]",
+      "expr": [
+        "%",
+        10,
+        3
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "%: argument 0 is string",
+      "expr": [
+        "%",
+        "5",
+        3
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "%: argument 1 is string",
+      "expr": [
+        "%",
+        10,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "*: [\"*\",3,4]",
+      "expr": [
+        "*",
+        3,
+        4
+      ],
+      "expect": {
+        "value": 12
+      }
+    },
+    {
+      "name": "*: argument 0 is string",
+      "expr": [
+        "*",
+        "5",
+        4
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "*: argument 1 is string",
+      "expr": [
+        "*",
+        3,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "+: [\"+\",2,3]",
+      "expr": [
+        "+",
+        2,
+        3
+      ],
+      "expect": {
+        "value": 5
+      }
+    },
+    {
+      "name": "+: argument 0 is string",
+      "expr": [
+        "+",
+        "5",
+        3
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "+: argument 1 is string",
+      "expr": [
+        "+",
+        2,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "-: [\"-\",5]",
+      "expr": [
+        "-",
+        5
+      ],
+      "expect": {
+        "value": -5
+      }
+    },
+    {
+      "name": "-: argument 0 is string",
+      "expr": [
+        "-",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "/: [\"/\",10,2]",
+      "expr": [
+        "/",
+        10,
+        2
+      ],
+      "expect": {
+        "value": 5
+      }
+    },
+    {
+      "name": "/: argument 0 is string",
+      "expr": [
+        "/",
+        "5",
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "/: argument 1 is string",
+      "expr": [
+        "/",
+        10,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "<: [\"<\",3,5]",
+      "expr": [
+        "<",
+        3,
+        5
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "<: argument 0 is boolean",
+      "expr": [
+        "<",
+        true,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number | string",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": "<: argument 1 is boolean",
+      "expr": [
+        "<",
+        3,
+        true
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number | string",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": "<=: [\"<=\",5,5]",
+      "expr": [
+        "<=",
+        5,
+        5
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "<=: argument 0 is boolean",
+      "expr": [
+        "<=",
+        true,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number | string",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": "<=: argument 1 is boolean",
+      "expr": [
+        "<=",
+        5,
+        true
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number | string",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": "=: [\"=\",5,5]",
+      "expr": [
+        "=",
+        5,
+        5
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "==: [\"==\",5,5]",
+      "expr": [
+        "==",
+        5,
+        5
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": ">: [\">\",5,3]",
+      "expr": [
+        ">",
+        5,
+        3
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": ">: argument 0 is boolean",
+      "expr": [
+        ">",
+        true,
+        3
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number | string",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": ">: argument 1 is boolean",
+      "expr": [
+        ">",
+        5,
+        true
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number | string",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": ">=: [\">=\",5,5]",
+      "expr": [
+        ">=",
+        5,
+        5
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": ">=: argument 0 is boolean",
+      "expr": [
+        ">=",
+        true,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number | string",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": ">=: argument 1 is boolean",
+      "expr": [
+        ">=",
+        5,
+        true
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number | string",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": "and: [\"and\",true,true]",
+      "expr": [
+        "and",
+        true,
+        true
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "anim/direction-from-delta: [\"anim/direction-from-delta\",1,0]",
+      "expr": [
+        "anim/direction-from-delta",
+        1,
+        0
+      ],
+      "expect": {
+        "value": "right"
+      }
+    },
+    {
+      "name": "anim/direction-from-delta: argument 0 is string",
+      "expr": [
+        "anim/direction-from-delta",
+        "5",
+        0
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "anim/direction-from-delta: argument 1 is string",
+      "expr": [
+        "anim/direction-from-delta",
+        1,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/append: [\"array/append\",[1,2],3]",
+      "expr": [
+        "array/append",
+        [
+          1,
+          2
+        ],
+        3
+      ],
+      "expect": {
+        "value": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "array/append: argument 0 is number",
+      "expr": [
+        "array/append",
+        5,
+        3
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/avg: [\"array/avg\",[{\"score\":80},{\"score\":90}],\"score\"]",
+      "expr": [
+        "array/avg",
+        [
+          {
+            "score": 80
+          },
+          {
+            "score": 90
+          }
+        ],
+        "score"
+      ],
+      "expect": {
+        "value": 85
+      }
+    },
+    {
+      "name": "array/avg: argument 0 is number",
+      "expr": [
+        "array/avg",
+        5,
+        "score"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/avg: argument 1 is number",
+      "expr": [
+        "array/avg",
+        [
+          {
+            "score": 80
+          },
+          {
+            "score": 90
+          }
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/concat: [\"array/concat\",[1,2],[3,4]]",
+      "expr": [
+        "array/concat",
+        [
+          1,
+          2
+        ],
+        [
+          3,
+          4
+        ]
+      ],
+      "expect": {
+        "value": [
+          1,
+          2,
+          3,
+          4
+        ]
+      }
+    },
+    {
+      "name": "array/concat: argument 0 is number",
+      "expr": [
+        "array/concat",
+        5,
+        [
+          3,
+          4
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/concat: argument 1 is number",
+      "expr": [
+        "array/concat",
+        [
+          1,
+          2
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/cosine: [\"array/cosine\",[1,0],[1,0]]",
+      "expr": [
+        "array/cosine",
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "array/cosine: argument 0 is number",
+      "expr": [
+        "array/cosine",
+        5,
+        [
+          1,
+          0
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/cosine: argument 1 is number",
+      "expr": [
+        "array/cosine",
+        [
+          1,
+          0
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/count: [\"array/count\",[{\"status\":\"done\"},{\"status\":\"todo\"}],[\"fn\",\"t\",[\"=\",\"@t.status\",\"done\"]]]",
+      "expr": [
+        "array/count",
+        [
+          {
+            "status": "done"
+          },
+          {
+            "status": "todo"
+          }
+        ],
+        [
+          "fn",
+          "t",
+          [
+            "=",
+            "@t.status",
+            "done"
+          ]
+        ]
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "array/count: argument 0 is number",
+      "expr": [
+        "array/count",
+        5,
+        [
+          "fn",
+          "t",
+          [
+            "=",
+            "@t.status",
+            "done"
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/drop: [\"array/drop\",[1,2,3,4,5,6,7],5]",
+      "expr": [
+        "array/drop",
+        [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        5
+      ],
+      "expect": {
+        "value": [
+          6,
+          7
+        ]
+      }
+    },
+    {
+      "name": "array/drop: argument 0 is number",
+      "expr": [
+        "array/drop",
+        5,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/drop: argument 1 is string",
+      "expr": [
+        "array/drop",
+        [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/dropLast: [\"array/dropLast\",[1,2,3,4,5],2]",
+      "expr": [
+        "array/dropLast",
+        [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        2
+      ],
+      "expect": {
+        "value": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "array/dropLast: argument 0 is number",
+      "expr": [
+        "array/dropLast",
+        5,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/dropLast: argument 1 is string",
+      "expr": [
+        "array/dropLast",
+        [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/every: [\"array/every\",[{\"price\":5},{\"price\":10}],[\"fn\",\"x\",[\">\",\"@x.price\",0]]]",
+      "expr": [
+        "array/every",
+        [
+          {
+            "price": 5
+          },
+          {
+            "price": 10
+          }
+        ],
+        [
+          "fn",
+          "x",
+          [
+            ">",
+            "@x.price",
+            0
+          ]
+        ]
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "array/every: argument 0 is number",
+      "expr": [
+        "array/every",
+        5,
+        [
+          "fn",
+          "x",
+          [
+            ">",
+            "@x.price",
+            0
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/filter: [\"array/filter\",[{\"price\":50},{\"price\":150}],[\"fn\",\"x\",[\">\",\"@x.price\",100]]]",
+      "expr": [
+        "array/filter",
+        [
+          {
+            "price": 50
+          },
+          {
+            "price": 150
+          }
+        ],
+        [
+          "fn",
+          "x",
+          [
+            ">",
+            "@x.price",
+            100
+          ]
+        ]
+      ],
+      "expect": {
+        "value": [
+          {
+            "price": 150
+          }
+        ]
+      }
+    },
+    {
+      "name": "array/filter: argument 0 is number",
+      "expr": [
+        "array/filter",
+        5,
+        [
+          "fn",
+          "x",
+          [
+            ">",
+            "@x.price",
+            100
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/find: [\"array/find\",[{\"status\":\"active\"},{\"status\":\"archived\"}],[\"fn\",\"x\",[\"=\",\"@x.status\",\"active\"]]]",
+      "expr": [
+        "array/find",
+        [
+          {
+            "status": "active"
+          },
+          {
+            "status": "archived"
+          }
+        ],
+        [
+          "fn",
+          "x",
+          [
+            "=",
+            "@x.status",
+            "active"
+          ]
+        ]
+      ],
+      "expect": {
+        "value": {
+          "status": "active"
+        }
+      }
+    },
+    {
+      "name": "array/find: argument 0 is number",
+      "expr": [
+        "array/find",
+        5,
+        [
+          "fn",
+          "x",
+          [
+            "=",
+            "@x.status",
+            "active"
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/findIndex: [\"array/findIndex\",[{\"status\":\"active\"},{\"status\":\"archived\"}],[\"fn\",\"x\",[\"=\",\"@x.status\",\"active\"]]]",
+      "expr": [
+        "array/findIndex",
+        [
+          {
+            "status": "active"
+          },
+          {
+            "status": "archived"
+          }
+        ],
+        [
+          "fn",
+          "x",
+          [
+            "=",
+            "@x.status",
+            "active"
+          ]
+        ]
+      ],
+      "expect": {
+        "value": 0
+      }
+    },
+    {
+      "name": "array/findIndex: argument 0 is number",
+      "expr": [
+        "array/findIndex",
+        5,
+        [
+          "fn",
+          "x",
+          [
+            "=",
+            "@x.status",
+            "active"
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/first: [\"array/first\",[1,2,3]]",
+      "expr": [
+        "array/first",
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "array/first: argument 0 is number",
+      "expr": [
+        "array/first",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/flatten: [\"array/flatten\",[[1,2],[3,4]]]",
+      "expr": [
+        "array/flatten",
+        [
+          [
+            1,
+            2
+          ],
+          [
+            3,
+            4
+          ]
+        ]
+      ],
+      "expect": {
+        "value": [
+          1,
+          2,
+          3,
+          4
+        ]
+      }
+    },
+    {
+      "name": "array/flatten: argument 0 is number",
+      "expr": [
+        "array/flatten",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/groupBy: [\"array/groupBy\",[{\"status\":\"new\"},{\"status\":\"done\"}],\"status\"]",
+      "expr": [
+        "array/groupBy",
+        [
+          {
+            "status": "new"
+          },
+          {
+            "status": "done"
+          }
+        ],
+        "status"
+      ],
+      "expect": {
+        "value": {
+          "new": [
+            {
+              "status": "new"
+            }
+          ],
+          "done": [
+            {
+              "status": "done"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "array/groupBy: argument 0 is number",
+      "expr": [
+        "array/groupBy",
+        5,
+        "status"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/includes: [\"array/includes\",[1,2,3],2]",
+      "expr": [
+        "array/includes",
+        [
+          1,
+          2,
+          3
+        ],
+        2
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "array/includes: argument 0 is number",
+      "expr": [
+        "array/includes",
+        5,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/indexOf: [\"array/indexOf\",[1,2,3],2]",
+      "expr": [
+        "array/indexOf",
+        [
+          1,
+          2,
+          3
+        ],
+        2
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "array/indexOf: argument 0 is number",
+      "expr": [
+        "array/indexOf",
+        5,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/insert: [\"array/insert\",[1,3],1,2]",
+      "expr": [
+        "array/insert",
+        [
+          1,
+          3
+        ],
+        1,
+        2
+      ],
+      "expect": {
+        "value": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "array/insert: argument 0 is number",
+      "expr": [
+        "array/insert",
+        5,
+        1,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/insert: argument 1 is string",
+      "expr": [
+        "array/insert",
+        [
+          1,
+          3
+        ],
+        "5",
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/last: [\"array/last\",[1,2,3]]",
+      "expr": [
+        "array/last",
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "expect": {
+        "value": 3
+      }
+    },
+    {
+      "name": "array/last: argument 0 is number",
+      "expr": [
+        "array/last",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/len: [\"array/len\",[1,2,3]]",
+      "expr": [
+        "array/len",
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "expect": {
+        "value": 3
+      }
+    },
+    {
+      "name": "array/len: argument 0 is number",
+      "expr": [
+        "array/len",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/map: [\"array/map\",[{\"price\":100},{\"price\":200}],[\"fn\",\"x\",[\"*\",\"@x.price\",1.1]]]",
+      "expr": [
+        "array/map",
+        [
+          {
+            "price": 100
+          },
+          {
+            "price": 200
+          }
+        ],
+        [
+          "fn",
+          "x",
+          [
+            "*",
+            "@x.price",
+            1.1
+          ]
+        ]
+      ],
+      "expect": {
+        "value": [
+          110.00000000000001,
+          220.00000000000003
+        ]
+      }
+    },
+    {
+      "name": "array/map: argument 0 is number",
+      "expr": [
+        "array/map",
+        5,
+        [
+          "fn",
+          "x",
+          [
+            "*",
+            "@x.price",
+            1.1
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/max: [\"array/max\",[{\"price\":3},{\"price\":9}],\"price\"]",
+      "expr": [
+        "array/max",
+        [
+          {
+            "price": 3
+          },
+          {
+            "price": 9
+          }
+        ],
+        "price"
+      ],
+      "expect": {
+        "value": 9
+      }
+    },
+    {
+      "name": "array/max: argument 0 is number",
+      "expr": [
+        "array/max",
+        5,
+        "price"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/max: argument 1 is number",
+      "expr": [
+        "array/max",
+        [
+          {
+            "price": 3
+          },
+          {
+            "price": 9
+          }
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/min: [\"array/min\",[{\"price\":3},{\"price\":9}],\"price\"]",
+      "expr": [
+        "array/min",
+        [
+          {
+            "price": 3
+          },
+          {
+            "price": 9
+          }
+        ],
+        "price"
+      ],
+      "expect": {
+        "value": 3
+      }
+    },
+    {
+      "name": "array/min: argument 0 is number",
+      "expr": [
+        "array/min",
+        5,
+        "price"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/min: argument 1 is number",
+      "expr": [
+        "array/min",
+        [
+          {
+            "price": 3
+          },
+          {
+            "price": 9
+          }
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/nearest: [\"array/nearest\",[1,0],[[1,0],[0,1]]]",
+      "expr": [
+        "array/nearest",
+        [
+          1,
+          0
+        ],
+        [
+          [
+            1,
+            0
+          ],
+          [
+            0,
+            1
+          ]
+        ]
+      ],
+      "expect": {
+        "value": {
+          "index": 0,
+          "score": 1,
+          "margin": 1
+        }
+      }
+    },
+    {
+      "name": "array/nearest: argument 0 is number",
+      "expr": [
+        "array/nearest",
+        5,
+        [
+          [
+            1,
+            0
+          ],
+          [
+            0,
+            1
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/nearest: argument 1 is number",
+      "expr": [
+        "array/nearest",
+        [
+          1,
+          0
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/nth: [\"array/nth\",[1,2,3],1]",
+      "expr": [
+        "array/nth",
+        [
+          1,
+          2,
+          3
+        ],
+        1
+      ],
+      "expect": {
+        "value": 2
+      }
+    },
+    {
+      "name": "array/nth: argument 0 is number",
+      "expr": [
+        "array/nth",
+        5,
+        1
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/nth: argument 1 is string",
+      "expr": [
+        "array/nth",
+        [
+          1,
+          2,
+          3
+        ],
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/partition: [\"array/partition\",[{\"price\":30},{\"price\":80}],[\"fn\",\"x\",[\">\",\"@x.price\",50]]]",
+      "expr": [
+        "array/partition",
+        [
+          {
+            "price": 30
+          },
+          {
+            "price": 80
+          }
+        ],
+        [
+          "fn",
+          "x",
+          [
+            ">",
+            "@x.price",
+            50
+          ]
+        ]
+      ],
+      "expect": {
+        "value": [
+          [
+            {
+              "price": 80
+            }
+          ],
+          [
+            {
+              "price": 30
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "array/partition: argument 0 is number",
+      "expr": [
+        "array/partition",
+        5,
+        [
+          "fn",
+          "x",
+          [
+            ">",
+            "@x.price",
+            50
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/prepend: [\"array/prepend\",[2,3],1]",
+      "expr": [
+        "array/prepend",
+        [
+          2,
+          3
+        ],
+        1
+      ],
+      "expect": {
+        "value": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "array/prepend: argument 0 is number",
+      "expr": [
+        "array/prepend",
+        5,
+        1
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/range: [\"array/range\",3]",
+      "expr": [
+        "array/range",
+        3
+      ],
+      "expect": {
+        "value": [
+          0,
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "array/range: argument 0 is string",
+      "expr": [
+        "array/range",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/reduce: [\"array/reduce\",[{\"price\":10},{\"price\":25}],0,[\"fn\",[\"acc\",\"x\"],[\"+\",\"@acc\",\"@x.price\"]]]",
+      "expr": [
+        "array/reduce",
+        [
+          {
+            "price": 10
+          },
+          {
+            "price": 25
+          }
+        ],
+        0,
+        [
+          "fn",
+          [
+            "acc",
+            "x"
+          ],
+          [
+            "+",
+            "@acc",
+            "@x.price"
+          ]
+        ]
+      ],
+      "expect": {
+        "value": 35
+      }
+    },
+    {
+      "name": "array/reduce: argument 0 is number",
+      "expr": [
+        "array/reduce",
+        5,
+        0,
+        [
+          "fn",
+          [
+            "acc",
+            "x"
+          ],
+          [
+            "+",
+            "@acc",
+            "@x.price"
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/reject: [\"array/reject\",[{\"status\":\"active\"},{\"status\":\"deleted\"}],[\"fn\",\"x\",[\"=\",\"@x.status\",\"deleted\"]]]",
+      "expr": [
+        "array/reject",
+        [
+          {
+            "status": "active"
+          },
+          {
+            "status": "deleted"
+          }
+        ],
+        [
+          "fn",
+          "x",
+          [
+            "=",
+            "@x.status",
+            "deleted"
+          ]
+        ]
+      ],
+      "expect": {
+        "value": [
+          {
+            "status": "active"
+          }
+        ]
+      }
+    },
+    {
+      "name": "array/reject: argument 0 is number",
+      "expr": [
+        "array/reject",
+        5,
+        [
+          "fn",
+          "x",
+          [
+            "=",
+            "@x.status",
+            "deleted"
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/remove: [\"array/remove\",[1,2,3],1]",
+      "expr": [
+        "array/remove",
+        [
+          1,
+          2,
+          3
+        ],
+        1
+      ],
+      "expect": {
+        "value": [
+          1,
+          3
+        ]
+      }
+    },
+    {
+      "name": "array/remove: argument 0 is number",
+      "expr": [
+        "array/remove",
+        5,
+        1
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/remove: argument 1 is string",
+      "expr": [
+        "array/remove",
+        [
+          1,
+          2,
+          3
+        ],
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/removeItem: [\"array/removeItem\",[1,2,3,2],2]",
+      "expr": [
+        "array/removeItem",
+        [
+          1,
+          2,
+          3,
+          2
+        ],
+        2
+      ],
+      "expect": {
+        "value": [
+          1,
+          3,
+          2
+        ]
+      }
+    },
+    {
+      "name": "array/removeItem: argument 0 is number",
+      "expr": [
+        "array/removeItem",
+        5,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/reverse: [\"array/reverse\",[1,2,3]]",
+      "expr": [
+        "array/reverse",
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "expect": {
+        "value": [
+          3,
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "name": "array/reverse: argument 0 is number",
+      "expr": [
+        "array/reverse",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/slice: [\"array/slice\",[1,2,3,4],1,3]",
+      "expr": [
+        "array/slice",
+        [
+          1,
+          2,
+          3,
+          4
+        ],
+        1,
+        3
+      ],
+      "expect": {
+        "value": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "array/slice: argument 0 is number",
+      "expr": [
+        "array/slice",
+        5,
+        1,
+        3
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/slice: argument 1 is string",
+      "expr": [
+        "array/slice",
+        [
+          1,
+          2,
+          3,
+          4
+        ],
+        "5",
+        3
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/slice: argument 2 is string",
+      "expr": [
+        "array/slice",
+        [
+          1,
+          2,
+          3,
+          4
+        ],
+        1,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/some: [\"array/some\",[{\"status\":\"archived\"},{\"status\":\"active\"}],[\"fn\",\"x\",[\"=\",\"@x.status\",\"active\"]]]",
+      "expr": [
+        "array/some",
+        [
+          {
+            "status": "archived"
+          },
+          {
+            "status": "active"
+          }
+        ],
+        [
+          "fn",
+          "x",
+          [
+            "=",
+            "@x.status",
+            "active"
+          ]
+        ]
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "array/some: argument 0 is number",
+      "expr": [
+        "array/some",
+        5,
+        [
+          "fn",
+          "x",
+          [
+            "=",
+            "@x.status",
+            "active"
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/sum: [\"array/sum\",[{\"price\":10},{\"price\":25}],\"price\"]",
+      "expr": [
+        "array/sum",
+        [
+          {
+            "price": 10
+          },
+          {
+            "price": 25
+          }
+        ],
+        "price"
+      ],
+      "expect": {
+        "value": 35
+      }
+    },
+    {
+      "name": "array/sum: argument 0 is number",
+      "expr": [
+        "array/sum",
+        5,
+        "price"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/sum: argument 1 is number",
+      "expr": [
+        "array/sum",
+        [
+          {
+            "price": 10
+          },
+          {
+            "price": 25
+          }
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/take: [\"array/take\",[1,2,3,4,5,6,7],5]",
+      "expr": [
+        "array/take",
+        [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        5
+      ],
+      "expect": {
+        "value": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      }
+    },
+    {
+      "name": "array/take: argument 0 is number",
+      "expr": [
+        "array/take",
+        5,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/take: argument 1 is string",
+      "expr": [
+        "array/take",
+        [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/takeLast: [\"array/takeLast\",[1,2,3,4,5],3]",
+      "expr": [
+        "array/takeLast",
+        [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        3
+      ],
+      "expect": {
+        "value": [
+          3,
+          4,
+          5
+        ]
+      }
+    },
+    {
+      "name": "array/takeLast: argument 0 is number",
+      "expr": [
+        "array/takeLast",
+        5,
+        3
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/takeLast: argument 1 is string",
+      "expr": [
+        "array/takeLast",
+        [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/unique: [\"array/unique\",[1,2,2,3,1]]",
+      "expr": [
+        "array/unique",
+        [
+          1,
+          2,
+          2,
+          3,
+          1
+        ]
+      ],
+      "expect": {
+        "value": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "array/unique: argument 0 is number",
+      "expr": [
+        "array/unique",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/zip: [\"array/zip\",[1,2],[\"a\",\"b\"]]",
+      "expr": [
+        "array/zip",
+        [
+          1,
+          2
+        ],
+        [
+          "a",
+          "b"
+        ]
+      ],
+      "expect": {
+        "value": [
+          [
+            1,
+            "a"
+          ],
+          [
+            2,
+            "b"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "array/zip: argument 0 is number",
+      "expr": [
+        "array/zip",
+        5,
+        [
+          "a",
+          "b"
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "array/zip: argument 1 is number",
+      "expr": [
+        "array/zip",
+        [
+          1,
+          2
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "behavior/ref: [\"behavior/ref\",\"./orbitals/shop\"]",
+      "expr": [
+        "behavior/ref",
+        "./orbitals/shop"
+      ],
+      "expect": {
+        "value": {
+          "behavior": "./orbitals/shop"
+        }
+      }
+    },
+    {
+      "name": "behavior/ref: argument 0 is number",
+      "expr": [
+        "behavior/ref",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "csv/parse: header keys the data rows",
+      "expr": [
+        "csv/parse",
+        "name,age\nAda,36\nGrace,45"
+      ],
+      "expect": {
+        "value": [
+          {
+            "name": "Ada",
+            "age": "36"
+          },
+          {
+            "name": "Grace",
+            "age": "45"
+          }
+        ]
+      }
+    },
+    {
+      "name": "csv/parse: quoted comma stays in one cell",
+      "expr": [
+        "csv/parse",
+        "a,b\n\"x, y\",z"
+      ],
+      "expect": {
+        "value": [
+          {
+            "a": "x, y",
+            "b": "z"
+          }
+        ]
+      }
+    },
+    {
+      "name": "csv/parse: escaped quote",
+      "expr": [
+        "csv/parse",
+        "a\n\"she said \"\"hi\"\"\""
+      ],
+      "expect": {
+        "value": [
+          {
+            "a": "she said \"hi\""
+          }
+        ]
+      }
+    },
+    {
+      "name": "csv/parse: quoted line break",
+      "expr": [
+        "csv/parse",
+        "a,b\n\"l1\nl2\",z"
+      ],
+      "expect": {
+        "value": [
+          {
+            "a": "l1\nl2",
+            "b": "z"
+          }
+        ]
+      }
+    },
+    {
+      "name": "csv/parse: CRLF records",
+      "expr": [
+        "csv/parse",
+        "a,b\r\n1,2\r\n3,4"
+      ],
+      "expect": {
+        "value": [
+          {
+            "a": "1",
+            "b": "2"
+          },
+          {
+            "a": "3",
+            "b": "4"
+          }
+        ]
+      }
+    },
+    {
+      "name": "csv/parse: trailing newline adds no row",
+      "expr": [
+        "csv/parse",
+        "a,b\n1,2\n"
+      ],
+      "expect": {
+        "value": [
+          {
+            "a": "1",
+            "b": "2"
+          }
+        ]
+      }
+    },
+    {
+      "name": "csv/parse: blank line is skipped",
+      "expr": [
+        "csv/parse",
+        "a,b\n\n1,2"
+      ],
+      "expect": {
+        "value": [
+          {
+            "a": "1",
+            "b": "2"
+          }
+        ]
+      }
+    },
+    {
+      "name": "csv/parse: short row fills empty cells",
+      "expr": [
+        "csv/parse",
+        "a,b\n1"
+      ],
+      "expect": {
+        "value": [
+          {
+            "a": "1",
+            "b": ""
+          }
+        ]
+      }
+    },
+    {
+      "name": "csv/parse: empty text",
+      "expr": [
+        "csv/parse",
+        ""
+      ],
+      "expect": {
+        "value": []
+      }
+    },
+    {
+      "name": "csv/parse: header only",
+      "expr": [
+        "csv/parse",
+        "a,b\n"
+      ],
+      "expect": {
+        "value": []
+      }
+    },
+    {
+      "name": "csv/parse: argument 0 is number",
+      "expr": [
+        "csv/parse",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "format/bytes: [\"format/bytes\",2500000]",
+      "expr": [
+        "format/bytes",
+        2500000
+      ],
+      "expect": {
+        "value": "2.4 MB"
+      }
+    },
+    {
+      "name": "format/bytes: argument 0 is string",
+      "expr": [
+        "format/bytes",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "format/creditCard: [\"format/creditCard\",\"4111111111111234\"]",
+      "expr": [
+        "format/creditCard",
+        "4111111111111234"
+      ],
+      "expect": {
+        "value": "•••• •••• •••• 1234"
+      }
+    },
+    {
+      "name": "format/creditCard: argument 0 is number",
+      "expr": [
+        "format/creditCard",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "format/list: [\"format/list\",[\"Alice\",\"Bob\",\"Charlie\"],\"and\"]",
+      "expr": [
+        "format/list",
+        [
+          "Alice",
+          "Bob",
+          "Charlie"
+        ],
+        "and"
+      ],
+      "expect": {
+        "value": "Alice, Bob, and Charlie"
+      }
+    },
+    {
+      "name": "format/list: argument 0 is number",
+      "expr": [
+        "format/list",
+        5,
+        "and"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "format/ordinal: [\"format/ordinal\",42]",
+      "expr": [
+        "format/ordinal",
+        42
+      ],
+      "expect": {
+        "value": "42nd"
+      }
+    },
+    {
+      "name": "format/ordinal: argument 0 is string",
+      "expr": [
+        "format/ordinal",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "format/phone: [\"format/phone\",\"5551234567\"]",
+      "expr": [
+        "format/phone",
+        "5551234567"
+      ],
+      "expect": {
+        "value": "(555) 123-4567"
+      }
+    },
+    {
+      "name": "format/phone: argument 0 is number",
+      "expr": [
+        "format/phone",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "format/plural: [\"format/plural\",5,\"item\",\"items\"]",
+      "expr": [
+        "format/plural",
+        5,
+        "item",
+        "items"
+      ],
+      "expect": {
+        "value": "5 items"
+      }
+    },
+    {
+      "name": "format/plural: argument 0 is string",
+      "expr": [
+        "format/plural",
+        "5",
+        "item",
+        "items"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "format/plural: argument 1 is number",
+      "expr": [
+        "format/plural",
+        5,
+        5,
+        "items"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "format/plural: argument 2 is number",
+      "expr": [
+        "format/plural",
+        5,
+        "item",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "geo/aabb-overlap: [\"geo/aabb-overlap\",{\"x\":0,\"y\":0,\"w\":10,\"h\":10},{\"x\":5,\"y\":5,\"w\":10,\"h\":10}]",
+      "expr": [
+        "geo/aabb-overlap",
+        {
+          "x": 0,
+          "y": 0,
+          "w": 10,
+          "h": 10
+        },
+        {
+          "x": 5,
+          "y": 5,
+          "w": 10,
+          "h": 10
+        }
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "geo/circle-overlap: [\"geo/circle-overlap\",{\"x\":0,\"y\":0,\"r\":3},{\"x\":4,\"y\":0,\"r\":2}]",
+      "expr": [
+        "geo/circle-overlap",
+        {
+          "x": 0,
+          "y": 0,
+          "r": 3
+        },
+        {
+          "x": 4,
+          "y": 0,
+          "r": 2
+        }
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "geo/point-in-circle: [\"geo/point-in-circle\",{\"x\":1,\"y\":1},{\"x\":0,\"y\":0,\"r\":2}]",
+      "expr": [
+        "geo/point-in-circle",
+        {
+          "x": 1,
+          "y": 1
+        },
+        {
+          "x": 0,
+          "y": 0,
+          "r": 2
+        }
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "geo/point-in-rect: [\"geo/point-in-rect\",{\"x\":5,\"y\":5},{\"x\":0,\"y\":0,\"w\":10,\"h\":10}]",
+      "expr": [
+        "geo/point-in-rect",
+        {
+          "x": 5,
+          "y": 5
+        },
+        {
+          "x": 0,
+          "y": 0,
+          "w": 10,
+          "h": 10
+        }
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "geo/rect-circle-overlap: [\"geo/rect-circle-overlap\",{\"x\":0,\"y\":0,\"w\":10,\"h\":10},{\"x\":12,\"y\":5,\"r\":3}]",
+      "expr": [
+        "geo/rect-circle-overlap",
+        {
+          "x": 0,
+          "y": 0,
+          "w": 10,
+          "h": 10
+        },
+        {
+          "x": 12,
+          "y": 5,
+          "r": 3
+        }
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "geo/reflect: [\"geo/reflect\",{\"x\":1,\"y\":-1},{\"x\":0,\"y\":1}]",
+      "expr": [
+        "geo/reflect",
+        {
+          "x": 1,
+          "y": -1
+        },
+        {
+          "x": 0,
+          "y": 1
+        }
+      ],
+      "expect": {
+        "value": {
+          "x": 1,
+          "y": 1
+        }
+      }
+    },
+    {
+      "name": "geo/segment-intersect: [\"geo/segment-intersect\",{\"x1\":0,\"y1\":0,\"x2\":4,\"y2\":4},{\"x1\":0,\"y1\":4,\"x2\":4,\"y2\":0}]",
+      "expr": [
+        "geo/segment-intersect",
+        {
+          "x1": 0,
+          "y1": 0,
+          "x2": 4,
+          "y2": 4
+        },
+        {
+          "x1": 0,
+          "y1": 4,
+          "x2": 4,
+          "y2": 0
+        }
+      ],
+      "expect": {
+        "value": {
+          "x": 2,
+          "y": 2
+        }
+      }
+    },
+    {
+      "name": "grid/cells-in-radius: [\"grid/cells-in-radius\",{\"x\":0,\"y\":0},1]",
+      "expr": [
+        "grid/cells-in-radius",
+        {
+          "x": 0,
+          "y": 0
+        },
+        1
+      ],
+      "expect": {
+        "value": [
+          {
+            "x": 0,
+            "y": -1
+          },
+          {
+            "x": -1,
+            "y": 0
+          },
+          {
+            "x": 0,
+            "y": 0
+          },
+          {
+            "x": 1,
+            "y": 0
+          },
+          {
+            "x": 0,
+            "y": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "grid/cells-in-radius: argument 1 is string",
+      "expr": [
+        "grid/cells-in-radius",
+        {
+          "x": 0,
+          "y": 0
+        },
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "grid/distance: [\"grid/distance\",{\"x\":0,\"y\":0},{\"x\":3,\"y\":2}]",
+      "expr": [
+        "grid/distance",
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 3,
+          "y": 2
+        }
+      ],
+      "expect": {
+        "value": 3
+      }
+    },
+    {
+      "name": "grid/from-world: [\"grid/from-world\",{\"x\":80,\"y\":112},32]",
+      "expr": [
+        "grid/from-world",
+        {
+          "x": 80,
+          "y": 112
+        },
+        32
+      ],
+      "expect": {
+        "value": {
+          "x": 2,
+          "y": 3
+        }
+      }
+    },
+    {
+      "name": "grid/from-world: argument 1 is string",
+      "expr": [
+        "grid/from-world",
+        {
+          "x": 80,
+          "y": 112
+        },
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "grid/in-bounds: [\"grid/in-bounds\",{\"x\":2,\"y\":3},5,5]",
+      "expr": [
+        "grid/in-bounds",
+        {
+          "x": 2,
+          "y": 3
+        },
+        5,
+        5
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "grid/in-bounds: argument 1 is string",
+      "expr": [
+        "grid/in-bounds",
+        {
+          "x": 2,
+          "y": 3
+        },
+        "5",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "grid/in-bounds: argument 2 is string",
+      "expr": [
+        "grid/in-bounds",
+        {
+          "x": 2,
+          "y": 3
+        },
+        5,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "grid/iso-to-screen: [\"grid/iso-to-screen\",{\"x\":1,\"y\":0},64,32]",
+      "expr": [
+        "grid/iso-to-screen",
+        {
+          "x": 1,
+          "y": 0
+        },
+        64,
+        32
+      ],
+      "expect": {
+        "value": {
+          "x": 32,
+          "y": 16
+        }
+      }
+    },
+    {
+      "name": "grid/iso-to-screen: argument 1 is string",
+      "expr": [
+        "grid/iso-to-screen",
+        {
+          "x": 1,
+          "y": 0
+        },
+        "5",
+        32
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "grid/iso-to-screen: argument 2 is string",
+      "expr": [
+        "grid/iso-to-screen",
+        {
+          "x": 1,
+          "y": 0
+        },
+        64,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "grid/line: [\"grid/line\",{\"x\":0,\"y\":0},{\"x\":2,\"y\":2}]",
+      "expr": [
+        "grid/line",
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 2,
+          "y": 2
+        }
+      ],
+      "expect": {
+        "value": [
+          {
+            "x": 0,
+            "y": 0
+          },
+          {
+            "x": 1,
+            "y": 1
+          },
+          {
+            "x": 2,
+            "y": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "grid/manhattan-distance: [\"grid/manhattan-distance\",{\"x\":0,\"y\":0},{\"x\":3,\"y\":2}]",
+      "expr": [
+        "grid/manhattan-distance",
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 3,
+          "y": 2
+        }
+      ],
+      "expect": {
+        "value": 5
+      }
+    },
+    {
+      "name": "grid/neighbors: [\"grid/neighbors\",{\"x\":1,\"y\":1}]",
+      "expr": [
+        "grid/neighbors",
+        {
+          "x": 1,
+          "y": 1
+        }
+      ],
+      "expect": {
+        "value": [
+          {
+            "x": 1,
+            "y": 0
+          },
+          {
+            "x": 2,
+            "y": 1
+          },
+          {
+            "x": 1,
+            "y": 2
+          },
+          {
+            "x": 0,
+            "y": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "grid/screen-to-iso: [\"grid/screen-to-iso\",640,360,1]",
+      "expr": [
+        "grid/screen-to-iso",
+        640,
+        360,
+        1
+      ],
+      "expect": {
+        "value": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "name": "grid/screen-to-iso: argument 1 is string",
+      "expr": [
+        "grid/screen-to-iso",
+        640,
+        "5",
+        1
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "grid/screen-to-iso: argument 2 is string",
+      "expr": [
+        "grid/screen-to-iso",
+        640,
+        360,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "if: [\"if\",true,42,0]",
+      "expr": [
+        "if",
+        true,
+        42,
+        0
+      ],
+      "expect": {
+        "value": 42
+      }
+    },
+    {
+      "name": "json/parse: [\"json/parse\",\"{\\\"a\\\": 1}\"]",
+      "expr": [
+        "json/parse",
+        "{\"a\": 1}",
+        "Row"
+      ],
+      "expect": {
+        "value": {
+          "a": 1
+        }
+      }
+    },
+    {
+      "name": "json/parse: argument 0 is number",
+      "expr": [
+        "json/parse",
+        5,
+        "Row"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "list: [\"list\",1,2,3]",
+      "expr": [
+        "list",
+        1,
+        2,
+        3
+      ],
+      "expect": {
+        "value": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "math/abs: [\"math/abs\",-5]",
+      "expr": [
+        "math/abs",
+        -5
+      ],
+      "expect": {
+        "value": 5
+      }
+    },
+    {
+      "name": "math/abs: argument 0 is string",
+      "expr": [
+        "math/abs",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/approach: [\"math/approach\",10,20,3]",
+      "expr": [
+        "math/approach",
+        10,
+        20,
+        3
+      ],
+      "expect": {
+        "value": 13
+      }
+    },
+    {
+      "name": "math/approach: argument 0 is string",
+      "expr": [
+        "math/approach",
+        "5",
+        20,
+        3
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/approach: argument 1 is string",
+      "expr": [
+        "math/approach",
+        10,
+        "5",
+        3
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/approach: argument 2 is string",
+      "expr": [
+        "math/approach",
+        10,
+        20,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/ceil: [\"math/ceil\",3.2]",
+      "expr": [
+        "math/ceil",
+        3.2
+      ],
+      "expect": {
+        "value": 4
+      }
+    },
+    {
+      "name": "math/ceil: argument 0 is string",
+      "expr": [
+        "math/ceil",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/clamp: [\"math/clamp\",150,0,100]",
+      "expr": [
+        "math/clamp",
+        150,
+        0,
+        100
+      ],
+      "expect": {
+        "value": 100
+      }
+    },
+    {
+      "name": "math/clamp: argument 0 is string",
+      "expr": [
+        "math/clamp",
+        "5",
+        0,
+        100
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/clamp: argument 1 is string",
+      "expr": [
+        "math/clamp",
+        150,
+        "5",
+        100
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/clamp: argument 2 is string",
+      "expr": [
+        "math/clamp",
+        150,
+        0,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/cos: [\"math/cos\",0]",
+      "expr": [
+        "math/cos",
+        0
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "math/cos: argument 0 is string",
+      "expr": [
+        "math/cos",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/default: [\"math/default\",null,0]",
+      "expr": [
+        "math/default",
+        null,
+        0
+      ],
+      "expect": {
+        "value": 0
+      }
+    },
+    {
+      "name": "math/default: argument 0 is string",
+      "expr": [
+        "math/default",
+        "5",
+        0
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/default: argument 1 is string",
+      "expr": [
+        "math/default",
+        null,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/floor: [\"math/floor\",3.7]",
+      "expr": [
+        "math/floor",
+        3.7
+      ],
+      "expect": {
+        "value": 3
+      }
+    },
+    {
+      "name": "math/floor: argument 0 is string",
+      "expr": [
+        "math/floor",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/hypot: [\"math/hypot\",3,4]",
+      "expr": [
+        "math/hypot",
+        3,
+        4
+      ],
+      "expect": {
+        "value": 5
+      }
+    },
+    {
+      "name": "math/hypot: argument 0 is string",
+      "expr": [
+        "math/hypot",
+        "5",
+        4
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/hypot: argument 1 is string",
+      "expr": [
+        "math/hypot",
+        3,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/lerp: [\"math/lerp\",0,100,0.5]",
+      "expr": [
+        "math/lerp",
+        0,
+        100,
+        0.5
+      ],
+      "expect": {
+        "value": 50
+      }
+    },
+    {
+      "name": "math/lerp: argument 0 is string",
+      "expr": [
+        "math/lerp",
+        "5",
+        100,
+        0.5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/lerp: argument 1 is string",
+      "expr": [
+        "math/lerp",
+        0,
+        "5",
+        0.5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/lerp: argument 2 is string",
+      "expr": [
+        "math/lerp",
+        0,
+        100,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/log10: [\"math/log10\",100]",
+      "expr": [
+        "math/log10",
+        100
+      ],
+      "expect": {
+        "value": 2
+      }
+    },
+    {
+      "name": "math/log10: argument 0 is string",
+      "expr": [
+        "math/log10",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/map: [\"math/map\",5,0,10,0,100]",
+      "expr": [
+        "math/map",
+        5,
+        0,
+        10,
+        0,
+        100
+      ],
+      "expect": {
+        "value": 50
+      }
+    },
+    {
+      "name": "math/map: argument 0 is string",
+      "expr": [
+        "math/map",
+        "5",
+        0,
+        10,
+        0,
+        100
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/map: argument 1 is string",
+      "expr": [
+        "math/map",
+        5,
+        "5",
+        10,
+        0,
+        100
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/map: argument 2 is string",
+      "expr": [
+        "math/map",
+        5,
+        0,
+        "5",
+        0,
+        100
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/map: argument 3 is string",
+      "expr": [
+        "math/map",
+        5,
+        0,
+        10,
+        "5",
+        100
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/map: argument 4 is string",
+      "expr": [
+        "math/map",
+        5,
+        0,
+        10,
+        0,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/max: [\"math/max\",3,1,4]",
+      "expr": [
+        "math/max",
+        3,
+        1,
+        4
+      ],
+      "expect": {
+        "value": 4
+      }
+    },
+    {
+      "name": "math/max: argument 0 is string",
+      "expr": [
+        "math/max",
+        "5",
+        1,
+        4
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/max: argument 1 is string",
+      "expr": [
+        "math/max",
+        3,
+        "5",
+        4
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/max: argument 2 is string",
+      "expr": [
+        "math/max",
+        3,
+        1,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/min: [\"math/min\",3,1,4]",
+      "expr": [
+        "math/min",
+        3,
+        1,
+        4
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "math/min: argument 0 is string",
+      "expr": [
+        "math/min",
+        "5",
+        1,
+        4
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/min: argument 1 is string",
+      "expr": [
+        "math/min",
+        3,
+        "5",
+        4
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/min: argument 2 is string",
+      "expr": [
+        "math/min",
+        3,
+        1,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/mod: [\"math/mod\",7,3]",
+      "expr": [
+        "math/mod",
+        7,
+        3
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "math/mod: argument 0 is string",
+      "expr": [
+        "math/mod",
+        "5",
+        3
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/mod: argument 1 is string",
+      "expr": [
+        "math/mod",
+        7,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/pow: [\"math/pow\",2,8]",
+      "expr": [
+        "math/pow",
+        2,
+        8
+      ],
+      "expect": {
+        "value": 256
+      }
+    },
+    {
+      "name": "math/pow: argument 0 is string",
+      "expr": [
+        "math/pow",
+        "5",
+        8
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/pow: argument 1 is string",
+      "expr": [
+        "math/pow",
+        2,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/sign: [\"math/sign\",-42]",
+      "expr": [
+        "math/sign",
+        -42
+      ],
+      "expect": {
+        "value": -1
+      }
+    },
+    {
+      "name": "math/sign: argument 0 is string",
+      "expr": [
+        "math/sign",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/sqrt: [\"math/sqrt\",16]",
+      "expr": [
+        "math/sqrt",
+        16
+      ],
+      "expect": {
+        "value": 4
+      }
+    },
+    {
+      "name": "math/sqrt: argument 0 is string",
+      "expr": [
+        "math/sqrt",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/wrap: [\"math/wrap\",15,0,10]",
+      "expr": [
+        "math/wrap",
+        15,
+        0,
+        10
+      ],
+      "expect": {
+        "value": 5
+      }
+    },
+    {
+      "name": "math/wrap: argument 0 is string",
+      "expr": [
+        "math/wrap",
+        "5",
+        0,
+        10
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/wrap: argument 1 is string",
+      "expr": [
+        "math/wrap",
+        15,
+        "5",
+        10
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/wrap: argument 2 is string",
+      "expr": [
+        "math/wrap",
+        15,
+        0,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "not: [\"not\",true]",
+      "expr": [
+        "not",
+        true
+      ],
+      "expect": {
+        "value": false
+      }
+    },
+    {
+      "name": "object/clone: [\"object/clone\",{\"a\":1,\"b\":2}]",
+      "expr": [
+        "object/clone",
+        {
+          "a": 1,
+          "b": 2
+        }
+      ],
+      "expect": {
+        "value": {
+          "a": 1,
+          "b": 2
+        }
+      }
+    },
+    {
+      "name": "object/clone: argument 0 is number",
+      "expr": [
+        "object/clone",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/deepClone: [\"object/deepClone\",{\"a\":{\"b\":2}}]",
+      "expr": [
+        "object/deepClone",
+        {
+          "a": {
+            "b": 2
+          }
+        }
+      ],
+      "expect": {
+        "value": {
+          "a": {
+            "b": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "object/deepClone: argument 0 is number",
+      "expr": [
+        "object/deepClone",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/deepMerge: [\"object/deepMerge\",{\"a\":{\"b\":1}},{\"a\":{\"c\":2}}]",
+      "expr": [
+        "object/deepMerge",
+        {
+          "a": {
+            "b": 1
+          }
+        },
+        {
+          "a": {
+            "c": 2
+          }
+        }
+      ],
+      "expect": {
+        "value": {
+          "a": {
+            "b": 1,
+            "c": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "object/deepMerge: argument 0 is number",
+      "expr": [
+        "object/deepMerge",
+        5,
+        {
+          "a": {
+            "c": 2
+          }
+        }
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/deepMerge: argument 1 is number",
+      "expr": [
+        "object/deepMerge",
+        {
+          "a": {
+            "b": 1
+          }
+        },
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/entries: argument 0 is number",
+      "expr": [
+        "object/entries",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/equals: [\"object/equals\",{\"a\":1},{\"a\":1}]",
+      "expr": [
+        "object/equals",
+        {
+          "a": 1
+        },
+        {
+          "a": 1
+        }
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "object/equals: argument 0 is number",
+      "expr": [
+        "object/equals",
+        5,
+        {
+          "a": 1
+        }
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/equals: argument 1 is number",
+      "expr": [
+        "object/equals",
+        {
+          "a": 1
+        },
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/filter: [\"object/filter\",{\"a\":1,\"b\":null},[\"fn\",[\"k\",\"v\"],[\"!=\",\"@v\",null]]]",
+      "expr": [
+        "object/filter",
+        {
+          "a": 1,
+          "b": null
+        },
+        [
+          "fn",
+          [
+            "k",
+            "v"
+          ],
+          [
+            "!=",
+            "@v",
+            null
+          ]
+        ]
+      ],
+      "expect": {
+        "value": {
+          "a": 1
+        }
+      }
+    },
+    {
+      "name": "object/filter: argument 0 is number",
+      "expr": [
+        "object/filter",
+        5,
+        [
+          "fn",
+          [
+            "k",
+            "v"
+          ],
+          [
+            "!=",
+            "@v",
+            null
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/fromEntries: [\"object/fromEntries\",[[\"a\",1],[\"b\",2]]]",
+      "expr": [
+        "object/fromEntries",
+        [
+          [
+            "a",
+            1
+          ],
+          [
+            "b",
+            2
+          ]
+        ]
+      ],
+      "expect": {
+        "value": {
+          "a": 1,
+          "b": 2
+        }
+      }
+    },
+    {
+      "name": "object/fromEntries: argument 0 is number",
+      "expr": [
+        "object/fromEntries",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/get: [\"object/get\",{\"profile\":{\"name\":\"Ann\"}},\"profile.name\",\"Anonymous\"]",
+      "expr": [
+        "object/get",
+        {
+          "profile": {
+            "name": "Ann"
+          }
+        },
+        "profile.name",
+        "Anonymous"
+      ],
+      "expect": {
+        "value": "Ann"
+      }
+    },
+    {
+      "name": "object/get: argument 0 is number",
+      "expr": [
+        "object/get",
+        5,
+        "profile.name",
+        "Anonymous"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object | array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/get: argument 1 is number",
+      "expr": [
+        "object/get",
+        {
+          "profile": {
+            "name": "Ann"
+          }
+        },
+        5,
+        "Anonymous"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/has: [\"object/has\",{\"profile\":{\"name\":\"Ann\"}},\"profile.name\"]",
+      "expr": [
+        "object/has",
+        {
+          "profile": {
+            "name": "Ann"
+          }
+        },
+        "profile.name"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "object/has: argument 0 is number",
+      "expr": [
+        "object/has",
+        5,
+        "profile.name"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/has: argument 1 is number",
+      "expr": [
+        "object/has",
+        {
+          "profile": {
+            "name": "Ann"
+          }
+        },
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/keys: argument 0 is number",
+      "expr": [
+        "object/keys",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/mapKeys: [\"object/mapKeys\",{\"a\":1,\"b\":2},[\"fn\",\"k\",[\"str/upper\",\"@k\"]]]",
+      "expr": [
+        "object/mapKeys",
+        {
+          "a": 1,
+          "b": 2
+        },
+        [
+          "fn",
+          "k",
+          [
+            "str/upper",
+            "@k"
+          ]
+        ]
+      ],
+      "expect": {
+        "value": {
+          "A": 1,
+          "B": 2
+        }
+      }
+    },
+    {
+      "name": "object/mapKeys: argument 0 is number",
+      "expr": [
+        "object/mapKeys",
+        5,
+        [
+          "fn",
+          "k",
+          [
+            "str/upper",
+            "@k"
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/mapValues: [\"object/mapValues\",{\"a\":0.5,\"b\":0.25},[\"fn\",\"v\",[\"*\",\"@v\",100]]]",
+      "expr": [
+        "object/mapValues",
+        {
+          "a": 0.5,
+          "b": 0.25
+        },
+        [
+          "fn",
+          "v",
+          [
+            "*",
+            "@v",
+            100
+          ]
+        ]
+      ],
+      "expect": {
+        "value": {
+          "a": 50,
+          "b": 25
+        }
+      }
+    },
+    {
+      "name": "object/mapValues: argument 0 is number",
+      "expr": [
+        "object/mapValues",
+        5,
+        [
+          "fn",
+          "v",
+          [
+            "*",
+            "@v",
+            100
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/merge: [\"object/merge\",{\"a\":1},{\"b\":2}]",
+      "expr": [
+        "object/merge",
+        {
+          "a": 1
+        },
+        {
+          "b": 2
+        }
+      ],
+      "expect": {
+        "value": {
+          "a": 1,
+          "b": 2
+        }
+      }
+    },
+    {
+      "name": "object/merge: argument 0 is number",
+      "expr": [
+        "object/merge",
+        5,
+        {
+          "b": 2
+        }
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/merge: argument 1 is number",
+      "expr": [
+        "object/merge",
+        {
+          "a": 1
+        },
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/omit: [\"object/omit\",{\"name\":\"Ann\",\"password\":\"x\"},[\"password\"]]",
+      "expr": [
+        "object/omit",
+        {
+          "name": "Ann",
+          "password": "x"
+        },
+        [
+          "password"
+        ]
+      ],
+      "expect": {
+        "value": {
+          "name": "Ann"
+        }
+      }
+    },
+    {
+      "name": "object/omit: argument 0 is number",
+      "expr": [
+        "object/omit",
+        5,
+        [
+          "password"
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/omit: argument 1 is number",
+      "expr": [
+        "object/omit",
+        {
+          "name": "Ann",
+          "password": "x"
+        },
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/pick: [\"object/pick\",{\"name\":\"Ann\",\"email\":\"ann@example.com\",\"age\":30},[\"name\",\"email\"]]",
+      "expr": [
+        "object/pick",
+        {
+          "name": "Ann",
+          "email": "ann@example.com",
+          "age": 30
+        },
+        [
+          "name",
+          "email"
+        ]
+      ],
+      "expect": {
+        "value": {
+          "name": "Ann",
+          "email": "ann@example.com"
+        }
+      }
+    },
+    {
+      "name": "object/pick: argument 0 is number",
+      "expr": [
+        "object/pick",
+        5,
+        [
+          "name",
+          "email"
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/pick: argument 1 is number",
+      "expr": [
+        "object/pick",
+        {
+          "name": "Ann",
+          "email": "ann@example.com",
+          "age": 30
+        },
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "or: [\"or\",false,true]",
+      "expr": [
+        "or",
+        false,
+        true
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "path: [\"path\",\"user\",\"id\",\"name\"]",
+      "expr": [
+        "path",
+        "user",
+        "id",
+        "name"
+      ],
+      "expect": {
+        "value": "user.id.name"
+      }
+    },
+    {
+      "name": "path: argument 0 is number",
+      "expr": [
+        "path",
+        5,
+        "id",
+        "name"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "path: argument 1 is number",
+      "expr": [
+        "path",
+        "user",
+        5,
+        "name"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "path: argument 2 is number",
+      "expr": [
+        "path",
+        "user",
+        "id",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "path/astar: [\"path/astar\",{\"x\":0,\"y\":0},{\"x\":2,\"y\":0},[],3,1]",
+      "expr": [
+        "path/astar",
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 2,
+          "y": 0
+        },
+        [],
+        3,
+        1
+      ],
+      "expect": {
+        "value": [
+          {
+            "x": 0,
+            "y": 0
+          },
+          {
+            "x": 1,
+            "y": 0
+          },
+          {
+            "x": 2,
+            "y": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "path/astar: argument 2 is number",
+      "expr": [
+        "path/astar",
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 2,
+          "y": 0
+        },
+        5,
+        3,
+        1
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "path/astar: argument 3 is string",
+      "expr": [
+        "path/astar",
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 2,
+          "y": 0
+        },
+        [],
+        "5",
+        1
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "path/astar: argument 4 is string",
+      "expr": [
+        "path/astar",
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 2,
+          "y": 0
+        },
+        [],
+        3,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "path/reachable: [\"path/reachable\",{\"x\":1,\"y\":1},1,[],3,3,false]",
+      "expr": [
+        "path/reachable",
+        {
+          "x": 1,
+          "y": 1
+        },
+        1,
+        [],
+        3,
+        3,
+        false
+      ],
+      "expect": {
+        "value": [
+          {
+            "x": 1,
+            "y": 0
+          },
+          {
+            "x": 0,
+            "y": 1
+          },
+          {
+            "x": 1,
+            "y": 1
+          },
+          {
+            "x": 2,
+            "y": 1
+          },
+          {
+            "x": 1,
+            "y": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "path/reachable: argument 1 is string",
+      "expr": [
+        "path/reachable",
+        {
+          "x": 1,
+          "y": 1
+        },
+        "5",
+        [],
+        3,
+        3,
+        false
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "path/reachable: argument 2 is number",
+      "expr": [
+        "path/reachable",
+        {
+          "x": 1,
+          "y": 1
+        },
+        1,
+        5,
+        3,
+        3,
+        false
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "path/reachable: argument 3 is string",
+      "expr": [
+        "path/reachable",
+        {
+          "x": 1,
+          "y": 1
+        },
+        1,
+        [],
+        "5",
+        3,
+        false
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "path/reachable: argument 4 is string",
+      "expr": [
+        "path/reachable",
+        {
+          "x": 1,
+          "y": 1
+        },
+        1,
+        [],
+        3,
+        "5",
+        false
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "path/reachable: argument 5 is number",
+      "expr": [
+        "path/reachable",
+        {
+          "x": 1,
+          "y": 1
+        },
+        1,
+        [],
+        3,
+        3,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "boolean",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/camelCase: [\"str/camelCase\",\"hello world\"]",
+      "expr": [
+        "str/camelCase",
+        "hello world"
+      ],
+      "expect": {
+        "value": "helloWorld"
+      }
+    },
+    {
+      "name": "str/camelCase: argument 0 is number",
+      "expr": [
+        "str/camelCase",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/capitalize: [\"str/capitalize\",\"hello\"]",
+      "expr": [
+        "str/capitalize",
+        "hello"
+      ],
+      "expect": {
+        "value": "Hello"
+      }
+    },
+    {
+      "name": "str/capitalize: argument 0 is number",
+      "expr": [
+        "str/capitalize",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/concat: [\"str/concat\",\"Hello\",\" \",\"World\"]",
+      "expr": [
+        "str/concat",
+        "Hello",
+        " ",
+        "World"
+      ],
+      "expect": {
+        "value": "Hello World"
+      }
+    },
+    {
+      "name": "str/default: [\"str/default\",null,\"N/A\"]",
+      "expr": [
+        "str/default",
+        null,
+        "N/A"
+      ],
+      "expect": {
+        "value": "N/A"
+      }
+    },
+    {
+      "name": "str/default: a scalar value and a string default disagree",
+      "expr": [
+        "str/default",
+        5,
+        "N/A"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "str/default: a number default for an absent value",
+      "expr": [
+        "str/default",
+        null,
+        5
+      ],
+      "expect": {
+        "value": 5
+      }
+    },
+    {
+      "name": "str/endsWith: [\"str/endsWith\",\"hello\",\"lo\"]",
+      "expr": [
+        "str/endsWith",
+        "hello",
+        "lo"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "str/endsWith: argument 0 is number",
+      "expr": [
+        "str/endsWith",
+        5,
+        "lo"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/endsWith: argument 1 is number",
+      "expr": [
+        "str/endsWith",
+        "hello",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/includes: [\"str/includes\",\"hello world\",\"world\"]",
+      "expr": [
+        "str/includes",
+        "hello world",
+        "world"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "str/includes: argument 0 is number",
+      "expr": [
+        "str/includes",
+        5,
+        "world"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/includes: argument 1 is number",
+      "expr": [
+        "str/includes",
+        "hello world",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/join: [\"str/join\",[\"a\",\"b\",\"c\"],\", \"]",
+      "expr": [
+        "str/join",
+        [
+          "a",
+          "b",
+          "c"
+        ],
+        ", "
+      ],
+      "expect": {
+        "value": "a, b, c"
+      }
+    },
+    {
+      "name": "str/join: argument 0 is number",
+      "expr": [
+        "str/join",
+        5,
+        ", "
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/join: argument 1 is number",
+      "expr": [
+        "str/join",
+        [
+          "a",
+          "b",
+          "c"
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/kebabCase: [\"str/kebabCase\",\"Hello World\"]",
+      "expr": [
+        "str/kebabCase",
+        "Hello World"
+      ],
+      "expect": {
+        "value": "hello-world"
+      }
+    },
+    {
+      "name": "str/kebabCase: argument 0 is number",
+      "expr": [
+        "str/kebabCase",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/len: [\"str/len\",\"hello\"]",
+      "expr": [
+        "str/len",
+        "hello"
+      ],
+      "expect": {
+        "value": 5
+      }
+    },
+    {
+      "name": "str/len: argument 0 is number",
+      "expr": [
+        "str/len",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/lower: [\"str/lower\",\"HELLO\"]",
+      "expr": [
+        "str/lower",
+        "HELLO"
+      ],
+      "expect": {
+        "value": "hello"
+      }
+    },
+    {
+      "name": "str/lower: argument 0 is number",
+      "expr": [
+        "str/lower",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/padEnd: [\"str/padEnd\",\"5\",3,\"0\"]",
+      "expr": [
+        "str/padEnd",
+        "5",
+        3,
+        "0"
+      ],
+      "expect": {
+        "value": "500"
+      }
+    },
+    {
+      "name": "str/padEnd: argument 0 is number",
+      "expr": [
+        "str/padEnd",
+        5,
+        3,
+        "0"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/padEnd: argument 1 is string",
+      "expr": [
+        "str/padEnd",
+        "5",
+        "5",
+        "0"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "str/padEnd: argument 2 is number",
+      "expr": [
+        "str/padEnd",
+        "5",
+        3,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/padStart: [\"str/padStart\",\"5\",3,\"0\"]",
+      "expr": [
+        "str/padStart",
+        "5",
+        3,
+        "0"
+      ],
+      "expect": {
+        "value": "005"
+      }
+    },
+    {
+      "name": "str/padStart: argument 0 is number",
+      "expr": [
+        "str/padStart",
+        5,
+        3,
+        "0"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/padStart: argument 1 is string",
+      "expr": [
+        "str/padStart",
+        "5",
+        "5",
+        "0"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "str/padStart: argument 2 is number",
+      "expr": [
+        "str/padStart",
+        "5",
+        3,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/repeat: [\"str/repeat\",\"ab\",3]",
+      "expr": [
+        "str/repeat",
+        "ab",
+        3
+      ],
+      "expect": {
+        "value": "ababab"
+      }
+    },
+    {
+      "name": "str/repeat: argument 0 is number",
+      "expr": [
+        "str/repeat",
+        5,
+        3
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/repeat: argument 1 is string",
+      "expr": [
+        "str/repeat",
+        "ab",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "str/replace: [\"str/replace\",\"hello world\",\"world\",\"there\"]",
+      "expr": [
+        "str/replace",
+        "hello world",
+        "world",
+        "there"
+      ],
+      "expect": {
+        "value": "hello there"
+      }
+    },
+    {
+      "name": "str/replace: argument 0 is number",
+      "expr": [
+        "str/replace",
+        5,
+        "world",
+        "there"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/replace: argument 1 is number",
+      "expr": [
+        "str/replace",
+        "hello world",
+        5,
+        "there"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/replace: argument 2 is number",
+      "expr": [
+        "str/replace",
+        "hello world",
+        "world",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/replaceAll: [\"str/replaceAll\",\"a-b-c\",\"-\",\"_\"]",
+      "expr": [
+        "str/replaceAll",
+        "a-b-c",
+        "-",
+        "_"
+      ],
+      "expect": {
+        "value": "a_b_c"
+      }
+    },
+    {
+      "name": "str/replaceAll: argument 0 is number",
+      "expr": [
+        "str/replaceAll",
+        5,
+        "-",
+        "_"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/replaceAll: argument 1 is number",
+      "expr": [
+        "str/replaceAll",
+        "a-b-c",
+        5,
+        "_"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/replaceAll: argument 2 is number",
+      "expr": [
+        "str/replaceAll",
+        "a-b-c",
+        "-",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/reverse: [\"str/reverse\",\"hello\"]",
+      "expr": [
+        "str/reverse",
+        "hello"
+      ],
+      "expect": {
+        "value": "olleh"
+      }
+    },
+    {
+      "name": "str/reverse: argument 0 is number",
+      "expr": [
+        "str/reverse",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/slice: [\"str/slice\",\"hello\",1,4]",
+      "expr": [
+        "str/slice",
+        "hello",
+        1,
+        4
+      ],
+      "expect": {
+        "value": "ell"
+      }
+    },
+    {
+      "name": "str/slice: argument 0 is number",
+      "expr": [
+        "str/slice",
+        5,
+        1,
+        4
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/slice: argument 1 is string",
+      "expr": [
+        "str/slice",
+        "hello",
+        "5",
+        4
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "str/slice: argument 2 is string",
+      "expr": [
+        "str/slice",
+        "hello",
+        1,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "str/snakeCase: [\"str/snakeCase\",\"Hello World\"]",
+      "expr": [
+        "str/snakeCase",
+        "Hello World"
+      ],
+      "expect": {
+        "value": "hello_world"
+      }
+    },
+    {
+      "name": "str/snakeCase: argument 0 is number",
+      "expr": [
+        "str/snakeCase",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/split: [\"str/split\",\"a,b,c\",\",\"]",
+      "expr": [
+        "str/split",
+        "a,b,c",
+        ","
+      ],
+      "expect": {
+        "value": [
+          "a",
+          "b",
+          "c"
+        ]
+      }
+    },
+    {
+      "name": "str/split: argument 0 is number",
+      "expr": [
+        "str/split",
+        5,
+        ","
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/split: argument 1 is number",
+      "expr": [
+        "str/split",
+        "a,b,c",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/startsWith: [\"str/startsWith\",\"hello\",\"hel\"]",
+      "expr": [
+        "str/startsWith",
+        "hello",
+        "hel"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "str/startsWith: argument 0 is number",
+      "expr": [
+        "str/startsWith",
+        5,
+        "hel"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/startsWith: argument 1 is number",
+      "expr": [
+        "str/startsWith",
+        "hello",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/titleCase: [\"str/titleCase\",\"hello world\"]",
+      "expr": [
+        "str/titleCase",
+        "hello world"
+      ],
+      "expect": {
+        "value": "Hello World"
+      }
+    },
+    {
+      "name": "str/titleCase: argument 0 is number",
+      "expr": [
+        "str/titleCase",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/trim: [\"str/trim\",\" hello \"]",
+      "expr": [
+        "str/trim",
+        " hello "
+      ],
+      "expect": {
+        "value": "hello"
+      }
+    },
+    {
+      "name": "str/trim: argument 0 is number",
+      "expr": [
+        "str/trim",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/trimEnd: [\"str/trimEnd\",\"hello \"]",
+      "expr": [
+        "str/trimEnd",
+        "hello "
+      ],
+      "expect": {
+        "value": "hello"
+      }
+    },
+    {
+      "name": "str/trimEnd: argument 0 is number",
+      "expr": [
+        "str/trimEnd",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/trimStart: [\"str/trimStart\",\" hello\"]",
+      "expr": [
+        "str/trimStart",
+        " hello"
+      ],
+      "expect": {
+        "value": "hello"
+      }
+    },
+    {
+      "name": "str/trimStart: argument 0 is number",
+      "expr": [
+        "str/trimStart",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/upper: [\"str/upper\",\"hello\"]",
+      "expr": [
+        "str/upper",
+        "hello"
+      ],
+      "expect": {
+        "value": "HELLO"
+      }
+    },
+    {
+      "name": "str/upper: argument 0 is number",
+      "expr": [
+        "str/upper",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "time/day: [\"time/day\",1700000000000]",
+      "expr": [
+        "time/day",
+        1700000000000
+      ],
+      "expect": {
+        "value": 14
+      }
+    },
+    {
+      "name": "time/day: argument 0 is string",
+      "expr": [
+        "time/day",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/diff: [\"time/diff\",1700000000000,[\"time/now\"],\"year\"]",
+      "expr": [
+        "time/diff",
+        1700000000000,
+        [
+          "time/now"
+        ],
+        "year"
+      ],
+      "expect": {
+        "value": -2
+      }
+    },
+    {
+      "name": "time/diff: argument 0 is string",
+      "expr": [
+        "time/diff",
+        "5",
+        [
+          "time/now"
+        ],
+        "year"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/diff: argument 1 is string",
+      "expr": [
+        "time/diff",
+        1700000000000,
+        "5",
+        "year"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/diff: argument 2 is number",
+      "expr": [
+        "time/diff",
+        1700000000000,
+        [
+          "time/now"
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "time/duration: [\"time/duration\",9000000]",
+      "expr": [
+        "time/duration",
+        9000000
+      ],
+      "expect": {
+        "value": "2h 30m"
+      }
+    },
+    {
+      "name": "time/duration: argument 0 is string",
+      "expr": [
+        "time/duration",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/endOf: [\"time/endOf\",[\"time/now\"],\"month\"]",
+      "expr": [
+        "time/endOf",
+        [
+          "time/now"
+        ],
+        "month"
+      ],
+      "expect": {
+        "value": 1793491199999
+      }
+    },
+    {
+      "name": "time/endOf: argument 0 is string",
+      "expr": [
+        "time/endOf",
+        "5",
+        "month"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/endOf: argument 1 is number",
+      "expr": [
+        "time/endOf",
+        [
+          "time/now"
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "time/format: [\"time/format\",1700000000000,\"MMM DD, YYYY\"]",
+      "expr": [
+        "time/format",
+        1700000000000,
+        "MMM DD, YYYY"
+      ],
+      "expect": {
+        "value": "Nov 14, 2023"
+      }
+    },
+    {
+      "name": "time/format: argument 0 is string",
+      "expr": [
+        "time/format",
+        "5",
+        "MMM DD, YYYY"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/format: argument 1 is number",
+      "expr": [
+        "time/format",
+        1700000000000,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "time/isAfter: [\"time/isAfter\",[\"time/now\"],1700000000000]",
+      "expr": [
+        "time/isAfter",
+        [
+          "time/now"
+        ],
+        1700000000000
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "time/isAfter: argument 0 is string",
+      "expr": [
+        "time/isAfter",
+        "5",
+        1700000000000
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/isAfter: argument 1 is string",
+      "expr": [
+        "time/isAfter",
+        [
+          "time/now"
+        ],
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/isBefore: [\"time/isBefore\",1700000000000,1700086400000]",
+      "expr": [
+        "time/isBefore",
+        1700000000000,
+        1700086400000
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "time/isBefore: argument 0 is string",
+      "expr": [
+        "time/isBefore",
+        "5",
+        1700086400000
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/isBefore: argument 1 is string",
+      "expr": [
+        "time/isBefore",
+        1700000000000,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/isBetween: [\"time/isBetween\",[\"time/now\"],1700000000000,2000000000000]",
+      "expr": [
+        "time/isBetween",
+        [
+          "time/now"
+        ],
+        1700000000000,
+        2000000000000
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "time/isBetween: argument 0 is string",
+      "expr": [
+        "time/isBetween",
+        "5",
+        1700000000000,
+        2000000000000
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/isBetween: argument 1 is string",
+      "expr": [
+        "time/isBetween",
+        [
+          "time/now"
+        ],
+        "5",
+        2000000000000
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/isBetween: argument 2 is string",
+      "expr": [
+        "time/isBetween",
+        [
+          "time/now"
+        ],
+        1700000000000,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/isSame: [\"time/isSame\",1700000000000,1700001000000,\"day\"]",
+      "expr": [
+        "time/isSame",
+        1700000000000,
+        1700001000000,
+        "day"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "time/isSame: argument 0 is string",
+      "expr": [
+        "time/isSame",
+        "5",
+        1700001000000,
+        "day"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/isSame: argument 1 is string",
+      "expr": [
+        "time/isSame",
+        1700000000000,
+        "5",
+        "day"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/isSame: argument 2 is number",
+      "expr": [
+        "time/isSame",
+        1700000000000,
+        1700001000000,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "time/minute: [\"time/minute\",1700000000000]",
+      "expr": [
+        "time/minute",
+        1700000000000
+      ],
+      "expect": {
+        "value": 13
+      }
+    },
+    {
+      "name": "time/minute: argument 0 is string",
+      "expr": [
+        "time/minute",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/month: [\"time/month\",1700000000000]",
+      "expr": [
+        "time/month",
+        1700000000000
+      ],
+      "expect": {
+        "value": 11
+      }
+    },
+    {
+      "name": "time/month: argument 0 is string",
+      "expr": [
+        "time/month",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/parse: [\"time/parse\",\"2024-01-18\",\"YYYY-MM-DD\"]",
+      "expr": [
+        "time/parse",
+        "2024-01-18",
+        "YYYY-MM-DD"
+      ],
+      "expect": {
+        "value": 1705536000000
+      }
+    },
+    {
+      "name": "time/parse: argument 0 is number",
+      "expr": [
+        "time/parse",
+        5,
+        "YYYY-MM-DD"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "time/second: [\"time/second\",1700000000000]",
+      "expr": [
+        "time/second",
+        1700000000000
+      ],
+      "expect": {
+        "value": 20
+      }
+    },
+    {
+      "name": "time/second: argument 0 is string",
+      "expr": [
+        "time/second",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/startOf: [\"time/startOf\",[\"time/now\"],\"month\"]",
+      "expr": [
+        "time/startOf",
+        [
+          "time/now"
+        ],
+        "month"
+      ],
+      "expect": {
+        "value": 1790812800000
+      }
+    },
+    {
+      "name": "time/startOf: argument 0 is string",
+      "expr": [
+        "time/startOf",
+        "5",
+        "month"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/startOf: argument 1 is number",
+      "expr": [
+        "time/startOf",
+        [
+          "time/now"
+        ],
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "time/weekday: [\"time/weekday\",1700000000000]",
+      "expr": [
+        "time/weekday",
+        1700000000000
+      ],
+      "expect": {
+        "value": 2
+      }
+    },
+    {
+      "name": "time/weekday: argument 0 is string",
+      "expr": [
+        "time/weekday",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "time/year: [\"time/year\",1700000000000]",
+      "expr": [
+        "time/year",
+        1700000000000
+      ],
+      "expect": {
+        "value": 2023
+      }
+    },
+    {
+      "name": "time/year: argument 0 is string",
+      "expr": [
+        "time/year",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "validate/array: [\"validate/array\",[1,2]]",
+      "expr": [
+        "validate/array",
+        [
+          1,
+          2
+        ]
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/boolean: [\"validate/boolean\",true]",
+      "expr": [
+        "validate/boolean",
+        true
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/creditCard: [\"validate/creditCard\",\"4111111111111111\"]",
+      "expr": [
+        "validate/creditCard",
+        "4111111111111111"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/creditCard: argument 0 is number",
+      "expr": [
+        "validate/creditCard",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "validate/date: [\"validate/date\",\"2024-01-18\"]",
+      "expr": [
+        "validate/date",
+        "2024-01-18"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/email: [\"validate/email\",\"ann@example.com\"]",
+      "expr": [
+        "validate/email",
+        "ann@example.com"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/email: argument 0 is number",
+      "expr": [
+        "validate/email",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "validate/equals: [\"validate/equals\",\"secret\",\"secret\"]",
+      "expr": [
+        "validate/equals",
+        "secret",
+        "secret"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/length: [\"validate/length\",\"ABC123\",6]",
+      "expr": [
+        "validate/length",
+        "ABC123",
+        6
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/length: argument 0 is number",
+      "expr": [
+        "validate/length",
+        5,
+        6
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string | array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "validate/length: argument 1 is string",
+      "expr": [
+        "validate/length",
+        "ABC123",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "validate/max: [\"validate/max\",50,100]",
+      "expr": [
+        "validate/max",
+        50,
+        100
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/max: argument 0 is string",
+      "expr": [
+        "validate/max",
+        "5",
+        100
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "validate/max: argument 1 is string",
+      "expr": [
+        "validate/max",
+        50,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "validate/maxLength: [\"validate/maxLength\",\"Ann\",50]",
+      "expr": [
+        "validate/maxLength",
+        "Ann",
+        50
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/maxLength: argument 0 is number",
+      "expr": [
+        "validate/maxLength",
+        5,
+        50
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string | array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "validate/maxLength: argument 1 is string",
+      "expr": [
+        "validate/maxLength",
+        "Ann",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "validate/min: [\"validate/min\",21,18]",
+      "expr": [
+        "validate/min",
+        21,
+        18
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/min: argument 0 is string",
+      "expr": [
+        "validate/min",
+        "5",
+        18
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "validate/min: argument 1 is string",
+      "expr": [
+        "validate/min",
+        21,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "validate/minLength: [\"validate/minLength\",\"password123\",8]",
+      "expr": [
+        "validate/minLength",
+        "password123",
+        8
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/minLength: argument 0 is number",
+      "expr": [
+        "validate/minLength",
+        5,
+        8
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string | array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "validate/minLength: argument 1 is string",
+      "expr": [
+        "validate/minLength",
+        "password123",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "validate/noneOf: [\"validate/noneOf\",\"alice\",[\"admin\",\"root\",\"system\"]]",
+      "expr": [
+        "validate/noneOf",
+        "alice",
+        [
+          "admin",
+          "root",
+          "system"
+        ]
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/noneOf: argument 1 is number",
+      "expr": [
+        "validate/noneOf",
+        "alice",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "validate/number: [\"validate/number\",42]",
+      "expr": [
+        "validate/number",
+        42
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/object: [\"validate/object\",{\"a\":1}]",
+      "expr": [
+        "validate/object",
+        {
+          "a": 1
+        }
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/oneOf: [\"validate/oneOf\",\"admin\",[\"admin\",\"user\",\"guest\"]]",
+      "expr": [
+        "validate/oneOf",
+        "admin",
+        [
+          "admin",
+          "user",
+          "guest"
+        ]
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/oneOf: argument 1 is number",
+      "expr": [
+        "validate/oneOf",
+        "admin",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "validate/phone: [\"validate/phone\",\"+15551234567\"]",
+      "expr": [
+        "validate/phone",
+        "+15551234567"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/phone: argument 0 is number",
+      "expr": [
+        "validate/phone",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "validate/range: [\"validate/range\",4,1,5]",
+      "expr": [
+        "validate/range",
+        4,
+        1,
+        5
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/range: argument 0 is string",
+      "expr": [
+        "validate/range",
+        "5",
+        1,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "validate/range: argument 1 is string",
+      "expr": [
+        "validate/range",
+        4,
+        "5",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "validate/range: argument 2 is string",
+      "expr": [
+        "validate/range",
+        4,
+        1,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "validate/required: [\"validate/required\",\"Ann\"]",
+      "expr": [
+        "validate/required",
+        "Ann"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/string: [\"validate/string\",\"Ann\"]",
+      "expr": [
+        "validate/string",
+        "Ann"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/url: [\"validate/url\",\"https://example.com\"]",
+      "expr": [
+        "validate/url",
+        "https://example.com"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/url: argument 0 is number",
+      "expr": [
+        "validate/url",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "validate/uuid: [\"validate/uuid\",\"550e8400-e29b-41d4-a716-446655440000\"]",
+      "expr": [
+        "validate/uuid",
+        "550e8400-e29b-41d4-a716-446655440000"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/uuid: argument 0 is number",
+      "expr": [
+        "validate/uuid",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "vec/add: [\"vec/add\",[1,2,3],[4,5,6]]",
+      "expr": [
+        "vec/add",
+        [
+          1,
+          2,
+          3
+        ],
+        [
+          4,
+          5,
+          6
+        ]
+      ],
+      "expect": {
+        "value": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "name": "vec/clamp-length: [\"vec/clamp-length\",[10,10],12]",
+      "expr": [
+        "vec/clamp-length",
+        [
+          10,
+          10
+        ],
+        12
+      ],
+      "expect": {
+        "value": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "name": "vec/clamp-length: argument 1 is string",
+      "expr": [
+        "vec/clamp-length",
+        [
+          10,
+          10
+        ],
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "vec/cross: [\"vec/cross\",[1,0,0],[0,1,0]]",
+      "expr": [
+        "vec/cross",
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      "expect": {
+        "value": 0
+      }
+    },
+    {
+      "name": "vec/lerp: [\"vec/lerp\",[0,0],[10,10],0.5]",
+      "expr": [
+        "vec/lerp",
+        [
+          0,
+          0
+        ],
+        [
+          10,
+          10
+        ],
+        0.5
+      ],
+      "expect": {
+        "value": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "name": "vec/lerp: argument 2 is string",
+      "expr": [
+        "vec/lerp",
+        [
+          0,
+          0
+        ],
+        [
+          10,
+          10
+        ],
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "vec/normalize: [\"vec/normalize\",[3,4]]",
+      "expr": [
+        "vec/normalize",
+        [
+          3,
+          4
+        ]
+      ],
+      "expect": {
+        "value": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "name": "vec/rotate: [\"vec/rotate\",[1,0],1.57]",
+      "expr": [
+        "vec/rotate",
+        [
+          1,
+          0
+        ],
+        1.57
+      ],
+      "expect": {
+        "value": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "name": "vec/rotate: argument 1 is string",
+      "expr": [
+        "vec/rotate",
+        [
+          1,
+          0
+        ],
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "vec/scale: [\"vec/scale\",[1,2,3],2]",
+      "expr": [
+        "vec/scale",
+        [
+          1,
+          2,
+          3
+        ],
+        2
+      ],
+      "expect": {
+        "value": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "name": "vec/scale: argument 1 is string",
+      "expr": [
+        "vec/scale",
+        [
+          1,
+          2,
+          3
+        ],
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "vec/sub: [\"vec/sub\",[5,7,9],[1,2,3]]",
+      "expr": [
+        "vec/sub",
+        [
+          5,
+          7,
+          9
+        ],
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      "expect": {
+        "value": {
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    {
+      "name": "anim/frame-at: [\"anim/frame-at\",2,2,2]",
+      "expr": [
+        "anim/frame-at",
+        2,
+        2,
+        2
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "anim/frame-at: argument 0 is string",
+      "expr": [
+        "anim/frame-at",
+        "5",
+        2,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "anim/frame-at: argument 1 is string",
+      "expr": [
+        "anim/frame-at",
+        2,
+        "5",
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "anim/frame-at: argument 2 is string",
+      "expr": [
+        "anim/frame-at",
+        2,
+        2,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "anim/sheet-rect: [\"anim/sheet-rect\",2,2,2,2]",
+      "expr": [
+        "anim/sheet-rect",
+        2,
+        2,
+        2,
+        2
+      ],
+      "expect": {
+        "value": {
+          "sx": 0,
+          "sy": 2,
+          "sw": 2,
+          "sh": 2
+        }
+      }
+    },
+    {
+      "name": "anim/sheet-rect: argument 0 is string",
+      "expr": [
+        "anim/sheet-rect",
+        "5",
+        2,
+        2,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "anim/sheet-rect: argument 1 is string",
+      "expr": [
+        "anim/sheet-rect",
+        2,
+        "5",
+        2,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "anim/sheet-rect: argument 2 is string",
+      "expr": [
+        "anim/sheet-rect",
+        2,
+        2,
+        "5",
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "anim/sheet-rect: argument 3 is string",
+      "expr": [
+        "anim/sheet-rect",
+        2,
+        2,
+        2,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "array/sort: [\"array/sort\",[1,2,3],\"ab\",\"ab\"]",
+      "expr": [
+        "array/sort",
+        [
+          1,
+          2,
+          3
+        ],
+        "ab",
+        "ab"
+      ],
+      "expect": {
+        "value": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "array/sort: argument 0 is number",
+      "expr": [
+        "array/sort",
+        5,
+        "ab",
+        "ab"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "ease/smoothstep: [\"ease/smoothstep\",2,2,2]",
+      "expr": [
+        "ease/smoothstep",
+        2,
+        2,
+        2
+      ],
+      "expect": {
+        "value": 0
+      }
+    },
+    {
+      "name": "ease/smoothstep: argument 0 is string",
+      "expr": [
+        "ease/smoothstep",
+        "5",
+        2,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "ease/smoothstep: argument 1 is string",
+      "expr": [
+        "ease/smoothstep",
+        2,
+        "5",
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "ease/smoothstep: argument 2 is string",
+      "expr": [
+        "ease/smoothstep",
+        2,
+        2,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "format/number: [\"format/number\",2,{\"a\":1}]",
+      "expr": [
+        "format/number",
+        2,
+        {
+          "a": 1
+        }
+      ],
+      "expect": {
+        "value": "2"
+      }
+    },
+    {
+      "name": "format/number: argument 0 is string",
+      "expr": [
+        "format/number",
+        "5",
+        {
+          "a": 1
+        }
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "grid/to-world: [\"grid/to-world\",2,2]",
+      "expr": [
+        "grid/to-world",
+        2,
+        2
+      ],
+      "expect": {
+        "value": {
+          "x": 1,
+          "y": 1
+        }
+      }
+    },
+    {
+      "name": "grid/to-world: argument 1 is string",
+      "expr": [
+        "grid/to-world",
+        2,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "let: [\"let\",[1,2,3],\"ab\"]",
+      "expr": [
+        "let",
+        [
+          1,
+          2,
+          3
+        ],
+        "ab"
+      ],
+      "expect": {
+        "value": "ab"
+      }
+    },
+    {
+      "name": "math/atan2: [\"math/atan2\",2,2]",
+      "expr": [
+        "math/atan2",
+        2,
+        2
+      ],
+      "expect": {
+        "value": 0.7853981633974483
+      }
+    },
+    {
+      "name": "math/atan2: argument 0 is string",
+      "expr": [
+        "math/atan2",
+        "5",
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/atan2: argument 1 is string",
+      "expr": [
+        "math/atan2",
+        2,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/deg-rad: [\"math/deg-rad\",2]",
+      "expr": [
+        "math/deg-rad",
+        2
+      ],
+      "expect": {
+        "value": 0.03490658503988659
+      }
+    },
+    {
+      "name": "math/deg-rad: argument 0 is string",
+      "expr": [
+        "math/deg-rad",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/ln: [\"math/ln\",2]",
+      "expr": [
+        "math/ln",
+        2
+      ],
+      "expect": {
+        "value": 0.6931471805599453
+      }
+    },
+    {
+      "name": "math/ln: argument 0 is string",
+      "expr": [
+        "math/ln",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/rad-deg: [\"math/rad-deg\",2]",
+      "expr": [
+        "math/rad-deg",
+        2
+      ],
+      "expect": {
+        "value": 114.59155902616465
+      }
+    },
+    {
+      "name": "math/rad-deg: argument 0 is string",
+      "expr": [
+        "math/rad-deg",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/round: [\"math/round\",2,2]",
+      "expr": [
+        "math/round",
+        2,
+        2
+      ],
+      "expect": {
+        "value": 2
+      }
+    },
+    {
+      "name": "math/round: argument 0 is string",
+      "expr": [
+        "math/round",
+        "5",
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/sin: [\"math/sin\",2]",
+      "expr": [
+        "math/sin",
+        2
+      ],
+      "expect": {
+        "value": 0.9092974268256817
+      }
+    },
+    {
+      "name": "math/sin: argument 0 is string",
+      "expr": [
+        "math/sin",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "math/tan: [\"math/tan\",2]",
+      "expr": [
+        "math/tan",
+        2
+      ],
+      "expect": {
+        "value": -2.185039863261519
+      }
+    },
+    {
+      "name": "math/tan: argument 0 is string",
+      "expr": [
+        "math/tan",
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "noise/fbm: [\"noise/fbm\",2,2,2]",
+      "expr": [
+        "noise/fbm",
+        2,
+        2,
+        2
+      ],
+      "expect": {
+        "value": 0
+      }
+    },
+    {
+      "name": "noise/fbm: argument 0 is string",
+      "expr": [
+        "noise/fbm",
+        "5",
+        2,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "noise/fbm: argument 1 is string",
+      "expr": [
+        "noise/fbm",
+        2,
+        "5",
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "noise/fbm: argument 2 is string",
+      "expr": [
+        "noise/fbm",
+        2,
+        2,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "noise/perlin: [\"noise/perlin\",2,2]",
+      "expr": [
+        "noise/perlin",
+        2,
+        2
+      ],
+      "expect": {
+        "value": 0
+      }
+    },
+    {
+      "name": "noise/perlin: argument 0 is string",
+      "expr": [
+        "noise/perlin",
+        "5",
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "noise/perlin: argument 1 is string",
+      "expr": [
+        "noise/perlin",
+        2,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "noise/simplex: [\"noise/simplex\",2,2]",
+      "expr": [
+        "noise/simplex",
+        2,
+        2
+      ],
+      "expect": {
+        "value": 0.05615296475428625
+      }
+    },
+    {
+      "name": "noise/simplex: argument 0 is string",
+      "expr": [
+        "noise/simplex",
+        "5",
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "noise/simplex: argument 1 is string",
+      "expr": [
+        "noise/simplex",
+        2,
+        "5"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "object/set: [\"object/set\",{\"a\":1},\"ab\",\"ab\"]",
+      "expr": [
+        "object/set",
+        {
+          "a": 1
+        },
+        "ab",
+        "ab"
+      ],
+      "expect": {
+        "value": {
+          "a": 1,
+          "ab": "ab"
+        }
+      }
+    },
+    {
+      "name": "object/set: argument 0 is number",
+      "expr": [
+        "object/set",
+        5,
+        "ab",
+        "ab"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/set: argument 1 is number",
+      "expr": [
+        "object/set",
+        {
+          "a": 1
+        },
+        5,
+        "ab"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "object/values: argument 0 is number",
+      "expr": [
+        "object/values",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/template: [\"str/template\",\"ab\",{\"a\":1}]",
+      "expr": [
+        "str/template",
+        "ab",
+        {
+          "a": 1
+        }
+      ],
+      "expect": {
+        "value": "ab"
+      }
+    },
+    {
+      "name": "str/template: argument 0 is number",
+      "expr": [
+        "str/template",
+        5,
+        {
+          "a": 1
+        }
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/template: argument 1 is number",
+      "expr": [
+        "str/template",
+        "ab",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/truncate: [\"str/truncate\",\"ab\",2,\"ab\"]",
+      "expr": [
+        "str/truncate",
+        "ab",
+        2,
+        "ab"
+      ],
+      "expect": {
+        "value": "ab"
+      }
+    },
+    {
+      "name": "str/truncate: argument 0 is number",
+      "expr": [
+        "str/truncate",
+        5,
+        2,
+        "ab"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "str/truncate: argument 1 is string",
+      "expr": [
+        "str/truncate",
+        "ab",
+        "5",
+        "ab"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "str/truncate: argument 2 is number",
+      "expr": [
+        "str/truncate",
+        "ab",
+        2,
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "validate/pattern: [\"validate/pattern\",\"ab\",\"ab\"]",
+      "expr": [
+        "validate/pattern",
+        "ab",
+        "ab"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "validate/pattern: argument 0 is number",
+      "expr": [
+        "validate/pattern",
+        5,
+        "ab"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "validate/pattern: argument 1 is number",
+      "expr": [
+        "validate/pattern",
+        "ab",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "a numeric string is a string, not a number",
+      "expr": [
+        "+",
+        "5",
+        1
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "control: a number sums",
+      "expr": [
+        "+",
+        5,
+        1
+      ],
+      "expect": {
+        "value": 6
+      }
+    },
+    {
+      "name": "null is an absent value and passes the check",
+      "expr": [
+        "+",
+        null,
+        1
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "a mistyped later argument of a variadic names its own type",
+      "expr": [
+        "math/max",
+        1,
+        "2"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "the innermost mistyped call raises",
+      "expr": [
+        "+",
+        1,
+        [
+          "str/upper",
+          5
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "a binding is checked by its resolved value",
+      "expr": [
+        "str/upper",
+        "@entity.count"
+      ],
+      "entity": {
+        "count": 3
+      },
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "control: a string binding passes",
+      "expr": [
+        "str/upper",
+        "@entity.name"
+      ],
+      "entity": {
+        "name": "ann"
+      },
+      "expect": {
+        "value": "ANN"
+      }
+    },
+    {
+      "name": "a lambda body argument is checked on every element",
+      "expr": [
+        "array/map",
+        [
+          "list",
+          1,
+          "2"
+        ],
+        [
+          "fn",
+          "x",
+          [
+            "*",
+            "@x",
+            2
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "control: the same lambda over numbers",
+      "expr": [
+        "array/map",
+        [
+          "list",
+          1,
+          2
+        ],
+        [
+          "fn",
+          "x",
+          [
+            "*",
+            "@x",
+            2
+          ]
+        ]
+      ],
+      "expect": {
+        "value": [
+          2,
+          4
+        ]
+      }
+    },
+    {
+      "name": "an any-typed argument stays permissive",
+      "expr": [
+        "str/concat",
+        "a",
+        5,
+        true
+      ],
+      "expect": {
+        "value": "a5true"
+      }
+    },
+    {
+      "name": "an ordering comparison takes numbers or strings",
+      "expr": [
+        "<",
+        "a",
+        "b"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "an ordering comparison rejects a boolean",
+      "expr": [
+        "<",
+        true,
+        1
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number | string",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": "an array operator names the array it expected",
+      "expr": [
+        "array/len",
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "a union parameter accepts either member",
+      "expr": [
+        "validate/minLength",
+        "abc",
+        2
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "a union parameter rejects a non-member",
+      "expr": [
+        "validate/minLength",
+        5,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string | array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "type variable: = of one type",
+      "expr": [
+        "=",
+        1,
+        1
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "type variable: = of two strings",
+      "expr": [
+        "=",
+        "a",
+        "b"
+      ],
+      "expect": {
+        "value": false
+      }
+    },
+    {
+      "name": "type variable: = of a number and a string",
+      "expr": [
+        "=",
+        1,
+        "1"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "type variable: != of a string and a boolean",
+      "expr": [
+        "!=",
+        "a",
+        true
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": "type variable: = against null passes",
+      "expr": [
+        "=",
+        1,
+        null
+      ],
+      "expect": {
+        "value": false
+      }
+    },
+    {
+      "name": "type variable: != null against a string passes",
+      "expr": [
+        "!=",
+        null,
+        "a"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "type variable: array/append of one element type",
+      "expr": [
+        "array/append",
+        [
+          1,
+          2
+        ],
+        3
+      ],
+      "expect": {
+        "value": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "type variable: array/append of another element type",
+      "expr": [
+        "array/append",
+        [
+          1,
+          2
+        ],
+        "x"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "type variable: array/append to an empty list binds nothing",
+      "expr": [
+        "array/append",
+        [],
+        "x"
+      ],
+      "expect": {
+        "value": [
+          "x"
+        ]
+      }
+    },
+    {
+      "name": "type variable: array/append skips leading nulls to find the element type",
+      "expr": [
+        "array/append",
+        [
+          null,
+          1
+        ],
+        2
+      ],
+      "expect": {
+        "value": [
+          null,
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "type variable: array/append to a non-list",
+      "expr": [
+        "array/append",
+        5,
+        1
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "type variable: array/includes of another element type",
+      "expr": [
+        "array/includes",
+        [
+          "a"
+        ],
+        1
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "type variable: array/includes of the element type",
+      "expr": [
+        "array/includes",
+        [
+          "a"
+        ],
+        "a"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "type variable: array/concat of two element types",
+      "expr": [
+        "array/concat",
+        [
+          1
+        ],
+        [
+          "a"
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "type variable: array/concat of one element type",
+      "expr": [
+        "array/concat",
+        [
+          1
+        ],
+        [
+          2
+        ]
+      ],
+      "expect": {
+        "value": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "type variable: if of two branches of one type",
+      "expr": [
+        "if",
+        true,
+        1,
+        2
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "type variable: if checks only the branch it evaluates (the static check sees both)",
+      "expr": [
+        "if",
+        true,
+        1,
+        "a"
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "type variable: if on a non-boolean condition",
+      "expr": [
+        "if",
+        "yes",
+        1,
+        2
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "boolean",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "type variable: if with a null branch passes",
+      "expr": [
+        "if",
+        false,
+        1,
+        null
+      ],
+      "expect": {
+        "value": null
+      }
+    },
+    {
+      "name": "type variable: and of one type returns the first falsy operand",
+      "expr": [
+        "and",
+        1,
+        0,
+        5
+      ],
+      "expect": {
+        "value": 0
+      }
+    },
+    {
+      "name": "type variable: and of strings returns the last",
+      "expr": [
+        "and",
+        "y",
+        "x"
+      ],
+      "expect": {
+        "value": "x"
+      }
+    },
+    {
+      "name": "type variable: and of two types",
+      "expr": [
+        "and",
+        5,
+        "x"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "type variable: or of one type returns the first truthy operand",
+      "expr": [
+        "or",
+        0,
+        42
+      ],
+      "expect": {
+        "value": 42
+      }
+    },
+    {
+      "name": "type variable: or skips null operands",
+      "expr": [
+        "or",
+        null,
+        "b"
+      ],
+      "expect": {
+        "value": "b"
+      }
+    },
+    {
+      "name": "type variable: or of two types",
+      "expr": [
+        "or",
+        false,
+        42
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "boolean",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "type variable: not of a number",
+      "expr": [
+        "not",
+        0
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "boolean",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "type variable: not of a boolean",
+      "expr": [
+        "not",
+        false
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "type variable: < of a number and a string",
+      "expr": [
+        "<",
+        1,
+        "a"
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "type variable: < of two strings",
+      "expr": [
+        "<",
+        "a",
+        "b"
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "type variable: object/merge of two records",
+      "expr": [
+        "object/merge",
+        {
+          "a": 1
+        },
+        {
+          "b": 2
+        }
+      ],
+      "expect": {
+        "value": {
+          "a": 1,
+          "b": 2
+        }
+      }
+    },
+    {
+      "name": "type variable: object/merge with a non-record",
+      "expr": [
+        "object/merge",
+        {
+          "a": 1
+        },
+        5
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "type variable: object/get on an array reads by index",
+      "expr": [
+        "object/get",
+        [
+          10,
+          20
+        ],
+        "1"
+      ],
+      "expect": {
+        "value": 20
+      }
+    },
+    {
+      "name": "type variable: object/get on a record reads the field",
+      "expr": [
+        "object/get",
+        {
+          "a": 1
+        },
+        "a"
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
+      "name": "type variable: object/get falls back to the default",
+      "expr": [
+        "object/get",
+        {
+          "a": 1
+        },
+        "b",
+        9
+      ],
+      "expect": {
+        "value": 9
+      }
+    },
+    {
+      "name": "type variable: object/keys of a record",
+      "expr": [
+        "object/keys",
+        {
+          "a": 1,
+          "b": 2
+        }
+      ],
+      "expect": {
+        "value": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    {
+      "name": "type variable: object/keys of an array",
+      "expr": [
+        "object/keys",
+        [
+          1
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "object",
+          "actual": "array"
+        }
+      }
+    },
+    {
+      "name": "type variable: array/reduce threads one accumulator type",
+      "expr": [
+        "array/reduce",
+        [
+          1,
+          2,
+          3
+        ],
+        0,
+        [
+          "fn",
+          [
+            "acc",
+            "x"
+          ],
+          [
+            "+",
+            "@acc",
+            "@x"
+          ]
+        ]
+      ],
+      "expect": {
+        "value": 6
+      }
+    },
+    {
+      "name": "type variable: array/unique keeps the element type",
+      "expr": [
+        "array/unique",
+        [
+          1,
+          1,
+          2
+        ]
+      ],
+      "expect": {
+        "value": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "type variable: validate/oneOf of one type",
+      "expr": [
+        "validate/oneOf",
+        "a",
+        [
+          "a",
+          "b"
+        ]
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "type variable: validate/oneOf of another type",
+      "expr": [
+        "validate/oneOf",
+        1,
+        [
+          "a",
+          "b"
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "type variable: json/stringify takes any one value",
+      "expr": [
+        "json/stringify",
+        {
+          "a": 1
+        }
+      ],
+      "expect": {
+        "value": "{\"a\":1}"
+      }
+    },
+    {
+      "name": "type variable: str/concat takes scalars",
+      "expr": [
+        "str/concat",
+        "a",
+        1,
+        true
+      ],
+      "expect": {
+        "value": "a1true"
+      }
+    },
+    {
+      "name": "type variable: str/concat of a record",
+      "expr": [
+        "str/concat",
+        "a",
+        {
+          "x": 1
+        }
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string | number | boolean | date | datetime",
+          "actual": "object"
+        }
+      }
+    },
+    {
+      "name": "type variable: list collects items of any types (a literal sequence, not a typed list)",
+      "expr": [
+        "list",
+        1,
+        "a",
+        true
+      ],
+      "expect": {
+        "value": [
+          1,
+          "a",
+          true
+        ]
+      }
+    }
+  ]
+}

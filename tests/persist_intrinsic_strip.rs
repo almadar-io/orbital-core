@@ -3,10 +3,10 @@
 //! `almadar-runtime/test/orbital-server-runtime-persist-intrinsic-strip.test.ts`; the compiled
 //! server strips the same set (`OirEntity::frame_fields`).
 
+use orbital_core::evaluator::ValueMap;
 use orbital_core::runtime::{EntitySource, InMemoryEntityCache, RuntimeKernel};
 use orbital_core::{OrbitalSchema, RuntimeEnvironment, Value};
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 fn schema() -> OrbitalSchema {
@@ -64,7 +64,7 @@ fn run(events: &[&str]) -> Vec<Value> {
                 "Composer",
                 Some("singleton"),
                 event,
-                Value::Object(HashMap::new()),
+                Value::Object(ValueMap::new()),
             )
             .unwrap();
     }

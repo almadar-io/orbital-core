@@ -1,10 +1,11 @@
 // What a host posts for a dispatch and a mount, and how it folds the answer (twins of `postServerLeg`, `postMountLeg`, `foldBase`/`changedSinceCarried` in `almadar-runtime/src/evaluation/client-role.ts`; ui `BrowserPlayground.wire`, `Chat.realtime-chat`, `Riya.boot-order`).
 
+use orbital_core::evaluator::ValueMap;
 use orbital_core::effects::{LifecycleEvent, MountSeed};
 use orbital_core::embed::EmbeddedKernel;
 use orbital_core::{EventResponse, OrbitalSchema, Value};
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
@@ -121,7 +122,7 @@ fn row(v: serde_json::Value) -> Value {
     serde_json::from_value(v).unwrap()
 }
 
-fn answer(rows: HashMap<String, Value>) -> EventResponse {
+fn answer(rows: ValueMap) -> EventResponse {
     EventResponse {
         success: true,
         entity_by_trait: Some(rows),
@@ -136,13 +137,13 @@ fn frame(k: &EmbeddedKernel, t: &str) -> serde_json::Value {
 #[test]
 fn a_late_echo_of_the_carried_row_does_not_overwrite_a_newer_client_value() {
     let k = kernel();
-    let carried = HashMap::from([(
+    let carried = ValueMap::from([(
         "Loader".to_string(),
         row(json!({ "id": "singleton", "note": "old" })),
     )]);
     let base = k.fold_base(Some(&carried), &[], None).unwrap();
     k.apply_server_response_since(
-        &answer(HashMap::from([(
+        &answer(ValueMap::from([(
             "Loader".to_string(),
             row(json!({ "id": "singleton", "note": "old", "count": 3.0 })),
         )])),
@@ -159,7 +160,7 @@ fn a_late_echo_of_the_carried_row_does_not_overwrite_a_newer_client_value() {
             entity: row(json!({ "id": "singleton", "note": "typing", "count": 3.0 })),
         },
     );
-    let echo = answer(HashMap::from([(
+    let echo = answer(ValueMap::from([(
         "Loader".to_string(),
         row(json!({ "id": "singleton", "note": "old", "count": 4.0 })),
     )]));
@@ -189,7 +190,7 @@ fn control_without_a_base_the_echo_overwrites() {
             entity: row(json!({ "id": "singleton", "note": "typing" })),
         },
     );
-    let echo = answer(HashMap::from([(
+    let echo = answer(ValueMap::from([(
         "Loader".to_string(),
         row(json!({ "id": "singleton", "note": "old" })),
     )]));
@@ -201,8 +202,8 @@ fn control_without_a_base_the_echo_overwrites() {
 #[test]
 fn a_row_with_no_carried_counterpart_folds_whole() {
     let k = kernel();
-    let base = k.fold_base(Some(&HashMap::new()), &[], None).unwrap();
-    let echo = answer(HashMap::from([(
+    let base = k.fold_base(Some(&ValueMap::new()), &[], None).unwrap();
+    let echo = answer(ValueMap::from([(
         "Loader".to_string(),
         row(json!({ "id": "singleton", "note": "fresh" })),
     )]));
@@ -222,7 +223,7 @@ fn a_seeded_trait_is_based_on_the_row_the_client_shows() {
             entity: row(json!({ "id": "singleton", "note": "shown" })),
         },
     );
-    let carried = HashMap::from([(
+    let carried = ValueMap::from([(
         "Loader".to_string(),
         row(json!({ "id": "singleton", "note": "pre-dispatch" })),
     )]);

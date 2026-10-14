@@ -206,7 +206,6 @@ impl PrettyPrinter {
             OirType::Money => "Money".to_string(),
             OirType::File => "File".to_string(),
             OirType::Json => "Json".to_string(),
-            OirType::Scalar => "Scalar".to_string(),
             OirType::Node => "Node".to_string(),
             OirType::Array { inner } => format!("[{}]", self.format_type(inner)),
             OirType::Tuple { items } => format!(

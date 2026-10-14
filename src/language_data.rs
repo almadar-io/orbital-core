@@ -43,6 +43,9 @@ pub struct LanguageData {
     /// `BINDING_CONTEXT_RULES` (`orbLanguage.bindingRules`): the sigil roots
     /// each binding context (guard / effect / tick) allows.
     pub binding_rules: String,
+    /// The program value types (`orbLanguage.programTypes`): the records `orbital`, `trait` and `behavior` values
+    /// are, by name, in the `.orb` field-definition shape.
+    pub program_types: String,
     /// The theme presets (`orbLanguage.themes`, a directory of one
     /// `ThemeDefinition` per `.json` file), sorted by file name.
     pub themes: Vec<String>,
@@ -137,12 +140,18 @@ fn load_language_data_for(
     running: &str,
 ) -> Result<LanguageData, LanguageDataError> {
     let block = read_language_block(CORE_PACKAGE, start_dir, user_store, running)?;
+    let program_types = block.read("programTypes")?;
+    crate::language::program_types::parse(&program_types).map_err(|reason| LanguageDataError::Invalid {
+        path: block.declared_path("programTypes").unwrap_or_default(),
+        reason,
+    })?;
     Ok(LanguageData {
         patterns: block.read("patterns")?,
         component_mapping: block.read("componentMapping")?,
         event_contracts: block.read("eventContracts")?,
         services: block.read("services")?,
         binding_rules: block.read("bindingRules")?,
+        program_types,
         themes: block.read_json_dir("themes")?,
         core_version: block.pkg.version,
         root: block.pkg.root,
@@ -382,7 +391,7 @@ pub fn preflight() -> Result<(), LanguageDataError> {
 /// (wasm): the same data the native loaders read, handed over as one JSON
 /// bundle the host assembles from ITS installed packages —
 /// `{ core: { version, compiler, patterns, componentMapping, eventContracts,
-/// services, bindingRules, themes: [ThemeDefinition…] }, std: { version, compiler,
+/// services, bindingRules, programTypes, themes: [ThemeDefinition…] }, std: { version, compiler,
 /// operators }, vocabularies: [{ package, version, compiler, vocabulary }] }`.
 /// The same checks apply: each `compiler` range must accept this binary, every
 /// rust-target operator must be implemented, and the language packs must be
@@ -470,6 +479,9 @@ fn parse_language_bundle(
             operators: missing,
         });
     }
+    let program_types = text(core, "programTypes", "core")?;
+    crate::language::program_types::parse(&program_types)
+        .map_err(|reason| invalid(format!("`core.programTypes`: {reason}")))?;
     let language = LanguageData {
         core_version: version(core, "core")?,
         root: PathBuf::new(),
@@ -478,6 +490,7 @@ fn parse_language_bundle(
         event_contracts: text(core, "eventContracts", "core")?,
         services: text(core, "services", "core")?,
         binding_rules: text(core, "bindingRules", "core")?,
+        program_types,
         themes,
     };
     let ops = OperatorData {
@@ -559,6 +572,11 @@ pub fn operator_data() -> Result<&'static OperatorData, LanguageDataError> {
     Ok(OPERATOR_DATA.get_or_init(|| data))
 }
 
+/// The operator table when something already installed or loaded it; never touches the filesystem.
+pub fn operator_data_if_loaded() -> Option<&'static OperatorData> {
+    OPERATOR_DATA.get()
+}
+
 /// For accessors that cannot return a `Result`; see
 /// [`language_data_after_preflight`].
 pub fn operator_data_after_preflight() -> &'static OperatorData {
@@ -611,6 +629,7 @@ mod tests {
                     "eventContracts": "dist/patterns/event-contracts.json",
                     "services": "dist/patterns/services-registry.json",
                     "bindingRules": "dist/language/binding-rules.json",
+                    "programTypes": "dist/language/program-types.json",
                     "themes": "themes"
                 }
             })
@@ -629,6 +648,11 @@ mod tests {
         fs::write(
             dir.join("dist/language/binding-rules.json"),
             r#"{"guard":{"allowed":["zz"]}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("dist/language/program-types.json"),
+            r#"{"OrbitalValue":{"type":"object","properties":{"behavior":{"type":"string","required":true}}}}"#,
         )
         .unwrap();
         fs::create_dir_all(dir.join("themes")).unwrap();
@@ -651,8 +675,26 @@ mod tests {
         assert!(data.event_contracts.contains("contracts"));
         assert!(data.services.contains("services"));
         assert!(data.binding_rules.contains("\"zz\""));
+        assert!(data.program_types.contains("OrbitalValue"));
         assert_eq!(data.themes.len(), 1);
         assert!(data.themes[0].contains("zz-theme"));
+    }
+
+    #[test]
+    fn edge_a_core_without_program_types_or_with_a_malformed_table_is_invalid() {
+        let tmp = Tmp::new("no-program-types");
+        let dir = install_core(&tmp.0, "10.1.0", ">=17.0.0");
+        fs::write(
+            dir.join("dist/language/program-types.json"),
+            r#"{"OrbitalValue":{"type":"nonsense"}}"#,
+        )
+        .unwrap();
+        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
+        assert!(err.to_string().contains("OrbitalValue"), "{err}");
+        fs::remove_file(dir.join("dist/language/program-types.json")).unwrap();
+        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
     }
 
     #[test]
@@ -714,10 +756,7 @@ mod tests {
         assert!(err.needs_install());
         let msg = err.to_string();
         assert!(msg.contains("@almadar/core is not installed"), "{msg}");
-        assert!(
-            msg.contains("run `orb update`"),
-            "{msg}"
-        );
+        assert!(msg.contains("run `orb update`"), "{msg}");
     }
 
     #[test]
@@ -832,10 +871,7 @@ mod tests {
         assert!(err.needs_install());
         let msg = err.to_string();
         assert!(msg.contains("@almadar/std is not installed"), "{msg}");
-        assert!(
-            msg.contains("run `orb update`"),
-            "{msg}"
-        );
+        assert!(msg.contains("run `orb update`"), "{msg}");
     }
 
     #[test]
@@ -900,6 +936,7 @@ mod tests {
                 "patterns": {"patterns": {"p": {}}}, "componentMapping": {"mappings": {}},
                 "eventContracts": {"contracts": {}}, "services": {"services": {}},
                 "bindingRules": {"guard": {"allowed": ["zz"]}},
+                "programTypes": {"OrbitalValue": {"type": "object", "properties": {"behavior": {"type": "string", "required": true}}}},
                 "themes": [{"name": "zz", "tokens": {}}]
             },
             "std": {
@@ -924,6 +961,7 @@ mod tests {
         assert_eq!(lang.core_version, "10.1.0");
         assert!(lang.patterns.contains("\"p\""));
         assert!(lang.binding_rules.contains("\"zz\""));
+        assert!(lang.program_types.contains("OrbitalValue"));
         assert_eq!(lang.themes.len(), 1);
         assert_eq!(ops.std_version, "8.2.0");
         assert!(ops.operators.contains("arithmetic"));
@@ -958,5 +996,13 @@ mod tests {
         v["core"].as_object_mut().unwrap().remove("bindingRules");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("core.bindingRules"), "{err}");
+        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        v["core"].as_object_mut().unwrap().remove("programTypes");
+        let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
+        assert!(err.to_string().contains("core.programTypes"), "{err}");
+        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        v["core"]["programTypes"] = json!({"OrbitalValue": {"type": "nonsense"}});
+        let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
+        assert!(err.to_string().contains("OrbitalValue"), "{err}");
     }
 }

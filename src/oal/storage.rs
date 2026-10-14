@@ -1,9 +1,9 @@
 //! Storage-related operators: disk usage, mount points
 
+use crate::evaluator::ValueMap;
 use crate::error::{EvalError, OrbitalError};
 use crate::evaluator::{eval_expr, BindingContext, EvalResult, Operator, Value};
 use crate::schema::SExpression;
-use std::collections::HashMap;
 
 // ============================================================================
 // Disk Usage Operator
@@ -103,7 +103,7 @@ fn get_disk_usage(path: &str) -> Result<Value, OrbitalError> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let mut result = HashMap::new();
+        let mut result = ValueMap::new();
         result.insert("path".to_string(), Value::String(path.to_string()));
         result.insert("total".to_string(), Value::Number(500_000_000_000.0));
         result.insert("used".to_string(), Value::Number(250_000_000_000.0));
@@ -183,7 +183,7 @@ fn get_mounts() -> Result<Value, OrbitalError> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let mut mount = HashMap::new();
+        let mut mount = ValueMap::new();
         mount.insert("device".to_string(), Value::String("/dev/sda1".to_string()));
         mount.insert("mountPoint".to_string(), Value::String("/".to_string()));
         mount.insert("filesystem".to_string(), Value::String("ext4".to_string()));
@@ -297,7 +297,7 @@ fn get_disk_io_stats() -> Result<Value, OrbitalError> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let mut stat = HashMap::new();
+        let mut stat = ValueMap::new();
         stat.insert("device".to_string(), Value::String("sda".to_string()));
         stat.insert("readsCompleted".to_string(), Value::Number(100000.0));
         stat.insert("writesCompleted".to_string(), Value::Number(50000.0));

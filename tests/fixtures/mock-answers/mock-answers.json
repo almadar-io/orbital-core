@@ -91,9 +91,9 @@
       "params": {},
       "success": true,
       "data": {
-        "output": "mock_output",
+        "output": {},
         "confidence": 42,
-        "violations": []
+        "violations": {}
       }
     },
     {
@@ -233,21 +233,37 @@
       "success": true,
       "data": {
         "stats": {
-          "sample": "mock_sample"
+          "committed": 42,
+          "failed": [
+            {
+              "ref": "mock_ref",
+              "reason": "mock_reason"
+            }
+          ]
         },
         "units": [
           {
-            "sample": "mock_sample"
+            "ref": "mock_ref",
+            "targetEntity": "mock_targetEntity",
+            "title": "mock_title",
+            "fields": {
+              "sample": "mock_sample"
+            },
+            "parentRef": "mock_parentRef"
           }
         ],
         "skipped": [
           {
-            "sample": "mock_sample"
+            "ref": "mock_ref",
+            "reason": "mock_reason"
           }
         ],
         "validationErrors": [
           {
-            "sample": "mock_sample"
+            "ref": "mock_ref",
+            "code": "mock_code",
+            "field": "mock_field",
+            "message": "mock_message"
           }
         ]
       }
@@ -261,7 +277,8 @@
         "committed": 42,
         "failed": [
           {
-            "sample": "mock_sample"
+            "ref": "mock_ref",
+            "reason": "mock_reason"
           }
         ]
       }
@@ -1873,7 +1890,20 @@
             "path": "mock_path",
             "fps": 42,
             "frames": 42,
-            "bones": []
+            "bones": [
+              {
+                "role": "mock_role",
+                "rotate_deg": [],
+                "rotate_deg_curve": [],
+                "translate_y": [],
+                "phase": 42,
+                "freq": 42,
+                "ik": {
+                  "stride": 42,
+                  "step_height": 42
+                }
+              }
+            ]
           }
         ]
       }
@@ -1884,8 +1914,42 @@
       "params": {},
       "success": true,
       "data": {
-        "rig": {},
-        "resolved": {}
+        "rig": {
+          "parts": [
+            {
+              "name": "mock_name",
+              "box": [],
+              "pivot": [],
+              "z": 42,
+              "parent": "mock_parent",
+              "role": "mock_role",
+              "cloneOf": "mock_cloneOf",
+              "offset": [],
+              "shade": 42,
+              "render": true,
+              "poly": []
+            }
+          ],
+          "skinFalloffPx": 42,
+          "meshGridStepPx": 42
+        },
+        "resolved": {
+          "parts": [
+            {
+              "name": "mock_name",
+              "box": [],
+              "pivot": [],
+              "z": 42,
+              "parent": "mock_parent",
+              "role": "mock_role",
+              "cloneOf": "mock_cloneOf",
+              "offset": [],
+              "shade": 42,
+              "render": true,
+              "poly": []
+            }
+          ]
+        }
       }
     },
     {

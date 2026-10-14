@@ -7,14 +7,14 @@
 //! field, and any field declaring a `default` — shared with `@almadar/runtime`'s
 //! `missingRequiredFields`.
 
+use orbital_core::evaluator::ValueMap;
 use orbital_core::effects::{Effect, EffectOutcome};
 use orbital_core::runtime::{EntitySource, InMemoryEntityCache, RuntimeKernel};
 use orbital_core::{OrbitalSchema, RuntimeEnvironment, Value};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 fn obj(pairs: &[(&str, Value)]) -> Value {
-    let mut m = HashMap::new();
+    let mut m = ValueMap::new();
     for (k, v) in pairs {
         m.insert((*k).to_string(), v.clone());
     }

@@ -1,8 +1,8 @@
 //! G6 Game: animation operators (`anim/*`). Pure, total.
 
+use crate::evaluator::ValueMap;
 use super::macros::*;
 use super::*;
-use std::collections::HashMap;
 
 pub struct AnimFrameAtOp;
 impl Operator for AnimFrameAtOp {
@@ -51,7 +51,7 @@ impl Operator for AnimSheetRectOp {
                 (frame_index / cols).floor() * frame_h,
             )
         };
-        let mut m = HashMap::new();
+        let mut m = ValueMap::new();
         m.insert("sx".to_string(), Value::Number(sx));
         m.insert("sy".to_string(), Value::Number(sy));
         m.insert("sw".to_string(), Value::Number(frame_w));

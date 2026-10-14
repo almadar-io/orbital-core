@@ -52,7 +52,7 @@ impl Session for EmbeddedSession {
     fn dispatch(&self, step: &Step) -> Result<Json, String> {
         let payload: Value = match &step.payload {
             Some(p) => serde_json::from_value(p.clone()).map_err(|e| format!("payload: {e}"))?,
-            None => Value::Object(HashMap::new()),
+            None => Value::Object(Default::default()),
         };
         let wire = self
             .kernel

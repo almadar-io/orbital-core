@@ -83,6 +83,7 @@
     "instance": "instance",
     "collection": "collection",
     "background": "background",
+    "visible": "visible",
     "mock": "mock"
   },
   "categories": {
@@ -173,7 +174,6 @@
     "datetime": "datetime",
     "duration": "duration",
     "money": "money",
-    "scalar": "scalar",
     "file": "file",
     "email": "email",
     "url": "url",
@@ -491,6 +491,7 @@
     "viewType": "viewType",
     "visual_prompt": "visual_prompt",
     "vocabulary": "vocabulary",
+    "whileVisible": "whileVisible",
     "seedMock": "seedMock",
     "localeInstances": "localeInstances",
     "diagram": "diagram",
@@ -597,6 +598,7 @@
     "contract/validate-input": "contract/validate-input",
     "contract/validate-output": "contract/validate-output",
     "contract/violations": "contract/violations",
+    "csv/parse": "csv/parse",
     "data/augment": "data/augment",
     "data/dataloader": "data/dataloader",
     "data/dataset": "data/dataset",

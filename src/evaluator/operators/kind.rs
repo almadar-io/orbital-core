@@ -121,6 +121,7 @@ operator_kind! {
     JoinOp => JoinOp,
     JsonParseOp => JsonParseOp,
     JsonStringifyOp => JsonStringifyOp,
+    CsvParseOp => CsvParseOp,
     LastOp => LastOp,
     LeOp => LeOp,
     LetOp => LetOp,
@@ -335,13 +336,25 @@ impl OperatorKind {
     pub fn raw_callback_params(&self) -> Option<&'static [&'static str]> {
         match self {
             Self::MapOp
+            | Self::FilterOp
             | Self::CountOp
             | Self::FindOp
             | Self::ArrayEveryOp
             | Self::ArraySomeOp
             | Self::ObjectFilterOp => Some(&["item", "index"]),
-            Self::FilterOp => Some(&["item"]),
             Self::ReduceOp => Some(&["acc", "item"]),
+            _ => None,
+        }
+    }
+
+    /// The position of the callback parameter that is the element's `number` index, when the operator hands its
+    /// callback one: `array/map`, `count`, `find`, `every` and `some` call back with `(item, index)`. The language
+    /// types that parameter, whatever it is named and however the callback is written.
+    pub fn callback_index_position(&self) -> Option<usize> {
+        match self {
+            Self::MapOp | Self::FilterOp | Self::CountOp | Self::FindOp | Self::ArrayEveryOp | Self::ArraySomeOp => {
+                Some(1)
+            }
             _ => None,
         }
     }

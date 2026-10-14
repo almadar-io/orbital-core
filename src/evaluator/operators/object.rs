@@ -1,5 +1,6 @@
 //! Object operators (and the `path` builder).
 
+use crate::evaluator::ValueMap;
 use super::macros::*;
 use super::util::deep_equals;
 use super::*;
@@ -63,7 +64,7 @@ impl Operator for ObjectSetOp {
 
         let mut result = match obj {
             Value::Object(o) => o,
-            Value::Null => std::collections::HashMap::new(),
+            Value::Null => ValueMap::new(),
             _ => {
                 return Err(OrbitalError::Eval(EvalError::TypeMismatch {
                     expected: "object".to_string(),
@@ -107,7 +108,7 @@ impl Operator for ObjectHasOp {
 pub struct ObjectMergeOp;
 impl Operator for ObjectMergeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        let mut result = std::collections::HashMap::new();
+        let mut result = ValueMap::new();
 
         for arg in args {
             let val = eval_expr(arg, ctx)?;
@@ -152,7 +153,7 @@ impl Operator for ObjectFromEntriesOp {
             }
         };
 
-        let mut result = std::collections::HashMap::new();
+        let mut result = ValueMap::new();
         for entry in array {
             if let Value::Array(pair) = entry {
                 if pair.len() >= 2 {
@@ -172,9 +173,9 @@ pub struct ObjectDeepMergeOp;
 impl Operator for ObjectDeepMergeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         fn deep_merge(
-            base: std::collections::HashMap<String, Value>,
-            overlay: std::collections::HashMap<String, Value>,
-        ) -> std::collections::HashMap<String, Value> {
+            base: ValueMap,
+            overlay: ValueMap,
+        ) -> ValueMap {
             let mut result = base;
             for (key, value) in overlay {
                 match (result.get(&key), &value) {
@@ -192,7 +193,7 @@ impl Operator for ObjectDeepMergeOp {
             result
         }
 
-        let mut result = std::collections::HashMap::new();
+        let mut result = ValueMap::new();
 
         for arg in args {
             let val = eval_expr(arg, ctx)?;
@@ -243,7 +244,7 @@ impl Operator for ObjectPickOp {
             }
         };
 
-        let mut result = std::collections::HashMap::new();
+        let mut result = ValueMap::new();
         for key in keys {
             if let Some(value) = source.get(&key) {
                 result.insert(key, value.clone());
@@ -283,7 +284,7 @@ impl Operator for ObjectOmitOp {
             }
         };
 
-        let result: std::collections::HashMap<String, Value> = source
+        let result: ValueMap = source
             .into_iter()
             .filter(|(k, _)| !omit_keys.contains(k))
             .collect();
@@ -314,7 +315,7 @@ impl Operator for ObjectMapValuesOp {
         // Handle lambda mapper
         let (params, body) = require_lambda!(mapper);
 
-        let mut result = std::collections::HashMap::new();
+        let mut result = ValueMap::new();
         for (key, value) in source {
             let mut child_ctx = ctx.child();
             if !params.is_empty() {
@@ -349,7 +350,7 @@ impl Operator for ObjectFilterOp {
             }
         };
 
-        let mut result = std::collections::HashMap::new();
+        let mut result = ValueMap::new();
         for (key, value) in source {
             let should_include = super::array::apply_callback(
                 &args[1],
@@ -390,7 +391,7 @@ impl Operator for ObjectMapKeysOp {
 
         let (params, body) = require_lambda!(mapper);
 
-        let mut result = std::collections::HashMap::new();
+        let mut result = ValueMap::new();
         for (key, value) in source {
             let mut child_ctx = ctx.child();
             if !params.is_empty() {

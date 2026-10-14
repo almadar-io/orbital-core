@@ -9,6 +9,7 @@
 //! - Math: min, max, clamp, abs, floor, ceil, round
 //! - Control flow: do, when, let
 
+use crate::evaluator::ValueMap;
 use super::context::BindingContext;
 use super::value::Value;
 use crate::error::{EvalError, OrbitalError};
@@ -23,11 +24,14 @@ pub trait Operator {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult;
 }
 
+mod arg_types;
 mod kind;
 mod macros;
+pub use arg_types::{actual_of, operator_signature};
 pub use kind::OperatorKind;
 mod anim;
 mod array;
+mod csv;
 mod ease;
 mod geo;
 mod grid;
@@ -45,6 +49,7 @@ mod vector;
 
 pub use anim::*;
 pub use array::*;
+pub use csv::*;
 pub use ease::*;
 pub use geo::*;
 pub use grid::*;
@@ -62,6 +67,12 @@ pub use vector::*;
 /// The names a raw-body callback of operator `name` binds (see [`OperatorKind::raw_callback_params`]).
 pub fn raw_callback_params(name: &str) -> Option<&'static [&'static str]> {
     get_operator(name).and_then(|kind| kind.raw_callback_params())
+}
+
+/// The position of the `number` index among the parameters of operator `name`'s callback (see
+/// [`OperatorKind::callback_index_position`]).
+pub fn callback_index_position(name: &str) -> Option<usize> {
+    get_operator(name).and_then(|kind| kind.callback_index_position())
 }
 
 /// Get an operator by name.
@@ -130,6 +141,9 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         // JSON
         "json/parse" => K::JsonParseOp,
         "json/stringify" => K::JsonStringifyOp,
+
+        // CSV
+        "csv/parse" => K::CsvParseOp,
 
         // Path building (for dynamic field paths in set effect)
         "path" => K::PathOp,
@@ -486,8 +500,18 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
     Some(kind)
 }
 
-/// Core expression evaluator - used by operators
+/// Core expression evaluator - used by operators. An operator's argument is checked against the type the
+/// operator table declares for its position (`arg_types`).
 pub fn eval_expr(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
+    let slot = arg_types::argument_slot(expr);
+    let value = eval_unchecked(expr, ctx)?;
+    if let Some(index) = slot {
+        arg_types::check_argument(index, &value)?;
+    }
+    Ok(value)
+}
+
+fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
     match expr {
         // Primitives
         SExpression::Null => Ok(Value::Null),
@@ -507,7 +531,7 @@ pub fn eval_expr(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
 
         // Object - evaluate all values
         SExpression::Object(obj) => {
-            let mut result = std::collections::HashMap::new();
+            let mut result = ValueMap::new();
             for (k, v) in obj {
                 result.insert(k.clone(), eval_expr(v, ctx)?);
             }
@@ -533,6 +557,8 @@ pub fn eval_expr(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
                     .into());
                 }
                 if let Some(operator) = get_operator(op) {
+                    let _frame = arg_types::signature_for(&operator)
+                        .map(|signature| arg_types::CallFrame::enter(signature, &arr[1..]));
                     return operator.evaluate(&arr[1..], ctx);
                 }
                 // Unknown operator - treat as literal array

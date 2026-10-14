@@ -37,8 +37,8 @@ pub enum WidenKind {
     IntegerNumber,
     /// Number/Integer ↔ Money (Money is numeric at rest).
     MoneyNumber,
-    /// A bounded primitive joins the closed `string|number|boolean|null` union.
-    ToScalar,
+    /// A value of one of a primitive union's member kinds joins the union.
+    ToUnionMember,
     /// String-kind value parsed into a Date.
     StringToDate,
     /// String-kind value parsed into a DateTime.
@@ -96,6 +96,19 @@ fn is_object_family(t: &OirType) -> bool {
     )
 }
 
+/// What an S-expression can be besides an options object: an atom, or a list of S-expressions.
+fn is_program_data(t: &OirType) -> bool {
+    match t {
+        OirType::Optional { inner } => is_program_data(inner),
+        OirType::Boolean => true,
+        OirType::Array { inner } => is_program_data(inner) || is_object_family(inner) || is_json_family(inner),
+        OirType::Tuple { items } => items
+            .iter()
+            .all(|i| is_program_data(i) || is_object_family(i) || is_json_family(i)),
+        _ => is_string_kind(t) || is_number_kind(t),
+    }
+}
+
 fn is_json_family(t: &OirType) -> bool {
     matches!(t, OirType::Json | OirType::SExpr)
 }
@@ -122,6 +135,19 @@ fn semantic_kind(t: &OirType) -> Option<SemanticStringKind> {
     }
 }
 
+/// True when `dst` is a union of primitive kinds (`string | number`) and `src` fits one member.
+fn primitive_union_member(dst: &OirType, src: &OirType) -> bool {
+    let OirType::Union { variants } = dst else {
+        return false;
+    };
+    variants.iter().any(|v| {
+        !matches!(
+            v.field_type,
+            OirType::Struct { .. } | OirType::Union { .. } | OirType::Map { .. } | OirType::Json
+        ) && sub(src, &v.field_type).is_some()
+    })
+}
+
 /// The type relation: `Some(coercion)` when a value of type `src` may be
 /// assigned to a slot of type `dst`, `None` on a clear kind contradiction.
 ///
@@ -129,11 +155,10 @@ fn semantic_kind(t: &OirType) -> Option<SemanticStringKind> {
 /// reverse-engineered from the legacy string predicate (both sides erased by
 /// `oir_type_kind`), decision-for-decision — Optional transparent both
 /// directions, arrays element-blind, the object/json/Map family mutually
-/// compatible, `Scalar` asymmetric (admits its members; fits only family or
-/// Scalar destinations), semantic-string refinements from any string-kind
+/// compatible, semantic-string refinements from any string-kind
 /// source, the numeric kinds widening upward (Integer/Money → Number, Integer → Money) but never narrowing back to Integer, Reference taking a row
-/// (object family) or an id string, and `Node` accepting any scalar (the
-/// scalar-widening arm moved in from config_type.rs).
+/// (object family) or an id string, and `Node` accepting any primitive (the
+/// widening arm moved in from config_type.rs).
 pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
     // Optional is transparent both directions (mirrors `oir_type_kind`); the
     // witness is unchecked — Optional is accepted via an unchecked unwrap.
@@ -193,8 +218,7 @@ pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
             _ => None,
         },
         // The object family (Struct/Union/Map/File/TypeRef) and the json family
-        // (Json/SExpr) are mutually compatible; a Scalar actual also fits any
-        // shapeless destination (the legacy `a == "scalar"` arm).
+        // (Json/SExpr) are mutually compatible.
         OirType::Struct { .. }
         | OirType::Union { .. }
         | OirType::Map { .. }
@@ -203,15 +227,13 @@ pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
         | OirType::Row { .. }
         | OirType::Json
         | OirType::SExpr => match src {
-            _ if is_object_family(src) || is_json_family(src) || matches!(src, OirType::Scalar) => {
+            _ if is_object_family(src) || is_json_family(src) => {
                 Some(Coercion::Erase { from: src.clone() })
             }
-            _ => None,
-        },
-        OirType::Scalar => match src {
-            _ if is_string_kind(src) || is_number_kind(src) || matches!(src, OirType::Boolean) => {
-                Some(Coercion::Widen(WidenKind::ToScalar))
+            _ if matches!(dst, OirType::SExpr) && is_program_data(src) => {
+                Some(Coercion::Erase { from: src.clone() })
             }
+            _ if primitive_union_member(dst, src) => Some(Coercion::Widen(WidenKind::ToUnionMember)),
             _ => None,
         },
         // Renderable content: object-family pattern trees, arrays of them,
@@ -231,6 +253,8 @@ pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
             OirType::Array { inner: s_inner } => {
                 sub(s_inner, d_inner).map(|element| Coercion::Element(Box::new(element)))
             }
+            // The empty list is typed by the list slot it fills: the slot supplies the element.
+            OirType::Tuple { items } if items.is_empty() => Some(Coercion::Identity),
             // A tuple is an array of its slots: every slot must fit the element.
             OirType::Tuple { items } => items
                 .iter()
@@ -339,8 +363,11 @@ fn parse_compat_type(s: &str) -> CompatType {
         "money" => CompatType::MoneyTag,
         "file" => CompatType::FileTag,
         "json" => CompatType::Ty(OirType::Json),
-        "scalar" => CompatType::Ty(OirType::Scalar),
         "node" => CompatType::Ty(OirType::Node),
+        // A tagged union of struct variants (`type Pick = A | B` in a payload):
+        // an object-family declaration — the variants themselves are checked
+        // by the variant-aware validators.
+        "union" => CompatType::Ty(OirType::Union { variants: vec![] }),
         // A schemaless object — an empty Struct is its nearest `OirType` shape;
         // the family arm makes every cross-variant object pairing erase.
         "object" => CompatType::Ty(OirType::Struct { fields: vec![] }),
@@ -365,6 +392,9 @@ fn parse_compat_type(s: &str) -> CompatType {
                 "number" | "float" => OirType::Number,
                 "int" | "integer" => OirType::Integer,
                 "boolean" => OirType::Boolean,
+                "orbital" => OirType::Orbital,
+                "trait" => OirType::Trait,
+                "behavior" => OirType::Behavior,
                 _ => OirType::Json,
             };
             CompatType::Ty(OirType::Array { inner: Box::new(inner) })
@@ -379,7 +409,7 @@ fn parse_compat_type(s: &str) -> CompatType {
 /// string predicate's decision table now lives. `Ty`×`Ty` delegates to
 /// [`sub`]; markers carry the string-only arms (`any` accepts everything,
 /// `entity`/named types take a row or id string, raw `int`/`float`/`null` are
-/// identity-only except as members of `scalar`, `timestamp` is a date family
+/// identity-only, `timestamp` is a date family
 /// that does NOT cross-accept `date`/`datetime` names, and a raw `Map<...>`
 /// tag counts as an object on both sides — plus the PascalCase quirk of also
 /// accepting a string-kind actual).
@@ -458,9 +488,6 @@ fn sub_compat(src: &CompatType, dst: &CompatType) -> Option<Coercion> {
             Null => Some(Coercion::Identity),
             _ => None,
         },
-        // Raw `int`/`float`/`null` actuals are admitted only by a `scalar`
-        // declaration (the legacy predicate's member list).
-        (Int | Float | Null, Ty(OirType::Scalar)) => Some(Coercion::Widen(WidenKind::ToScalar)),
         (Unknown(s), Unknown(d)) if s == d => Some(Coercion::Identity),
         _ => None,
     }
@@ -471,7 +498,7 @@ fn sub_compat(src: &CompatType, dst: &CompatType) -> Option<Coercion> {
 /// both sides are parsed from the legacy kind-string vocabulary and the
 /// relation's witness decides. The acceptance set is exactly the legacy
 /// string predicate's — Optional-transparent, element-blind arrays, the
-/// object/json/Map family, asymmetric `scalar`, semantic-string refinements,
+/// object/json/Map family, semantic-string refinements,
 /// entity/named row-or-id, `any` top, `Enum`/`Trait` as `string`.
 /// The slot types of a `.lolo` tuple type `[T1, T2, …]` (two or more top-level slots;
 /// a single `[T]` is an array), or `None`. The one tuple-type parser every consumer of
@@ -578,10 +605,6 @@ pub fn oir_type_kind(t: &crate::ir::OirType) -> String {
         OirType::Date => "date".to_string(),
         OirType::DateTime => "datetime".to_string(),
         OirType::Json | OirType::SExpr => "json".to_string(),
-        // A scalar is one of three primitive kinds; the kind lattice has no
-        // union member, so report the widest honest answer rather than pick
-        // one member and manufacture mismatches for the other two.
-        OirType::Scalar => "scalar".to_string(),
         OirType::Array { .. } | OirType::Tuple { .. } => "array".to_string(),
         OirType::Map { .. } | OirType::Struct { .. } | OirType::Row { .. } => "object".to_string(),
         // Every variant of a struct union is an object, so the KIND is object;
@@ -654,7 +677,7 @@ pub fn oir_type_satisfies(inferred: &OirType, declared: &OirType) -> bool {
 /// Structured sibling of [`set_value_type_compatible`]: `declared` is a real
 /// `OirType`, `actual_kind` stays the legacy marker-string vocabulary parsed
 /// through [`parse_compat_type`]. An erased-element actual (a bracket
-/// spelling the parser can't resolve, e.g. `[scalar]`) gets the same
+/// spelling the parser can't resolve, e.g. `[Foo]`) gets the same
 /// [`is_unknowable`] leniency the inferred side already has.
 pub fn oir_type_accepts_kind(declared: &OirType, actual_kind: &str) -> bool {
     let actual = parse_compat_type(actual_kind);
@@ -725,6 +748,29 @@ pub fn literal_value_type(value: &crate::schema::SExpression) -> Option<&'static
 mod tests {
     use super::{enum_value_is_member, oir_type_satisfies_field};
     use crate::ir::OirType;
+
+    #[test]
+    fn a_list_of_a_nominal_std_type_is_that_list() {
+        let orbitals = OirType::array(OirType::Orbital);
+        assert!(super::oir_type_satisfies(&orbitals, &super::compat_kind_oir("[orbital]")));
+        assert!(
+            !super::oir_type_satisfies(&OirType::array(OirType::String), &super::compat_kind_oir("[orbital]")),
+            "control: a list of strings is not a list of orbitals"
+        );
+        assert!(super::oir_type_satisfies(&OirType::array(OirType::Trait), &super::compat_kind_oir("[trait]")));
+        assert!(super::oir_type_satisfies(&OirType::array(OirType::Behavior), &super::compat_kind_oir("[behavior]")));
+    }
+
+    #[test]
+    fn the_empty_list_fits_a_list_of_any_element() {
+        let empty = OirType::Tuple { items: Vec::new() };
+        assert!(super::oir_type_satisfies(&empty, &OirType::array(OirType::String)));
+        assert!(super::oir_type_satisfies(&empty, &OirType::array(OirType::array(OirType::Number))));
+        assert!(
+            !super::oir_type_satisfies(&empty, &OirType::String),
+            "control: an empty list is not a string"
+        );
+    }
 
     #[test]
     fn enum_membership() {
@@ -921,8 +967,8 @@ mod compat_tests {
         assert!(oir_type_accepts_kind(&File, "object"));
         // An erased-element actual never rejects.
         assert!(oir_type_accepts_kind(
-            &Array { inner: Box::new(Scalar) },
-            "[scalar]"
+            &Array { inner: Box::new(Json) },
+            "[json]"
         ));
         assert!(oir_type_accepts_kind(
             &Array {
@@ -949,34 +995,35 @@ mod compat_tests {
     fn object_json_map_family() {
         assert!(set_value_type_compatible("object", "json"));
         assert!(set_value_type_compatible("json", "object"));
-        assert!(set_value_type_compatible("Map<string,scalar>", "object"));
-        assert!(set_value_type_compatible("object", "Map<string,scalar>"));
+        assert!(set_value_type_compatible("Map<string,string>", "object"));
+        assert!(set_value_type_compatible("object", "Map<string,string>"));
         assert!(set_value_type_compatible("Map<a,b>", "Map<c,d>"));
         // Raw `Map<...>` tags also accept a string actual (the legacy
         // predicate's PascalCase arm) — a quirk the relation preserves.
-        assert!(set_value_type_compatible("Map<string,scalar>", "string"));
-        assert!(!set_value_type_compatible("Map<string,scalar>", "number"));
+        assert!(set_value_type_compatible("Map<string,string>", "string"));
+        assert!(!set_value_type_compatible("Map<string,string>", "number"));
     }
 
     #[test]
-    fn scalar_union_asymmetric() {
-        // Declared scalar admits exactly its members.
-        assert!(set_value_type_compatible("scalar", "string"));
-        assert!(set_value_type_compatible("scalar", "number"));
-        assert!(set_value_type_compatible("scalar", "int"));
-        assert!(set_value_type_compatible("scalar", "float"));
-        assert!(set_value_type_compatible("scalar", "boolean"));
-        assert!(set_value_type_compatible("scalar", "null"));
-        assert!(!set_value_type_compatible("scalar", "object"));
-        assert!(!set_value_type_compatible("scalar", "array"));
-        assert!(!set_value_type_compatible("scalar", "email"));
-        // Scalar actual fits only the shapeless kinds.
-        assert!(set_value_type_compatible("object", "scalar"));
-        assert!(set_value_type_compatible("json", "scalar"));
+    fn a_tagged_union_declaration_takes_an_object_and_rejects_a_primitive() {
+        assert!(set_value_type_compatible("union", "object"));
+        assert!(!set_value_type_compatible("union", "string"));
+        assert!(!set_value_type_compatible("union", "number"));
+        assert!(!set_value_type_compatible("union", "array"));
+    }
+
+    #[test]
+    fn scalar_is_not_a_type() {
+        // `scalar` has no meaning in the kind vocabulary: identity only, it
+        // admits no member kind and fits no declared kind.
         assert!(set_value_type_compatible("scalar", "scalar"));
+        assert!(!set_value_type_compatible("scalar", "string"));
+        assert!(!set_value_type_compatible("scalar", "number"));
+        assert!(!set_value_type_compatible("scalar", "boolean"));
+        assert!(!set_value_type_compatible("scalar", "null"));
+        assert!(!set_value_type_compatible("object", "scalar"));
+        assert!(!set_value_type_compatible("json", "scalar"));
         assert!(!set_value_type_compatible("string", "scalar"));
-        assert!(!set_value_type_compatible("number", "scalar"));
-        assert!(!set_value_type_compatible("date", "scalar"));
         // Raw int/float are identity-only declared kinds.
         assert!(set_value_type_compatible("int", "int"));
         assert!(!set_value_type_compatible("number", "int"));
@@ -1108,12 +1155,26 @@ mod compat_tests {
         assert_eq!(sub(&Date, &DateTime), None);
         assert_eq!(sub(&DateTime, &Date), None);
         assert_eq!(sub(&Boolean, &Date), None);
-        // Scalar admits exactly its member kinds.
-        assert_eq!(sub(&String, &Scalar), Some(C::Widen(WidenKind::ToScalar)));
-        assert_eq!(sub(&Money, &Scalar), Some(C::Widen(WidenKind::ToScalar)));
-        assert_eq!(sub(&Boolean, &Scalar), Some(C::Widen(WidenKind::ToScalar)));
-        assert_eq!(sub(&Date, &Scalar), None);
-        assert_eq!(sub(&Scalar, &Scalar), Some(C::Identity));
+    }
+
+    #[test]
+    fn a_primitive_union_takes_its_member_kinds_and_nothing_else() {
+        use super::sub;
+        let union = Union {
+            variants: vec![
+                crate::ir::OirField::new("string".to_string(), String),
+                crate::ir::OirField::new("number".to_string(), Number),
+            ],
+        };
+        assert_eq!(sub(&String, &union), Some(C::Widen(WidenKind::ToUnionMember)));
+        assert_eq!(sub(&Number, &union), Some(C::Widen(WidenKind::ToUnionMember)));
+        assert_eq!(sub(&Integer, &union), Some(C::Widen(WidenKind::ToUnionMember)));
+        assert_eq!(sub(&Boolean, &union), None, "boolean is not a member");
+        // A tagged union of structs takes no primitive.
+        let tagged = Union {
+            variants: vec![crate::ir::OirField::new("a".to_string(), Struct { fields: vec![] })],
+        };
+        assert_eq!(sub(&String, &tagged), None);
     }
 
     #[test]
@@ -1127,12 +1188,29 @@ mod compat_tests {
         assert_eq!(sub(&row, &Json), Some(C::Erase { from: row.clone() }));
         assert_eq!(sub(&Json, &SExpr), Some(C::Erase { from: Json }));
         assert_eq!(sub(&File, &row), Some(C::Erase { from: File }));
-        assert_eq!(sub(&Scalar, &row), Some(C::Erase { from: Scalar }));
-        assert_eq!(sub(&row, &Scalar), None);
-        // json does not leak into string/array/scalar-declared slots.
+        // json does not leak into string/array-declared slots.
         assert_eq!(sub(&Json, &String), None);
         assert_eq!(sub(&Json, &Array { inner: Box::new(Json) }), None);
-        assert_eq!(sub(&Json, &Scalar), None);
+    }
+
+    #[test]
+    fn an_atom_and_a_list_of_program_data_are_an_sexpr() {
+        use super::sub;
+        let list = |inner: crate::ir::OirType| Array { inner: Box::new(inner) };
+        for atom in [String, Number, Boolean] {
+            assert!(sub(&atom, &SExpr).is_some(), "{atom:?} is an atom");
+        }
+        assert!(sub(&list(SExpr), &SExpr).is_some(), "a list of expressions is an expression");
+        assert!(sub(&list(String), &SExpr).is_some());
+        assert!(sub(&list(list(Number)), &SExpr).is_some());
+        assert!(sub(&Tuple { items: vec![String, Number, list(SExpr)] }, &SExpr).is_some());
+        assert!(sub(&Tuple { items: vec![] }, &SExpr).is_some(), "the empty list");
+        assert!(sub(&Struct { fields: vec![] }, &SExpr).is_some(), "an options object");
+        assert!(sub(&Optional { inner: Box::new(String) }, &SExpr).is_some());
+        assert_eq!(sub(&SExpr, &String), None, "control: an expression is not a string");
+        assert_eq!(sub(&SExpr, &list(SExpr)), None, "control: nor a list, until it is read as one");
+        assert_eq!(sub(&list(Date), &SExpr), None, "control: a list holding a date is not program data");
+        assert_eq!(sub(&String, &Json), None, "control: only the expression type takes atoms");
     }
 
     #[test]

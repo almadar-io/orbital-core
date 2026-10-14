@@ -4,6 +4,7 @@
 //! host-answered like any other read. JS twins: `OrbitalServerRuntime.populateRelations` and
 //! `effect-stage.ts` `injectRelationOptions`.
 
+use crate::evaluator::ValueMap;
 use super::entity_source::EntitySource;
 use crate::schema::{Cardinality, EntityDefinition, FieldDefinition, FieldType};
 use crate::Value;
@@ -97,11 +98,11 @@ pub fn populate_relations(
         let Ok(listed) = source.list(&related_type) else {
             continue;
         };
-        let all: HashMap<String, Value> = listed
+        let all: ValueMap = listed
             .into_iter()
             .filter_map(|row| id_of(&row).map(|id| (id, row)))
             .collect();
-        let mut related: HashMap<String, Value> = wanted
+        let mut related: ValueMap = wanted
             .iter()
             .filter_map(|id| all.get(id).map(|row| (id.clone(), row.clone())))
             .collect();
@@ -131,7 +132,7 @@ pub fn populate_relations(
             fn clone_of(
                 id: &str,
                 ancestors: &HashSet<String>,
-                related: &HashMap<String, Value>,
+                related: &ValueMap,
                 fk_field: &str,
                 self_tree: bool,
                 is_self: bool,
@@ -252,7 +253,7 @@ fn visit(source: &dyn EntitySource, targets: &HashMap<String, String>, node: &mu
                     Some(Value::Array(entries)) => entries.clone(),
                     _ => Vec::new(),
                 };
-                let mut data: HashMap<String, Value> = HashMap::new();
+                let mut data: ValueMap = ValueMap::new();
                 for entry in &entries {
                     let Some(name) = field_name(entry) else {
                         continue;
@@ -275,7 +276,7 @@ fn visit(source: &dyn EntitySource, targets: &HashMap<String, String>, node: &mu
                             let label = text("name")
                                 .or_else(|| text("title"))
                                 .unwrap_or_else(|| id.clone());
-                            Value::Object(HashMap::from([
+                            Value::Object(ValueMap::from([
                                 ("value".to_string(), Value::String(id)),
                                 ("label".to_string(), Value::String(label)),
                             ]))

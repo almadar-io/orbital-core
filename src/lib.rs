@@ -37,6 +37,7 @@ pub mod runtime;
 pub mod schema;
 pub mod shell;
 pub mod shell_protocol;
+pub mod signature;
 pub mod slots;
 pub mod stamp;
 pub mod state_machine;
@@ -52,7 +53,7 @@ pub mod util;
 
 pub use error::{EvalError, OrbitalError};
 pub use ir::field_shape;
-pub use evaluator::{BindingContext, BindingContextBuilder, Evaluator, Value};
+pub use evaluator::{BindingContext, BindingContextBuilder, Evaluator, Value, ValueMap};
 pub use events::{shared_bus, Event, EventBus, EventFilter, SharedEventBus, SubscriptionId};
 pub use schema::*;
 pub use slots::{

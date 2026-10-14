@@ -596,11 +596,6 @@ pub enum OirType {
     /// production. Not a semantic string: it names a stored artifact.
     File,
     Json,
-    /// A single primitive value of bounded kind: `string | number | boolean |
-    /// null`. Distinct from `Json` because it is CLOSED — an object or array is
-    /// not a scalar — so codegen emits the union instead of a shapeless record,
-    /// and the shape checker can reject nesting that `Json` accepted.
-    Scalar,
     /// Renderable UI content (a `node`-typed field/knob): a pattern node or
     /// array of them. Distinct from `Json` so codegen can emit the canonical
     /// pattern-tree type instead of a shapeless record.
@@ -651,7 +646,7 @@ pub enum OirType {
     /// each carries its own name so codegen can emit a discriminated union and
     /// the validator can select a variant by the value's tag field. A variant
     /// whose shape is a by-name recursive back-reference resolves to
-    /// `OirType::Json` rather than expanding forever.
+    /// `OirType::TypeRef` rather than expanding forever.
     Union {
         variants: Vec<OirField>,
     },
@@ -677,8 +672,8 @@ pub enum OirType {
     /// finite), so the resolver stops expanding at the cycle and leaves a
     /// `TypeRef` naming what it would have expanded to. Codegen backends with
     /// a named-type facility (the TS shell) hoist one declaration per name and
-    /// emit a real recursive reference; every other backend renders it like
-    /// `Json` (wire-safe degradation — see `ir/render.rs`'s default arm).
+    /// emit a real recursive reference; every other backend renders the wire shape (see
+    /// `ir/render.rs`'s default arm).
     TypeRef {
         name: String,
     },
@@ -755,8 +750,9 @@ impl OirType {
 
 /// Structural `FieldDefinition` → `OirType`, needing no resolver context.
 ///
-/// `Object`/`Union` degrade to `Json` — expanding `properties` needs the
-/// resolver's `&self` (named-type registration). `Relation` builds a real
+/// An `Object` is its `properties` as a struct, or a `Map` of its `items`; a `Union` that is a by-name
+/// back-reference keeps the type it names ([`FieldDefinition::by_name_reference`]). Named-type registration is
+/// the resolver's, not this function's. `Relation` builds a real
 /// `Reference` when it has one: `sub`'s `Reference` arm, not `Json`'s, is
 /// what accepts a row or an id string.
 pub fn field_shape(field: &FieldDefinition) -> OirType {
@@ -784,7 +780,22 @@ pub fn field_shape(field: &FieldDefinition) -> OirType {
         FieldType::Tuple => OirType::Tuple {
             items: field.tuple_slots().into_iter().map(field_shape).collect(),
         },
-        FieldType::Object => OirType::Json,
+        FieldType::Object => match (&field.properties, &field.items) {
+            (Some(properties), _) => {
+                let mut fields: Vec<OirField> = properties
+                    .iter()
+                    .map(|(name, def)| {
+                        let mut f = OirField::new(name.clone(), field_shape(def));
+                        f.required = def.required.unwrap_or(false);
+                        f
+                    })
+                    .collect();
+                fields.sort_by(|a, b| a.name.cmp(&b.name));
+                OirType::Struct { fields }
+            }
+            (None, Some(items)) => OirType::map(OirType::String, field_shape(items)),
+            (None, None) => OirType::Json,
+        },
         FieldType::Enum => OirType::enum_type("Enum"),
         FieldType::Relation => match &field.relation {
             Some(rel) if rel.is_to_many() && field.intrinsic == Some(true) => {
@@ -801,9 +812,19 @@ pub fn field_shape(field: &FieldDefinition) -> OirType {
             OirType::String
         }
         FieldType::Node => OirType::Node,
-        FieldType::Scalar => OirType::Scalar,
         FieldType::SExpr => OirType::SExpr,
-        FieldType::Union => OirType::Json,
+        FieldType::Union => match (field.by_name_reference(), &field.properties) {
+            (Some(name), _) => OirType::TypeRef { name: name.to_string() },
+            (None, Some(properties)) if !properties.is_empty() => {
+                let mut variants: Vec<OirField> = properties
+                    .iter()
+                    .map(|(name, def)| OirField::new(name.clone(), field_shape(def)))
+                    .collect();
+                variants.sort_by(|a, b| a.name.cmp(&b.name));
+                OirType::Union { variants }
+            }
+            (None, _) => OirType::Json,
+        },
     }
 }
 
@@ -1504,6 +1525,13 @@ pub struct OirTick {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub background: bool,
+    /// `[visible]`: a browser tick that pauses while its trait's rendered output is off screen.
+    #[serde(
+        rename = "whileVisible",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub while_visible: bool,
     /// The trait states the tick runs in; empty = every state.
     #[serde(rename = "appliesTo", default, skip_serializing_if = "Vec::is_empty")]
     pub applies_to: Vec<String>,
@@ -1519,6 +1547,7 @@ impl OirTick {
             effects: vec![],
             priority: 0,
             background: false,
+            while_visible: false,
             applies_to: vec![],
         }
     }
@@ -2218,13 +2247,67 @@ mod tests {
     }
 
     #[test]
-    fn field_shape_object_with_properties_degrades_to_json() {
-        // No `&self` here to expand `properties` with.
+    fn field_shape_object_with_properties_is_the_struct_of_them() {
         let mut f = bare_field(FieldType::Object);
         let mut props = std::collections::HashMap::new();
         props.insert("label".to_string(), bare_field(FieldType::String));
+        props.insert("count".to_string(), bare_field(FieldType::Number));
         f.properties = Some(props);
-        assert_eq!(field_shape(&f), OirType::Json);
+        let OirType::Struct { fields } = field_shape(&f) else {
+            panic!("an object with properties is a struct");
+        };
+        let named: Vec<(&str, &OirType)> = fields.iter().map(|f| (f.name.as_str(), &f.field_type)).collect();
+        assert_eq!(named, vec![("count", &OirType::Number), ("label", &OirType::String)]);
+    }
+
+    #[test]
+    fn field_shape_object_with_items_is_a_map_of_the_item_type() {
+        let mut f = bare_field(FieldType::Object);
+        f.items = Some(Box::new(bare_field(FieldType::Number)));
+        assert_eq!(field_shape(&f), OirType::map(OirType::String, OirType::Number));
+    }
+
+    #[test]
+    fn field_shape_keeps_a_recursive_back_reference_as_the_type_it_names() {
+        // `type Node = { children : [Node] }`: the inner `Node` is the by-name form.
+        let mut back = bare_field(FieldType::Union);
+        back.values = Some(vec!["Node".to_string()]);
+        let mut children = bare_field(FieldType::Array);
+        children.items = Some(Box::new(back.clone()));
+        assert_eq!(back.by_name_reference(), Some("Node"));
+        assert_eq!(
+            field_shape(&children),
+            OirType::array(OirType::TypeRef { name: "Node".to_string() })
+        );
+    }
+
+    #[test]
+    fn field_shape_of_a_union_carries_its_variants_sorted() {
+        let mut union = bare_field(FieldType::Union);
+        let mut props = std::collections::HashMap::new();
+        props.insert("string".to_string(), bare_field(FieldType::String));
+        props.insert("number".to_string(), bare_field(FieldType::Number));
+        union.properties = Some(props);
+        let OirType::Union { variants } = field_shape(&union) else {
+            panic!("a union with variants is a union");
+        };
+        let named: Vec<(&str, &OirType)> = variants.iter().map(|v| (v.name.as_str(), &v.field_type)).collect();
+        assert_eq!(named, vec![("number", &OirType::Number), ("string", &OirType::String)]);
+        assert_eq!(field_shape(&bare_field(FieldType::Union)), OirType::Json, "no variants, no shape");
+    }
+
+    #[test]
+    fn a_union_with_variant_shapes_is_not_a_by_name_reference() {
+        let mut tagged = bare_field(FieldType::Union);
+        tagged.values = Some(vec!["A".to_string()]);
+        let mut props = std::collections::HashMap::new();
+        props.insert("A".to_string(), bare_field(FieldType::Object));
+        tagged.properties = Some(props);
+        assert_eq!(tagged.by_name_reference(), None);
+        assert_eq!(bare_field(FieldType::Union).by_name_reference(), None);
+        let mut two = bare_field(FieldType::Union);
+        two.values = Some(vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(two.by_name_reference(), None, "a name list is not one reference");
     }
 
     #[test]

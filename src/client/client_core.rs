@@ -11,6 +11,7 @@
 //! loop); the synchronous [`ClientCore::drive_blocking`] path serves `GameApp` and
 //! the Layer-2 verifier.
 
+use crate::evaluator::ValueMap;
 use crate::client::client_kernel::ClientKernel;
 use crate::client::helpers::{format_value, get_string, SlotContent};
 use crate::{ClientEffect, EventResponse, OrbitalSchema, Value};
@@ -60,7 +61,7 @@ pub struct ClientCore {
     /// UI slots populated from render-ui effects.
     pub ui_slots: HashMap<String, Vec<SlotContent>>,
     /// Per-trait `main` render-ui content, keyed by trait name — resolves `@trait.X`.
-    pub trait_content: HashMap<String, Value>,
+    pub trait_content: ValueMap,
     /// Form field values for the active form.
     pub form_data: HashMap<String, String>,
     /// Entity cache populated from server responses.
@@ -85,7 +86,7 @@ pub struct ClientCore {
     pub current_page: Option<String>,
     /// The current page's route params (`:param` segments, then the navigate params, which win):
     /// the payload its traits' INIT runs with (the web router's `initPayload`).
-    pub route_params: HashMap<String, Value>,
+    pub route_params: ValueMap,
     /// Set when a `navigate` entered a page: the host mounts it ([`Self::mount_page_blocking`]).
     pub page_entered: bool,
     page_history: Vec<PageVisit>,
@@ -126,7 +127,7 @@ impl ClientCore {
             current_trait_name,
             current_state: "browsing".to_string(),
             ui_slots: HashMap::new(),
-            trait_content: HashMap::new(),
+            trait_content: ValueMap::new(),
             form_data: HashMap::new(),
             entities: HashMap::new(),
             status_message: None,
@@ -134,7 +135,7 @@ impl ClientCore {
             editing_entity: None,
             embedded,
             current_page,
-            route_params: HashMap::new(),
+            route_params: ValueMap::new(),
             page_entered: false,
             page_history: Vec::new(),
             await_rows: Vec::new(),
@@ -541,7 +542,7 @@ impl ClientCore {
         self.enter_page(visit.orbital_idx, visit.page, visit.params);
     }
 
-    fn enter_page(&mut self, idx: usize, page: Option<String>, params: HashMap<String, Value>) {
+    fn enter_page(&mut self, idx: usize, page: Option<String>, params: ValueMap) {
         if idx != self.current_orbital_idx {
             self.set_orbital(idx);
         }
@@ -669,7 +670,7 @@ impl ClientCore {
 
     /// `trait_content` with a skeleton for an embedded trait that awaits its first content (its
     /// host's `@trait.X` frame shows it).
-    pub fn trait_content_with_awaiting(&self, now: web_time::Instant) -> HashMap<String, Value> {
+    pub fn trait_content_with_awaiting(&self, now: web_time::Instant) -> ValueMap {
         let mut content = self.trait_content.clone();
         for render in self.visible_awaiting(now) {
             if self.embedded.contains(&render.trait_name)
@@ -801,7 +802,7 @@ impl ClientCore {
             if let ClientEffect::RenderUi { slot, config, .. } = effect {
                 if config.is_none() {
                     if is_main(slot) {
-                        self.trait_content.remove(src);
+                        self.trait_content.shift_remove(src);
                     }
                 } else if let Some(content) = effect.render_ui_value() {
                     if is_main(slot) {
@@ -966,12 +967,12 @@ fn initial_page(schema: &OrbitalSchema, idx: usize) -> Option<String> {
 struct PageVisit {
     orbital_idx: usize,
     page: Option<String>,
-    params: HashMap<String, Value>,
+    params: ValueMap,
 }
 
 /// A route pattern matched against a path segment by segment: a `:param` segment matches any
 /// value and binds it. `None` when the path is not this route.
-fn route_params(pattern: &str, path: &str) -> Option<HashMap<String, Value>> {
+fn route_params(pattern: &str, path: &str) -> Option<ValueMap> {
     let route: Vec<&str> = pattern.trim_matches('/').split('/').collect();
     let actual: Vec<&str> = path
         .split(['?', '#'])
@@ -983,7 +984,7 @@ fn route_params(pattern: &str, path: &str) -> Option<HashMap<String, Value>> {
     if route.len() != actual.len() {
         return None;
     }
-    let mut params = HashMap::new();
+    let mut params = ValueMap::new();
     for (r, a) in route.iter().zip(&actual) {
         match r.strip_prefix(':') {
             Some(name) => {
@@ -1063,7 +1064,7 @@ mod tests {
             "the client-kernel path never populates server_bridge"
         );
 
-        let mut payload = HashMap::new();
+        let mut payload = ValueMap::new();
         payload.insert("title".to_string(), Value::String("Hello".to_string()));
         core.drive_blocking("SHOW", Some("RenderTrait"), Value::Object(payload));
 
@@ -1601,7 +1602,7 @@ mod tests {
         core.mount_page_blocking();
         assert_eq!(main_prop(&core, "title"), ["42"]);
 
-        let mut params = HashMap::new();
+        let mut params = ValueMap::new();
         params.insert("id".to_string(), Value::String("7".into()));
         params.insert("tab".to_string(), Value::String("history".into()));
         core.navigate_to("/notes/42", Some(&Value::Object(params)));

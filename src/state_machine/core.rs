@@ -245,11 +245,12 @@ impl StateMachineCore {
 
 #[cfg(test)]
 mod tests {
+    use crate::evaluator::ValueMap;
     use super::super::types::TransitionFailureReason;
     use super::*;
     use crate::evaluator::Value;
     use crate::schema::{StateDefinition, StringOrArray};
-    use std::collections::HashMap;
+    
 
     fn create_test_state_machine() -> StateMachine {
         StateMachine {
@@ -367,7 +368,7 @@ mod tests {
     }
 
     fn key(k: &str) -> EventPayload {
-        let mut data = HashMap::new();
+        let mut data = ValueMap::new();
         data.insert("key".to_string(), Value::String(k.to_string()));
         EventPayload::new("KEY", Value::Object(data))
     }
@@ -462,7 +463,7 @@ mod tests {
             .process_event(
                 &create_test_state_machine(),
                 "browsing",
-                &EventPayload::new("REGISTER", Value::Object(HashMap::new())),
+                &EventPayload::new("REGISTER", Value::Object(ValueMap::new())),
                 &BindingContext::new(),
             )
             .unwrap();
@@ -497,7 +498,7 @@ mod tests {
         let sm = create_test_state_machine();
         let ctx = BindingContext::new();
 
-        let payload = EventPayload::new("REGISTER", Value::Object(HashMap::new()));
+        let payload = EventPayload::new("REGISTER", Value::Object(ValueMap::new()));
         let result = core.process_event(&sm, "browsing", &payload, &ctx).unwrap();
 
         assert!(result.executed);
@@ -513,7 +514,7 @@ mod tests {
         let ctx = BindingContext::new();
 
         // Guard checks @payload.data.email and @payload.data.name
-        let mut inner_data = HashMap::new();
+        let mut inner_data = ValueMap::new();
         inner_data.insert(
             "email".to_string(),
             Value::String("test@example.com".to_string()),
@@ -521,7 +522,7 @@ mod tests {
         inner_data.insert("name".to_string(), Value::String("Test User".to_string()));
         inner_data.insert("id".to_string(), Value::String("user-123".to_string()));
 
-        let mut data = HashMap::new();
+        let mut data = ValueMap::new();
         data.insert("data".to_string(), Value::Object(inner_data));
 
         let payload = EventPayload::new("SAVE", Value::Object(data));
@@ -545,11 +546,11 @@ mod tests {
         let ctx = BindingContext::new();
 
         // Empty email should fail the guard (@payload.data.email != "")
-        let mut inner_data = HashMap::new();
+        let mut inner_data = ValueMap::new();
         inner_data.insert("email".to_string(), Value::String("".to_string()));
         inner_data.insert("name".to_string(), Value::String("Test User".to_string()));
 
-        let mut data = HashMap::new();
+        let mut data = ValueMap::new();
         data.insert("data".to_string(), Value::Object(inner_data));
 
         let payload = EventPayload::new("SAVE", Value::Object(data));
@@ -586,7 +587,7 @@ mod tests {
         let sm = create_test_state_machine();
         let ctx = BindingContext::new();
 
-        let payload = EventPayload::new("UNKNOWN_EVENT", Value::Object(HashMap::new()));
+        let payload = EventPayload::new("UNKNOWN_EVENT", Value::Object(ValueMap::new()));
         let result = core.process_event(&sm, "browsing", &payload, &ctx).unwrap();
 
         assert!(!result.executed);
@@ -606,7 +607,7 @@ mod tests {
         let sm = create_test_state_machine();
         let ctx = BindingContext::new();
 
-        let payload = EventPayload::new("CANCEL", Value::Object(HashMap::new()));
+        let payload = EventPayload::new("CANCEL", Value::Object(ValueMap::new()));
         let result = core
             .process_event(&sm, "registering", &payload, &ctx)
             .unwrap();
@@ -674,7 +675,7 @@ mod tests {
         sm.transitions[0].event_id = Some("evt-register".to_string());
 
         let ctx = BindingContext::new();
-        let payload = EventPayload::new("REGISTER", Value::Object(HashMap::new()));
+        let payload = EventPayload::new("REGISTER", Value::Object(ValueMap::new()));
         let result = core.process_event(&sm, "browsing", &payload, &ctx).unwrap();
 
         assert!(result.executed);
@@ -687,7 +688,7 @@ mod tests {
         let sm = create_test_state_machine(); // no event ids anywhere
         let ctx = BindingContext::new();
 
-        let payload = EventPayload::new("VIEW", Value::Object(HashMap::new()));
+        let payload = EventPayload::new("VIEW", Value::Object(ValueMap::new()));
         let result = core.process_event(&sm, "browsing", &payload, &ctx).unwrap();
 
         assert!(result.executed);

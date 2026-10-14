@@ -5,9 +5,12 @@
 
 use crate::schema::SExpression;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+
+/// The fields of an object value, in insertion order: `object/keys`, `object/values` and `object/entries` list
+/// them in the order the fields were written, as the JS evaluator does.
+pub type ValueMap = indexmap::IndexMap<String, Value>;
 
 /// Runtime value resulting from S-expression evaluation
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -24,7 +27,7 @@ pub enum Value {
     /// Array of values
     Array(Vec<Value>),
     /// Object/map of values
-    Object(HashMap<String, Value>),
+    Object(ValueMap),
     /// Lambda function (params, body)
     Lambda {
         params: Vec<String>,
@@ -155,7 +158,7 @@ impl Value {
     }
 
     /// Try to get as object reference
-    pub fn as_object(&self) -> Option<&HashMap<String, Value>> {
+    pub fn as_object(&self) -> Option<&ValueMap> {
         match self {
             Value::Object(o) => Some(o),
             _ => None,
@@ -163,7 +166,7 @@ impl Value {
     }
 
     /// Try to get as mutable object reference
-    pub fn as_object_mut(&mut self) -> Option<&mut HashMap<String, Value>> {
+    pub fn as_object_mut(&mut self) -> Option<&mut ValueMap> {
         match self {
             Value::Object(o) => Some(o),
             _ => None,
@@ -260,7 +263,7 @@ impl Value {
                 match current {
                     Value::Object(obj) => {
                         if !obj.contains_key(*part) {
-                            obj.insert(part.to_string(), Value::Object(HashMap::new()));
+                            obj.insert(part.to_string(), Value::Object(ValueMap::new()));
                         }
                         match obj.get_mut(*part) {
                             Some(v) => current = v,
@@ -523,8 +526,8 @@ mod tests {
 
     #[test]
     fn test_get_path() {
-        let mut obj = HashMap::new();
-        let mut address = HashMap::new();
+        let mut obj = ValueMap::new();
+        let mut address = ValueMap::new();
         address.insert("city".to_string(), Value::String("NYC".to_string()));
         address.insert("zip".to_string(), Value::String("10001".to_string()));
         obj.insert("name".to_string(), Value::String("John".to_string()));
@@ -555,7 +558,7 @@ mod tests {
             Value::String("b".to_string()),
             Value::String("c".to_string()),
         ]);
-        let mut root = HashMap::new();
+        let mut root = ValueMap::new();
         root.insert("data".to_string(), data);
         let value = Value::Object(root);
 
@@ -578,7 +581,7 @@ mod tests {
 
     #[test]
     fn test_get_path_owned_empty_array_length_is_zero() {
-        let mut root = HashMap::new();
+        let mut root = ValueMap::new();
         root.insert("data".to_string(), Value::Array(vec![]));
         let value = Value::Object(root);
         assert_eq!(
@@ -589,7 +592,7 @@ mod tests {
 
     #[test]
     fn test_set_path() {
-        let mut value = Value::Object(HashMap::new());
+        let mut value = Value::Object(ValueMap::new());
 
         assert!(value.set_path("name", Value::String("John".to_string())));
         assert_eq!(

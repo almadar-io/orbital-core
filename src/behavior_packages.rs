@@ -21,9 +21,7 @@ pub struct BehaviorPackage {
     pub root: PathBuf,
     pub registry: RegistrySource,
     pub index: PathBuf,
-    pub factory_signatures: PathBuf,
     pub lolo_contracts: PathBuf,
-    pub signatures: PathBuf,
     pub embeddings: Vec<PathBuf>,
     /// Declared paths that `sidecars.lock.json` resolves to the content-addressed
     /// cache instead of the package. The matching field above holds `cache_path`.
@@ -454,14 +452,12 @@ fn scan_node_modules(
 /// carries `orb.language` (language data, see `language_data`) and is not a
 /// behavior package. A block with ANY behavior field is a behavior package,
 /// so a malformed one (say `registry` without `prefix`) still errors loudly.
-const BEHAVIOR_BLOCK_FIELDS: [&str; 7] = [
+const BEHAVIOR_BLOCK_FIELDS: [&str; 5] = [
     "prefix",
     "registry",
     "source",
     "index",
-    "factorySignatures",
     "loloContracts",
-    "signatures",
 ];
 
 fn is_behavior_block(orb: &Map<String, Value>) -> bool {
@@ -481,9 +477,7 @@ fn build_package(
     let registry_rel = optional_str(orb, "registry", package_json_path)?;
     let source_rel = optional_str(orb, "source", package_json_path)?;
     let index_rel = require_str(orb, "index", package_json_path)?;
-    let factory_signatures_rel = require_str(orb, "factorySignatures", package_json_path)?;
     let lolo_contracts_rel = require_str(orb, "loloContracts", package_json_path)?;
-    let signatures_rel = require_str(orb, "signatures", package_json_path)?;
     let compiler_range = require_str(orb, "compiler", package_json_path)?;
     let embeddings_rel = embeddings_field(orb, package_json_path)?;
     let std_peer_range = peer_dependency(top, "@almadar/std");
@@ -530,9 +524,7 @@ fn build_package(
         }
     };
     let (index, index_locked) = declared(&index_rel);
-    let (factory_signatures, factory_locked) = declared(&factory_signatures_rel);
     let (lolo_contracts, contracts_locked) = declared(&lolo_contracts_rel);
-    let (signatures, signatures_locked) = declared(&signatures_rel);
     let embeddings_declared: Vec<(PathBuf, bool)> =
         embeddings_rel.iter().map(|p| declared(p)).collect();
     let embeddings: Vec<PathBuf> = embeddings_declared.iter().map(|(p, _)| p.clone()).collect();
@@ -548,9 +540,7 @@ fn build_package(
             registry_locked,
         ),
         ("index", &index, index_locked),
-        ("factorySignatures", &factory_signatures, factory_locked),
         ("loloContracts", &lolo_contracts, contracts_locked),
-        ("signatures", &signatures, signatures_locked),
     ] {
         if !locked && !path.exists() {
             return Err(DiscoverError::MissingDeclaredPath {
@@ -577,9 +567,7 @@ fn build_package(
         root,
         registry,
         index,
-        factory_signatures,
         lolo_contracts,
-        signatures,
         embeddings,
         sidecars,
         compiler_range,
@@ -719,13 +707,7 @@ mod tests {
         fs::create_dir_all(&registry_dir).unwrap();
         fs::write(registry_dir.join("x.orb"), "{}").unwrap();
         fs::write(pkg_dir.join("behaviors/behaviors-registry.json"), "{}").unwrap();
-        fs::write(
-            pkg_dir.join("behaviors/registry/factory-signatures.json"),
-            "{}",
-        )
-        .unwrap();
         fs::write(pkg_dir.join("behaviors/lolo-behavior-contracts.json"), "{}").unwrap();
-        fs::write(pkg_dir.join("behaviors/signatures.lolo"), "").unwrap();
         fs::write(pkg_dir.join("behaviors/behaviors-embeddings.json"), "{}").unwrap();
 
         let pkg_json = serde_json::json!({
@@ -735,9 +717,7 @@ mod tests {
                 "prefix": prefix,
                 "registry": "behaviors/registry",
                 "index": "behaviors/behaviors-registry.json",
-                "factorySignatures": "behaviors/registry/factory-signatures.json",
                 "loloContracts": "behaviors/lolo-behavior-contracts.json",
-                "signatures": "behaviors/signatures.lolo",
                 "embeddings": ["behaviors/behaviors-embeddings.json"],
                 "compiler": ">=4.10.0"
             },
@@ -1001,9 +981,7 @@ mod tests {
         );
         assert!(pkg.registry.root().exists());
         assert!(pkg.index.exists());
-        assert!(pkg.factory_signatures.exists());
         assert!(pkg.lolo_contracts.exists());
-        assert!(pkg.signatures.exists());
     }
 
     #[test]

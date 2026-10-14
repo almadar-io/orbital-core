@@ -4,6 +4,7 @@
 //! only once all its I/O is answered. A blocking host runs the units straight through; an async host
 //! runs each with the answers recorded so far and gets [`Progress::Await`] at the first one missing.
 
+use crate::evaluator::ValueMap;
 use super::*;
 use crate::effects::MountSeed;
 use crate::runtime::resumable::{
@@ -804,7 +805,7 @@ impl RuntimeKernel {
                 &child,
                 Some(eid),
                 event,
-                Value::Object(HashMap::new()),
+                Value::Object(ValueMap::new()),
                 None,
                 false,
                 Some(&composed_with),

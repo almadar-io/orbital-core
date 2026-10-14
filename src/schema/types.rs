@@ -2278,6 +2278,20 @@ pub struct FieldDefinition {
 }
 
 impl FieldDefinition {
+    /// The type name this field refers to by name: the recursive back-reference the lolo lowerer leaves where a
+    /// self-referential alias would otherwise expand forever (`type Node = { children : [Node] }`). It is a
+    /// `union` carrying the one name in `values` and no `properties`; a tagged union carries its variants'
+    /// shapes in `properties`.
+    pub fn by_name_reference(&self) -> Option<&str> {
+        if self.field_type != FieldType::Union || self.properties.is_some() {
+            return None;
+        }
+        match self.values.as_deref() {
+            Some([name]) => Some(name.as_str()),
+            _ => None,
+        }
+    }
+
     /// A `tuple` field's slots, in slot order (`properties` keyed `"0"`, `"1"`, …).
     pub fn tuple_slots(&self) -> Vec<&FieldDefinition> {
         tuple_slots_of(self.properties.as_ref())
@@ -2373,22 +2387,6 @@ pub enum FieldType {
     /// A fixed-length tuple (`.lolo` `[T1, T2, …]`). Its slots ride `properties`, keyed
     /// by slot index (`"0"`, `"1"`, …).
     Tuple,
-    /// A single primitive VALUE of unknown-but-bounded kind:
-    /// `string | number | boolean | null`. The honest type for a field-value
-    /// bag whose keys are dynamic — `Map string scalar` — where `json` used to
-    /// stand in.
-    ///
-    /// This is a real type, not a generic: it REJECTS objects and arrays,
-    /// which `json` accepted. That is the whole point. A value that may nest
-    /// is not a scalar, and a field declared `scalar` that receives an object
-    /// is a shape mismatch, where `json` was silence.
-    ///
-    /// Introduced 2026-09-01 for the `json` burndown: `loadedRow` and friends
-    /// are written through config-named keys
-    /// (`(object/set @entity.loadedRow @config.contentField ?value)`) and read
-    /// whole, so their KEYS are dynamic and their VALUES are field values.
-    /// No struct can name them and no existing primitive admits all three.
-    Scalar,
     /// An S-expression as data — an atom (string/number/boolean/null), a list
     /// of S-expressions, or an options object: what a transition's guard and
     /// effect arguments are. `SExpr`-typed struct members (`args : [SExpr]`)
@@ -2467,7 +2465,7 @@ pub enum Cardinality {
 /// behavior) or Type-kind (no default; an unresolved sentinel is blocking).
 ///
 /// Gap C: `default` carries an optional `(r : Type = <name>)` declaration
-/// default — a primitive name (incl. `scalar`), an entity name, or a
+/// default — a primitive name, an entity name, or a
 /// struct-alias name declared in the atom's own file. Resolved via the same
 /// vocabulary a call-site `::` arg uses, consulted only when no call-site
 /// arg was supplied (and, for Entity-kind, only when `linkedEntity` also
@@ -3969,6 +3967,14 @@ pub struct TickDefinition {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub background: bool,
+
+    /// `[visible]`: a browser tick that pauses while its trait's rendered output is off screen.
+    #[serde(
+        rename = "whileVisible",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub while_visible: bool,
 }
 
 impl TickDefinition {

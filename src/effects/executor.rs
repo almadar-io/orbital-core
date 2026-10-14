@@ -2,6 +2,7 @@
 //!
 //! Environment-aware effect execution with routing logic.
 
+use crate::evaluator::ValueMap;
 use super::response::ServerEffectCode;
 use super::runs_on::{runs_on, RunsOn};
 use super::types::{Effect, EffectResult, LogLevel, PersistOperation, RuntimeEnvironment};
@@ -153,7 +154,7 @@ pub trait RenderHandler: Send + Sync {
 
 /// Handler for navigation (client-only)
 pub trait NavigationHandler: Send + Sync {
-    fn navigate(&self, path: &str, params: Option<&HashMap<String, Value>>) -> Result<(), String>;
+    fn navigate(&self, path: &str, params: Option<&ValueMap>) -> Result<(), String>;
 
     /// Pop the navigation stack and return to the previous entry. Hosts
     /// without a stack (headless verify harnesses) keep the default noop-ish
@@ -1112,14 +1113,14 @@ impl EffectExecutor {
                     &format!("Batch operation [{action}, {entity}] failed: {detail}"),
                 );
             }
-            let mut entry: HashMap<String, Value> = match (&result.return_value, operation) {
+            let mut entry: ValueMap = match (&result.return_value, operation) {
                 (Some(Value::Object(row)), PersistOperation::Create | PersistOperation::Update) => {
                     row.clone()
                 }
                 (_, PersistOperation::Create | PersistOperation::Update) => {
                     data.as_object().cloned().unwrap_or_default()
                 }
-                _ => HashMap::new(),
+                _ => ValueMap::new(),
             };
             entry.insert("action".to_string(), Value::String(action.to_string()));
             entry.insert("entityType".to_string(), Value::String(entity.to_string()));
@@ -1131,7 +1132,7 @@ impl EffectExecutor {
             }
             completed.push(Value::Object(entry));
         }
-        let mut summary = HashMap::new();
+        let mut summary = ValueMap::new();
         summary.insert("completedCount".to_string(), Value::Number(completed.len() as f64));
         summary.insert("totalCount".to_string(), Value::Number(total as f64));
         summary.insert("operations".to_string(), Value::Array(completed));
@@ -1296,7 +1297,7 @@ impl EffectExecutor {
     fn do_navigate(
         &self,
         path: &str,
-        params: Option<&HashMap<String, Value>>,
+        params: Option<&ValueMap>,
         options: Option<super::client_effect::NavigateOptions>,
     ) -> EffectResult {
         let effect = Effect::Navigate {
@@ -1473,6 +1474,7 @@ fn page_ordered_rows(
 
 #[cfg(test)]
 mod tests {
+    use crate::evaluator::ValueMap;
     use super::*;
     use crate::events::shared_bus;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1585,7 +1587,7 @@ mod tests {
             operation: PersistOperation::Create,
             entity_type: "User".to_string(),
             data: Value::Object({
-                let mut m = HashMap::new();
+                let mut m = ValueMap::new();
                 m.insert("name".to_string(), Value::String("John".to_string()));
                 m
             }),
@@ -1616,7 +1618,7 @@ mod tests {
             .create(
                 "Ticket",
                 &Value::Object({
-                    let mut m = HashMap::new();
+                    let mut m = ValueMap::new();
                     m.insert("subject".to_string(), Value::String("original".to_string()));
                     m
                 }),
@@ -1640,7 +1642,7 @@ mod tests {
             operation: PersistOperation::Update,
             entity_type: "Ticket".to_string(),
             data: Value::Object({
-                let mut m = HashMap::new();
+                let mut m = ValueMap::new();
                 m.insert("id".to_string(), Value::String(ticket_id.clone()));
                 m.insert("subject".to_string(), Value::String("edited".to_string()));
                 m
@@ -1708,11 +1710,11 @@ mod tests {
         let effect =
             crate::effects::parse_effect(&raw).expect("parse_persist must recognize this shape");
 
-        let mut payload_data = HashMap::new();
+        let mut payload_data = ValueMap::new();
         payload_data.insert("content".to_string(), Value::String("hello".to_string()));
-        let mut payload = HashMap::new();
+        let mut payload = ValueMap::new();
         payload.insert("data".to_string(), Value::Object(payload_data));
-        let mut user = HashMap::new();
+        let mut user = ValueMap::new();
         user.insert("id".to_string(), Value::String("user-42".to_string()));
 
         let ctx = crate::evaluator::BindingContextBuilder::new()
@@ -1757,7 +1759,7 @@ mod tests {
             .create(
                 "Note",
                 &Value::Object({
-                    let mut m = HashMap::new();
+                    let mut m = ValueMap::new();
                     m.insert("id".to_string(), Value::String("note-1".to_string()));
                     m.insert(
                         "authorId".to_string(),
@@ -1788,7 +1790,7 @@ mod tests {
         // The viewer is NOT the row's author — the declared `@delete`
         // policy must reject this row.
         let viewer = Value::Object({
-            let mut m = HashMap::new();
+            let mut m = ValueMap::new();
             m.insert("id".to_string(), Value::String("someone-else".to_string()));
             m
         });
@@ -1826,7 +1828,7 @@ mod tests {
 
         let effect = Effect::RenderUi {
             slot: "main".to_string(),
-            content: Value::Object(HashMap::new()),
+            content: Value::Object(ValueMap::new()),
         };
 
         // Server no-ops
@@ -1872,7 +1874,7 @@ mod tests {
 
         // Create
         let data = Value::Object({
-            let mut m = HashMap::new();
+            let mut m = ValueMap::new();
             m.insert("name".to_string(), Value::String("John".to_string()));
             m
         });
@@ -1894,7 +1896,7 @@ mod tests {
 
         // Update
         let update_data = Value::Object({
-            let mut m = HashMap::new();
+            let mut m = ValueMap::new();
             m.insert("name".to_string(), Value::String("Jane".to_string()));
             m
         });
@@ -1950,7 +1952,7 @@ mod tests {
             .create(
                 "User",
                 &Value::Object({
-                    let mut m = HashMap::new();
+                    let mut m = ValueMap::new();
                     m.insert("id".to_string(), Value::String("user-1".to_string()));
                     m.insert("name".to_string(), Value::String("John".to_string()));
                     m
@@ -1961,7 +1963,7 @@ mod tests {
             .create(
                 "User",
                 &Value::Object({
-                    let mut m = HashMap::new();
+                    let mut m = ValueMap::new();
                     m.insert("id".to_string(), Value::String("user-2".to_string()));
                     m.insert("name".to_string(), Value::String("Jane".to_string()));
                     m
@@ -2004,7 +2006,7 @@ mod tests {
             .create(
                 "User",
                 &Value::Object({
-                    let mut m = HashMap::new();
+                    let mut m = ValueMap::new();
                     m.insert("id".to_string(), Value::String("user-123".to_string()));
                     m.insert("name".to_string(), Value::String("John".to_string()));
                     m
@@ -2074,13 +2076,13 @@ mod tests {
             ) -> Result<FetchPage, String> {
                 let mut rows = vec![
                     Value::Object({
-                        let mut m = HashMap::new();
+                        let mut m = ValueMap::new();
                         m.insert("id".to_string(), Value::String("r1".to_string()));
                         m.insert("channel".to_string(), Value::String("general".to_string()));
                         m
                     }),
                     Value::Object({
-                        let mut m = HashMap::new();
+                        let mut m = ValueMap::new();
                         m.insert("id".to_string(), Value::String("r2".to_string()));
                         m.insert("channel".to_string(), Value::String("random".to_string()));
                         m
@@ -2115,7 +2117,7 @@ mod tests {
         ]);
 
         let issuing_entity = Value::Object({
-            let mut m = HashMap::new();
+            let mut m = ValueMap::new();
             m.insert(
                 "activeChannel".to_string(),
                 Value::String("general".to_string()),
@@ -2169,13 +2171,13 @@ mod tests {
             ) -> Result<FetchPage, String> {
                 let mut rows = vec![
                     Value::Object({
-                        let mut m = HashMap::new();
+                        let mut m = ValueMap::new();
                         m.insert("id".to_string(), Value::String("r1".to_string()));
                         m.insert("ownerId".to_string(), Value::String("user-1".to_string()));
                         m
                     }),
                     Value::Object({
-                        let mut m = HashMap::new();
+                        let mut m = ValueMap::new();
                         m.insert("id".to_string(), Value::String("r2".to_string()));
                         m.insert("ownerId".to_string(), Value::String("user-2".to_string()));
                         m
@@ -2201,7 +2203,7 @@ mod tests {
         }
 
         let viewer = Value::Object({
-            let mut m = HashMap::new();
+            let mut m = ValueMap::new();
             m.insert("id".to_string(), Value::String("user-1".to_string()));
             m
         });

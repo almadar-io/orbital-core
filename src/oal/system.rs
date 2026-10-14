@@ -1,9 +1,9 @@
 //! System information operators: CPU, memory, uptime
 
+use crate::evaluator::ValueMap;
 use crate::error::{EvalError, OrbitalError};
 use crate::evaluator::{BindingContext, EvalResult, Operator, Value};
 use crate::schema::SExpression;
-use std::collections::HashMap;
 
 // ============================================================================
 // CPU Usage Operator
@@ -189,7 +189,7 @@ fn get_memory_info() -> Result<Value, OrbitalError> {
     #[cfg(not(target_os = "linux"))]
     {
         // Return mock data for non-Linux systems
-        let mut result = HashMap::new();
+        let mut result = ValueMap::new();
         result.insert("total".to_string(), Value::Number(16_000_000_000.0));
         result.insert("available".to_string(), Value::Number(8_000_000_000.0));
         result.insert("used".to_string(), Value::Number(8_000_000_000.0));
@@ -313,7 +313,7 @@ fn get_load_avg() -> Result<Value, OrbitalError> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let mut result = HashMap::new();
+        let mut result = ValueMap::new();
         result.insert("one".to_string(), Value::Number(0.5));
         result.insert("five".to_string(), Value::Number(0.6));
         result.insert("fifteen".to_string(), Value::Number(0.7));

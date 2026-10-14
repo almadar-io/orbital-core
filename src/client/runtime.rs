@@ -169,6 +169,7 @@ impl Default for OrbitalClientRuntime {
 
 #[cfg(test)]
 mod tests {
+    use crate::evaluator::ValueMap;
     use super::*;
 
     fn create_test_schema() -> crate::OrbitalSchema {
@@ -281,7 +282,7 @@ mod tests {
     fn test_entity_cache() {
         let runtime = OrbitalClientRuntime::new();
 
-        let mut data = std::collections::HashMap::new();
+        let mut data = ValueMap::new();
         data.insert("id".to_string(), Value::String("test-1".to_string()));
         data.insert("value".to_string(), Value::Number(42.0));
 
@@ -299,7 +300,7 @@ mod tests {
     fn test_current_user() {
         let runtime = OrbitalClientRuntime::new();
 
-        let mut user = std::collections::HashMap::new();
+        let mut user = ValueMap::new();
         user.insert("id".to_string(), Value::String("user-1".to_string()));
         user.insert("name".to_string(), Value::String("Test User".to_string()));
 

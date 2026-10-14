@@ -490,19 +490,20 @@ pub fn is_access_denied_error(msg: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::evaluator::ValueMap;
     use super::*;
     use crate::evaluator::BindingContextBuilder;
-    use std::collections::HashMap as StdHashMap;
+    
 
     fn row(id: &str, owner: &str) -> Value {
-        let mut m = StdHashMap::new();
+        let mut m = ValueMap::new();
         m.insert("id".to_string(), Value::String(id.to_string()));
         m.insert("memberId".to_string(), Value::String(owner.to_string()));
         Value::Object(m)
     }
 
     fn viewer(id: &str) -> Value {
-        let mut m = StdHashMap::new();
+        let mut m = ValueMap::new();
         m.insert("id".to_string(), Value::String(id.to_string()));
         Value::Object(m)
     }
@@ -525,7 +526,7 @@ mod tests {
     }
 
     fn row_with_status(id: &str, owner: &str, status: &str) -> Value {
-        let mut m = StdHashMap::new();
+        let mut m = ValueMap::new();
         m.insert("id".to_string(), Value::String(id.to_string()));
         m.insert("memberId".to_string(), Value::String(owner.to_string()));
         m.insert("status".to_string(), Value::String(status.to_string()));

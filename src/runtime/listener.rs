@@ -1,5 +1,6 @@
 //! Cross-orbital event listener wiring for the runtime kernel.
 
+use crate::evaluator::ValueMap;
 use crate::effects::BusEventSource;
 use crate::schema::{ListenSource, SExpression};
 use crate::{
@@ -158,7 +159,7 @@ impl ListenerManager {
             }
 
             let mapped_payload = if let Some(ref mapping) = payload_mapping {
-                let mut mapped = HashMap::new();
+                let mut mapped = ValueMap::new();
                 for (key, expr) in mapping {
                     if let Ok(value) = evaluator.evaluate(expr, &ctx) {
                         mapped.insert(key.clone(), value);
@@ -268,7 +269,7 @@ mod tests {
     use super::*;
     use crate::schema::{ListenDefinition, SExpression};
     use crate::{shared_bus, Event, Value};
-    use std::collections::HashMap;
+    
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -407,13 +408,13 @@ mod tests {
 
         manager.register("ProfileManagement", "Orb", &listen).unwrap();
 
-        let mut payload1 = HashMap::new();
+        let mut payload1 = ValueMap::new();
         payload1.insert("status".to_string(), Value::String("pending".to_string()));
         bus.emit(Event::new("USER_UPDATED", Value::Object(payload1)));
 
         assert_eq!(triggered.load(Ordering::SeqCst), 0);
 
-        let mut payload2 = HashMap::new();
+        let mut payload2 = ValueMap::new();
         payload2.insert("status".to_string(), Value::String("active".to_string()));
         bus.emit(Event::new("USER_UPDATED", Value::Object(payload2)));
 
@@ -454,7 +455,7 @@ mod tests {
 
         manager.register("ProfileManagement", "Orb", &listen).unwrap();
 
-        let mut payload = HashMap::new();
+        let mut payload = ValueMap::new();
         payload.insert("id".to_string(), Value::String("user-123".to_string()));
         payload.insert("name".to_string(), Value::String("John".to_string()));
         bus.emit(Event::new("USER_CREATED", Value::Object(payload)));

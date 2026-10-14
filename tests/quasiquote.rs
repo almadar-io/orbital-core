@@ -2,6 +2,7 @@
 //! (`fixtures/quasiquote/cases.json`) and evaluation on the kernel path; twin
 //! of `@almadar/core` `__tests__/quasiquote-codec.test.ts`.
 
+use orbital_core::evaluator::ValueMap;
 use orbital_core::evaluator::{eval_expr, BindingContext, Value};
 use orbital_core::fixtures::quasiquote_cases;
 use orbital_core::schema::quote::{
@@ -30,7 +31,7 @@ fn sx(json: &str) -> SExpression {
 /// reproduces the fixture result without the holes being literals.
 fn ctx_with(values: &[Value]) -> BindingContext {
     let mut c = BindingContext::new();
-    let entity: std::collections::HashMap<String, Value> = values
+    let entity: ValueMap = values
         .iter()
         .enumerate()
         .map(|(i, v)| (format!("h{i}"), v.clone()))

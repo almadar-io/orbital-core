@@ -5,6 +5,7 @@
 //! `days` array. Native backends must compute the same derivation here instead of
 //! rendering empty — one owner so egui / dioxus / terminal never drift.
 
+use crate::evaluator::ValueMap;
 use super::helpers::{get_array, get_number, get_string, get_string_array};
 use chrono::{Datelike, Duration, NaiveDate};
 use crate::Value;
@@ -100,7 +101,7 @@ pub fn event_slot_index(event: &Value, slots: &[String]) -> Option<usize> {
 /// Build a click payload `{date, time?}` mirroring the React callbacks
 /// `onSlotClick(day, time)` / `onDayClick(day)`.
 pub fn calendar_click_payload(date: &str, time: Option<&str>) -> Value {
-    let mut o = std::collections::HashMap::new();
+    let mut o = ValueMap::new();
     o.insert("date".to_string(), Value::String(date.to_string()));
     if let Some(t) = time {
         o.insert("time".to_string(), Value::String(t.to_string()));

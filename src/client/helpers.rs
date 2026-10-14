@@ -3,6 +3,7 @@
 //! Common utilities for extracting and processing pattern properties
 //! from orbital schema definitions.
 
+use crate::evaluator::ValueMap;
 use crate::Value;
 use std::collections::HashMap;
 
@@ -112,7 +113,7 @@ pub struct RenderContext<'a> {
     pub child_render: Option<ChildRenderFn<'a>>,
     /// Per-trait current render output, keyed by trait name. Used to resolve
     /// `@trait.X` child references (matches `@almadar/ui`'s `<TraitFrame>`).
-    pub trait_content: &'a HashMap<String, Value>,
+    pub trait_content: &'a ValueMap,
     /// The trait that authored the content currently being rendered — the *source*
     /// of any event a button here queues. Set to a slot's origin trait at the top and
     /// switched per `@trait.X` child as rendering descends, so a button nested under
@@ -210,10 +211,10 @@ pub struct SlotContent {
 }
 
 /// A shared empty per-trait content map for contexts without `@trait` support.
-pub fn empty_trait_content() -> &'static HashMap<String, Value> {
+pub fn empty_trait_content() -> &'static ValueMap {
     use std::sync::OnceLock;
-    static EMPTY: OnceLock<HashMap<String, Value>> = OnceLock::new();
-    EMPTY.get_or_init(HashMap::new)
+    static EMPTY: OnceLock<ValueMap> = OnceLock::new();
+    EMPTY.get_or_init(ValueMap::new)
 }
 
 /// Map an `@almadar/ui` spacing token (`none`..`2xl`) to egui pixels.
@@ -420,7 +421,7 @@ pub fn substitute_row_bindings(spec: &Value, param: &str, row: &Value) -> Value 
             Value::Array(arr.iter().map(|v| substitute_row_bindings(v, param, row)).collect())
         }
         Value::Object(obj) => {
-            let mut out = HashMap::with_capacity(obj.len());
+            let mut out = ValueMap::with_capacity(obj.len());
             for (k, v) in obj {
                 out.insert(k.clone(), substitute_row_bindings(v, param, row));
             }
@@ -477,7 +478,7 @@ pub fn render_item_children(
 /// the returned objects expose `key`/`label` so existing render loops work unchanged.
 pub fn get_columns(props: &Value, rows: &[Value]) -> Vec<Value> {
     let spec = |key: &str, label: &str| -> Value {
-        let mut o = std::collections::HashMap::new();
+        let mut o = ValueMap::new();
         o.insert("key".to_string(), Value::String(key.to_string()));
         o.insert("label".to_string(), Value::String(label.to_string()));
         Value::Object(o)
@@ -780,7 +781,7 @@ pub fn inject_entity_data(pattern: &mut Value, entity_type: &str, data: &[Value]
 
 /// Build a payload object from form data
 pub fn build_form_payload(form_data: &HashMap<String, String>) -> Value {
-    let mut payload = HashMap::new();
+    let mut payload = ValueMap::new();
 
     for (key, value) in form_data {
         // Try to parse as number or boolean

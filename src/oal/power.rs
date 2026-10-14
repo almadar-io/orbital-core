@@ -1,9 +1,9 @@
 //! Power-related operators: battery status, thermal information
 
+use crate::evaluator::ValueMap;
 use crate::error::OrbitalError;
 use crate::evaluator::{BindingContext, EvalResult, Operator, Value};
 use crate::schema::SExpression;
-use std::collections::HashMap;
 
 // ============================================================================
 // Battery Status Operator
@@ -87,7 +87,7 @@ fn get_battery_status() -> Result<Value, OrbitalError> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let mut result = HashMap::new();
+        let mut result = ValueMap::new();
         result.insert("present".to_string(), Value::Bool(true));
         result.insert("percentage".to_string(), Value::Number(75.0));
         result.insert(
@@ -162,7 +162,7 @@ fn get_thermal_zones() -> Result<Value, OrbitalError> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let mut zone = HashMap::new();
+        let mut zone = ValueMap::new();
         zone.insert(
             "name".to_string(),
             Value::String("thermal_zone0".to_string()),

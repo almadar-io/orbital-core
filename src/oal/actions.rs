@@ -1,9 +1,9 @@
 //! Action operators: notifications, brightness, volume, speech
 
+use crate::evaluator::ValueMap;
 use crate::error::{EvalError, OrbitalError};
 use crate::evaluator::{eval_expr, BindingContext, EvalResult, Operator, Value};
 use crate::schema::SExpression;
-use std::collections::HashMap;
 use std::process::Command;
 
 // ============================================================================
@@ -324,7 +324,7 @@ fn get_volume() -> Result<Value, OrbitalError> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let mut result = HashMap::new();
+        let mut result = ValueMap::new();
         result.insert("volume".to_string(), Value::Number(75.0));
         result.insert("muted".to_string(), Value::Bool(false));
         Ok(Value::Object(result))

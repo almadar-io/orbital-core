@@ -11,14 +11,14 @@
 //! (`EffectExecutor.ts`); these are the missing Rust twin's regression tests
 //! (C-KERNEL-INTRA-TRANSITION-SET-INVISIBLE).
 
+use orbital_core::evaluator::ValueMap;
 use orbital_core::effects::{Effect, EffectOutcome};
 use orbital_core::runtime::{EntitySource, InMemoryEntityCache, RuntimeKernel};
 use orbital_core::{OrbitalSchema, RuntimeEnvironment, Value};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 fn obj(pairs: &[(&str, Value)]) -> Value {
-    let mut m = HashMap::new();
+    let mut m = ValueMap::new();
     for (k, v) in pairs {
         m.insert((*k).to_string(), v.clone());
     }
@@ -164,7 +164,7 @@ fn a_set_value_reads_a_field_set_earlier_in_the_same_transition() {
             "PolicyManage",
             Some("singleton"),
             "ARCHIVE",
-            Value::Object(HashMap::new()),
+            Value::Object(ValueMap::new()),
         )
         .unwrap();
     assert!(result.executed);

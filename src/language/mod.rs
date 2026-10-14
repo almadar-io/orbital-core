@@ -4,4 +4,5 @@
 pub mod canonical_operators;
 pub mod pattern_props;
 pub mod pattern_registry;
+pub mod program_types;
 pub mod registry;

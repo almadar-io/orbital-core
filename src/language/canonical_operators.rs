@@ -5,7 +5,7 @@
 
 use std::sync::LazyLock;
 
-use super::registry::{categories, operators};
+use super::registry::{categories, operators, OperatorTypeRef};
 
 /// Operator metadata derived from the canonical @almadar/std registry.
 #[derive(Debug, Clone)]
@@ -14,7 +14,10 @@ pub struct OperatorMeta {
     pub category: &'static str,
     pub min_arity: usize,
     pub max_arity: Option<usize>,
+    /// The coarse kind of the declared result (`OperatorTypeRef::kind_name`); the full type is `returns`.
     pub return_type: &'static str,
+    /// The declared result type, built from the type variables of the signature's parameters.
+    pub returns: &'static OperatorTypeRef,
     pub description: &'static str,
     pub has_side_effects: bool,
     /// Input-dependent return-type tag for operators whose actual return type
@@ -37,7 +40,8 @@ pub static CANONICAL_OPERATORS: LazyLock<Vec<OperatorMeta>> = LazyLock::new(|| {
             category: op.category.as_str(),
             min_arity: op.min_arity as usize,
             max_arity: op.max_arity.map(|n| n as usize),
-            return_type: op.return_type.as_str(),
+            return_type: op.return_type.kind_name(),
+            returns: &op.return_type,
             description: op.description.as_str(),
             has_side_effects: op.has_side_effects,
             return_semantics: op.return_semantics.as_deref(),

@@ -7,8 +7,8 @@
 //! `<spec>.orbitals.<Pascal>`. A local embed (`@trait.X`) is a different, string
 //! form and never a behavior value.
 
+use crate::evaluator::ValueMap;
 use crate::evaluator::Value;
-use std::collections::HashMap;
 
 const TRAITS_SEGMENT: &str = ".traits.";
 const ORBITALS_SEGMENT: &str = ".orbitals.";
@@ -120,7 +120,7 @@ impl TraitValueRef {
 
     /// The wire object `{"behavior", "trait"}`.
     pub fn to_value(&self) -> Value {
-        Value::Object(HashMap::from([
+        Value::Object(ValueMap::from([
             ("behavior".to_string(), Value::String(self.behavior.clone())),
             ("trait".to_string(), Value::String(self.trait_name.clone())),
         ]))
@@ -153,7 +153,7 @@ pub fn is_trait_value(value: &Value) -> bool {
     TraitValueRef::from_value(value).is_some()
 }
 
-fn merge_object_key(out: &mut HashMap<String, Value>, key: &str, new: &Value) {
+fn merge_object_key(out: &mut ValueMap, key: &str, new: &Value) {
     match (new, out.get(key)) {
         (Value::Object(new), Some(Value::Object(old))) => {
             let mut merged = old.clone();
@@ -167,9 +167,9 @@ fn merge_object_key(out: &mut HashMap<String, Value>, key: &str, new: &Value) {
 }
 
 fn merge_trait_overrides(
-    base: &HashMap<String, Value>,
-    over: &HashMap<String, Value>,
-) -> Option<HashMap<String, Value>> {
+    base: &ValueMap,
+    over: &ValueMap,
+) -> Option<ValueMap> {
     if over
         .keys()
         .any(|k| !MERGE_KEYS.contains(&k.as_str()) && !REPLACE_KEYS.contains(&k.as_str()))
@@ -284,7 +284,7 @@ pub fn apply_orbital_overrides(value: &Value, overrides: &Value) -> Option<Value
         };
         let mut traits = match base.get("traits") {
             Some(Value::Object(old)) => old.clone(),
-            _ => HashMap::new(),
+            _ => ValueMap::new(),
         };
         for (name, entry) in new_traits {
             let Value::Object(entry) = entry else {
@@ -292,7 +292,7 @@ pub fn apply_orbital_overrides(value: &Value, overrides: &Value) -> Option<Value
             };
             let prior = match traits.get(name) {
                 Some(Value::Object(old)) => old.clone(),
-                _ => HashMap::new(),
+                _ => ValueMap::new(),
             };
             traits.insert(
                 name.clone(),
@@ -344,7 +344,7 @@ impl OrbitalValueRef {
 
     /// The wire object `{"behavior", "orbital"}`.
     pub fn to_value(&self) -> Value {
-        Value::Object(HashMap::from([
+        Value::Object(ValueMap::from([
             ("behavior".to_string(), Value::String(self.behavior.clone())),
             ("orbital".to_string(), Value::String(self.orbital.clone())),
         ]))
@@ -381,7 +381,7 @@ pub fn is_orbital_value(value: &Value) -> bool {
 /// valid specifier, `None` otherwise. Twin of `@almadar/core` `behaviorRef`.
 pub fn behavior_ref(specifier: &str) -> Option<Value> {
     is_behavior_specifier(specifier).then(|| {
-        Value::Object(HashMap::from([(
+        Value::Object(ValueMap::from([(
             "behavior".to_string(),
             Value::String(specifier.to_string()),
         )]))
@@ -425,7 +425,7 @@ pub fn apply_behavior_ref_overrides(value: &Value, overrides: &Value) -> Option<
     if over.len() != 1 || !is_bridge(bridge) {
         return None;
     }
-    Some(Value::Object(HashMap::from([
+    Some(Value::Object(ValueMap::from([
         ("behavior".to_string(), value_map.get("behavior")?.clone()),
         ("bridge".to_string(), bridge.clone()),
     ])))

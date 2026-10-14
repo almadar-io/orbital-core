@@ -449,7 +449,7 @@ impl SExpression {
                     "and" => args.iter().any(|a| a.is_statically_false()),
                     // Disjunction: dead only when every operand is dead.
                     "or" => !args.is_empty() && args.iter().all(|a| a.is_statically_false()),
-                    "not" => args.len() == 1 && matches!(args[0], SExpression::Bool(true)),
+                    "not" => args.len() == 1 && args[0].is_statically_true(),
                     // Two literals that differ can never be equal, and two that
                     // match can never be unequal.
                     "=" | "==" | "!=" => {
@@ -457,6 +457,38 @@ impl SExpression {
                             return false;
                         }
                         (args[0] == args[1]) == (op == "!=")
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// True only when this expression is PROVABLY truthy without running the program: the dual of
+    /// [`Self::is_statically_false`], under the same truthiness table and the same conservatism. A comparison of two
+    /// literals that match (a `@config.mode` substituted to its call-site value) is the motivating case: the other
+    /// branch of the `if` it guards can never run.
+    pub fn is_statically_true(&self) -> bool {
+        match self {
+            SExpression::Bool(true) => true,
+            SExpression::Number(n) => *n != 0.0,
+            SExpression::String(s) => !s.is_empty() && !s.starts_with('@'),
+            SExpression::Object(obj) => !obj.is_empty(),
+            SExpression::Array(arr) => {
+                let Some(op) = arr.first().and_then(|e| e.as_str()) else {
+                    return !arr.is_empty();
+                };
+                let args = &arr[1..];
+                match op {
+                    "and" => !args.is_empty() && args.iter().all(|a| a.is_statically_true()),
+                    "or" => args.iter().any(|a| a.is_statically_true()),
+                    "not" => args.len() == 1 && args[0].is_statically_false(),
+                    "=" | "==" | "!=" => {
+                        if args.len() != 2 || !args.iter().all(|a| a.is_literal()) {
+                            return false;
+                        }
+                        (args[0] == args[1]) == (op != "!=")
                     }
                     _ => false,
                 }
@@ -1264,6 +1296,30 @@ mod tests {
         }
         assert_eq!(value[1][1][0]["action"], "T.X");
         assert_eq!(value[2][1][0]["action"], "Y");
+    }
+
+    #[test]
+    fn is_statically_true_is_the_dual_of_is_statically_false() {
+        assert!(SExpression::Bool(true).is_statically_true());
+        assert!(eq("==", lit("create"), lit("create")).is_statically_true());
+        assert!(eq("!=", lit("a"), lit("b")).is_statically_true());
+        assert!(!eq("==", lit("a"), lit("b")).is_statically_true());
+        assert!(!eq("==", lit("@config.mode"), lit("create")).is_statically_true(), "a binding is undecidable");
+        let or = SExpression::Array(vec![
+            lit("or"),
+            eq("==", lit("create"), lit("create")),
+            lit("@payload.row"),
+        ]);
+        assert!(or.is_statically_true(), "one operand provably true");
+        assert!(!or.is_statically_false());
+        let and = SExpression::Array(vec![lit("and"), SExpression::Bool(true), lit("@payload.row")]);
+        assert!(!and.is_statically_true() && !and.is_statically_false(), "undecidable");
+        let not = SExpression::Array(vec![lit("not"), SExpression::Bool(false)]);
+        assert!(not.is_statically_true());
+        assert!(!SExpression::Bool(false).is_statically_true());
+        assert!(!SExpression::String(String::new()).is_statically_true());
+        assert!(!SExpression::Null.is_statically_true());
+        assert!(!SExpression::String("@config.knob".to_string()).is_statically_true());
     }
 
     #[test]

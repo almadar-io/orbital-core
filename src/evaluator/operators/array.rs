@@ -1,5 +1,6 @@
 //! Array operators.
 
+use crate::evaluator::ValueMap;
 use super::macros::*;
 use super::*;
 
@@ -250,6 +251,8 @@ impl Operator for FilterOp {
                 .enumerate()
                 .filter_map(|(i, item)| {
                     let mut child_ctx = ctx.child();
+                    child_ctx.set_local("item", item.clone());
+                    child_ctx.set_local("index", Value::Number(i as f64));
                     if !params.is_empty() {
                         child_ctx.set_local(&params[0], item.clone());
                     }
@@ -270,8 +273,10 @@ impl Operator for FilterOp {
         let predicate = &args[1];
         let results: Result<Vec<Value>, _> = array
             .into_iter()
-            .filter_map(|item| {
-                let child_ctx = ctx.with_item(item.clone());
+            .enumerate()
+            .filter_map(|(i, item)| {
+                let mut child_ctx = ctx.with_item(item.clone());
+                child_ctx.set_local("index", Value::Number(i as f64));
                 match eval_expr(predicate, &child_ctx) {
                     Ok(v) if v.is_truthy() => Some(Ok(item)),
                     Ok(_) => None,
@@ -705,7 +710,7 @@ impl Operator for ArrayGroupByOp {
             groups.entry(key).or_default().push(item);
         }
 
-        let result: std::collections::HashMap<String, Value> = groups
+        let result: ValueMap = groups
             .into_iter()
             .map(|(k, v)| (k, Value::Array(v)))
             .collect();
@@ -1149,7 +1154,7 @@ impl Operator for ArrayNearestOp {
         } else {
             best_score - second_best
         };
-        let mut result = std::collections::HashMap::new();
+        let mut result = ValueMap::new();
         result.insert("index".to_string(), Value::Number(best_idx as f64));
         result.insert("score".to_string(), Value::Number(best_score));
         result.insert("margin".to_string(), Value::Number(margin));

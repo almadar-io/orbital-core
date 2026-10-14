@@ -1,9 +1,9 @@
 //! Network-related operators: interfaces, stats, connectivity
 
+use crate::evaluator::ValueMap;
 use crate::error::{EvalError, OrbitalError};
 use crate::evaluator::{BindingContext, EvalResult, Operator, Value};
 use crate::schema::SExpression;
-use std::collections::HashMap;
 
 // ============================================================================
 // Network Interfaces Operator
@@ -79,7 +79,7 @@ fn get_network_interfaces() -> Result<Value, OrbitalError> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let mut iface = HashMap::new();
+        let mut iface = ValueMap::new();
         iface.insert("name".to_string(), Value::String("eth0".to_string()));
         iface.insert(
             "mac".to_string(),
@@ -163,7 +163,7 @@ fn get_network_stats() -> Result<Value, OrbitalError> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let mut eth0_stats = HashMap::new();
+        let mut eth0_stats = ValueMap::new();
         eth0_stats.insert("rxBytes".to_string(), Value::Number(1_000_000.0));
         eth0_stats.insert("txBytes".to_string(), Value::Number(500_000.0));
         eth0_stats.insert("rxPackets".to_string(), Value::Number(10000.0));
@@ -171,7 +171,7 @@ fn get_network_stats() -> Result<Value, OrbitalError> {
         eth0_stats.insert("rxErrors".to_string(), Value::Number(0.0));
         eth0_stats.insert("txErrors".to_string(), Value::Number(0.0));
 
-        let mut stats = HashMap::new();
+        let mut stats = ValueMap::new();
         stats.insert("eth0".to_string(), Value::Object(eth0_stats));
         Ok(Value::Object(stats))
     }

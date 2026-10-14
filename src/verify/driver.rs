@@ -3,6 +3,7 @@
 //!
 //! The kernel is the executor under test; the planner's declared `to` is the oracle.
 
+use crate::evaluator::ValueMap;
 use crate::verify::frame::{Cause, EffectSummary, Frame, FrameStatus, Variant};
 use crate::planner::{self, Step};
 use crate::effects::{ClientEffect, Effect, EffectOutcome, EffectResult};
@@ -102,7 +103,7 @@ impl Harness {
         // (V-L1-SYNTHETIC-ID-INCOMPATIBLE-WITH-MUTATION-POLICY).
         if let Some(entity) = &step.linked_entity {
             let seed_id = self.effective_seed_id(entity);
-            let mut row = std::collections::HashMap::new();
+            let mut row = ValueMap::new();
             row.insert("id".to_string(), Value::String(seed_id));
             // Stamp the declared owner column(s) with the current viewer, exactly as
             // real seeding does (`stamp_owner`). Without this the row carries only

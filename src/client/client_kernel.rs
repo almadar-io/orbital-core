@@ -527,6 +527,7 @@ fn mount_request(
 
 #[cfg(test)]
 mod tests {
+    use crate::evaluator::ValueMap;
     use super::*;
     use crate::EntitySource;
     use crate::{BusEventSource, EmittedEvent, EventResponse};
@@ -809,7 +810,7 @@ mod tests {
 
     #[test]
     fn client_kernel_persisted_awaited_posts_leg_and_folds() {
-        let mut row = HashMap::new();
+        let mut row = ValueMap::new();
         row.insert("id".to_string(), Value::String("n-1".to_string()));
         row.insert(
             "title".to_string(),

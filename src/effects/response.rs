@@ -8,6 +8,7 @@
 //!
 //! Reference: builder/docs/Orbital_Pattern.orb
 
+use crate::evaluator::ValueMap;
 use crate::evaluator::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -81,7 +82,7 @@ impl BusEventSource {
 /// The evaluator value of a delivery record `{ event, payload, source }` (`@event`); twin of
 /// `@almadar/core` `deliveryRecordValue`. `source` carries only the fields that are set.
 pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSource) -> Value {
-    let mut src: HashMap<String, Value> = HashMap::new();
+    let mut src: ValueMap = ValueMap::new();
     let mut put_str = |key: &str, v: &Option<String>| {
         if let Some(v) = v {
             src.insert(key.to_string(), Value::String(v.clone()));
@@ -101,7 +102,7 @@ pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSour
     if let Some(v) = source.dispatched {
         src.insert("dispatched".to_string(), Value::Bool(v));
     }
-    let mut record = HashMap::new();
+    let mut record = ValueMap::new();
     record.insert("event".to_string(), Value::String(event.to_string()));
     record.insert("payload".to_string(), payload.clone());
     record.insert("source".to_string(), Value::Object(src));
@@ -275,7 +276,7 @@ pub struct EventRequest {
     pub traits: Option<Vec<TraitFrom>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(type = "{ [key in string]: EntityRow }"))]
-    pub entity_by_trait: Option<HashMap<String, Value>>,
+    pub entity_by_trait: Option<ValueMap>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<String>,
     /// `@event` for the target when this request continues a client-begun dispatch; `None` = direct.
@@ -407,7 +408,7 @@ pub struct EventResponse {
     pub data: Option<HashMap<String, Vec<Value>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(type = "{ [key in string]: EntityRow }"))]
-    pub entity_by_trait: Option<HashMap<String, Value>>,
+    pub entity_by_trait: Option<ValueMap>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_effects: Option<Vec<ClientEffect>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -541,11 +542,7 @@ impl TransitionHop {
                     to: result.new_state.clone(),
                     event,
                     guard_result,
-                    effects: result
-                        .effect_runs
-                        .iter()
-                        .map(HopEffect::of_run)
-                        .collect(),
+                    effects: result.effect_runs.iter().map(HopEffect::of_run).collect(),
                 })
             })
             .collect()
@@ -557,10 +554,14 @@ impl HopEffect {
         use crate::runtime::EffectRunStatus;
         let (head, args) = match &run.effect {
             crate::schema::SExpression::Array(items) => match items.split_first() {
-                Some((crate::schema::SExpression::String(head), rest)) => {
-                    (head.clone(), rest.iter().cloned().map(Value::from).collect())
-                }
-                _ => (String::new(), items.iter().cloned().map(Value::from).collect()),
+                Some((crate::schema::SExpression::String(head), rest)) => (
+                    head.clone(),
+                    rest.iter().cloned().map(Value::from).collect(),
+                ),
+                _ => (
+                    String::new(),
+                    items.iter().cloned().map(Value::from).collect(),
+                ),
             },
             other => (String::new(), vec![Value::from(other.clone())]),
         };
@@ -671,7 +672,11 @@ impl EventResponse {
             .collect();
         let mut keep = dropped.iter().map(|d| !d);
         by_trait.retain(|_| keep.next().unwrap_or(true));
-        if let Some(effects) = self.client_effects.as_mut().filter(|e| e.len() == dropped.len()) {
+        if let Some(effects) = self
+            .client_effects
+            .as_mut()
+            .filter(|e| e.len() == dropped.len())
+        {
             let mut keep = dropped.iter().map(|d| !d);
             effects.retain(|_| keep.next().unwrap_or(true));
         }
@@ -697,7 +702,7 @@ impl EventResponse {
             ..Default::default()
         };
         let mut data: HashMap<String, Vec<Value>> = HashMap::new();
-        let mut entity_by_trait: HashMap<String, Value> = HashMap::new();
+        let mut entity_by_trait: ValueMap = ValueMap::new();
         let mut client_effects: Vec<ClientEffect> = Vec::new();
         let mut client_effects_by_trait: Vec<ClientEffectByTrait> = Vec::new();
         let mut effect_results: Vec<ServerEffectResult> = Vec::new();
@@ -745,6 +750,12 @@ impl EventResponse {
             }
 
             for (index, er) in result.effect_results.iter().enumerate() {
+                // A `render-ui` or `emit` whose operands failed to evaluate reached no one: the failure is the rejection above.
+                if er.is_failed()
+                    && matches!(er.effect, Effect::RenderUi { .. } | Effect::Emit { .. })
+                {
+                    continue;
+                }
                 if let Some(ce) = ClientEffect::from_effect(&er.effect) {
                     client_effects_by_trait.push(ClientEffectByTrait {
                         trait_name: trait_name.clone(),
@@ -875,9 +886,7 @@ fn server_effect_result(er: &EffectResult) -> Option<ServerEffectResult> {
             Some(entity_type.clone()),
             Some(format!("{operation:?}").to_lowercase()),
         ),
-        Effect::PersistBatch { .. } => {
-            (ServerEffectKind::Persist, None, Some("batch".to_string()))
-        }
+        Effect::PersistBatch { .. } => (ServerEffectKind::Persist, None, Some("batch".to_string())),
         Effect::CallService {
             service, method, ..
         } => (
@@ -926,7 +935,8 @@ mod tests {
     fn a_mount_seed_accepts_only_lifecycle_events() {
         for e in ["INIT", "LOAD", "$MOUNT"] {
             let wire = serde_json::json!({ "trait": "T", "event": e });
-            let seed: super::MountSeed = serde_json::from_value(wire.clone()).expect("lifecycle parses");
+            let seed: super::MountSeed =
+                serde_json::from_value(wire.clone()).expect("lifecycle parses");
             assert_eq!(seed.event.as_str(), e);
             assert_eq!(serde_json::to_value(&seed).unwrap(), wire);
         }
@@ -937,7 +947,8 @@ mod tests {
     #[test]
     fn an_effect_failed_rejection_has_the_core_wire_shape() {
         let wire = serde_json::json!({ "code": "effect-failed", "trait": "Preview", "from": "idle", "event": "INIT", "error": "boom" });
-        let parsed: super::TransitionRejection = serde_json::from_value(wire.clone()).expect("parses");
+        let parsed: super::TransitionRejection =
+            serde_json::from_value(wire.clone()).expect("parses");
         assert_eq!(parsed.code, super::TransitionRejectionCode::EffectFailed);
         assert_eq!(parsed.error.as_deref(), Some("boom"));
         assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
@@ -946,14 +957,18 @@ mod tests {
     #[test]
     fn control_a_rejection_without_an_error_omits_the_field() {
         let wire = serde_json::json!({ "code": "no-matching-transition", "trait": "Preview", "event": "SAVE" });
-        let parsed: super::TransitionRejection = serde_json::from_value(wire.clone()).expect("parses");
+        let parsed: super::TransitionRejection =
+            serde_json::from_value(wire.clone()).expect("parses");
         assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
     }
 
     fn painted(trait_name: &str, slot: &str) -> (String, Effect) {
         (
             trait_name.to_string(),
-            Effect::RenderUi { slot: slot.to_string(), content: Value::Null },
+            Effect::RenderUi {
+                slot: slot.to_string(),
+                content: Value::Null,
+            },
         )
     }
 
@@ -961,13 +976,15 @@ mod tests {
         let mut r = EventResponse::default();
         for (t, e) in paints {
             let ce = ClientEffect::from_effect(e).unwrap();
-            r.client_effects_by_trait.get_or_insert_with(Vec::new).push(ClientEffectByTrait {
-                trait_name: t.clone(),
-                effect: ce.clone(),
-                event: None,
-                from_state: None,
-                callsite_payload: None,
-            });
+            r.client_effects_by_trait
+                .get_or_insert_with(Vec::new)
+                .push(ClientEffectByTrait {
+                    trait_name: t.clone(),
+                    effect: ce.clone(),
+                    event: None,
+                    from_state: None,
+                    callsite_payload: None,
+                });
             r.client_effects.get_or_insert_with(Vec::new).push(ce);
         }
         r
@@ -975,8 +992,16 @@ mod tests {
 
     #[test]
     fn drop_renders_of_removes_only_the_named_trait_slot_from_both_lists() {
-        let mut r = response_of(&[painted("Hud", "hud"), painted("Hud", "side"), painted("Other", "hud")]);
-        r.drop_renders_of(&[("Hud".to_string(), "hud".to_string())].into_iter().collect());
+        let mut r = response_of(&[
+            painted("Hud", "hud"),
+            painted("Hud", "side"),
+            painted("Other", "hud"),
+        ]);
+        r.drop_renders_of(
+            &[("Hud".to_string(), "hud".to_string())]
+                .into_iter()
+                .collect(),
+        );
         let kept: Vec<_> = r
             .client_effects_by_trait
             .as_ref()
@@ -1043,12 +1068,18 @@ mod tests {
         });
         let parsed: ClientEffectByTrait = serde_json::from_value(wire.clone()).expect("wire shape");
         assert!(parsed.callsite_payload.is_some());
-        assert_eq!(serde_json::to_value(&parsed).unwrap()["callsitePayload"], wire["callsitePayload"]);
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap()["callsitePayload"],
+            wire["callsitePayload"]
+        );
 
         let bare = serde_json::json!({ "traitName": "Body", "effect": ["render-ui", "main", { "type": "timeline" }] });
         let parsed: ClientEffectByTrait = serde_json::from_value(bare).expect("wire shape");
         assert!(parsed.callsite_payload.is_none());
-        assert!(serde_json::to_value(&parsed).unwrap().get("callsitePayload").is_none());
+        assert!(serde_json::to_value(&parsed)
+            .unwrap()
+            .get("callsitePayload")
+            .is_none());
     }
 
     fn denied_persist() -> ServerEffectResult {
@@ -1078,20 +1109,37 @@ mod tests {
 
     #[test]
     fn the_server_results_follow_the_local_ones() {
-        let local = ServerEffectResult { success: true, denied: None, error: None, ..denied_persist() };
+        let local = ServerEffectResult {
+            success: true,
+            denied: None,
+            error: None,
+            ..denied_persist()
+        };
         let mut base = EventResponse::success("idle");
         base.effect_results = Some(vec![local.clone()]);
-        let posted = EventResponse { effect_results: Some(vec![denied_persist()]), ..Default::default() };
+        let posted = EventResponse {
+            effect_results: Some(vec![denied_persist()]),
+            ..Default::default()
+        };
         let settled = base.with_server_effect_results(&posted);
         assert_eq!(settled.effect_results, Some(vec![local, denied_persist()]));
     }
 
     #[test]
     fn control_a_server_answer_with_no_outcomes_adds_none() {
-        let settled = EventResponse::success("idle").with_server_effect_results(&EventResponse::default());
+        let settled =
+            EventResponse::success("idle").with_server_effect_results(&EventResponse::default());
         assert_eq!(settled.effect_results, None);
-        let empty = EventResponse { effect_results: Some(Vec::new()), ..Default::default() };
-        assert_eq!(EventResponse::success("idle").with_server_effect_results(&empty).effect_results, None);
+        let empty = EventResponse {
+            effect_results: Some(Vec::new()),
+            ..Default::default()
+        };
+        assert_eq!(
+            EventResponse::success("idle")
+                .with_server_effect_results(&empty)
+                .effect_results,
+            None
+        );
     }
 
     fn empty_result(new_state: &str, executed: bool) -> ProcessEventResult {
@@ -1185,7 +1233,7 @@ mod tests {
         result.effect_results = vec![
             EffectResult::executed(Effect::RenderUi {
                 slot: "modal".to_string(),
-                content: Value::Object(HashMap::from([(
+                content: Value::Object(ValueMap::from([(
                     "type".to_string(),
                     Value::String("form".to_string()),
                 )])),
@@ -1289,14 +1337,19 @@ mod tests {
 
     #[test]
     fn event_request_carries_the_viewer_locale() {
-        let req: EventRequest = serde_json::from_value(serde_json::json!({ "event": "INIT", "locale": "ar" })).unwrap();
+        let req: EventRequest =
+            serde_json::from_value(serde_json::json!({ "event": "INIT", "locale": "ar" })).unwrap();
         assert_eq!(req.locale.as_deref(), Some("ar"));
-        assert_eq!(serde_json::to_value(&req).unwrap().get("locale"), Some(&serde_json::json!("ar")));
+        assert_eq!(
+            serde_json::to_value(&req).unwrap().get("locale"),
+            Some(&serde_json::json!("ar"))
+        );
     }
 
     #[test]
     fn control_an_event_request_without_a_locale_serializes_none() {
-        let req: EventRequest = serde_json::from_value(serde_json::json!({ "event": "INIT" })).unwrap();
+        let req: EventRequest =
+            serde_json::from_value(serde_json::json!({ "event": "INIT" })).unwrap();
         assert_eq!(req.locale, None);
         assert_eq!(serde_json::to_value(&req).unwrap().get("locale"), None);
     }

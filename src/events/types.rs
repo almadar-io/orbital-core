@@ -2,9 +2,9 @@
 //!
 //! Core types for the event bus system.
 
+use crate::evaluator::ValueMap;
 use crate::evaluator::Value;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Unique identifier for a subscription
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -42,7 +42,7 @@ pub struct Event {
     pub timestamp: i64,
 
     /// Metadata
-    pub metadata: HashMap<String, Value>,
+    pub metadata: ValueMap,
 }
 
 impl Event {
@@ -54,7 +54,7 @@ impl Event {
             source: None,
             target: None,
             timestamp: crate::time_util::now_millis(),
-            metadata: HashMap::new(),
+            metadata: ValueMap::new(),
         }
     }
 
@@ -66,7 +66,7 @@ impl Event {
             source: Some(source.to_string()),
             target: None,
             timestamp: crate::time_util::now_millis(),
-            metadata: HashMap::new(),
+            metadata: ValueMap::new(),
         }
     }
 
@@ -78,7 +78,7 @@ impl Event {
             source: Some(trait_name.to_string()),
             target: None,
             timestamp: crate::time_util::now_millis(),
-            metadata: HashMap::new(),
+            metadata: ValueMap::new(),
         }
     }
 

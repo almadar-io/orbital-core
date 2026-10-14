@@ -2,10 +2,10 @@
 //!
 //! Core types for state machine execution.
 
+use crate::evaluator::ValueMap;
 use crate::evaluator::Value;
 use crate::schema::SExpression;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Current state of a trait instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,7 +23,7 @@ pub struct TraitState {
     pub entity_data: Option<Value>,
 
     /// Additional state data
-    pub data: HashMap<String, Value>,
+    pub data: ValueMap,
 
     /// Timestamp when state was entered
     pub entered_at: i64,
@@ -37,7 +37,7 @@ impl TraitState {
             current_state: initial_state.to_string(),
             entity_id: None,
             entity_data: None,
-            data: HashMap::new(),
+            data: ValueMap::new(),
             entered_at: crate::time_util::now_millis(),
         }
     }
@@ -54,7 +54,7 @@ impl TraitState {
             current_state: initial_state.to_string(),
             entity_id: Some(entity_id.to_string()),
             entity_data: Some(entity_data),
-            data: HashMap::new(),
+            data: ValueMap::new(),
             entered_at: crate::time_util::now_millis(),
         }
     }

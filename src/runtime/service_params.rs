@@ -77,12 +77,26 @@ pub fn checkable_type(declared: &str) -> Option<ArgKind> {
         "string" => Some(ArgKind::String),
         "number" => Some(ArgKind::Number),
         "boolean" => Some(ArgKind::Boolean),
-        "object" => Some(ArgKind::Object),
+        "object" | "map" => Some(ArgKind::Object),
         "array" => Some(ArgKind::Array),
         _ if t.ends_with("[]") => Some(ArgKind::Array),
         _ if t.starts_with('\'') => Some(ArgKind::String),
         _ => None,
     }
+}
+
+/// The kind a declared param requires: its type string's, else the one its shape names (a struct or a dictionary
+/// is an object, a list of items an array); `None` for a bare named type.
+pub fn checkable_param(p: &crate::language::registry::EmbeddedServiceParam) -> Option<ArgKind> {
+    checkable_type(&p.param_type).or_else(|| {
+        if p.properties.is_some() || p.map_value.is_some() {
+            Some(ArgKind::Object)
+        } else if p.items.is_some() {
+            Some(ArgKind::Array)
+        } else {
+            None
+        }
+    })
 }
 
 /// One way a call disagrees with its contract.
@@ -218,7 +232,7 @@ pub fn validate_params(
         if actual == ArgKind::Dynamic {
             continue;
         }
-        if let Some(expected) = checkable_type(&p.param_type) {
+        if let Some(expected) = checkable_param(p) {
             if expected != actual {
                 issues.push(ParamIssue::TypeMismatch {
                     param: p.name.clone(),
@@ -236,6 +250,42 @@ mod tests {
     use super::*;
     use crate::language::registry::parse_service_registry_data;
     use serde_json::json;
+
+    #[test]
+    fn a_map_param_requires_an_object_and_no_other_kind() {
+        assert_eq!(checkable_type("map"), Some(ArgKind::Object));
+        assert_eq!(checkable_type("object"), Some(ArgKind::Object));
+        assert_eq!(checkable_type("Rig"), None, "a named struct type is not checked");
+    }
+
+    #[test]
+    fn a_param_declared_by_its_shape_requires_that_shape() {
+        let data = parse_service_registry_data(
+            &json!({"services": {"rigger": {"actions": [{"name": "saveRig", "params": [
+                {"name": "rig", "type": "Rig", "required": true, "properties": {"parts": {"type": "RigPart[]"}}},
+                {"name": "tags", "type": "Tags", "required": false, "mapValue": {"type": "string"}},
+                {"name": "opaque", "type": "Named", "required": false}]}]}}}).to_string(),
+        )
+        .expect("registry");
+        let args = |rig: ArgKind, tags: ArgKind, opaque: ArgKind| {
+            let mut a = Args::new();
+            a.insert("rig".to_string(), rig);
+            a.insert("tags".to_string(), tags);
+            a.insert("opaque".to_string(), opaque);
+            a
+        };
+        let bad = validate_params(&data, "rigger", "saveRig", &args(ArgKind::Number, ArgKind::String, ArgKind::Number));
+        let names: Vec<&str> = bad
+            .iter()
+            .filter_map(|i| match i {
+                ParamIssue::TypeMismatch { param, .. } => Some(param.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["rig", "tags"], "a struct and a dictionary param are objects; a bare named type stays unchecked");
+        let ok = validate_params(&data, "rigger", "saveRig", &args(ArgKind::Object, ArgKind::Object, ArgKind::Number));
+        assert!(ok.is_empty(), "{ok:?}");
+    }
 
     fn registry() -> ServiceRegistryData {
         parse_service_registry_data(
@@ -522,7 +572,7 @@ mod tests {
                 for p in params.iter().filter(|p| p.required) {
                     args.insert(
                         p.name.clone(),
-                        checkable_type(&p.param_type).unwrap_or(ArgKind::String),
+                        checkable_param(p).unwrap_or(ArgKind::String),
                     );
                 }
                 let issues = validate_params(installed, service, action, &args);
