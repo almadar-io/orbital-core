@@ -192,6 +192,10 @@
       {
         "name": "traitField",
         "type": "trait"
+      },
+      {
+        "name": "orbitalField",
+        "type": "orbital"
       }
     ]
   },
@@ -246,7 +250,9 @@
       "homepage": "https://example.com/homepage/1",
       "mobile": "+1-555-1001",
       "externalId": "00000000-0000-4000-8000-000000000001",
-      "heroShot": "https://picsum.photos/seed/BoardState-heroShot-1/400/400"
+      "heroShot": "https://picsum.photos/seed/BoardState-heroShot-1/400/400",
+      "traitField": null,
+      "orbitalField": null
     }
   ]
 }

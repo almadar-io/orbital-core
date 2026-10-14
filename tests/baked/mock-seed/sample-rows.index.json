@@ -192,6 +192,20 @@
       {
         "name": "traitField",
         "type": "trait"
+      },
+      {
+        "name": "orbitalField",
+        "type": "orbital"
+      },
+      {
+        "name": "moneyField",
+        "type": "money",
+        "required": true
+      },
+      {
+        "name": "fileField",
+        "type": "file",
+        "required": true
       }
     ]
   },
@@ -206,7 +220,7 @@
       "vocabWithEmpty": "",
       "vocabNoDefault": "x",
       "enumTyped": "one",
-      "zeroNumber": 0,
+      "zeroNumber": 10,
       "plainNumber": 10,
       "falseBool": false,
       "plainBool": false,
@@ -246,7 +260,16 @@
       "homepage": "https://example.com/homepage/1",
       "mobile": "+1-555-1001",
       "externalId": "00000000-0000-4000-8000-000000000001",
-      "heroShot": "https://picsum.photos/seed/Member-heroShot-1/400/400"
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-1/400/400",
+      "moneyField": 10,
+      "fileField": {
+        "name": "filefield-1.pdf",
+        "url": "https://example.com/files/filefield/1.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 1024
+      },
+      "traitField": null,
+      "orbitalField": null
     },
     {
       "plainString": "Plain String 2",
@@ -257,9 +280,9 @@
       "vocabWithEmpty": "",
       "vocabNoDefault": "y",
       "enumTyped": "two",
-      "zeroNumber": 0,
+      "zeroNumber": 20,
       "plainNumber": 20,
-      "falseBool": false,
+      "falseBool": true,
       "plainBool": true,
       "dateOnly": "2026-03-15",
       "withTime": "2026-03-15T00:00:00.000Z",
@@ -297,7 +320,16 @@
       "homepage": "https://example.com/homepage/2",
       "mobile": "+1-555-1002",
       "externalId": "00000000-0000-4000-8000-000000000002",
-      "heroShot": "https://picsum.photos/seed/Member-heroShot-2/400/400"
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-2/400/400",
+      "moneyField": 20,
+      "fileField": {
+        "name": "filefield-2.pdf",
+        "url": "https://example.com/files/filefield/2.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 2048
+      },
+      "traitField": null,
+      "orbitalField": null
     },
     {
       "plainString": "Plain String 3",
@@ -308,7 +340,7 @@
       "vocabWithEmpty": "",
       "vocabNoDefault": "x",
       "enumTyped": "one",
-      "zeroNumber": 0,
+      "zeroNumber": 30,
       "plainNumber": 30,
       "falseBool": false,
       "plainBool": false,
@@ -348,7 +380,16 @@
       "homepage": "https://example.com/homepage/3",
       "mobile": "+1-555-1003",
       "externalId": "00000000-0000-4000-8000-000000000003",
-      "heroShot": "https://picsum.photos/seed/Member-heroShot-3/400/400"
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-3/400/400",
+      "moneyField": 30,
+      "fileField": {
+        "name": "filefield-3.pdf",
+        "url": "https://example.com/files/filefield/3.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 3072
+      },
+      "traitField": null,
+      "orbitalField": null
     },
     {
       "plainString": "Plain String 4",
@@ -359,9 +400,9 @@
       "vocabWithEmpty": "",
       "vocabNoDefault": "y",
       "enumTyped": "two",
-      "zeroNumber": 0,
+      "zeroNumber": 40,
       "plainNumber": 40,
-      "falseBool": false,
+      "falseBool": true,
       "plainBool": true,
       "dateOnly": "2026-05-15",
       "withTime": "2026-05-15T00:00:00.000Z",
@@ -399,7 +440,16 @@
       "homepage": "https://example.com/homepage/4",
       "mobile": "+1-555-1004",
       "externalId": "00000000-0000-4000-8000-000000000004",
-      "heroShot": "https://picsum.photos/seed/Member-heroShot-4/400/400"
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-4/400/400",
+      "moneyField": 40,
+      "fileField": {
+        "name": "filefield-4.pdf",
+        "url": "https://example.com/files/filefield/4.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 4096
+      },
+      "traitField": null,
+      "orbitalField": null
     },
     {
       "plainString": "Plain String 5",
@@ -410,7 +460,7 @@
       "vocabWithEmpty": "",
       "vocabNoDefault": "x",
       "enumTyped": "one",
-      "zeroNumber": 0,
+      "zeroNumber": 50,
       "plainNumber": 50,
       "falseBool": false,
       "plainBool": false,
@@ -450,7 +500,16 @@
       "homepage": "https://example.com/homepage/5",
       "mobile": "+1-555-1005",
       "externalId": "00000000-0000-4000-8000-000000000005",
-      "heroShot": "https://picsum.photos/seed/Member-heroShot-5/400/400"
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-5/400/400",
+      "moneyField": 50,
+      "fileField": {
+        "name": "filefield-5.pdf",
+        "url": "https://example.com/files/filefield/5.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 5120
+      },
+      "traitField": null,
+      "orbitalField": null
     },
     {
       "plainString": "Plain String 6",
@@ -461,9 +520,9 @@
       "vocabWithEmpty": "",
       "vocabNoDefault": "y",
       "enumTyped": "two",
-      "zeroNumber": 0,
+      "zeroNumber": 60,
       "plainNumber": 60,
-      "falseBool": false,
+      "falseBool": true,
       "plainBool": true,
       "dateOnly": "2026-07-15",
       "withTime": "2026-07-15T00:00:00.000Z",
@@ -501,7 +560,16 @@
       "homepage": "https://example.com/homepage/6",
       "mobile": "+1-555-1006",
       "externalId": "00000000-0000-4000-8000-000000000006",
-      "heroShot": "https://picsum.photos/seed/Member-heroShot-6/400/400"
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-6/400/400",
+      "moneyField": 60,
+      "fileField": {
+        "name": "filefield-6.pdf",
+        "url": "https://example.com/files/filefield/6.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 6144
+      },
+      "traitField": null,
+      "orbitalField": null
     },
     {
       "plainString": "Plain String 7",
@@ -512,7 +580,7 @@
       "vocabWithEmpty": "",
       "vocabNoDefault": "x",
       "enumTyped": "one",
-      "zeroNumber": 0,
+      "zeroNumber": 70,
       "plainNumber": 70,
       "falseBool": false,
       "plainBool": false,
@@ -552,7 +620,16 @@
       "homepage": "https://example.com/homepage/7",
       "mobile": "+1-555-1007",
       "externalId": "00000000-0000-4000-8000-000000000007",
-      "heroShot": "https://picsum.photos/seed/Member-heroShot-7/400/400"
+      "heroShot": "https://picsum.photos/seed/Member-heroShot-7/400/400",
+      "moneyField": 70,
+      "fileField": {
+        "name": "filefield-7.pdf",
+        "url": "https://example.com/files/filefield/7.pdf",
+        "mimeType": "application/pdf",
+        "sizeBytes": 7168
+      },
+      "traitField": null,
+      "orbitalField": null
     }
   ]
 }
