@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     pub method: String,
     pub url: String,
@@ -15,11 +15,40 @@ pub struct HttpRequest {
     pub timeout: Option<Duration>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+/// A request carries credentials (an `Authorization` header, an api-key query, a grant body), so its `Debug`
+/// shows the method, the URL without its query, the header names and the body length, never a value.
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let url = self.url.split(['?', '#']).next().unwrap_or(&self.url);
+        let names: Vec<&str> = self.headers.iter().map(|(k, _)| k.as_str()).collect();
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &url)
+            .field("header_names", &names)
+            .field("body_len", &self.body.len())
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+/// A reply can carry a minted token (an OAuth reply) or a cookie, so its `Debug` shows the status, the header
+/// names and the body length.
+impl std::fmt::Debug for HttpResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.headers.iter().map(|(k, _)| k.as_str()).collect();
+        f.debug_struct("HttpResponse")
+            .field("status", &self.status)
+            .field("header_names", &names)
+            .field("body_len", &self.body.len())
+            .finish()
+    }
 }
 
 impl HttpRequest {
@@ -62,6 +91,8 @@ impl HttpResponse {
 pub enum TransportError {
     TimedOut,
     Failed(String),
+    /// The host refused before sending (a non-public resolved address, a redirect it does not follow).
+    Refused(String),
 }
 
 pub trait Transport: Send + Sync {
@@ -106,4 +137,30 @@ pub trait SecretSource: Send + Sync {
     fn store_secret(&self, _name: &str, _value: &str, _ttl_ms: u64) -> Result<(), String> {
         Err("this host keeps no derived secrets".to_string())
     }
+    /// The credential `name` of `principal` (a signed-in user's id), or the app-wide one when `None`.
+    fn secret_of(&self, name: &str, principal: Option<&str>) -> Result<Option<String>, String> {
+        match principal {
+            None => self.secret(name),
+            Some(_) => Err(NO_USER_CREDENTIALS.to_string()),
+        }
+    }
+    /// [`Self::store_secret`] for `principal`'s credential.
+    fn store_secret_of(
+        &self,
+        name: &str,
+        value: &str,
+        ttl_ms: u64,
+        principal: Option<&str>,
+    ) -> Result<(), String> {
+        match principal {
+            None => self.store_secret(name, value, ttl_ms),
+            Some(_) => Err(NO_USER_CREDENTIALS.to_string()),
+        }
+    }
+    /// Drop the credential `name` of `principal` (or the app-wide one when `None`).
+    fn forget_of(&self, _name: &str, _principal: Option<&str>) -> Result<(), String> {
+        Err("this host keeps no credentials to forget".to_string())
+    }
 }
+
+const NO_USER_CREDENTIALS: &str = "this host keeps no user-scoped credentials";

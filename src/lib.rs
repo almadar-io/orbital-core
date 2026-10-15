@@ -37,6 +37,7 @@ pub mod renderer_packs;
 pub mod route;
 pub mod runtime;
 pub mod schema;
+pub mod secrets;
 pub mod shell;
 pub mod shell_protocol;
 pub mod signature;

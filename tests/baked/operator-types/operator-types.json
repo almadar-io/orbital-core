@@ -6356,11 +6356,10 @@
       }
     },
     {
-      "name": "time/parse: [\"time/parse\",\"2024-01-18\",\"YYYY-MM-DD\"]",
+      "name": "time/parse: [\"time/parse\",\"2024-01-18\"]",
       "expr": [
         "time/parse",
-        "2024-01-18",
-        "YYYY-MM-DD"
+        "2024-01-18"
       ],
       "expect": {
         "value": 1705536000000
@@ -6370,8 +6369,7 @@
       "name": "time/parse: argument 0 is number",
       "expr": [
         "time/parse",
-        5,
-        "YYYY-MM-DD"
+        5
       ],
       "expect": {
         "error": {

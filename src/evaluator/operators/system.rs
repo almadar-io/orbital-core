@@ -233,42 +233,94 @@ impl Operator for TimeIsAfterOp {
     }
 }
 
-/// time/parse - Parse date string to timestamp (basic ISO 8601 support)
+/// `YYYY-MM-DD[THH:MM[:SS[.f+]][Z|±HH:MM]]` to epoch ms; a date is midnight UTC and a date-time
+/// without an offset is read as UTC. `None` for every other spelling or an out-of-range part.
+fn parse_iso_instant(text: &str) -> Option<i64> {
+    use chrono::{NaiveDate, TimeZone};
+    let b = text.as_bytes();
+    let num = |from: usize, len: usize| -> Option<u32> {
+        let slice = b.get(from..from + len)?;
+        if slice.iter().all(u8::is_ascii_digit) {
+            std::str::from_utf8(slice).ok()?.parse().ok()
+        } else {
+            None
+        }
+    };
+    if b.get(4) != Some(&b'-') || b.get(7) != Some(&b'-') {
+        return None;
+    }
+    let date = NaiveDate::from_ymd_opt(num(0, 4)? as i32, num(5, 2)?, num(8, 2)?)?;
+    let mut ms = chrono::Utc
+        .from_utc_datetime(&date.and_hms_opt(0, 0, 0)?)
+        .timestamp_millis();
+    if b.len() == 10 {
+        return Some(ms);
+    }
+    if b.get(10) != Some(&b'T') || b.get(13) != Some(&b':') {
+        return None;
+    }
+    let (hour, minute) = (num(11, 2)?, num(14, 2)?);
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    ms += i64::from(hour) * 3_600_000 + i64::from(minute) * 60_000;
+    let mut at = 16;
+    if b.get(at) == Some(&b':') {
+        let second = num(at + 1, 2)?;
+        if second > 59 {
+            return None;
+        }
+        ms += i64::from(second) * 1000;
+        at += 3;
+        if b.get(at) == Some(&b'.') {
+            let start = at + 1;
+            let mut end = start;
+            while b.get(end).is_some_and(u8::is_ascii_digit) {
+                end += 1;
+            }
+            if end == start {
+                return None;
+            }
+            let padded = format!("{:0<3}", &text[start..end]);
+            ms += padded[..3].parse::<i64>().ok()?;
+            at = end;
+        }
+    }
+    match &text[at..] {
+        "" | "Z" => Some(ms),
+        zone if zone.len() == 6 && matches!(b[at], b'+' | b'-') && b[at + 3] == b':' => {
+            let (oh, om) = (num(at + 1, 2)?, num(at + 4, 2)?);
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            let offset = (i64::from(oh) * 60 + i64::from(om)) * 60_000;
+            Some(if b[at] == b'-' { ms + offset } else { ms - offset })
+        }
+        _ => None,
+    }
+}
+
+/// time/parse - RFC 3339 / ISO 8601 date or date-time to epoch ms; anything else is an error.
 pub struct TimeParseOp;
 impl Operator for TimeParseOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+    fn evaluate(&self, args: &[SExpr], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/parse", 1);
 
-        let date_str = eval_expr(&args[0], ctx)?.to_string_value();
-
-        // Basic ISO 8601 parsing: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
-        // For full parsing, would need chrono crate
-
-        // Try to parse YYYY-MM-DD format
-        let parts: Vec<&str> = date_str.split(['-', 'T', ':']).collect();
-
-        if parts.len() >= 3 {
-            let year: i32 = parts[0].parse().unwrap_or(1970);
-            let month: u32 = parts[1].parse().unwrap_or(1);
-            let day: u32 = parts[2].parse().unwrap_or(1);
-
-            // Simple calculation (not accounting for leap years properly)
-            let days_from_epoch = (year - 1970) * 365 +
-                ((year - 1969) / 4) - // leap years
-                ((year - 1901) / 100)
-                + ((year - 1601) / 400);
-
-            let month_days = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-            let day_of_year = month_days.get(month as usize - 1).unwrap_or(&0) + day - 1;
-
-            let total_days = days_from_epoch as i64 + day_of_year as i64;
-            let ms = total_days * 24 * 60 * 60 * 1000;
-
-            return Ok(Value::Number(ms as f64));
+        let date_str = match eval_expr(&args[0], ctx)? {
+            Value::String(s) => s,
+            other => {
+                return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                    "time/parse: expected a string argument, got {}",
+                    other.type_name()
+                ))))
+            }
+        };
+        match parse_iso_instant(&date_str) {
+            Some(ms) => Ok(Value::Number(ms as f64)),
+            None => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                "time/parse: \"{date_str}\" is not an ISO 8601 date or date-time"
+            )))),
         }
-
-        // If parsing fails, return null
-        Ok(Value::Null)
     }
 }
 

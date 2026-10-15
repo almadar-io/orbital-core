@@ -40,10 +40,39 @@ pub enum ProducedPayload {
     /// A fixed set of field names, e.g. `persist delete`'s `{ id, deleted }`
     /// or `fetch`'s `{ data, totalCount }` wrapper.
     Fields(&'static [&'static str]),
+    /// A fixed set of typed fields (`http`'s reply, failure and stream event),
+    /// each possibly carrying nested typed fields.
+    Shape(&'static [ShapeField]),
     /// Not decidable here — no contract, an opaque `any`, or a call site this
     /// layer cannot narrow. Callers MUST treat this as "do not check" rather
     /// than as "produces nothing".
     Opaque,
+}
+
+/// One typed field of a [`ProducedPayload::Shape`]. `field_type` speaks the
+/// payload-declaration vocabulary (`string`, `number`, `object`, `array`);
+/// `fields` types an object's members, empty when it has none to state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShapeField {
+    pub name: &'static str,
+    pub field_type: &'static str,
+    pub fields: &'static [ShapeField],
+}
+
+const fn field(name: &'static str, field_type: &'static str) -> ShapeField {
+    ShapeField { name, field_type, fields: &[] }
+}
+
+/// What distinguishes a call site within one operator's contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallVariant<'a> {
+    /// The operator has one contract, or the call site carries no literal
+    /// action (the legacy 3-element `persist`).
+    Plain,
+    /// `persist`'s literal action keyword (`create`, `update`, `delete`, ...).
+    PersistAction(&'a str),
+    /// An `http` call site that carries `paginate`.
+    HttpPaginate,
 }
 
 /// `persist delete` hands back the deleted row's id plus a tombstone flag —
@@ -54,42 +83,106 @@ pub const PERSIST_DELETE_FIELDS: &[&str] = &["id", "deleted"];
 /// the pre-pagination count so a paginating consumer needs no second call.
 pub const FETCH_WRAPPER_FIELDS: &[&str] = &["data", "totalCount"];
 
-/// `http` hands back the reply: its status, its lower-cased headers and its body.
-pub const HTTP_REPLY_FIELDS: &[&str] = &["status", "headers", "body"];
+/// The reply an `http` call hands back, as `last` carries it inside a paged payload.
+const HTTP_REPLY_BODY_SHAPE: &[ShapeField] = &[
+    field("status", "number"),
+    field("headers", "object"),
+    field("body", "string"),
+];
+
+/// `http` hands back the reply: its status, its lower-cased headers, its body and the call's key (`null` unkeyed).
+pub const HTTP_REPLY_SHAPE: &[ShapeField] = &[
+    field("status", "number"),
+    field("headers", "object"),
+    field("body", "string"),
+    field("key", "string"),
+];
 
 /// `http` with `paginate` hands back the pages it walked, the collected items and the last reply.
-pub const HTTP_PAGED_FIELDS: &[&str] = &["pages", "items", "last"];
+pub const HTTP_PAGED_SHAPE: &[ShapeField] = &[
+    field("pages", "number"),
+    field("items", "array"),
+    ShapeField { name: "last", field_type: "object", fields: HTTP_REPLY_BODY_SHAPE },
+    field("key", "string"),
+];
 
-/// The `variant` of an `http` call site that carries `paginate`.
-pub const HTTP_PAGINATE_VARIANT: &str = "paginate";
+/// An `http` failure: the message, its kind (`timeout`, `failed`, `refused`, `unconfigured`), the credential a
+/// missing one names (`null` for every other kind) and the call's key.
+pub const HTTP_FAILURE_SHAPE: &[ShapeField] = &[
+    field("error", "string"),
+    field("kind", "string"),
+    field("credential", "string"),
+    field("key", "string"),
+];
+
+/// One `http` `stream` event handed to `emit.onMessage`.
+pub const HTTP_STREAM_EVENT_SHAPE: &[ShapeField] = &[
+    field("data", "string"),
+    field("event", "string"),
+    field("id", "string"),
+    field("key", "string"),
+];
+
+/// `random-bytes` hands back the bytes as base64url without padding.
+pub const RANDOM_BYTES_SHAPE: &[ShapeField] = &[field("value", "string")];
+
+/// `credential-status` and `credential-forget` hand back whether the credential is connected.
+pub const CREDENTIAL_SHAPE: &[ShapeField] = &[field("connected", "boolean")];
+
+/// A host effect's failure: the message.
+pub const HOST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
+
+/// A keyed `call-service` failure: the message and the call's key.
+pub const KEYED_CALL_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("key", "string")];
 
 /// `persist batch` hands back a summary of the attempted operations.
 pub const PERSIST_BATCH_FIELDS: &[&str] = &["operations", "completedCount", "totalCount"];
 
 /// What `operator` emits on success at a call site.
 ///
-/// `persist_action` is the literal action keyword when the call site carries
-/// one (`["persist", "create", …]`). The legacy 3-element form
-/// (`["persist", "Entity", data]`) has no action keyword; pass `None` and this
-/// returns [`ProducedPayload::Opaque`] rather than guessing "create" — a wrong
-/// guess would report against the wrong contract. For `http` it is
-/// [`HTTP_PAGINATE_VARIANT`] when the call site carries `paginate`, else `None`.
-pub fn success_payload(operator: &str, persist_action: Option<&str>) -> ProducedPayload {
+/// `variant` carries what the call site adds to the operator's contract:
+/// `persist`'s literal action keyword (the legacy 3-element form has no action
+/// keyword; pass [`CallVariant::Plain`] and this returns
+/// [`ProducedPayload::Opaque`] rather than guessing "create" -- a wrong guess
+/// would report against the wrong contract), or an `http` call's `paginate`.
+pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload {
     match operator {
-        "persist" => match persist_action {
-            Some("create") | Some("upsert") | Some("update") => ProducedPayload::EntityRow,
-            Some("delete") => ProducedPayload::Fields(PERSIST_DELETE_FIELDS),
-            Some("batch") => ProducedPayload::Fields(PERSIST_BATCH_FIELDS),
+        "persist" => match variant {
+            CallVariant::PersistAction("create" | "upsert" | "update") => ProducedPayload::EntityRow,
+            CallVariant::PersistAction("delete") => ProducedPayload::Fields(PERSIST_DELETE_FIELDS),
+            CallVariant::PersistAction("batch") => ProducedPayload::Fields(PERSIST_BATCH_FIELDS),
             _ => ProducedPayload::Opaque,
         },
         // `ref` emits the same wrapper as `fetch` but fires it on `on_change`;
         // see `success_emit_key`.
         "fetch" | "ref" => ProducedPayload::Fields(FETCH_WRAPPER_FIELDS),
-        "http" => match persist_action {
-            Some(HTTP_PAGINATE_VARIANT) => ProducedPayload::Fields(HTTP_PAGED_FIELDS),
-            _ => ProducedPayload::Fields(HTTP_REPLY_FIELDS),
+        "http" => match variant {
+            CallVariant::HttpPaginate => ProducedPayload::Shape(HTTP_PAGED_SHAPE),
+            _ => ProducedPayload::Shape(HTTP_REPLY_SHAPE),
         },
+        "random-bytes" => ProducedPayload::Shape(RANDOM_BYTES_SHAPE),
+        "credential-status" | "credential-forget" => ProducedPayload::Shape(CREDENTIAL_SHAPE),
         // `call-service` and `set` declare `any`; nothing to compare against.
+        _ => ProducedPayload::Opaque,
+    }
+}
+
+/// What `operator` emits on `emit.failure`. `keyed` = the call site carries a
+/// `key`: only a keyed `call-service` failure has a known shape (`{ error, key }`);
+/// an unkeyed one stays opaque. `http` always echoes its key.
+pub fn failure_payload(operator: &str, keyed: bool) -> ProducedPayload {
+    match operator {
+        "http" => ProducedPayload::Shape(HTTP_FAILURE_SHAPE),
+        "random-bytes" | "credential-status" | "credential-forget" => ProducedPayload::Shape(HOST_FAILURE_SHAPE),
+        "call-service" | "call_service" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
+        _ => ProducedPayload::Opaque,
+    }
+}
+
+/// What `operator` emits on `emit.onMessage`: only an `http` `stream` has one.
+pub fn message_payload(operator: &str) -> ProducedPayload {
+    match operator {
+        "http" => ProducedPayload::Shape(HTTP_STREAM_EVENT_SHAPE),
         _ => ProducedPayload::Opaque,
     }
 }
@@ -121,9 +214,14 @@ pub fn undeclared_reads<'a>(
     produced: &ProducedPayload,
     entity_field_names: &[&str],
 ) -> Vec<&'a str> {
+    let shape_names: Vec<&str>;
     let produced_names: &[&str] = match produced {
         ProducedPayload::Opaque => return Vec::new(),
         ProducedPayload::Fields(f) => f,
+        ProducedPayload::Shape(fields) => {
+            shape_names = fields.iter().map(|f| f.name).collect();
+            &shape_names
+        }
         ProducedPayload::EntityRow => {
             if entity_field_names.is_empty() {
                 return Vec::new();
@@ -143,13 +241,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn host_effects_emit_their_closed_payloads() {
+        assert_eq!(
+            success_payload("random-bytes", CallVariant::Plain),
+            ProducedPayload::Shape(RANDOM_BYTES_SHAPE)
+        );
+        for op in ["credential-status", "credential-forget"] {
+            assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(CREDENTIAL_SHAPE));
+            assert_eq!(failure_payload(op, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
+        }
+        assert_eq!(failure_payload("random-bytes", false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
+        assert_eq!(
+            undeclared_reads(&["value", "bytes"], &success_payload("random-bytes", CallVariant::Plain), &[]),
+            vec!["bytes"]
+        );
+        assert_eq!(
+            undeclared_reads(&["connected"], &success_payload("credential-status", CallVariant::Plain), &[]),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
     fn persist_create_and_update_emit_the_row_flat() {
         assert_eq!(
-            success_payload("persist", Some("create")),
+            success_payload("persist", CallVariant::PersistAction("create")),
             ProducedPayload::EntityRow
         );
         assert_eq!(
-            success_payload("persist", Some("update")),
+            success_payload("persist", CallVariant::PersistAction("update")),
             ProducedPayload::EntityRow
         );
     }
@@ -157,7 +276,7 @@ mod tests {
     #[test]
     fn persist_delete_emits_a_tombstone_not_the_row() {
         assert_eq!(
-            success_payload("persist", Some("delete")),
+            success_payload("persist", CallVariant::PersistAction("delete")),
             ProducedPayload::Fields(PERSIST_DELETE_FIELDS)
         );
     }
@@ -166,13 +285,13 @@ mod tests {
     /// "create" there would compare against the wrong contract.
     #[test]
     fn an_actionless_persist_is_not_guessed_at() {
-        assert_eq!(success_payload("persist", None), ProducedPayload::Opaque);
+        assert_eq!(success_payload("persist", CallVariant::Plain), ProducedPayload::Opaque);
     }
 
     #[test]
     fn fetch_and_ref_emit_the_data_wrapper_and_ref_uses_on_change() {
         assert_eq!(
-            success_payload("fetch", None),
+            success_payload("fetch", CallVariant::Plain),
             ProducedPayload::Fields(FETCH_WRAPPER_FIELDS)
         );
         assert_eq!(success_emit_key("fetch"), "success");
@@ -215,33 +334,58 @@ mod tests {
     #[test]
     fn http_emits_the_reply_and_a_paginating_call_emits_the_pages() {
         assert_eq!(
-            success_payload("http", None),
-            ProducedPayload::Fields(HTTP_REPLY_FIELDS)
+            success_payload("http", CallVariant::Plain),
+            ProducedPayload::Shape(HTTP_REPLY_SHAPE)
         );
         assert_eq!(
-            success_payload("http", Some(HTTP_PAGINATE_VARIANT)),
-            ProducedPayload::Fields(HTTP_PAGED_FIELDS)
+            success_payload("http", CallVariant::HttpPaginate),
+            ProducedPayload::Shape(HTTP_PAGED_SHAPE)
         );
         assert_eq!(success_emit_key("http"), "success");
         assert_eq!(
-            undeclared_reads(
-                &["status", "body"],
-                &success_payload("http", None),
-                &[]
-            ),
+            undeclared_reads(&["status", "body"], &success_payload("http", CallVariant::Plain), &[]),
             Vec::<&str>::new()
         );
         assert_eq!(
-            undeclared_reads(&["status"], &success_payload("http", Some("paginate")), &[]),
+            undeclared_reads(&["status"], &success_payload("http", CallVariant::HttpPaginate), &[]),
             vec!["status"],
             "control: a paged payload has no status at its root"
         );
     }
 
     #[test]
+    fn a_paged_payload_types_its_last_reply() {
+        let last = HTTP_PAGED_SHAPE.iter().find(|f| f.name == "last").unwrap();
+        let names: Vec<&str> = last.fields.iter().map(|f| f.name).collect();
+        assert_eq!(names, vec!["status", "headers", "body"]);
+    }
+
+    #[test]
+    fn http_failure_and_stream_events_echo_the_key() {
+        let failure = failure_payload("http", false);
+        assert_eq!(failure, ProducedPayload::Shape(HTTP_FAILURE_SHAPE));
+        assert!(undeclared_reads(&["error", "kind", "credential", "key"], &failure, &[]).is_empty());
+        assert_eq!(undeclared_reads(&["status"], &failure, &[]), vec!["status"]);
+        let event = message_payload("http");
+        assert!(undeclared_reads(&["data", "event", "id", "key"], &event, &[]).is_empty());
+        assert_eq!(undeclared_reads(&["error"], &event, &[]), vec!["error"]);
+    }
+
+    #[test]
+    fn a_keyed_call_service_failure_is_error_and_key_and_an_unkeyed_one_is_opaque() {
+        assert_eq!(
+            failure_payload("call-service", true),
+            ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE)
+        );
+        assert_eq!(failure_payload("call-service", false), ProducedPayload::Opaque);
+        assert_eq!(message_payload("call-service"), ProducedPayload::Opaque);
+        assert_eq!(failure_payload("fetch", true), ProducedPayload::Opaque);
+    }
+
+    #[test]
     fn opaque_operators_are_never_checked() {
         assert_eq!(
-            success_payload("call-service", None),
+            success_payload("call-service", CallVariant::Plain),
             ProducedPayload::Opaque
         );
         assert!(undeclared_reads(&["whatever"], &ProducedPayload::Opaque, &[]).is_empty());

@@ -227,8 +227,7 @@ mod tests {
             ]
         }"#,
         )
-        .unwrap(),
-    egress: None,
+        .unwrap()
     }
 
     #[test]

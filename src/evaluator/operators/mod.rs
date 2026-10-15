@@ -47,6 +47,7 @@ mod string;
 mod system;
 mod util;
 mod vector;
+mod xml;
 
 pub use anim::*;
 pub use array::*;
@@ -65,6 +66,7 @@ pub use path::*;
 pub use string::*;
 pub use system::*;
 pub use vector::*;
+pub use xml::*;
 
 /// The names a raw-body callback of operator `name` binds (see [`OperatorKind::raw_callback_params`]).
 pub fn raw_callback_params(name: &str) -> Option<&'static [&'static str]> {
@@ -146,6 +148,9 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
 
         // CSV
         "csv/parse" => K::CsvParseOp,
+
+        // XML
+        "xml/parse" => K::XmlParseOp,
 
         // Path building (for dynamic field paths in set effect)
         "path" => K::PathOp,

@@ -688,6 +688,21 @@ impl PrettyPrinter {
                 self.write_expr(key);
                 self.write(")");
             }
+            OirEffect::RandomBytes { bytes: expr, .. } => {
+                self.write("random-bytes(");
+                self.write_expr(expr);
+                self.write(")");
+            }
+            OirEffect::CredentialStatus { credential: expr, .. } => {
+                self.write("credential-status(");
+                self.write_expr(expr);
+                self.write(")");
+            }
+            OirEffect::CredentialForget { credential: expr, .. } => {
+                self.write("credential-forget(");
+                self.write_expr(expr);
+                self.write(")");
+            }
             OirEffect::Spawn { entity_type, props } => {
                 self.write(&format!("spawn(\"{}\", ", entity_type));
                 self.write_expr(props);

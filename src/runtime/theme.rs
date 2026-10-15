@@ -998,6 +998,7 @@ mod tests {
             metadata: None,
             schema_version: None,
             ledger: None,
+            egress: None,
         }
     }
 

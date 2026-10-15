@@ -226,6 +226,9 @@ impl ExprLowerer {
             "call-service" | "call_service" => self.resolve_call_service_effect(args),
             "http" => self.resolve_http_effect(args),
             "cancel-call" => self.resolve_cancel_call_effect(args),
+            "random-bytes" => self.resolve_random_bytes_effect(args),
+            "credential-status" => self.resolve_credential_effect(args, true),
+            "credential-forget" => self.resolve_credential_effect(args, false),
 
             // Resource operators
             "ref" => self.resolve_ref_effect(args),
@@ -1230,6 +1233,60 @@ impl ExprLowerer {
         let mut fields = fields.clone();
         fields.insert("paginate".to_string(), SExpression::Object(held));
         self.resolve_sexpr(&SExpression::Object(fields))
+    }
+
+    /// The `{ emit }` options object a one-argument effect may carry.
+    fn resolve_emit_only_options(
+        &self,
+        head: &str,
+        options: Option<&SExpression>,
+    ) -> Result<Option<OirEmitConfig>, LowerError> {
+        match options {
+            None | Some(SExpression::Null) => Ok(None),
+            Some(SExpression::Object(options)) => self.extract_emit_config(options),
+            Some(other) => Err(LowerError::InvalidSExpr(format!(
+                "({head} …) options must be an object, got {other:?}"
+            ))),
+        }
+    }
+
+    fn resolve_random_bytes_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+        // Format: ["random-bytes", n, { emit? }?]
+        if !(1..=2).contains(&args.len()) {
+            return Err(LowerError::InvalidSExpr(
+                "random-bytes takes a byte count and optional options".to_string(),
+            ));
+        }
+        let emit = self.resolve_emit_only_options("random-bytes", args.get(1))?;
+        Ok(OirExpr::effect(OirEffect::random_bytes(
+            self.resolve_sexpr(&args[0])?,
+            emit,
+        )))
+    }
+
+    fn resolve_credential_effect(
+        &self,
+        args: &[SExpression],
+        status: bool,
+    ) -> Result<OirExpr, LowerError> {
+        // Format: ["credential-status" | "credential-forget", credential, { emit? }?]
+        let head = if status {
+            "credential-status"
+        } else {
+            "credential-forget"
+        };
+        if !(1..=2).contains(&args.len()) {
+            return Err(LowerError::InvalidSExpr(format!(
+                "{head} takes a credential knob and optional options"
+            )));
+        }
+        let emit = self.resolve_emit_only_options(head, args.get(1))?;
+        let credential = self.resolve_sexpr(&args[0])?;
+        Ok(OirExpr::effect(if status {
+            OirEffect::credential_status(credential, emit)
+        } else {
+            OirEffect::credential_forget(credential, emit)
+        }))
     }
 
     fn resolve_cancel_call_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {

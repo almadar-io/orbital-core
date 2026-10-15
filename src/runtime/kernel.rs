@@ -2,7 +2,6 @@
 
 use super::{
     http_request,
-    http_service::TransportError,
     dispatch_memory::{DispatchMemory, DispatchView},
     dispatch_mode::DispatchMode,
     embed_index::EmbedIndex,
@@ -31,6 +30,8 @@ use crate::effects::{
     delivery_record_value, page_ordered_rows, BusEventSource, DeliveryRecord, DispatchLog,
     PersistOperation,
 };
+use crate::codec;
+use crate::effects::ServiceCaller;
 use crate::error::{EvalError, OrbitalError};
 use crate::evaluator::ValueMap;
 use crate::util::DispatchVisits;
@@ -51,6 +52,9 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tracing::{debug, info};
+
+/// The most bytes one `random-bytes` may ask for.
+const RANDOM_BYTES_MAX: f64 = 1024.0;
 
 /// Errors returned by the runtime kernel.
 #[derive(Debug, thiserror::Error)]
@@ -1183,9 +1187,7 @@ impl RuntimeKernel {
             // Seed entity instances from inline entity definitions.
             if let EntityRef::Inline(entity_def) = &orbital.entity {
                 if let Some(instances) = &entity_def.instances {
-                    let now = crate::runtime::mock_random::iso_from_ms(
-                        crate::time_util::now_millis_f64(),
-                    );
+                    let now = crate::runtime::mock_random::iso_from_ms(self.clock_now());
                     for entity in
                         crate::runtime::seed::instance_rows(&entity_def.name, instances, &now)
                     {
@@ -3312,7 +3314,8 @@ impl RuntimeKernel {
                         (self.effect_executor.execute(&resolved, ctx), None)
                     } else {
                         self.io.set_call_site(self.call_site_of(emit.as_ref()));
-                        let mut result = self.run_http(&resolved, ctx, evaluator);
+                        let principal = ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
+                        let mut result = self.run_http(&resolved, principal.as_deref());
                         let verdict = self.io.take_call_verdict();
                         self.io.set_call_site(None);
                         if verdict == Some(CallVerdict::Cancelled) {
@@ -3343,6 +3346,23 @@ impl RuntimeKernel {
                         return;
                     };
                     effect_results.push(self.effect_executor.execute(&resolved, ctx));
+                }
+                Effect::RandomBytes { emit, .. }
+                | Effect::CredentialStatus { emit, .. }
+                | Effect::CredentialForget { emit, .. } => {
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    let result = if self.effect_executor.environment().is_client() {
+                        self.effect_executor.execute(&resolved, ctx)
+                    } else {
+                        self.run_host_effect(&resolved, ctx)
+                    };
+                    let completion = emit
+                        .as_ref()
+                        .and_then(|e| keyed_call_completion_emit(e, &result, None, None));
+                    effect_results.push(result);
+                    effect_results.extend(completion);
                 }
                 Effect::Emit { .. } => {
                     // Resolve now, against this leaf's scope (`let` locals, earlier sets), as JS does at emit time.
@@ -3400,15 +3420,76 @@ impl RuntimeKernel {
         })
     }
 
-    /// Run an `http` effect: one `Secret` ask per credential, then the `Http` (or `HttpStream`) asks of its
-    /// pages. A refusal fails before any `Http` ask; a reply of any status is the success payload.
-    fn run_http(
-        &self,
-        effect: &Effect,
-        ctx: &BindingContext,
-        evaluator: &Evaluator,
-    ) -> EffectResult {
-        use http_request::{HttpAuth, HttpRefusal};
+    /// Run `random-bytes`, `credential-status` or `credential-forget` through one journaled ask.
+    fn run_host_effect(&self, effect: &Effect, ctx: &BindingContext) -> EffectResult {
+        let principal = ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
+        match effect {
+            Effect::RandomBytes { bytes, .. } => {
+                let count = match bytes {
+                    Value::Number(n) if n.fract() == 0.0 && (1.0..=RANDOM_BYTES_MAX).contains(n) => *n as u32,
+                    other => {
+                        return EffectResult::failed(
+                            effect.clone(),
+                            &format!(
+                                "random-bytes: the byte count must be an integer from 1 to {RANDOM_BYTES_MAX}, got {}",
+                                other.to_string_value()
+                            ),
+                        )
+                    }
+                };
+                match self.io.random(count) {
+                    Ok(raw) => EffectResult::executed_with_value(
+                        effect.clone(),
+                        Value::Object(ValueMap::from([(
+                            "value".to_string(),
+                            Value::String(codec::base64url_encode(&raw)),
+                        )])),
+                    ),
+                    Err(message) => EffectResult::failed(effect.clone(), &message),
+                }
+            }
+            Effect::CredentialStatus { credential, .. } | Effect::CredentialForget { credential, .. } => {
+                let status = matches!(effect, Effect::CredentialStatus { .. });
+                let head = if status { "credential-status" } else { "credential-forget" };
+                let Some(principal) = principal else {
+                    return EffectResult::failed(effect.clone(), &format!("{head}: nobody is signed in"));
+                };
+                let Value::String(name) = credential else {
+                    return EffectResult::failed(
+                        effect.clone(),
+                        &format!("{head}: the credential must be a secret knob's name"),
+                    );
+                };
+                let answer = if status {
+                    self.io.credential_status(name, Some(&principal))
+                } else {
+                    self.io
+                        .credential_forget(name, Some(&principal))
+                        .map(|()| false)
+                };
+                match answer {
+                    Ok(connected) => EffectResult::executed_with_value(
+                        effect.clone(),
+                        Value::Object(ValueMap::from([(
+                            "connected".to_string(),
+                            Value::Bool(connected),
+                        )])),
+                    ),
+                    Err(message) => EffectResult::failed(effect.clone(), &message),
+                }
+            }
+            other => EffectResult::noop(other.clone(), "not a host effect"),
+        }
+    }
+
+    /// Run an `http` effect by answering the asks of its `HttpCallDriver`, each journaled; the driver owns
+    /// credentials, OAuth, pagination and streaming.
+    fn run_http(&self, effect: &Effect, principal: Option<&str>) -> EffectResult {
+        use http_request::{HttpAnswer, HttpAsk, HttpCallDriver, HttpStep, SecretScope};
+        let owner = |scope: SecretScope| match scope {
+            SecretScope::App => Ok(None),
+            SecretScope::User => principal.map(Some).ok_or_else(|| "nobody is signed in".to_string()),
+        };
         let Effect::Http {
             method,
             origin,
@@ -3421,196 +3502,51 @@ impl RuntimeKernel {
             return EffectResult::noop(effect.clone(), "not an http effect");
         };
         let key = key.as_deref();
-        let failed = |payload: Value| http_failure(effect, payload);
-        let refused = |refusal: HttpRefusal| failed(http_request::refusal_payload(&refusal));
-        let transport_failed =
-            |error: TransportError| failed(http_request::failure_payload(&error));
-        let broke = |message: String| {
-            failed(http_request::failure_payload(&TransportError::Failed(message)))
-        };
-
-        let spec = match http_request::parse_http_call(*method, origin, path, request) {
+        let spec = match http_request::parse_http_call(
+            *method,
+            &origin.to_string_value(),
+            &path.to_string_value(),
+            request,
+        ) {
             Ok(spec) => spec,
-            Err(refusal) => return refused(refusal),
+            Err(refusal) => return http_failure(effect, http_request::refusal_payload(&refusal)),
         };
         let egress = self.egress.read().clone();
-        if !http_request::origin_allowed(&spec.origin, &egress) {
-            return refused(HttpRefusal::EgressDenied(spec.origin.clone()));
-        }
-        let mut secrets: HashMap<String, String> = HashMap::new();
-        let oauth = match &spec.auth {
-            Some(auth @ HttpAuth::OAuth2Client { client_id, client_secret, .. }) => {
-                http_request::oauth2_cache_name(auth).map(|cache| (cache, client_id.clone(), client_secret.clone()))
-            }
-            _ => None,
-        };
-        if let Some((cache, _, _)) = &oauth {
-            match self.io.secret(cache) {
-                Ok(Some(token)) => {
-                    secrets.insert(cache.clone(), token);
-                }
-                Ok(None) => {}
-                Err(message) => return broke(message),
-            }
-            if self.io.suspended() {
-                return EffectResult::failed(effect.clone(), AWAITING_HOST);
-            }
-        }
-        let cached = oauth.as_ref().is_some_and(|(cache, _, _)| secrets.contains_key(cache));
-        for name in http_request::credentials_needed(&spec) {
-            let grant_only = oauth
-                .as_ref()
-                .is_some_and(|(cache, id, secret)| name != *cache && (name == *id || name == *secret));
-            if secrets.contains_key(&name) || (cached && grant_only) {
-                continue;
-            }
-            match self.io.secret(&name) {
-                Ok(Some(value)) => {
-                    secrets.insert(name, value);
-                }
-                Ok(None) => return refused(HttpRefusal::CredentialMissing(name)),
-                Err(message) => return broke(message),
-            }
-            if self.io.suspended() {
-                return EffectResult::failed(effect.clone(), AWAITING_HOST);
-            }
-        }
-        if let (Some(auth), true) = (&spec.auth, oauth.is_some() && !cached) {
-            if let Err(payload) = self.oauth_grant(auth, &mut secrets, &egress) {
-                return failed(payload);
-            }
-        }
-
-        let max = spec.paginate.as_ref().map_or(1, |p| p.max.max(1));
-        let mut page_token: Option<String> = None;
-        let mut items: Vec<Value> = Vec::new();
-        let mut pages = 0u32;
-        let mut refreshed = false;
+        let (mut driver, mut step) = HttpCallDriver::start(spec, egress, key.map(str::to_string));
         loop {
-            let built = http_request::build_request(
-                &spec,
-                &|name| secrets.get(name).cloned(),
-                &egress,
-                page_token.as_deref(),
-            );
-            let wire = match built {
-                Ok(wire) if http_request::origin_allowed(&wire.url, &egress) => wire,
-                Ok(wire) => return refused(HttpRefusal::EgressDenied(wire.url)),
-                Err(refusal) => return refused(refusal),
-            };
-            let sent = match spec.stream {
-                Some(framing) => self.io.http_stream(&wire, key, framing),
-                None => self.io.http_send(&wire, key),
-            };
-            if self.io.suspended() {
-                return EffectResult::failed(effect.clone(), AWAITING_HOST);
-            }
-            let reply = match sent {
-                Ok(reply) => reply,
-                Err(error) => return transport_failed(error),
-            };
-            if reply.status == 401 && oauth.is_some() && !refreshed {
-                refreshed = true;
-                if let Some(auth) = &spec.auth {
-                    if let Err(payload) = self.oauth_grant(auth, &mut secrets, &egress) {
-                        return failed(payload);
+            match step {
+                HttpStep::Done(Ok(payload)) => {
+                    return EffectResult::executed_with_value(effect.clone(), payload)
+                }
+                HttpStep::Done(Err(payload)) => return http_failure(effect, payload),
+                HttpStep::Ask(ask) => {
+                    let answer = match ask {
+                        HttpAsk::Secret { name, scope } => {
+                            HttpAnswer::Secret(owner(scope).and_then(|who| self.io.secret(&name, who)))
+                        }
+                        HttpAsk::SecretSet {
+                            name,
+                            value,
+                            ttl_ms,
+                            scope,
+                        } => HttpAnswer::SecretSet(
+                            owner(scope).and_then(|who| self.io.store_secret(&name, &value, ttl_ms, who)),
+                        ),
+                        HttpAsk::Random { bytes } => HttpAnswer::Random(self.io.random(bytes)),
+                        HttpAsk::Http { request, delay_ms } => {
+                            HttpAnswer::Http(self.io.http_send(&request, key, delay_ms))
+                        }
+                        HttpAsk::HttpStream { request, framing } => {
+                            HttpAnswer::Http(self.io.http_stream(&request, key, framing))
+                        }
+                    };
+                    if self.io.suspended() {
+                        return EffectResult::failed(effect.clone(), AWAITING_HOST);
                     }
-                }
-                continue;
-            }
-            pages += 1;
-            let payload = http_request::reply_payload(&reply, spec.response_as);
-            let Some(paginate) = &spec.paginate else {
-                return EffectResult::executed_with_value(effect.clone(), payload);
-            };
-            let mut page_ctx = ctx.child();
-            page_ctx.set_local("response", payload.clone());
-            match eval_held(&paginate.collect, evaluator, &page_ctx) {
-                Ok(Value::Array(page_items)) => items.extend(page_items),
-                Ok(_) => return broke("paginate.collect must produce a list".to_string()),
-                Err(message) => return broke(format!("paginate.collect: {message}")),
-            }
-            let next = match paginate.style {
-                http_request::PageStyle::LinkHeader => {
-                    http_request::next_link(&reply).map(Value::String)
-                }
-                _ => match eval_held(&paginate.next, evaluator, &page_ctx) {
-                    Ok(Value::Null) => None,
-                    Ok(Value::String(token)) if token.is_empty() => None,
-                    Ok(token @ (Value::String(_) | Value::Number(_))) => Some(token),
-                    Ok(_) => {
-                        return broke("paginate.next must produce a token or null".to_string())
-                    }
-                    Err(message) => return broke(format!("paginate.next: {message}")),
-                },
-            };
-            match next {
-                Some(token) if pages < max => page_token = Some(token.to_string_value()),
-                _ => {
-                    let mut paged = ValueMap::new();
-                    paged.insert("pages".to_string(), Value::Number(f64::from(pages)));
-                    paged.insert("items".to_string(), Value::Array(items));
-                    paged.insert("last".to_string(), payload);
-                    return EffectResult::executed_with_value(effect.clone(), Value::Object(paged));
+                    step = driver.resume(answer);
                 }
             }
         }
-    }
-
-    /// One client-credentials grant: the token request through `Http`, the token kept with `SecretSet`.
-    fn oauth_grant(
-        &self,
-        auth: &http_request::HttpAuth,
-        secrets: &mut HashMap<String, String>,
-        egress: &[String],
-    ) -> Result<(), Value> {
-        use http_request::{HttpAuth, HttpRefusal};
-        let refused = |r: HttpRefusal| http_request::refusal_payload(&r);
-        let broke = |message: String| {
-            http_request::failure_payload(&TransportError::Failed(message))
-        };
-        let HttpAuth::OAuth2Client {
-            client_id,
-            client_secret,
-            ..
-        } = auth
-        else {
-            return Err(refused(HttpRefusal::Invalid("not an oauth2 auth".to_string())));
-        };
-        for name in [client_id, client_secret] {
-            if secrets.contains_key(name) {
-                continue;
-            }
-            match self.io.secret(name) {
-                Ok(Some(value)) => {
-                    secrets.insert(name.clone(), value);
-                }
-                Ok(None) => return Err(refused(HttpRefusal::CredentialMissing(name.clone()))),
-                Err(message) => return Err(broke(message)),
-            }
-            if self.io.suspended() {
-                return Err(broke(AWAITING_HOST.to_string()));
-            }
-        }
-        let grant = http_request::oauth2_token_request(auth, &|name| secrets.get(name).cloned())
-            .map_err(refused)?;
-        if !http_request::origin_allowed(&grant.url, egress) {
-            return Err(refused(HttpRefusal::EgressDenied(grant.url)));
-        }
-        let reply = self.io.http_send(&grant, None).map_err(|e| http_request::failure_payload(&e))?;
-        if self.io.suspended() {
-            return Err(broke(AWAITING_HOST.to_string()));
-        }
-        let (token, ttl_ms) = http_request::parse_token_reply(&reply).map_err(&broke)?;
-        let Some(cache) = http_request::oauth2_cache_name(auth) else {
-            return Err(refused(HttpRefusal::Invalid("not an oauth2 auth".to_string())));
-        };
-        self.io.store_secret(&cache, &token, ttl_ms).map_err(&broke)?;
-        if self.io.suspended() {
-            return Err(broke(AWAITING_HOST.to_string()));
-        }
-        secrets.insert(cache, token);
-        Ok(())
     }
 
     /// Get render-ui effects for a state to show UI when no transition happens.
@@ -3839,13 +3775,21 @@ impl RuntimeKernel {
     }
 
     /// Get the current user.
+    /// The dispatch clock: the configured one, else the wall clock.
+    pub(crate) fn clock_now(&self) -> f64 {
+        match &self.config.clock {
+            Some(clock) => clock(),
+            None => crate::time_util::now_millis_f64(),
+        }
+    }
+
     /// Stamp `now` once for the dispatch this call starts; a nested call reuses the outer stamp.
     fn begin_dispatch(&self) -> DispatchStamp {
         let mut slot = self.dispatch_now.write();
         match *slot {
             Some(now) => DispatchStamp { slot: None, now },
             None => {
-                let now = crate::time_util::now_millis_f64();
+                let now = self.clock_now();
                 *slot = Some(now);
                 DispatchStamp {
                     slot: Some(Arc::clone(&self.dispatch_now)),
@@ -4371,6 +4315,7 @@ fn browser_data_effect(effect: &Effect, residence: &crate::effects::Residence) -
         Effect::Persist { entity_type, .. } | Effect::Fetch { entity_type, .. } => {
             residence.is_client(entity_type)
         }
+        Effect::Http { request, .. } => crate::effects::resolved_http_is_keyless(request),
         _ => false,
     }
 }
@@ -4537,14 +4482,26 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             emit,
         } => Effect::Http {
             method,
-            origin: ctx.resolve_value_checked(&Value::String(origin))?.into_owned().to_string_value(),
-            path: ctx.resolve_value_checked(&Value::String(path))?.into_owned().to_string_value(),
+            origin: ctx.resolve_value_checked(&origin)?.into_owned(),
+            path: ctx.resolve_value_checked(&path)?.into_owned(),
             request: resolve_http_request(&request, ctx)?,
             key: key.map(|k| resolve_key(&k, ctx)),
             emit,
         },
         Effect::CancelCall { key } => Effect::CancelCall {
             key: resolve_key(&key, ctx),
+        },
+        Effect::RandomBytes { bytes, emit } => Effect::RandomBytes {
+            bytes: ctx.resolve_value_checked(&bytes)?.into_owned(),
+            emit,
+        },
+        Effect::CredentialStatus { credential, emit } => Effect::CredentialStatus {
+            credential: ctx.resolve_value_checked(&credential)?.into_owned(),
+            emit,
+        },
+        Effect::CredentialForget { credential, emit } => Effect::CredentialForget {
+            credential: ctx.resolve_value_checked(&credential)?.into_owned(),
+            emit,
         },
         other => other,
     })
@@ -4628,17 +4585,6 @@ fn resolve_http_request(request: &Value, ctx: &BindingContext) -> Result<Value, 
         }
     }
     Ok(resolved)
-}
-
-/// Evaluate a held `paginate.next`/`collect`: a `(quote …)` is its body, anything else is the expression.
-fn eval_held(held: &Value, evaluator: &Evaluator, ctx: &BindingContext) -> Result<Value, String> {
-    let expr = value_to_sexpr(held);
-    let expr = match crate::schema::quote::quote_body_of(&expr) {
-        Some(body) => crate::schema::quote::decode_quote_body(body)
-            .ok_or_else(|| "the quoted expression is not valid JSON".to_string())?,
-        None => expr,
-    };
-    evaluator.evaluate(&expr, ctx).map_err(|e| e.to_string())
 }
 
 fn resolve_key(key: &str, ctx: &BindingContext) -> String {
@@ -4821,9 +4767,12 @@ fn is_thrown_failure(result: &EffectResult) -> bool {
         | Effect::CancelCall { .. }
         | Effect::RenderUi { .. }
         | Effect::Emit { .. } => true,
-        Effect::CallService { emit, .. } | Effect::Http { emit, .. } | Effect::Custom { emit, .. } => {
-            !routed(emit)
-        }
+        Effect::CallService { emit, .. }
+        | Effect::Http { emit, .. }
+        | Effect::Custom { emit, .. }
+        | Effect::RandomBytes { emit, .. }
+        | Effect::CredentialStatus { emit, .. }
+        | Effect::CredentialForget { emit, .. } => !routed(emit),
         _ => false,
     }
 }
@@ -4851,18 +4800,33 @@ fn keyed_call_completion_emit(
         }
         (None, EffectOutcome::Executed) => (
             emit.success.clone()?,
-            result.return_value.clone().unwrap_or(Value::Null),
+            echo_key(result.return_value.clone().unwrap_or(Value::Null), &result.effect, key),
         ),
         (None, EffectOutcome::Failed) => (
             emit.failure.clone()?,
-            result
-                .return_value
-                .clone()
-                .unwrap_or_else(|| error_payload(result, None)),
+            echo_key(
+                result
+                    .return_value
+                    .clone()
+                    .unwrap_or_else(|| error_payload(result, None)),
+                &result.effect,
+                key,
+            ),
         ),
         (None, EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_)) => return None,
     };
     Some(EffectResult::executed(Effect::Emit { event, payload }))
+}
+
+/// A keyed `call-service` echoes its key beside the record it answers with (D-A82); an `http` payload already
+/// carries it (the driver owns it), and a result that is not a record is left as it is.
+fn echo_key(payload: Value, effect: &Effect, key: Option<&str>) -> Value {
+    let (Effect::CallService { .. }, Some(key), Value::Object(mut fields)) = (effect, key, payload.clone())
+    else {
+        return payload;
+    };
+    fields.insert("key".to_string(), Value::String(key.to_string()));
+    Value::Object(fields)
 }
 
 /// A substrate op's declared completion — JS `runSubstrate`/`runProgramEffectArm`: `emit.success`

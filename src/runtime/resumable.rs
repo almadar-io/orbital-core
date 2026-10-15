@@ -45,8 +45,9 @@ impl RequestId {
 }
 
 /// The I/O the kernel needs the host to do. The kernel applies row policy, filters and paging itself
-/// around these, so a host answers plain storage reads and writes.
-#[derive(Debug, Clone, PartialEq)]
+/// around these, so a host answers plain storage reads and writes. `Debug` shows no secret value
+/// (`SecretSet.value`; an `HttpRequest` redacts its own credentials).
+#[derive(Clone, PartialEq)]
 pub enum IoRequest {
     ReadRow {
         entity_type: String,
@@ -101,6 +102,9 @@ pub enum IoRequest {
         request: HttpRequest,
         /// The effect's key, so `cancel-call` can abort the request in flight.
         key: Option<String>,
+        /// How long the host waits before sending (a retry's backoff); `None` sends now.
+        delay_ms: Option<u64>,
+        site: Option<CallSite>,
     },
     /// A request of the `http` effect whose reply is a stream: the host dispatches each event to `site`'s
     /// `onMessage` route as it arrives, then answers [`IoAnswer::Http`] with the final reply, body empty.
@@ -110,15 +114,32 @@ pub enum IoRequest {
         framing: StreamFraming,
         site: Option<CallSite>,
     },
-    /// A credential by name.
+    /// A credential by name. `principal` is the dispatch's `@user` id for a user-scoped credential
+    /// (set by the kernel, never by the program); `None` is the app-wide credential.
     Secret {
         name: String,
+        principal: Option<String>,
     },
     /// Keep a derived secret (an OAuth token) in the host's store.
     SecretSet {
         name: String,
         value: String,
         ttl_ms: u64,
+        principal: Option<String>,
+    },
+    /// `bytes` of CSPRNG output, journaled so a replay sees the same bytes.
+    Random {
+        bytes: u32,
+    },
+    /// Whether the host holds a value for the credential `name` (for `principal` when set).
+    CredentialStatus {
+        name: String,
+        principal: Option<String>,
+    },
+    /// Drop the credential `name` the host holds (for `principal` when set).
+    CredentialForget {
+        name: String,
+        principal: Option<String>,
     },
 }
 
@@ -151,8 +172,9 @@ pub enum CallVerdict {
     Deferred,
 }
 
-/// A host's answer to one [`IoRequest`]; the variant must be the one the request calls for.
-#[derive(Debug, Clone, PartialEq)]
+/// A host's answer to one [`IoRequest`]; the variant must be the one the request calls for. `Debug` shows no
+/// secret value (`Secret` carries one).
+#[derive(Clone, PartialEq)]
 pub enum IoAnswer {
     Row(Result<Value, String>),
     Rows(Result<Vec<Arc<Value>>, String>),
@@ -174,6 +196,165 @@ pub enum IoAnswer {
     Http(Result<HttpResponse, TransportError>),
     Secret(Result<Option<String>, String>),
     SecretSet(Result<(), String>),
+    Random(Result<Vec<u8>, String>),
+    CredentialStatus(Result<bool, String>),
+    CredentialForget(Result<(), String>),
+}
+
+struct Redacted;
+
+impl std::fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl std::fmt::Debug for IoRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadRow { entity_type, id } => f
+                .debug_struct("ReadRow")
+                .field("entity_type", entity_type)
+                .field("id", id)
+                .finish(),
+            Self::ListRows { entity_type } => f.debug_struct("ListRows").field("entity_type", entity_type).finish(),
+            Self::QueryRows {
+                entity_type,
+                query,
+                project,
+            } => f
+                .debug_struct("QueryRows")
+                .field("entity_type", entity_type)
+                .field("query", query)
+                .field("project", project)
+                .finish(),
+            Self::WriteRows { batch } => f.debug_struct("WriteRows").field("batch", batch).finish(),
+            Self::CreateRow { entity_type, data } => f
+                .debug_struct("CreateRow")
+                .field("entity_type", entity_type)
+                .field("data", data)
+                .finish(),
+            Self::WriteRow { entity_type, id, data } => f
+                .debug_struct("WriteRow")
+                .field("entity_type", entity_type)
+                .field("id", id)
+                .field("data", data)
+                .finish(),
+            Self::DeleteRow { entity_type, id } => f
+                .debug_struct("DeleteRow")
+                .field("entity_type", entity_type)
+                .field("id", id)
+                .finish(),
+            Self::CallService {
+                service,
+                method,
+                args,
+                key,
+                caller,
+                site,
+            } => f
+                .debug_struct("CallService")
+                .field("service", service)
+                .field("method", method)
+                .field("args", args)
+                .field("key", key)
+                .field("caller", caller)
+                .field("site", site)
+                .finish(),
+            Self::CancelCall { key } => f.debug_struct("CancelCall").field("key", key).finish(),
+            Self::Substrate { op, args } => f.debug_struct("Substrate").field("op", op).field("args", args).finish(),
+            Self::Http {
+                request,
+                key,
+                delay_ms,
+                site,
+            } => f
+                .debug_struct("Http")
+                .field("request", request)
+                .field("key", key)
+                .field("delay_ms", delay_ms)
+                .field("site", site)
+                .finish(),
+            Self::HttpStream {
+                request,
+                key,
+                framing,
+                site,
+            } => f
+                .debug_struct("HttpStream")
+                .field("request", request)
+                .field("key", key)
+                .field("framing", framing)
+                .field("site", site)
+                .finish(),
+            Self::Secret { name, principal } => f
+                .debug_struct("Secret")
+                .field("name", name)
+                .field("principal", principal)
+                .finish(),
+            Self::SecretSet {
+                name,
+                ttl_ms,
+                principal,
+                ..
+            } => f
+                .debug_struct("SecretSet")
+                .field("name", name)
+                .field("value", &Redacted)
+                .field("ttl_ms", ttl_ms)
+                .field("principal", principal)
+                .finish(),
+            Self::Random { bytes } => f.debug_struct("Random").field("bytes", bytes).finish(),
+            Self::CredentialStatus { name, principal } => f
+                .debug_struct("CredentialStatus")
+                .field("name", name)
+                .field("principal", principal)
+                .finish(),
+            Self::CredentialForget { name, principal } => f
+                .debug_struct("CredentialForget")
+                .field("name", name)
+                .field("principal", principal)
+                .finish(),
+        }
+    }
+}
+
+impl std::fmt::Debug for IoAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Row(r) => f.debug_tuple("Row").field(r).finish(),
+            Self::Rows(r) => f.debug_tuple("Rows").field(r).finish(),
+            Self::Page(r) => f.debug_tuple("Page").field(r).finish(),
+            Self::IdPage(r) => f.debug_tuple("IdPage").field(r).finish(),
+            Self::QueryUnsupported(m) => f.debug_tuple("QueryUnsupported").field(m).finish(),
+            Self::Wrote(r) => f.debug_tuple("Wrote").field(r).finish(),
+            Self::WriteUnsupported(m) => f.debug_tuple("WriteUnsupported").field(m).finish(),
+            Self::Deleted(r) => f.debug_tuple("Deleted").field(r).finish(),
+            Self::Service(r) => f.debug_tuple("Service").field(r).finish(),
+            Self::ServiceCancelled => f.write_str("ServiceCancelled"),
+            Self::ServiceDeferred => f.write_str("ServiceDeferred"),
+            Self::Cancelled(r) => f.debug_tuple("Cancelled").field(r).finish(),
+            Self::Substrate(r) => f.debug_tuple("Substrate").field(r).finish(),
+            Self::Http(r) => f.debug_tuple("Http").field(r).finish(),
+            Self::Secret(r) => {
+                let shown: Result<Option<Redacted>, &String> = match r {
+                    Ok(value) => Ok(value.as_ref().map(|_| Redacted)),
+                    Err(message) => Err(message),
+                };
+                f.debug_tuple("Secret").field(&shown).finish()
+            }
+            Self::SecretSet(r) => f.debug_tuple("SecretSet").field(r).finish(),
+            Self::Random(r) => {
+                let shown: Result<Redacted, &String> = match r {
+                    Ok(_) => Ok(Redacted),
+                    Err(message) => Err(message),
+                };
+                f.debug_tuple("Random").field(&shown).finish()
+            }
+            Self::CredentialStatus(r) => f.debug_tuple("CredentialStatus").field(r).finish(),
+            Self::CredentialForget(r) => f.debug_tuple("CredentialForget").field(r).finish(),
+        }
+    }
 }
 
 impl IoAnswer {
@@ -217,6 +398,9 @@ impl IoAnswer {
                 )
                 | (IoRequest::Secret { .. }, IoAnswer::Secret(_))
                 | (IoRequest::SecretSet { .. }, IoAnswer::SecretSet(_))
+                | (IoRequest::Random { .. }, IoAnswer::Random(_))
+                | (IoRequest::CredentialStatus { .. }, IoAnswer::CredentialStatus(_))
+                | (IoRequest::CredentialForget { .. }, IoAnswer::CredentialForget(_))
         )
     }
 }
@@ -898,10 +1082,13 @@ impl IoPort {
         &self,
         request: &HttpRequest,
         key: Option<&str>,
+        delay_ms: Option<u64>,
     ) -> Result<HttpResponse, TransportError> {
         match self.ask(|| IoRequest::Http {
             request: request.clone(),
             key: key.map(str::to_string),
+            delay_ms,
+            site: self.site.lock().clone(),
         }) {
             Asked::Direct => Err(TransportError::Failed(NO_HTTP_HOST.to_string())),
             Asked::Answer(answer) => self.http_answer(answer),
@@ -938,9 +1125,10 @@ impl IoPort {
         }
     }
 
-    pub(crate) fn secret(&self, name: &str) -> Result<Option<String>, String> {
+    pub(crate) fn secret(&self, name: &str, principal: Option<&str>) -> Result<Option<String>, String> {
         match self.ask(|| IoRequest::Secret {
             name: name.to_string(),
+            principal: principal.map(str::to_string),
         }) {
             Asked::Direct => Err(NO_HTTP_HOST.to_string()),
             Asked::Answer(IoAnswer::Secret(out)) => out,
@@ -948,14 +1136,51 @@ impl IoPort {
         }
     }
 
-    pub(crate) fn store_secret(&self, name: &str, value: &str, ttl_ms: u64) -> Result<(), String> {
+    pub(crate) fn store_secret(
+        &self,
+        name: &str,
+        value: &str,
+        ttl_ms: u64,
+        principal: Option<&str>,
+    ) -> Result<(), String> {
         match self.ask(|| IoRequest::SecretSet {
             name: name.to_string(),
             value: value.to_string(),
             ttl_ms,
+            principal: principal.map(str::to_string),
         }) {
             Asked::Direct => Err(NO_HTTP_HOST.to_string()),
             Asked::Answer(IoAnswer::SecretSet(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn random(&self, bytes: u32) -> Result<Vec<u8>, String> {
+        match self.ask(|| IoRequest::Random { bytes }) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::Random(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn credential_status(&self, name: &str, principal: Option<&str>) -> Result<bool, String> {
+        match self.ask(|| IoRequest::CredentialStatus {
+            name: name.to_string(),
+            principal: principal.map(str::to_string),
+        }) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::CredentialStatus(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn credential_forget(&self, name: &str, principal: Option<&str>) -> Result<(), String> {
+        match self.ask(|| IoRequest::CredentialForget {
+            name: name.to_string(),
+            principal: principal.map(str::to_string),
+        }) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::CredentialForget(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
     }
@@ -1116,7 +1341,10 @@ impl BlockingHost<'_> {
             IoRequest::Http { .. }
             | IoRequest::HttpStream { .. }
             | IoRequest::Secret { .. }
-            | IoRequest::SecretSet { .. } => answer_http(None, request),
+            | IoRequest::SecretSet { .. }
+            | IoRequest::Random { .. }
+            | IoRequest::CredentialStatus { .. }
+            | IoRequest::CredentialForget { .. } => answer_http(None, request),
         }
     }
 
@@ -1126,7 +1354,10 @@ impl BlockingHost<'_> {
             IoRequest::Http { .. }
             | IoRequest::HttpStream { .. }
             | IoRequest::Secret { .. }
-            | IoRequest::SecretSet { .. } => answer_http(Some(http), request),
+            | IoRequest::SecretSet { .. }
+            | IoRequest::Random { .. }
+            | IoRequest::CredentialStatus { .. }
+            | IoRequest::CredentialForget { .. } => answer_http(Some(http), request),
             other => self.answer(other),
         }
     }
@@ -1173,46 +1404,82 @@ fn blocking_send(
     request: &HttpRequest,
 ) -> Result<HttpResponse, TransportError> {
     if let Some(refusal) = address_refusal(&request.url, host.egress) {
-        return Err(TransportError::Failed(refusal));
+        return Err(TransportError::Refused(refusal));
     }
     host.transport.send(request)
 }
 
-/// Answer an [`IoRequest::Http`] / `HttpStream` / `Secret` / `SecretSet` with `host`; with no host the request fails.
+/// `bytes` of operating-system CSPRNG output; wasm hosts answer `Random` themselves.
+#[cfg(not(target_arch = "wasm32"))]
+fn os_random(bytes: u32) -> Result<Vec<u8>, String> {
+    let mut buf = vec![0u8; bytes as usize];
+    getrandom::getrandom(&mut buf).map_err(|e| format!("random: {e}"))?;
+    Ok(buf)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn os_random(_bytes: u32) -> Result<Vec<u8>, String> {
+    Err("random: the host must answer Random".to_string())
+}
+
+/// Answer an [`IoRequest::Http`] / `HttpStream` / `Secret` / `SecretSet` / `Random` / `CredentialStatus` /
+/// `CredentialForget` with `host`; with no host an `http` request fails.
 pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer {
     match (request, host) {
-        (IoRequest::Http { request, .. }, Some(host)) => {
+        (IoRequest::Http { request, delay_ms, .. }, Some(host)) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(ms) = delay_ms {
+                std::thread::sleep(std::time::Duration::from_millis(*ms));
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = delay_ms;
             IoAnswer::Http(blocking_send(host, request))
         }
-        (IoRequest::HttpStream { request, framing, site, .. }, Some(host)) => {
-            IoAnswer::Http(blocking_send(host, request).map(|mut reply| {
-                let text = reply.text().into_owned();
-                let mut carry = String::new();
-                let mut events = http_request::stream_events(*framing, &text, &mut carry);
-                if *framing == StreamFraming::JsonLines && !carry.is_empty() {
-                    events.extend(http_request::stream_events(*framing, "\n", &mut carry));
-                }
-                for event in events {
-                    (host.on_event)(site.as_ref(), event);
-                }
-                reply.body = Vec::new();
-                reply
-            }))
-        }
+        (
+            IoRequest::HttpStream {
+                request,
+                key,
+                framing,
+                site,
+            },
+            Some(host),
+        ) => IoAnswer::Http(blocking_send(host, request).map(|mut reply| {
+            let text = reply.text().into_owned();
+            let mut carry = String::new();
+            let mut events = http_request::frame_stream(*framing, key.as_deref(), &text, &mut carry);
+            events.extend(http_request::frame_stream_finish(*framing, key.as_deref(), &mut carry));
+            for event in events {
+                (host.on_event)(site.as_ref(), event);
+            }
+            reply.body = Vec::new();
+            reply
+        })),
         (IoRequest::Http { .. } | IoRequest::HttpStream { .. }, None) => {
             IoAnswer::Http(Err(TransportError::Failed(NO_HTTP_HOST.to_string())))
         }
-        (IoRequest::Secret { name }, Some(host)) => IoAnswer::Secret(host.secrets.secret(name)),
+        (IoRequest::Secret { name, principal }, Some(host)) => {
+            IoAnswer::Secret(host.secrets.secret_of(name, principal.as_deref()))
+        }
         (IoRequest::Secret { .. }, None) => IoAnswer::Secret(Err(NO_HTTP_HOST.to_string())),
         (
             IoRequest::SecretSet {
                 name,
                 value,
                 ttl_ms,
+                principal,
             },
             Some(host),
-        ) => IoAnswer::SecretSet(host.secrets.store_secret(name, value, *ttl_ms)),
+        ) => IoAnswer::SecretSet(host.secrets.store_secret_of(name, value, *ttl_ms, principal.as_deref())),
         (IoRequest::SecretSet { .. }, None) => IoAnswer::SecretSet(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::Random { bytes }, _) => IoAnswer::Random(os_random(*bytes)),
+        (IoRequest::CredentialStatus { name, principal }, Some(host)) => {
+            IoAnswer::CredentialStatus(host.secrets.secret_of(name, principal.as_deref()).map(|v| v.is_some()))
+        }
+        (IoRequest::CredentialForget { name, principal }, Some(host)) => {
+            IoAnswer::CredentialForget(host.secrets.forget_of(name, principal.as_deref()))
+        }
+        (IoRequest::CredentialStatus { .. }, None) => IoAnswer::CredentialStatus(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialForget { .. }, None) => IoAnswer::CredentialForget(Err(NO_HTTP_HOST.to_string())),
         _ => IoAnswer::Service(Err("not an HTTP request".to_string())),
     }
 }
@@ -1297,6 +1564,8 @@ mod http_replay_tests {
             IoRequest::Http {
                 request: request.clone(),
                 key: None,
+                delay_ms: None,
+                site: None,
             },
             IoAnswer::Http(Ok(HttpResponse {
                 status: 200,
@@ -1310,7 +1579,7 @@ mod http_replay_tests {
     fn a_replayed_step_is_served_its_recorded_reply_and_asks_nothing() {
         let request = get("https://a.example.com/x");
         let port = port();
-        let (reply, end) = port.run_step(recorded(&request), || port.http_send(&request, None));
+        let (reply, end) = port.run_step(recorded(&request), || port.http_send(&request, None, None));
         assert_eq!(reply.map(|r| r.status), Ok(200));
         assert!(end.pending.is_none() && end.diverged.is_none());
     }
@@ -1319,7 +1588,7 @@ mod http_replay_tests {
     fn a_replayed_step_that_asks_a_changed_request_diverges() {
         let port = port();
         let (_, end) = port.run_step(recorded(&get("https://a.example.com/x")), || {
-            port.http_send(&get("https://a.example.com/y"), None)
+            port.http_send(&get("https://a.example.com/y"), None, None)
         });
         assert!(
             matches!(end.diverged, Some(ResumeError::Diverged { .. })),
@@ -1333,7 +1602,7 @@ mod http_replay_tests {
     fn a_changed_key_or_a_stream_in_place_of_a_send_also_diverges() {
         let request = get("https://a.example.com/x");
         let port = port();
-        let (_, end) = port.run_step(recorded(&request), || port.http_send(&request, Some("k")));
+        let (_, end) = port.run_step(recorded(&request), || port.http_send(&request, Some("k"), None));
         assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
         let (_, end) = port.run_step(recorded(&request), || {
             port.http_stream(&request, None, StreamFraming::Sse)
@@ -1345,15 +1614,221 @@ mod http_replay_tests {
     fn a_step_with_no_record_leaves_the_request_pending() {
         let request = get("https://a.example.com/x");
         let port = port();
-        let (_, end) = port.run_step(Vec::new(), || port.http_send(&request, None));
+        let (_, end) = port.run_step(Vec::new(), || port.http_send(&request, None, None));
         assert!(matches!(end.pending, Some(IoRequest::Http { .. })));
+    }
+
+    struct Canned(Vec<u8>);
+
+    impl Transport for Canned {
+        fn send(&self, _: &HttpRequest) -> Result<HttpResponse, TransportError> {
+            Ok(HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: self.0.clone(),
+            })
+        }
+    }
+
+    struct Vaulted;
+
+    impl SecretSource for Vaulted {
+        fn secret(&self, _: &str) -> Result<Option<String>, String> {
+            Ok(Some("sk-live-999".to_string()))
+        }
+    }
+
+    fn streamed(key: Option<&str>) -> Vec<Value> {
+        let transport = Canned(b"data: a\n\ndata: b".to_vec());
+        let seen = Mutex::new(Vec::new());
+        let on_event = |_: Option<&CallSite>, event: Value| seen.lock().push(event);
+        let host = HttpHost {
+            transport: &transport,
+            secrets: &Vaulted,
+            egress: &[],
+            on_event: &on_event,
+        };
+        let request = IoRequest::HttpStream {
+            request: get("https://8.8.8.8/x"),
+            key: key.map(str::to_string),
+            framing: StreamFraming::Sse,
+            site: None,
+        };
+        let IoAnswer::Http(Ok(reply)) = answer_http(Some(&host), &request) else {
+            panic!("expected an Http reply")
+        };
+        assert!(reply.body.is_empty());
+        let out = seen.lock().clone();
+        out
+    }
+
+    fn keys(events: &[Value]) -> Vec<Value> {
+        events
+            .iter()
+            .map(|e| match e {
+                Value::Object(fields) => fields.get("key").cloned().unwrap_or(Value::String("absent".into())),
+                other => panic!("event is not an object: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_blocking_stream_answer_carries_the_key_the_framer_adds_flush_included() {
+        let events = streamed(Some("job"));
+        assert_eq!(keys(&events), vec![Value::String("job".into()); 2]);
+    }
+
+    #[test]
+    fn control_an_unkeyed_blocking_stream_carries_a_null_key() {
+        let events = streamed(None);
+        assert_eq!(keys(&events), vec![Value::Null; 2]);
+    }
+
+    #[test]
+    fn no_debug_of_a_request_answer_or_journal_shows_a_secret_value() {
+        let secret = "sk-live-999";
+        let authorized = HttpRequest {
+            headers: vec![
+                ("Authorization".to_string(), format!("Bearer {secret}")),
+                ("X-Trace".to_string(), "t-1".to_string()),
+            ],
+            body: format!("client_secret={secret}").into_bytes(),
+            ..get(&format!("https://a.example.com/x?api_key={secret}"))
+        };
+        let journal = vec![
+            Exchange::new(
+                IoRequest::Secret { name: "TOKEN".to_string(), principal: None },
+                IoAnswer::Secret(Ok(Some(secret.to_string()))),
+            ),
+            Exchange::new(
+                IoRequest::SecretSet {
+                    name: "oauth2:t".to_string(),
+                    value: secret.to_string(),
+                    ttl_ms: 5,
+                    principal: None,
+                },
+                IoAnswer::SecretSet(Ok(())),
+            ),
+            Exchange::new(
+                IoRequest::Http {
+                    request: authorized.clone(),
+                    key: None,
+                    delay_ms: None,
+                    site: None,
+                },
+                IoAnswer::Http(Ok(HttpResponse {
+                    status: 200,
+                    headers: vec![("Set-Cookie".to_string(), secret.to_string())],
+                    body: format!("{{\"access_token\":\"{secret}\"}}").into_bytes(),
+                })),
+            ),
+        ];
+        let shown = format!("{journal:?} {:?}", ResumeError::Diverged {
+            recorded: Box::new(journal[1].request.clone()),
+            got: Box::new(journal[2].request.clone()),
+        });
+        assert!(!shown.contains(secret), "leaked: {shown}");
+        assert!(!shown.contains("api_key"), "the query is not shown: {shown}");
+        assert!(shown.contains("TOKEN") && shown.contains("oauth2:t"), "control: names are shown");
+        assert!(shown.contains("X-Trace") && shown.contains("https://a.example.com/x"), "control: headers and url");
+    }
+
+    #[test]
+    fn a_blocking_random_answer_is_fresh_csprng_output_of_the_asked_length() {
+        let ask = IoRequest::Random { bytes: 32 };
+        let (IoAnswer::Random(Ok(a)), IoAnswer::Random(Ok(b))) =
+            (answer_http(None, &ask), answer_http(None, &ask))
+        else {
+            panic!("expected random bytes")
+        };
+        assert_eq!((a.len(), b.len()), (32, 32));
+        assert_ne!(a, b);
+        assert!(a.iter().any(|byte| *byte != 0));
+    }
+
+    #[test]
+    fn a_random_ask_is_journaled_and_replayed_without_asking_again() {
+        let port = port();
+        let ask = IoRequest::Random { bytes: 4 };
+        let recorded = vec![Exchange::new(ask, IoAnswer::Random(Ok(vec![1, 2, 3, 4])))];
+        let (bytes, end) = port.run_step(recorded.clone(), || port.random(4));
+        assert_eq!(bytes, Ok(vec![1, 2, 3, 4]));
+        assert!(end.pending.is_none() && end.diverged.is_none());
+        let (_, end) = port.run_step(recorded, || port.random(5));
+        assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
+    }
+
+    #[test]
+    fn a_secret_ask_for_another_principal_diverges_from_the_recorded_one() {
+        let port = port();
+        let recorded = vec![Exchange::new(
+            IoRequest::Secret { name: "t".into(), principal: Some("u1".into()) },
+            IoAnswer::Secret(Ok(Some("v".into()))),
+        )];
+        let (value, end) = port.run_step(recorded.clone(), || port.secret("t", Some("u1")));
+        assert_eq!(value, Ok(Some("v".to_string())));
+        assert!(end.diverged.is_none());
+        let (_, end) = port.run_step(recorded.clone(), || port.secret("t", Some("u2")));
+        assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
+        let (_, end) = port.run_step(recorded, || port.secret("t", None));
+        assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
+    }
+
+    struct PerUser;
+
+    impl SecretSource for PerUser {
+        fn secret(&self, _: &str) -> Result<Option<String>, String> {
+            Ok(Some("app".to_string()))
+        }
+        fn secret_of(&self, name: &str, principal: Option<&str>) -> Result<Option<String>, String> {
+            match principal {
+                None => self.secret(name),
+                Some("u1") => Ok(Some("mine".to_string())),
+                Some(_) => Ok(None),
+            }
+        }
+        fn forget_of(&self, _: &str, principal: Option<&str>) -> Result<(), String> {
+            principal.map(|_| ()).ok_or_else(|| "no app-wide forget".to_string())
+        }
+    }
+
+    #[test]
+    fn a_blocking_host_answers_credential_asks_per_principal() {
+        let transport = Canned(Vec::new());
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let host = HttpHost { transport: &transport, secrets: &PerUser, egress: &[], on_event: &on_event };
+        let status = |principal: Option<&str>| {
+            answer_http(
+                Some(&host),
+                &IoRequest::CredentialStatus { name: "t".into(), principal: principal.map(str::to_string) },
+            )
+        };
+        assert_eq!(status(Some("u1")), IoAnswer::CredentialStatus(Ok(true)));
+        assert_eq!(status(Some("u2")), IoAnswer::CredentialStatus(Ok(false)));
+        let forget = answer_http(
+            Some(&host),
+            &IoRequest::CredentialForget { name: "t".into(), principal: Some("u1".into()) },
+        );
+        assert_eq!(forget, IoAnswer::CredentialForget(Ok(())));
+        assert_eq!(
+            answer_http(None, &IoRequest::CredentialStatus { name: "t".into(), principal: None }),
+            IoAnswer::CredentialStatus(Err(NO_HTTP_HOST.to_string()))
+        );
+    }
+
+    #[test]
+    fn a_default_secret_source_keeps_no_user_credentials() {
+        let user = Vaulted.secret_of("t", Some("u1"));
+        assert!(user.is_err(), "{user:?}");
+        assert_eq!(Vaulted.secret_of("t", None), Ok(Some("sk-live-999".to_string())));
+        assert!(Vaulted.forget_of("t", Some("u1")).is_err());
     }
 
     #[test]
     fn outside_a_step_an_http_ask_fails_for_want_of_a_host() {
         let port = port();
         assert_eq!(
-            port.http_send(&get("https://a.example.com/x"), None).map(|r| r.status),
+            port.http_send(&get("https://a.example.com/x"), None, None).map(|r| r.status),
             Err(TransportError::Failed(NO_HTTP_HOST.to_string()))
         );
     }

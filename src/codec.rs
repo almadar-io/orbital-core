@@ -4,6 +4,11 @@
 use base64::Engine;
 use sha2::{Digest, Sha256};
 
+pub mod jwt;
+pub mod lenient;
+pub mod sigv4;
+pub mod webpush;
+
 fn push_escaped(out: &mut String, byte: u8) {
     out.push('%');
     out.push(char::from_digit(u32::from(byte >> 4), 16).map_or('0', |c| c.to_ascii_uppercase()));
@@ -63,6 +68,11 @@ pub fn encode_rfc3986(text: &str) -> String {
 /// Standard padded base64.
 pub fn base64_encode(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// URL-safe base64 without padding (the `random-bytes` value).
+pub fn base64url_encode(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
 pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
@@ -142,6 +152,14 @@ mod tests {
             assert_eq!(base64_decode(enc).unwrap(), plain.as_bytes());
         }
         assert!(base64_decode("!!!").is_err());
+    }
+
+    #[test]
+    fn base64_decode_is_strict_rfc_4648() {
+        for bad in ["Zg", "Zm9", "Zh==", "Zm 9v", "Zm9v\n", "-_8=", "Zg=", "=Zg="] {
+            assert!(base64_decode(bad).is_err(), "{bad:?} must be rejected");
+        }
+        assert_eq!(base64_decode("+/8=").unwrap(), vec![0xfb, 0xff]);
     }
 
     #[test]

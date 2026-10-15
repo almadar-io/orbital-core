@@ -559,7 +559,7 @@ impl RuntimeKernel {
         let now = self
             .dispatch_now
             .read()
-            .unwrap_or_else(crate::time_util::now_millis_f64);
+            .unwrap_or_else(|| self.clock_now());
         let SeedPlan {
             trait_name,
             entity_id,

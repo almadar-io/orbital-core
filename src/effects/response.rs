@@ -949,7 +949,7 @@ fn server_effect_result(er: &EffectResult) -> Option<ServerEffectResult> {
         Effect::Http { method, origin, .. } => (
             ServerEffectKind::Http,
             None,
-            Some(format!("{} {origin}", format!("{method:?}").to_uppercase())),
+            Some(format!("{} {}", format!("{method:?}").to_uppercase(), origin.to_string_value())),
         ),
         Effect::Fetch { entity_type, .. } => {
             (ServerEffectKind::Fetch, Some(entity_type.clone()), None)

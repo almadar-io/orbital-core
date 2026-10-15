@@ -52,6 +52,9 @@ pub struct OirModule {
     /// never on a server. Stamped by the compiler from the registry it loaded.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub browser_services: Vec<String>,
+    /// The program's `egress` origins: the only hosts its `http` effects may reach.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub egress: Vec<String>,
     /// Entity names this module `expects` rather than declares — the consumer
     /// side of `expects entity X` / `expects identity X`. NAMES ONLY: no
     /// `OirEntity` is synthesized, so codegen and persistence never mistake an
@@ -129,6 +132,7 @@ impl OirModule {
             default_theme: None,
             services: vec![],
             browser_services: vec![],
+            egress: vec![],
             expected_entities: vec![],
             locales: vec![],
             named_types: std::collections::BTreeMap::new(),

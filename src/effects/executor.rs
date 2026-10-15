@@ -668,6 +668,9 @@ impl EffectExecutor {
                 EffectResult::noop(effect.clone(), "http is run by the kernel, which owns its host I/O")
             }
             Effect::CancelCall { key } => self.do_cancel_call(key),
+            Effect::RandomBytes { .. } | Effect::CredentialStatus { .. } | Effect::CredentialForget { .. } => {
+                EffectResult::noop(effect.clone(), "host effects are run by the kernel, which owns its host I/O")
+            }
             Effect::RenderUi { slot, content } => self.do_render_ui(slot, content),
             Effect::Navigate {
                 path,

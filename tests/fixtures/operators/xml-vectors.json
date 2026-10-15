@@ -1,0 +1,408 @@
+[
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a>hello</a>",
+      "Row"
+    ],
+    "expect": "hello",
+    "source": "leaf element is its text"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a/>",
+      "Row"
+    ],
+    "expect": "",
+    "source": "empty element is the empty string"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a></a>",
+      "Row"
+    ],
+    "expect": "",
+    "source": "empty element, explicit close"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a>  x \n\t y   z </a>",
+      "Row"
+    ],
+    "expect": "x y z",
+    "source": "whitespace collapsed and trimmed"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a id=\"7\" kind=\"k\">t</a>",
+      "Row"
+    ],
+    "expect": {
+      "@id": "7",
+      "@kind": "k",
+      "#text": "t"
+    },
+    "source": "attributes read as @name, text as #text"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<link href=\"u\" rel=\"alternate\"/>",
+      "Row"
+    ],
+    "expect": {
+      "@href": "u",
+      "@rel": "alternate"
+    },
+    "source": "attribute-only element has no #text"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<p>\n  <name>Ada</name>\n  <age>36</age>\n</p>",
+      "Row"
+    ],
+    "expect": {
+      "name": "Ada",
+      "age": "36"
+    },
+    "source": "children by name; container whitespace is not text"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<p><t>a</t><t>b</t><t>c</t></p>",
+      "Row"
+    ],
+    "expect": {
+      "t": [
+        "a",
+        "b",
+        "c"
+      ]
+    },
+    "source": "repeated children are a list"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<p><t>a</t></p>",
+      "Row"
+    ],
+    "expect": {
+      "t": "a"
+    },
+    "source": "a single child stays a scalar"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<p><x>1</x><y>2</y><x>3</x></p>",
+      "Row"
+    ],
+    "expect": {
+      "x": [
+        "1",
+        "3"
+      ],
+      "y": "2"
+    },
+    "source": "repeats need not be adjacent"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a:r xmlns:a=\"urn:u\" xmlns=\"urn:d\"><a:x a:k=\"v\">1</a:x><y>2</y></a:r>",
+      "Row"
+    ],
+    "expect": {
+      "x": {
+        "@k": "v",
+        "#text": "1"
+      },
+      "y": "2"
+    },
+    "source": "namespaces ignored by local name, xmlns declarations dropped"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a>1 &lt; 2 &amp; &#65;&#x42; &quot;&apos;&gt;</a>",
+      "Row"
+    ],
+    "expect": "1 < 2 & AB \"'>",
+    "source": "predefined and numeric entities"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a><![CDATA[ <raw> &amp; ]]></a>",
+      "Row"
+    ],
+    "expect": "<raw> &amp;",
+    "source": "CDATA is literal text"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- c --><a>x<!-- m -->y<?pi z?></a>\n<!-- end -->",
+      "Row"
+    ],
+    "expect": "xy",
+    "source": "declaration, comments and processing instructions ignored"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<!DOCTYPE a><a>x</a>",
+      "Row"
+    ],
+    "expect": "x",
+    "source": "a doctype without an internal subset is ignored"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<t>A <i>Bare</i>\n  Entry</t>",
+      "Row"
+    ],
+    "expect": "A Bare Entry",
+    "source": "text with inline markup flattens to its text"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<n a=\"1\">x <b>y</b> z</n>",
+      "Row"
+    ],
+    "expect": {
+      "@a": "1",
+      "b": "y",
+      "#text": "x y z"
+    },
+    "source": "attributes plus mixed content keep children and the full text"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a x=\"a &amp; b\" y='q'/>",
+      "Row"
+    ],
+    "expect": {
+      "@x": "a & b",
+      "@y": "q"
+    },
+    "source": "attribute entities and single quotes"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<r><e k=\"1\"/><e k=\"2\"/></r>",
+      "Row"
+    ],
+    "expect": {
+      "e": [
+        {
+          "@k": "1"
+        },
+        {
+          "@k": "2"
+        }
+      ]
+    },
+    "source": "repeated attribute-only elements"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<r><é>ü</é></r>",
+      "Row"
+    ],
+    "expect": {
+      "é": "ü"
+    },
+    "source": "non-ASCII names and text"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      null,
+      "Row"
+    ],
+    "expect": null,
+    "source": "absent input is null"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "",
+      "Row"
+    ],
+    "error": true,
+    "source": "empty text has no root"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "plain text",
+      "Row"
+    ],
+    "error": true,
+    "source": "text is not XML"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a>",
+      "Row"
+    ],
+    "error": true,
+    "source": "unclosed element"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a></b>",
+      "Row"
+    ],
+    "error": true,
+    "source": "mismatched close"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a><b></a></b>",
+      "Row"
+    ],
+    "error": true,
+    "source": "crossed elements"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a/><b/>",
+      "Row"
+    ],
+    "error": true,
+    "source": "two roots"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a>x</a>trailing",
+      "Row"
+    ],
+    "error": true,
+    "source": "text after the root"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a>&bogus;</a>",
+      "Row"
+    ],
+    "error": true,
+    "source": "unknown entity"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a x=1/>",
+      "Row"
+    ],
+    "error": true,
+    "source": "unquoted attribute"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a x=\"1\" x=\"2\"/>",
+      "Row"
+    ],
+    "error": true,
+    "source": "duplicate attribute"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a><!-- open </a>",
+      "Row"
+    ],
+    "error": true,
+    "source": "unterminated comment"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a>&#xZZ;</a>",
+      "Row"
+    ],
+    "error": true,
+    "source": "bad character reference"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<1a/>",
+      "Row"
+    ],
+    "error": true,
+    "source": "invalid name"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<feed xmlns=\"http://www.w3.org/2005/Atom\">\n  <id>http://arxiv.org/api/feed</id>\n  <title>ArXiv Query</title>\n  <entry>\n    <id>http://arxiv.org/abs/1706.03762v7</id>\n    <updated>2023-08-02T00:41:18Z</updated>\n    <published>2017-06-12T17:57:34Z</published>\n    <title>Attention Is All\n      You Need</title>\n    <summary>  The dominant sequence transduction models\n    are based on complex recurrent networks.  </summary>\n    <author>\n      <name>Ashish Vaswani</name>\n    </author>\n    <author><name> Noam Shazeer </name></author>\n    <link href=\"http://arxiv.org/abs/1706.03762v7\" rel=\"alternate\" type=\"text/html\"/>\n    <link title=\"pdf\" href=\"http://arxiv.org/pdf/1706.03762v7\" rel=\"related\" type=\"application/pdf\"/>\n    <arxiv:primary_category xmlns:arxiv=\"http://arxiv.org/schemas/atom\" term=\"cs.CL\" scheme=\"http://arxiv.org/schemas/atom\"/>\n  </entry>\n  <entry>\n    <id>http://arxiv.org/abs/2001.00001v1</id>\n    <published>2020-01-01T00:00:00Z</published>\n    <title>A <i>Bare</i> Entry</title>\n    <summary>Only an id link.</summary>\n  </entry>\n</feed>\n",
+      "AtomFeed"
+    ],
+    "expect": {
+      "id": "http://arxiv.org/api/feed",
+      "title": "ArXiv Query",
+      "entry": [
+        {
+          "id": "http://arxiv.org/abs/1706.03762v7",
+          "updated": "2023-08-02T00:41:18Z",
+          "published": "2017-06-12T17:57:34Z",
+          "title": "Attention Is All You Need",
+          "summary": "The dominant sequence transduction models are based on complex recurrent networks.",
+          "author": [
+            {
+              "name": "Ashish Vaswani"
+            },
+            {
+              "name": "Noam Shazeer"
+            }
+          ],
+          "link": [
+            {
+              "@href": "http://arxiv.org/abs/1706.03762v7",
+              "@rel": "alternate",
+              "@type": "text/html"
+            },
+            {
+              "@title": "pdf",
+              "@href": "http://arxiv.org/pdf/1706.03762v7",
+              "@rel": "related",
+              "@type": "application/pdf"
+            }
+          ],
+          "primary_category": {
+            "@term": "cs.CL",
+            "@scheme": "http://arxiv.org/schemas/atom"
+          }
+        },
+        {
+          "id": "http://arxiv.org/abs/2001.00001v1",
+          "published": "2020-01-01T00:00:00Z",
+          "title": "A Bare Entry",
+          "summary": "Only an id link."
+        }
+      ]
+    },
+    "source": "arXiv search.json Atom feed (orbital-integrations fixture)"
+  }
+]

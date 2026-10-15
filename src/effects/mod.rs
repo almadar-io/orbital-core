@@ -21,7 +21,10 @@ mod types;
 
 pub use client_effect::{ClientEffect, NavigateOptions};
 pub use effect_row::{EffectRow, EffectRowBuilder, EffectSite, EffectUse, TICKS_KIND};
-pub use emit_contract::{success_emit_key, success_payload, undeclared_reads, ProducedPayload};
+pub use emit_contract::{
+    failure_payload, message_payload, success_emit_key, success_payload, undeclared_reads, CallVariant,
+    ProducedPayload, ShapeField,
+};
 pub(crate) use executor::page_ordered_rows;
 pub use executor::{
     EffectDelegate, EffectExecutor, FetchHandler, FetchPage, GameEntityHandler,
@@ -37,8 +40,8 @@ pub use response::{
     BUS_EVENT_SOURCE_FIELDS,
 };
 pub use runs_on::{
-    effect_operator, effect_runs_on, effect_site, entity_arg, ir_effect_site, runs_on,
-    sexpr_runs_server_effect, Residence, RunsOn, EFFECT_SITES, ENTITY_ARGS,
+    effect_operator, effect_runs_on, effect_site, entity_arg, http_auth, ir_effect_site, resolved_http_is_keyless,
+    runs_on, sexpr_runs_server_effect, HttpAuth, Residence, RunsOn, EFFECT_SITES, ENTITY_ARGS,
 };
 pub use types::{
     is_known_effect_name, parse_effect, Effect, EffectOutcome, EffectResult, FetchDeliver, FetchEmit,

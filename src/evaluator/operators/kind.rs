@@ -122,6 +122,7 @@ operator_kind! {
     JsonParseOp => JsonParseOp,
     JsonStringifyOp => JsonStringifyOp,
     CsvParseOp => CsvParseOp,
+    XmlParseOp => XmlParseOp,
     LastOp => LastOp,
     LeOp => LeOp,
     LetOp => LetOp,

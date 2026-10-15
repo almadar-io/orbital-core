@@ -1,0 +1,244 @@
+[
+  {
+    "expr": [
+      "time/parse",
+      "1970-01-01"
+    ],
+    "expect": 0,
+    "source": "epoch"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-02-29"
+    ],
+    "expect": 1835395200000,
+    "source": "leap day"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01"
+    ],
+    "expect": 1835481600000,
+    "source": "day after leap day"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2100-03-01"
+    ],
+    "expect": 4107542400000,
+    "source": "2100 is not leap"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2000-03-01"
+    ],
+    "expect": 951868800000,
+    "source": "2000 is leap"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "1969-12-31"
+    ],
+    "expect": -86400000,
+    "source": "pre-1970"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "1900-03-01"
+    ],
+    "expect": -2203891200000,
+    "source": "1900 is not leap"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01T13:45:10Z"
+    ],
+    "expect": 1835531110000,
+    "source": "time of day"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01T13:45:10.250Z"
+    ],
+    "expect": 1835531110250,
+    "source": "fraction ms"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01T13:45:10.5Z"
+    ],
+    "expect": 1835531110500,
+    "source": "short fraction"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01T13:45:10+02:00"
+    ],
+    "expect": 1835523910000,
+    "source": "positive offset"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01T13:45:10-05:30"
+    ],
+    "expect": 1835550910000,
+    "source": "negative offset"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01T00:30:00+01:00"
+    ],
+    "expect": 1835479800000,
+    "source": "offset crosses day"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "1969-12-31T23:59:59Z"
+    ],
+    "expect": -1000,
+    "source": "pre-1970 time"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01T13:45Z"
+    ],
+    "expect": 1835531100000,
+    "source": "no seconds"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01T13:45:10"
+    ],
+    "expect": 1835531110000,
+    "source": "no offset reads as UTC"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01T13:45"
+    ],
+    "expect": 1835531100000,
+    "source": "datetime-local form, UTC"
+  },
+  {
+    "expr": [
+      "time/add",
+      [
+        "time/parse",
+        "2028-03-01"
+      ],
+      1,
+      "day"
+    ],
+    "expect": 1835568000000,
+    "source": "leap fix"
+  },
+  {
+    "expr": [
+      "time/add",
+      [
+        "time/parse",
+        "2028-02-28"
+      ],
+      2,
+      "day"
+    ],
+    "expect": 1835481600000,
+    "source": "through leap day"
+  },
+  {
+    "expr": [
+      "time/parse",
+      ""
+    ],
+    "error": true,
+    "source": "invalid"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "not a date"
+    ],
+    "error": true,
+    "source": "invalid"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-02-30"
+    ],
+    "error": true,
+    "source": "invalid"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2100-02-29"
+    ],
+    "error": true,
+    "source": "invalid"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-13-01"
+    ],
+    "error": true,
+    "source": "invalid"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-00-10"
+    ],
+    "error": true,
+    "source": "invalid"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01T25:00:00Z"
+    ],
+    "error": true,
+    "source": "invalid"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-3-1"
+    ],
+    "error": true,
+    "source": "invalid"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "20280301"
+    ],
+    "error": true,
+    "source": "invalid"
+  },
+  {
+    "expr": [
+      "time/parse",
+      "2028-03-01T13:45:10+2:00"
+    ],
+    "error": true,
+    "source": "invalid"
+  }
+]

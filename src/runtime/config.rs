@@ -31,7 +31,14 @@ pub struct KernelConfig {
 
     /// Runs substrate operators (`program/*`, `behavior/*`, …); `None` fails them.
     pub substrate_handler: Option<Arc<dyn SubstrateHandler>>,
+
+    /// The dispatch stamp source (ms-epoch): every dispatch's one `@now` reads it.
+    /// `None` (the default) is the wall clock; a fixture pins it to replay a dispatch.
+    pub clock: Option<DispatchClock>,
 }
+
+/// A host-supplied millisecond clock for dispatch stamps.
+pub type DispatchClock = Arc<dyn Fn() -> f64 + Send + Sync>;
 
 impl std::fmt::Debug for KernelConfig {
     // Manual impl: `Arc<dyn EffectDelegate>` isn't `Debug` (no supertrait
@@ -49,6 +56,7 @@ impl std::fmt::Debug for KernelConfig {
             .field("delegate", &self.delegate.is_some())
             .field("service_handler", &self.service_handler.is_some())
             .field("substrate_handler", &self.substrate_handler.is_some())
+            .field("clock", &self.clock.is_some())
             .finish()
     }
 }
@@ -63,6 +71,7 @@ impl Default for KernelConfig {
             delegate: None,
             service_handler: None,
             substrate_handler: None,
+            clock: None,
         }
     }
 }

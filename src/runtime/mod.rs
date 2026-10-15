@@ -14,6 +14,7 @@ pub mod embed_index;
 pub mod entity_access;
 pub mod entity_source;
 pub mod external_inputs;
+pub mod http_request;
 pub mod http_service;
 pub mod kernel;
 pub mod key_chord;
@@ -37,7 +38,7 @@ pub mod theme;
 pub mod tick_clock;
 pub mod trait_owners;
 
-pub use config::KernelConfig;
+pub use config::{DispatchClock, KernelConfig};
 pub use dispatch_mode::{compute as compute_dispatch_mode, DispatchMode};
 pub use embed_index::EmbedIndex;
 pub use entity_access::{

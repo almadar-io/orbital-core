@@ -114,7 +114,7 @@ fn reply(status: u16, headers: &[(&str, &str)], body: &str) -> IoAnswer {
 /// A host holding the credential `api_key_name`, answering every `Http` with `answer`.
 fn keyed_host(answer: IoAnswer) -> impl FnMut(&IoRequest) -> IoAnswer {
     move |request| match request {
-        IoRequest::Secret { name } if name == "api_key_name" => {
+        IoRequest::Secret { name, .. } if name == "api_key_name" => {
             IoAnswer::Secret(Ok(Some("s3cret".to_string())))
         }
         IoRequest::Http { .. } => answer.clone(),
@@ -235,8 +235,8 @@ fn a_call_asks_the_credential_then_the_request_and_fires_success_with_the_reply(
         ask(),
         keyed_host(reply(200, &[("Content-Type", "application/json")], "{\"hits\":1}")),
     );
-    assert!(matches!(&seen[0], IoRequest::Secret { name } if name == "api_key_name"), "{seen:?}");
-    let IoRequest::Http { request, key } = &seen[1] else {
+    assert!(matches!(&seen[0], IoRequest::Secret { name, .. } if name == "api_key_name"), "{seen:?}");
+    let IoRequest::Http { request, key, .. } = &seen[1] else {
         panic!("the second ask is the request: {seen:?}");
     };
     assert_eq!(seen.len(), 2, "{seen:?}");
@@ -247,7 +247,7 @@ fn a_call_asks_the_credential_then_the_request_and_fires_success_with_the_reply(
     assert_eq!(header(request, "Accept"), Some("application/json"));
     assert_eq!(state(&response), Some("done"));
     let payload = payload_of(&response, "SEARCHED");
-    assert_eq!(payload.get_path("status").and_then(Value::as_f64), Some(200.0));
+    assert_eq!(payload.get_path("status").and_then(Value::as_number), Some(200.0));
     assert_eq!(field_str(payload, "body"), "{\"hits\":1}");
     assert_eq!(field_str(payload, "headers.content-type"), "application/json");
 }
@@ -266,7 +266,7 @@ fn a_non_2xx_reply_is_a_success() {
     let (response, _) = run(schema(effect), ask(), keyed_host(reply(404, &[], "nope")));
     assert_eq!(state(&response), Some("done"));
     let payload = payload_of(&response, "SEARCHED");
-    assert_eq!(payload.get_path("status").and_then(Value::as_f64), Some(404.0));
+    assert_eq!(payload.get_path("status").and_then(Value::as_number), Some(404.0));
     assert!(emitted(&response).iter().all(|(e, _)| *e != "SEARCH_FAILED"));
 }
 
@@ -400,7 +400,7 @@ fn pagination_stops_at_max_pages_and_collects_what_it_walked() {
     assert_eq!(asks.len(), 2, "{seen:?}");
     assert!(asks[1].url.contains("after=p2"), "{}", asks[1].url);
     let payload = payload_of(&response, "SEARCHED");
-    assert_eq!(payload.get_path("pages").and_then(Value::as_f64), Some(2.0));
+    assert_eq!(payload.get_path("pages").and_then(Value::as_number), Some(2.0));
     let items: Vec<&str> = payload
         .get_path("items")
         .and_then(Value::as_array)
@@ -417,7 +417,7 @@ fn control_pagination_with_room_stops_when_next_is_null() {
     let (response, seen) = run(schema(paged(5)), ask(), three_pages);
     assert_eq!(http_asks(&seen).len(), 3, "{seen:?}");
     let payload = payload_of(&response, "SEARCHED");
-    assert_eq!(payload.get_path("pages").and_then(Value::as_f64), Some(3.0));
+    assert_eq!(payload.get_path("pages").and_then(Value::as_number), Some(3.0));
     assert_eq!(field_str(payload, "last.body"), "c");
 }
 
@@ -445,9 +445,9 @@ fn oauth_effect() -> Json {
 fn oauth_host(cached: Option<&'static str>, replies: Vec<IoAnswer>) -> impl FnMut(&IoRequest) -> IoAnswer {
     let mut replies = replies.into_iter();
     move |request| match request {
-        IoRequest::Secret { name } if name == CACHE => IoAnswer::Secret(Ok(cached.map(str::to_string))),
-        IoRequest::Secret { name } if name == "cid_name" => IoAnswer::Secret(Ok(Some("the-id".to_string()))),
-        IoRequest::Secret { name } if name == "csec_name" => IoAnswer::Secret(Ok(Some("the-secret".to_string()))),
+        IoRequest::Secret { name, .. } if name == CACHE => IoAnswer::Secret(Ok(cached.map(str::to_string))),
+        IoRequest::Secret { name, .. } if name == "cid_name" => IoAnswer::Secret(Ok(Some("the-id".to_string()))),
+        IoRequest::Secret { name, .. } if name == "csec_name" => IoAnswer::Secret(Ok(Some("the-secret".to_string()))),
         IoRequest::SecretSet { .. } => IoAnswer::SecretSet(Ok(())),
         IoRequest::Http { .. } => replies.next().expect("a scripted reply"),
         other => panic!("the fixture asks for {other:?}"),
@@ -490,7 +490,7 @@ fn an_oauth2_cache_miss_grants_keeps_the_token_and_uses_it() {
     let stored = seen
         .iter()
         .find_map(|r| match r {
-            IoRequest::SecretSet { name, value, ttl_ms } => Some((name.as_str(), value.as_str(), *ttl_ms)),
+            IoRequest::SecretSet { name, value, ttl_ms, .. } => Some((name.as_str(), value.as_str(), *ttl_ms)),
             _ => None,
         })
         .expect("the token is kept");
@@ -510,7 +510,7 @@ fn a_401_refreshes_the_token_once_and_retries() {
     );
     assert_eq!(urls(&seen), ["https://api.example.com/search", TOKEN_URL, "https://api.example.com/search"], "{seen:?}");
     assert_eq!(header(http_asks(&seen)[2], "Authorization"), Some("Bearer fresh"));
-    assert_eq!(payload_of(&response, "SEARCHED").get_path("status").and_then(Value::as_f64), Some(200.0));
+    assert_eq!(payload_of(&response, "SEARCHED").get_path("status").and_then(Value::as_number), Some(200.0));
 }
 
 #[test]
@@ -525,7 +525,7 @@ fn a_second_401_is_the_reply_and_asks_nothing_more() {
     );
     assert_eq!(http_asks(&seen).len(), 3, "{seen:?}");
     assert_eq!(state(&response), Some("done"));
-    assert_eq!(payload_of(&response, "SEARCHED").get_path("status").and_then(Value::as_f64), Some(401.0));
+    assert_eq!(payload_of(&response, "SEARCHED").get_path("status").and_then(Value::as_number), Some(401.0));
 }
 
 #[test]
@@ -539,7 +539,7 @@ fn an_oauth2_token_url_outside_egress_is_refused_before_the_grant() {
         schema(effect),
         ask(),
         |request| match request {
-            IoRequest::Secret { name } if name.starts_with("oauth2:") => IoAnswer::Secret(Ok(None)),
+            IoRequest::Secret { name, .. } if name.starts_with("oauth2:") => IoAnswer::Secret(Ok(None)),
             IoRequest::Secret { .. } => IoAnswer::Secret(Ok(Some("v".to_string()))),
             other => panic!("the fixture asks for {other:?}"),
         },

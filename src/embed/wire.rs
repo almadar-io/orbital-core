@@ -241,6 +241,27 @@ impl<T, E> From<Settled<T, E>> for Result<T, E> {
     }
 }
 
+/// A secret value on the wire: a plain JSON string whose `Debug` never shows it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SecretText(String);
+
+impl SecretText {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for SecretText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
 /// The I/O a dispatch needs the host to do (`IoRequest` on the wire).
 #[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -289,6 +310,10 @@ pub enum IoRequestWire {
         request: HttpRequestWire,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delay_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<CallSiteWire>,
     },
     #[serde(rename_all = "camelCase")]
     HttpStream {
@@ -300,19 +325,40 @@ pub enum IoRequestWire {
         site: Option<CallSiteWire>,
     },
     #[serde(rename_all = "camelCase")]
-    Secret { name: String },
+    Secret {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
+    },
     #[serde(rename_all = "camelCase")]
     SecretSet {
         name: String,
-        value: String,
+        #[cfg_attr(test, ts(type = "string"))]
+        value: SecretText,
         ttl_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Random { bytes: u32 },
+    #[serde(rename_all = "camelCase")]
+    CredentialStatus {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    CredentialForget {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
     },
 }
 
 /// How a streamed `http` reply is framed.
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 pub enum StreamFramingWire {
     Sse,
     JsonLines,
@@ -386,9 +432,20 @@ pub enum IoAnswerWire {
         result: Settled<HttpResponseWire, HttpFailureWire>,
     },
     Secret {
-        result: Settled<Option<String>, String>,
+        #[cfg_attr(test, ts(type = "Settled<string | null, string>"))]
+        result: Settled<Option<SecretText>, String>,
     },
     SecretSet {
+        result: Settled<(), String>,
+    },
+    /// The random bytes, standard base64.
+    Random {
+        result: Settled<String, String>,
+    },
+    CredentialStatus {
+        result: Settled<bool, String>,
+    },
+    CredentialForget {
         result: Settled<(), String>,
     },
 }
@@ -534,9 +591,16 @@ impl From<IoRequestWire> for IoRequest {
             },
             IoRequestWire::CancelCall { key } => Self::CancelCall { key },
             IoRequestWire::Substrate { op, args } => Self::Substrate { op, args },
-            IoRequestWire::Http { request, key } => Self::Http {
+            IoRequestWire::Http {
+                request,
+                key,
+                delay_ms,
+                site,
+            } => Self::Http {
                 request: request.into(),
                 key,
+                delay_ms,
+                site: site.map(CallSite::from),
             },
             IoRequestWire::HttpStream {
                 request,
@@ -549,16 +613,25 @@ impl From<IoRequestWire> for IoRequest {
                 framing: framing.into(),
                 site: site.map(CallSite::from),
             },
-            IoRequestWire::Secret { name } => Self::Secret { name },
+            IoRequestWire::Secret { name, principal } => Self::Secret { name, principal },
             IoRequestWire::SecretSet {
                 name,
                 value,
                 ttl_ms,
+                principal,
             } => Self::SecretSet {
                 name,
-                value,
+                value: value.into_inner(),
                 ttl_ms,
+                principal,
             },
+            IoRequestWire::Random { bytes } => Self::Random { bytes },
+            IoRequestWire::CredentialStatus { name, principal } => {
+                Self::CredentialStatus { name, principal }
+            }
+            IoRequestWire::CredentialForget { name, principal } => {
+                Self::CredentialForget { name, principal }
+            }
         }
     }
 }
@@ -622,9 +695,16 @@ impl From<&IoRequest> for IoRequestWire {
                 op: op.clone(),
                 args: args.clone(),
             },
-            IoRequest::Http { request, key } => Self::Http {
+            IoRequest::Http {
+                request,
+                key,
+                delay_ms,
+                site,
+            } => Self::Http {
                 request: HttpRequestWire::from(request),
                 key: key.clone(),
+                delay_ms: *delay_ms,
+                site: site.as_ref().map(CallSiteWire::from),
             },
             IoRequest::HttpStream {
                 request,
@@ -637,15 +717,29 @@ impl From<&IoRequest> for IoRequestWire {
                 framing: StreamFramingWire::from(*framing),
                 site: site.as_ref().map(CallSiteWire::from),
             },
-            IoRequest::Secret { name } => Self::Secret { name: name.clone() },
+            IoRequest::Secret { name, principal } => Self::Secret {
+                name: name.clone(),
+                principal: principal.clone(),
+            },
             IoRequest::SecretSet {
                 name,
                 value,
                 ttl_ms,
+                principal,
             } => Self::SecretSet {
                 name: name.clone(),
-                value: value.clone(),
+                value: SecretText::new(value.clone()),
                 ttl_ms: *ttl_ms,
+                principal: principal.clone(),
+            },
+            IoRequest::Random { bytes } => Self::Random { bytes: *bytes },
+            IoRequest::CredentialStatus { name, principal } => Self::CredentialStatus {
+                name: name.clone(),
+                principal: principal.clone(),
+            },
+            IoRequest::CredentialForget { name, principal } => Self::CredentialForget {
+                name: name.clone(),
+                principal: principal.clone(),
             },
         }
     }
@@ -716,9 +810,22 @@ impl From<&IoAnswer> for IoAnswerWire {
                     .into(),
             },
             IoAnswer::Secret(r) => Self::Secret {
-                result: r.clone().into(),
+                result: r.clone().map(|value| value.map(SecretText::new)).into(),
             },
             IoAnswer::SecretSet(r) => Self::SecretSet {
+                result: r.clone().into(),
+            },
+            IoAnswer::Random(r) => Self::Random {
+                result: r
+                    .as_ref()
+                    .map(|bytes| crate::codec::base64_encode(bytes))
+                    .map_err(Clone::clone)
+                    .into(),
+            },
+            IoAnswer::CredentialStatus(r) => Self::CredentialStatus {
+                result: r.clone().into(),
+            },
+            IoAnswer::CredentialForget(r) => Self::CredentialForget {
                 result: r.clone().into(),
             },
         }
@@ -754,8 +861,19 @@ impl From<IoAnswerWire> for IoAnswer {
                 let result: Result<HttpResponseWire, HttpFailureWire> = result.into();
                 Self::Http(result.map(HttpResponse::from).map_err(TransportError::from))
             }
-            IoAnswerWire::Secret { result } => Self::Secret(result.into()),
+            IoAnswerWire::Secret { result } => {
+                let result: Result<Option<SecretText>, String> = result.into();
+                Self::Secret(result.map(|value| value.map(SecretText::into_inner)))
+            }
             IoAnswerWire::SecretSet { result } => Self::SecretSet(result.into()),
+            IoAnswerWire::Random { result } => {
+                let result: Result<String, String> = result.into();
+                Self::Random(result.and_then(|text| {
+                    crate::codec::base64_decode(&text).map_err(|e| format!("random: not base64: {e}"))
+                }))
+            }
+            IoAnswerWire::CredentialStatus { result } => Self::CredentialStatus(result.into()),
+            IoAnswerWire::CredentialForget { result } => Self::CredentialForget(result.into()),
         }
     }
 }
@@ -775,7 +893,7 @@ mod ts_export;
 
 /// A request or reply body on the wire: text as text, any other bytes as base64, so a binary body survives JSON.
 #[cfg_attr(test, derive(ts_rs::TS))]
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum HttpBody {
     #[default]
@@ -786,6 +904,16 @@ pub enum HttpBody {
     Base64 {
         data: String,
     },
+}
+
+impl std::fmt::Debug for HttpBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("Empty"),
+            Self::Text { text } => write!(f, "Text({} bytes)", text.len()),
+            Self::Base64 { data } => write!(f, "Base64({} chars)", data.len()),
+        }
+    }
 }
 
 impl From<&[u8]> for HttpBody {
@@ -818,7 +946,7 @@ impl From<HttpBody> for Vec<u8> {
 
 /// `HttpRequest` on the wire.
 #[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpRequestWire {
     pub method: String,
@@ -827,6 +955,12 @@ pub struct HttpRequestWire {
     pub body: HttpBody,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+}
+
+impl std::fmt::Debug for HttpRequestWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&HttpRequest::from(self.clone()), f)
+    }
 }
 
 impl From<&HttpRequest> for HttpRequestWire {
@@ -855,11 +989,17 @@ impl From<HttpRequestWire> for HttpRequest {
 
 /// `HttpResponse` on the wire. A non-2xx status is a reply, not a failure.
 #[cfg_attr(test, derive(ts_rs::TS))]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpResponseWire {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: HttpBody,
+}
+
+impl std::fmt::Debug for HttpResponseWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&HttpResponse::from(self.clone()), f)
+    }
 }
 
 impl From<&HttpResponse> for HttpResponseWire {
@@ -889,6 +1029,7 @@ impl From<HttpResponseWire> for HttpResponse {
 pub enum HttpFailureWire {
     TimedOut,
     Failed { message: String },
+    Refused { message: String },
 }
 
 impl From<&TransportError> for HttpFailureWire {
@@ -896,6 +1037,9 @@ impl From<&TransportError> for HttpFailureWire {
         match e {
             TransportError::TimedOut => Self::TimedOut,
             TransportError::Failed(message) => Self::Failed {
+                message: message.clone(),
+            },
+            TransportError::Refused(message) => Self::Refused {
                 message: message.clone(),
             },
         }
@@ -907,6 +1051,7 @@ impl From<HttpFailureWire> for TransportError {
         match w {
             HttpFailureWire::TimedOut => Self::TimedOut,
             HttpFailureWire::Failed { message } => Self::Failed(message),
+            HttpFailureWire::Refused { message } => Self::Refused(message),
         }
     }
 }

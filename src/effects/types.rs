@@ -121,8 +121,8 @@ pub enum Effect {
     /// S-expressions the kernel evaluates per page against `@response`.
     Http {
         method: HttpMethod,
-        origin: String,
-        path: String,
+        origin: Value,
+        path: Value,
         request: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
@@ -132,6 +132,28 @@ pub enum Effect {
 
     /// Abort the in-flight keyed call-service or http started with `key`
     CancelCall { key: String },
+
+    /// `n` bytes of host CSPRNG output, journaled; success carries `{ value: base64url, no padding }`.
+    RandomBytes {
+        bytes: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// Whether the host holds the credential named by `credential` (for the dispatch's `@user`
+    /// when the knob is user-scoped); success carries `{ connected: boolean }`.
+    CredentialStatus {
+        credential: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// Drop the credential named by `credential` the host holds.
+    CredentialForget {
+        credential: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
 
     /// Render UI (client-only)
     RenderUi { slot: String, content: Value },
@@ -228,6 +250,9 @@ impl Effect {
             Effect::CallService { .. } => "call-service",
             Effect::Http { .. } => "http",
             Effect::CancelCall { .. } => "cancel-call",
+            Effect::RandomBytes { .. } => "random-bytes",
+            Effect::CredentialStatus { .. } => "credential-status",
+            Effect::CredentialForget { .. } => "credential-forget",
             Effect::RenderUi { .. } => "render-ui",
             Effect::Navigate { .. } => "navigate",
             Effect::NavigateBack => "navigate-back",
@@ -509,6 +534,9 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
         "call-service" => parse_call_service(args),
         "http" => parse_http(args),
         "cancel-call" => parse_cancel_call(args),
+        "random-bytes" => parse_random_bytes(args),
+        "credential-status" => parse_credential(args, true),
+        "credential-forget" => parse_credential(args, false),
         "render-ui" => parse_render_ui(args),
         "navigate" => parse_navigate(args),
         "navigate-back" => Some(Effect::NavigateBack),
@@ -546,7 +574,7 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
 /// - Namespaced effect ops parsed via `parse_effect`'s `_` arm into
 ///   `Effect::Custom`: `agent/*`, `os/*`, and the substrate operator
 ///   families (`llm/*`, `memory/*`, `trace/*`, `session/*`,
-///   `workspace/*`, `integration/*`) and the named reflection effects
+///   `workspace/*`) and the named reflection effects
 ///   (`behavior/catalog|describe|source`, `program/read|print|eval`).
 ///   These don't have explicit arms above but ARE legitimate effect calls;
 ///   treat them as operators. `browser/*` device ops are also recognized
@@ -563,7 +591,6 @@ pub fn is_known_effect_name(op: &str) -> bool {
         || op.starts_with("trace/")
         || op.starts_with("session/")
         || op.starts_with("workspace/")
-        || op.starts_with("integration/")
         || crate::ir::is_substrate_operator(op)
     {
         return true;
@@ -577,6 +604,9 @@ pub fn is_known_effect_name(op: &str) -> bool {
             | "call-service"
             | "http"
             | "cancel-call"
+            | "random-bytes"
+            | "credential-status"
+            | "credential-forget"
             | "render-ui"
             | "navigate"
             | "navigate-back"
@@ -802,8 +832,8 @@ fn parse_http(args: &[SExpression]) -> Option<Effect> {
     }
     let method: HttpMethod =
         serde_json::from_value(serde_json::Value::String(args[0].as_str()?.to_string())).ok()?;
-    let origin = args[1].as_str()?.to_string();
-    let path = args[2].as_str()?.to_string();
+    let origin = Value::from(args[1].clone());
+    let path = Value::from(args[2].clone());
     let request = args
         .get(3)
         .map(|e| Value::from(e.clone()))
@@ -823,6 +853,36 @@ fn parse_http(args: &[SExpression]) -> Option<Effect> {
         request,
         key,
         emit,
+    })
+}
+
+/// `["random-bytes", n, { emit? }?]`.
+fn parse_random_bytes(args: &[SExpression]) -> Option<Effect> {
+    if !(1..=2).contains(&args.len()) {
+        return None;
+    }
+    let emit = args
+        .get(1)
+        .and_then(|options| parse_emit_config(&Value::from(options.clone())));
+    Some(Effect::RandomBytes {
+        bytes: Value::from(args[0].clone()),
+        emit,
+    })
+}
+
+/// `["credential-status" | "credential-forget", credential, { emit? }?]`.
+fn parse_credential(args: &[SExpression], status: bool) -> Option<Effect> {
+    if !(1..=2).contains(&args.len()) {
+        return None;
+    }
+    let credential = Value::from(args[0].clone());
+    let emit = args
+        .get(1)
+        .and_then(|options| parse_emit_config(&Value::from(options.clone())));
+    Some(if status {
+        Effect::CredentialStatus { credential, emit }
+    } else {
+        Effect::CredentialForget { credential, emit }
     })
 }
 
@@ -1023,6 +1083,35 @@ mod tests {
         match parse_effect(&expr).unwrap() {
             Effect::CallService { key, .. } => assert_eq!(key, None),
             other => panic!("expected CallService, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_host_effects_read_their_argument_and_emit() {
+        let random: SExpression =
+            serde_json::from_str(r#"["random-bytes", 32, {"emit": {"success": "S", "failure": "F"}}]"#).unwrap();
+        match parse_effect(&random).unwrap() {
+            Effect::RandomBytes { bytes, emit } => {
+                assert_eq!(bytes, Value::Number(32.0));
+                assert_eq!(emit.and_then(|e| e.success).as_deref(), Some("S"));
+            }
+            other => panic!("expected RandomBytes, got {other:?}"),
+        }
+        for (head, status) in [("credential-status", true), ("credential-forget", false)] {
+            let expr: SExpression = serde_json::from_str(&format!(r#"["{head}", "tok", {{"emit": {{"success": "S"}}}}]"#)).unwrap();
+            let parsed = parse_effect(&expr).unwrap();
+            assert_eq!(parsed.operator(), head);
+            assert_eq!(matches!(parsed, Effect::CredentialStatus { .. }), status);
+            assert!(is_known_effect_name(head));
+        }
+        assert!(is_known_effect_name("random-bytes"));
+    }
+
+    #[test]
+    fn parse_host_effects_refuse_the_wrong_arity_and_never_fall_to_custom() {
+        for src in [r#"["random-bytes"]"#, r#"["random-bytes", 1, {}, {}]"#, r#"["credential-status"]"#, r#"["credential-forget", "a", {}, {}]"#] {
+            let expr: SExpression = serde_json::from_str(src).unwrap();
+            assert!(parse_effect(&expr).is_none(), "{src}");
         }
     }
 

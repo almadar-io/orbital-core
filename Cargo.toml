@@ -27,9 +27,14 @@ parking_lot = "0.12"
 semver = "1"
 sha2 = "0.10"
 base64 = "0.22"
+quick-xml = "0.38"
 tokio = { version = "1.0", features = ["full"], optional = true }
 # `Instant` that works on wasm32 (performance.now); std's panics there.
 web-time = "1.1"
+aes-gcm = "0.10"
+p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pem"] }
+rsa = { version = "0.9", default-features = false, features = ["std", "pem", "sha2"] }
+url = "2"
 ureq = { version = "2.9", default-features = false, features = ["json"], optional = true }
 
 [dev-dependencies]
@@ -52,3 +57,6 @@ harness = false
 # build reads the clock through `js_sys::Date` (see `time_util`). wasm32-only.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+getrandom = "0.2"

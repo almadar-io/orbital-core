@@ -453,6 +453,48 @@ pub struct ServiceRegistryData {
     /// Service name → the runtimes its implementation declares (`node`, `browser`).
     /// A service without the field declares none.
     pub runtimes: HashMap<String, Vec<String>>,
+    /// Service name → action name → the fields of the action's `responseShape`
+    /// record, sorted by name. An action with no (or an empty) `responseShape`
+    /// is absent: its result is not a known record.
+    pub response_shapes: HashMap<String, HashMap<String, Vec<ResponseShapeField>>>,
+}
+
+/// One field of a service action's `responseShape` record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseShapeField {
+    pub name: String,
+    pub field_type: String,
+}
+
+impl ServiceRegistryData {
+    /// The fields of `service.action`'s `responseShape`, or `None` when the
+    /// action declares none.
+    pub fn response_shape(&self, service: &str, action: &str) -> Option<&[ResponseShapeField]> {
+        self.response_shapes
+            .get(service)?
+            .get(action)
+            .map(Vec::as_slice)
+    }
+}
+
+fn response_shape_fields(shape: &serde_json::Map<String, serde_json::Value>) -> Vec<ResponseShapeField> {
+    let mut fields: Vec<ResponseShapeField> = shape
+        .iter()
+        .map(|(name, value)| ResponseShapeField {
+            name: name.clone(),
+            field_type: match value {
+                serde_json::Value::String(t) => t.clone(),
+                serde_json::Value::Object(o) => o
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("any")
+                    .to_string(),
+                _ => "any".to_string(),
+            },
+        })
+        .collect();
+    fields.sort_by(|a, b| a.name.cmp(&b.name));
+    fields
 }
 
 /// Parse raw services-registry.json text into both validation projections.
@@ -462,6 +504,8 @@ pub fn parse_service_registry_data(raw: &str) -> Result<ServiceRegistryData, ser
         name: String,
         #[serde(default)]
         params: Vec<EmbeddedServiceParam>,
+        #[serde(default, rename = "responseShape")]
+        response_shape: Option<serde_json::Map<String, serde_json::Value>>,
     }
     #[derive(Deserialize)]
     struct ServiceEntry {
@@ -480,10 +524,15 @@ pub fn parse_service_registry_data(raw: &str) -> Result<ServiceRegistryData, ser
     for (name, entry) in registry.services {
         let mut actions = HashSet::new();
         let mut params = HashMap::new();
+        let mut shapes = HashMap::new();
         for a in entry.actions {
             actions.insert(a.name.clone());
+            if let Some(shape) = a.response_shape.filter(|s| !s.is_empty()) {
+                shapes.insert(a.name.clone(), response_shape_fields(&shape));
+            }
             params.insert(a.name, a.params);
         }
+        data.response_shapes.insert(name.clone(), shapes);
         data.actions.insert(name.clone(), actions);
         data.params.insert(name.clone(), params);
         data.runtimes.insert(name, entry.runtimes);
@@ -928,6 +977,35 @@ pub fn known_contexts() -> HashSet<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shaped_registry() -> ServiceRegistryData {
+        parse_service_registry_data(
+            r#"{"services": {"files": {"actions": [
+                {"name": "upload", "params": [],
+                 "responseShape": {"url": "string", "meta": {"type": "object"}, "loose": 3}},
+                {"name": "ping", "params": [], "responseShape": {}},
+                {"name": "bare", "params": []}]}}}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_registry_action_exposes_its_response_shape_sorted_and_typed() {
+        let registry = shaped_registry();
+        let shape = registry.response_shape("files", "upload").expect("shape");
+        let found: Vec<(&str, &str)> =
+            shape.iter().map(|f| (f.name.as_str(), f.field_type.as_str())).collect();
+        assert_eq!(found, vec![("loose", "any"), ("meta", "object"), ("url", "string")]);
+    }
+
+    #[test]
+    fn an_action_without_a_usable_response_shape_has_none() {
+        let registry = shaped_registry();
+        assert!(registry.response_shape("files", "ping").is_none(), "empty shape");
+        assert!(registry.response_shape("files", "bare").is_none(), "no shape");
+        assert!(registry.response_shape("files", "missing").is_none(), "unknown action");
+        assert!(registry.response_shape("nope", "upload").is_none(), "unknown service");
+    }
 
     // Operator-parity gate (zero exemptions): the runtime evaluator
     // (`crate::evaluator::get_operator`) must resolve EVERY operator whose

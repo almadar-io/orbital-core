@@ -230,6 +230,29 @@ pub enum OirEffect {
     /// no-op when none is in flight. Server-only, like `call-service`.
     CancelCall { key: OirExpr },
 
+    /// `bytes` of journaled host CSPRNG output; success carries `{ value }` (base64url, no padding).
+    /// Server-only.
+    RandomBytes {
+        bytes: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
+    /// Whether the host holds the credential named by the `secret` knob `credential`; success
+    /// carries `{ connected }`. Server-only.
+    CredentialStatus {
+        credential: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
+    /// Drop the credential named by the `secret` knob `credential`. Server-only.
+    CredentialForget {
+        credential: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
     /// Spawn a game entity
     Spawn { entity_type: String, props: OirExpr },
 
@@ -399,7 +422,6 @@ const SUBSTRATE_OPERATOR_PREFIXES: &[&str] = &[
     "trace/",
     "session/",
     "workspace/",
-    "integration/",
 ];
 
 
@@ -715,6 +737,21 @@ impl OirEffect {
         Self::CancelCall { key }
     }
 
+    /// Create a random-bytes effect
+    pub fn random_bytes(bytes: OirExpr, emit: Option<OirEmitConfig>) -> Self {
+        Self::RandomBytes { bytes, emit }
+    }
+
+    /// Create a credential-status effect
+    pub fn credential_status(credential: OirExpr, emit: Option<OirEmitConfig>) -> Self {
+        Self::CredentialStatus { credential, emit }
+    }
+
+    /// Create a credential-forget effect
+    pub fn credential_forget(credential: OirExpr, emit: Option<OirEmitConfig>) -> Self {
+        Self::CredentialForget { credential, emit }
+    }
+
     /// Get the effect kind as a string
     pub fn kind(&self) -> &'static str {
         match self {
@@ -734,6 +771,9 @@ impl OirEffect {
             Self::CallService { .. } => "call-service",
             Self::Http { .. } => "http",
             Self::CancelCall { .. } => "cancel-call",
+            Self::RandomBytes { .. } => "random-bytes",
+            Self::CredentialStatus { .. } => "credential-status",
+            Self::CredentialForget { .. } => "credential-forget",
             Self::Spawn { .. } => "spawn",
             Self::Despawn { .. } => "despawn",
             Self::Log { .. } => "log",
@@ -906,6 +946,17 @@ impl OirEffect {
             }
             Self::CancelCall { key } => {
                 key.collect_bindings()
+                    .into_iter()
+                    .for_each(|b| bindings.push(b));
+            }
+            Self::RandomBytes { bytes: expr, .. }
+            | Self::CredentialStatus {
+                credential: expr, ..
+            }
+            | Self::CredentialForget {
+                credential: expr, ..
+            } => {
+                expr.collect_bindings()
                     .into_iter()
                     .for_each(|b| bindings.push(b));
             }
@@ -1136,6 +1187,13 @@ impl OirEffect {
                 push_opt(&mut out, key);
             }
             Self::CancelCall { key } => out.push(key),
+            Self::RandomBytes { bytes: expr, .. }
+            | Self::CredentialStatus {
+                credential: expr, ..
+            }
+            | Self::CredentialForget {
+                credential: expr, ..
+            } => out.push(expr),
             Self::Spawn { props, .. } => out.push(props),
             Self::Despawn { entity_id } => out.push(entity_id),
             Self::Log { message, .. } => out.push(message),
