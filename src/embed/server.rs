@@ -3,14 +3,15 @@
 //! on a promise, so it starts a dispatch, answers the requests it is handed (in any order, all at
 //! once) and resumes. The continuation never leaves this module; only requests and answers cross.
 
-use super::wire::{IoReplyWire, PendingRequestWire, ServerProgressWire};
+use super::wire::{IoReplyWire, PendingRequestWire, ResolveProgressWire, ServerProgressWire};
 use crate::effects::{RunTick, TraitFrom, TransitionHop};
 use crate::effects::{ServiceHandler, SubstrateHandler};
 use crate::runtime::payload_validation::{format_payload_failures, validate_event_payload};
 use crate::runtime::resumable::{
     DispatchContinuation, DispatchError, DispatchOutcomes, HostAnswered, IoReply, PendingRequest,
-    Progress,
+    Progress, ResolveContinuation, ResolveProgress,
 };
+use crate::runtime::row_query::{RowPage, RowSetRef};
 use crate::runtime::{KernelConfig, KernelError, RuntimeKernel};
 use crate::{EntitySource, EventRequest, EventResponse, OrbitalSchema, RuntimeEnvironment, Value};
 use parking_lot::Mutex;
@@ -34,6 +35,31 @@ impl From<&ServerProgress> for ServerProgressWire {
                 response: response.clone(),
             },
             ServerProgress::Await { flight, requests } => ServerProgressWire::Await {
+                flight: *flight,
+                requests: requests.iter().map(PendingRequestWire::from).collect(),
+            },
+        }
+    }
+}
+
+/// Where a row-set resolve stands: the page, or the reads the host answers next.
+#[derive(Debug)]
+pub enum ServerResolve {
+    Done(RowPage),
+    Await {
+        flight: u64,
+        requests: Vec<PendingRequest>,
+    },
+}
+
+impl From<&ServerResolve> for ResolveProgressWire {
+    fn from(progress: &ServerResolve) -> Self {
+        match progress {
+            ServerResolve::Done(page) => ResolveProgressWire::Done {
+                rows: page.rows.clone(),
+                total: page.total,
+            },
+            ServerResolve::Await { flight, requests } => ResolveProgressWire::Await {
                 flight: *flight,
                 requests: requests.iter().map(PendingRequestWire::from).collect(),
             },
@@ -69,6 +95,8 @@ pub struct EmbeddedServer {
     /// The traits some client has mounted: a tick that is not `[background]` fires only for these.
     tick_mount: Mutex<BTreeSet<String>>,
     flights: Mutex<HashMap<u64, Flight>>,
+    /// Row-set resolves waiting on the host; they share `next_flight`'s ids with the dispatches.
+    resolves: Mutex<HashMap<u64, ResolveContinuation>>,
     next_flight: Mutex<u64>,
 }
 
@@ -112,6 +140,7 @@ impl EmbeddedServer {
             default_user: Mutex::new(default_user),
             tick_mount: Mutex::new(BTreeSet::new()),
             flights: Mutex::new(HashMap::new()),
+            resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
         })
     }
@@ -133,6 +162,27 @@ impl EmbeddedServer {
         catalogs: HashMap<String, HashMap<String, String>>,
     ) {
         self.kernel.set_messages(locales, catalogs);
+    }
+
+    /// Declare what the host's row store honours for `entity_type`, as JSON: `query` is a
+    /// `QueryCapabilities`, `write` a `WriteCapabilities`; either may be `null` to declare nothing.
+    pub fn set_capabilities_json(
+        &self,
+        entity_type: &str,
+        query_json: &str,
+        write_json: &str,
+    ) -> Result<(), String> {
+        let query: Option<crate::runtime::row_query::QueryCapabilities> =
+            serde_json::from_str(query_json).map_err(|e| format!("parse query_json: {e}"))?;
+        let write: Option<crate::runtime::row_query::WriteCapabilities> =
+            serde_json::from_str(write_json).map_err(|e| format!("parse write_json: {e}"))?;
+        if let Some(q) = query {
+            self.kernel.set_query_capabilities(entity_type, q);
+        }
+        if let Some(w) = write {
+            self.kernel.set_write_capabilities(entity_type, w);
+        }
+        Ok(())
     }
 
     /// The traits whose mount-scoped ticks fire: the host's union of what its clients have mounted.
@@ -160,12 +210,85 @@ impl EmbeddedServer {
 
     /// How many dispatches are waiting on the host.
     pub fn in_flight(&self) -> usize {
-        self.flights.lock().len()
+        self.flights.lock().len() + self.resolves.lock().len()
     }
 
     /// Forget a dispatch the host gave up on.
     pub fn abandon(&self, flight: u64) -> bool {
-        self.flights.lock().remove(&flight).is_some()
+        self.flights.lock().remove(&flight).is_some() || self.resolves.lock().remove(&flight).is_some()
+    }
+
+    /// `reference` resolved for `viewer` against the host-answered store (EXEC-RENDER-3): the ids that still
+    /// match its query and the viewer's `@read`, a missing or hidden row omitted and `total` re-counted. Each read
+    /// is a request the host answers, as in a dispatch; resume the flight with [`Self::resume_resolve`].
+    pub fn resolve_rows(
+        &self,
+        reference: &RowSetRef,
+        viewer: &Value,
+    ) -> Result<ServerResolve, String> {
+        let progress = self
+            .kernel
+            .start_resolve_rows(reference, viewer)
+            .map_err(dispatch_error)?;
+        Ok(self.settle_resolve(progress))
+    }
+
+    /// Go on with a resolve `flight`, given an answer to each request it is waiting on.
+    pub fn resume_resolve(
+        &self,
+        flight: u64,
+        replies: Vec<IoReply>,
+    ) -> Result<ServerResolve, String> {
+        let continuation = self
+            .resolves
+            .lock()
+            .remove(&flight)
+            .ok_or_else(|| format!("no resolve is waiting as flight {flight}"))?;
+        let progress = self
+            .kernel
+            .resume_resolve_rows(continuation, replies)
+            .map_err(dispatch_error)?;
+        Ok(self.settle_resolve(progress))
+    }
+
+    /// [`Self::resolve_rows`] over JSON: the reference and viewer in, a `ResolveProgressWire` out.
+    pub fn resolve_rows_json(&self, ref_json: &str, viewer_json: &str) -> Result<String, String> {
+        let reference: RowSetRef =
+            serde_json::from_str(ref_json).map_err(|e| format!("parse ref_json: {e}"))?;
+        let viewer: Value =
+            serde_json::from_str(viewer_json).map_err(|e| format!("parse viewer_json: {e}"))?;
+        let progress = self.resolve_rows(&reference, &viewer)?;
+        serde_json::to_string(&ResolveProgressWire::from(&progress))
+            .map_err(|e| format!("serialize: {e}"))
+    }
+
+    /// [`Self::resume_resolve`] over JSON: the answers (`IoReplyWire[]`) in, a `ResolveProgressWire` out.
+    pub fn resume_resolve_json(&self, flight: u64, replies_json: &str) -> Result<String, String> {
+        let replies: Vec<IoReplyWire> =
+            serde_json::from_str(replies_json).map_err(|e| format!("parse replies_json: {e}"))?;
+        let progress =
+            self.resume_resolve(flight, replies.into_iter().map(IoReply::from).collect())?;
+        serde_json::to_string(&ResolveProgressWire::from(&progress))
+            .map_err(|e| format!("serialize: {e}"))
+    }
+
+    fn settle_resolve(&self, progress: ResolveProgress) -> ServerResolve {
+        match progress {
+            ResolveProgress::Done(page) => ServerResolve::Done(page),
+            ResolveProgress::Await {
+                continuation,
+                requests,
+            } => {
+                let flight = {
+                    let mut next = self.next_flight.lock();
+                    let id = *next;
+                    *next += 1;
+                    id
+                };
+                self.resolves.lock().insert(flight, continuation);
+                ServerResolve::Await { flight, requests }
+            }
+        }
     }
 
     /// Start `request` against `orbital`. A delegated leg (`traits` / `entityByTrait`) first seeds the client's

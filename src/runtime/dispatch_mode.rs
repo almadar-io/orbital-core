@@ -54,7 +54,10 @@ mod tests {
     fn dispatch_mode_rule_table() {
         // `local` wins everywhere.
         for (runtime, server) in [(true, true), (true, false), (false, true), (false, false)] {
-            assert_eq!(compute(true, runtime, server), DispatchMode::HybridClientOnly);
+            assert_eq!(
+                compute(true, runtime, server),
+                DispatchMode::HybridClientOnly
+            );
         }
         // A `[runtime]` trait is client-only unless its own effects reach the server.
         assert_eq!(compute(false, true, false), DispatchMode::HybridClientOnly);
@@ -87,24 +90,44 @@ mod tests {
 
     #[test]
     fn a_runtime_trait_with_no_server_effect_is_client_only() {
-        let t = schema_trait(serde_json::json!([["set", "@entity.x", 1]]), serde_json::json!([]));
-        assert_eq!(t.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()), DispatchMode::HybridClientOnly);
+        let t = schema_trait(
+            serde_json::json!([["set", "@entity.x", 1]]),
+            serde_json::json!([]),
+        );
+        assert_eq!(
+            t.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()),
+            DispatchMode::HybridClientOnly
+        );
     }
 
     #[test]
     fn a_nested_server_effect_makes_a_runtime_trait_optimistic() {
-        let t = schema_trait(serde_json::json!([["when", true, ["fetch", "Row", {}]]]), serde_json::json!([]));
-        assert_eq!(t.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()), DispatchMode::RuntimeOptimistic);
+        let t = schema_trait(
+            serde_json::json!([["when", true, ["fetch", "Row", {}]]]),
+            serde_json::json!([]),
+        );
+        assert_eq!(
+            t.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()),
+            DispatchMode::RuntimeOptimistic
+        );
     }
 
     #[test]
     fn a_client_tick_server_effect_counts_a_background_tick_does_not() {
-        let tick = |bg: bool| serde_json::json!([{ "name": "t", "interval": 100, "runsInBackground": bg,
-            "effects": [["fetch", "Row", {}]] }]);
+        let tick = |bg: bool| {
+            serde_json::json!([{ "name": "t", "interval": 100, "runsInBackground": bg,
+            "effects": [["fetch", "Row", {}]] }])
+        };
         let client = schema_trait(serde_json::json!([]), tick(false));
         let background = schema_trait(serde_json::json!([]), tick(true));
-        assert_eq!(client.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()), DispatchMode::RuntimeOptimistic);
-        assert_eq!(background.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()), DispatchMode::HybridClientOnly);
+        assert_eq!(
+            client.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()),
+            DispatchMode::RuntimeOptimistic
+        );
+        assert_eq!(
+            background.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()),
+            DispatchMode::HybridClientOnly
+        );
     }
 
     /// A branch that can never run is no server work: a ui-* wrapper's
@@ -120,32 +143,82 @@ mod tests {
             },
         }))
         .expect("trait fixture");
-        assert_eq!(guarded.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()), DispatchMode::HybridClientOnly);
-        let dead_then = schema_trait(serde_json::json!([["if", false, ["fetch", "Row", {}], null]]), serde_json::json!([]));
-        assert_eq!(dead_then.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()), DispatchMode::HybridClientOnly);
-        let live_else = schema_trait(serde_json::json!([["if", false, null, ["fetch", "Row", {}]]]), serde_json::json!([]));
-        assert_eq!(live_else.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()), DispatchMode::RuntimeOptimistic);
+        assert_eq!(
+            guarded.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()),
+            DispatchMode::HybridClientOnly
+        );
+        let dead_then = schema_trait(
+            serde_json::json!([["if", false, ["fetch", "Row", {}], null]]),
+            serde_json::json!([]),
+        );
+        assert_eq!(
+            dead_then.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()),
+            DispatchMode::HybridClientOnly
+        );
+        let live_else = schema_trait(
+            serde_json::json!([["if", false, null, ["fetch", "Row", {}]]]),
+            serde_json::json!([]),
+        );
+        assert_eq!(
+            live_else.dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none()),
+            DispatchMode::RuntimeOptimistic
+        );
     }
 
     /// A binding position names a value; it never calls the operator it spells.
     #[test]
     fn a_binding_named_like_a_server_operator_is_not_server_work() {
         let optimistic = |effects: serde_json::Value| {
-            schema_trait(effects, serde_json::json!([])).dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none())
+            schema_trait(effects, serde_json::json!([]))
+                .dispatch_mode(Some(&entity(true)), &crate::effects::Residence::none())
                 == DispatchMode::RuntimeOptimistic
         };
-        assert!(!optimistic(serde_json::json!([["let", [["swap", [">", "@a", "@b"]]], ["set", "@entity.x", "@swap"]]])));
-        assert!(!optimistic(serde_json::json!([["let", [["fetch", 1], ["persist", 2]], ["set", "@entity.x", "@fetch"]]])));
-        assert!(!optimistic(serde_json::json!([["set", "@entity.xs", ["array/map", "@entity.xs", ["fn", ["swap", "i"], "@swap"]]]])));
-        assert!(optimistic(serde_json::json!([["let", [["rows", ["fetch", "Row", {}]]], ["set", "@entity.x", "@rows"]]])));
-        assert!(optimistic(serde_json::json!([["let", [["swap", true]], ["persist", "create", "Row", {}]]])));
-        assert!(optimistic(serde_json::json!([["set", "@entity.xs", ["array/map", "@entity.xs", ["fn", ["swap", "i"], ["fetch", "Row", {}]]]]])));
+        assert!(!optimistic(serde_json::json!([[
+            "let",
+            [["swap", [">", "@a", "@b"]]],
+            ["set", "@entity.x", "@swap"]
+        ]])));
+        assert!(!optimistic(serde_json::json!([[
+            "let",
+            [["fetch", 1], ["persist", 2]],
+            ["set", "@entity.x", "@fetch"]
+        ]])));
+        assert!(!optimistic(serde_json::json!([[
+            "set",
+            "@entity.xs",
+            ["array/map", "@entity.xs", ["fn", ["swap", "i"], "@swap"]]
+        ]])));
+        assert!(optimistic(serde_json::json!([[
+            "let",
+            [["rows", ["fetch", "Row", {}]]],
+            ["set", "@entity.x", "@rows"]
+        ]])));
+        assert!(optimistic(serde_json::json!([[
+            "let",
+            [["swap", true]],
+            ["persist", "create", "Row", {}]
+        ]])));
+        assert!(optimistic(serde_json::json!([[
+            "set",
+            "@entity.xs",
+            [
+                "array/map",
+                "@entity.xs",
+                ["fn", ["swap", "i"], ["fetch", "Row", {}]]
+            ]
+        ]])));
     }
 
     #[test]
     fn control_a_persisted_trait_awaits_whatever_its_effects() {
-        let t = schema_trait(serde_json::json!([["set", "@entity.x", 1]]), serde_json::json!([]));
-        assert_eq!(t.dispatch_mode(Some(&entity(false)), &crate::effects::Residence::none()), DispatchMode::PersistedAwaited);
+        let t = schema_trait(
+            serde_json::json!([["set", "@entity.x", 1]]),
+            serde_json::json!([]),
+        );
+        assert_eq!(
+            t.dispatch_mode(Some(&entity(false)), &crate::effects::Residence::none()),
+            DispatchMode::PersistedAwaited
+        );
     }
 
     fn oir_fetch() -> OirExpr {
@@ -188,7 +261,8 @@ mod tests {
                     } else {
                         OirPersistence::Persistent
                     };
-                    let ir_mode = oir_trait.dispatch_mode(Some(&oir_entity), &crate::effects::Residence::none());
+                    let ir_mode = oir_trait
+                        .dispatch_mode(Some(&oir_entity), &crate::effects::Residence::none());
 
                     let mut schema = schema_trait(
                         if server {
@@ -199,7 +273,10 @@ mod tests {
                         serde_json::json!([]),
                     );
                     schema.local = local;
-                    let schema_mode = schema.dispatch_mode(Some(&entity(entity_is_runtime)), &crate::effects::Residence::none());
+                    let schema_mode = schema.dispatch_mode(
+                        Some(&entity(entity_is_runtime)),
+                        &crate::effects::Residence::none(),
+                    );
 
                     assert_eq!(
                         ir_mode, schema_mode,

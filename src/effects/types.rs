@@ -2,8 +2,9 @@
 //!
 //! Core types for effect execution.
 
-use crate::evaluator::ValueMap;
 use crate::evaluator::Value;
+use crate::evaluator::ValueMap;
+use crate::runtime::http_request::HttpMethod;
 use crate::schema::SExpression;
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +59,22 @@ impl FetchEmit {
     }
 }
 
+/// What a `fetch` hands its success event: the rows, or a [`RowSetRef`](crate::runtime::row_query::RowSetRef)
+/// to them (`deliver: ids`, Almadar_Embedded_Kernel_Speed_Design.md section 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FetchDeliver {
+    #[default]
+    Rows,
+    Ids,
+}
+
+impl FetchDeliver {
+    fn is_rows(&self) -> bool {
+        *self == FetchDeliver::Rows
+    }
+}
+
 /// Typed effect variants
 ///
 /// Effects are the side-effects produced by state machine transitions.
@@ -85,10 +102,7 @@ pub enum Effect {
 
     /// `["persist", "batch", <ops>, { emit }?]` — many rows in one effect. `ops`
     /// is evaluated at execution time to an array of `["create"|"update"|"delete", …]`.
-    PersistBatch {
-        ops: Value,
-        emit: Option<FetchEmit>,
-    },
+    PersistBatch { ops: Value, emit: Option<FetchEmit> },
 
     /// Call an external service
     CallService {
@@ -103,7 +117,20 @@ pub enum Effect {
         emit: Option<FetchEmit>,
     },
 
-    /// Abort the in-flight keyed call-service started with `key`
+    /// One HTTP request. `request` is resolved except `paginate.next`/`collect`, which stay
+    /// S-expressions the kernel evaluates per page against `@response`.
+    Http {
+        method: HttpMethod,
+        origin: String,
+        path: String,
+        request: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// Abort the in-flight keyed call-service or http started with `key`
     CancelCall { key: String },
 
     /// Render UI (client-only)
@@ -164,6 +191,12 @@ pub enum Effect {
         /// Optional list of relation fields to include (e.g., ["company", "inspector"])
         /// These must reference relation fields on the entity
         include: Option<Vec<String>>,
+        /// `rows` (absent) delivers the rows in `data`; `ids` delivers a row-set reference.
+        #[serde(default, skip_serializing_if = "FetchDeliver::is_rows")]
+        deliver: FetchDeliver,
+        /// `none` (ruled Q12): the store skips counting every match; the success payload carries no `totalCount`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<crate::runtime::row_query::RowTotalMode>,
         /// Completion events fired after the fetch resolves (`success` carries the rows
         /// as `{ data: [...] }`; `failure` fires on error). Drives `loading` → `loaded`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -183,8 +216,7 @@ pub enum Effect {
 /// All client-targeted effect wire kinds, in `kebab-case`. Every client shell MUST handle
 /// each; the shell effect-coverage gates iterate this. Kept in sync with [`Effect::client_kind`]
 /// by `effects::tests::client_kind_matches_kinds`.
-pub const CLIENT_EFFECT_KINDS: &[&str] =
-    &["render-ui", "navigate", "navigate-back", "emit"];
+pub const CLIENT_EFFECT_KINDS: &[&str] = &["render-ui", "navigate", "navigate-back", "emit"];
 
 impl Effect {
     /// Registry name of the operator this effect came from.
@@ -194,6 +226,7 @@ impl Effect {
             Effect::Set { .. } => "set",
             Effect::Persist { .. } | Effect::PersistBatch { .. } => "persist",
             Effect::CallService { .. } => "call-service",
+            Effect::Http { .. } => "http",
             Effect::CancelCall { .. } => "cancel-call",
             Effect::RenderUi { .. } => "render-ui",
             Effect::Navigate { .. } => "navigate",
@@ -226,6 +259,7 @@ impl Effect {
 #[serde(rename_all = "lowercase")]
 pub enum PersistOperation {
     Create,
+    Upsert,
     Read,
     Update,
     Delete,
@@ -237,6 +271,7 @@ impl PersistOperation {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "create" => Some(PersistOperation::Create),
+            "upsert" => Some(PersistOperation::Upsert),
             "read" => Some(PersistOperation::Read),
             "update" => Some(PersistOperation::Update),
             "delete" => Some(PersistOperation::Delete),
@@ -325,7 +360,7 @@ impl EffectResult {
         effect: Effect,
         entities: Value,
         entity_type: &str,
-        total: usize,
+        total: Option<usize>,
     ) -> Self {
         Self {
             effect,
@@ -333,7 +368,26 @@ impl EffectResult {
             return_value: Some(entities),
             error: None,
             entity_type: Some(entity_type.to_string()),
-            total_count: Some(total),
+            total_count: total,
+            persist_success: false,
+            code: None,
+        }
+    }
+
+    /// A fetch delivered by reference (`deliver: ids`): the success payload's `data` is the reference's
+    /// render-prop leaf, `totalCount` its count.
+    pub fn executed_row_set(
+        effect: Effect,
+        reference: &crate::runtime::row_query::RowSetRef,
+        total: Option<usize>,
+    ) -> Self {
+        Self {
+            effect,
+            outcome: EffectOutcome::Executed,
+            return_value: Some(crate::runtime::row_query::row_set_marker(reference)),
+            error: None,
+            entity_type: Some(reference.entity_type.clone()),
+            total_count: total,
             persist_success: false,
             code: None,
         }
@@ -453,6 +507,7 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
         "persist" => parse_persist(args),
         "fetch" => parse_fetch(args),
         "call-service" => parse_call_service(args),
+        "http" => parse_http(args),
         "cancel-call" => parse_cancel_call(args),
         "render-ui" => parse_render_ui(args),
         "navigate" => parse_navigate(args),
@@ -520,6 +575,7 @@ pub fn is_known_effect_name(op: &str) -> bool {
             | "persist"
             | "fetch"
             | "call-service"
+            | "http"
             | "cancel-call"
             | "render-ui"
             | "navigate"
@@ -572,29 +628,32 @@ fn strip_trailing_emit_options(args: &[SExpression]) -> &[SExpression] {
 /// one shape, one reader. `None` when `obj` carries no `emit` key or neither
 /// event is declared.
 fn parse_emit_config(obj: &Value) -> Option<FetchEmit> {
-    obj.as_object()?.get("emit").and_then(|v| v.as_object()).and_then(|e| {
-        let success = e
-            .get("success")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let failure = e
-            .get("failure")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let route = |snake: &str, camel: &str| {
-            e.get(snake)
-                .or_else(|| e.get(camel))
+    obj.as_object()?
+        .get("emit")
+        .and_then(|v| v.as_object())
+        .and_then(|e| {
+            let success = e
+                .get("success")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        };
-        let fe = FetchEmit {
-            success,
-            failure,
-            cancelled: route("cancelled", "cancelled"),
-            on_message: route("on_message", "onMessage"),
-        };
-        (!fe.is_empty() || fe.on_message.is_some()).then_some(fe)
-    })
+                .map(|s| s.to_string());
+            let failure = e
+                .get("failure")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let route = |snake: &str, camel: &str| {
+                e.get(snake)
+                    .or_else(|| e.get(camel))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            };
+            let fe = FetchEmit {
+                success,
+                failure,
+                cancelled: route("cancelled", "cancelled"),
+                on_message: route("on_message", "onMessage"),
+            };
+            (!fe.is_empty() || fe.on_message.is_some()).then_some(fe)
+        })
 }
 
 fn parse_persist(args: &[SExpression]) -> Option<Effect> {
@@ -660,7 +719,7 @@ fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
     let entity_type = args[0].as_str()?.to_string();
 
     // Parse optional config object
-    let (id, filter, limit, offset, order_by, include, emit) = if let Some(config) = args.get(1) {
+    let (id, filter, limit, offset, order_by, include, deliver, total, emit) = if let Some(config) = args.get(1) {
         let config_value = Value::from(config.clone());
         if let Some(obj) = config_value.as_object() {
             let option = |key: &str| obj.get(key).filter(|v| !v.is_null()).cloned();
@@ -676,13 +735,21 @@ fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
                         .collect()
                 })
             });
+            let deliver = match obj.get("deliver").and_then(Value::as_str) {
+                Some("ids") => FetchDeliver::Ids,
+                _ => FetchDeliver::Rows,
+            };
+            let total = match obj.get("total").and_then(Value::as_str) {
+                Some("none") => Some(crate::runtime::row_query::RowTotalMode::None),
+                _ => None,
+            };
             let emit = parse_emit_config(&config_value);
-            (id, filter, limit, offset, order_by, include, emit)
+            (id, filter, limit, offset, order_by, include, deliver, total, emit)
         } else {
-            (None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, FetchDeliver::Rows, None, None)
         }
     } else {
-        (None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, FetchDeliver::Rows, None, None)
     };
 
     Some(Effect::Fetch {
@@ -693,6 +760,8 @@ fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
         offset,
         order_by,
         include,
+        deliver,
+        total,
         emit,
     })
 }
@@ -726,6 +795,37 @@ fn parse_call_service(args: &[SExpression]) -> Option<Effect> {
     })
 }
 
+/// `["http", METHOD, origin, path, request?, { key?, emit? }?]`.
+fn parse_http(args: &[SExpression]) -> Option<Effect> {
+    if !(3..=5).contains(&args.len()) {
+        return None;
+    }
+    let method: HttpMethod =
+        serde_json::from_value(serde_json::Value::String(args[0].as_str()?.to_string())).ok()?;
+    let origin = args[1].as_str()?.to_string();
+    let path = args[2].as_str()?.to_string();
+    let request = args
+        .get(3)
+        .map(|e| Value::from(e.clone()))
+        .unwrap_or_else(|| Value::Object(ValueMap::new()));
+    let options = args.get(4).map(|e| Value::from(e.clone()));
+    let key = options
+        .as_ref()
+        .and_then(|o| o.as_object())
+        .and_then(|o| o.get("key"))
+        .and_then(|k| k.as_str())
+        .map(str::to_string);
+    let emit = options.as_ref().and_then(parse_emit_config);
+    Some(Effect::Http {
+        method,
+        origin,
+        path,
+        request,
+        key,
+        emit,
+    })
+}
+
 fn parse_cancel_call(args: &[SExpression]) -> Option<Effect> {
     let key = args.first()?.as_str()?.to_string();
     Some(Effect::CancelCall { key })
@@ -754,13 +854,20 @@ fn parse_navigate(args: &[SExpression]) -> Option<Effect> {
     });
     let options = args.get(2).and_then(|e| {
         if let Value::Object(obj) = Value::from(e.clone()) {
-            let crumb = obj.get("crumb").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let crumb = obj
+                .get("crumb")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             Some(super::client_effect::NavigateOptions { crumb })
         } else {
             None
         }
     });
-    Some(Effect::Navigate { path, params, options })
+    Some(Effect::Navigate {
+        path,
+        params,
+        options,
+    })
 }
 
 fn parse_spawn(args: &[SExpression]) -> Option<Effect> {
@@ -888,6 +995,8 @@ mod tests {
                 offset: None,
                 order_by: None,
                 include: None,
+                deliver: FetchDeliver::Rows,
+                total: None,
                 emit: None,
             }
             .client_kind(),
@@ -1083,7 +1192,11 @@ mod tests {
 
         let effect = parse_effect(&expr).unwrap();
         match effect {
-            Effect::Navigate { path, params, options } => {
+            Effect::Navigate {
+                path,
+                params,
+                options,
+            } => {
                 assert_eq!(path, "/users");
                 assert!(params.is_none());
                 assert!(options.is_none());
@@ -1150,6 +1263,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_fetch_reads_total_none_and_only_none() {
+        let total_of = |config: &str| {
+            let expr: SExpression =
+                serde_json::from_str(&format!(r#"["fetch", "User", {config}]"#)).unwrap();
+            match parse_effect(&expr).unwrap() {
+                Effect::Fetch { total, .. } => total,
+                other => panic!("not a fetch: {other:?}"),
+            }
+        };
+        assert_eq!(
+            total_of(r#"{"total": "none"}"#),
+            Some(crate::runtime::row_query::RowTotalMode::None)
+        );
+        assert_eq!(total_of(r#"{"total": "exact"}"#), None);
+        assert_eq!(total_of(r#"{"limit": 5}"#), None);
+        let expr: SExpression = serde_json::from_str(r#"["fetch", "User"]"#).unwrap();
+        let Effect::Fetch { total, .. } = parse_effect(&expr).unwrap() else {
+            panic!("not a fetch")
+        };
+        assert_eq!(total, None);
+    }
+
+    #[test]
     fn test_parse_fetch_all() {
         // ["fetch", "User"] - fetch all users (from Orbital_Pattern.orb INIT transition)
         let expr: SExpression = serde_json::from_str(r#"["fetch", "User"]"#).unwrap();
@@ -1195,7 +1331,8 @@ mod tests {
 
     #[test]
     fn control_a_call_service_without_options_declares_no_completion() {
-        let expr: SExpression = serde_json::from_str(r#"["call-service", "llm", "embed", {}]"#).unwrap();
+        let expr: SExpression =
+            serde_json::from_str(r#"["call-service", "llm", "embed", {}]"#).unwrap();
         match parse_effect(&expr).unwrap() {
             Effect::CallService { emit, .. } => assert!(emit.is_none()),
             other => panic!("expected CallService, got {other:?}"),
@@ -1214,7 +1351,10 @@ mod tests {
             Effect::Custom { name, args, emit } => {
                 assert_eq!(name, "program/eval");
                 assert_eq!(args.len(), 2, "the emit object is not an argument");
-                assert_eq!(emit.expect("emit parsed").success.as_deref(), Some("EVALUATED"));
+                assert_eq!(
+                    emit.expect("emit parsed").success.as_deref(),
+                    Some("EVALUATED")
+                );
             }
             other => panic!("expected Custom, got {other:?}"),
         }
@@ -1222,8 +1362,10 @@ mod tests {
 
     #[test]
     fn edge_a_trailing_object_without_emit_stays_an_argument() {
-        let expr: SExpression =
-            serde_json::from_str(r#"["program/eval", {"name": "App", "orbitals": []}, {"final": true}]"#).unwrap();
+        let expr: SExpression = serde_json::from_str(
+            r#"["program/eval", {"name": "App", "orbitals": []}, {"final": true}]"#,
+        )
+        .unwrap();
         match parse_effect(&expr).unwrap() {
             Effect::Custom { args, emit, .. } => {
                 assert_eq!(args.len(), 2);

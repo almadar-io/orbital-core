@@ -46,11 +46,17 @@ pub struct StreamItem {
 
 impl StreamItem {
     pub fn event(event: EmittedEvent) -> Self {
-        Self { payload: StreamItemPayload::Event(event), timestamp: crate::time_util::now_millis() }
+        Self {
+            payload: StreamItemPayload::Event(event),
+            timestamp: crate::time_util::now_millis(),
+        }
     }
 
     pub fn effect(effect: ClientEffect) -> Self {
-        Self { payload: StreamItemPayload::Effect(effect), timestamp: crate::time_util::now_millis() }
+        Self {
+            payload: StreamItemPayload::Effect(effect),
+            timestamp: crate::time_util::now_millis(),
+        }
     }
 
     pub fn complete(response: EventResponse) -> Self {
@@ -62,7 +68,9 @@ impl StreamItem {
 
     pub fn error(message: impl Into<String>) -> Self {
         Self {
-            payload: StreamItemPayload::Error(StreamErrorData { message: message.into() }),
+            payload: StreamItemPayload::Error(StreamErrorData {
+                message: message.into(),
+            }),
             timestamp: crate::time_util::now_millis(),
         }
     }

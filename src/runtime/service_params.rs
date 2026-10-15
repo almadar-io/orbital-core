@@ -255,7 +255,11 @@ mod tests {
     fn a_map_param_requires_an_object_and_no_other_kind() {
         assert_eq!(checkable_type("map"), Some(ArgKind::Object));
         assert_eq!(checkable_type("object"), Some(ArgKind::Object));
-        assert_eq!(checkable_type("Rig"), None, "a named struct type is not checked");
+        assert_eq!(
+            checkable_type("Rig"),
+            None,
+            "a named struct type is not checked"
+        );
     }
 
     #[test]
@@ -274,7 +278,12 @@ mod tests {
             a.insert("opaque".to_string(), opaque);
             a
         };
-        let bad = validate_params(&data, "rigger", "saveRig", &args(ArgKind::Number, ArgKind::String, ArgKind::Number));
+        let bad = validate_params(
+            &data,
+            "rigger",
+            "saveRig",
+            &args(ArgKind::Number, ArgKind::String, ArgKind::Number),
+        );
         let names: Vec<&str> = bad
             .iter()
             .filter_map(|i| match i {
@@ -282,8 +291,17 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(names, vec!["rig", "tags"], "a struct and a dictionary param are objects; a bare named type stays unchecked");
-        let ok = validate_params(&data, "rigger", "saveRig", &args(ArgKind::Object, ArgKind::Object, ArgKind::Number));
+        assert_eq!(
+            names,
+            vec!["rig", "tags"],
+            "a struct and a dictionary param are objects; a bare named type stays unchecked"
+        );
+        let ok = validate_params(
+            &data,
+            "rigger",
+            "saveRig",
+            &args(ArgKind::Object, ArgKind::Object, ArgKind::Number),
+        );
         assert!(ok.is_empty(), "{ok:?}");
     }
 

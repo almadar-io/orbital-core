@@ -4,9 +4,9 @@
 //! only once all its I/O is answered. A blocking host runs the units straight through; an async host
 //! runs each with the answers recorded so far and gets [`Progress::Await`] at the first one missing.
 
-use crate::evaluator::ValueMap;
 use super::*;
 use crate::effects::MountSeed;
+use crate::evaluator::ValueMap;
 use crate::runtime::resumable::{
     accept_replies, DispatchContinuation, DispatchError, DispatchOutcomes, IoReply, PendingRequest,
     Progress, RequestId,
@@ -532,7 +532,10 @@ impl RuntimeKernel {
         };
         let ids: Vec<String> = rows
             .iter()
-            .filter_map(|row| row.get_path("id").and_then(|id| id.as_str().map(str::to_string)))
+            .filter_map(|row| {
+                row.get_path("id")
+                    .and_then(|id| id.as_str().map(str::to_string))
+            })
             .collect();
         for id in ids.into_iter().rev() {
             plans.push_front(SeedPlan {
@@ -798,7 +801,10 @@ impl RuntimeKernel {
         };
         let def = self.trait_definitions.read().get(&child).cloned();
         let lifecycle = def.as_ref().and_then(|def| {
-            crate::runtime::callsite_capture::repaint_lifecycle_event(def, &self.current_state_name(&child, Some(eid)))
+            crate::runtime::callsite_capture::repaint_lifecycle_event(
+                def,
+                &self.current_state_name(&child, Some(eid)),
+            )
         });
         let result = match lifecycle {
             Some(event) => match self.process_event_composed(
@@ -827,10 +833,13 @@ impl RuntimeKernel {
                 self.composed_callsite
                     .write()
                     .insert(child.clone(), composed_with.clone());
-                let authored: Vec<&SExpression> = result.effect_runs.iter().map(|run| &run.effect).collect();
+                let authored: Vec<&SExpression> =
+                    result.effect_runs.iter().map(|run| &run.effect).collect();
                 (
                     job.keep_composed,
-                    Some(crate::runtime::callsite_capture::embedded_by_effects(def, &authored)),
+                    Some(crate::runtime::callsite_capture::embedded_by_effects(
+                        def, &authored,
+                    )),
                 )
             }
             _ => (true, None),

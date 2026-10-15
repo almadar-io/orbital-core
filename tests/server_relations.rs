@@ -3,6 +3,7 @@
 // column-bearing nodes list. JS twins: `populate-self-relation-depth`, `populate-relations-auxiliary-entity`,
 // `relation-options-injection` in `almadar-runtime/test`.
 
+use std::sync::Arc;
 use orbital_core::embed::{EmbeddedServer, ServerProgress};
 use orbital_core::runtime::resumable::{IoAnswer, IoReply, IoRequest};
 use orbital_core::{EventRequest, EventResponse, OrbitalSchema, Value};
@@ -65,7 +66,7 @@ fn drive(
                                 .get(&entity_type)
                                 .into_iter()
                                 .flatten()
-                                .map(|r| serde_json::from_value(r.clone()).unwrap())
+                                .map(|r| Arc::new(serde_json::from_value(r.clone()).unwrap()))
                                 .collect())),
                             IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
                             other => panic!("the fixture asks for {other:?}"),

@@ -1,7 +1,8 @@
 //! Runtime kernel — canonical runtime lifecycle for Orbital applications.
 
-use crate::evaluator::ValueMap;
 use super::{
+    http_request,
+    http_service::TransportError,
     dispatch_memory::{DispatchMemory, DispatchView},
     dispatch_mode::DispatchMode,
     embed_index::EmbedIndex,
@@ -15,15 +16,23 @@ use super::{
         RuntimeStats,
     },
     render_store::RenderStore,
-    resumable::{CallRoutes, CallSite, CallVerdict, IoPort},
+    resumable::{CallRoutes, CallSite, CallVerdict, IoPort, AWAITING_HOST},
+    row_query::{
+        and_predicates, compile_predicate, default_row_order, query_unsupported_reason,
+        resolve_row_set, NotExpressible, PredicateRole, QueryCapabilities, RowOrder, RowPage,
+        RowPredicate, RowQuery, RowSetRef, RowTotalMode, RowWriteBatch, RowWriteOp, RowWriteOutcome,
+        WriteCapabilities,
+    },
     server_leg::ServerLegCollector,
     theme::{resolve_theme, resolve_theme_default, ResolvedTheme, ThemeMode, ThemePresets},
     KernelConfig,
 };
 use crate::effects::{
-    delivery_record_value, BusEventSource, DeliveryRecord, DispatchLog, PersistOperation,
+    delivery_record_value, page_ordered_rows, BusEventSource, DeliveryRecord, DispatchLog,
+    PersistOperation,
 };
 use crate::error::{EvalError, OrbitalError};
+use crate::evaluator::ValueMap;
 use crate::util::DispatchVisits;
 use crate::{
     effects::{
@@ -38,6 +47,7 @@ use crate::{
     state_machine::{EventPayload, StateMachineManager, TraitState},
 };
 use parking_lot::RwLock;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -53,6 +63,7 @@ pub enum KernelError {
 }
 
 mod dispatch_run;
+mod resolve_run;
 pub(crate) use dispatch_run::{DispatchRun, Fault};
 
 /// Circuit breaker for one dispatch's cross-trait worklist; twin of the JS `CROSS_TRAIT_CASCADE_CAP`.
@@ -204,6 +215,8 @@ pub struct RuntimeKernel {
     event_bus: SharedEventBus,
     listener_manager: ListenerManager,
     schemas: Arc<RwLock<HashMap<String, OrbitalSchema>>>,
+    /// Trait name to the schema and orbital index that declare it, rebuilt on every registration.
+    trait_homes: Arc<RwLock<HashMap<String, (String, usize)>>>,
     trait_definitions: Arc<RwLock<HashMap<String, Arc<TraitDefinition>>>>,
     entity_source: Arc<dyn EntitySource>,
     /// The door every read, write, service call and substrate operator goes through; `entity_source` is it.
@@ -235,6 +248,11 @@ pub struct RuntimeKernel {
     /// trait's linked entity here to decide `DispatchMode` (declared
     /// `[runtime]` persistence, never inferred).
     entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
+    /// Each entity type's declared field defaults as one object (`Null` when none), built when the
+    /// schema registers; `read_trait_entity` layers a row and a frame over it.
+    entity_defaults: Arc<RwLock<HashMap<String, Arc<Value>>>>,
+    /// The `egress` origins the registered programs declare: the only hosts the `http` effect may reach.
+    egress: Arc<RwLock<Vec<String>>>,
     /// The trait whose effects are running and whether its step is a follow-on of the dispatch:
     /// what a `call-service` is stamped with.
     step_site: Arc<RwLock<Option<(String, bool)>>>,
@@ -265,6 +283,9 @@ pub struct RuntimeKernel {
     mount: Arc<RwLock<MountLifecycle>>,
     /// Each mounted trait's last `render-ui`, kept to repaint it when the entity it reads changes.
     renders: Arc<RwLock<RenderStore>>,
+    /// The fetch/persist handler over the entity source: where a row-set reference is resolved and the
+    /// kernel's own writes are noted for EXEC-RENDER-3.
+    rows: Arc<EntitySourceHandler>,
 }
 
 impl std::fmt::Debug for RuntimeKernel {
@@ -336,6 +357,9 @@ pub struct Rerender {
     pub state: String,
     pub entity: Value,
     pub effects: Vec<Effect>,
+    /// The slots of `effects` repainted because the rows a reference in them points at changed
+    /// (EXEC-RENDER-3); their content may be unchanged.
+    pub rows_changed: Vec<String>,
 }
 
 /// One scheduled tick's outcome for a client-role kernel ([`RuntimeKernel::dispatch_tick`]):
@@ -406,76 +430,338 @@ struct EntitySourceHandler {
     io: Arc<IoPort>,
     entity_policies: Arc<RwLock<EntityAccessTable>>,
     entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
+    /// Entity types the kernel has written since the render store last heard (EXEC-RENDER-3).
+    written: Arc<parking_lot::Mutex<BTreeSet<String>>>,
+}
+
+impl EntitySourceHandler {
+    fn note_write(&self, entity_type: &str) {
+        self.written.lock().insert(entity_type.to_string());
+    }
 }
 
 impl PersistenceHandler for EntitySourceHandler {
     fn create(&self, entity_type: &str, data: &Value) -> Result<Value, String> {
-        self.source.create(entity_type, data)
+        let created = self.source.create(entity_type, data)?;
+        self.note_write(entity_type);
+        Ok(created)
     }
     fn read(&self, entity_type: &str, id: &str) -> Result<Value, String> {
-        self.source.read(entity_type, id)
+        self.source.read(entity_type, id).map(|row| (*row).clone())
     }
     fn find(&self, entity_type: &str, id: &str) -> Result<Option<Value>, String> {
-        self.source.find(entity_type, id)
+        self.source
+            .find(entity_type, id)
+            .map(|row| row.map(|r| (*r).clone()))
     }
     fn update(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String> {
-        self.source.write(entity_type, id, data)
+        let written = self.source.write(entity_type, id, data)?;
+        self.note_write(entity_type);
+        Ok(written)
     }
     fn delete(&self, entity_type: &str, id: &str) -> Result<(), String> {
-        self.source.delete(entity_type, id)
+        self.source.delete(entity_type, id)?;
+        self.note_write(entity_type);
+        Ok(())
     }
     fn list(&self, entity_type: &str) -> Result<Vec<Value>, String> {
-        self.source.list(entity_type)
+        self.source
+            .list(entity_type)
+            .map(|rows| rows.iter().map(|row| (**row).clone()).collect())
+    }
+    fn write_where(&self, op: &RowWriteOp) -> Option<Result<RowWriteOutcome, String>> {
+        let written = self.source.write_where(op);
+        if let Some(Ok(outcome)) = &written {
+            if outcome.applied() {
+                self.note_write(op.entity_type());
+            }
+        }
+        written
+    }
+    fn write_batch(&self, batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
+        let written = self.source.write_batch(batch);
+        if let Some(Ok(outcomes)) = &written {
+            for (op, outcome) in batch.ops.iter().zip(outcomes) {
+                if outcome.applied() {
+                    self.note_write(op.entity_type());
+                }
+            }
+        }
+        written
     }
 }
 
-impl FetchHandler for EntitySourceHandler {
+impl EntitySourceHandler {
+    /// The collection fetch as a [`RowQuery`], or why it is not expressible (the interpreter runs it).
     #[allow(clippy::too_many_arguments)]
-    fn fetch(
-        &self,
-        entity_type: &str,
-        id: Option<&str>,
+    fn compile_fetch(
+        policy: Option<&Value>,
         filter: Option<&Value>,
+        order: Option<&RowOrder>,
         limit: Option<usize>,
         offset: Option<usize>,
-        include: Option<&Vec<String>>,
+        total: RowTotalMode,
         ctx: &BindingContext,
-    ) -> Result<FetchPage, String> {
-        let mut entities = match id {
-            Some(id) => match self.source.read(entity_type, id) {
-                Ok(v) if !v.is_null() => vec![v],
-                _ => Vec::new(),
-            },
-            None => self.source.list(entity_type)?,
-        };
-        tracing::debug!(
-            target: crate::logging::ns::RUNTIME_FETCH,
-            entity = %entity_type,
-            id = ?id,
-            has_filter = filter.is_some(),
-            limit = ?limit,
-            returned = entities.len(),
-            "fetch",
-        );
-        // The env-agnostic entity source lists unfiltered, so the declared
-        // predicate is applied here, through the shared owner every FetchHandler
-        // uses (C-FETCH-FILTER-NOT-APPLIED-BY-ENTITY-SOURCE-HANDLER). The
-        // entity's declared `@read` policy (if any) is ANDed in alongside the
-        // call-site filter — the un-bypassable half of row visibility.
+        required: &dyn Fn(&str) -> bool,
+    ) -> Result<RowQuery, NotExpressible> {
+        if let Some(order) = order {
+            if order.field.contains('.') || order.field.contains('[') {
+                return Err(NotExpressible::Shape(
+                    "an order field that is a path".to_string(),
+                ));
+            }
+        }
+        Ok(RowQuery {
+            policy: policy
+                .map(|p| compile_predicate(p, ctx, PredicateRole::Policy, required))
+                .transpose()?,
+            filter: filter
+                .map(|f| compile_predicate(f, ctx, PredicateRole::Filter, required))
+                .transpose()?,
+            order: order.cloned(),
+            offset,
+            limit,
+            total: (total == RowTotalMode::None).then_some(RowTotalMode::None),
+        })
+    }
+
+    /// The fields `entity_type`'s predicates may compare as present: `id` and the entity's required ones.
+    fn required_fields_of(&self, entity_type: &str) -> HashSet<String> {
+        self.entity_policies
+            .read()
+            .get(entity_type)
+            .map(|p| p.required_fields.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// `reference` resolved against the rows as they are now, for the viewer `ctx` carries: the ids that still
+    /// match the reference's query and the viewer's `@read`, in the reference's order, with `total` re-counted over
+    /// the query's matches (ignoring order and window). A row that is gone or now hidden is omitted. The two reads
+    /// are the same `QueryRows` a fetch issues, so the store's capabilities and the `@read` policy apply exactly
+    /// as they do there.
+    fn resolve_rows(&self, reference: &RowSetRef, ctx: &BindingContext) -> Result<RowPage, String> {
+        let entity_type = reference.entity_type.as_str();
         let policy = self
             .entity_policies
             .read()
             .get(entity_type)
             .and_then(|p| p.read.clone());
-        let total = scope_fetched_rows(
-            &mut entities,
-            policy.as_ref(),
-            filter,
-            limit,
-            offset,
-            ctx,
-            entity_type,
+        let required_fields = self.required_fields_of(entity_type);
+        let required = |field: &str| field == "id" || required_fields.contains(field);
+        let viewer_policy = policy
+            .as_ref()
+            .map(|p| compile_predicate(p, ctx, PredicateRole::Policy, &required))
+            .transpose();
+        let Ok(viewer_policy) = viewer_policy else {
+            return self.resolve_rows_interpreted(reference, policy.as_ref(), ctx);
+        };
+        let combined = and_predicates(reference.query.policy.clone(), viewer_policy);
+        let member = RowPredicate::Member {
+            field: "id".to_string(),
+            values: reference
+                .ids
+                .iter()
+                .map(|id| Value::String(id.clone()))
+                .collect(),
+        };
+        let uncounted = reference.query.total == Some(RowTotalMode::None);
+        let wanted = RowQuery {
+            policy: combined.clone(),
+            filter: Some(and_predicates(reference.query.filter.clone(), Some(member)).unwrap_or(
+                RowPredicate::Const { value: true },
+            )),
+            total: Some(RowTotalMode::None),
+            ..RowQuery::default()
+        };
+        let count = RowQuery {
+            policy: combined,
+            filter: reference.query.filter.clone(),
+            limit: Some(0),
+            ..RowQuery::default()
+        };
+        let Some(rows) = self.source.query_page(entity_type, &wanted) else {
+            return self.resolve_rows_interpreted(reference, policy.as_ref(), ctx);
+        };
+        let rows = rows?;
+        let total = if uncounted {
+            None
+        } else {
+            let Some(counted) = self.source.query_page(entity_type, &count) else {
+                return self.resolve_rows_interpreted(reference, policy.as_ref(), ctx);
+            };
+            Some(counted?.total)
+        };
+        let by_id: HashMap<String, &Value> = rows
+            .rows
+            .iter()
+            .map(|row| (super::row_query::row_id(row), row))
+            .collect();
+        let rows: Vec<Value> = reference
+            .ids
+            .iter()
+            .filter_map(|id| by_id.get(id).map(|row| (*row).clone()))
+            .collect();
+        Ok(RowPage {
+            total: total.unwrap_or(rows.len()),
+            rows,
+        })
+    }
+
+    /// [`Self::resolve_rows`] for a `@read` policy that is not a row predicate: the table is listed and the
+    /// interpreter applies the policy.
+    fn resolve_rows_interpreted(
+        &self,
+        reference: &RowSetRef,
+        policy: Option<&Value>,
+        ctx: &BindingContext,
+    ) -> Result<RowPage, String> {
+        let entity_type = reference.entity_type.as_str();
+        let mut visible: Vec<Value> = Vec::new();
+        self.source.scan(entity_type, &mut |row| {
+            visible.push((**row).clone());
+            super::row_query::ScanControl::Continue
+        })?;
+        apply_read_access(&mut visible, policy, None, ctx, entity_type);
+        let visible: Vec<Arc<Value>> = visible.into_iter().map(Arc::new).collect();
+        let mut page = resolve_row_set(&visible, reference, None);
+        if reference.query.total == Some(RowTotalMode::None) {
+            page.total = page.rows.len();
+        }
+        Ok(page)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fetch_rows(
+        &self,
+        entity_type: &str,
+        id: Option<&str>,
+        filter: Option<&Value>,
+        order: Option<&RowOrder>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        include: Option<&Vec<String>>,
+        total_mode: RowTotalMode,
+        ctx: &BindingContext,
+    ) -> Result<FetchPage, String> {
+        let policy = self
+            .entity_policies
+            .read()
+            .get(entity_type)
+            .and_then(|p| p.read.clone());
+        let mut tier = "interpreted";
+        let mut compiled: Option<FetchPage> = None;
+        // EXEC-FETCH-1: a collection fetch with no authored order is ordered by `createdAt`, then `id`.
+        let default_order = default_row_order();
+        let plain_order = match order {
+            None if id.is_none() => Some(&default_order),
+            other => other,
+        };
+        if id.is_none() {
+            let required_fields: Vec<String> = self
+                .entity_policies
+                .read()
+                .get(entity_type)
+                .map(|p| p.required_fields.clone())
+                .unwrap_or_default();
+            let required_fields: HashSet<String> = required_fields.into_iter().collect();
+            let required = |field: &str| field == "id" || required_fields.contains(field);
+            match Self::compile_fetch(
+                policy.as_ref(),
+                filter,
+                order,
+                limit,
+                offset,
+                total_mode,
+                ctx,
+                &required,
+            ) {
+                Ok(query) => {
+                    tier = match self.io.query_capabilities_of(entity_type) {
+                        Some(caps) if query_unsupported_reason(&caps, &query).is_none() => "pushed",
+                        _ => "compiled",
+                    };
+                    if let Some(page) = self.source.query_page(entity_type, &query) {
+                        let page = page?;
+                        compiled = Some(FetchPage {
+                            rows: page.rows,
+                            total: page.total,
+                        });
+                    } else {
+                        tier = "interpreted";
+                    }
+                }
+                Err(why) => {
+                    tracing::warn!(
+                        target: crate::logging::ns::RUNTIME_FETCH,
+                        entity = %entity_type,
+                        reason = why.reason(),
+                        detail = %why,
+                        "kernel.fetch.pushdown-fallback",
+                    );
+                }
+            }
+        }
+        tracing::debug!(
+            target: crate::logging::ns::RUNTIME_FETCH,
+            entity = %entity_type,
+            tier,
+            "kernel.fetch.tier",
         );
+        let FetchPage {
+            rows: mut entities,
+            total,
+        } = match compiled {
+            Some(page) => page,
+            None => {
+                let mut entities = match id {
+                    Some(id) => match self.source.read(entity_type, id) {
+                        Ok(v) if !v.is_null() => vec![(*v).clone()],
+                        _ => Vec::new(),
+                    },
+                    None => self
+                        .source
+                        .list(entity_type)?
+                        .iter()
+                        .map(|row| (**row).clone())
+                        .collect(),
+                };
+                tracing::debug!(
+                    target: crate::logging::ns::RUNTIME_FETCH,
+                    entity = %entity_type,
+                    id = ?id,
+                    has_filter = filter.is_some(),
+                    limit = ?limit,
+                    returned = entities.len(),
+                    "fetch",
+                );
+                // The env-agnostic entity source lists unfiltered, so the declared
+                // predicate is applied here, through the shared owner every FetchHandler
+                // uses (C-FETCH-FILTER-NOT-APPLIED-BY-ENTITY-SOURCE-HANDLER). The
+                // entity's declared `@read` policy (if any) is ANDed in alongside the
+                // call-site filter — the un-bypassable half of row visibility.
+                let (window_limit, window_offset) = if plain_order.is_some() {
+                    (None, None)
+                } else {
+                    (limit, offset)
+                };
+                let total = scope_fetched_rows(
+                    &mut entities,
+                    policy.as_ref(),
+                    filter,
+                    window_limit,
+                    window_offset,
+                    ctx,
+                    entity_type,
+                );
+                if let Some(order) = plain_order {
+                    entities = page_ordered_rows(entities, order, offset, limit);
+                }
+                FetchPage {
+                    rows: entities,
+                    total,
+                }
+            }
+        };
         if let Some(include) = include.filter(|i| !i.is_empty()) {
             super::relations::populate_relations(
                 &*self.source,
@@ -493,6 +779,80 @@ impl FetchHandler for EntitySourceHandler {
         Ok(FetchPage {
             rows: entities,
             total,
+        })
+    }
+}
+
+impl FetchHandler for EntitySourceHandler {
+    #[allow(clippy::too_many_arguments)]
+    fn fetch(
+        &self,
+        entity_type: &str,
+        id: Option<&str>,
+        filter: Option<&Value>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        include: Option<&Vec<String>>,
+        ctx: &BindingContext,
+    ) -> Result<FetchPage, String> {
+        self.fetch_rows(entity_type, id, filter, None, limit, offset, include, RowTotalMode::Exact, ctx)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fetch_ordered(
+        &self,
+        entity_type: &str,
+        id: Option<&str>,
+        filter: Option<&Value>,
+        order: Option<&RowOrder>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        include: Option<&Vec<String>>,
+        total: RowTotalMode,
+        ctx: &BindingContext,
+    ) -> Result<FetchPage, String> {
+        self.fetch_rows(entity_type, id, filter, order, limit, offset, include, total, ctx)
+    }
+
+    fn fetch_row_set(
+        &self,
+        entity_type: &str,
+        filter: Option<&Value>,
+        order: Option<&RowOrder>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        total: RowTotalMode,
+        ctx: &BindingContext,
+    ) -> Result<RowSetRef, String> {
+        let policy = self
+            .entity_policies
+            .read()
+            .get(entity_type)
+            .and_then(|p| p.read.clone());
+        let required_fields = self.required_fields_of(entity_type);
+        let required = |field: &str| field == "id" || required_fields.contains(field);
+        let query = Self::compile_fetch(policy.as_ref(), filter, order, limit, offset, total, ctx, &required)
+            .map_err(|why| {
+                format!("{entity_type}: `deliver: ids` needs a fetch expressible as a row query ({why})")
+            })?;
+        tracing::debug!(
+            target: crate::logging::ns::RUNTIME_FETCH,
+            entity = %entity_type,
+            tier = match self.io.query_capabilities_of(entity_type) {
+                Some(caps) if query_unsupported_reason(&caps, &query).is_none() => "pushed",
+                _ => "compiled",
+            },
+            "kernel.fetch.tier",
+        );
+        let page = self
+            .source
+            .query_ids(entity_type, &query)
+            .ok_or_else(|| format!("{entity_type}: the store cannot answer a fetch by reference"))??;
+        Ok(RowSetRef {
+            entity_type: entity_type.to_string(),
+            ids: page.ids,
+            total: page.total,
+            query,
         })
     }
 }
@@ -551,10 +911,11 @@ impl RuntimeKernel {
             io: io.clone(),
             entity_policies: entity_policies.clone(),
             entity_definitions: entity_definitions.clone(),
+            written: Arc::default(),
         });
         let mut executor = EffectExecutor::new(environment)
             .with_fetch_handler(entity_handler.clone())
-            .with_persistence(entity_handler)
+            .with_persistence(entity_handler.clone())
             .with_entity_policies(entity_policies.clone());
         // Threaded BEFORE the `Arc` wrap (`EffectExecutor::with_delegate` is a
         // consuming builder) — every client-role kernel is configured with the
@@ -596,9 +957,11 @@ impl RuntimeKernel {
             event_bus,
             listener_manager,
             schemas: Arc::new(RwLock::new(HashMap::new())),
+            trait_homes: Arc::new(RwLock::new(HashMap::new())),
             trait_definitions: Arc::new(RwLock::new(HashMap::new())),
             entity_source,
             io,
+            rows: entity_handler,
             current_user: Arc::new(RwLock::new(current_user)),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
             dispatch_now: Arc::new(RwLock::new(None)),
@@ -607,6 +970,8 @@ impl RuntimeKernel {
             entity_policies,
             embed_index: Arc::new(RwLock::new(EmbedIndex::default())),
             entity_definitions,
+            entity_defaults: Arc::new(RwLock::new(HashMap::new())),
+            egress: Arc::new(RwLock::new(Vec::new())),
             step_site: Arc::new(RwLock::new(None)),
             capture_children: Arc::new(RwLock::new(HashMap::new())),
             composed_callsite: Arc::new(RwLock::new(ValueMap::new())),
@@ -673,6 +1038,14 @@ impl RuntimeKernel {
     /// Register a schema with the kernel.
     pub fn register_schema(&self, mut schema: OrbitalSchema) -> Result<(), KernelError> {
         schema.bind_unlinked_traits_to_host_entity();
+        if let Some(declared) = &schema.egress {
+            let mut egress = self.egress.write();
+            for origin in declared {
+                if !egress.contains(origin) {
+                    egress.push(origin.clone());
+                }
+            }
+        }
         let schema_name = schema.name.clone();
         info!(schema = %schema_name, "Registering schema");
         self.theme_presets
@@ -722,6 +1095,12 @@ impl RuntimeKernel {
                                 inherited: false,
                                 required_create_fields:
                                     crate::runtime::entity_access::required_create_field_names(def),
+                                required_fields: def
+                                    .fields
+                                    .iter()
+                                    .filter(|f| f.required == Some(true) || f.default.is_some())
+                                    .filter_map(|f| f.name.clone())
+                                    .collect(),
                                 intrinsic_fields:
                                     crate::runtime::entity_access::intrinsic_field_names(def),
                             },
@@ -770,6 +1149,21 @@ impl RuntimeKernel {
                 }
             }
         }
+        {
+            let defs = self.entity_definitions.read();
+            let mut defaults = self.entity_defaults.write();
+            for orbital in &schema.orbitals {
+                for entity_ref in std::iter::once(&orbital.entity)
+                    .chain(orbital.auxiliary_entities.iter().flatten())
+                {
+                    if let EntityRef::Inline(def) = entity_ref {
+                        if let Some(registered) = defs.get(&def.name) {
+                            defaults.insert(def.name.clone(), Arc::new(declared_defaults(registered)));
+                        }
+                    }
+                }
+            }
+        }
 
         for orbital in &schema.orbitals {
             let mut registered = Vec::new();
@@ -801,9 +1195,23 @@ impl RuntimeKernel {
             }
         }
 
-        self.schemas
-            .write()
-            .insert(schema_name.clone(), schema.clone());
+        {
+            let mut schemas = self.schemas.write();
+            schemas.insert(schema_name.clone(), schema.clone());
+            let mut homes = HashMap::new();
+            for (name, schema) in schemas.iter() {
+                for (index, orbital) in schema.orbitals.iter().enumerate() {
+                    for trait_ref in &orbital.traits {
+                        if let Some(trait_name) = trait_ref.trait_name() {
+                            homes
+                                .entry(trait_name.to_string())
+                                .or_insert_with(|| (name.clone(), index));
+                        }
+                    }
+                }
+            }
+            *self.trait_homes.write() = homes;
+        }
         {
             let mut nav = self.nav_pages.write();
             *nav = merge_nav_items(&nav, app_nav_items(&schema));
@@ -1023,9 +1431,9 @@ impl RuntimeKernel {
             let (effect_results, captured_entity_data, effect_runs, failure) =
                 match self.server_leg_collector() {
                     Some(collector) => collector.attribute(trait_name, || {
-                        self.execute_effects_traced(&result.effects, &ctx)
+                        self.execute_effects_traced(result.effects(), &ctx)
                     }),
-                    None => self.execute_effects_traced(&result.effects, &ctx),
+                    None => self.execute_effects_traced(result.effects(), &ctx),
                 };
             *self.step_site.write() = None;
 
@@ -1233,7 +1641,6 @@ impl RuntimeKernel {
             .ticks
             .as_ref()
             .and_then(|ticks| ticks.iter().find(|t| t.name == tick_name))
-            .cloned()
             .ok_or_else(|| {
                 KernelError::Internal(format!("tick '{tick_name}' not found on '{trait_name}'"))
             })?;
@@ -1571,8 +1978,9 @@ impl RuntimeKernel {
                             client_id: client_id.map(|s| s.to_string()),
                             source_trait: emitter.map(str::to_string),
                             traits: traits.clone(),
-                            entity_by_trait: (!entry.entity_before.is_null())
-                                .then(|| ValueMap::from([(t.clone(), entry.entity_before.clone())])),
+                            entity_by_trait: (!entry.entity_before.is_null()).then(|| {
+                                ValueMap::from([(t.clone(), entry.entity_before.clone())])
+                            }),
                             delivery,
                             dispatch_log,
                             ..Default::default()
@@ -1749,6 +2157,25 @@ impl RuntimeKernel {
         tick_name: &str,
         client_id: Option<&str>,
     ) -> Result<TickDispatch, KernelError> {
+        let mut dispatched =
+            self.dispatch_tick_unrepainted(orbital, trait_name, entity_id, tick_name, client_id)?;
+        if dispatched.outcome.executed {
+            dispatched.rerenders = self.rerender_stale();
+        }
+        Ok(dispatched)
+    }
+
+    /// [`Self::dispatch_tick`] without the repaint pass: `rerenders` is empty and the caller owns the
+    /// [`Self::rerender_stale`] call. A host frame running many ticks calls it once after the last
+    /// one, so the render store is scanned once per frame instead of once per tick.
+    pub fn dispatch_tick_unrepainted(
+        &self,
+        orbital: &str,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        tick_name: &str,
+        client_id: Option<&str>,
+    ) -> Result<TickDispatch, KernelError> {
         let eid = entity_id.unwrap_or("singleton").to_string();
         let trait_def = self
             .trait_definitions
@@ -1756,7 +2183,6 @@ impl RuntimeKernel {
             .get(trait_name)
             .cloned()
             .ok_or_else(|| KernelError::TraitNotFound(trait_name.to_string()))?;
-        let mode = self.dispatch_mode_of(&trait_def);
         // The leg replays the tick from the pre-tick row, so the store applies its writes once.
         let pre_tick_row = self.snapshot_trait(trait_name, Some(&eid)).entity;
 
@@ -1765,11 +2191,15 @@ impl RuntimeKernel {
         // The tick's own delegated effects, by where their data lives: browser-stored data
         // leaves as one `runTick` leg; server-owned work in a browser-run tick is an
         // `orb validate` error (ORB_T_CLIENT_TICK_SERVER_EFFECT), so reaching here is a bug.
-        let residence =
-            crate::effects::Residence::of_entities(self.entity_definitions.read().values());
-        let (browser_own, server_own): (Vec<Effect>, Vec<Effect>) = tick_own
-            .into_iter()
-            .partition(|effect| browser_data_effect(effect, &residence));
+        let (browser_own, server_own): (Vec<Effect>, Vec<Effect>) = if tick_own.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            let residence =
+                crate::effects::Residence::of_entities(self.entity_definitions.read().values());
+            tick_own
+                .into_iter()
+                .partition(|effect| browser_data_effect(effect, &residence))
+        };
         let discarded_server_effects = server_own.len();
         if !server_own.is_empty() {
             tracing::error!(
@@ -1810,11 +2240,10 @@ impl RuntimeKernel {
 
         debug!(
             target: "almadar::kernel",
-            orbital = %orbital, trait_name = %trait_name, tick = %tick_name, mode = ?mode,
+            orbital = %orbital, trait_name = %trait_name, tick = %tick_name,
             "dispatch_tick",
         );
-        let mut source = self.emit_source(trait_name);
-        source.tick = Some(tick_name.to_string());
+        let mut emit_context: Option<(DispatchMode, BusEventSource)> = None;
         let mut emits = Vec::new();
         for er in &outcome.effect_results {
             let Effect::Emit {
@@ -1824,6 +2253,13 @@ impl RuntimeKernel {
             else {
                 continue;
             };
+            let (mode, source) = emit_context.get_or_insert_with(|| {
+                let mut source = self.emit_source(trait_name);
+                source.tick = Some(tick_name.to_string());
+                (self.dispatch_mode_of(&trait_def), source)
+            });
+            let mode = *mode;
+            let source = &*source;
             let snapshot = matches!(mode, DispatchMode::RuntimeOptimistic)
                 .then(|| self.snapshot_trait(trait_name, Some(&eid)));
             let seed_row = self.snapshot_trait(trait_name, Some(&eid)).entity;
@@ -1834,7 +2270,7 @@ impl RuntimeKernel {
             let handled = self.trait_handles(trait_name, &outcome.new_state, emitted);
             self.emit_followup(
                 trait_name,
-                &source,
+                source,
                 handled,
                 emitted,
                 ep,
@@ -1876,7 +2312,7 @@ impl RuntimeKernel {
             discarded_server_effects,
             browser_leg,
             emits,
-            rerenders: self.rerender_stale(),
+            rerenders: Vec::new(),
         })
     }
 
@@ -1926,32 +2362,20 @@ impl RuntimeKernel {
 
     /// A trait's `@entity`: declared field defaults, then its row, then its frame.
     fn read_trait_entity(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> Value {
-        let defaults: ValueMap = self
-            .entity_definitions
+        let defaults = self
+            .entity_defaults
             .read()
             .get(entity_type)
-            .map(|d| {
-                d.fields
-                    .iter()
-                    .filter_map(|f| Some((f.name.clone()?, sexpr_to_value(f.default.as_ref()?))))
-                    .collect()
-            })
+            .cloned()
             .unwrap_or_default();
-        let base = if defaults.is_empty() {
-            Value::Null
-        } else {
-            Value::Object(defaults)
-        };
-        let row = self
-            .entity_source
-            .read(entity_type, entity_id)
-            .unwrap_or(Value::Null);
-        let with_row = merge_entity(&base, &row);
+        let row = self.entity_source.read(entity_type, entity_id).ok();
         let slot = self.frame_slot(trait_name, entity_type, entity_id);
-        match self.frames.read().get(&slot) {
-            Some(frame) => merge_entity(&with_row, frame),
-            None => with_row,
-        }
+        let frames = self.frames.read();
+        let layered = overlay(
+            overlay(Cow::Borrowed(&*defaults), row.as_deref().unwrap_or(&Value::Null)),
+            frames.get(&slot).unwrap_or(&Value::Null),
+        );
+        layered.into_owned()
     }
 
     /// The `@entity` a step of `trait_name` would read now, for the cascade's visit key.
@@ -2093,6 +2517,27 @@ impl RuntimeKernel {
                         .and_then(Value::as_str)
                         .unwrap_or("singleton");
                     let _ = self.entity_source.write(entity_type, id, row);
+                }
+                self.rows.note_write(entity_type);
+            }
+        }
+        for written in response.effect_results.iter().flatten() {
+            if written.effect == crate::effects::ServerEffectKind::Persist && written.success {
+                match &written.entity_type {
+                    Some(entity_type) => self.rows.note_write(entity_type),
+                    None => {
+                        for entity_type in written
+                            .data
+                            .as_ref()
+                            .and_then(|summary| summary.get_path("operations"))
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|op| op.get_path("entityType")?.as_str().map(str::to_string))
+                        {
+                            self.rows.note_write(&entity_type);
+                        }
+                    }
                 }
             }
         }
@@ -2513,20 +2958,24 @@ impl RuntimeKernel {
     /// The envelope this trait stamps on its emits: `{ orbital, trait }` plus the ids the schema carries.
     fn emit_source(&self, trait_name: &str) -> BusEventSource {
         let mut source = BusEventSource::from_trait(trait_name);
-        for schema in self.schemas.read().values() {
-            for orbital in &schema.orbitals {
-                let found = orbital
-                    .traits
-                    .iter()
-                    .find(|r| r.trait_name() == Some(trait_name));
-                if let Some(trait_ref) = found {
-                    source.orbital = Some(orbital.name.clone());
-                    source.orbital_id = orbital.id.clone();
-                    if let TraitReference::Inline(def) = trait_ref {
-                        source.trait_id = def.id.clone();
-                    }
-                    return source;
-                }
+        let homes = self.trait_homes.read();
+        let Some((schema, index)) = homes.get(trait_name) else {
+            return source;
+        };
+        if let Some(orbital) = self
+            .schemas
+            .read()
+            .get(schema)
+            .and_then(|s| s.orbitals.get(*index))
+        {
+            source.orbital = Some(orbital.name.clone());
+            source.orbital_id = orbital.id.clone();
+            let found = orbital
+                .traits
+                .iter()
+                .find(|r| r.trait_name() == Some(trait_name));
+            if let Some(TraitReference::Inline(def)) = found {
+                source.trait_id = def.id.clone();
             }
         }
         source
@@ -2550,11 +2999,12 @@ impl RuntimeKernel {
     ) -> (Vec<EffectResult>, Value, Vec<EffectRun>, Option<String>) {
         let evaluator = Evaluator::new();
         let mut effect_results = Vec::new();
-        let mut entity_data: ValueMap = ValueMap::new();
+        let mut entity_data = PendingSets::new(ctx);
         let mut runs = Vec::with_capacity(effects.len());
         let mut failure = None;
 
-        for effect_expr in effects {
+        let mut run_results: HashMap<usize, EffectResult> = HashMap::new();
+        for (index, effect_expr) in effects.iter().enumerate() {
             if failure.is_some() {
                 runs.push(EffectRun {
                     effect: effect_expr.clone(),
@@ -2564,13 +3014,39 @@ impl RuntimeKernel {
                 continue;
             }
             let before = effect_results.len();
-            self.exec_effect_expr(
-                effect_expr,
-                ctx,
-                &evaluator,
-                &mut effect_results,
-                &mut entity_data,
-            );
+            if !run_results.contains_key(&index) {
+                let run = persist_run(effects, index);
+                if run.len() >= 2 {
+                    let mirrored = entity_data.apply(ctx);
+                    let results = self.effect_executor.execute_persist_run(&run, &mirrored);
+                    run_results
+                        .extend(results.into_iter().enumerate().map(|(k, r)| (index + k, r)));
+                }
+            }
+            if let Some(result) = run_results.remove(&index) {
+                let completion = match crate::effects::parse_effect(effect_expr) {
+                    Some(effect @ Effect::Persist { .. }) => match &effect {
+                        Effect::Persist {
+                            emit: Some(persist_emit),
+                            ..
+                        } if !persist_emit.is_empty() => {
+                            persist_completion_emit(persist_emit, &effect, &result)
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                effect_results.push(result);
+                effect_results.extend(completion);
+            } else {
+                self.exec_effect_expr(
+                    effect_expr,
+                    ctx,
+                    &evaluator,
+                    &mut effect_results,
+                    &mut entity_data,
+                );
+            }
             let ran = &effect_results[before..];
             let failed = ran.iter().find(|r| r.is_failed());
             let status = if failed.is_some() {
@@ -2597,7 +3073,7 @@ impl RuntimeKernel {
             effect_results.retain(is_thrown_failure);
         }
 
-        (effect_results, Value::Object(entity_data), runs, failure)
+        (effect_results, Value::Object(entity_data.sets), runs, failure)
     }
 
     /// Execute a single top-level effect expression.
@@ -2616,12 +3092,15 @@ impl RuntimeKernel {
         ctx: &BindingContext,
         evaluator: &Evaluator,
         effect_results: &mut Vec<EffectResult>,
-        entity_data: &mut ValueMap,
+        entity_data: &mut PendingSets,
     ) {
-        let mirrored = with_pending_sets(ctx, entity_data);
-        let ctx: &BindingContext = &mirrored;
+        // Only control flow reads the mirrored `@entity` here; a leaf mirrors it itself so it can
+        // release the view before its `set` writes into it in place.
         if let SExpression::Array(items) = effect_expr {
             if let Some(SExpression::String(head)) = items.first() {
+                if matches!(head.as_str(), "let" | "do" | "if" | "when") {
+                let mirrored = entity_data.apply(ctx);
+                let ctx: &BindingContext = &mirrored;
                 match head.as_str() {
                     "let" => {
                         // [ "let", [[name, valExpr], …], body… ]
@@ -2711,17 +3190,10 @@ impl RuntimeKernel {
                         }
                         return;
                     }
-                    _ => {
-                        self.exec_leaf_effect(
-                            effect_expr,
-                            ctx,
-                            evaluator,
-                            effect_results,
-                            entity_data,
-                        );
-                    }
+                    _ => {}
                 }
                 return;
+                }
             }
         }
 
@@ -2736,10 +3208,10 @@ impl RuntimeKernel {
         ctx: &BindingContext,
         evaluator: &Evaluator,
         effect_results: &mut Vec<EffectResult>,
-        entity_data: &mut ValueMap,
+        entity_data: &mut PendingSets,
     ) {
-        // `ctx` arrives with this transition's earlier `(set @entity.…)` writes already mirrored
-        // into `@entity` by `exec_effect_expr` (the same `entity_data`, unchanged since).
+        let mirrored = entity_data.apply(ctx);
+        let ctx: &BindingContext = &mirrored;
         if let Some(effect) = crate::effects::parse_effect(effect_expr) {
             match &effect {
                 Effect::Set { path, value } => {
@@ -2770,6 +3242,7 @@ impl RuntimeKernel {
                     };
 
                     let field_name = path.strip_prefix("@entity.").unwrap_or(path);
+                    drop(mirrored);
                     entity_data.insert(field_name.to_string(), evaluated_value.clone());
 
                     effect_results.push(EffectResult::executed(Effect::Set {
@@ -2822,7 +3295,33 @@ impl RuntimeKernel {
                         routes.clone_from(emit);
                     }
                     let completion = emit.as_ref().and_then(|e| {
-                        call_service_completion_emit(e, &result, verdict, key.as_deref())
+                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
+                    });
+                    effect_results.push(result);
+                    effect_results.extend(completion);
+                }
+                Effect::Http { emit, .. } => {
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    let key = match &resolved {
+                        Effect::Http { key, .. } => key.clone(),
+                        _ => None,
+                    };
+                    let (result, verdict) = if self.effect_executor.environment().is_client() {
+                        (self.effect_executor.execute(&resolved, ctx), None)
+                    } else {
+                        self.io.set_call_site(self.call_site_of(emit.as_ref()));
+                        let mut result = self.run_http(&resolved, ctx, evaluator);
+                        let verdict = self.io.take_call_verdict();
+                        self.io.set_call_site(None);
+                        if verdict == Some(CallVerdict::Cancelled) {
+                            result = EffectResult::executed(resolved);
+                        }
+                        (result, verdict)
+                    };
+                    let completion = emit.as_ref().and_then(|e| {
+                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
                     });
                     effect_results.push(result);
                     effect_results.extend(completion);
@@ -2901,6 +3400,219 @@ impl RuntimeKernel {
         })
     }
 
+    /// Run an `http` effect: one `Secret` ask per credential, then the `Http` (or `HttpStream`) asks of its
+    /// pages. A refusal fails before any `Http` ask; a reply of any status is the success payload.
+    fn run_http(
+        &self,
+        effect: &Effect,
+        ctx: &BindingContext,
+        evaluator: &Evaluator,
+    ) -> EffectResult {
+        use http_request::{HttpAuth, HttpRefusal};
+        let Effect::Http {
+            method,
+            origin,
+            path,
+            request,
+            key,
+            ..
+        } = effect
+        else {
+            return EffectResult::noop(effect.clone(), "not an http effect");
+        };
+        let key = key.as_deref();
+        let failed = |payload: Value| http_failure(effect, payload);
+        let refused = |refusal: HttpRefusal| failed(http_request::refusal_payload(&refusal));
+        let transport_failed =
+            |error: TransportError| failed(http_request::failure_payload(&error));
+        let broke = |message: String| {
+            failed(http_request::failure_payload(&TransportError::Failed(message)))
+        };
+
+        let spec = match http_request::parse_http_call(*method, origin, path, request) {
+            Ok(spec) => spec,
+            Err(refusal) => return refused(refusal),
+        };
+        let egress = self.egress.read().clone();
+        if !http_request::origin_allowed(&spec.origin, &egress) {
+            return refused(HttpRefusal::EgressDenied(spec.origin.clone()));
+        }
+        let mut secrets: HashMap<String, String> = HashMap::new();
+        let oauth = match &spec.auth {
+            Some(auth @ HttpAuth::OAuth2Client { client_id, client_secret, .. }) => {
+                http_request::oauth2_cache_name(auth).map(|cache| (cache, client_id.clone(), client_secret.clone()))
+            }
+            _ => None,
+        };
+        if let Some((cache, _, _)) = &oauth {
+            match self.io.secret(cache) {
+                Ok(Some(token)) => {
+                    secrets.insert(cache.clone(), token);
+                }
+                Ok(None) => {}
+                Err(message) => return broke(message),
+            }
+            if self.io.suspended() {
+                return EffectResult::failed(effect.clone(), AWAITING_HOST);
+            }
+        }
+        let cached = oauth.as_ref().is_some_and(|(cache, _, _)| secrets.contains_key(cache));
+        for name in http_request::credentials_needed(&spec) {
+            let grant_only = oauth
+                .as_ref()
+                .is_some_and(|(cache, id, secret)| name != *cache && (name == *id || name == *secret));
+            if secrets.contains_key(&name) || (cached && grant_only) {
+                continue;
+            }
+            match self.io.secret(&name) {
+                Ok(Some(value)) => {
+                    secrets.insert(name, value);
+                }
+                Ok(None) => return refused(HttpRefusal::CredentialMissing(name)),
+                Err(message) => return broke(message),
+            }
+            if self.io.suspended() {
+                return EffectResult::failed(effect.clone(), AWAITING_HOST);
+            }
+        }
+        if let (Some(auth), true) = (&spec.auth, oauth.is_some() && !cached) {
+            if let Err(payload) = self.oauth_grant(auth, &mut secrets, &egress) {
+                return failed(payload);
+            }
+        }
+
+        let max = spec.paginate.as_ref().map_or(1, |p| p.max.max(1));
+        let mut page_token: Option<String> = None;
+        let mut items: Vec<Value> = Vec::new();
+        let mut pages = 0u32;
+        let mut refreshed = false;
+        loop {
+            let built = http_request::build_request(
+                &spec,
+                &|name| secrets.get(name).cloned(),
+                &egress,
+                page_token.as_deref(),
+            );
+            let wire = match built {
+                Ok(wire) if http_request::origin_allowed(&wire.url, &egress) => wire,
+                Ok(wire) => return refused(HttpRefusal::EgressDenied(wire.url)),
+                Err(refusal) => return refused(refusal),
+            };
+            let sent = match spec.stream {
+                Some(framing) => self.io.http_stream(&wire, key, framing),
+                None => self.io.http_send(&wire, key),
+            };
+            if self.io.suspended() {
+                return EffectResult::failed(effect.clone(), AWAITING_HOST);
+            }
+            let reply = match sent {
+                Ok(reply) => reply,
+                Err(error) => return transport_failed(error),
+            };
+            if reply.status == 401 && oauth.is_some() && !refreshed {
+                refreshed = true;
+                if let Some(auth) = &spec.auth {
+                    if let Err(payload) = self.oauth_grant(auth, &mut secrets, &egress) {
+                        return failed(payload);
+                    }
+                }
+                continue;
+            }
+            pages += 1;
+            let payload = http_request::reply_payload(&reply, spec.response_as);
+            let Some(paginate) = &spec.paginate else {
+                return EffectResult::executed_with_value(effect.clone(), payload);
+            };
+            let mut page_ctx = ctx.child();
+            page_ctx.set_local("response", payload.clone());
+            match eval_held(&paginate.collect, evaluator, &page_ctx) {
+                Ok(Value::Array(page_items)) => items.extend(page_items),
+                Ok(_) => return broke("paginate.collect must produce a list".to_string()),
+                Err(message) => return broke(format!("paginate.collect: {message}")),
+            }
+            let next = match paginate.style {
+                http_request::PageStyle::LinkHeader => {
+                    http_request::next_link(&reply).map(Value::String)
+                }
+                _ => match eval_held(&paginate.next, evaluator, &page_ctx) {
+                    Ok(Value::Null) => None,
+                    Ok(Value::String(token)) if token.is_empty() => None,
+                    Ok(token @ (Value::String(_) | Value::Number(_))) => Some(token),
+                    Ok(_) => {
+                        return broke("paginate.next must produce a token or null".to_string())
+                    }
+                    Err(message) => return broke(format!("paginate.next: {message}")),
+                },
+            };
+            match next {
+                Some(token) if pages < max => page_token = Some(token.to_string_value()),
+                _ => {
+                    let mut paged = ValueMap::new();
+                    paged.insert("pages".to_string(), Value::Number(f64::from(pages)));
+                    paged.insert("items".to_string(), Value::Array(items));
+                    paged.insert("last".to_string(), payload);
+                    return EffectResult::executed_with_value(effect.clone(), Value::Object(paged));
+                }
+            }
+        }
+    }
+
+    /// One client-credentials grant: the token request through `Http`, the token kept with `SecretSet`.
+    fn oauth_grant(
+        &self,
+        auth: &http_request::HttpAuth,
+        secrets: &mut HashMap<String, String>,
+        egress: &[String],
+    ) -> Result<(), Value> {
+        use http_request::{HttpAuth, HttpRefusal};
+        let refused = |r: HttpRefusal| http_request::refusal_payload(&r);
+        let broke = |message: String| {
+            http_request::failure_payload(&TransportError::Failed(message))
+        };
+        let HttpAuth::OAuth2Client {
+            client_id,
+            client_secret,
+            ..
+        } = auth
+        else {
+            return Err(refused(HttpRefusal::Invalid("not an oauth2 auth".to_string())));
+        };
+        for name in [client_id, client_secret] {
+            if secrets.contains_key(name) {
+                continue;
+            }
+            match self.io.secret(name) {
+                Ok(Some(value)) => {
+                    secrets.insert(name.clone(), value);
+                }
+                Ok(None) => return Err(refused(HttpRefusal::CredentialMissing(name.clone()))),
+                Err(message) => return Err(broke(message)),
+            }
+            if self.io.suspended() {
+                return Err(broke(AWAITING_HOST.to_string()));
+            }
+        }
+        let grant = http_request::oauth2_token_request(auth, &|name| secrets.get(name).cloned())
+            .map_err(refused)?;
+        if !http_request::origin_allowed(&grant.url, egress) {
+            return Err(refused(HttpRefusal::EgressDenied(grant.url)));
+        }
+        let reply = self.io.http_send(&grant, None).map_err(|e| http_request::failure_payload(&e))?;
+        if self.io.suspended() {
+            return Err(broke(AWAITING_HOST.to_string()));
+        }
+        let (token, ttl_ms) = http_request::parse_token_reply(&reply).map_err(&broke)?;
+        let Some(cache) = http_request::oauth2_cache_name(auth) else {
+            return Err(refused(HttpRefusal::Invalid("not an oauth2 auth".to_string())));
+        };
+        self.io.store_secret(&cache, &token, ttl_ms).map_err(&broke)?;
+        if self.io.suspended() {
+            return Err(broke(AWAITING_HOST.to_string()));
+        }
+        secrets.insert(cache, token);
+        Ok(())
+    }
+
     /// Get render-ui effects for a state to show UI when no transition happens.
     fn get_state_render_effects(
         &self,
@@ -2936,6 +3648,7 @@ impl RuntimeKernel {
         if sources.is_empty() || !self.effect_executor.environment().is_client() {
             return;
         }
+        self.flush_row_writes();
         let resolved = resolved.iter().filter_map(|er| match &er.effect {
             Effect::RenderUi { content, .. } => Some(content.clone()),
             _ => None,
@@ -2961,6 +3674,7 @@ impl RuntimeKernel {
         if !self.effect_executor.environment().is_client() {
             return Vec::new();
         }
+        self.flush_row_writes();
         let stale = self.renders.write().stale(
             |trait_name| {
                 let entity_type = self
@@ -2981,6 +3695,11 @@ impl RuntimeKernel {
             .map(|(trait_name, entity_id, repaints)| Rerender {
                 state: self.current_state_name(&trait_name, Some(&entity_id)),
                 entity: self.step_entity_view(&trait_name, &entity_id),
+                rows_changed: repaints
+                    .iter()
+                    .filter(|r| r.rows_changed)
+                    .map(|r| r.slot.clone())
+                    .collect(),
                 effects: repaints
                     .into_iter()
                     .map(|r| Effect::RenderUi {
@@ -2991,6 +3710,26 @@ impl RuntimeKernel {
                 trait_name,
             })
             .collect()
+    }
+
+    /// Tell the render store which entity types the kernel has written since it last heard, so the slots
+    /// holding a row-set reference to them are repainted (EXEC-RENDER-3). Called before a render is recorded
+    /// and before a repaint, so a slot painted after a write is not marked by it.
+    fn flush_row_writes(&self) {
+        let written = std::mem::take(&mut *self.rows.written.lock());
+        if !written.is_empty() {
+            self.renders.write().mark_rows_changed(&written);
+        }
+    }
+
+    /// `reference` resolved against the rows as they are now for `viewer`: the ids that still match the
+    /// reference's query and the viewer's `@read`, in the reference's order, a missing or hidden row omitted and
+    /// `total` re-counted (Q6). The one resolver every renderer and the embedded API reach, so `@read` is applied
+    /// here and nowhere else. A store that answers through the host (the server role) is reached in a dispatch.
+    pub fn resolve_rows(&self, reference: &RowSetRef, viewer: &Value) -> Result<RowPage, String> {
+        let mut ctx = BindingContext::new();
+        ctx.set_user(viewer.clone());
+        self.rows.resolve_rows(reference, &ctx)
     }
 
     /// The state a trait instance is in now, or the one it will be created in; empty for an unknown trait.
@@ -3196,18 +3935,14 @@ impl RuntimeKernel {
 
     /// Resolve `@currentTheme` for the orbital that owns `trait_name`,
     /// applying orbital → app → default precedence (`resolve_theme`). Walks
-    /// the registered schemas the same way [`Self::get_initial_state`] does
-    /// — no separate trait→orbital index to keep in sync.
+    /// the trait→orbital index rebuilt by [`Self::register_schema`].
     fn resolve_current_theme_for_trait(&self, trait_name: &str) -> ResolvedTheme {
         let mode = *self.theme_mode.read();
-        let schemas = self.schemas.read();
-        for schema in schemas.values() {
-            for orbital in &schema.orbitals {
-                if orbital
-                    .traits
-                    .iter()
-                    .any(|t| t.trait_name() == Some(trait_name))
-                {
+        let homes = self.trait_homes.read();
+        if let Some((schema_name, index)) = homes.get(trait_name) {
+            let schemas = self.schemas.read();
+            if let Some(schema) = schemas.get(schema_name) {
+                if let Some(orbital) = schema.orbitals.get(*index) {
                     return resolve_theme(
                         schema,
                         Some(&orbital.name),
@@ -3345,6 +4080,18 @@ impl RuntimeKernel {
     /// Access the event bus.
     pub fn event_bus(&self) -> &SharedEventBus {
         &self.event_bus
+    }
+
+    /// Declare what the host's query push-down honours for `entity_type`. A host that declares nothing is
+    /// never sent a query: the kernel lists the table and runs the query itself.
+    pub fn set_query_capabilities(&self, entity_type: &str, capabilities: QueryCapabilities) {
+        self.io.set_query_capabilities(entity_type, capabilities);
+    }
+
+    /// Declare what the host's conditional writes honour for `entity_type`. A host that declares nothing is
+    /// never sent `WriteRows`: the kernel reads the row, tests the policy and writes it itself.
+    pub fn set_write_capabilities(&self, entity_type: &str, capabilities: WriteCapabilities) {
+        self.io.set_write_capabilities(entity_type, capabilities);
     }
 
     /// Access the entity source.
@@ -3634,26 +4381,81 @@ fn browser_data_effect(effect: &Effect, residence: &crate::effects::Residence) -
 /// write of only the Set-touched fields drops the rest and breaks
 /// `@entity.<untouched-field>` on the next frame). Empty/Null `set` ⇒ `base`;
 /// a non-object `set` with no base ⇒ `set` (first write).
-/// `ctx` with the transition's earlier `(set @entity.…)` writes merged into `@entity`, so
-/// every read inside the transition sees them: leaf effects, `if`/`when` conditions,
-/// `let` values (JS twin: `EffectExecutor`'s bindings mirror).
-fn with_pending_sets<'a>(
-    ctx: &'a BindingContext,
-    entity_data: &ValueMap,
-) -> std::borrow::Cow<'a, BindingContext> {
-    if entity_data.is_empty() {
-        return std::borrow::Cow::Borrowed(ctx);
-    }
-    let mut c = ctx.clone();
-    c.entity = Arc::new(match ctx.entity.as_object() {
-        Some(base) => {
-            let mut merged = base.clone();
-            merged.extend(entity_data.iter().map(|(k, v)| (k.clone(), v.clone())));
-            Value::Object(merged)
+/// The transition's `(set @entity.…)` writes so far, and `@entity` with them applied, kept in step
+/// on every write so a later read in the same transition sees them without rebuilding the map
+/// (JS twin: `EffectExecutor`'s bindings mirror).
+struct PendingSets {
+    sets: ValueMap,
+    view: Arc<Value>,
+}
+
+impl PendingSets {
+    fn new(ctx: &BindingContext) -> Self {
+        Self {
+            sets: ValueMap::new(),
+            view: Arc::clone(&ctx.entity),
         }
-        None => Value::Object(entity_data.clone()),
-    });
-    std::borrow::Cow::Owned(c)
+    }
+
+    /// `ctx` with the earlier writes visible in `@entity`.
+    fn apply<'a>(&self, ctx: &'a BindingContext) -> std::borrow::Cow<'a, BindingContext> {
+        if self.sets.is_empty() {
+            return std::borrow::Cow::Borrowed(ctx);
+        }
+        let mut c = ctx.clone();
+        c.entity = Arc::clone(&self.view);
+        std::borrow::Cow::Owned(c)
+    }
+
+    fn insert(&mut self, field: String, value: Value) {
+        self.sets.insert(field.clone(), value.clone());
+        match Arc::make_mut(&mut self.view) {
+            Value::Object(entity) => {
+                entity.insert(field, value);
+            }
+            other => *other = Value::Object(self.sets.clone()),
+        }
+    }
+}
+
+/// The declared field defaults of `def` as one object, `Null` when no field declares one.
+fn declared_defaults(def: &EntityDefinition) -> Value {
+    let defaults: ValueMap = def
+        .fields
+        .iter()
+        .filter_map(|f| Some((f.name.clone()?, sexpr_to_value(f.default.as_ref()?))))
+        .collect();
+    if defaults.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(defaults)
+    }
+}
+
+/// `set` laid over `base` with `merge_entity`'s rules, extending an owned `base` in place and
+/// copying a borrowed layer only when it must change.
+fn overlay<'a>(base: Cow<'a, Value>, set: &'a Value) -> Cow<'a, Value> {
+    let set_fields = set.as_object().filter(|s| !s.is_empty());
+    let Some(set_fields) = set_fields else {
+        return base;
+    };
+    match base {
+        Cow::Owned(Value::Object(mut fields)) => {
+            for (k, v) in set_fields {
+                fields.insert(k.clone(), v.clone());
+            }
+            Cow::Owned(Value::Object(fields))
+        }
+        Cow::Borrowed(Value::Object(fields)) => {
+            let mut merged = ValueMap::with_capacity(fields.len() + set_fields.len());
+            merged.extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+            for (k, v) in set_fields {
+                merged.insert(k.clone(), v.clone());
+            }
+            Cow::Owned(Value::Object(merged))
+        }
+        _ => Cow::Borrowed(set),
+    }
 }
 
 fn merge_entity(base: &Value, set: &Value) -> Value {
@@ -3726,6 +4528,21 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             key: key.map(|k| resolve_key(&k, ctx)),
             emit,
         },
+        Effect::Http {
+            method,
+            origin,
+            path,
+            request,
+            key,
+            emit,
+        } => Effect::Http {
+            method,
+            origin: ctx.resolve_value_checked(&Value::String(origin))?.into_owned().to_string_value(),
+            path: ctx.resolve_value_checked(&Value::String(path))?.into_owned().to_string_value(),
+            request: resolve_http_request(&request, ctx)?,
+            key: key.map(|k| resolve_key(&k, ctx)),
+            emit,
+        },
         Effect::CancelCall { key } => Effect::CancelCall {
             key: resolve_key(&key, ctx),
         },
@@ -3762,6 +4579,66 @@ fn resolve_effect_result(result: EffectResult, ctx: &BindingContext) -> EffectRe
         }
         Err(fault) => EffectResult::failed(result.effect, &OrbitalError::Eval(fault).to_string()),
     }
+}
+
+/// A failed `http` whose failure payload (`{ error, kind }`) rides the result's value.
+fn http_failure(effect: &Effect, payload: Value) -> EffectResult {
+    let message = payload
+        .get_path("error")
+        .map(Value::to_string_value)
+        .unwrap_or_default();
+    let mut result = EffectResult::failed(effect.clone(), &message);
+    result.return_value = Some(payload);
+    result
+}
+
+/// The request with its bindings resolved, except `paginate.next` and `paginate.collect`: those are
+/// evaluated per page against `@response`.
+fn resolve_http_request(request: &Value, ctx: &BindingContext) -> Result<Value, EvalError> {
+    let held = request
+        .as_object()
+        .and_then(|fields| fields.get("paginate"))
+        .and_then(Value::as_object)
+        .map(|paginate| {
+            ["next", "collect"]
+                .into_iter()
+                .filter_map(|k| paginate.get(k).map(|v| (k.to_string(), v.clone())))
+                .collect::<Vec<_>>()
+        })
+        .filter(|held| !held.is_empty());
+    let Some(held) = held else {
+        return Ok(ctx.resolve_value_checked(request)?.into_owned());
+    };
+    let mut stripped = request.clone();
+    if let Some(Value::Object(paginate)) = stripped
+        .as_object_mut()
+        .and_then(|fields| fields.get_mut("paginate"))
+    {
+        for (k, _) in &held {
+            paginate.shift_remove(k);
+        }
+    }
+    let mut resolved = ctx.resolve_value_checked(&stripped)?.into_owned();
+    if let Some(Value::Object(paginate)) = resolved
+        .as_object_mut()
+        .and_then(|fields| fields.get_mut("paginate"))
+    {
+        for (k, v) in held {
+            paginate.insert(k, v);
+        }
+    }
+    Ok(resolved)
+}
+
+/// Evaluate a held `paginate.next`/`collect`: a `(quote …)` is its body, anything else is the expression.
+fn eval_held(held: &Value, evaluator: &Evaluator, ctx: &BindingContext) -> Result<Value, String> {
+    let expr = value_to_sexpr(held);
+    let expr = match crate::schema::quote::quote_body_of(&expr) {
+        Some(body) => crate::schema::quote::decode_quote_body(body)
+            .ok_or_else(|| "the quoted expression is not valid JSON".to_string())?,
+        None => expr,
+    };
+    evaluator.evaluate(&expr, ctx).map_err(|e| e.to_string())
 }
 
 fn resolve_key(key: &str, ctx: &BindingContext) -> String {
@@ -3918,6 +4795,18 @@ fn merge_nav_items(current: &Value, added: Vec<Value>) -> Value {
     }
 }
 
+/// The consecutive top-level plain `persist` effects of `effects` from `start`: a write run. Effects nested in
+/// `let`/`do`/`if`/`when` are not top-level, and a `persist batch` is its own request, so neither joins a run.
+fn persist_run(effects: &[SExpression], start: usize) -> Vec<Effect> {
+    effects[start..]
+        .iter()
+        .map_while(|expr| match crate::effects::parse_effect(expr) {
+            Some(effect @ Effect::Persist { .. }) => Some(effect),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Whether a failed effect is one the JS executor throws, the failure a response reports as `effect-failed`.
 /// A `set` that cannot evaluate, and a `call-service` or substrate operator with no declared `emit.failure`
 /// route, are; a `persist` refusal (policy, required column) and a `fetch` miss are handled outcomes. A thrown
@@ -3932,14 +4821,17 @@ fn is_thrown_failure(result: &EffectResult) -> bool {
         | Effect::CancelCall { .. }
         | Effect::RenderUi { .. }
         | Effect::Emit { .. } => true,
-        Effect::CallService { emit, .. } | Effect::Custom { emit, .. } => !routed(emit),
+        Effect::CallService { emit, .. } | Effect::Http { emit, .. } | Effect::Custom { emit, .. } => {
+            !routed(emit)
+        }
         _ => false,
     }
 }
 
-/// A `call-service`'s declared completion — JS `EffectExecutor.ts`: `emit.success` carries the
-/// service's result as the payload, `emit.failure` `{ error }`. A delegated or no-op call fires nothing.
-fn call_service_completion_emit(
+/// A keyed call's (`call-service`, `http`) declared completion — JS `EffectExecutor.ts`: `emit.success`
+/// carries the result as the payload, `emit.failure` the failure's own payload when it has one (an `http`
+/// failure carries `{ error, kind }`) else `{ error }`. A delegated or no-op call fires nothing.
+fn keyed_call_completion_emit(
     emit: &FetchEmit,
     result: &EffectResult,
     verdict: Option<CallVerdict>,
@@ -3961,7 +4853,13 @@ fn call_service_completion_emit(
             emit.success.clone()?,
             result.return_value.clone().unwrap_or(Value::Null),
         ),
-        (None, EffectOutcome::Failed) => (emit.failure.clone()?, error_payload(result, None)),
+        (None, EffectOutcome::Failed) => (
+            emit.failure.clone()?,
+            result
+                .return_value
+                .clone()
+                .unwrap_or_else(|| error_payload(result, None)),
+        ),
         (None, EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_)) => return None,
     };
     Some(EffectResult::executed(Effect::Emit { event, payload }))
@@ -4016,10 +4914,9 @@ fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<Effe
             };
             let mut payload = ValueMap::new();
             payload.insert("data".to_string(), data);
-            payload.insert(
-                "totalCount".to_string(),
-                Value::Number(result.total_count.unwrap_or_default() as f64),
-            );
+            if let Some(total) = result.total_count {
+                payload.insert("totalCount".to_string(), Value::Number(total as f64));
+            }
             (event, Value::Object(payload))
         }
         EffectOutcome::Failed => (emit.failure.clone()?, Value::Object(ValueMap::new())),
@@ -4078,7 +4975,6 @@ fn persist_completion_emit(
 #[cfg(test)]
 mod merge_entity_tests {
     use super::*;
-    
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
         let mut m = ValueMap::new();

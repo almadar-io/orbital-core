@@ -40,6 +40,7 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("cancel-call", RunsOn::Server),
     ("fetch", RunsOn::Server),
     ("fetch-stream", RunsOn::Server),
+    ("http", RunsOn::Server),
     ("navigate", RunsOn::Client),
     ("navigate-back", RunsOn::Client),
     ("os/debounce", RunsOn::Server),
@@ -139,7 +140,10 @@ pub const SERVICE_RUNTIME_UNSUPPORTED: &str = "ORB_SHELL_SERVICE_RUNTIME_UNSUPPO
 
 /// The argument position naming a data effect's entity, when it has one.
 pub fn entity_arg(operator: &str) -> Option<usize> {
-    ENTITY_ARGS.iter().find(|(name, _)| *name == operator).map(|(_, i)| *i)
+    ENTITY_ARGS
+        .iter()
+        .find(|(name, _)| *name == operator)
+        .map(|(_, i)| *i)
 }
 
 /// Where one call runs: its registry site, except a data effect whose target
@@ -171,7 +175,10 @@ pub fn effect_site(
             };
         }
     }
-    match entity_arg(operator).and_then(|i| args.get(i)).and_then(|a| a.as_str()) {
+    match entity_arg(operator)
+        .and_then(|i| args.get(i))
+        .and_then(|a| a.as_str())
+    {
         Some(entity) if !entity.starts_with('@') && residence.is_client(entity) => RunsOn::Client,
         _ => RunsOn::Server,
     }
@@ -192,7 +199,11 @@ pub fn ir_effect_site(effect: &OirEffect, residence: &Residence) -> RunsOn {
     }
     if let OirEffect::PersistBatch { entities, .. } = effect {
         let all_client = !entities.is_empty() && entities.iter().all(|e| residence.is_client(e));
-        return if all_client { RunsOn::Client } else { RunsOn::Server };
+        return if all_client {
+            RunsOn::Client
+        } else {
+            RunsOn::Server
+        };
     }
     let entity = match effect {
         OirEffect::Fetch { entity_type, .. } | OirEffect::Persist { entity_type, .. } => {
@@ -395,9 +406,7 @@ pub fn sexpr_runs_server_effect(expr: &crate::schema::SExpression, residence: &R
                 let then_live = !arr[1].is_statically_false();
                 return (then_live && recur(&arr[2]))
                     || (head == Some("if") && arr.get(3).is_some_and(recur))
-                    || (head == Some("when")
-                        && then_live
-                        && arr[3..].iter().any(recur));
+                    || (head == Some("when") && then_live && arr[3..].iter().any(recur));
             }
             // Binding positions name values: a `let` pair's name and a
             // `fn`/`lambda` param list are never calls.

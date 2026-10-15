@@ -145,6 +145,20 @@ impl ClientCore {
         }
     }
 
+    /// A row-set reference resolved for the viewer it is signed in as, by the store's location: the client-role
+    /// kernel when there is one, else the server bridge (the server holds the rows and applies `@read`); `Err`
+    /// when this core has neither. Renderers reach `@read`-checked rows only through here.
+    pub fn resolve_rows(
+        &self,
+        reference: &crate::runtime::row_query::RowSetRef,
+    ) -> Result<crate::runtime::row_query::RowPage, String> {
+        match (&self.client_kernel, &self.server_bridge) {
+            (Some(kernel), _) => kernel.resolve_rows(reference),
+            (None, Some(bridge)) => bridge.resolve_rows(reference).map_err(|e| e.to_string()),
+            (None, None) => Err("no store to resolve a row set against".to_string()),
+        }
+    }
+
     /// Build a core driven by the client-role kernel (`client_kernel.rs`) instead
     /// of a bare [`crate::client::bridge::ServerBridge`] — `drive_blocking`/
     /// `drive_tick_blocking` route through [`ClientKernel::dispatch`]/[`ClientKernel::tick`],

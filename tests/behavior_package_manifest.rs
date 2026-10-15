@@ -10,7 +10,6 @@ fn package(root: &Path, extra: Option<(&str, &str)>) {
     for file in [
         "behaviors/registry/x.orb",
         "behaviors/behaviors-registry.json",
-        "behaviors/lolo-behavior-contracts.json",
     ] {
         fs::write(pkg.join(file), "{}").unwrap();
     }
@@ -18,7 +17,6 @@ fn package(root: &Path, extra: Option<(&str, &str)>) {
         "prefix": "pa",
         "registry": "behaviors/registry",
         "index": "behaviors/behaviors-registry.json",
-        "loloContracts": "behaviors/lolo-behavior-contracts.json",
         "compiler": ">=0.0.0"
     });
     if let Some((key, value)) = extra {
@@ -53,4 +51,29 @@ fn a_package_published_with_a_factory_signatures_key_still_loads() {
     );
     let found = discover(tmp.path(), &tmp.path().join("store")).unwrap();
     assert_eq!(found[0].prefix, "pa");
+}
+
+#[test]
+fn a_package_needs_no_contracts_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    package(tmp.path(), None);
+    let found = discover(tmp.path(), &tmp.path().join("store")).unwrap();
+    assert_eq!(found[0].lolo_source, None);
+}
+
+#[test]
+fn a_package_published_with_a_contracts_key_still_loads_without_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    package(tmp.path(), Some(("loloContracts", "behaviors/lolo-behavior-contracts.json")));
+    let found = discover(tmp.path(), &tmp.path().join("store")).unwrap();
+    assert_eq!(found[0].prefix, "pa");
+}
+
+#[test]
+fn a_package_declaring_source_exposes_its_lolo_tree() {
+    let tmp = tempfile::tempdir().unwrap();
+    package(tmp.path(), Some(("source", "behaviors/lolo")));
+    fs::create_dir_all(tmp.path().join("node_modules/pkg-a/behaviors/lolo")).unwrap();
+    let found = discover(tmp.path(), &tmp.path().join("store")).unwrap();
+    assert!(found[0].lolo_source.as_ref().unwrap().ends_with("behaviors/lolo"));
 }

@@ -1,0 +1,1548 @@
+{
+  "name": "pushdown-query-cases",
+  "entity": "Ticket",
+  "fields": [
+    {
+      "name": "id",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "title",
+      "type": "string"
+    },
+    {
+      "name": "status",
+      "type": "string"
+    },
+    {
+      "name": "priority",
+      "type": "number"
+    },
+    {
+      "name": "owner",
+      "type": "string"
+    },
+    {
+      "name": "tags",
+      "type": "array",
+      "items": {
+        "name": "tag",
+        "type": "string"
+      }
+    },
+    {
+      "name": "score",
+      "type": "number"
+    }
+  ],
+  "rows": [
+    {
+      "id": "t01",
+      "createdAt": "2026-03-05T10:00:00.000Z",
+      "title": "Alpha",
+      "status": "open",
+      "priority": 3,
+      "owner": "u1",
+      "tags": [
+        "a",
+        "b"
+      ],
+      "score": 10
+    },
+    {
+      "id": "t02",
+      "createdAt": "2026-03-01T10:00:00.000Z",
+      "title": "Bravo",
+      "status": "open",
+      "priority": 5,
+      "owner": "u2",
+      "tags": [
+        "b"
+      ],
+      "score": 10
+    },
+    {
+      "id": "t03",
+      "createdAt": "2026-03-09T10:00:00.000Z",
+      "title": "Charlie",
+      "status": "closed",
+      "priority": 2,
+      "owner": "u1",
+      "tags": [],
+      "score": null
+    },
+    {
+      "id": "t04",
+      "createdAt": "2026-03-03T10:00:00.000Z",
+      "title": "Delta",
+      "status": "open",
+      "priority": 4,
+      "owner": "u3",
+      "tags": [
+        "c"
+      ]
+    },
+    {
+      "id": "t05",
+      "createdAt": "2026-03-03T10:00:00.000Z",
+      "title": "Echo",
+      "status": "archived",
+      "priority": 1,
+      "owner": "u2",
+      "tags": [
+        "a"
+      ],
+      "score": 7
+    },
+    {
+      "id": "t06",
+      "createdAt": "2026-03-11T10:00:00.000Z",
+      "title": "Foxtrot",
+      "status": "open",
+      "priority": 5,
+      "owner": "u1",
+      "tags": [
+        "a",
+        "c"
+      ],
+      "score": 12
+    },
+    {
+      "id": "t07",
+      "createdAt": "2026-03-04T10:00:00.000Z",
+      "title": "Golf",
+      "status": "closed",
+      "priority": 3,
+      "owner": "u3",
+      "tags": [
+        "b",
+        "c"
+      ],
+      "score": 0
+    },
+    {
+      "id": "t08",
+      "createdAt": "2026-03-08T10:00:00.000Z",
+      "title": "beta ALPHA",
+      "status": "open",
+      "priority": 1,
+      "owner": "u2",
+      "tags": [],
+      "score": 5
+    },
+    {
+      "id": "t09",
+      "createdAt": "2026-03-06T10:00:00.000Z",
+      "title": "India",
+      "status": "open",
+      "priority": 4,
+      "tags": [
+        "a"
+      ],
+      "score": 9
+    },
+    {
+      "id": "t10",
+      "createdAt": "2026-03-07T10:00:00.000Z",
+      "title": "Juliet",
+      "status": "open",
+      "owner": "u1",
+      "tags": [
+        "c"
+      ],
+      "score": 5
+    },
+    {
+      "id": "t11",
+      "title": "Kilo",
+      "status": "closed",
+      "priority": 5,
+      "owner": "u3",
+      "tags": [
+        "a"
+      ],
+      "score": 12
+    },
+    {
+      "id": "t12",
+      "title": "Lima",
+      "status": "archived",
+      "priority": 2,
+      "owner": null,
+      "tags": [
+        "b"
+      ],
+      "score": 3
+    }
+  ],
+  "cases": [
+    {
+      "name": "no-query",
+      "why": "no filter, no policy, no order: every row by the default order, createdAt ascending with a row lacking one last, ties by id",
+      "bindings": {},
+      "sexpr": {},
+      "query": {},
+      "expect": {
+        "ids": [
+          "t02",
+          "t04",
+          "t05",
+          "t07",
+          "t01",
+          "t09",
+          "t10",
+          "t08",
+          "t03",
+          "t06",
+          "t11",
+          "t12"
+        ],
+        "total": 12
+      }
+    },
+    {
+      "name": "default-order-window",
+      "why": "an unordered page windows the default order: createdAt ascending, then id",
+      "bindings": {},
+      "sexpr": {},
+      "query": {
+        "offset": 2,
+        "limit": 5
+      },
+      "expect": {
+        "ids": [
+          "t05",
+          "t07",
+          "t01",
+          "t09",
+          "t10"
+        ],
+        "total": 12
+      }
+    },
+    {
+      "name": "default-order-missing-created-at-last",
+      "why": "a row with no createdAt sorts after every stamped row, in both a filtered and a windowed unordered page",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "priority"
+          ],
+          5
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "priority",
+          "op": "==",
+          "value": 5
+        }
+      },
+      "expect": {
+        "ids": [
+          "t02",
+          "t06",
+          "t11"
+        ],
+        "total": 3
+      }
+    },
+    {
+      "name": "default-order-ties-break-by-id",
+      "why": "two rows stamped the same instant keep id order",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "t05",
+            "t04",
+            "t07"
+          ],
+          [
+            "object/get",
+            "@entity",
+            "id"
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "member",
+          "field": "id",
+          "values": [
+            "t05",
+            "t04",
+            "t07"
+          ]
+        }
+      },
+      "expect": {
+        "ids": [
+          "t04",
+          "t05",
+          "t07"
+        ],
+        "total": 3
+      }
+    },
+    {
+      "name": "authored-order-overrides-default",
+      "why": "an authored order replaces createdAt: priority descending, ties by id",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "t01",
+            "t02",
+            "t03"
+          ],
+          [
+            "object/get",
+            "@entity",
+            "id"
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "member",
+          "field": "id",
+          "values": [
+            "t01",
+            "t02",
+            "t03"
+          ]
+        },
+        "order": {
+          "field": "priority",
+          "direction": "desc"
+        }
+      },
+      "expect": {
+        "ids": [
+          "t02",
+          "t01",
+          "t03"
+        ],
+        "total": 3
+      }
+    },
+    {
+      "name": "authored-id-order",
+      "why": "an authored order on id alone, descending: the one order every store, including those that cannot order by createdAt, can run",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ],
+          "open"
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "status",
+          "op": "==",
+          "value": "open"
+        },
+        "order": {
+          "field": "id",
+          "direction": "desc"
+        }
+      },
+      "expect": {
+        "ids": [
+          "t10",
+          "t09",
+          "t08",
+          "t06",
+          "t04",
+          "t02",
+          "t01"
+        ],
+        "total": 7
+      }
+    },
+    {
+      "name": "filter-equals",
+      "why": "a plain equality, ordered",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ],
+          "open"
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "status",
+          "op": "==",
+          "value": "open"
+        },
+        "order": {
+          "field": "priority",
+          "direction": "asc"
+        },
+        "limit": 4
+      },
+      "expect": {
+        "ids": [
+          "t08",
+          "t01",
+          "t04",
+          "t09"
+        ],
+        "total": 7
+      }
+    },
+    {
+      "name": "order-desc-missing-last",
+      "why": "missing and null sort last in descending order",
+      "bindings": {},
+      "sexpr": {},
+      "query": {
+        "order": {
+          "field": "score",
+          "direction": "desc"
+        }
+      },
+      "expect": {
+        "ids": [
+          "t06",
+          "t11",
+          "t01",
+          "t02",
+          "t09",
+          "t05",
+          "t08",
+          "t10",
+          "t12",
+          "t07",
+          "t03",
+          "t04"
+        ],
+        "total": 12
+      }
+    },
+    {
+      "name": "order-asc-missing-last",
+      "why": "missing and null sort last in ascending order too",
+      "bindings": {},
+      "sexpr": {},
+      "query": {
+        "order": {
+          "field": "score",
+          "direction": "asc"
+        }
+      },
+      "expect": {
+        "ids": [
+          "t07",
+          "t12",
+          "t08",
+          "t10",
+          "t05",
+          "t09",
+          "t01",
+          "t02",
+          "t06",
+          "t11",
+          "t03",
+          "t04"
+        ],
+        "total": 12
+      }
+    },
+    {
+      "name": "order-ties-break-by-id",
+      "why": "equal keys (score 10 and 12) are ordered by id ascending, in both directions",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          ">=",
+          [
+            "object/get",
+            "@entity",
+            "score"
+          ],
+          10
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "score",
+          "op": ">=",
+          "value": 10
+        },
+        "order": {
+          "field": "score",
+          "direction": "desc"
+        }
+      },
+      "expect": {
+        "ids": [
+          "t06",
+          "t11",
+          "t01",
+          "t02"
+        ],
+        "total": 4
+      }
+    },
+    {
+      "name": "not-equals-includes-missing",
+      "why": "a missing value is not equal to 5, so != matches it",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "!=",
+          [
+            "object/get",
+            "@entity",
+            "priority"
+          ],
+          5
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "priority",
+          "op": "!=",
+          "value": 5
+        }
+      },
+      "expect": {
+        "ids": [
+          "t04",
+          "t05",
+          "t07",
+          "t01",
+          "t09",
+          "t10",
+          "t08",
+          "t03",
+          "t12"
+        ],
+        "total": 9
+      }
+    },
+    {
+      "name": "range-and",
+      "why": "priority 3 or 4",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            ">=",
+            [
+              "object/get",
+              "@entity",
+              "priority"
+            ],
+            3
+          ],
+          [
+            "<",
+            [
+              "object/get",
+              "@entity",
+              "priority"
+            ],
+            5
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "all",
+          "of": [
+            {
+              "kind": "compare",
+              "field": "priority",
+              "op": ">=",
+              "value": 3
+            },
+            {
+              "kind": "compare",
+              "field": "priority",
+              "op": "<",
+              "value": 5
+            }
+          ]
+        },
+        "order": {
+          "field": "id",
+          "direction": "asc"
+        }
+      },
+      "expect": {
+        "ids": [
+          "t01",
+          "t04",
+          "t07",
+          "t09"
+        ],
+        "total": 4
+      }
+    },
+    {
+      "name": "range-skips-missing",
+      "why": "a missing priority is neither below nor above",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "<",
+          [
+            "object/get",
+            "@entity",
+            "priority"
+          ],
+          3
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "priority",
+          "op": "<",
+          "value": 3
+        }
+      },
+      "expect": {
+        "ids": [
+          "t05",
+          "t08",
+          "t03",
+          "t12"
+        ],
+        "total": 4
+      }
+    },
+    {
+      "name": "or-two-fields",
+      "why": "closed or owned by u2",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "closed"
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "owner"
+            ],
+            "u2"
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "any",
+          "of": [
+            {
+              "kind": "compare",
+              "field": "status",
+              "op": "==",
+              "value": "closed"
+            },
+            {
+              "kind": "compare",
+              "field": "owner",
+              "op": "==",
+              "value": "u2"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "ids": [
+          "t02",
+          "t05",
+          "t07",
+          "t08",
+          "t03",
+          "t11"
+        ],
+        "total": 6
+      }
+    },
+    {
+      "name": "not-over-compare",
+      "why": "not(open): a row lacking the field would satisfy it",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "not",
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "not",
+          "of": {
+            "kind": "compare",
+            "field": "status",
+            "op": "==",
+            "value": "open"
+          }
+        }
+      },
+      "expect": {
+        "ids": [
+          "t05",
+          "t07",
+          "t03",
+          "t11",
+          "t12"
+        ],
+        "total": 5
+      }
+    },
+    {
+      "name": "not-over-missing-field",
+      "why": "not(priority > 3): rows with no priority satisfy it (two-valued logic, not SQL NULL)",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "not",
+          [
+            ">",
+            [
+              "object/get",
+              "@entity",
+              "priority"
+            ],
+            3
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "not",
+          "of": {
+            "kind": "compare",
+            "field": "priority",
+            "op": ">",
+            "value": 3
+          }
+        }
+      },
+      "expect": {
+        "ids": [
+          "t05",
+          "t07",
+          "t01",
+          "t10",
+          "t08",
+          "t03",
+          "t12"
+        ],
+        "total": 7
+      }
+    },
+    {
+      "name": "membership",
+      "why": "status in {closed, archived}",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "closed",
+            "archived"
+          ],
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "member",
+          "field": "status",
+          "values": [
+            "closed",
+            "archived"
+          ]
+        }
+      },
+      "expect": {
+        "ids": [
+          "t05",
+          "t07",
+          "t03",
+          "t11",
+          "t12"
+        ],
+        "total": 5
+      }
+    },
+    {
+      "name": "not-membership",
+      "why": "not in {closed, archived}: the open rows",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "not",
+          [
+            "array/includes",
+            [
+              "closed",
+              "archived"
+            ],
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ]
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "not",
+          "of": {
+            "kind": "member",
+            "field": "status",
+            "values": [
+              "closed",
+              "archived"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "ids": [
+          "t02",
+          "t04",
+          "t01",
+          "t09",
+          "t10",
+          "t08",
+          "t06"
+        ],
+        "total": 7
+      }
+    },
+    {
+      "name": "not-membership-includes-missing",
+      "why": "not in {u1, u2}: rows with no owner (t09) or a null owner (t12) are not members, so they satisfy the negation",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "not",
+          [
+            "array/includes",
+            [
+              "u1",
+              "u2"
+            ],
+            [
+              "object/get",
+              "@entity",
+              "owner"
+            ]
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "not",
+          "of": {
+            "kind": "member",
+            "field": "owner",
+            "values": [
+              "u1",
+              "u2"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "ids": [
+          "t04",
+          "t07",
+          "t09",
+          "t11",
+          "t12"
+        ],
+        "total": 5
+      }
+    },
+    {
+      "name": "not-has-element-includes-missing",
+      "why": "not(score is a list holding 10): score is never a list, and t04 has no score at all, so every row satisfies the negation",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "not",
+          [
+            "array/includes",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            10
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "not",
+          "of": {
+            "kind": "hasElement",
+            "field": "score",
+            "value": 10
+          }
+        }
+      },
+      "expect": {
+        "ids": [
+          "t02",
+          "t04",
+          "t05",
+          "t07",
+          "t01",
+          "t09",
+          "t10",
+          "t08",
+          "t03",
+          "t06",
+          "t11",
+          "t12"
+        ],
+        "total": 12
+      }
+    },
+    {
+      "name": "array-contains",
+      "why": "tag c",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "object/get",
+            "@entity",
+            "tags"
+          ],
+          "c"
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "hasElement",
+          "field": "tags",
+          "value": "c"
+        }
+      },
+      "expect": {
+        "ids": [
+          "t04",
+          "t07",
+          "t10",
+          "t06"
+        ],
+        "total": 4
+      }
+    },
+    {
+      "name": "array-contains-any",
+      "why": "tag a or b, as an or of array-contains",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "array/includes",
+            [
+              "object/get",
+              "@entity",
+              "tags"
+            ],
+            "a"
+          ],
+          [
+            "array/includes",
+            [
+              "object/get",
+              "@entity",
+              "tags"
+            ],
+            "b"
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "any",
+          "of": [
+            {
+              "kind": "hasElement",
+              "field": "tags",
+              "value": "a"
+            },
+            {
+              "kind": "hasElement",
+              "field": "tags",
+              "value": "b"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "ids": [
+          "t02",
+          "t05",
+          "t07",
+          "t01",
+          "t09",
+          "t06",
+          "t11",
+          "t12"
+        ],
+        "total": 8
+      }
+    },
+    {
+      "name": "contains-case-insensitive",
+      "why": "title contains \"alpha\" ignoring case: Alpha and beta ALPHA",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "str/includes",
+          [
+            "str/lower",
+            [
+              "object/get",
+              "@entity",
+              "title"
+            ]
+          ],
+          "alpha"
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "contains",
+          "field": "title",
+          "text": "alpha",
+          "caseSensitive": false
+        }
+      },
+      "expect": {
+        "ids": [
+          "t01",
+          "t08"
+        ],
+        "total": 2
+      }
+    },
+    {
+      "name": "contains-case-sensitive",
+      "why": "title contains \"ALPHA\" exactly: only beta ALPHA",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "str/includes",
+          [
+            "object/get",
+            "@entity",
+            "title"
+          ],
+          "ALPHA"
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "contains",
+          "field": "title",
+          "text": "ALPHA",
+          "caseSensitive": true
+        }
+      },
+      "expect": {
+        "ids": [
+          "t08"
+        ],
+        "total": 1
+      }
+    },
+    {
+      "name": "zero-is-a-value",
+      "why": "score == 0 matches the row with 0, not the rows with no score",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "score"
+          ],
+          0
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "score",
+          "op": "==",
+          "value": 0
+        }
+      },
+      "expect": {
+        "ids": [
+          "t07"
+        ],
+        "total": 1
+      }
+    },
+    {
+      "name": "is-null",
+      "why": "null and absent are both null: t03 (null) and t04 (absent)",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "score"
+          ],
+          null
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "isNull",
+          "field": "score",
+          "isNull": true
+        }
+      },
+      "expect": {
+        "ids": [
+          "t04",
+          "t03"
+        ],
+        "total": 2
+      }
+    },
+    {
+      "name": "is-not-null",
+      "why": "the complement of is-null",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "!=",
+          [
+            "object/get",
+            "@entity",
+            "score"
+          ],
+          null
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "isNull",
+          "field": "score",
+          "isNull": false
+        },
+        "order": {
+          "field": "id",
+          "direction": "asc"
+        }
+      },
+      "expect": {
+        "ids": [
+          "t01",
+          "t02",
+          "t05",
+          "t06",
+          "t07",
+          "t08",
+          "t09",
+          "t10",
+          "t11",
+          "t12"
+        ],
+        "total": 10
+      }
+    },
+    {
+      "name": "window-not-page-aligned",
+      "why": "offset 5 limit 2 is not a multiple of the page size",
+      "bindings": {},
+      "sexpr": {},
+      "query": {
+        "order": {
+          "field": "id",
+          "direction": "asc"
+        },
+        "offset": 5,
+        "limit": 2
+      },
+      "expect": {
+        "ids": [
+          "t06",
+          "t07"
+        ],
+        "total": 12
+      }
+    },
+    {
+      "name": "window-past-end",
+      "why": "an offset beyond the last row: no rows, the total unchanged",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ],
+          "open"
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "status",
+          "op": "==",
+          "value": "open"
+        },
+        "order": {
+          "field": "id",
+          "direction": "asc"
+        },
+        "offset": 50,
+        "limit": 5
+      },
+      "expect": {
+        "ids": [],
+        "total": 7
+      }
+    },
+    {
+      "name": "no-limit-returns-the-rest",
+      "why": "no limit returns every remaining row",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ],
+          "open"
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "status",
+          "op": "==",
+          "value": "open"
+        },
+        "order": {
+          "field": "id",
+          "direction": "asc"
+        },
+        "offset": 6
+      },
+      "expect": {
+        "ids": [
+          "t10"
+        ],
+        "total": 7
+      }
+    },
+    {
+      "name": "total-ignores-window",
+      "why": "total counts every match, not the window",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ],
+          "open"
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "status",
+          "op": "==",
+          "value": "open"
+        },
+        "order": {
+          "field": "id",
+          "direction": "asc"
+        },
+        "limit": 2
+      },
+      "expect": {
+        "ids": [
+          "t01",
+          "t02"
+        ],
+        "total": 7
+      }
+    },
+    {
+      "name": "policy-owner-is-viewer",
+      "why": "@read: owner == @user.id for u1",
+      "bindings": {
+        "user": {
+          "id": "u1",
+          "role": "member"
+        }
+      },
+      "sexpr": {
+        "readPolicy": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "owner"
+          ],
+          "@user.id"
+        ]
+      },
+      "query": {
+        "policy": {
+          "kind": "compare",
+          "field": "owner",
+          "op": "==",
+          "value": "u1"
+        },
+        "order": {
+          "field": "id",
+          "direction": "asc"
+        }
+      },
+      "expect": {
+        "ids": [
+          "t01",
+          "t03",
+          "t06",
+          "t10"
+        ],
+        "total": 4
+      }
+    },
+    {
+      "name": "policy-and-filter",
+      "why": "the policy and the call-site filter are ANDed",
+      "bindings": {
+        "user": {
+          "id": "u1",
+          "role": "member"
+        }
+      },
+      "sexpr": {
+        "readPolicy": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "owner"
+          ],
+          "@user.id"
+        ],
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ],
+          "open"
+        ]
+      },
+      "query": {
+        "policy": {
+          "kind": "compare",
+          "field": "owner",
+          "op": "==",
+          "value": "u1"
+        },
+        "filter": {
+          "kind": "compare",
+          "field": "status",
+          "op": "==",
+          "value": "open"
+        },
+        "order": {
+          "field": "id",
+          "direction": "asc"
+        }
+      },
+      "expect": {
+        "ids": [
+          "t01",
+          "t06",
+          "t10"
+        ],
+        "total": 3
+      }
+    },
+    {
+      "name": "policy-without-viewer-denies-all",
+      "why": "no viewer: the policy cannot be evaluated, so it hides every row (a predicate error hides a row today)",
+      "bindings": {},
+      "sexpr": {
+        "readPolicy": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "owner"
+          ],
+          "@user.id"
+        ]
+      },
+      "query": {
+        "policy": {
+          "kind": "const",
+          "value": false
+        },
+        "order": {
+          "field": "id",
+          "direction": "asc"
+        }
+      },
+      "expect": {
+        "ids": [],
+        "total": 0
+      }
+    },
+    {
+      "name": "policy-hides-most-rows",
+      "why": "a policy with no viewer term hides most rows: status archived",
+      "bindings": {},
+      "sexpr": {
+        "readPolicy": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ],
+          "archived"
+        ]
+      },
+      "query": {
+        "policy": {
+          "kind": "compare",
+          "field": "status",
+          "op": "==",
+          "value": "archived"
+        },
+        "order": {
+          "field": "score",
+          "direction": "desc"
+        },
+        "limit": 20
+      },
+      "expect": {
+        "ids": [
+          "t05",
+          "t12"
+        ],
+        "total": 2
+      }
+    },
+    {
+      "name": "policy-and-window",
+      "why": "the total counts policy-visible rows; the window pages inside them",
+      "bindings": {
+        "user": {
+          "id": "u1",
+          "role": "member"
+        }
+      },
+      "sexpr": {
+        "readPolicy": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "owner"
+          ],
+          "@user.id"
+        ]
+      },
+      "query": {
+        "policy": {
+          "kind": "compare",
+          "field": "owner",
+          "op": "==",
+          "value": "u1"
+        },
+        "order": {
+          "field": "id",
+          "direction": "asc"
+        },
+        "offset": 1,
+        "limit": 2
+      },
+      "expect": {
+        "ids": [
+          "t03",
+          "t06"
+        ],
+        "total": 4
+      }
+    }
+  ]
+}

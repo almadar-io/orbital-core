@@ -121,6 +121,11 @@ fn to_eval_error(mismatch: Mismatch) -> OrbitalError {
             expected: "a value of a determined type".to_string(),
             actual: reason,
         }),
+        // Raised by the static checker only: at run time a missing value is a value, and evaluation is unchanged.
+        Mismatch::MaybeAbsent { operator, operand } => OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: format!("a present operand for `{operator}`"),
+            actual: operand,
+        }),
     }
 }
 

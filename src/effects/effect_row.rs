@@ -233,6 +233,8 @@ fn resource_arg_index(kind: &str) -> Option<usize> {
         "despawn" => Some(0),
         // (call-service <service> <method> <args>) — joined below, both parts matter
         "call-service" => Some(0),
+        // (http <METHOD> <origin> <path> ...) — the origin is the resource
+        "http" => Some(1),
         _ => None,
     }
 }
@@ -405,13 +407,22 @@ mod tests {
             r#"["persist", "batch", [["create", "Product", {}], ["delete", "Order", "o1"], ["create", "Product", {}]]]"#,
             EffectSite::Transition,
         );
-        let resources: Vec<_> = found.iter().map(|u| (u.kind.as_str(), u.resolved_resource())).collect();
-        assert_eq!(resources, vec![("persist", Some("Product")), ("persist", Some("Order"))]);
+        let resources: Vec<_> = found
+            .iter()
+            .map(|u| (u.kind.as_str(), u.resolved_resource()))
+            .collect();
+        assert_eq!(
+            resources,
+            vec![("persist", Some("Product")), ("persist", Some("Order"))]
+        );
     }
 
     #[test]
     fn a_persist_batch_over_an_opaque_expression_has_no_resource() {
-        let found = uses(r#"["persist", "batch", "@payload.ops"]"#, EffectSite::Transition);
+        let found = uses(
+            r#"["persist", "batch", "@payload.ops"]"#,
+            EffectSite::Transition,
+        );
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].resource, None);
     }

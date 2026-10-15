@@ -8,8 +8,8 @@
 //!
 //! Reference: builder/docs/Orbital_Pattern.orb
 
-use crate::evaluator::ValueMap;
 use crate::evaluator::Value;
+use crate::evaluator::ValueMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -155,6 +155,20 @@ pub struct ClientEffectByTrait {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(type = "EventPayload"))]
     pub callsite_payload: Option<Value>,
+    /// Set when the paint is a repaint with no transition behind it that a renderer must act on beyond the
+    /// content: the rows a row-set reference in it points at changed (EXEC-RENDER-3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repaint: Option<RepaintReason>,
+}
+
+/// Why a paint was repainted without a transition, when the content alone does not say.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RepaintReason {
+    /// A kernel write to an entity type a row-set reference in the paint points at: re-resolve it, though the
+    /// reference's ids are unchanged.
+    RowsChanged,
 }
 
 /// The `effect` discriminant of `ServerEffectResult` — mirror of core's
@@ -168,6 +182,7 @@ pub enum ServerEffectKind {
     Set,
     Persist,
     CallService,
+    Http,
     Fetch,
     FetchStream,
     Ref,
@@ -210,18 +225,19 @@ pub struct ServerEffectResult {
     pub denied: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Coded failure reason for a persist that resolved no target row.
+    /// Coded failure reason for a persist that resolved no target row, or created on a taken id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<ServerEffectCode>,
 }
 
-/// `ServerEffectResult.code` — mirror of core's `"not-found" | "no-row-key"`.
+/// `ServerEffectResult.code` — mirror of core's `"not-found" | "no-row-key" | "duplicate-id"`.
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServerEffectCode {
     NotFound,
     NoRowKey,
+    DuplicateId,
 }
 
 /// `EventRequest.run_tick`: which trait's tick the data authority runs once.
@@ -406,6 +422,9 @@ pub struct EventResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(type = "{ [key in string]: Array<EntityRow> }"))]
     pub data: Option<HashMap<String, Vec<Value>>>,
+    /// Fetched pages delivered by reference (`deliver: ids`), keyed by entity name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_refs: Option<HashMap<String, crate::runtime::row_query::RowSetRef>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(type = "{ [key in string]: EntityRow }"))]
     pub entity_by_trait: Option<ValueMap>,
@@ -646,6 +665,14 @@ impl EventResponse {
                         event: None,
                         from_state: None,
                         callsite_payload: None,
+                        repaint: match &client_effect {
+                            ClientEffect::RenderUi { slot, .. }
+                                if rerender.rows_changed.contains(slot) =>
+                            {
+                                Some(RepaintReason::RowsChanged)
+                            }
+                            _ => None,
+                        },
                     });
                 self.client_effects
                     .get_or_insert_with(Vec::new)
@@ -697,11 +724,24 @@ impl EventResponse {
         seed_trait: &str,
         event_name: &str,
     ) -> Self {
+        Self::fold_outcomes(
+            outcomes.iter().map(|(t, r)| (t.as_str(), r)),
+            seed_trait,
+            event_name,
+        )
+    }
+
+    fn fold_outcomes<'a>(
+        outcomes: impl Iterator<Item = (&'a str, &'a crate::runtime::ProcessEventResult)>,
+        seed_trait: &str,
+        event_name: &str,
+    ) -> Self {
         let mut merged = EventResponse {
             success: true,
             ..Default::default()
         };
         let mut data: HashMap<String, Vec<Value>> = HashMap::new();
+        let mut data_refs: HashMap<String, crate::runtime::row_query::RowSetRef> = HashMap::new();
         let mut entity_by_trait: ValueMap = ValueMap::new();
         let mut client_effects: Vec<ClientEffect> = Vec::new();
         let mut client_effects_by_trait: Vec<ClientEffectByTrait> = Vec::new();
@@ -711,10 +751,11 @@ impl EventResponse {
 
         let mut rejections: Vec<TransitionRejection> = Vec::new();
         for (trait_name, result) in outcomes {
+            let trait_name: &str = trait_name;
             if let (Some(error), Some(event)) = (&result.failure, &result.event) {
                 rejections.push(TransitionRejection {
                     code: TransitionRejectionCode::EffectFailed,
-                    trait_name: Some(trait_name.clone()),
+                    trait_name: Some(trait_name.to_string()),
                     from: Some(result.previous_state.clone()),
                     event: Some(event.clone()),
                     states_declaring_event: None,
@@ -730,7 +771,7 @@ impl EventResponse {
             }
             merged
                 .states
-                .insert(trait_name.clone(), result.new_state.clone());
+                .insert(trait_name.to_string(), result.new_state.clone());
             merged.transitioned =
                 merged.transitioned || (result.executed && result.failure.is_none());
 
@@ -746,7 +787,7 @@ impl EventResponse {
                 .map(|o| o.is_empty())
                 .unwrap_or(false);
             if !result.entity_data.is_null() && !is_empty_obj {
-                entity_by_trait.insert(trait_name.clone(), result.entity_data.clone());
+                entity_by_trait.insert(trait_name.to_string(), result.entity_data.clone());
             }
 
             for (index, er) in result.effect_results.iter().enumerate() {
@@ -758,11 +799,12 @@ impl EventResponse {
                 }
                 if let Some(ce) = ClientEffect::from_effect(&er.effect) {
                     client_effects_by_trait.push(ClientEffectByTrait {
-                        trait_name: trait_name.clone(),
+                        trait_name: trait_name.to_string(),
                         effect: ce.clone(),
                         event: result.event.clone(),
                         from_state: result.event.as_ref().map(|_| result.previous_state.clone()),
                         callsite_payload: result.callsite_payload.clone(),
+                        repaint: None,
                     });
                     client_effects.push(ce);
                     continue;
@@ -778,7 +820,7 @@ impl EventResponse {
                         source: Some(BusEventSource {
                             dispatched: result.consumed_emits.contains(&index).then_some(true),
                             persist_success: er.persist_success.then_some(true),
-                            ..BusEventSource::from_trait(trait_name.clone())
+                            ..BusEventSource::from_trait(trait_name)
                         }),
                     });
                     continue;
@@ -788,7 +830,13 @@ impl EventResponse {
                         if let Some(rows) = er.return_value.as_ref().and_then(Value::as_array) {
                             data.entry(entity_type.clone())
                                 .or_default()
-                                .extend(rows.clone());
+                                .extend(rows.iter().cloned());
+                        } else if let Some(reference) = er
+                            .return_value
+                            .as_ref()
+                            .and_then(crate::runtime::row_query::as_row_set_marker)
+                        {
+                            data_refs.insert(entity_type.clone(), reference);
                         }
                     }
                 }
@@ -801,6 +849,11 @@ impl EventResponse {
         dedup_rows_by_id(&mut data);
 
         merged.data = if data.is_empty() { None } else { Some(data) };
+        merged.data_refs = if data_refs.is_empty() {
+            None
+        } else {
+            Some(data_refs)
+        };
         merged.entity_by_trait = if entity_by_trait.is_empty() {
             None
         } else {
@@ -848,10 +901,9 @@ impl EventResponse {
         trait_name: &str,
         result: &crate::runtime::ProcessEventResult,
     ) -> Self {
-        let outcomes = [(trait_name.to_string(), result.clone())];
         // No seed/event context on the single-result path — pass a seed that can never
         // match so `guard_failed` stays unset (ticks don't dispatch a named event).
-        Self::from_process_results(&outcomes, "", "")
+        Self::fold_outcomes(std::iter::once((trait_name, result)), "", "")
     }
 }
 
@@ -893,6 +945,11 @@ fn server_effect_result(er: &EffectResult) -> Option<ServerEffectResult> {
             ServerEffectKind::CallService,
             None,
             Some(format!("{service}.{method}")),
+        ),
+        Effect::Http { method, origin, .. } => (
+            ServerEffectKind::Http,
+            None,
+            Some(format!("{} {origin}", format!("{method:?}").to_uppercase())),
         ),
         Effect::Fetch { entity_type, .. } => {
             (ServerEffectKind::Fetch, Some(entity_type.clone()), None)
@@ -984,6 +1041,7 @@ mod tests {
                     event: None,
                     from_state: None,
                     callsite_payload: None,
+                    repaint: None,
                 });
             r.client_effects.get_or_insert_with(Vec::new).push(ce);
         }
@@ -1275,8 +1333,8 @@ mod tests {
     }
 
     #[test]
-    fn a_server_effect_result_code_round_trips_both_core_values() {
-        for code in ["not-found", "no-row-key"] {
+    fn a_server_effect_result_code_round_trips_every_core_value() {
+        for code in ["not-found", "no-row-key", "duplicate-id"] {
             let wire = serde_json::json!({ "effect": "persist", "success": false, "code": code });
             let parsed: ServerEffectResult = serde_json::from_value(wire.clone()).expect("parses");
             assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);

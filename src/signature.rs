@@ -88,6 +88,10 @@ pub enum Mismatch {
     NoField { path: String, record: String },
     /// A value handed to a type variable has no determined type: what the variable stands for is unknown.
     Undetermined { reason: String },
+    /// An ordering comparison (`<`, `<=`, `>`, `>=`) whose operand can be missing or null and is neither
+    /// guarded by a presence check nor declared with a default. Both evaluators read a missing value as below
+    /// any number while every push-down store fails the comparison, so the program must say which it means.
+    MaybeAbsent { operator: String, operand: String },
 }
 
 impl fmt::Display for Mismatch {
@@ -100,6 +104,9 @@ impl fmt::Display for Mismatch {
                 write!(f, "`{path}` is not a field of {record}")
             }
             Mismatch::Undetermined { reason } => write!(f, "{reason}"),
+            Mismatch::MaybeAbsent { operator, operand } => {
+                write!(f, "`{operand}` can be missing, so `{operator}` over it is undecided")
+            }
         }
     }
 }

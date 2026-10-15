@@ -3,8 +3,10 @@
 // the correctness scenarios of persist_success_emit, client_fetch_success_emit, same_trait_cascade,
 // dispatch_roots, cross_trait_dispatch and completion_events.
 
+use orbital_core::effects::{
+    LifecycleEvent, MountSeed, ServiceHandler, SubstrateFailure, SubstrateHandler,
+};
 use orbital_core::evaluator::ValueMap;
-use orbital_core::effects::{LifecycleEvent, MountSeed, ServiceHandler, SubstrateFailure, SubstrateHandler};
 use orbital_core::runtime::resumable::{
     drive_blocking, BlockingHost, DispatchContinuation, DispatchError, DispatchOutcomes,
     HostAnswered, IoAnswer, IoReply, IoRequest, PendingRequest, Progress, RequestId, ResumeError,
@@ -316,7 +318,14 @@ struct Llm {
 }
 
 impl ServiceHandler for Llm {
-    fn call(&self, _s: &str, _m: &str, _a: &Value, _k: Option<&str>, _c: Option<&orbital_core::effects::ServiceCaller>) -> Result<Value, String> {
+    fn call(
+        &self,
+        _s: &str,
+        _m: &str,
+        _a: &Value,
+        _k: Option<&str>,
+        _c: Option<&orbital_core::effects::ServiceCaller>,
+    ) -> Result<Value, String> {
         if self.fail {
             return Err("rate limited".to_string());
         }
@@ -441,7 +450,7 @@ fn every_fixture() -> Vec<(&'static str, Setup)> {
 struct FailingCreates(InMemoryEntityCache);
 
 impl EntitySource for FailingCreates {
-    fn read(&self, t: &str, id: &str) -> Result<Value, String> {
+    fn read(&self, t: &str, id: &str) -> Result<Arc<Value>, String> {
         self.0.read(t, id)
     }
     fn write(&self, t: &str, id: &str, d: &Value) -> Result<Value, String> {
@@ -459,7 +468,7 @@ impl EntitySource for FailingCreates {
     fn count(&self) -> usize {
         self.0.count()
     }
-    fn list(&self, t: &str) -> Result<Vec<Value>, String> {
+    fn list(&self, t: &str) -> Result<Vec<Arc<Value>>, String> {
         self.0.list(t)
     }
     fn bind_collection(&self, t: &str, c: &str) {
@@ -588,7 +597,7 @@ fn world_of(setup: &Setup, kernel: &RuntimeKernel, store: &Arc<dyn EntitySource>
     }
     let mut rows = serde_json::Map::new();
     for entity in &setup.entities {
-        let mut list: Vec<Json> = store.list(entity).unwrap().iter().map(j).collect();
+        let mut list: Vec<Json> = store.list(entity).unwrap().iter().map(|r| j(r)).collect();
         list.sort_by_key(|r| r["id"].as_str().unwrap_or_default().to_string());
         rows.insert(entity.to_string(), Json::Array(list));
     }
@@ -996,18 +1005,23 @@ fn control_the_blocking_entry_points_never_await() {
 // K5: the server-role embedding (`EmbeddedServer`) over JSON
 // ---------------------------------------------------------------------------------------------
 
+use orbital_core::effects::ServiceCaller;
 use orbital_core::embed::wire::{IoAnswerWire, IoReplyWire, IoRequestWire, ServerProgressWire};
 use orbital_core::embed::EmbeddedServer;
-use orbital_core::effects::ServiceCaller;
 use orbital_core::runtime::resumable::{CallRoutes, CallSite};
 
 fn orbital_of(setup: &Setup) -> String {
-    setup.schema["orbitals"][0]["name"].as_str().unwrap().to_string()
+    setup.schema["orbitals"][0]["name"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 fn request_of(step: &Step) -> Json {
     match step {
-        Step::Dispatch { trait_name, event } => json!({ "event": event, "targetTrait": trait_name }),
+        Step::Dispatch { trait_name, event } => {
+            json!({ "event": event, "targetTrait": trait_name })
+        }
         Step::Mount(list) => json!({
             "event": list[0].1,
             "mount": list.iter().map(|(t, e)| json!({ "trait": t, "event": e })).collect::<Vec<_>>(),
@@ -1027,7 +1041,10 @@ fn blocking_responses(setup: &Setup) -> Vec<Json> {
                 Step::Dispatch { trait_name, event } => (*trait_name, *event),
                 Step::Mount(list) => list[0],
             };
-            serde_json::to_value(orbital_core::EventResponse::from_process_results(&outcomes, t, e)).unwrap()
+            serde_json::to_value(orbital_core::EventResponse::from_process_results(
+                &outcomes, t, e,
+            ))
+            .unwrap()
         })
         .collect()
 }
@@ -1106,7 +1123,11 @@ fn run_json_loop(setup: &Setup) -> Vec<Json> {
     let orbital = orbital_of(setup);
     let mut responses = Vec::new();
     for step in &setup.steps {
-        let mut wire = wire_of(&server.start_json(&orbital, &request_of(step).to_string()).unwrap());
+        let mut wire = wire_of(
+            &server
+                .start_json(&orbital, &request_of(step).to_string())
+                .unwrap(),
+        );
         loop {
             match wire {
                 Wire::Done(response) => {
@@ -1127,7 +1148,10 @@ fn run_json_loop(setup: &Setup) -> Vec<Json> {
 /// `got` without the states the server echoes for traits the dispatch did not run (`tests/server_held_states.rs`).
 fn without_held_echo(mut got: Vec<Json>, expected: &[Json]) -> Vec<Json> {
     for (response, expect) in got.iter_mut().zip(expected) {
-        if let (Some(states), Some(kept)) = (response["states"].as_object_mut(), expect["states"].as_object()) {
+        if let (Some(states), Some(kept)) = (
+            response["states"].as_object_mut(),
+            expect["states"].as_object(),
+        ) {
             states.retain(|trait_name, _| kept.contains_key(trait_name));
         }
     }
@@ -1138,7 +1162,11 @@ fn without_held_echo(mut got: Vec<Json>, expected: &[Json]) -> Vec<Json> {
 fn the_embedded_server_json_loop_matches_the_blocking_response_for_every_fixture() {
     for (name, setup) in every_fixture() {
         let expected = blocking_responses(&setup);
-        assert_eq!(without_held_echo(run_json_loop(&setup), &expected), expected, "{name}");
+        assert_eq!(
+            without_held_echo(run_json_loop(&setup), &expected),
+            expected,
+            "{name}"
+        );
     }
 }
 
@@ -1147,7 +1175,11 @@ fn control_a_wrong_row_answer_changes_the_embedded_response() {
     let setup = fetch_success();
     let (server, _) = embedded_server(&setup);
     let orbital = orbital_of(&setup);
-    let mut wire = wire_of(&server.start_json(&orbital, &request_of(&setup.steps[0]).to_string()).unwrap());
+    let mut wire = wire_of(
+        &server
+            .start_json(&orbital, &request_of(&setup.steps[0]).to_string())
+            .unwrap(),
+    );
     let response = loop {
         match wire {
             Wire::Done(response) => break response,
@@ -1162,7 +1194,11 @@ fn control_a_wrong_row_answer_changes_the_embedded_response() {
                         json!({ "id": p["id"], "answer": result })
                     })
                     .collect();
-                wire = wire_of(&server.resume_json(flight, &Json::Array(replies).to_string()).unwrap());
+                wire = wire_of(
+                    &server
+                        .resume_json(flight, &Json::Array(replies).to_string())
+                        .unwrap(),
+                );
             }
         }
     };
@@ -1192,7 +1228,9 @@ fn embedded_servers_answered_in_a_shuffled_order_match_the_blocking_responses() 
                 }
             }
         }
-        let live: Vec<usize> = (0..fixtures.len()).filter(|&i| waiting[i].is_some()).collect();
+        let live: Vec<usize> = (0..fixtures.len())
+            .filter(|&i| waiting[i].is_some())
+            .collect();
         if live.is_empty() {
             break;
         }
@@ -1227,7 +1265,10 @@ fn first_request_of_kind(
         match wire {
             Wire::Done(_) => panic!("the dispatch finished without a {kind} request"),
             Wire::Await(flight, requests) => {
-                if let Some(found) = requests.iter().find(|p| p["request"]["kind"] == json!(kind)) {
+                if let Some(found) = requests
+                    .iter()
+                    .find(|p| p["request"]["kind"] == json!(kind))
+                {
                     return found["request"].clone();
                 }
                 let replies = json_answers(setup, store, &requests);
@@ -1244,16 +1285,28 @@ fn the_dispatchs_user_travels_to_the_service_as_its_caller() {
     let mut request = request_of(&setup.steps[0]);
     request["user"] = json!({ "id": "u1", "role": "admin" });
     let call = first_request_of_kind(&server, &setup, &store, "Main", &request, "callService");
-    assert_eq!(call["caller"], json!({ "principal": "u1", "role": "admin" }));
+    assert_eq!(
+        call["caller"],
+        json!({ "principal": "u1", "role": "admin" })
+    );
     let wire: IoRequestWire = serde_json::from_value(call).unwrap();
-    assert!(matches!(IoRequest::from(wire), IoRequest::CallService { caller: Some(ServiceCaller { principal, .. }), .. } if principal == "u1"));
+    assert!(
+        matches!(IoRequest::from(wire), IoRequest::CallService { caller: Some(ServiceCaller { principal, .. }), .. } if principal == "u1")
+    );
 }
 
 #[test]
 fn control_a_request_without_a_user_has_no_service_caller() {
     let setup = service_call(false);
     let (server, store) = embedded_server(&setup);
-    let call = first_request_of_kind(&server, &setup, &store, "Main", &request_of(&setup.steps[0]), "callService");
+    let call = first_request_of_kind(
+        &server,
+        &setup,
+        &store,
+        "Main",
+        &request_of(&setup.steps[0]),
+        "callService",
+    );
     assert!(call.get("caller").is_none(), "{call}");
 }
 
@@ -1261,7 +1314,14 @@ fn control_a_request_without_a_user_has_no_service_caller() {
 fn a_target_less_request_runs_the_orbitals_first_trait() {
     let setup = persist_success();
     let (server, store) = embedded_server(&setup);
-    let create = first_request_of_kind(&server, &setup, &store, "Main", &json!({ "event": "CREATE" }), "createRow");
+    let create = first_request_of_kind(
+        &server,
+        &setup,
+        &store,
+        "Main",
+        &json!({ "event": "CREATE" }),
+        "createRow",
+    );
     assert_eq!(create["entityType"], json!("Note"));
 }
 
@@ -1273,8 +1333,14 @@ fn the_embedded_server_refuses_what_it_cannot_run() {
         .start_json("Nowhere", &json!({ "event": "CREATE" }).to_string())
         .unwrap_err()
         .contains("Orbital not found"));
-    assert!(server.resume_json(99, "[]").unwrap_err().contains("flight 99"));
-    assert!(server.start_json("Main", "{").unwrap_err().contains("parse request_json"));
+    assert!(server
+        .resume_json(99, "[]")
+        .unwrap_err()
+        .contains("flight 99"));
+    assert!(server
+        .start_json("Main", "{")
+        .unwrap_err()
+        .contains("parse request_json"));
 }
 
 #[test]
@@ -1282,7 +1348,9 @@ fn a_flight_resumed_with_a_wrong_kind_of_answer_is_refused_and_forgotten() {
     let setup = persist_success();
     let (server, _) = embedded_server(&setup);
     let Wire::Await(flight, requests) = wire_of(
-        &server.start_json("Main", &request_of(&setup.steps[0]).to_string()).unwrap(),
+        &server
+            .start_json("Main", &request_of(&setup.steps[0]).to_string())
+            .unwrap(),
     ) else {
         panic!("awaits")
     };
@@ -1292,7 +1360,9 @@ fn a_flight_resumed_with_a_wrong_kind_of_answer_is_refused_and_forgotten() {
     assert_eq!(server.in_flight(), 0);
 
     let Wire::Await(flight, _) = wire_of(
-        &server.start_json("Main", &request_of(&setup.steps[0]).to_string()).unwrap(),
+        &server
+            .start_json("Main", &request_of(&setup.steps[0]).to_string())
+            .unwrap(),
     ) else {
         panic!("awaits")
     };
@@ -1305,17 +1375,35 @@ fn a_flight_resumed_with_a_wrong_kind_of_answer_is_refused_and_forgotten() {
 #[test]
 fn the_wire_round_trips_every_request_and_answer() {
     let requests = vec![
-        IoRequest::ReadRow { entity_type: "N".into(), id: "1".into() },
-        IoRequest::ListRows { entity_type: "N".into() },
-        IoRequest::CreateRow { entity_type: "N".into(), data: Value::Null },
-        IoRequest::WriteRow { entity_type: "N".into(), id: "1".into(), data: Value::Bool(true) },
-        IoRequest::DeleteRow { entity_type: "N".into(), id: "1".into() },
+        IoRequest::ReadRow {
+            entity_type: "N".into(),
+            id: "1".into(),
+        },
+        IoRequest::ListRows {
+            entity_type: "N".into(),
+        },
+        IoRequest::CreateRow {
+            entity_type: "N".into(),
+            data: Value::Null,
+        },
+        IoRequest::WriteRow {
+            entity_type: "N".into(),
+            id: "1".into(),
+            data: Value::Bool(true),
+        },
+        IoRequest::DeleteRow {
+            entity_type: "N".into(),
+            id: "1".into(),
+        },
         IoRequest::CallService {
             service: "s".into(),
             method: "m".into(),
             args: Value::Null,
             key: Some("k".into()),
-            caller: Some(ServiceCaller { principal: "p".into(), role: None }),
+            caller: Some(ServiceCaller {
+                principal: "p".into(),
+                role: None,
+            }),
             site: None,
         },
         IoRequest::CallService {
@@ -1328,11 +1416,19 @@ fn the_wire_round_trips_every_request_and_answer() {
                 orbital: Some("O".into()),
                 trait_name: "T".into(),
                 follow_on: true,
-                emit: CallRoutes { success: Some("S".into()), failure: None, cancelled: Some("C".into()), on_message: Some("M".into()) },
+                emit: CallRoutes {
+                    success: Some("S".into()),
+                    failure: None,
+                    cancelled: Some("C".into()),
+                    on_message: Some("M".into()),
+                },
             }),
         },
         IoRequest::CancelCall { key: "k".into() },
-        IoRequest::Substrate { op: "program/eval".into(), args: vec![Value::Null] },
+        IoRequest::Substrate {
+            op: "program/eval".into(),
+            args: vec![Value::Null],
+        },
     ];
     for request in requests {
         let text = serde_json::to_string(&IoRequestWire::from(&request)).unwrap();
@@ -1342,18 +1438,29 @@ fn the_wire_round_trips_every_request_and_answer() {
     let answers = vec![
         IoAnswer::Row(Ok(Value::Null)),
         IoAnswer::Row(Err("e".into())),
-        IoAnswer::Rows(Ok(vec![Value::Bool(false)])),
+        IoAnswer::Rows(Ok(vec![Arc::new(Value::Bool(false))])),
         IoAnswer::Deleted(Ok(())),
         IoAnswer::Cancelled(Err("e".into())),
         IoAnswer::Service(Ok(Value::Null)),
         IoAnswer::ServiceCancelled,
         IoAnswer::ServiceDeferred,
-        IoAnswer::Substrate(Err(SubstrateFailure { message: "m".into(), errors: vec![Value::Null] })),
+        IoAnswer::Substrate(Err(SubstrateFailure {
+            message: "m".into(),
+            errors: vec![Value::Null],
+        })),
     ];
     for answer in answers {
         let text = serde_json::to_string(&IoAnswerWire::from(&answer)).unwrap();
         let back: IoAnswerWire = serde_json::from_str(&text).unwrap();
         assert_eq!(IoAnswer::from(back), answer, "{text}");
     }
-    let _ = (IoReplyWire { id: 0, answer: IoAnswerWire::from(&IoAnswer::Deleted(Ok(()))) }, ServerProgressWire::Done { response: Default::default() });
+    let _ = (
+        IoReplyWire {
+            id: 0,
+            answer: IoAnswerWire::from(&IoAnswer::Deleted(Ok(()))),
+        },
+        ServerProgressWire::Done {
+            response: Default::default(),
+        },
+    );
 }

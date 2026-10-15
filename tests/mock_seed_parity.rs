@@ -223,7 +223,7 @@ fn rows_json(
         .iter()
         .map(|row| {
             let mut json =
-                serde_json::to_value(SExpression::from(row.clone())).expect("a row must serialize");
+                serde_json::to_value(SExpression::from((**row).clone())).expect("a row must serialize");
             canonicalize_numbers(&mut json);
             json
         })

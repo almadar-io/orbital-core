@@ -234,7 +234,13 @@ impl Harness {
     fn entity_counts(&self, linked: Option<&str>) -> BTreeMap<String, usize> {
         let mut counts = BTreeMap::new();
         if let Some(entity) = linked {
-            let mut rows = self.entities.list(entity).unwrap_or_default();
+            let mut rows: Vec<Value> = self
+                .entities
+                .list(entity)
+                .unwrap_or_default()
+                .iter()
+                .map(|row| (**row).clone())
+                .collect();
             self.kernel.retain_readable(entity, &mut rows);
             counts.insert(entity.to_string(), rows.len());
         }

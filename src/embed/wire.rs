@@ -5,8 +5,15 @@ use crate::effects::{ServiceCaller, SubstrateFailure};
 use crate::runtime::resumable::{
     CallRoutes, CallSite, IoAnswer, IoReply, IoRequest, PendingRequest, RequestId,
 };
+use crate::runtime::http_request::StreamFraming;
+use crate::runtime::http_service::{HttpRequest, HttpResponse, TransportError};
+use base64::Engine;
+use crate::runtime::row_query::{
+    RowIdPage, RowPage, RowProjection, RowQuery, RowWriteBatch, RowWriteOutcome,
+};
 use crate::runtime::{AwaitingTrait, DispatchMode, ResolvedTheme, TraitSnapshot};
 use crate::{EventRequest, EventResponse, Value};
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 /// A server leg and the orbital that owns the trait it is addressed to (the route it posts to).
@@ -244,6 +251,14 @@ pub enum IoRequestWire {
     #[serde(rename_all = "camelCase")]
     ListRows { entity_type: String },
     #[serde(rename_all = "camelCase")]
+    QueryRows {
+        entity_type: String,
+        query: RowQuery,
+        project: RowProjection,
+    },
+    #[serde(rename_all = "camelCase")]
+    WriteRows { batch: RowWriteBatch },
+    #[serde(rename_all = "camelCase")]
     CreateRow { entity_type: String, data: Value },
     #[serde(rename_all = "camelCase")]
     WriteRow {
@@ -269,6 +284,56 @@ pub enum IoRequestWire {
     CancelCall { key: String },
     #[serde(rename_all = "camelCase")]
     Substrate { op: String, args: Vec<Value> },
+    #[serde(rename_all = "camelCase")]
+    Http {
+        request: HttpRequestWire,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    HttpStream {
+        request: HttpRequestWire,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        framing: StreamFramingWire,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<CallSiteWire>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Secret { name: String },
+    #[serde(rename_all = "camelCase")]
+    SecretSet {
+        name: String,
+        value: String,
+        ttl_ms: u64,
+    },
+}
+
+/// How a streamed `http` reply is framed.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StreamFramingWire {
+    Sse,
+    JsonLines,
+}
+
+impl From<StreamFraming> for StreamFramingWire {
+    fn from(framing: StreamFraming) -> Self {
+        match framing {
+            StreamFraming::Sse => Self::Sse,
+            StreamFraming::JsonLines => Self::JsonLines,
+        }
+    }
+}
+
+impl From<StreamFramingWire> for StreamFraming {
+    fn from(framing: StreamFramingWire) -> Self {
+        match framing {
+            StreamFramingWire::Sse => Self::Sse,
+            StreamFramingWire::JsonLines => Self::JsonLines,
+        }
+    }
 }
 
 /// A host's answer to one request; `kind` must be the one the request calls for.
@@ -277,10 +342,29 @@ pub enum IoRequestWire {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum IoAnswerWire {
     Row {
+        #[cfg_attr(test, ts(type = "Settled<EntityRow | null, string>"))]
         result: Settled<Value, String>,
     },
     Rows {
+        #[cfg_attr(test, ts(type = "Settled<Array<EntityRow>, string>"))]
         result: Settled<Vec<Value>, String>,
+    },
+    Page {
+        result: Settled<RowPage, String>,
+    },
+    IdPage {
+        result: Settled<RowIdPage, String>,
+    },
+    /// The host cannot run the query it was sent; nothing was read.
+    QueryUnsupported {
+        reason: String,
+    },
+    Wrote {
+        result: Settled<Vec<RowWriteOutcome>, String>,
+    },
+    /// The host cannot run the writes it was sent; nothing was written.
+    WriteUnsupported {
+        reason: String,
     },
     Deleted {
         result: Settled<(), String>,
@@ -297,6 +381,15 @@ pub enum IoAnswerWire {
     },
     Substrate {
         result: Settled<Value, SubstrateFailureWire>,
+    },
+    Http {
+        result: Settled<HttpResponseWire, HttpFailureWire>,
+    },
+    Secret {
+        result: Settled<Option<String>, String>,
+    },
+    SecretSet {
+        result: Settled<(), String>,
     },
 }
 
@@ -324,6 +417,23 @@ pub struct IoReplyWire {
 pub enum ServerProgressWire {
     Done {
         response: EventResponse,
+    },
+    Await {
+        flight: u64,
+        requests: Vec<PendingRequestWire>,
+    },
+}
+
+/// Where a row-set resolve through a host-answered store stands: the resolved page, or `requests` to answer
+/// before `resumeResolve`-ing the `flight`.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum ResolveProgressWire {
+    Done {
+        #[cfg_attr(test, ts(type = "Array<EntityRow>"))]
+        rows: Vec<Value>,
+        total: usize,
     },
     Await {
         flight: u64,
@@ -386,6 +496,16 @@ impl From<IoRequestWire> for IoRequest {
         match request {
             IoRequestWire::ReadRow { entity_type, id } => Self::ReadRow { entity_type, id },
             IoRequestWire::ListRows { entity_type } => Self::ListRows { entity_type },
+            IoRequestWire::QueryRows {
+                entity_type,
+                query,
+                project,
+            } => Self::QueryRows {
+                entity_type,
+                query,
+                project,
+            },
+            IoRequestWire::WriteRows { batch } => Self::WriteRows { batch },
             IoRequestWire::CreateRow { entity_type, data } => Self::CreateRow { entity_type, data },
             IoRequestWire::WriteRow {
                 entity_type,
@@ -414,6 +534,31 @@ impl From<IoRequestWire> for IoRequest {
             },
             IoRequestWire::CancelCall { key } => Self::CancelCall { key },
             IoRequestWire::Substrate { op, args } => Self::Substrate { op, args },
+            IoRequestWire::Http { request, key } => Self::Http {
+                request: request.into(),
+                key,
+            },
+            IoRequestWire::HttpStream {
+                request,
+                key,
+                framing,
+                site,
+            } => Self::HttpStream {
+                request: request.into(),
+                key,
+                framing: framing.into(),
+                site: site.map(CallSite::from),
+            },
+            IoRequestWire::Secret { name } => Self::Secret { name },
+            IoRequestWire::SecretSet {
+                name,
+                value,
+                ttl_ms,
+            } => Self::SecretSet {
+                name,
+                value,
+                ttl_ms,
+            },
         }
     }
 }
@@ -427,6 +572,18 @@ impl From<&IoRequest> for IoRequestWire {
             },
             IoRequest::ListRows { entity_type } => Self::ListRows {
                 entity_type: entity_type.clone(),
+            },
+            IoRequest::QueryRows {
+                entity_type,
+                query,
+                project,
+            } => Self::QueryRows {
+                entity_type: entity_type.clone(),
+                query: query.clone(),
+                project: *project,
+            },
+            IoRequest::WriteRows { batch } => Self::WriteRows {
+                batch: batch.clone(),
             },
             IoRequest::CreateRow { entity_type, data } => Self::CreateRow {
                 entity_type: entity_type.clone(),
@@ -465,6 +622,31 @@ impl From<&IoRequest> for IoRequestWire {
                 op: op.clone(),
                 args: args.clone(),
             },
+            IoRequest::Http { request, key } => Self::Http {
+                request: HttpRequestWire::from(request),
+                key: key.clone(),
+            },
+            IoRequest::HttpStream {
+                request,
+                key,
+                framing,
+                site,
+            } => Self::HttpStream {
+                request: HttpRequestWire::from(request),
+                key: key.clone(),
+                framing: StreamFramingWire::from(*framing),
+                site: site.as_ref().map(CallSiteWire::from),
+            },
+            IoRequest::Secret { name } => Self::Secret { name: name.clone() },
+            IoRequest::SecretSet {
+                name,
+                value,
+                ttl_ms,
+            } => Self::SecretSet {
+                name: name.clone(),
+                value: value.clone(),
+                ttl_ms: *ttl_ms,
+            },
         }
     }
 }
@@ -485,7 +667,26 @@ impl From<&IoAnswer> for IoAnswerWire {
                 result: r.clone().into(),
             },
             IoAnswer::Rows(r) => Self::Rows {
+                result: r
+                    .as_ref()
+                    .map(|rows| rows.iter().map(|row| (**row).clone()).collect())
+                    .map_err(Clone::clone)
+                    .into(),
+            },
+            IoAnswer::Page(r) => Self::Page {
                 result: r.clone().into(),
+            },
+            IoAnswer::IdPage(r) => Self::IdPage {
+                result: r.clone().into(),
+            },
+            IoAnswer::QueryUnsupported(reason) => Self::QueryUnsupported {
+                reason: reason.clone(),
+            },
+            IoAnswer::Wrote(r) => Self::Wrote {
+                result: r.clone().into(),
+            },
+            IoAnswer::WriteUnsupported(reason) => Self::WriteUnsupported {
+                reason: reason.clone(),
             },
             IoAnswer::Deleted(r) => Self::Deleted {
                 result: r.clone().into(),
@@ -507,6 +708,19 @@ impl From<&IoAnswer> for IoAnswerWire {
                     })
                     .into(),
             },
+            IoAnswer::Http(r) => Self::Http {
+                result: r
+                    .as_ref()
+                    .map(HttpResponseWire::from)
+                    .map_err(HttpFailureWire::from)
+                    .into(),
+            },
+            IoAnswer::Secret(r) => Self::Secret {
+                result: r.clone().into(),
+            },
+            IoAnswer::SecretSet(r) => Self::SecretSet {
+                result: r.clone().into(),
+            },
         }
     }
 }
@@ -515,7 +729,15 @@ impl From<IoAnswerWire> for IoAnswer {
     fn from(answer: IoAnswerWire) -> Self {
         match answer {
             IoAnswerWire::Row { result } => Self::Row(result.into()),
-            IoAnswerWire::Rows { result } => Self::Rows(result.into()),
+            IoAnswerWire::Rows { result } => {
+                let result: Result<Vec<Value>, String> = result.into();
+                Self::Rows(result.map(|rows| rows.into_iter().map(Arc::new).collect()))
+            }
+            IoAnswerWire::Page { result } => Self::Page(result.into()),
+            IoAnswerWire::IdPage { result } => Self::IdPage(result.into()),
+            IoAnswerWire::QueryUnsupported { reason } => Self::QueryUnsupported(reason),
+            IoAnswerWire::Wrote { result } => Self::Wrote(result.into()),
+            IoAnswerWire::WriteUnsupported { reason } => Self::WriteUnsupported(reason),
             IoAnswerWire::Deleted { result } => Self::Deleted(result.into()),
             IoAnswerWire::Service { result } => Self::Service(result.into()),
             IoAnswerWire::ServiceCancelled => Self::ServiceCancelled,
@@ -528,6 +750,12 @@ impl From<IoAnswerWire> for IoAnswer {
                     errors: f.errors,
                 }))
             }
+            IoAnswerWire::Http { result } => {
+                let result: Result<HttpResponseWire, HttpFailureWire> = result.into();
+                Self::Http(result.map(HttpResponse::from).map_err(TransportError::from))
+            }
+            IoAnswerWire::Secret { result } => Self::Secret(result.into()),
+            IoAnswerWire::SecretSet { result } => Self::SecretSet(result.into()),
         }
     }
 }
@@ -544,3 +772,141 @@ impl From<IoReplyWire> for IoReply {
 #[cfg(test)]
 #[path = "ts_export.rs"]
 mod ts_export;
+
+/// A request or reply body on the wire: text as text, any other bytes as base64, so a binary body survives JSON.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum HttpBody {
+    #[default]
+    Empty,
+    Text {
+        text: String,
+    },
+    Base64 {
+        data: String,
+    },
+}
+
+impl From<&[u8]> for HttpBody {
+    fn from(bytes: &[u8]) -> Self {
+        if bytes.is_empty() {
+            return Self::Empty;
+        }
+        match std::str::from_utf8(bytes) {
+            Ok(text) => Self::Text {
+                text: text.to_string(),
+            },
+            Err(_) => Self::Base64 {
+                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            },
+        }
+    }
+}
+
+impl From<HttpBody> for Vec<u8> {
+    fn from(body: HttpBody) -> Self {
+        match body {
+            HttpBody::Empty => Vec::new(),
+            HttpBody::Text { text } => text.into_bytes(),
+            HttpBody::Base64 { data } => base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// `HttpRequest` on the wire.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpRequestWire {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: HttpBody,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+impl From<&HttpRequest> for HttpRequestWire {
+    fn from(r: &HttpRequest) -> Self {
+        Self {
+            method: r.method.clone(),
+            url: r.url.clone(),
+            headers: r.headers.clone(),
+            body: HttpBody::from(r.body.as_slice()),
+            timeout_ms: r.timeout.map(|d| d.as_millis() as u64),
+        }
+    }
+}
+
+impl From<HttpRequestWire> for HttpRequest {
+    fn from(w: HttpRequestWire) -> Self {
+        Self {
+            method: w.method,
+            url: w.url,
+            headers: w.headers,
+            body: w.body.into(),
+            timeout: w.timeout_ms.map(std::time::Duration::from_millis),
+        }
+    }
+}
+
+/// `HttpResponse` on the wire. A non-2xx status is a reply, not a failure.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpResponseWire {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: HttpBody,
+}
+
+impl From<&HttpResponse> for HttpResponseWire {
+    fn from(r: &HttpResponse) -> Self {
+        Self {
+            status: r.status,
+            headers: r.headers.clone(),
+            body: HttpBody::from(r.body.as_slice()),
+        }
+    }
+}
+
+impl From<HttpResponseWire> for HttpResponse {
+    fn from(w: HttpResponseWire) -> Self {
+        Self {
+            status: w.status,
+            headers: w.headers,
+            body: w.body.into(),
+        }
+    }
+}
+
+/// `TransportError` on the wire: the request produced no reply.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum HttpFailureWire {
+    TimedOut,
+    Failed { message: String },
+}
+
+impl From<&TransportError> for HttpFailureWire {
+    fn from(e: &TransportError) -> Self {
+        match e {
+            TransportError::TimedOut => Self::TimedOut,
+            TransportError::Failed(message) => Self::Failed {
+                message: message.clone(),
+            },
+        }
+    }
+}
+
+impl From<HttpFailureWire> for TransportError {
+    fn from(w: HttpFailureWire) -> Self {
+        match w {
+            HttpFailureWire::TimedOut => Self::TimedOut,
+            HttpFailureWire::Failed { message } => Self::Failed(message),
+        }
+    }
+}

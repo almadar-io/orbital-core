@@ -365,7 +365,10 @@ fn sample_value(
                 },
             );
         }
-        if matches!(field.field_type, FieldType::Date | FieldType::Datetime | FieldType::Timestamp) {
+        if matches!(
+            field.field_type,
+            FieldType::Date | FieldType::Datetime | FieldType::Timestamp
+        ) {
             let candidates = mock_candidates(declared);
             let literal = candidates
                 .get((ordinal - 1) % candidates.len().max(1))
@@ -397,9 +400,7 @@ fn sample_value(
 
     let name = field.name.as_deref().unwrap_or("field");
     match field.field_type {
-        FieldType::String => {
-            Some(sample_text(name, entity_name, index, entropy))
-        }
+        FieldType::String => Some(sample_text(name, entity_name, index, entropy)),
         // Semantic domains synthesize a value that SATISFIES their own validator
         // (`semantic_string_value_valid`) — the property that keeps the seeder and
         // the validator from drifting.
@@ -1312,11 +1313,11 @@ impl<'a> MockSeeder<'a> {
         let mut out: Vec<Value> = listed
             .iter()
             .filter(|r| row_id(r).is_none_or(|id| !created.contains(&id)))
-            .cloned()
+            .map(|r| (**r).clone())
             .collect();
         for id in &created {
             if let Ok(row) = self.source.read(&entity, id) {
-                out.push(row);
+                out.push((*row).clone());
             }
         }
         out
@@ -1502,12 +1503,7 @@ impl<'a> MockSeeder<'a> {
     /// ownership — some identity is admitted only while the column holds its id —
     /// or `None` when `@read` does not scope it (then `@create` decides). Twin of
     /// `MockPersistenceAdapter.readOwners`.
-    fn read_owners(
-        &self,
-        store: &str,
-        column: &str,
-        row: &ValueMap,
-    ) -> Option<Vec<String>> {
+    fn read_owners(&self, store: &str, column: &str, row: &ValueMap) -> Option<Vec<String>> {
         if column == "id" || !self.read_policies.contains_key(store) {
             return None;
         }
@@ -1569,12 +1565,7 @@ impl<'a> MockSeeder<'a> {
         })
     }
 
-    fn first_eligible_owner(
-        &self,
-        store: &str,
-        column: &str,
-        row: &ValueMap,
-    ) -> Option<String> {
+    fn first_eligible_owner(&self, store: &str, column: &str, row: &ValueMap) -> Option<String> {
         if let Some(readers) = self.read_owners(store, column, row) {
             return readers.into_iter().next();
         }
@@ -2085,9 +2076,8 @@ mod policy_tests {
 
 #[cfg(test)]
 mod tests {
-    use crate::evaluator::ValueMap;
     use super::*;
-    
+    use crate::evaluator::ValueMap;
 
     fn rows(n: usize) -> Vec<Value> {
         (0..n)
@@ -2695,7 +2685,7 @@ mod relation_link_tests {
         .expect("schema fixture must deserialize")
     }
 
-    fn ids_of(rows: &[Value]) -> Vec<String> {
+    fn ids_of(rows: &[std::sync::Arc<Value>]) -> Vec<String> {
         rows.iter()
             .filter_map(|r| {
                 r.get_path("id")
@@ -2736,7 +2726,7 @@ mod relation_link_tests {
         }
         let by_id: HashMap<&str, &Value> = rows
             .iter()
-            .map(|r| (r.get_path("id").and_then(|v| v.as_str()).unwrap(), r))
+            .map(|r| (r.get_path("id").and_then(|v| v.as_str()).unwrap(), &**r))
             .collect();
         for row in &rows {
             let mut current: &Value = row;
@@ -3147,7 +3137,9 @@ mod relative_mock_date_tests {
     use super::*;
 
     fn field(name: &str, field_type: FieldType, mock: &str) -> FieldDefinition {
-        let mut f: FieldDefinition = serde_json::from_value(serde_json::json!({ "name": name, "type": "string" })).expect("field");
+        let mut f: FieldDefinition =
+            serde_json::from_value(serde_json::json!({ "name": name, "type": "string" }))
+                .expect("field");
         f.field_type = field_type;
         f.mock = Some(mock.to_string());
         f
@@ -3161,24 +3153,54 @@ mod relative_mock_date_tests {
     #[test]
     fn index_strategy_offsets_resolve_against_the_fixed_anchor() {
         let posted = field("postedAt", FieldType::Datetime, "-1d, -2h, -3w");
-        assert_eq!(sample(&posted, 1, &mut Entropy::Index), Value::String("2026-06-14T00:00:00.000Z".into()));
-        assert_eq!(sample(&posted, 2, &mut Entropy::Index), Value::String("2026-06-14T22:00:00.000Z".into()));
-        assert_eq!(sample(&posted, 3, &mut Entropy::Index), Value::String("2026-05-25T00:00:00.000Z".into()));
+        assert_eq!(
+            sample(&posted, 1, &mut Entropy::Index),
+            Value::String("2026-06-14T00:00:00.000Z".into())
+        );
+        assert_eq!(
+            sample(&posted, 2, &mut Entropy::Index),
+            Value::String("2026-06-14T22:00:00.000Z".into())
+        );
+        assert_eq!(
+            sample(&posted, 3, &mut Entropy::Index),
+            Value::String("2026-05-25T00:00:00.000Z".into())
+        );
         let due = field("dueOn", FieldType::Date, "+2d");
-        assert_eq!(sample(&due, 1, &mut Entropy::Index), Value::String("2026-06-17".into()));
+        assert_eq!(
+            sample(&due, 1, &mut Entropy::Index),
+            Value::String("2026-06-17".into())
+        );
     }
 
     #[test]
     fn seeded_strategy_offsets_resolve_against_the_rng_clock() {
         let mut rng = MockRandom::new(7, 0.0);
-        let past = sample(&field("postedAt", FieldType::Datetime, "-1d"), 1, &mut Entropy::Seeded(&mut rng));
+        let past = sample(
+            &field("postedAt", FieldType::Datetime, "-1d"),
+            1,
+            &mut Entropy::Seeded(&mut rng),
+        );
         assert_eq!(past, Value::String("1969-12-31T00:00:00.000Z".into()));
     }
 
     #[test]
     fn control_a_fixed_literal_is_used_as_written_and_a_string_field_keeps_it_literally() {
-        assert_eq!(sample(&field("opened", FieldType::Date, "2026-01-02"), 2, &mut Entropy::Index), Value::String("2026-01-02".into()));
-        assert_eq!(sample(&field("code", FieldType::String, "-1d, x"), 1, &mut Entropy::Index), Value::String("-1d".into()));
+        assert_eq!(
+            sample(
+                &field("opened", FieldType::Date, "2026-01-02"),
+                2,
+                &mut Entropy::Index
+            ),
+            Value::String("2026-01-02".into())
+        );
+        assert_eq!(
+            sample(
+                &field("code", FieldType::String, "-1d, x"),
+                1,
+                &mut Entropy::Index
+            ),
+            Value::String("-1d".into())
+        );
     }
 }
 
@@ -3188,21 +3210,32 @@ mod trait_field_seed_tests {
 
     fn field(ty: FieldType) -> FieldDefinition {
         let mut f: FieldDefinition =
-            serde_json::from_value(serde_json::json!({ "name": "panel", "type": "string" })).expect("field");
+            serde_json::from_value(serde_json::json!({ "name": "panel", "type": "string" }))
+                .expect("field");
         f.field_type = ty;
         f
     }
 
     #[test]
     fn a_trait_field_seeds_null() {
-        let v = sample_value(&field(FieldType::Trait), "Panel", 1, None, 0, &mut Entropy::Index);
+        let v = sample_value(
+            &field(FieldType::Trait),
+            "Panel",
+            1,
+            None,
+            0,
+            &mut Entropy::Index,
+        );
         assert_eq!(v, Some(Value::Null));
     }
 
     #[test]
     fn control_other_reference_types_still_omit_the_key() {
         for ty in [FieldType::Slot, FieldType::Pattern, FieldType::SExpr] {
-            assert_eq!(sample_value(&field(ty), "Panel", 1, None, 0, &mut Entropy::Index), None);
+            assert_eq!(
+                sample_value(&field(ty), "Panel", 1, None, 0, &mut Entropy::Index),
+                None
+            );
         }
     }
 }

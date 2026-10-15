@@ -5,6 +5,7 @@
 use crate::ir::{
     OirBinaryOp, OirBinding, OirBindingRoot, OirEffect, OirEmitConfig, OirExpr, OirPattern, OirValue,
 };
+use crate::runtime::http_request::HttpMethod;
 use crate::schema::SExpression;
 use thiserror::Error;
 
@@ -223,6 +224,7 @@ impl ExprLowerer {
             "notify" => self.resolve_notify_effect(args),
             "log" => self.resolve_log_effect(args),
             "call-service" | "call_service" => self.resolve_call_service_effect(args),
+            "http" => self.resolve_http_effect(args),
             "cancel-call" => self.resolve_cancel_call_effect(args),
 
             // Resource operators
@@ -642,7 +644,7 @@ impl ExprLowerer {
         }
         let operation = self.sexpr_as_str(
             &args[0],
-            "(persist …) argument 1 — the operation (create|update|delete)",
+            "(persist …) argument 1 — the operation (create|upsert|update|delete)",
         )?;
         let entity = self.sexpr_as_str(&args[1], "(persist …) argument 2 — the entity name")?;
 
@@ -672,6 +674,7 @@ impl ExprLowerer {
 
         let mut effect = match operation.as_str() {
             "create" => OirEffect::create(&entity, data),
+            "upsert" => OirEffect::upsert(&entity, data),
             "update" => OirEffect::update(&entity, data),
             "delete" => OirEffect::delete(&entity, data),
             "read" | "get" => OirEffect::read(&entity, data),
@@ -1153,6 +1156,80 @@ impl ExprLowerer {
             *k = key;
         }
         Ok(OirExpr::effect(effect))
+    }
+
+    fn resolve_http_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+        // Format: ["http", METHOD, origin, path, request?, { key?, emit? }?]
+        if !(3..=5).contains(&args.len()) {
+            return Err(LowerError::InvalidSExpr(
+                "http takes a method, an origin, a path, then an optional request and options"
+                    .to_string(),
+            ));
+        }
+        let word = self.sexpr_as_str(&args[0], "(http …) argument 1 — the method")?;
+        let method: HttpMethod = serde_json::from_value(serde_json::Value::String(word.clone()))
+            .map_err(|_| {
+                LowerError::InvalidSExpr(format!(
+                    "(http …) argument 1 — \"{word}\" is not one of GET POST PUT PATCH DELETE"
+                ))
+            })?;
+        let origin = self.resolve_sexpr(&args[1])?;
+        let path = self.resolve_sexpr(&args[2])?;
+        let request = args
+            .get(3)
+            .map(|request| self.resolve_http_request(request))
+            .transpose()?;
+        let (key, emit) = match args.get(4) {
+            None | Some(SExpression::Null) => (None, None),
+            Some(SExpression::Object(options)) => (
+                match options.get("key") {
+                    None | Some(SExpression::Null) => None,
+                    Some(k) => Some(self.resolve_sexpr(k)?),
+                },
+                self.extract_emit_config(options)?,
+            ),
+            Some(other) => {
+                return Err(LowerError::InvalidSExpr(format!(
+                    "(http …) options must be an object, got {other:?}"
+                )))
+            }
+        };
+        let mut effect = OirEffect::http(method, origin, path);
+        if let OirEffect::Http {
+            request: ref mut r,
+            key: ref mut k,
+            emit: ref mut e,
+            ..
+        } = effect
+        {
+            *r = request;
+            *k = key;
+            *e = emit;
+        }
+        Ok(OirExpr::effect(effect))
+    }
+
+    /// The request object, with `paginate.next` and `paginate.collect` held as `(quote …)` data: they are
+    /// evaluated per page against `@response`, so lowering must not read them.
+    fn resolve_http_request(&self, request: &SExpression) -> Result<OirExpr, LowerError> {
+        let SExpression::Object(fields) = request else {
+            return self.resolve_sexpr(request);
+        };
+        let Some(SExpression::Object(paginate)) = fields.get("paginate") else {
+            return self.resolve_sexpr(request);
+        };
+        let mut held = paginate.clone();
+        for key in ["next", "collect"] {
+            if let Some(expr) = held.get(key) {
+                if crate::schema::quote::quote_body_of(expr).is_none() {
+                    let quoted = crate::schema::quote::quote_expr(expr);
+                    held.insert(key.to_string(), quoted);
+                }
+            }
+        }
+        let mut fields = fields.clone();
+        fields.insert("paginate".to_string(), SExpression::Object(held));
+        self.resolve_sexpr(&SExpression::Object(fields))
     }
 
     fn resolve_cancel_call_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {

@@ -99,6 +99,7 @@
     "write": "write",
     "browse": "browse",
     "create": "create",
+    "upsert": "upsert",
     "update": "update",
     "delete": "delete",
     "notify": "notify",

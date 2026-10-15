@@ -116,7 +116,7 @@ fn an_array_map_of_op_tuples_writes_one_row_per_element() {
 }
 
 #[test]
-fn the_first_failing_op_stops_the_batch_and_routes_failure() {
+fn a_failing_op_fails_the_whole_batch_and_routes_failure() {
     let k = kernel();
     let out = send(&k, "BAD_SECOND", Json::Null);
     assert_eq!(out.len(), 1, "{out:?}");
@@ -126,10 +126,9 @@ fn the_first_failing_op_stops_the_batch_and_routes_failure() {
         error.contains("[create, Note]") && error.contains("required"),
         "{error}"
     );
-    assert_eq!(
-        ids(&k),
-        vec!["ok".to_string()],
-        "the op before the failure landed, the one after did not"
+    assert!(
+        ids(&k).is_empty(),
+        "a batch is all or nothing (owner ruling Q2, 2026-10-13): the op before the failure did not land either"
     );
 }
 

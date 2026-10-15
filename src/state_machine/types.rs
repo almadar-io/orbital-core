@@ -2,10 +2,11 @@
 //!
 //! Core types for state machine execution.
 
-use crate::evaluator::ValueMap;
 use crate::evaluator::Value;
-use crate::schema::SExpression;
+use crate::evaluator::ValueMap;
+use crate::schema::{SExpression, TraitDefinition};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Current state of a trait instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,8 +94,8 @@ pub struct TransitionResult {
     /// New state (if transition executed)
     pub new_state: Option<String>,
 
-    /// Effects to execute (if transition executed)
-    pub effects: Vec<SExpression>,
+    /// Effects to execute (if transition executed); read them through [`TransitionResult::effects`].
+    pub effect_list: TransitionEffects,
 
     /// Guard evaluation result (if guard was present)
     pub guard_result: Option<GuardResult>,
@@ -109,6 +110,34 @@ pub struct TransitionResult {
     pub guards: Vec<ArmGuard>,
 }
 
+/// The effect list of a fired transition: borrowed from the registered trait (one `Arc` bump, no
+/// copy of the expressions) or owned when the caller handed the machine in by reference.
+#[derive(Debug, Clone)]
+pub enum TransitionEffects {
+    None,
+    Shared {
+        definition: Arc<TraitDefinition>,
+        transition: usize,
+    },
+    Owned(Vec<SExpression>),
+}
+
+impl TransitionEffects {
+    pub fn as_slice(&self) -> &[SExpression] {
+        match self {
+            Self::None => &[],
+            Self::Shared {
+                definition,
+                transition,
+            } => definition.state_machine.transitions[*transition]
+                .effects
+                .as_deref()
+                .unwrap_or(&[]),
+            Self::Owned(effects) => effects,
+        }
+    }
+}
+
 /// One guarded arm evaluated during arm selection.
 #[derive(Debug, Clone)]
 pub struct ArmGuard {
@@ -118,13 +147,18 @@ pub struct ArmGuard {
 }
 
 impl TransitionResult {
+    /// The effects to execute (empty when no transition fired).
+    pub fn effects(&self) -> &[SExpression] {
+        self.effect_list.as_slice()
+    }
+
     /// Create a successful transition result
-    pub fn success(previous_state: &str, new_state: &str, effects: Vec<SExpression>) -> Self {
+    pub fn success(previous_state: &str, new_state: &str, effects: TransitionEffects) -> Self {
         Self {
             executed: true,
             previous_state: Some(previous_state.to_string()),
             new_state: Some(new_state.to_string()),
-            effects,
+            effect_list: effects,
             guard_result: None,
             reason: None,
             fired_arm: None,
@@ -136,14 +170,14 @@ impl TransitionResult {
     pub fn success_with_guard(
         previous_state: &str,
         new_state: &str,
-        effects: Vec<SExpression>,
+        effects: TransitionEffects,
         guard_result: GuardResult,
     ) -> Self {
         Self {
             executed: true,
             previous_state: Some(previous_state.to_string()),
             new_state: Some(new_state.to_string()),
-            effects,
+            effect_list: effects,
             guard_result: Some(guard_result),
             reason: None,
             fired_arm: None,
@@ -157,7 +191,7 @@ impl TransitionResult {
             executed: false,
             previous_state: Some(current_state.to_string()),
             new_state: None,
-            effects: vec![],
+            effect_list: TransitionEffects::None,
             guard_result: None,
             reason: Some(TransitionFailureReason::NoMatchingTransition {
                 state: current_state.to_string(),
@@ -179,7 +213,7 @@ impl TransitionResult {
             executed: false,
             previous_state: Some(current_state.to_string()),
             new_state: None,
-            effects: vec![],
+            effect_list: TransitionEffects::None,
             guard_result: Some(guard_result),
             reason: Some(TransitionFailureReason::GuardBlocked {
                 state: current_state.to_string(),
@@ -199,7 +233,7 @@ pub struct GuardResult {
     pub passed: bool,
 
     /// The guard expression that was evaluated
-    pub guard: SExpression,
+    pub guard: Arc<SExpression>,
 
     /// The evaluated value
     pub value: Value,
@@ -210,30 +244,30 @@ pub struct GuardResult {
 
 impl GuardResult {
     /// Create a passed guard result
-    pub fn passed(guard: SExpression, value: Value) -> Self {
+    pub fn passed(guard: impl Into<Arc<SExpression>>, value: Value) -> Self {
         Self {
             passed: true,
-            guard,
+            guard: guard.into(),
             value,
             error: None,
         }
     }
 
     /// Create a failed guard result
-    pub fn failed(guard: SExpression, value: Value) -> Self {
+    pub fn failed(guard: impl Into<Arc<SExpression>>, value: Value) -> Self {
         Self {
             passed: false,
-            guard,
+            guard: guard.into(),
             value,
             error: None,
         }
     }
 
     /// Create an error guard result
-    pub fn error(guard: SExpression, error: String) -> Self {
+    pub fn error(guard: impl Into<Arc<SExpression>>, error: String) -> Self {
         Self {
             passed: false,
-            guard,
+            guard: guard.into(),
             value: Value::Null,
             error: Some(error),
         }

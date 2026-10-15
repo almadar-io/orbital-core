@@ -21,8 +21,11 @@ pub struct BehaviorPackage {
     pub root: PathBuf,
     pub registry: RegistrySource,
     pub index: PathBuf,
-    pub lolo_contracts: PathBuf,
-    pub embeddings: Vec<PathBuf>,
+    /// The `.lolo` tree (`orb.source`) the package's contracts are lowered from;
+    /// `None` when the manifest declares only a materialized `orb.registry`.
+    pub lolo_source: Option<PathBuf>,
+    /// The `orb.vectors` snapshot (`dist/vectors.vec`), when declared; a lock entry resolves it to the cache.
+    pub vectors: Option<PathBuf>,
     /// Declared paths that `sidecars.lock.json` resolves to the content-addressed
     /// cache instead of the package. The matching field above holds `cache_path`.
     pub sidecars: Vec<LockedSidecar>,
@@ -215,7 +218,10 @@ pub fn discover_with_cache(
 /// The shared node-style walk-up rungs: each ancestor's `node_modules`, then
 /// the user store's `node_modules` last. Nearest-first order, one definition
 /// shared by `discover` and `find_npm_package`.
-pub(crate) fn node_modules_dirs(start_dir: &Path, user_store: &Path) -> impl Iterator<Item = PathBuf> {
+pub(crate) fn node_modules_dirs(
+    start_dir: &Path,
+    user_store: &Path,
+) -> impl Iterator<Item = PathBuf> {
     let mut dirs: Vec<PathBuf> = start_dir
         .ancestors()
         .map(|dir| dir.join("node_modules"))
@@ -322,7 +328,10 @@ pub fn install_command(package: &str) -> String {
 /// loader, `orbital-lolo`'s contracts loader, the language-data loader and
 /// `orbital-cli` all report a missing package through this one function.
 pub fn not_installed_message(package: &str) -> String {
-    format!("{package} is not installed — run `{}` (or with `--global`)", install_command(package))
+    format!(
+        "{package} is not installed — run `{}` (or with `--global`)",
+        install_command(package)
+    )
 }
 
 pub fn compiler_satisfies(range: &str, running_version: &str) -> Result<bool, semver::Error> {
@@ -452,13 +461,7 @@ fn scan_node_modules(
 /// carries `orb.language` (language data, see `language_data`) and is not a
 /// behavior package. A block with ANY behavior field is a behavior package,
 /// so a malformed one (say `registry` without `prefix`) still errors loudly.
-const BEHAVIOR_BLOCK_FIELDS: [&str; 5] = [
-    "prefix",
-    "registry",
-    "source",
-    "index",
-    "loloContracts",
-];
+const BEHAVIOR_BLOCK_FIELDS: [&str; 4] = ["prefix", "registry", "source", "index"];
 
 fn is_behavior_block(orb: &Map<String, Value>) -> bool {
     BEHAVIOR_BLOCK_FIELDS.iter().any(|f| orb.contains_key(*f))
@@ -477,9 +480,8 @@ fn build_package(
     let registry_rel = optional_str(orb, "registry", package_json_path)?;
     let source_rel = optional_str(orb, "source", package_json_path)?;
     let index_rel = require_str(orb, "index", package_json_path)?;
-    let lolo_contracts_rel = require_str(orb, "loloContracts", package_json_path)?;
     let compiler_range = require_str(orb, "compiler", package_json_path)?;
-    let embeddings_rel = embeddings_field(orb, package_json_path)?;
+    let vectors_rel = optional_str(orb, "vectors", package_json_path)?;
     let std_peer_range = peer_dependency(top, "@almadar/std");
     let core_range =
         peer_dependency(top, "@almadar/core").or_else(|| dependency(top, "@almadar/core"));
@@ -524,10 +526,9 @@ fn build_package(
         }
     };
     let (index, index_locked) = declared(&index_rel);
-    let (lolo_contracts, contracts_locked) = declared(&lolo_contracts_rel);
-    let embeddings_declared: Vec<(PathBuf, bool)> =
-        embeddings_rel.iter().map(|p| declared(p)).collect();
-    let embeddings: Vec<PathBuf> = embeddings_declared.iter().map(|(p, _)| p.clone()).collect();
+    let lolo_source = source_rel.as_ref().map(|rel| root.join(rel));
+    let vectors_declared: Option<(PathBuf, bool)> = vectors_rel.as_deref().map(declared);
+    let vectors: Option<PathBuf> = vectors_declared.as_ref().map(|(p, _)| p.clone());
 
     let registry_field = match &registry {
         RegistrySource::Materialized(_) => "registry",
@@ -540,7 +541,6 @@ fn build_package(
             registry_locked,
         ),
         ("index", &index, index_locked),
-        ("loloContracts", &lolo_contracts, contracts_locked),
     ] {
         if !locked && !path.exists() {
             return Err(DiscoverError::MissingDeclaredPath {
@@ -550,11 +550,11 @@ fn build_package(
             });
         }
     }
-    for (path, locked) in &embeddings_declared {
+    if let Some((path, locked)) = &vectors_declared {
         if !locked && !path.exists() {
             return Err(DiscoverError::MissingDeclaredPath {
                 package: name.to_string(),
-                field: "embeddings",
+                field: "vectors",
                 path: path.clone(),
             });
         }
@@ -567,8 +567,8 @@ fn build_package(
         root,
         registry,
         index,
-        lolo_contracts,
-        embeddings,
+        lolo_source,
+        vectors,
         sidecars,
         compiler_range,
         std_peer_range,
@@ -602,31 +602,6 @@ fn require_str(
         None => Err(DiscoverError::InvalidPackageJson {
             path: path.to_path_buf(),
             reason: format!("missing field '{field}'"),
-        }),
-    }
-}
-
-fn embeddings_field(orb: &Map<String, Value>, path: &Path) -> Result<Vec<String>, DiscoverError> {
-    match orb.get("embeddings") {
-        None => Ok(Vec::new()),
-        Some(Value::Array(items)) => {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                match item {
-                    Value::String(s) => out.push(s.clone()),
-                    _ => {
-                        return Err(DiscoverError::InvalidPackageJson {
-                            path: path.to_path_buf(),
-                            reason: "field 'embeddings' must be an array of strings".to_string(),
-                        })
-                    }
-                }
-            }
-            Ok(out)
-        }
-        Some(_) => Err(DiscoverError::InvalidPackageJson {
-            path: path.to_path_buf(),
-            reason: "field 'embeddings' must be an array of strings".to_string(),
         }),
     }
 }
@@ -707,8 +682,8 @@ mod tests {
         fs::create_dir_all(&registry_dir).unwrap();
         fs::write(registry_dir.join("x.orb"), "{}").unwrap();
         fs::write(pkg_dir.join("behaviors/behaviors-registry.json"), "{}").unwrap();
-        fs::write(pkg_dir.join("behaviors/lolo-behavior-contracts.json"), "{}").unwrap();
-        fs::write(pkg_dir.join("behaviors/behaviors-embeddings.json"), "{}").unwrap();
+        fs::create_dir_all(pkg_dir.join("dist")).unwrap();
+        fs::write(pkg_dir.join("dist/vectors.vec"), "x").unwrap();
 
         let pkg_json = serde_json::json!({
             "name": name,
@@ -717,8 +692,7 @@ mod tests {
                 "prefix": prefix,
                 "registry": "behaviors/registry",
                 "index": "behaviors/behaviors-registry.json",
-                "loloContracts": "behaviors/lolo-behavior-contracts.json",
-                "embeddings": ["behaviors/behaviors-embeddings.json"],
+                "vectors": "dist/vectors.vec",
                 "compiler": ">=4.10.0"
             },
             "peerDependencies": { "@almadar/std": ">=1.0.0" }
@@ -786,24 +760,21 @@ mod tests {
     }
 
     #[test]
-    fn locked_embeddings_absent_from_package_pass_and_resolve_to_cache() {
+    fn locked_vectors_absent_from_package_pass_and_resolve_to_cache() {
         let tmp = TestTempDir::new("lock-absent");
         let nm = tmp.path().join("node_modules");
         let pkg_dir = fake_package(&nm, "pkg-a", "pa", "1.0.0");
-        fs::remove_file(pkg_dir.join("behaviors/behaviors-embeddings.json")).unwrap();
+        fs::remove_file(pkg_dir.join("dist/vectors.vec")).unwrap();
         write_lock(
             &pkg_dir,
-            serde_json::json!({ "behaviors/behaviors-embeddings.json": lock_entry(7) }),
+            serde_json::json!({ "dist/vectors.vec": lock_entry(7) }),
         );
         let cache = tmp.path().join("cache");
         let found = discover_with_cache(tmp.path(), &tmp.path().join("store"), &cache).unwrap();
         let pkg = &found[0];
-        assert_eq!(pkg.embeddings, vec![cache.join(SHA)]);
+        assert_eq!(pkg.vectors, Some(cache.join(SHA)));
         assert_eq!(pkg.sidecars.len(), 1);
-        assert_eq!(
-            pkg.sidecars[0].rel_path,
-            "behaviors/behaviors-embeddings.json"
-        );
+        assert_eq!(pkg.sidecars[0].rel_path, "dist/vectors.vec");
         assert_eq!(pkg.sidecars[0].sha256, SHA);
         assert_eq!(pkg.sidecars[0].bytes, 7);
         assert_eq!(pkg.sidecars[0].cache_path, cache.join(SHA));
@@ -820,15 +791,15 @@ mod tests {
         let pkg_dir = fake_package(&nm, "pkg-a", "pa", "1.0.0");
         write_lock(
             &pkg_dir,
-            serde_json::json!({ "behaviors/behaviors-embeddings.json": lock_entry(7) }),
+            serde_json::json!({ "dist/vectors.vec": lock_entry(7) }),
         );
         let cache = tmp.path().join("cache");
         let found = discover_with_cache(tmp.path(), &tmp.path().join("store"), &cache).unwrap();
-        assert_eq!(found[0].embeddings, vec![cache.join(SHA)]);
+        assert_eq!(found[0].vectors, Some(cache.join(SHA)));
     }
 
     #[test]
-    fn locked_non_embeddings_path_absent_from_package_passes() {
+    fn locked_non_vectors_path_absent_from_package_passes() {
         let tmp = TestTempDir::new("lock-index");
         let nm = tmp.path().join("node_modules");
         let pkg_dir = fake_package(&nm, "pkg-a", "pa", "1.0.0");
@@ -840,23 +811,23 @@ mod tests {
         let cache = tmp.path().join("cache");
         let found = discover_with_cache(tmp.path(), &tmp.path().join("store"), &cache).unwrap();
         assert_eq!(found[0].index, cache.join(SHA));
-        assert_eq!(found[0].embeddings.len(), 1);
-        assert!(found[0].embeddings[0].starts_with(&found[0].root));
+        let vectors = found[0].vectors.as_ref().unwrap();
+        assert!(vectors.starts_with(&found[0].root));
     }
 
     #[test]
-    fn missing_embeddings_without_a_lock_entry_still_fails() {
+    fn missing_vectors_without_a_lock_entry_still_fails() {
         let tmp = TestTempDir::new("no-lock-missing");
         let nm = tmp.path().join("node_modules");
         let pkg_dir = fake_package(&nm, "pkg-a", "pa", "1.0.0");
-        fs::remove_file(pkg_dir.join("behaviors/behaviors-embeddings.json")).unwrap();
+        fs::remove_file(pkg_dir.join("dist/vectors.vec")).unwrap();
         let err = discover_with_cache(tmp.path(), &tmp.path().join("store"), &tmp.path().join("c"))
             .unwrap_err();
         assert!(
             matches!(
                 err,
                 DiscoverError::MissingDeclaredPath {
-                    field: "embeddings",
+                    field: "vectors",
                     ..
                 }
             ),
@@ -869,7 +840,7 @@ mod tests {
         let tmp = TestTempDir::new("lock-other-path");
         let nm = tmp.path().join("node_modules");
         let pkg_dir = fake_package(&nm, "pkg-a", "pa", "1.0.0");
-        fs::remove_file(pkg_dir.join("behaviors/behaviors-embeddings.json")).unwrap();
+        fs::remove_file(pkg_dir.join("dist/vectors.vec")).unwrap();
         write_lock(
             &pkg_dir,
             serde_json::json!({ "dist/other.json": lock_entry(1) }),
@@ -880,10 +851,51 @@ mod tests {
             matches!(
                 err,
                 DiscoverError::MissingDeclaredPath {
-                    field: "embeddings",
+                    field: "vectors",
                     ..
                 }
             ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_old_manifest_with_embeddings_loads_with_no_snapshot() {
+        let tmp = TestTempDir::new("old-embeddings");
+        let nm = tmp.path().join("node_modules");
+        let pkg_dir = fake_package(&nm, "pkg-a", "pa", "1.0.0");
+        let json = fs::read_to_string(pkg_dir.join("package.json"))
+            .unwrap()
+            .replace(
+                r#""vectors": "dist/vectors.vec""#,
+                r#""embeddings": ["dist/gone.json", 3]"#,
+            );
+        fs::write(pkg_dir.join("package.json"), json).unwrap();
+        let found =
+            discover_with_cache(tmp.path(), &tmp.path().join("store"), &tmp.path().join("c"))
+                .unwrap();
+        assert_eq!(found[0].vectors, None);
+    }
+
+    #[test]
+    fn a_manifest_with_neither_key_loads_and_a_non_string_vectors_is_refused() {
+        let tmp = TestTempDir::new("neither");
+        let nm = tmp.path().join("node_modules");
+        let pkg_dir = fake_package(&nm, "pkg-a", "pa", "1.0.0");
+        let json = fs::read_to_string(pkg_dir.join("package.json")).unwrap();
+        let without = json.replace(r#""vectors": "dist/vectors.vec","#, "");
+        fs::write(pkg_dir.join("package.json"), without).unwrap();
+        let cache = tmp.path().join("c");
+        let found = discover_with_cache(tmp.path(), &tmp.path().join("store"), &cache).unwrap();
+        assert_eq!(found[0].vectors, None);
+        let bad = json.replace(
+            r#""vectors": "dist/vectors.vec""#,
+            r#""vectors": ["dist/vectors.vec"]"#,
+        );
+        fs::write(pkg_dir.join("package.json"), bad).unwrap();
+        let err = discover_with_cache(tmp.path(), &tmp.path().join("store"), &cache).unwrap_err();
+        assert!(
+            matches!(err, DiscoverError::InvalidPackageJson { .. }),
             "{err}"
         );
     }
@@ -974,14 +986,14 @@ mod tests {
         assert_eq!(pkg.std_peer_range.as_deref(), Some(">=1.0.0"));
         assert_eq!(pkg.core_range, None);
         assert!(!pkg.is_link);
-        assert_eq!(pkg.embeddings.len(), 1);
+        assert!(pkg.vectors.as_ref().unwrap().starts_with(&pkg.root));
         assert_eq!(
             pkg.root,
             fs::canonicalize(node_modules.join("@almadar-io/behaviors")).unwrap()
         );
         assert!(pkg.registry.root().exists());
         assert!(pkg.index.exists());
-        assert!(pkg.lolo_contracts.exists());
+        assert_eq!(pkg.lolo_source, None);
     }
 
     #[test]
@@ -1289,7 +1301,11 @@ mod tests {
             not_installed_message("@fake-io/behaviors"),
             "@fake-io/behaviors is not installed — run `orb add @fake-io/behaviors` (or with `--global`)"
         );
-        assert_eq!(install_command(crate::language_data::CORE_PACKAGE), "orb update", "core is what orb installs itself");
+        assert_eq!(
+            install_command(crate::language_data::CORE_PACKAGE),
+            "orb update",
+            "core is what orb installs itself"
+        );
     }
 
     /// A plain npm package.json (no `orb` block) — `find_npm_package` targets

@@ -666,6 +666,23 @@ impl PrettyPrinter {
                 self.write_expr(args);
                 self.write(")");
             }
+            OirEffect::Http {
+                method,
+                origin,
+                path,
+                request,
+                ..
+            } => {
+                self.write(&format!("http({}, ", format!("{method:?}").to_uppercase()));
+                self.write_expr(origin);
+                self.write(", ");
+                self.write_expr(path);
+                if let Some(request) = request {
+                    self.write(", ");
+                    self.write_expr(request);
+                }
+                self.write(")");
+            }
             OirEffect::CancelCall { key } => {
                 self.write("cancel-call(");
                 self.write_expr(key);

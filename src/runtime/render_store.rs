@@ -8,8 +8,9 @@
 //! flushed with, and the `@entity` it was resolved against. [`RenderStore::stale`]
 //! re-resolves only the marker leaves against the entity as it is now.
 
+use super::row_query::{row_sets_in, RowSetRef};
 use crate::evaluator::{get_operator, BindingContext, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// Deepest `@config.X` forward chain followed to uncover an `@entity` leaf (the web's bound).
@@ -21,8 +22,12 @@ struct RenderedSlot {
     slot: String,
     source: Value,
     flushed: Arc<BindingContext>,
-    entity: Value,
+    entity: Arc<Value>,
     resolved: Value,
+    /// The row-set references the resolved content carries (EXEC-RENDER-3).
+    row_sets: Vec<RowSetRef>,
+    /// A kernel write touched an entity type one of `row_sets` points at since the slot last painted.
+    rows_dirty: bool,
 }
 
 /// A trait instance's `(trait name, entity id)`.
@@ -33,6 +38,8 @@ type Instance = (String, String);
 pub(crate) struct Repaint {
     pub slot: String,
     pub content: Value,
+    /// Repainted because the rows a reference in it points at changed (its content may be unchanged).
+    pub rows_changed: bool,
 }
 
 /// The mounted traits' last renders, in `(trait, entity id)` order.
@@ -69,8 +76,10 @@ impl RenderStore {
                 slot,
                 source,
                 flushed: flushed.clone(),
-                entity: (*flushed.entity).clone(),
+                entity: Arc::clone(&flushed.entity),
+                row_sets: row_sets_in(&resolved),
                 resolved,
+                rows_dirty: false,
             });
         }
         if slots.is_empty() {
@@ -100,6 +109,20 @@ impl RenderStore {
         self.instances.clear();
     }
 
+    /// A kernel write to each of `entity_types`: the slots holding a row-set reference to one of them repaint
+    /// on the next [`Self::stale`], though the reference itself is unchanged, so a renderer re-resolves it.
+    pub(crate) fn mark_rows_changed(&mut self, entity_types: &BTreeSet<String>) {
+        for slot in self.instances.values_mut().flatten() {
+            if slot
+                .row_sets
+                .iter()
+                .any(|r| entity_types.contains(&r.entity_type))
+            {
+                slot.rows_dirty = true;
+            }
+        }
+    }
+
     /// Every instance with a slot whose marker leaves resolve differently now, as
     /// `(trait, entity id, repaints)`. `entity_now` reads an instance's current `@entity`;
     /// `reads_live` says whether the client owns that instance's entity bindings (the web's
@@ -115,18 +138,28 @@ impl RenderStore {
             if !reads_live(trait_name) {
                 continue;
             }
-            let now = entity_now(trait_name, entity_id);
+            let now = Arc::new(entity_now(trait_name, entity_id));
             let mut repaints = Vec::new();
-            for slot in slots.iter_mut().filter(|s| s.entity != now) {
-                let mut live = (*slot.flushed).clone();
-                live.set_entity(now.clone());
-                let resolved = resolve_deferred(&slot.source, &slot.flushed, &live, 0);
-                slot.entity = now.clone();
-                if resolved != slot.resolved {
+            for slot in slots
+                .iter_mut()
+                .filter(|s| s.rows_dirty || *s.entity != *now)
+            {
+                let rows_changed = std::mem::take(&mut slot.rows_dirty);
+                let resolved = if *slot.entity != *now {
+                    let mut live = (*slot.flushed).clone();
+                    live.entity = Arc::clone(&now);
+                    resolve_deferred(&slot.source, &slot.flushed, &live, 0)
+                } else {
+                    slot.resolved.clone()
+                };
+                slot.entity = Arc::clone(&now);
+                if rows_changed || resolved != slot.resolved {
                     slot.resolved = resolved.clone();
+                    slot.row_sets = row_sets_in(&resolved);
                     repaints.push(Repaint {
                         slot: slot.slot.clone(),
                         content: resolved,
+                        rows_changed,
                     });
                 }
             }
@@ -265,7 +298,9 @@ mod tests {
     fn an_unset_config_knob_is_an_absent_prop_in_a_repaint_as_in_the_first_paint() {
         let mut c = ctx(json!({ "n": 1 }), json!({}));
         c.set_config(val(json!({ "title": "T" })));
-        let source = val(json!({ "title": "@config.title", "asset": "@config.asset", "rows": ["@config.asset", "@entity.n"] }));
+        let source = val(
+            json!({ "title": "@config.title", "asset": "@config.asset", "rows": ["@config.asset", "@entity.n"] }),
+        );
         let plain = c.resolve_value(&source).into_owned();
         assert_eq!(plain, val(json!({ "title": "T", "rows": [null, 1] })));
         assert_eq!(resolve_deferred(&source, &c, &c, 0), plain);
@@ -276,7 +311,10 @@ mod tests {
         let mut c = ctx(json!({ "n": 1 }), json!({}));
         c.set_config(val(json!({ "asset": { "src": "a.png" } })));
         let source = val(json!({ "asset": "@config.asset" }));
-        assert_eq!(resolve_deferred(&source, &c, &c, 0), val(json!({ "asset": { "src": "a.png" } })));
+        assert_eq!(
+            resolve_deferred(&source, &c, &c, 0),
+            val(json!({ "asset": { "src": "a.png" } }))
+        );
     }
 
     #[test]
@@ -366,7 +404,8 @@ mod tests {
             first[0].2,
             vec![Repaint {
                 slot: "hud".into(),
-                content: val(json!({ "content": 2 }))
+                content: val(json!({ "content": 2 })),
+                rows_changed: false
             }]
         );
         assert!(store.stale(|_| true, |_, _| now.clone()).is_empty());

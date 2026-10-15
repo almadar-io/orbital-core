@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{OirBinding, OirExpr, OirPattern};
+use crate::runtime::http_request::HttpMethod;
 
 /// Configuration for the `emit:` option on async/reactive data operators.
 ///
@@ -210,7 +211,22 @@ pub enum OirEffect {
         emit: Option<OirEmitConfig>,
     },
 
-    /// Abort the in-flight keyed `call-service` started with this key. A
+    /// One HTTP request (`runtime::http_request`). `origin` is a literal or a `url` knob, `request`
+    /// carries `query`/`headers`/one body/`auth`/`timeoutMs`/`responseAs`/`paginate`/`stream`.
+    /// Server-only, keyed and routed like `call-service`.
+    Http {
+        method: HttpMethod,
+        origin: OirExpr,
+        path: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
+    /// Abort the in-flight keyed `call-service` or `http` started with this key. A
     /// no-op when none is in flight. Server-only, like `call-service`.
     CancelCall { key: OirExpr },
 
@@ -567,6 +583,16 @@ impl OirEffect {
         }
     }
 
+    /// Create a persist upsert effect (create-or-replace by id)
+    pub fn upsert(entity_type: impl Into<String>, data: OirExpr) -> Self {
+        Self::Persist {
+            operation: OirPersistOp::Upsert,
+            entity_type: entity_type.into(),
+            data,
+            emit: None,
+        }
+    }
+
     /// Create a persist update effect
     pub fn update(entity_type: impl Into<String>, data: OirExpr) -> Self {
         Self::Persist {
@@ -672,6 +698,18 @@ impl OirEffect {
         }
     }
 
+    /// Create an http effect
+    pub fn http(method: HttpMethod, origin: OirExpr, path: OirExpr) -> Self {
+        Self::Http {
+            method,
+            origin,
+            path,
+            request: None,
+            key: None,
+            emit: None,
+        }
+    }
+
     /// Create a cancel-call effect
     pub fn cancel_call(key: OirExpr) -> Self {
         Self::CancelCall { key }
@@ -694,6 +732,7 @@ impl OirEffect {
             Self::NavigateBack => "navigate-back",
             Self::RenderUi { .. } => "render-ui",
             Self::CallService { .. } => "call-service",
+            Self::Http { .. } => "http",
             Self::CancelCall { .. } => "cancel-call",
             Self::Spawn { .. } => "spawn",
             Self::Despawn { .. } => "despawn",
@@ -848,6 +887,19 @@ impl OirEffect {
                     .for_each(|b| bindings.push(b));
                 if let Some(k) = key {
                     k.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
+                }
+            }
+            Self::Http {
+                origin,
+                path,
+                request,
+                key,
+                ..
+            } => {
+                for expr in [origin, path].into_iter().chain(request).chain(key) {
+                    expr.collect_bindings()
                         .into_iter()
                         .for_each(|b| bindings.push(b));
                 }
@@ -1071,6 +1123,18 @@ impl OirEffect {
                 out.push(args);
                 push_opt(&mut out, key);
             }
+            Self::Http {
+                origin,
+                path,
+                request,
+                key,
+                ..
+            } => {
+                out.push(origin);
+                out.push(path);
+                push_opt(&mut out, request);
+                push_opt(&mut out, key);
+            }
             Self::CancelCall { key } => out.push(key),
             Self::Spawn { props, .. } => out.push(props),
             Self::Despawn { entity_id } => out.push(entity_id),
@@ -1128,6 +1192,7 @@ impl OirEffect {
 #[serde(rename_all = "lowercase")]
 pub enum OirPersistOp {
     Create,
+    Upsert,
     Read,
     Update,
     Delete,

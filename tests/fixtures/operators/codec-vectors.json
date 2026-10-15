@@ -1,0 +1,532 @@
+[
+  {
+    "op": "base64/encode",
+    "args": [
+      ""
+    ],
+    "expect": "",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      ""
+    ],
+    "expect": "",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/encode",
+    "args": [
+      "f"
+    ],
+    "expect": "Zg==",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zg=="
+    ],
+    "expect": "f",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/encode",
+    "args": [
+      "fo"
+    ],
+    "expect": "Zm8=",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zm8="
+    ],
+    "expect": "fo",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/encode",
+    "args": [
+      "foo"
+    ],
+    "expect": "Zm9v",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zm9v"
+    ],
+    "expect": "foo",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/encode",
+    "args": [
+      "foob"
+    ],
+    "expect": "Zm9vYg==",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zm9vYg=="
+    ],
+    "expect": "foob",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/encode",
+    "args": [
+      "fooba"
+    ],
+    "expect": "Zm9vYmE=",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zm9vYmE="
+    ],
+    "expect": "fooba",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/encode",
+    "args": [
+      "foobar"
+    ],
+    "expect": "Zm9vYmFy",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zm9vYmFy"
+    ],
+    "expect": "foobar",
+    "source": "RFC 4648 section 10"
+  },
+  {
+    "op": "base64/encode",
+    "args": [
+      "héllo wörld ✓ 😀"
+    ],
+    "expect": "aMOpbGxvIHfDtnJsZCDinJMg8J+YgA==",
+    "source": "UTF-8 non-ASCII"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "aMOpbGxvIHfDtnJsZCDinJMg8J+YgA=="
+    ],
+    "expect": "héllo wörld ✓ 😀",
+    "source": "UTF-8 non-ASCII"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zg"
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zm9"
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zm9v!"
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zg=a"
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "=Zg="
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zm 9v"
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zm9v\n"
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Z"
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "Zh=="
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "-_8="
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "/w=="
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/decode",
+    "args": [
+      "gA=="
+    ],
+    "error": true,
+    "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "",
+      "hex"
+    ],
+    "expect": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "source": "FIPS 180-2 appendix"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "",
+      "base64"
+    ],
+    "expect": "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+    "source": "FIPS 180-2 appendix"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "abc",
+      "hex"
+    ],
+    "expect": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    "source": "FIPS 180-2 appendix"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "abc",
+      "base64"
+    ],
+    "expect": "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=",
+    "source": "FIPS 180-2 appendix"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+      "hex"
+    ],
+    "expect": "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+    "source": "FIPS 180-2 appendix"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+      "base64"
+    ],
+    "expect": "JI1qYdIGOLjlwCaTDD5gOaM85Flk/yFn9uzt1BnbBsE=",
+    "source": "FIPS 180-2 appendix"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hex"
+    ],
+    "expect": "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3",
+    "source": "multi-block, node crypto reference"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "héllo wörld ✓ 😀",
+      "hex"
+    ],
+    "expect": "23e0a0c5e66366c058e29407717008da83f9004340e71ff074bb24bd4b80eb2a",
+    "source": "UTF-8 non-ASCII, node crypto reference"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hex"
+    ],
+    "expect": "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318",
+    "source": "padding boundary, node crypto reference"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hex"
+    ],
+    "expect": "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a",
+    "source": "padding boundary, node crypto reference"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hex"
+    ],
+    "expect": "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb",
+    "source": "padding boundary, node crypto reference"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "abc",
+      "base32"
+    ],
+    "error": true,
+    "source": "unknown encoding"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      "abc",
+      "HEX"
+    ],
+    "error": true,
+    "source": "encoding is case-sensitive"
+  },
+  {
+    "op": "hash/sha256",
+    "args": [
+      1,
+      "hex"
+    ],
+    "error": true,
+    "source": "non-string input"
+  },
+  {
+    "op": "hmac/sha256",
+    "args": [
+      "\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b",
+      "Hi There",
+      "hex"
+    ],
+    "expect": "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+    "source": "RFC 4231 test case 1 (key 0x0b x20)"
+  },
+  {
+    "op": "hmac/sha256",
+    "args": [
+      "\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b",
+      "Hi There",
+      "base64"
+    ],
+    "expect": "sDRMYdjbOFNcqK/OrwvxK4gdwgDJgz2nJuk3bC4yz/c=",
+    "source": "RFC 4231 test case 1"
+  },
+  {
+    "op": "hmac/sha256",
+    "args": [
+      "Jefe",
+      "what do ya want for nothing?",
+      "hex"
+    ],
+    "expect": "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+    "source": "RFC 4231 test case 2"
+  },
+  {
+    "op": "hmac/sha256",
+    "args": [
+      "Jefe",
+      "what do ya want for nothing?",
+      "base64"
+    ],
+    "expect": "W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM=",
+    "source": "RFC 4231 test case 2"
+  },
+  {
+    "op": "hmac/sha256",
+    "args": [
+      "\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019",
+      "x",
+      "hex"
+    ],
+    "expect": "cbd3e9b628a141fdbf0894cb3d27fa1c69600572a4e8121bd96dbcf45664e5cc",
+    "source": "RFC 4231 case 4 key (0x01..0x19) with text data, node crypto reference"
+  },
+  {
+    "op": "hmac/sha256",
+    "args": [
+      "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "Test Using Larger Than Block-Size Key - Hash Key First",
+      "hex"
+    ],
+    "expect": "70e4b005732fa7ff79392aa24fb240159b925dbc9f1398420c0f45e6763dcf14",
+    "source": "key longer than block size (RFC 4231 case 6 shape, text key), node crypto reference"
+  },
+  {
+    "op": "hmac/sha256",
+    "args": [
+      "",
+      "",
+      "hex"
+    ],
+    "expect": "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad",
+    "source": "empty key and message, node crypto reference"
+  },
+  {
+    "op": "hmac/sha256",
+    "args": [
+      "héllo wörld ✓ 😀",
+      "héllo wörld ✓ 😀",
+      "hex"
+    ],
+    "expect": "664a99c163c7a855b43434fe80d7455d181f6438f363a0804108541b5cb69ca3",
+    "source": "UTF-8 key and message, node crypto reference"
+  },
+  {
+    "op": "hmac/sha256",
+    "args": [
+      "k",
+      "m",
+      "base32"
+    ],
+    "error": true,
+    "source": "unknown encoding"
+  },
+  {
+    "op": "hmac/sha256",
+    "args": [
+      1,
+      "m",
+      "hex"
+    ],
+    "error": true,
+    "source": "non-string key"
+  },
+  {
+    "op": "str/encode-uri-component",
+    "args": [
+      "ABCabc019-_.!~*'()"
+    ],
+    "expect": "ABCabc019-_.!~*'()",
+    "source": "unreserved marks stay"
+  },
+  {
+    "op": "str/encode-uri-component",
+    "args": [
+      ""
+    ],
+    "expect": "",
+    "source": "empty"
+  },
+  {
+    "op": "str/encode-uri-component",
+    "args": [
+      " "
+    ],
+    "expect": "%20",
+    "source": "space is %20"
+  },
+  {
+    "op": "str/encode-uri-component",
+    "args": [
+      ";,/?:@&=+$#"
+    ],
+    "expect": "%3B%2C%2F%3F%3A%40%26%3D%2B%24%23",
+    "source": "reserved characters"
+  },
+  {
+    "op": "str/encode-uri-component",
+    "args": [
+      "100% sure"
+    ],
+    "expect": "100%25%20sure",
+    "source": "percent"
+  },
+  {
+    "op": "str/encode-uri-component",
+    "args": [
+      "é"
+    ],
+    "expect": "%C3%A9",
+    "source": "two-byte UTF-8"
+  },
+  {
+    "op": "str/encode-uri-component",
+    "args": [
+      "✓"
+    ],
+    "expect": "%E2%9C%93",
+    "source": "three-byte UTF-8"
+  },
+  {
+    "op": "str/encode-uri-component",
+    "args": [
+      "😀"
+    ],
+    "expect": "%F0%9F%98%80",
+    "source": "surrogate pair, four-byte UTF-8"
+  },
+  {
+    "op": "str/encode-uri-component",
+    "args": [
+      "a b&c=d/é"
+    ],
+    "expect": "a%20b%26c%3Dd%2F%C3%A9",
+    "source": "mixed"
+  },
+  {
+    "op": "str/encode-uri-component",
+    "args": [
+      1
+    ],
+    "error": true,
+    "source": "non-string input"
+  }
+]

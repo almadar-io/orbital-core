@@ -78,6 +78,16 @@
     },
     {
       "service": "llm",
+      "action": "choose",
+      "params": {},
+      "success": true,
+      "data": {
+        "choice": "mock_choice",
+        "confidence": 42
+      }
+    },
+    {
+      "service": "llm",
       "action": "embed",
       "params": {},
       "success": true,
@@ -645,6 +655,16 @@
           "totalTokens": 42,
           "modelCalls": 42
         }
+      }
+    },
+    {
+      "service": "llm-integration",
+      "action": "choose",
+      "params": {},
+      "success": true,
+      "data": {
+        "choice": "mock_choice",
+        "confidence": 42
       }
     },
     {

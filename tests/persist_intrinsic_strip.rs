@@ -68,7 +68,7 @@ fn run(events: &[&str]) -> Vec<Value> {
             )
             .unwrap();
     }
-    cache.list("Message").unwrap()
+    cache.list("Message").unwrap().iter().map(|r| (**r).clone()).collect()
 }
 
 fn has(row: &Value, field: &str) -> bool {

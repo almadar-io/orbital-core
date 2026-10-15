@@ -1,5 +1,5 @@
 {
-  "description": "ServerEffectResult.code on a persist update/delete: `no-row-key` when no row key resolves, `not-found` when the keyed row is absent, none when it lands. Read by orbital-core tests/persist_effect_codes.rs and @almadar/runtime persist-effect-codes.test.ts.",
+  "description": "ServerEffectResult.code on a persist: `no-row-key` when no row key resolves (an update/delete, or an upsert naming no id), `not-found` when the keyed row is absent, `duplicate-id` when a create names a taken id, none when it lands. Read by orbital-core tests/persist_effect_codes.rs and @almadar/runtime persist-effect-codes.test.ts.",
   "schema": {
     "name": "persist-codes",
     "version": "1.0.0",
@@ -25,7 +25,10 @@
               "events": [
                 { "key": "UPDATE_BY_ID", "name": "UPDATE_BY_ID" },
                 { "key": "UPDATE_OWN_KEY", "name": "UPDATE_OWN_KEY" },
-                { "key": "DELETE_BY_ID", "name": "DELETE_BY_ID" }
+                { "key": "DELETE_BY_ID", "name": "DELETE_BY_ID" },
+                { "key": "CREATE_BY_ID", "name": "CREATE_BY_ID" },
+                { "key": "UPSERT_BY_ID", "name": "UPSERT_BY_ID" },
+                { "key": "UPSERT_KEYLESS", "name": "UPSERT_KEYLESS" }
               ],
               "transitions": [
                 {
@@ -45,6 +48,24 @@
                   "to": "idle",
                   "event": "DELETE_BY_ID",
                   "effects": [["persist", "delete", "Note", "@payload.id"]]
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "CREATE_BY_ID",
+                  "effects": [["persist", "create", "Note", { "id": "@payload.id", "title": "made" }]]
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "UPSERT_BY_ID",
+                  "effects": [["persist", "upsert", "Note", { "id": "@payload.id", "title": "saved" }]]
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "UPSERT_KEYLESS",
+                  "effects": [["persist", "upsert", "Note", { "title": "saved" }]]
                 }
               ]
             }
@@ -59,6 +80,11 @@
     { "name": "update with no row key", "event": "UPDATE_OWN_KEY", "payload": {}, "expect": { "success": false, "code": "no-row-key" } },
     { "name": "delete of a missing row", "event": "DELETE_BY_ID", "payload": { "id": "zz" }, "expect": { "success": false, "code": "not-found" } },
     { "name": "control: delete of a present row", "event": "DELETE_BY_ID", "payload": { "id": "n1" }, "expect": { "success": true } },
-    { "name": "delete with no row key", "event": "DELETE_BY_ID", "payload": {}, "expect": { "success": false, "code": "no-row-key" } }
+    { "name": "delete with no row key", "event": "DELETE_BY_ID", "payload": {}, "expect": { "success": false, "code": "no-row-key" } },
+    { "name": "create on a taken id", "event": "CREATE_BY_ID", "payload": { "id": "n1" }, "expect": { "success": false, "code": "duplicate-id" } },
+    { "name": "control: create on a free id", "event": "CREATE_BY_ID", "payload": { "id": "zz" }, "expect": { "success": true } },
+    { "name": "upsert over a present row", "event": "UPSERT_BY_ID", "payload": { "id": "n1" }, "expect": { "success": true } },
+    { "name": "control: upsert of an absent row", "event": "UPSERT_BY_ID", "payload": { "id": "zz" }, "expect": { "success": true } },
+    { "name": "upsert naming no id", "event": "UPSERT_KEYLESS", "payload": {}, "expect": { "success": false, "code": "no-row-key" } }
   ]
 }

@@ -167,10 +167,9 @@ pub fn persona_from_env_for_schema(schema: &OrbitalSchema) -> Result<Value, Stri
 
 #[cfg(test)]
 mod tests {
-    use crate::evaluator::ValueMap;
     use super::*;
+    use crate::evaluator::ValueMap;
     use serde_json::json;
-    
 
     fn roster3() -> Vec<Value> {
         ["member", "moderator", "admin"]

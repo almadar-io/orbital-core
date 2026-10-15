@@ -4,8 +4,8 @@
 //! host-answered like any other read. JS twins: `OrbitalServerRuntime.populateRelations` and
 //! `effect-stage.ts` `injectRelationOptions`.
 
-use crate::evaluator::ValueMap;
 use super::entity_source::EntitySource;
+use crate::evaluator::ValueMap;
 use crate::schema::{Cardinality, EntityDefinition, FieldDefinition, FieldType};
 use crate::Value;
 use std::collections::{HashMap, HashSet};
@@ -100,7 +100,7 @@ pub fn populate_relations(
         };
         let all: ValueMap = listed
             .into_iter()
-            .filter_map(|row| id_of(&row).map(|id| (id, row)))
+            .filter_map(|row| id_of(&row).map(|id| (id, (*row).clone())))
             .collect();
         let mut related: ValueMap = wanted
             .iter()

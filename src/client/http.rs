@@ -147,6 +147,24 @@ impl SyncServerBridge {
         Ok(event_response)
     }
 
+    /// Ask the server to resolve `reference` for the viewer it serves (`POST /api/orbitals/resolve-rows`).
+    pub fn resolve_rows(
+        &self,
+        reference: &crate::runtime::row_query::RowSetRef,
+    ) -> Result<crate::runtime::row_query::RowPage, BridgeError> {
+        let url = format!("{}/api/orbitals/resolve-rows", self.base_url);
+        let request = crate::runtime::row_query::ResolveRowsRequest { reference: reference.clone() };
+        let response = ureq::post(&url)
+            .send_json(&request)
+            .map_err(|e| BridgeError::Network(e.to_string()))?;
+        if response.status() != 200 {
+            let body = response.into_string().unwrap_or_default();
+            error!(body = %body, "Server refused to resolve a row set");
+            return Err(BridgeError::Server(body));
+        }
+        response.into_json().map_err(|e| BridgeError::Parse(e.to_string()))
+    }
+
     /// Post a full `EventRequest` AS-IS (the client-kernel "server leg" — carries
     /// `traits`/`entityByTrait`/`clientId` that `send_event_with_options`'s
     /// narrower `(event, entity_id, trait_name, payload)` signature can't express)

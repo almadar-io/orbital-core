@@ -38,6 +38,7 @@ pub use operators::{
     actual_of, callback_index_position, eval_expr, get_operator, operator_signature, raw_callback_params, EvalResult, Operator,
     TimeUnit, TIME_UNIT_VOCABULARY,
 };
+pub(crate) use operators::value_to_json;
 pub use value::{Value, ValueMap};
 
 use crate::error::OrbitalError;

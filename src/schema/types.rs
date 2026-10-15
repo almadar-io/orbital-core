@@ -85,6 +85,10 @@ pub struct OrbitalSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<SiteMeta>,
 
+    /// `egress: [...]` — the exact `scheme://host[:port]` origins the `http` effect may reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<Vec<String>>,
+
     /// Pages served by `uses lazy` behaviors, each loaded from its own `.orb`
     /// when opened.
     #[serde(rename = "lazyPages", default, skip_serializing_if = "Option::is_none")]

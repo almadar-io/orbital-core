@@ -2,14 +2,20 @@
 //!
 //! Environment-aware effect execution with routing logic.
 
-use crate::evaluator::ValueMap;
 use super::response::ServerEffectCode;
 use super::runs_on::{runs_on, RunsOn};
-use super::types::{Effect, EffectResult, LogLevel, PersistOperation, RuntimeEnvironment};
+use super::types::{
+    Effect, EffectResult, FetchDeliver, LogLevel, PersistOperation, RuntimeEnvironment,
+};
+use crate::evaluator::ValueMap;
 use crate::evaluator::{BindingContext, Evaluator, Value};
 use crate::events::{Event, SharedEventBus};
 use crate::runtime::entity_access::{
     check_mutation_access, missing_required_fields, scope_fetched_rows, EntityAccessTable,
+};
+use crate::runtime::row_query::{
+    compare_rows, compile_predicate, default_row_order, PredicateRole, RowDirection, RowOrder, RowPredicate,
+    RowSetRef, RowTotalMode, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome,
 };
 use crate::schema::SExpression;
 use parking_lot::RwLock;
@@ -39,6 +45,16 @@ pub trait PersistenceHandler: Send + Sync {
     fn delete(&self, entity_type: &str, id: &str) -> Result<(), String>;
     /// List all entities of a type (for fetch without ID)
     fn list(&self, entity_type: &str) -> Result<Vec<Value>, String>;
+    /// One conditional write: the row is tested against the op's guard (on its pre-image) and written in one
+    /// step. `None` = this store cannot, and nothing was written; the caller takes the read-then-write path.
+    fn write_where(&self, _op: &RowWriteOp) -> Option<Result<RowWriteOutcome, String>> {
+        None
+    }
+    /// Several conditional writes at once, `atomic` or `stop` as the batch says. `None` = this store cannot, and
+    /// nothing was written.
+    fn write_batch(&self, _batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
+        None
+    }
 }
 
 /// Handler for fetch operations (server-only)
@@ -74,6 +90,59 @@ pub trait FetchHandler: Send + Sync {
         include: Option<&Vec<String>>,
         ctx: &BindingContext,
     ) -> Result<FetchPage, String>;
+
+    /// `fetch` with an `orderBy`: the page is the window of the matches ordered by `order` (ties by `id`
+    /// ascending; with no `order`, by `createdAt` then `id`, EXEC-FETCH-1). The default fetches every match and orders them here; a handler that can order where the
+    /// data lives overrides it.
+    #[allow(clippy::too_many_arguments)]
+    fn fetch_ordered(
+        &self,
+        entity_type: &str,
+        id: Option<&str>,
+        filter: Option<&Value>,
+        order: Option<&RowOrder>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        include: Option<&Vec<String>>,
+        total: RowTotalMode,
+        ctx: &BindingContext,
+    ) -> Result<FetchPage, String> {
+        let _ = total;
+        let default_order = default_row_order();
+        match (order, id) {
+            (None, Some(_)) => self.fetch(entity_type, id, filter, limit, offset, include, ctx),
+            (order, _) => self
+                .fetch(entity_type, id, filter, None, None, include, ctx)
+                .map(|page| FetchPage {
+                    total: page.total,
+                    rows: page_ordered_rows(
+                        page.rows,
+                        order.unwrap_or(&default_order),
+                        offset,
+                        limit,
+                    ),
+                }),
+        }
+    }
+
+    /// A collection fetch delivered by reference (`deliver: ids`): the window's ids, the count of every match,
+    /// and the query that re-counts it at resolve time. A handler that cannot express the fetch as a row query
+    /// refuses, since a reference without its query could not re-count `total` (Q6).
+    #[allow(clippy::too_many_arguments)]
+    fn fetch_row_set(
+        &self,
+        entity_type: &str,
+        _filter: Option<&Value>,
+        _order: Option<&RowOrder>,
+        _limit: Option<usize>,
+        _offset: Option<usize>,
+        _total: RowTotalMode,
+        _ctx: &BindingContext,
+    ) -> Result<RowSetRef, String> {
+        Err(format!(
+            "{entity_type}: this fetch handler cannot deliver rows by reference"
+        ))
+    }
 }
 
 /// A fetch's rows after `@read`, `filter:`, offset and limit, with `total` counted
@@ -260,7 +329,12 @@ impl PersistenceHandler for InMemoryPersistence {
     }
 
     fn find(&self, entity_type: &str, id: &str) -> Result<Option<Value>, String> {
-        Ok(self.data.read().get(entity_type).and_then(|c| c.get(id)).cloned())
+        Ok(self
+            .data
+            .read()
+            .get(entity_type)
+            .and_then(|c| c.get(id))
+            .cloned())
     }
 
     fn update(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String> {
@@ -362,7 +436,9 @@ fn interpolate_filter_trait_refs(value: &Value, ctx: &BindingContext) -> Value {
                 // A knob whose value IS an `@entity` binding (a list-detail pair's `initialFilterValue`)
                 // reads the issuing trait's entity, not the candidate row the filter runs over.
                 match ctx.resolve_binding(s) {
-                    Some(Value::String(inner)) if inner == "@entity" || inner.starts_with("@entity.") => {
+                    Some(Value::String(inner))
+                        if inner == "@entity" || inner.starts_with("@entity.") =>
+                    {
                         ctx.resolve_binding(&inner).unwrap_or(Value::Null)
                     }
                     _ => value.clone(),
@@ -566,6 +642,8 @@ impl EffectExecutor {
                 offset,
                 order_by,
                 include,
+                deliver,
+                total,
                 emit: _,
             } => self.do_fetch(
                 entity_type,
@@ -575,6 +653,8 @@ impl EffectExecutor {
                 offset.as_ref(),
                 order_by.as_ref(),
                 include.as_ref(),
+                *deliver,
+                total.unwrap_or(RowTotalMode::Exact),
                 ctx,
             ),
             Effect::CallService {
@@ -584,6 +664,9 @@ impl EffectExecutor {
                 key,
                 ..
             } => self.do_call_service(service, method, args, key.as_deref(), ctx),
+            Effect::Http { .. } => {
+                EffectResult::noop(effect.clone(), "http is run by the kernel, which owns its host I/O")
+            }
             Effect::CancelCall { key } => self.do_cancel_call(key),
             Effect::RenderUi { slot, content } => self.do_render_ui(slot, content),
             Effect::Navigate {
@@ -731,18 +814,28 @@ impl EffectExecutor {
         }
     }
 
-    /// A fetch's `orderBy` (`"field"` or `"field:asc|desc"`, an expression) as (field, descending).
+    /// A fetch's `orderBy` (`"field"` or `"field:asc|desc"`, an expression) as a [`RowOrder`].
     fn resolve_order_spec(
         &self,
         value: Option<&Value>,
         ctx: &BindingContext,
-    ) -> Result<Option<(String, bool)>, String> {
+    ) -> Result<Option<RowOrder>, String> {
         let Some(value) = value else { return Ok(None) };
         let sexpr: SExpression = value.clone().into();
-        match Evaluator::new().evaluate(&sexpr, ctx).map_err(|e| e.to_string())? {
+        match Evaluator::new()
+            .evaluate(&sexpr, ctx)
+            .map_err(|e| e.to_string())?
+        {
             Value::String(spec) if !spec.is_empty() => {
                 let (field, direction) = spec.split_once(':').unwrap_or((spec.as_str(), "asc"));
-                Ok(Some((field.to_string(), direction == "desc")))
+                Ok(Some(RowOrder {
+                    field: field.to_string(),
+                    direction: if direction == "desc" {
+                        RowDirection::Desc
+                    } else {
+                        RowDirection::Asc
+                    },
+                }))
             }
             _ => Ok(None),
         }
@@ -853,7 +946,14 @@ impl EffectExecutor {
         if self.persistence.is_some() {
             // Resolve bindings in data before persisting
             let resolved_data = self.resolve_persist_data(data, ctx);
-            self.persist_resolved(operation, entity_type, resolved_data.as_ref(), id, ctx, effect)
+            self.persist_resolved(
+                operation,
+                entity_type,
+                resolved_data.as_ref(),
+                id,
+                ctx,
+                effect,
+            )
         } else {
             EffectResult::noop(effect, "no persistence handler configured")
         }
@@ -876,6 +976,280 @@ impl EffectExecutor {
         }
     }
 
+    /// The access directive, required columns and `@intrinsic` fields that govern one persist.
+    fn persist_scope(&self, entity_type: &str, operation: PersistOperation) -> PersistScope {
+        let Some(table) = self.entity_policies.as_ref() else {
+            return PersistScope::default();
+        };
+        let table = table.read();
+        let Some(policies) = table.get(entity_type) else {
+            return PersistScope::default();
+        };
+        PersistScope {
+            policy: match operation {
+                PersistOperation::Create | PersistOperation::Upsert => policies.create.clone(),
+                PersistOperation::Update => policies.update.clone(),
+                PersistOperation::Delete => policies.delete.clone(),
+                PersistOperation::Read => None,
+            },
+            required_fields: policies.required_create_fields.clone(),
+            declared_required: policies.required_fields.clone(),
+            intrinsic: policies.intrinsic_fields.clone(),
+        }
+    }
+
+    /// `@intrinsic` fields are the trait's frame, never a column: a write leaves them out.
+    fn without_intrinsic(resolved_data: &Value, intrinsic: &[String]) -> Value {
+        match resolved_data {
+            Value::Object(fields) if fields.keys().any(|k| intrinsic.contains(k)) => Value::Object(
+                fields
+                    .iter()
+                    .filter(|(k, _)| !intrinsic.contains(k))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
+    /// The checks of a `persist create` that read only the incoming data: required columns, then the
+    /// `@create` directive.
+    fn check_create(
+        entity_type: &str,
+        data: &Value,
+        scope: &PersistScope,
+        ctx: &BindingContext,
+    ) -> Result<(), String> {
+        let missing = missing_required_fields(&scope.required_fields, data);
+        if !missing.is_empty() {
+            // Distinct wording from `check_mutation_access`'s denial message
+            // (`is_access_denied_error` matches on " denied: the declared
+            // access policy for ") so this is never mis-bucketed as one.
+            return Err(format!(
+                "persist create {entity_type}: required field(s) {} missing",
+                missing.join(", ")
+            ));
+        }
+        check_mutation_access(
+            PersistOperation::Create,
+            data,
+            scope.policy.as_ref(),
+            ctx,
+            entity_type,
+        )
+    }
+
+    /// What one write outcome means as a persist result. A guarded write must carry the pre-image it was
+    /// tested on, and the guard must hold on it: a host that ignored the guard fails loudly here.
+    fn outcome_value(
+        outcome: RowWriteOutcome,
+        operation: PersistOperation,
+        entity_type: &str,
+        entity_id: &str,
+        guard: Option<&RowPredicate>,
+        code: &mut Option<ServerEffectCode>,
+    ) -> Result<Value, String> {
+        if let Some(guard) = guard {
+            if let RowWriteOutcome::Updated { before, .. } | RowWriteOutcome::Deleted { before } =
+                &outcome
+            {
+                if !before.as_ref().is_some_and(|b| guard.matches(b)) {
+                    error!(
+                        entity_type = entity_type,
+                        id = entity_id,
+                        "the host applied a guarded write its guard rejects, or returned no pre-image"
+                    );
+                    return Err(format!(
+                        "{entity_type} {entity_id}: the host applied a write whose guard does not hold on the row it replaced"
+                    ));
+                }
+            }
+        }
+        match (outcome, operation) {
+            (RowWriteOutcome::Created { row }, PersistOperation::Create | PersistOperation::Upsert)
+            | (RowWriteOutcome::Updated { row, .. }, PersistOperation::Update | PersistOperation::Upsert) => Ok(row),
+            (RowWriteOutcome::DuplicateId, _) => {
+                *code = Some(ServerEffectCode::DuplicateId);
+                Err(format!("{entity_type} {entity_id} already exists"))
+            }
+            (RowWriteOutcome::Deleted { .. }, PersistOperation::Delete) => Ok(Value::Null),
+            (RowWriteOutcome::NotFound, _) => {
+                *code = Some(ServerEffectCode::NotFound);
+                Err(format!("{entity_type} {entity_id} not found"))
+            }
+            (RowWriteOutcome::Refused, _) => Err(format!(
+                "@{operation:?} denied: the declared access policy for `{entity_type}` rejected this row"
+            )),
+            (RowWriteOutcome::Failed { message }, _) => Err(message),
+            (RowWriteOutcome::RolledBack, _) => Err(format!(
+                "{entity_type}: the write was rolled back with its batch"
+            )),
+            (other, _) => Err(format!(
+                "{entity_type}: the host answered a {operation:?} with {other:?}"
+            )),
+        }
+    }
+
+    /// The guard of an `@update`/`@delete` directive as a predicate; `None` when no directive is declared.
+    /// `Err` = the directive is not expressible or does not specialise: the caller takes the read path, which
+    /// words the denial.
+    fn write_guard(
+        policy: Option<&Value>,
+        ctx: &BindingContext,
+        declared_required: &[String],
+    ) -> Result<Option<RowPredicate>, ()> {
+        match policy {
+            None => Ok(None),
+            Some(policy) => compile_predicate(policy, ctx, PredicateRole::Filter, &|f| {
+                f == "id" || declared_required.iter().any(|r| r == f)
+            })
+            .map(Some)
+            .map_err(|_| ()),
+        }
+    }
+
+    /// One `persist` the store may run as a conditional write: `None` = take the read-then-write path.
+    #[allow(clippy::too_many_arguments)]
+    fn pushed_write(
+        &self,
+        persistence: &dyn PersistenceHandler,
+        operation: PersistOperation,
+        entity_type: &str,
+        entity_id: &str,
+        data: &Value,
+        policy: Option<&Value>,
+        declared_required: &[String],
+        ctx: &BindingContext,
+        code: &mut Option<ServerEffectCode>,
+    ) -> Option<Result<Value, String>> {
+        let guard = Self::write_guard(policy, ctx, declared_required).ok()?;
+        let op = match operation {
+            PersistOperation::Create | PersistOperation::Upsert | PersistOperation::Read => {
+                return None
+            }
+            PersistOperation::Update => RowWriteOp::Update {
+                entity_type: entity_type.to_string(),
+                id: entity_id.to_string(),
+                data: data.clone(),
+                guard: guard.clone(),
+            },
+            PersistOperation::Delete => RowWriteOp::Delete {
+                entity_type: entity_type.to_string(),
+                id: entity_id.to_string(),
+                guard: guard.clone(),
+            },
+        };
+        let outcome = match persistence.write_where(&op)? {
+            Ok(outcome) => outcome,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(Self::outcome_value(
+            outcome,
+            operation,
+            entity_type,
+            entity_id,
+            guard.as_ref(),
+            code,
+        ))
+    }
+
+    /// The string id an incoming row names, when it names one.
+    fn row_id_of(data: &Value) -> Option<&str> {
+        data.as_object()
+            .and_then(|o| o.get("id"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// A `persist create` that is not pushed down: a row naming a taken id fails `duplicate-id` (EXEC-STEP-8);
+    /// a row naming none is minted an id by the store.
+    fn create_row(
+        &self,
+        persistence: &dyn PersistenceHandler,
+        entity_type: &str,
+        data: &Value,
+        code: &mut Option<ServerEffectCode>,
+    ) -> Result<Value, String> {
+        if let Some(id) = Self::row_id_of(data) {
+            let op = RowWriteOp::Create {
+                entity_type: entity_type.to_string(),
+                data: data.clone(),
+            };
+            if let Some(written) = persistence.write_where(&op) {
+                return written.and_then(|outcome| {
+                    Self::outcome_value(
+                        outcome,
+                        PersistOperation::Create,
+                        entity_type,
+                        id,
+                        None,
+                        code,
+                    )
+                });
+            }
+            if persistence.find(entity_type, id)?.is_some() {
+                *code = Some(ServerEffectCode::DuplicateId);
+                return Err(format!("{entity_type} {id} already exists"));
+            }
+        }
+        persistence.create(entity_type, data)
+    }
+
+    /// A `persist upsert` that is not pushed as part of a run: the `@update` directive (when declared) is
+    /// tested on the row it replaces, then the store creates or replaces the row by id (EXEC-STEP-8).
+    fn upsert_row(
+        &self,
+        persistence: &dyn PersistenceHandler,
+        entity_type: &str,
+        data: &Value,
+        ctx: &BindingContext,
+        code: &mut Option<ServerEffectCode>,
+    ) -> Result<Value, String> {
+        let Some(id) = Self::row_id_of(data) else {
+            *code = Some(ServerEffectCode::NoRowKey);
+            return Err(format!("persist upsert {entity_type}: the row names no id"));
+        };
+        let update_policy = self
+            .persist_scope(entity_type, PersistOperation::Update)
+            .policy;
+        let existing = if update_policy.is_some() {
+            persistence.find(entity_type, id)?
+        } else {
+            None
+        };
+        if let Some(existing) = &existing {
+            check_mutation_access(
+                PersistOperation::Update,
+                existing,
+                update_policy.as_ref(),
+                ctx,
+                entity_type,
+            )?;
+        }
+        let op = RowWriteOp::Upsert {
+            entity_type: entity_type.to_string(),
+            data: data.clone(),
+        };
+        if let Some(written) = persistence.write_where(&op) {
+            return written.and_then(|outcome| {
+                Self::outcome_value(outcome, PersistOperation::Upsert, entity_type, id, None, code)
+            });
+        }
+        let existing = match existing {
+            Some(row) => Some(row),
+            None => persistence.find(entity_type, id)?,
+        };
+        let Some(existing) = existing else {
+            return persistence.create(entity_type, data);
+        };
+        let mut row = data.as_object().cloned().unwrap_or_default();
+        if let Some(created_at) = existing.as_object().and_then(|o| o.get("createdAt")) {
+            row.insert("createdAt".to_string(), created_at.clone());
+        }
+        persistence.delete(entity_type, id)?;
+        persistence.create(entity_type, &Value::Object(row))
+    }
+
     /// One persist whose `data` is already evaluated: the access-policy gate,
     /// required-column check and store write shared by the single forms and each
     /// op of a `persist batch`.
@@ -889,69 +1263,34 @@ impl EffectExecutor {
         effect: Effect,
     ) -> EffectResult {
         if let Some(persistence) = &self.persistence {
-
-            let policy = self.entity_policies.as_ref().and_then(|table| {
-                let table = table.read();
-                let policies = table.get(entity_type)?;
-                match operation {
-                    PersistOperation::Create => policies.create.clone(),
-                    PersistOperation::Update => policies.update.clone(),
-                    PersistOperation::Delete => policies.delete.clone(),
-                    PersistOperation::Read => None,
-                }
-            });
-
-            let required_fields: Vec<String> = self
-                .entity_policies
-                .as_ref()
-                .and_then(|table| {
-                    let table = table.read();
-                    Some(table.get(entity_type)?.required_create_fields.clone())
-                })
-                .unwrap_or_default();
-
-            // `@intrinsic` fields are the trait's frame, never a column: a write leaves them out.
-            let intrinsic: Vec<String> = self
-                .entity_policies
-                .as_ref()
-                .and_then(|table| Some(table.read().get(entity_type)?.intrinsic_fields.clone()))
-                .unwrap_or_default();
-            let without_intrinsic = match resolved_data {
-                Value::Object(fields) if fields.keys().any(|k| intrinsic.contains(k)) => {
-                    Value::Object(
-                        fields
-                            .iter()
-                            .filter(|(k, _)| !intrinsic.contains(k))
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect(),
-                    )
-                }
-                other => other.clone(),
-            };
-            let resolved_data = &without_intrinsic;
+            let scope = self.persist_scope(entity_type, operation);
+            let data = Self::without_intrinsic(resolved_data, &scope.intrinsic);
+            let resolved_data = &data;
+            let policy = scope.policy.as_ref();
 
             let mut code: Option<ServerEffectCode> = None;
             let result = match operation {
                 PersistOperation::Create => {
-                    let missing = missing_required_fields(&required_fields, resolved_data);
-                    if !missing.is_empty() {
-                        // Distinct wording from `check_mutation_access`'s denial message
-                        // (`is_access_denied_error` matches on " denied: the declared
-                        // access policy for ") so this is never mis-bucketed as one.
-                        Err(format!(
-                            "persist create {entity_type}: required field(s) {} missing",
-                            missing.join(", ")
-                        ))
-                    } else if let Err(denial) = check_mutation_access(
-                        operation,
-                        resolved_data,
-                        policy.as_ref(),
-                        ctx,
-                        entity_type,
-                    ) {
-                        Err(denial)
-                    } else {
-                        persistence.create(entity_type, resolved_data)
+                    match Self::check_create(entity_type, resolved_data, &scope, ctx) {
+                        Err(denial) => Err(denial),
+                        Ok(()) => self.create_row(
+                            persistence.as_ref(),
+                            entity_type,
+                            resolved_data,
+                            &mut code,
+                        ),
+                    }
+                }
+                PersistOperation::Upsert => {
+                    match Self::check_create(entity_type, resolved_data, &scope, ctx) {
+                        Err(denial) => Err(denial),
+                        Ok(()) => self.upsert_row(
+                            persistence.as_ref(),
+                            entity_type,
+                            resolved_data,
+                            ctx,
+                            &mut code,
+                        ),
                     }
                 }
                 PersistOperation::Read => match self.resolve_id(id, ctx) {
@@ -963,19 +1302,37 @@ impl EffectExecutor {
                         code = Some(ServerEffectCode::NoRowKey);
                         Err(e)
                     }
-                    Ok(entity_id) => Self::existing_row(persistence.as_ref(), entity_type, &entity_id, &mut code)
+                    Ok(entity_id) => match self.pushed_write(
+                        persistence.as_ref(),
+                        operation,
+                        entity_type,
+                        &entity_id,
+                        resolved_data,
+                        policy,
+                        &scope.declared_required,
+                        ctx,
+                        &mut code,
+                    ) {
+                        Some(pushed) => pushed,
+                        None => Self::existing_row(
+                            persistence.as_ref(),
+                            entity_type,
+                            &entity_id,
+                            &mut code,
+                        )
                         .and_then(|existing| {
                             if policy.is_some() {
                                 check_mutation_access(
                                     operation,
                                     &existing,
-                                    policy.as_ref(),
+                                    policy,
                                     ctx,
                                     entity_type,
                                 )?;
                             }
                             persistence.update(entity_type, &entity_id, resolved_data)
                         }),
+                    },
                 },
                 PersistOperation::Delete => match self.resolve_id(id, ctx) {
                     Err(e) => {
@@ -986,19 +1343,39 @@ impl EffectExecutor {
                         code = Some(ServerEffectCode::NoRowKey);
                         Err(NO_ROW_KEY.to_string())
                     }
-                    Ok(entity_id) => Self::existing_row(persistence.as_ref(), entity_type, &entity_id, &mut code)
+                    Ok(entity_id) => match self.pushed_write(
+                        persistence.as_ref(),
+                        operation,
+                        entity_type,
+                        &entity_id,
+                        resolved_data,
+                        policy,
+                        &scope.declared_required,
+                        ctx,
+                        &mut code,
+                    ) {
+                        Some(pushed) => pushed,
+                        None => Self::existing_row(
+                            persistence.as_ref(),
+                            entity_type,
+                            &entity_id,
+                            &mut code,
+                        )
                         .and_then(|existing| {
                             if policy.is_some() {
                                 check_mutation_access(
                                     operation,
                                     &existing,
-                                    policy.as_ref(),
+                                    policy,
                                     ctx,
                                     entity_type,
                                 )?;
                             }
-                            persistence.delete(entity_type, &entity_id).map(|()| Value::Null)
+                            persistence
+                                .delete(entity_type, &entity_id)
+                                .map(|()| Value::Null)
                         }),
+                    },
                 },
             };
 
@@ -1021,19 +1398,266 @@ impl EffectExecutor {
         }
     }
 
-    /// `persist batch`: evaluate `ops` to an array and run each op in order through
-    /// [`Self::persist_resolved`] (so every op gets the single form's policy and
-    /// required-column checks). The first failure stops the batch; earlier ops stay
-    /// written. Success returns `{ operations, completedCount, totalCount }`, the
-    /// shape `emit_contract::PERSIST_BATCH_FIELDS` declares.
+    /// Decide how one evaluated persist is sent to the store: as a conditional write (`Push`), refused here
+    /// before any I/O (`Refused`, the failed result), or through the read-then-write path (`Legacy`).
+    fn prepare_push(
+        &self,
+        operation: PersistOperation,
+        entity_type: &str,
+        resolved_data: &Value,
+        id: Option<&str>,
+        ctx: &BindingContext,
+        effect: Effect,
+    ) -> PersistPrep {
+        if self.persistence.is_none() {
+            return PersistPrep::Legacy;
+        }
+        let scope = self.persist_scope(entity_type, operation);
+        let data = Self::without_intrinsic(resolved_data, &scope.intrinsic);
+        let refuse = |effect: Effect, e: String, code: Option<ServerEffectCode>| {
+            let failed = EffectResult::failed(effect, &e);
+            PersistPrep::Refused(match code {
+                Some(code) => failed.with_code(code),
+                None => failed,
+            })
+        };
+        let (op, row_id, guard) = match operation {
+            PersistOperation::Read => return PersistPrep::Legacy,
+            PersistOperation::Create | PersistOperation::Upsert => {
+                let Some(row_id) = Self::row_id_of(&data).map(str::to_string) else {
+                    return PersistPrep::Legacy;
+                };
+                if operation == PersistOperation::Upsert
+                    && self
+                        .persist_scope(entity_type, PersistOperation::Update)
+                        .policy
+                        .is_some()
+                {
+                    return PersistPrep::Legacy;
+                }
+                if let Err(denial) = Self::check_create(entity_type, &data, &scope, ctx) {
+                    return refuse(effect, denial, None);
+                }
+                let op = if operation == PersistOperation::Create {
+                    RowWriteOp::Create {
+                        entity_type: entity_type.to_string(),
+                        data: data.clone(),
+                    }
+                } else {
+                    RowWriteOp::Upsert {
+                        entity_type: entity_type.to_string(),
+                        data: data.clone(),
+                    }
+                };
+                (op, row_id, None)
+            }
+            PersistOperation::Update | PersistOperation::Delete => {
+                let row_id = if operation == PersistOperation::Update {
+                    self.resolve_update_id(id, &data, ctx)
+                } else {
+                    self.resolve_id(id, ctx).and_then(|row_id| {
+                        if row_id.is_empty() {
+                            Err(NO_ROW_KEY.to_string())
+                        } else {
+                            Ok(row_id)
+                        }
+                    })
+                };
+                let row_id = match row_id {
+                    Ok(row_id) => row_id,
+                    Err(e) => return refuse(effect, e, Some(ServerEffectCode::NoRowKey)),
+                };
+                let Ok(guard) =
+                    Self::write_guard(scope.policy.as_ref(), ctx, &scope.declared_required)
+                else {
+                    return PersistPrep::Legacy;
+                };
+                let op = if operation == PersistOperation::Update {
+                    RowWriteOp::Update {
+                        entity_type: entity_type.to_string(),
+                        id: row_id.clone(),
+                        data: data.clone(),
+                        guard: guard.clone(),
+                    }
+                } else {
+                    RowWriteOp::Delete {
+                        entity_type: entity_type.to_string(),
+                        id: row_id.clone(),
+                        guard: guard.clone(),
+                    }
+                };
+                (op, row_id, guard)
+            }
+        };
+        PersistPrep::Push(Box::new(PreparedWrite {
+            effect,
+            operation,
+            entity_type: entity_type.to_string(),
+            id: id.map(str::to_string),
+            resolved_data: resolved_data.clone(),
+            row_id,
+            op,
+            guard,
+        }))
+    }
+
+    /// The persist result of the outcome the store answered for a prepared write.
+    fn finish_push(prepared: &PreparedWrite, outcome: RowWriteOutcome) -> EffectResult {
+        let mut code: Option<ServerEffectCode> = None;
+        match Self::outcome_value(
+            outcome,
+            prepared.operation,
+            &prepared.entity_type,
+            &prepared.row_id,
+            prepared.guard.as_ref(),
+            &mut code,
+        ) {
+            Ok(value) => {
+                info!(entity_type = %prepared.entity_type, operation = ?prepared.operation, "Persist effect executed");
+                EffectResult::executed_with_value(prepared.effect.clone(), value)
+            }
+            Err(e) => {
+                error!(entity_type = %prepared.entity_type, error = %e, "Persist effect failed");
+                let failed = EffectResult::failed(prepared.effect.clone(), &e);
+                match code {
+                    Some(code) => failed.with_code(code),
+                    None => failed,
+                }
+            }
+        }
+    }
+
+    /// Run consecutive top-level `persist` effects of one transition as a write run. Plain persists the
+    /// store can run as conditional writes go out as ONE `stop` batch; a persist refused here before any I/O,
+    /// or one the store cannot push, takes its own path in place. A persist failure is a handled outcome (EXEC-STEP-7),
+    /// so after a failure the rest of the run is sent again as a new request: the effects run exactly as they
+    /// would one at a time. Results come back in effect order.
+    pub fn execute_persist_run(
+        &self,
+        effects: &[Effect],
+        ctx: &BindingContext,
+    ) -> Vec<EffectResult> {
+        if self.environment.is_client() || self.persistence.is_none() {
+            return effects.iter().map(|e| self.execute(e, ctx)).collect();
+        }
+        let mut out: Vec<Option<EffectResult>> = vec![None; effects.len()];
+        let mut pending: Vec<(usize, PreparedWrite)> = Vec::new();
+        for (k, effect) in effects.iter().enumerate() {
+            let Effect::Persist {
+                operation,
+                entity_type,
+                data,
+                id,
+                ..
+            } = effect
+            else {
+                self.flush_writes(&mut pending, &mut out, ctx);
+                out[k] = Some(self.execute(effect, ctx));
+                continue;
+            };
+            let resolved = self.resolve_persist_data(data, ctx);
+            let mut result_effect = effect.clone();
+            if let Effect::Persist { emit, .. } = &mut result_effect {
+                *emit = None;
+            }
+            match self.prepare_push(
+                *operation,
+                entity_type,
+                resolved.as_ref(),
+                id.as_deref(),
+                ctx,
+                result_effect.clone(),
+            ) {
+                PersistPrep::Push(prepared) => pending.push((k, *prepared)),
+                PersistPrep::Refused(result) => out[k] = Some(result),
+                PersistPrep::Legacy => {
+                    self.flush_writes(&mut pending, &mut out, ctx);
+                    out[k] = Some(self.persist_resolved(
+                        *operation,
+                        entity_type,
+                        resolved.as_ref(),
+                        id.as_deref(),
+                        ctx,
+                        result_effect,
+                    ));
+                }
+            }
+        }
+        self.flush_writes(&mut pending, &mut out, ctx);
+        out.into_iter()
+            .zip(effects)
+            .map(|(result, effect)| {
+                result.unwrap_or_else(|| {
+                    EffectResult::failed(effect.clone(), "the persist was never run")
+                })
+            })
+            .collect()
+    }
+
+    /// Send the pending prepared writes; see [`Self::execute_persist_run`].
+    fn flush_writes(
+        &self,
+        pending: &mut Vec<(usize, PreparedWrite)>,
+        out: &mut [Option<EffectResult>],
+        ctx: &BindingContext,
+    ) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        while !pending.is_empty() {
+            let batch = RowWriteBatch {
+                ops: pending.iter().map(|(_, p)| p.op.clone()).collect(),
+                on_failure: RowWriteFailureMode::Stop,
+            };
+            match persistence.write_batch(&batch) {
+                None => {
+                    for (k, p) in pending.drain(..) {
+                        out[k] = Some(self.persist_resolved(
+                            p.operation,
+                            &p.entity_type,
+                            &p.resolved_data,
+                            p.id.as_deref(),
+                            ctx,
+                            p.effect.clone(),
+                        ));
+                    }
+                }
+                Some(Err(e)) => {
+                    for (k, p) in pending.drain(..) {
+                        error!(entity_type = %p.entity_type, error = %e, "Persist effect failed");
+                        out[k] = Some(EffectResult::failed(p.effect, &e));
+                    }
+                }
+                Some(Ok(outcomes)) if outcomes.is_empty() => {
+                    for (k, p) in pending.drain(..) {
+                        let e = "the host answered a write run with no outcome";
+                        out[k] = Some(EffectResult::failed(p.effect, e));
+                    }
+                }
+                Some(Ok(outcomes)) => {
+                    let attempted = outcomes.len().min(pending.len());
+                    for ((k, p), outcome) in pending.drain(..attempted).zip(outcomes) {
+                        out[k] = Some(Self::finish_push(&p, outcome));
+                    }
+                }
+            }
+        }
+    }
+
+    /// `persist batch`: evaluate `ops` to an array, check every op's shape and local gates (required column,
+    /// `@create`, row key) before anything is written, then run the ops in order. A store that runs conditional
+    /// batches applies them ALL or NONE; on a failure it rolls the earlier ops back. A store that cannot takes
+    /// each op through [`Self::persist_resolved`] and stops at the first failure with earlier ops written.
+    /// Success returns `{ operations, completedCount, totalCount }`, the shape
+    /// `emit_contract::PERSIST_BATCH_FIELDS` declares.
     fn do_persist_batch(&self, ops: &Value, ctx: &BindingContext) -> EffectResult {
         let effect = Effect::PersistBatch {
             ops: ops.clone(),
             emit: None,
         };
-        if self.persistence.is_none() {
+        let Some(persistence) = self.persistence.clone() else {
             return EffectResult::noop(effect, "no persistence handler configured");
-        }
+        };
         let expr: SExpression = ops.clone().into();
         let evaluated = match Evaluator::new().evaluate(&expr, ctx) {
             Ok(v) => v,
@@ -1054,7 +1678,7 @@ impl EffectExecutor {
             return EffectResult::failed(effect, "Batch requires a non-empty operations array");
         }
         let total = items.len();
-        let mut completed: Vec<Value> = Vec::with_capacity(total);
+        let mut parsed: Vec<BatchOp> = Vec::with_capacity(total);
         for item in &items {
             let tuple = match item {
                 Value::Array(t) => t.as_slice(),
@@ -1097,46 +1721,159 @@ impl EffectExecutor {
                     Value::Null,
                 ),
             };
-            let op_effect = Effect::Persist {
+            parsed.push(BatchOp {
+                action: action.to_string(),
+                entity: entity.to_string(),
                 operation,
-                entity_type: entity.to_string(),
-                data: data.clone(),
-                id: row_id.clone(),
-                emit: None,
+                row_id,
+                data,
+            });
+        }
+
+        let op_effect = |b: &BatchOp| Effect::Persist {
+            operation: b.operation,
+            entity_type: b.entity.clone(),
+            data: b.data.clone(),
+            id: b.row_id.clone(),
+            emit: None,
+        };
+        let batch_failure = |b: &BatchOp, detail: &str| {
+            EffectResult::failed(
+                effect.clone(),
+                &format!(
+                    "Batch operation [{}, {}] failed: {detail}",
+                    b.action, b.entity
+                ),
+            )
+        };
+
+        let mut prepared: Vec<PreparedWrite> = Vec::with_capacity(total);
+        let mut pushable = true;
+        for b in parsed.iter().filter(|_| pushable) {
+            match self.prepare_push(
+                b.operation,
+                &b.entity,
+                &b.data,
+                b.row_id.as_deref(),
+                ctx,
+                op_effect(b),
+            ) {
+                PersistPrep::Push(p) => prepared.push(*p),
+                PersistPrep::Refused(refused) => {
+                    let detail = refused.error.unwrap_or_else(|| "not executed".to_string());
+                    return batch_failure(b, &detail);
+                }
+                PersistPrep::Legacy => {
+                    pushable = false;
+                    break;
+                }
+            }
+        }
+
+        let mut completed: Vec<Value> = Vec::with_capacity(total);
+        if pushable {
+            let batch = RowWriteBatch {
+                ops: prepared.iter().map(|p| p.op.clone()).collect(),
+                on_failure: RowWriteFailureMode::Atomic,
             };
-            let result =
-                self.persist_resolved(operation, entity, &data, row_id.as_deref(), ctx, op_effect);
+            match persistence.write_batch(&batch) {
+                Some(Err(e)) => {
+                    return EffectResult::failed(effect, &format!("persist batch failed: {e}"))
+                }
+                Some(Ok(outcomes)) => {
+                    let mut seen = 0;
+                    for ((b, p), outcome) in parsed.iter().zip(&prepared).zip(outcomes) {
+                        seen += 1;
+                        if outcome == RowWriteOutcome::RolledBack {
+                            continue;
+                        }
+                        let result = Self::finish_push(p, outcome);
+                        if !result.is_executed() {
+                            let detail = result.error.unwrap_or_else(|| "not executed".to_string());
+                            return batch_failure(b, &detail);
+                        }
+                        completed.push(batch_entry(b, &result));
+                    }
+                    if seen < total {
+                        return EffectResult::failed(
+                            effect,
+                            "persist batch failed: the host answered fewer outcomes than operations",
+                        );
+                    }
+                    return batch_summary(effect, completed, total);
+                }
+                None => {}
+            }
+        }
+
+        // The store cannot run the batch atomically: each applied op keeps its pre-image so a later failure can
+        // compensate. Not isolation: a concurrent reader may see the intermediate rows (D-A22).
+        let mut applied: Vec<(usize, Option<Value>, Option<String>)> = Vec::new();
+        for (k, b) in parsed.iter().enumerate() {
+            let pre = match (b.operation, b.row_id.as_deref()) {
+                (PersistOperation::Update | PersistOperation::Delete, Some(id)) => {
+                    persistence.find(&b.entity, id).ok().flatten()
+                }
+                _ => None,
+            };
+            let result = self.persist_resolved(
+                b.operation,
+                &b.entity,
+                &b.data,
+                b.row_id.as_deref(),
+                ctx,
+                op_effect(b),
+            );
             if !result.is_executed() {
                 let detail = result.error.unwrap_or_else(|| "not executed".to_string());
-                return EffectResult::failed(
-                    effect,
-                    &format!("Batch operation [{action}, {entity}] failed: {detail}"),
-                );
+                if !applied.is_empty() {
+                    warn!(
+                        applied = applied.len(),
+                        "kernel.write.batch-compensated: restoring the pre-images of the ops applied before the failure"
+                    );
+                    for (done, pre, created) in applied.iter().rev() {
+                        let op = &parsed[*done];
+                        let restored = match (op.operation, pre, created) {
+                            (PersistOperation::Create, _, Some(id)) => {
+                                persistence.delete(&op.entity, id)
+                            }
+                            (PersistOperation::Update, Some(row), _) => {
+                                let mut restore = row.as_object().cloned().unwrap_or_default();
+                                if let Some(data) = op.data.as_object() {
+                                    for key in data.keys() {
+                                        restore.entry(key.clone()).or_insert(Value::Null);
+                                    }
+                                }
+                                persistence
+                                    .update(
+                                        &op.entity,
+                                        op.row_id.as_deref().unwrap_or(""),
+                                        &Value::Object(restore),
+                                    )
+                                    .map(|_| ())
+                            }
+                            (PersistOperation::Delete, Some(row), _) => {
+                                persistence.create(&op.entity, row).map(|_| ())
+                            }
+                            _ => Ok(()),
+                        };
+                        if let Err(e) = restored {
+                            error!(entity_type = %op.entity, error = %e, "persist batch compensation failed");
+                        }
+                    }
+                }
+                return batch_failure(b, &detail);
             }
-            let mut entry: ValueMap = match (&result.return_value, operation) {
-                (Some(Value::Object(row)), PersistOperation::Create | PersistOperation::Update) => {
-                    row.clone()
+            let created = match (&result.return_value, b.operation) {
+                (Some(Value::Object(row)), PersistOperation::Create) => {
+                    row.get("id").and_then(Value::as_str).map(str::to_string)
                 }
-                (_, PersistOperation::Create | PersistOperation::Update) => {
-                    data.as_object().cloned().unwrap_or_default()
-                }
-                _ => ValueMap::new(),
+                _ => None,
             };
-            entry.insert("action".to_string(), Value::String(action.to_string()));
-            entry.insert("entityType".to_string(), Value::String(entity.to_string()));
-            if let Some(id) = &row_id {
-                entry.insert("id".to_string(), Value::String(id.clone()));
-            }
-            if operation == PersistOperation::Delete {
-                entry.insert("deleted".to_string(), Value::Bool(true));
-            }
-            completed.push(Value::Object(entry));
+            applied.push((k, pre, created));
+            completed.push(batch_entry(b, &result));
         }
-        let mut summary = ValueMap::new();
-        summary.insert("completedCount".to_string(), Value::Number(completed.len() as f64));
-        summary.insert("totalCount".to_string(), Value::Number(total as f64));
-        summary.insert("operations".to_string(), Value::Array(completed));
-        EffectResult::executed_with_value(effect, Value::Object(summary))
+        batch_summary(effect, completed, total)
     }
 
     #[allow(clippy::too_many_arguments)] // mirrors FetchHandler::fetch query params
@@ -1149,6 +1886,8 @@ impl EffectExecutor {
         offset: Option<&Value>,
         order_by: Option<&Value>,
         include: Option<&Vec<String>>,
+        deliver: FetchDeliver,
+        total_mode: RowTotalMode,
         ctx: &BindingContext,
     ) -> EffectResult {
         let effect = Effect::Fetch {
@@ -1159,8 +1898,11 @@ impl EffectExecutor {
             offset: offset.cloned(),
             order_by: order_by.cloned(),
             include: include.cloned(),
+            deliver,
+            total: (total_mode == RowTotalMode::None).then_some(RowTotalMode::None),
             emit: None,
         };
+        let counted = |total: usize| (total_mode == RowTotalMode::Exact).then_some(total);
 
         if let Some(fetch_handler) = &self.fetch_handler {
             let resolved = self.resolve_fetch_id(id, ctx).and_then(|id| {
@@ -1185,25 +1927,49 @@ impl EffectExecutor {
                 }
             };
             let interpolated_filter = filter.map(|f| interpolate_filter_trait_refs(f, ctx));
-            // Ordered: the handler returns every matching row and the page is cut here, after the sort.
-            let (handler_limit, handler_offset) = if order.is_some() { (None, None) } else { (limit, offset) };
-            let fetched = fetch_handler
-                .fetch(
+            if deliver == FetchDeliver::Ids {
+                if resolved_id.is_some() || include.is_some_and(|i| !i.is_empty()) {
+                    let e = format!(
+                        "{entity_type}: `deliver: ids` applies to a collection fetch with no `id` or `include`"
+                    );
+                    error!(entity_type = entity_type, error = %e, "Fetch effect failed");
+                    return EffectResult::failed(effect, &e);
+                }
+                return match fetch_handler.fetch_row_set(
                     entity_type,
-                    resolved_id.as_deref(),
                     interpolated_filter.as_ref(),
-                    handler_limit,
-                    handler_offset,
-                    include,
+                    order.as_ref(),
+                    limit,
+                    offset,
+                    total_mode,
                     ctx,
-                )
-                .map(|page| match &order {
-                    Some((field, descending)) => FetchPage {
-                        total: page.total,
-                        rows: page_ordered_rows(page.rows, field, *descending, offset, limit),
-                    },
-                    None => page,
-                });
+                ) {
+                    Ok(reference) => {
+                        info!(
+                            entity_type = entity_type,
+                            count = reference.ids.len(),
+                            total = reference.total,
+                            "Fetch effect delivered by reference"
+                        );
+                        EffectResult::executed_row_set(effect, &reference, counted(reference.total))
+                    }
+                    Err(e) => {
+                        error!(entity_type = entity_type, error = %e, "Fetch effect failed");
+                        EffectResult::failed(effect, &e)
+                    }
+                };
+            }
+            let fetched = fetch_handler.fetch_ordered(
+                entity_type,
+                resolved_id.as_deref(),
+                interpolated_filter.as_ref(),
+                order.as_ref(),
+                limit,
+                offset,
+                include,
+                total_mode,
+                ctx,
+            );
             match fetched {
                 // A by-id miss (absent or `@read`-refused alike) is a failure, as `EffectExecutor.ts`.
                 Ok(page) if page.rows.is_empty() && resolved_id.is_some() => {
@@ -1220,7 +1986,7 @@ impl EffectExecutor {
                         total,
                         "Fetch effect executed"
                     );
-                    EffectResult::executed_fetch(effect, Value::Array(rows), entity_type, total)
+                    EffectResult::executed_fetch(effect, Value::Array(rows), entity_type, counted(total))
                 }
                 Err(e) => {
                     error!(entity_type = entity_type, error = %e, "Fetch effect failed");
@@ -1249,7 +2015,13 @@ impl EffectExecutor {
         };
 
         if let Some(handler) = &self.service_handler {
-            match handler.call(service, method, args, key, ServiceCaller::of_user(&ctx.user).as_ref()) {
+            match handler.call(
+                service,
+                method,
+                args,
+                key,
+                ServiceCaller::of_user(&ctx.user).as_ref(),
+            ) {
                 Ok(value) => EffectResult::executed_with_value(effect, value),
                 Err(e) => EffectResult::failed(effect, &e),
             }
@@ -1421,7 +2193,10 @@ impl EffectExecutor {
                 };
             }
             if self.environment.is_server() {
-                return EffectResult::failed(effect, &format!("no substrate host configured for {name}"));
+                return EffectResult::failed(
+                    effect,
+                    &format!("no substrate host configured for {name}"),
+                );
             }
             return EffectResult::noop(effect, "substrate operators run on the server leg");
         }
@@ -1442,28 +2217,86 @@ impl std::fmt::Debug for EffectExecutor {
     }
 }
 
-/// Order rows by one field (missing values last in both directions, as the compiled path and
-/// `@almadar/db` `sortRows`), then cut the page with the same `> 0` offset/limit rule.
-fn page_ordered_rows(
+/// The access directive, required columns and `@intrinsic` fields that govern one persist.
+#[derive(Default)]
+struct PersistScope {
+    policy: Option<Value>,
+    required_fields: Vec<String>,
+    declared_required: Vec<String>,
+    intrinsic: Vec<String>,
+}
+
+/// One evaluated persist, ready to be sent to the store as a conditional write.
+struct PreparedWrite {
+    effect: Effect,
+    operation: PersistOperation,
+    entity_type: String,
+    id: Option<String>,
+    resolved_data: Value,
+    row_id: String,
+    op: RowWriteOp,
+    guard: Option<RowPredicate>,
+}
+
+/// How one evaluated persist reaches the store.
+enum PersistPrep {
+    Push(Box<PreparedWrite>),
+    Refused(EffectResult),
+    Legacy,
+}
+
+/// One parsed `persist batch` op tuple.
+struct BatchOp {
+    action: String,
+    entity: String,
+    operation: PersistOperation,
+    row_id: Option<String>,
+    data: Value,
+}
+
+/// The `operations` entry a finished batch op contributes.
+fn batch_entry(b: &BatchOp, result: &EffectResult) -> Value {
+    let mut entry: ValueMap = match (&result.return_value, b.operation) {
+        (
+            Some(Value::Object(row)),
+            PersistOperation::Create | PersistOperation::Upsert | PersistOperation::Update,
+        ) => row.clone(),
+        (_, PersistOperation::Create | PersistOperation::Upsert | PersistOperation::Update) => {
+            b.data.as_object().cloned().unwrap_or_default()
+        }
+        _ => ValueMap::new(),
+    };
+    entry.insert("action".to_string(), Value::String(b.action.clone()));
+    entry.insert("entityType".to_string(), Value::String(b.entity.clone()));
+    if let Some(id) = &b.row_id {
+        entry.insert("id".to_string(), Value::String(id.clone()));
+    }
+    if b.operation == PersistOperation::Delete {
+        entry.insert("deleted".to_string(), Value::Bool(true));
+    }
+    Value::Object(entry)
+}
+
+fn batch_summary(effect: Effect, completed: Vec<Value>, total: usize) -> EffectResult {
+    let mut summary = ValueMap::new();
+    summary.insert(
+        "completedCount".to_string(),
+        Value::Number(completed.len() as f64),
+    );
+    summary.insert("totalCount".to_string(), Value::Number(total as f64));
+    summary.insert("operations".to_string(), Value::Array(completed));
+    EffectResult::executed_with_value(effect, Value::Object(summary))
+}
+
+/// Order rows by `order` (missing values last in both directions, ties by `id` ascending, as the compiled
+/// path and `@almadar/db`), then cut the page with the same `> 0` offset/limit rule.
+pub(crate) fn page_ordered_rows(
     mut rows: Vec<Value>,
-    field: &str,
-    descending: bool,
+    order: &RowOrder,
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Vec<Value> {
-    rows.sort_by(|a, b| {
-        let (x, y) = (a.get_path(field), b.get_path(field));
-        let missing = |v: Option<&Value>| matches!(v, None | Some(Value::Null));
-        match (missing(x), missing(y)) {
-            (true, true) => std::cmp::Ordering::Equal,
-            (true, false) => std::cmp::Ordering::Greater,
-            (false, true) => std::cmp::Ordering::Less,
-            (false, false) => {
-                let ord = x.and_then(|x| y.and_then(|y| x.compare(y))).unwrap_or(std::cmp::Ordering::Equal);
-                if descending { ord.reverse() } else { ord }
-            }
-        }
-    });
+    rows.sort_by(|a, b| compare_rows(a, b, order));
     let start = offset.unwrap_or(0).min(rows.len());
     let rows = rows.split_off(start);
     match limit {
@@ -1474,8 +2307,8 @@ fn page_ordered_rows(
 
 #[cfg(test)]
 mod tests {
-    use crate::evaluator::ValueMap;
     use super::*;
+    use crate::evaluator::ValueMap;
     use crate::events::shared_bus;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1602,6 +2435,80 @@ mod tests {
         // Client no-ops
         let client_result = client_executor.execute(&effect, &BindingContext::new());
         assert!(client_result.is_noop());
+    }
+
+    fn row_of(pairs: &[(&str, &str)]) -> Value {
+        Value::Object({
+            let mut m = ValueMap::new();
+            for (k, v) in pairs {
+                m.insert((*k).to_string(), Value::String((*v).to_string()));
+            }
+            m
+        })
+    }
+
+    fn persist_effect(operation: PersistOperation, data: Value) -> Effect {
+        Effect::Persist {
+            operation,
+            entity_type: "Mix".to_string(),
+            data,
+            id: None,
+            emit: None,
+        }
+    }
+
+    /// EXEC-STEP-8: a create on a taken id fails `duplicate-id` and changes nothing, on a store with no
+    /// conditional write; a create naming no id is minted one (control).
+    #[test]
+    fn test_persist_create_on_a_taken_id_fails_duplicate_id() {
+        let persistence = Arc::new(InMemoryPersistence::new());
+        let executor = EffectExecutor::server().with_persistence(persistence.clone());
+        let ctx = BindingContext::new();
+        let first = persist_effect(
+            PersistOperation::Create,
+            row_of(&[("id", "mix"), ("title", "one")]),
+        );
+        assert!(executor.execute(&first, &ctx).is_executed());
+        let again = persist_effect(
+            PersistOperation::Create,
+            row_of(&[("id", "mix"), ("title", "two")]),
+        );
+        let result = executor.execute(&again, &ctx);
+        assert!(result.is_failed());
+        assert_eq!(result.code, Some(ServerEffectCode::DuplicateId));
+        let stored = persistence.read("Mix", "mix").unwrap();
+        assert_eq!(stored.as_object().unwrap()["title"], Value::String("one".into()));
+        let minted = persist_effect(PersistOperation::Create, row_of(&[("title", "free")]));
+        assert!(executor.execute(&minted, &ctx).is_executed());
+        assert!(executor.execute(&minted, &ctx).is_executed());
+    }
+
+    /// EXEC-STEP-8: an upsert creates the row, then replaces it whole keeping the stored `createdAt`.
+    #[test]
+    fn test_persist_upsert_creates_then_replaces_the_whole_row() {
+        let persistence = Arc::new(InMemoryPersistence::new());
+        let executor = EffectExecutor::server().with_persistence(persistence.clone());
+        let ctx = BindingContext::new();
+        let created = persist_effect(
+            PersistOperation::Upsert,
+            row_of(&[("id", "mix"), ("title", "one"), ("tone", "warm"), ("createdAt", "2026-01-01")]),
+        );
+        assert!(executor.execute(&created, &ctx).is_executed());
+        let replaced = persist_effect(
+            PersistOperation::Upsert,
+            row_of(&[("id", "mix"), ("title", "two"), ("createdAt", "2030-01-01")]),
+        );
+        let result = executor.execute(&replaced, &ctx);
+        assert!(result.is_executed(), "{result:?}");
+        let stored = persistence.read("Mix", "mix").unwrap();
+        let fields = stored.as_object().unwrap();
+        assert_eq!(fields["title"], Value::String("two".into()));
+        assert!(!fields.contains_key("tone"), "replaced whole: {fields:?}");
+        assert_eq!(fields["createdAt"], Value::String("2026-01-01".into()));
+        let keyless = persist_effect(PersistOperation::Upsert, row_of(&[("title", "x")]));
+        let failed = executor.execute(&keyless, &ctx);
+        assert!(failed.is_failed());
+        assert_eq!(failed.code, Some(ServerEffectCode::NoRowKey), "control: an upsert needs an id");
     }
 
     /// C-PERSIST-UPDATE-TRAILING-EMIT-MISPARSED, end to end: `(persist update
@@ -1984,6 +2891,8 @@ mod tests {
             offset: None,
             order_by: None,
             include: None,
+            deliver: FetchDeliver::Rows,
+            total: None,
             emit: None,
         };
 
@@ -2027,6 +2936,8 @@ mod tests {
             offset: None,
             order_by: None,
             include: None,
+            deliver: FetchDeliver::Rows,
+            total: None,
             emit: None,
         };
 
@@ -2053,6 +2964,8 @@ mod tests {
             offset: None,
             order_by: None,
             include: None,
+            deliver: FetchDeliver::Rows,
+            total: None,
             emit: None,
         };
 
@@ -2137,6 +3050,8 @@ mod tests {
             offset: None,
             order_by: None,
             include: None,
+            deliver: FetchDeliver::Rows,
+            total: None,
             emit: None,
         };
 
@@ -2221,6 +3136,8 @@ mod tests {
             offset: None,
             order_by: None,
             include: None,
+            deliver: FetchDeliver::Rows,
+            total: None,
             emit: None,
         };
 
@@ -2302,6 +3219,8 @@ mod tests {
                 offset: offset.map(|n| Value::Number(n as f64)),
                 order_by: None,
                 include: None,
+                deliver: FetchDeliver::Rows,
+                total: None,
                 emit: None,
             };
             executor.execute(&effect, ctx)
@@ -2648,19 +3567,79 @@ mod tests {
 
         #[test]
         fn order_by_field_and_direction_applies_before_paging() {
-            assert_eq!(ids(&run(json!({ "orderBy": "n:desc" }), json!({}), json!({}))), ["r4", "r3", "r2", "r1", "r0"]);
-            assert_eq!(ids(&run(json!({ "orderBy": "n:desc", "limit": 2 }), json!({}), json!({}))), ["r4", "r3"]);
+            assert_eq!(
+                ids(&run(json!({ "orderBy": "n:desc" }), json!({}), json!({}))),
+                ["r4", "r3", "r2", "r1", "r0"]
+            );
+            assert_eq!(
+                ids(&run(
+                    json!({ "orderBy": "n:desc", "limit": 2 }),
+                    json!({}),
+                    json!({})
+                )),
+                ["r4", "r3"]
+            );
         }
 
         #[test]
         fn a_bare_order_field_is_ascending_and_a_payload_spec_is_evaluated() {
-            assert_eq!(ids(&run(json!({ "orderBy": "@payload.order", "limit": 2 }), json!({ "order": "n:desc" }), json!({}))), ["r4", "r3"]);
-            assert_eq!(ids(&run(json!({ "orderBy": "n", "offset": 3 }), json!({}), json!({}))), ["r3", "r4"]);
+            assert_eq!(
+                ids(&run(
+                    json!({ "orderBy": "@payload.order", "limit": 2 }),
+                    json!({ "order": "n:desc" }),
+                    json!({})
+                )),
+                ["r4", "r3"]
+            );
+            assert_eq!(
+                ids(&run(
+                    json!({ "orderBy": "n", "offset": 3 }),
+                    json!({}),
+                    json!({})
+                )),
+                ["r3", "r4"]
+            );
         }
 
         #[test]
-        fn without_order_by_the_store_order_is_kept() {
-            assert_eq!(ids(&run(json!({ "limit": 2 }), json!({}), json!({}))), ["r0", "r1"]);
+        fn without_order_by_rows_lacking_created_at_follow_id_order() {
+            assert_eq!(
+                ids(&run(json!({ "limit": 2 }), json!({}), json!({}))),
+                ["r0", "r1"]
+            );
+        }
+
+        /// EXEC-FETCH-1: an unordered fetch is `createdAt` ascending, a row without one last, ties by id; the
+        /// insertion order of the store is not the answer. Twin: `almadar-runtime/test/fetch-default-order.test.ts`.
+        #[test]
+        fn without_order_by_the_default_order_is_created_at_then_id() {
+            let persistence = Arc::new(InMemoryPersistence::new());
+            for (id, created) in [
+                ("a", Some("2026-03-02T00:00:00.000Z")),
+                ("b", None),
+                ("c", Some("2026-03-01T00:00:00.000Z")),
+                ("d", Some("2026-03-02T00:00:00.000Z")),
+            ] {
+                let mut row = json!({ "id": id });
+                if let Some(created) = created {
+                    row["createdAt"] = json!(created);
+                }
+                persistence.create("Row", &v(row)).unwrap();
+            }
+            let executor = EffectExecutor::server().with_fetch_handler(persistence);
+            let fetch = |options: serde_json::Value| {
+                let raw: SExpression =
+                    serde_json::from_value(json!(["fetch", "Row", options])).unwrap();
+                let effect = crate::effects::parse_effect(&raw).expect("fetch parses");
+                let mut ctx = BindingContext::new();
+                ctx.payload = Arc::new(v(json!({})));
+                ctx.set_entity(v(json!({})));
+                ids(&executor.execute(&effect, &ctx))
+            };
+            assert_eq!(fetch(json!({})), ["c", "a", "d", "b"]);
+            assert_eq!(fetch(json!({ "offset": 1, "limit": 2 })), ["a", "d"]);
+            // control: an authored order replaces the default
+            assert_eq!(fetch(json!({ "orderBy": "id:desc" })), ["d", "c", "b", "a"]);
         }
 
         #[test]

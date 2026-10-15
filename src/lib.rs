@@ -10,6 +10,8 @@
 
 pub mod behavior_packages;
 pub mod sidecar_store;
+pub mod vector_store;
+pub mod codec;
 pub mod cron;
 pub mod drawable;
 pub mod effects;

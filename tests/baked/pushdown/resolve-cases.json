@@ -1,0 +1,427 @@
+{
+  "name": "pushdown-resolve-cases",
+  "entity": "Item",
+  "rows": [
+    {
+      "id": "r1",
+      "name": "Alpha",
+      "rank": 3,
+      "owner": "u1"
+    },
+    {
+      "id": "r2",
+      "name": "Bravo",
+      "rank": 1,
+      "owner": "u2"
+    },
+    {
+      "id": "r3",
+      "name": "Charlie",
+      "rank": 2,
+      "owner": "u1"
+    },
+    {
+      "id": "r4",
+      "name": "Delta",
+      "rank": 2,
+      "owner": "u2"
+    },
+    {
+      "id": "r5",
+      "name": "Echo",
+      "rank": null,
+      "owner": "u1"
+    },
+    {
+      "id": "r6",
+      "name": "Foxtrot",
+      "rank": 1,
+      "owner": "u1"
+    }
+  ],
+  "idCases": [
+    {
+      "name": "ids-no-query",
+      "query": {},
+      "expect": {
+        "ids": [
+          "r1",
+          "r2",
+          "r3",
+          "r4",
+          "r5",
+          "r6"
+        ],
+        "total": 6
+      }
+    },
+    {
+      "name": "ids-order-asc-ties-break-by-id-asc",
+      "query": {
+        "order": {
+          "field": "rank",
+          "direction": "asc"
+        }
+      },
+      "expect": {
+        "ids": [
+          "r2",
+          "r6",
+          "r3",
+          "r4",
+          "r1",
+          "r5"
+        ],
+        "total": 6
+      }
+    },
+    {
+      "name": "ids-order-desc-ties-break-by-id-asc",
+      "query": {
+        "order": {
+          "field": "rank",
+          "direction": "desc"
+        }
+      },
+      "expect": {
+        "ids": [
+          "r1",
+          "r3",
+          "r4",
+          "r2",
+          "r6",
+          "r5"
+        ],
+        "total": 6
+      }
+    },
+    {
+      "name": "ids-window-keeps-total",
+      "query": {
+        "order": {
+          "field": "rank",
+          "direction": "asc"
+        },
+        "offset": 1,
+        "limit": 2
+      },
+      "expect": {
+        "ids": [
+          "r6",
+          "r3"
+        ],
+        "total": 6
+      }
+    },
+    {
+      "name": "ids-policy-and-filter",
+      "query": {
+        "policy": {
+          "kind": "compare",
+          "field": "owner",
+          "op": "==",
+          "value": "u1"
+        },
+        "filter": {
+          "kind": "compare",
+          "field": "rank",
+          "op": ">=",
+          "value": 2
+        }
+      },
+      "expect": {
+        "ids": [
+          "r1",
+          "r3"
+        ],
+        "total": 2
+      }
+    },
+    {
+      "name": "ids-window-past-end",
+      "query": {
+        "offset": 9,
+        "limit": 2
+      },
+      "expect": {
+        "ids": [],
+        "total": 6
+      }
+    },
+    {
+      "name": "ids-total-none-reports-window-size",
+      "query": {
+        "limit": 2,
+        "total": "none"
+      },
+      "expect": {
+        "ids": [
+          "r1",
+          "r2"
+        ],
+        "total": 2
+      }
+    }
+  ],
+  "resolveCases": [
+    {
+      "name": "resolve-keeps-ref-order",
+      "ref": {
+        "entityType": "Item",
+        "ids": [
+          "r3",
+          "r1",
+          "r2"
+        ],
+        "total": 6,
+        "query": {}
+      },
+      "expect": {
+        "ids": [
+          "r3",
+          "r1",
+          "r2"
+        ],
+        "total": 6
+      }
+    },
+    {
+      "name": "resolve-omits-a-deleted-row-and-recounts-the-store",
+      "ref": {
+        "entityType": "Item",
+        "ids": [
+          "r1",
+          "gone",
+          "r2"
+        ],
+        "total": 53,
+        "query": {}
+      },
+      "expect": {
+        "ids": [
+          "r1",
+          "r2"
+        ],
+        "total": 6
+      }
+    },
+    {
+      "name": "resolve-omits-rows-the-ref-policy-hides-and-recounts",
+      "ref": {
+        "entityType": "Item",
+        "ids": [
+          "r1",
+          "r2",
+          "r3",
+          "r4"
+        ],
+        "total": 10,
+        "query": {
+          "policy": {
+            "kind": "compare",
+            "field": "owner",
+            "op": "==",
+            "value": "u1"
+          }
+        }
+      },
+      "expect": {
+        "ids": [
+          "r1",
+          "r3"
+        ],
+        "total": 4
+      }
+    },
+    {
+      "name": "resolve-applies-the-current-viewer-policy-too",
+      "ref": {
+        "entityType": "Item",
+        "ids": [
+          "r1",
+          "r2",
+          "r3",
+          "r4"
+        ],
+        "total": 6,
+        "query": {}
+      },
+      "policy": {
+        "kind": "compare",
+        "field": "owner",
+        "op": "==",
+        "value": "u1"
+      },
+      "expect": {
+        "ids": [
+          "r1",
+          "r3"
+        ],
+        "total": 4
+      }
+    },
+    {
+      "name": "resolve-new-matching-row-raises-the-total",
+      "ref": {
+        "entityType": "Item",
+        "ids": [
+          "r1",
+          "r3",
+          "r4"
+        ],
+        "total": 3,
+        "query": {
+          "filter": {
+            "kind": "compare",
+            "field": "rank",
+            "op": ">=",
+            "value": 2
+          }
+        }
+      },
+      "add": [
+        {
+          "id": "r7",
+          "name": "Golf",
+          "rank": 5,
+          "owner": "u1"
+        }
+      ],
+      "expect": {
+        "ids": [
+          "r1",
+          "r3",
+          "r4"
+        ],
+        "total": 4
+      }
+    },
+    {
+      "name": "resolve-row-that-stops-matching-lowers-the-total",
+      "ref": {
+        "entityType": "Item",
+        "ids": [
+          "r1",
+          "r3",
+          "r4"
+        ],
+        "total": 3,
+        "query": {
+          "filter": {
+            "kind": "compare",
+            "field": "rank",
+            "op": ">=",
+            "value": 2
+          }
+        }
+      },
+      "set": [
+        {
+          "id": "r3",
+          "fields": {
+            "rank": 1
+          }
+        }
+      ],
+      "expect": {
+        "ids": [
+          "r1",
+          "r4"
+        ],
+        "total": 2
+      }
+    },
+    {
+      "name": "resolve-control-nothing-changed-keeps-the-total",
+      "ref": {
+        "entityType": "Item",
+        "ids": [
+          "r1",
+          "r3",
+          "r4"
+        ],
+        "total": 3,
+        "query": {
+          "filter": {
+            "kind": "compare",
+            "field": "rank",
+            "op": ">=",
+            "value": 2
+          }
+        }
+      },
+      "expect": {
+        "ids": [
+          "r1",
+          "r3",
+          "r4"
+        ],
+        "total": 3
+      }
+    },
+    {
+      "name": "resolve-empty-ref-still-counts",
+      "ref": {
+        "entityType": "Item",
+        "ids": [],
+        "total": 0,
+        "query": {}
+      },
+      "expect": {
+        "ids": [],
+        "total": 6
+      }
+    },
+    {
+      "name": "resolve-everything-hidden",
+      "ref": {
+        "entityType": "Item",
+        "ids": [
+          "r2",
+          "r4"
+        ],
+        "total": 2,
+        "query": {
+          "policy": {
+            "kind": "compare",
+            "field": "owner",
+            "op": "==",
+            "value": "u1"
+          }
+        }
+      },
+      "expect": {
+        "ids": [],
+        "total": 4
+      }
+    },
+    {
+      "name": "resolve-control-policy-hides-nothing",
+      "ref": {
+        "entityType": "Item",
+        "ids": [
+          "r1",
+          "r3",
+          "r5"
+        ],
+        "total": 3,
+        "query": {
+          "policy": {
+            "kind": "compare",
+            "field": "owner",
+            "op": "==",
+            "value": "u1"
+          }
+        }
+      },
+      "expect": {
+        "ids": [
+          "r1",
+          "r3",
+          "r5"
+        ],
+        "total": 4
+      }
+    }
+  ]
+}

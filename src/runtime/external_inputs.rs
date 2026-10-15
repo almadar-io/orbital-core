@@ -27,7 +27,11 @@ pub struct ExternalInput {
 
 /// The input record for one event of one trait, or `None` when the event is
 /// not a declared external input. The single constructor every consumer uses.
-pub fn external_input_of(orbital: &str, trait_name: &str, ev: &EventDefinition) -> Option<ExternalInput> {
+pub fn external_input_of(
+    orbital: &str,
+    trait_name: &str,
+    ev: &EventDefinition,
+) -> Option<ExternalInput> {
     if ev.external != Some(true) {
         return None;
     }

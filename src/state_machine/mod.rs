@@ -27,7 +27,7 @@ mod types;
 
 pub use types::{
     ArmGuard, EventPayload, GuardResult, TraitInstanceId, TraitState, TransitionFailureReason,
-    TransitionResult,
+    TransitionEffects, TransitionResult,
 };
 
 pub use core::StateMachineCore;

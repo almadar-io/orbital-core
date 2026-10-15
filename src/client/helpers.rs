@@ -327,6 +327,34 @@ pub fn get_explicit_rows(props: &Value) -> Vec<Value> {
     r
 }
 
+/// `props` with every row-set marker replaced by the rows `resolve` answers for it, in the reference's order
+/// (`resolve` is the kernel's one resolver: [`crate::client::ClientCore::resolve_rows`]). A reference that cannot be
+/// resolved is replaced by an empty list, never by a stale copy.
+pub fn resolve_row_set_markers(
+    props: &Value,
+    resolve: &dyn Fn(
+        &crate::runtime::row_query::RowSetRef,
+    ) -> Result<crate::runtime::row_query::RowPage, String>,
+) -> Value {
+    if let Some(reference) = crate::runtime::row_query::as_row_set_marker(props) {
+        return Value::Array(resolve(&reference).map(|page| page.rows).unwrap_or_default());
+    }
+    match props {
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| resolve_row_set_markers(item, resolve))
+                .collect(),
+        ),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), resolve_row_set_markers(v, resolve)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// HashMap-backed variant of [`get_entity_rows`] for backends whose render view
 /// holds the entity cache as a plain map (the Dioxus backend's `DioxusView`).
 /// Identical precedence: inline `entity` array → cache lookup by type name →
@@ -902,6 +930,47 @@ mod tests {
     fn json_value(s: &str) -> Value {
         let json: serde_json::Value = serde_json::from_str(s).unwrap();
         from_json(json)
+    }
+
+    fn marker_props() -> Value {
+        use crate::runtime::row_query::{row_set_marker, RowSetRef};
+        let mut props = json_value(r#"{"type":"table-view","title":"T"}"#);
+        let reference = RowSetRef {
+            entity_type: "Ticket".into(),
+            ids: vec!["a".into(), "b".into()],
+            total: 2,
+            query: Default::default(),
+        };
+        props
+            .as_object_mut()
+            .unwrap()
+            .insert("entity".into(), row_set_marker(&reference));
+        props
+    }
+
+    #[test]
+    fn a_row_set_marker_prop_is_replaced_by_the_rows_the_kernel_resolver_answers() {
+        use crate::runtime::row_query::RowPage;
+        let rows = vec![json_value(r#"{"id":"b"}"#)];
+        let resolved = resolve_row_set_markers(&marker_props(), &|_| {
+            Ok(RowPage { rows: rows.clone(), total: 1 })
+        });
+        assert_eq!(
+            resolved.as_object().unwrap().get("entity"),
+            Some(&Value::Array(rows))
+        );
+        assert_eq!(get_string(&resolved, "title"), Some("T".to_string()));
+    }
+
+    #[test]
+    fn an_unresolvable_marker_is_an_empty_list_never_the_raw_marker_and_plain_props_pass_through() {
+        let resolved = resolve_row_set_markers(&marker_props(), &|_| Err("host down".into()));
+        assert_eq!(
+            resolved.as_object().unwrap().get("entity"),
+            Some(&Value::Array(Vec::new()))
+        );
+        let plain = json_value(r#"{"entity":[{"id":"a"}],"x":{"y":[1,2]}}"#);
+        assert_eq!(resolve_row_set_markers(&plain, &|_| Err("unused".into())), plain);
     }
 
     #[test]

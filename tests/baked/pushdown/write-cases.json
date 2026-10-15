@@ -1,0 +1,1718 @@
+{
+  "name": "pushdown-write-cases",
+  "entity": "Stock",
+  "rows": [
+    {
+      "id": "s1",
+      "title": "Alpha",
+      "stock": 5,
+      "owner": "u1",
+      "status": "open"
+    },
+    {
+      "id": "s2",
+      "title": "Bravo",
+      "stock": 0,
+      "owner": "u2",
+      "status": "open"
+    },
+    {
+      "id": "s3",
+      "title": "Charlie",
+      "stock": 2,
+      "owner": "u1",
+      "status": "closed"
+    }
+  ],
+  "cases": [
+    {
+      "name": "update-existing",
+      "op": {
+        "kind": "update",
+        "entityType": "Stock",
+        "id": "s1",
+        "data": {
+          "stock": 4
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "updated",
+            "row": {
+              "id": "s1",
+              "title": "Alpha",
+              "stock": 4,
+              "owner": "u1",
+              "status": "open"
+            }
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 4,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "update-merges-and-stamps-id-last",
+      "op": {
+        "kind": "update",
+        "entityType": "Stock",
+        "id": "s1",
+        "data": {
+          "id": "zzz",
+          "title": "Beta"
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "updated",
+            "row": {
+              "id": "s1",
+              "title": "Beta",
+              "stock": 5,
+              "owner": "u1",
+              "status": "open"
+            }
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Beta",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "update-sets-null",
+      "op": {
+        "kind": "update",
+        "entityType": "Stock",
+        "id": "s1",
+        "data": {
+          "owner": null
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "updated",
+            "row": {
+              "id": "s1",
+              "title": "Alpha",
+              "stock": 5,
+              "owner": null,
+              "status": "open"
+            }
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": null,
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "update-missing-is-not-found-never-upsert",
+      "op": {
+        "kind": "update",
+        "entityType": "Stock",
+        "id": "nope",
+        "data": {
+          "stock": 1
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "not-found"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "update-guard-true-returns-before",
+      "op": {
+        "kind": "update",
+        "entityType": "Stock",
+        "id": "s1",
+        "data": {
+          "stock": 4
+        },
+        "guard": {
+          "kind": "compare",
+          "field": "stock",
+          "op": ">",
+          "value": 0
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "updated",
+            "row": {
+              "id": "s1",
+              "title": "Alpha",
+              "stock": 4,
+              "owner": "u1",
+              "status": "open"
+            },
+            "before": {
+              "id": "s1",
+              "title": "Alpha",
+              "stock": 5,
+              "owner": "u1",
+              "status": "open"
+            }
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 4,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "update-guard-false-refuses",
+      "op": {
+        "kind": "update",
+        "entityType": "Stock",
+        "id": "s2",
+        "data": {
+          "stock": 9
+        },
+        "guard": {
+          "kind": "compare",
+          "field": "stock",
+          "op": ">",
+          "value": 0
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "refused"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "update-guard-reads-the-pre-image",
+      "op": {
+        "kind": "update",
+        "entityType": "Stock",
+        "id": "s1",
+        "data": {
+          "stock": 0
+        },
+        "guard": {
+          "kind": "compare",
+          "field": "stock",
+          "op": "==",
+          "value": 5
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "updated",
+            "row": {
+              "id": "s1",
+              "title": "Alpha",
+              "stock": 0,
+              "owner": "u1",
+              "status": "open"
+            },
+            "before": {
+              "id": "s1",
+              "title": "Alpha",
+              "stock": 5,
+              "owner": "u1",
+              "status": "open"
+            }
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 0,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "update-guard-on-missing-row-is-not-found",
+      "op": {
+        "kind": "update",
+        "entityType": "Stock",
+        "id": "nope",
+        "data": {
+          "stock": 1
+        },
+        "guard": {
+          "kind": "const",
+          "value": false
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "not-found"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "delete-existing",
+      "op": {
+        "kind": "delete",
+        "entityType": "Stock",
+        "id": "s3"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "deleted"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "delete-missing-is-not-found",
+      "op": {
+        "kind": "delete",
+        "entityType": "Stock",
+        "id": "nope"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "not-found"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "delete-guard-true-returns-before",
+      "op": {
+        "kind": "delete",
+        "entityType": "Stock",
+        "id": "s1",
+        "guard": {
+          "kind": "compare",
+          "field": "stock",
+          "op": ">",
+          "value": 0
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "deleted",
+            "before": {
+              "id": "s1",
+              "title": "Alpha",
+              "stock": 5,
+              "owner": "u1",
+              "status": "open"
+            }
+          }
+        ],
+        "rows": [
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "delete-guard-false-refuses",
+      "op": {
+        "kind": "delete",
+        "entityType": "Stock",
+        "id": "s2",
+        "guard": {
+          "kind": "compare",
+          "field": "stock",
+          "op": ">",
+          "value": 0
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "refused"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "create-new-appends",
+      "op": {
+        "kind": "create",
+        "entityType": "Stock",
+        "data": {
+          "id": "s4",
+          "title": "Delta",
+          "stock": 1
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "created",
+            "row": {
+              "id": "s4",
+              "title": "Delta",
+              "stock": 1
+            }
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          },
+          {
+            "id": "s4",
+            "title": "Delta",
+            "stock": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "create-duplicate-id-fails",
+      "op": {
+        "kind": "create",
+        "entityType": "Stock",
+        "data": {
+          "id": "s1",
+          "title": "Dup"
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "duplicate-id"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "create-without-id-fails",
+      "op": {
+        "kind": "create",
+        "entityType": "Stock",
+        "data": {
+          "title": "No id"
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "failed"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "upsert-new-appends",
+      "op": {
+        "kind": "upsert",
+        "entityType": "Stock",
+        "data": {
+          "id": "s4",
+          "title": "Delta",
+          "stock": 1
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "created",
+            "row": {
+              "id": "s4",
+              "title": "Delta",
+              "stock": 1
+            }
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          },
+          {
+            "id": "s4",
+            "title": "Delta",
+            "stock": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "upsert-existing-replaces-the-whole-row",
+      "op": {
+        "kind": "upsert",
+        "entityType": "Stock",
+        "data": {
+          "id": "s1",
+          "title": "Replaced"
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "updated",
+            "row": {
+              "id": "s1",
+              "title": "Replaced"
+            }
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Replaced"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "upsert-without-id-fails",
+      "op": {
+        "kind": "upsert",
+        "entityType": "Stock",
+        "data": {
+          "title": "No id"
+        }
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "failed"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "atomic-upsert-rolls-back-on-not-found",
+      "batch": {
+        "ops": [
+          {
+            "kind": "upsert",
+            "entityType": "Stock",
+            "data": {
+              "id": "s1",
+              "title": "Replaced"
+            }
+          },
+          {
+            "kind": "delete",
+            "entityType": "Stock",
+            "id": "missing"
+          }
+        ],
+        "onFailure": "atomic"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "rolled-back"
+          },
+          {
+            "kind": "not-found"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "stop-upsert-twice-creates-then-replaces",
+      "batch": {
+        "ops": [
+          {
+            "kind": "upsert",
+            "entityType": "Stock",
+            "data": {
+              "id": "s4",
+              "title": "Delta"
+            }
+          },
+          {
+            "kind": "upsert",
+            "entityType": "Stock",
+            "data": {
+              "id": "s4",
+              "stock": 9
+            }
+          }
+        ],
+        "onFailure": "stop"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "created",
+            "row": {
+              "id": "s4",
+              "title": "Delta"
+            }
+          },
+          {
+            "kind": "updated",
+            "row": {
+              "id": "s4",
+              "stock": 9
+            }
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          },
+          {
+            "id": "s4",
+            "stock": 9
+          }
+        ]
+      }
+    },
+    {
+      "name": "atomic-applies-every-op",
+      "batch": {
+        "ops": [
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "stock": 4
+            }
+          },
+          {
+            "kind": "create",
+            "entityType": "Stock",
+            "data": {
+              "id": "s4",
+              "title": "Delta",
+              "stock": 1
+            }
+          },
+          {
+            "kind": "delete",
+            "entityType": "Stock",
+            "id": "s3"
+          }
+        ],
+        "onFailure": "atomic"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "updated",
+            "row": {
+              "id": "s1",
+              "title": "Alpha",
+              "stock": 4,
+              "owner": "u1",
+              "status": "open"
+            }
+          },
+          {
+            "kind": "created",
+            "row": {
+              "id": "s4",
+              "title": "Delta",
+              "stock": 1
+            }
+          },
+          {
+            "kind": "deleted"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 4,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s4",
+            "title": "Delta",
+            "stock": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "atomic-rolls-back-on-not-found",
+      "batch": {
+        "ops": [
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "stock": 4
+            }
+          },
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "nope",
+            "data": {
+              "stock": 1
+            }
+          }
+        ],
+        "onFailure": "atomic"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "rolled-back"
+          },
+          {
+            "kind": "not-found"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "atomic-rolls-back-a-delete-on-refused",
+      "batch": {
+        "ops": [
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "stock": 4
+            }
+          },
+          {
+            "kind": "delete",
+            "entityType": "Stock",
+            "id": "s3"
+          },
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s2",
+            "data": {
+              "stock": 9
+            },
+            "guard": {
+              "kind": "compare",
+              "field": "stock",
+              "op": ">",
+              "value": 0
+            }
+          }
+        ],
+        "onFailure": "atomic"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "rolled-back"
+          },
+          {
+            "kind": "rolled-back"
+          },
+          {
+            "kind": "refused"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "atomic-does-not-attempt-ops-after-the-failure",
+      "batch": {
+        "ops": [
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "nope",
+            "data": {
+              "stock": 1
+            }
+          },
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "stock": 4
+            }
+          }
+        ],
+        "onFailure": "atomic"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "not-found"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "atomic-rolls-back-on-failed-create",
+      "batch": {
+        "ops": [
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "stock": 4
+            }
+          },
+          {
+            "kind": "create",
+            "entityType": "Stock",
+            "data": {
+              "id": "s2"
+            }
+          }
+        ],
+        "onFailure": "atomic"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "rolled-back"
+          },
+          {
+            "kind": "duplicate-id"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "atomic-guard-sees-an-earlier-op-and-rolls-back",
+      "batch": {
+        "ops": [
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "stock": 0
+            }
+          },
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "status": "x"
+            },
+            "guard": {
+              "kind": "compare",
+              "field": "stock",
+              "op": ">",
+              "value": 0
+            }
+          }
+        ],
+        "onFailure": "atomic"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "rolled-back"
+          },
+          {
+            "kind": "refused"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "stop-guard-sees-an-earlier-op-and-keeps-it",
+      "batch": {
+        "ops": [
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "stock": 0
+            }
+          },
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "status": "x"
+            },
+            "guard": {
+              "kind": "compare",
+              "field": "stock",
+              "op": ">",
+              "value": 0
+            }
+          }
+        ],
+        "onFailure": "stop"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "updated",
+            "row": {
+              "id": "s1",
+              "title": "Alpha",
+              "stock": 0,
+              "owner": "u1",
+              "status": "open"
+            }
+          },
+          {
+            "kind": "refused"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 0,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "atomic-empty-batch",
+      "batch": {
+        "ops": [],
+        "onFailure": "atomic"
+      },
+      "expect": {
+        "outcomes": [],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "stop-applies-every-op",
+      "batch": {
+        "ops": [
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "stock": 4
+            }
+          },
+          {
+            "kind": "create",
+            "entityType": "Stock",
+            "data": {
+              "id": "s4",
+              "title": "Delta",
+              "stock": 1
+            }
+          },
+          {
+            "kind": "delete",
+            "entityType": "Stock",
+            "id": "s3"
+          }
+        ],
+        "onFailure": "stop"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "updated",
+            "row": {
+              "id": "s1",
+              "title": "Alpha",
+              "stock": 4,
+              "owner": "u1",
+              "status": "open"
+            }
+          },
+          {
+            "kind": "created",
+            "row": {
+              "id": "s4",
+              "title": "Delta",
+              "stock": 1
+            }
+          },
+          {
+            "kind": "deleted"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 4,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s4",
+            "title": "Delta",
+            "stock": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "stop-stops-at-the-first-failure-earlier-ops-stay",
+      "batch": {
+        "ops": [
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "stock": 4
+            }
+          },
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "nope",
+            "data": {
+              "stock": 1
+            }
+          },
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s3",
+            "data": {
+              "stock": 9
+            }
+          }
+        ],
+        "onFailure": "stop"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "updated",
+            "row": {
+              "id": "s1",
+              "title": "Alpha",
+              "stock": 4,
+              "owner": "u1",
+              "status": "open"
+            }
+          },
+          {
+            "kind": "not-found"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 4,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "stop-failure-first-applies-nothing",
+      "batch": {
+        "ops": [
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "nope",
+            "data": {
+              "stock": 1
+            }
+          },
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "stock": 4
+            }
+          }
+        ],
+        "onFailure": "stop"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "not-found"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "stop-stops-at-a-refusal",
+      "batch": {
+        "ops": [
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s2",
+            "data": {
+              "stock": 9
+            },
+            "guard": {
+              "kind": "compare",
+              "field": "stock",
+              "op": ">",
+              "value": 0
+            }
+          },
+          {
+            "kind": "update",
+            "entityType": "Stock",
+            "id": "s1",
+            "data": {
+              "stock": 4
+            }
+          }
+        ],
+        "onFailure": "stop"
+      },
+      "expect": {
+        "outcomes": [
+          {
+            "kind": "refused"
+          }
+        ],
+        "rows": [
+          {
+            "id": "s1",
+            "title": "Alpha",
+            "stock": 5,
+            "owner": "u1",
+            "status": "open"
+          },
+          {
+            "id": "s2",
+            "title": "Bravo",
+            "stock": 0,
+            "owner": "u2",
+            "status": "open"
+          },
+          {
+            "id": "s3",
+            "title": "Charlie",
+            "stock": 2,
+            "owner": "u1",
+            "status": "closed"
+          }
+        ]
+      }
+    }
+  ]
+}

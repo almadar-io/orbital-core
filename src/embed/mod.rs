@@ -6,7 +6,7 @@
 pub mod server;
 pub mod wire;
 
-pub use server::{EmbeddedServer, ServerProgress};
+pub use server::{EmbeddedServer, ServerProgress, ServerResolve};
 
 use crate::evaluator::ValueMap;
 use crate::effects::{MountSeed, TransitionHop};
@@ -579,7 +579,7 @@ impl EmbeddedKernel {
         let mut dropped_server_effects = 0;
         for (trait_name, tick) in due {
             let orbital = self.owning_orbital(&trait_name)?;
-            match self.kernel.dispatch_tick(
+            match self.kernel.dispatch_tick_unrepainted(
                 orbital,
                 &trait_name,
                 None,
@@ -643,6 +643,22 @@ impl EmbeddedKernel {
         }
         if fired.is_empty() && errors.is_empty() {
             return Ok(None);
+        }
+        // One repaint pass for the whole frame: it sees the newest content of every slot, so it
+        // supersedes the dispatch renders of every tick fired before it.
+        if !fired.is_empty() {
+            let tail = self.kernel.rerender_stale();
+            for rerender in &tail {
+                for effect in &rerender.effects {
+                    if let Effect::RenderUi { slot, .. } = effect {
+                        last_repaint.insert(
+                            (rerender.trait_name.clone(), slot.clone()),
+                            fired.len() - 1,
+                        );
+                    }
+                }
+            }
+            rerenders.extend(tail);
         }
         // The host folds `response` before the dispatches, so a dispatch render of a slot that the
         // same or a later tick repainted would land last with older content: the repaint is the
@@ -731,6 +747,17 @@ impl EmbeddedKernel {
     /// [`RuntimeKernel::set_host_fans_out`]).
     pub fn set_host_fans_out(&self, fans_out: bool) {
         self.kernel.set_host_fans_out(fans_out);
+    }
+
+    /// A row-set reference resolved against this client's rows for its current user: the one kernel resolver
+    /// ([`RuntimeKernel::resolve_rows`]) every renderer reaches. A store the client does not hold answers
+    /// nothing here; the host resolves those through the server leg.
+    pub fn resolve_rows(
+        &self,
+        reference: &crate::runtime::row_query::RowSetRef,
+    ) -> Result<crate::runtime::row_query::RowPage, String> {
+        self.kernel
+            .resolve_rows(reference, &self.kernel.get_current_user())
     }
 
     /// Seed `entity_type` rows into the entity cache; each row's own `id` is honored.

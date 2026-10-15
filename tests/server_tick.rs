@@ -2,6 +2,7 @@
 // tick fires — its trait's mount scope, `appliesTo`, the rows it runs over. JS twins:
 // `almadar-runtime/test/{tick-mount-scope,tick-applies-to-states,pause-ticks}.test.ts`.
 
+use std::sync::Arc;
 use orbital_core::effects::{tick_event_key, RunTick};
 use orbital_core::embed::{EmbeddedServer, ServerProgress};
 use orbital_core::runtime::resumable::{IoAnswer, IoReply, IoRequest};
@@ -61,7 +62,7 @@ fn drive(server: &EmbeddedServer, request: EventRequest, rows: &[&str]) -> Event
                             id: pending.id,
                             answer: match pending.request {
                                 IoRequest::ListRows { .. } => {
-                                    IoAnswer::Rows(Ok(rows.iter().map(|id| row(id)).collect()))
+                                    IoAnswer::Rows(Ok(rows.iter().map(|id| Arc::new(row(id))).collect()))
                                 }
                                 IoRequest::ReadRow { id, .. } => IoAnswer::Row(Ok(row(&id))),
                                 other => panic!("the fixture asks for {other:?}"),

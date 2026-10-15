@@ -14,6 +14,7 @@ pub mod embed_index;
 pub mod entity_access;
 pub mod entity_source;
 pub mod external_inputs;
+pub mod http_service;
 pub mod kernel;
 pub mod key_chord;
 pub mod listener;
@@ -26,8 +27,9 @@ pub mod process_result;
 pub mod projected_payload;
 pub mod relations;
 pub mod relay;
-pub mod resumable;
 pub(crate) mod render_store;
+pub mod resumable;
+pub mod row_query;
 pub mod seed;
 pub mod server_leg;
 pub mod service_params;
@@ -45,19 +47,20 @@ pub use entity_access::{
 };
 pub use entity_source::{EntitySource, InMemoryEntityCache};
 pub use kernel::{
-    already_delivered_from, AwaitingTrait, ClientDispatch, KernelError, Rerender, RuntimeKernel, StatefulLeg, TickDispatch, TickEmit, TraitSnapshot,
-    CROSS_TRAIT_CASCADE_CAP,
+    already_delivered_from, AwaitingTrait, ClientDispatch, KernelError, Rerender, RuntimeKernel,
+    StatefulLeg, TickDispatch, TickEmit, TraitSnapshot, CROSS_TRAIT_CASCADE_CAP,
 };
-pub use tick_clock::{Calendar, TickClock};
-pub use trait_owners::TraitOwners;
 pub use listener::{ListenerInfo, ListenerManager, TriggerCallback};
 pub use persona::{
     default_probe_persona, find_persona_in_roster, identity_roster, persona_from_env_for_schema,
     persona_from_env_spec, resolve_persona_spec, EnvPersona, DEFAULT_IDENTITY_ROSTER_COUNT,
     PERSONA_ENV,
 };
+pub use process_result::{
+    DeliveryEntry, EffectRun, EffectRunStatus, OrbitalDetail, OrbitalInfo, ProcessEventResult,
+    RuntimeStats,
+};
 pub use projected_payload::projected_payload;
-pub use process_result::{DeliveryEntry, EffectRun, EffectRunStatus, OrbitalDetail, OrbitalInfo, ProcessEventResult, RuntimeStats};
 pub use seed::{
     cross_relation_value, identity_entity_def, identity_entity_name, identity_roster_rows,
     instance_rows, mock_row_id, owner_columns_from_policy, owner_fields_from_schema, sample_rows,
@@ -65,3 +68,5 @@ pub use seed::{
 };
 pub use server_leg::ServerLegCollector;
 pub use theme::{resolve_theme, ResolvedTheme, ThemeError, ThemeMode, ThemePresets};
+pub use tick_clock::{Calendar, TickClock};
+pub use trait_owners::TraitOwners;

@@ -29,7 +29,7 @@ fn json_to_value(json: serde_json::Value) -> Value {
 /// without a decimal point (`JSON.stringify(1)` → `"1"`, never `"1.0"`),
 /// matching `to_string_value`'s integer rule. A lambda has no JSON form (JS
 /// `JSON.stringify(fn)` → undefined) and serializes as null.
-fn value_to_json(value: &Value) -> serde_json::Value {
+pub(crate) fn value_to_json(value: &Value) -> serde_json::Value {
     match value {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),

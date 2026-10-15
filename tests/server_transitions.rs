@@ -74,7 +74,9 @@ fn run_answering(event: &str, target: &str, create: IoAnswer) -> EventResponse {
                     .map(|pending| IoReply {
                         id: pending.id,
                         answer: match pending.request {
-                            IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
+                            IoRequest::ReadRow { .. } => {
+                                IoAnswer::Row(Ok(orbital_core::Value::Null))
+                            }
                             IoRequest::CreateRow { .. } => create.clone(),
                             other => panic!("the fixture asks for {other:?}"),
                         },

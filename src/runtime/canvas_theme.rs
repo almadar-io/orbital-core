@@ -418,10 +418,7 @@ mod tests {
     use serde_json::Value;
 
     fn fixtures() -> Vec<(String, Value)> {
-        let dir = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/canvas-theme"
-        );
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/canvas-theme");
         let mut out: Vec<(String, Value)> = std::fs::read_dir(dir)
             .expect("canvas-theme fixture dir")
             .filter_map(Result::ok)

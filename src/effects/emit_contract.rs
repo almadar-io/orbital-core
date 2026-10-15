@@ -54,6 +54,15 @@ pub const PERSIST_DELETE_FIELDS: &[&str] = &["id", "deleted"];
 /// the pre-pagination count so a paginating consumer needs no second call.
 pub const FETCH_WRAPPER_FIELDS: &[&str] = &["data", "totalCount"];
 
+/// `http` hands back the reply: its status, its lower-cased headers and its body.
+pub const HTTP_REPLY_FIELDS: &[&str] = &["status", "headers", "body"];
+
+/// `http` with `paginate` hands back the pages it walked, the collected items and the last reply.
+pub const HTTP_PAGED_FIELDS: &[&str] = &["pages", "items", "last"];
+
+/// The `variant` of an `http` call site that carries `paginate`.
+pub const HTTP_PAGINATE_VARIANT: &str = "paginate";
+
 /// `persist batch` hands back a summary of the attempted operations.
 pub const PERSIST_BATCH_FIELDS: &[&str] = &["operations", "completedCount", "totalCount"];
 
@@ -63,11 +72,12 @@ pub const PERSIST_BATCH_FIELDS: &[&str] = &["operations", "completedCount", "tot
 /// one (`["persist", "create", …]`). The legacy 3-element form
 /// (`["persist", "Entity", data]`) has no action keyword; pass `None` and this
 /// returns [`ProducedPayload::Opaque`] rather than guessing "create" — a wrong
-/// guess would report against the wrong contract.
+/// guess would report against the wrong contract. For `http` it is
+/// [`HTTP_PAGINATE_VARIANT`] when the call site carries `paginate`, else `None`.
 pub fn success_payload(operator: &str, persist_action: Option<&str>) -> ProducedPayload {
     match operator {
         "persist" => match persist_action {
-            Some("create") | Some("update") => ProducedPayload::EntityRow,
+            Some("create") | Some("upsert") | Some("update") => ProducedPayload::EntityRow,
             Some("delete") => ProducedPayload::Fields(PERSIST_DELETE_FIELDS),
             Some("batch") => ProducedPayload::Fields(PERSIST_BATCH_FIELDS),
             _ => ProducedPayload::Opaque,
@@ -75,6 +85,10 @@ pub fn success_payload(operator: &str, persist_action: Option<&str>) -> Produced
         // `ref` emits the same wrapper as `fetch` but fires it on `on_change`;
         // see `success_emit_key`.
         "fetch" | "ref" => ProducedPayload::Fields(FETCH_WRAPPER_FIELDS),
+        "http" => match persist_action {
+            Some(HTTP_PAGINATE_VARIANT) => ProducedPayload::Fields(HTTP_PAGED_FIELDS),
+            _ => ProducedPayload::Fields(HTTP_REPLY_FIELDS),
+        },
         // `call-service` and `set` declare `any`; nothing to compare against.
         _ => ProducedPayload::Opaque,
     }
@@ -196,6 +210,32 @@ mod tests {
     #[test]
     fn an_unresolvable_entity_yields_no_findings() {
         assert!(undeclared_reads(&["anything"], &ProducedPayload::EntityRow, &[]).is_empty());
+    }
+
+    #[test]
+    fn http_emits_the_reply_and_a_paginating_call_emits_the_pages() {
+        assert_eq!(
+            success_payload("http", None),
+            ProducedPayload::Fields(HTTP_REPLY_FIELDS)
+        );
+        assert_eq!(
+            success_payload("http", Some(HTTP_PAGINATE_VARIANT)),
+            ProducedPayload::Fields(HTTP_PAGED_FIELDS)
+        );
+        assert_eq!(success_emit_key("http"), "success");
+        assert_eq!(
+            undeclared_reads(
+                &["status", "body"],
+                &success_payload("http", None),
+                &[]
+            ),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            undeclared_reads(&["status"], &success_payload("http", Some("paginate")), &[]),
+            vec!["status"],
+            "control: a paged payload has no status at its root"
+        );
     }
 
     #[test]

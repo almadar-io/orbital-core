@@ -52,7 +52,9 @@ fn save(create: IoAnswer) -> EventResponse {
                                 IoAnswer::Row(Ok(_)) => IoAnswer::Row(Ok(data)),
                                 other => other.clone(),
                             },
-                            IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
+                            IoRequest::ReadRow { .. } => {
+                                IoAnswer::Row(Ok(orbital_core::Value::Null))
+                            }
                             other => panic!("the fixture asks for {other:?}"),
                         },
                     })

@@ -138,6 +138,7 @@ impl OrbitalClientRuntime {
             .entity_source()
             .read(entity_type, entity_id)
             .ok()
+            .map(|row| (*row).clone())
     }
 
     /// Clear entity cache
@@ -169,8 +170,8 @@ impl Default for OrbitalClientRuntime {
 
 #[cfg(test)]
 mod tests {
-    use crate::evaluator::ValueMap;
     use super::*;
+    use crate::evaluator::ValueMap;
 
     fn create_test_schema() -> crate::OrbitalSchema {
         serde_json::from_str(
@@ -226,7 +227,8 @@ mod tests {
             ]
         }"#,
         )
-        .unwrap()
+        .unwrap(),
+    egress: None,
     }
 
     #[test]

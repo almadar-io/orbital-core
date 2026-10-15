@@ -1,7 +1,7 @@
 //! Cross-orbital event listener wiring for the runtime kernel.
 
-use crate::evaluator::ValueMap;
 use crate::effects::BusEventSource;
+use crate::evaluator::ValueMap;
 use crate::schema::{ListenSource, SExpression};
 use crate::{
     BindingContextBuilder, Evaluator, ListenDefinition, SharedEventBus, SubscriptionId, Value,
@@ -47,7 +47,10 @@ impl ListenerInfo {
     pub fn matches_source(&self, source: &BusEventSource) -> bool {
         match &self.source {
             None | Some(ListenSource::Any) => true,
-            Some(ListenSource::Trait { trait_name, trait_id }) => match trait_id {
+            Some(ListenSource::Trait {
+                trait_name,
+                trait_id,
+            }) => match trait_id {
                 Some(id) => source.trait_id.as_deref() == Some(id.as_str()),
                 None => {
                     source.orbital.as_deref() == Some(self.orbital.as_str())
@@ -269,7 +272,7 @@ mod tests {
     use super::*;
     use crate::schema::{ListenDefinition, SExpression};
     use crate::{shared_bus, Event, Value};
-    
+
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -374,7 +377,9 @@ mod tests {
             triggers_id: None,
         };
 
-        manager.register("ProfileManagement", "Orb", &listen).unwrap();
+        manager
+            .register("ProfileManagement", "Orb", &listen)
+            .unwrap();
 
         bus.emit(Event::new("USER_REGISTERED", Value::Null));
 
@@ -406,7 +411,9 @@ mod tests {
             triggers_id: None,
         };
 
-        manager.register("ProfileManagement", "Orb", &listen).unwrap();
+        manager
+            .register("ProfileManagement", "Orb", &listen)
+            .unwrap();
 
         let mut payload1 = ValueMap::new();
         payload1.insert("status".to_string(), Value::String("pending".to_string()));
@@ -453,7 +460,9 @@ mod tests {
             triggers_id: None,
         };
 
-        manager.register("ProfileManagement", "Orb", &listen).unwrap();
+        manager
+            .register("ProfileManagement", "Orb", &listen)
+            .unwrap();
 
         let mut payload = ValueMap::new();
         payload.insert("id".to_string(), Value::String("user-123".to_string()));

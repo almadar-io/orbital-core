@@ -182,7 +182,7 @@ pub fn role_satisfying_policy(
         .into_iter()
         .find(|d| d.name == entity)?;
     let policy = match kind {
-        PersistOperation::Create => def.create_policy.as_ref(),
+        PersistOperation::Create | PersistOperation::Upsert => def.create_policy.as_ref(),
         PersistOperation::Update => def.update_policy.as_ref(),
         PersistOperation::Delete => def.delete_policy.as_ref(),
         PersistOperation::Read => None,
@@ -220,6 +220,9 @@ pub struct EntityAccessPolicies {
     /// [`required_create_field_names`]. A property of the entity's OWN field
     /// declarations, never inherited from a sibling on the same collection.
     pub required_create_fields: Vec<String>,
+    /// Names of every field the entity declares required (`!`) or with a default: never missing, so an ordering comparison on one
+    /// reads the same in a predicate and in the evaluator.
+    pub required_fields: Vec<String>,
     /// Names of this entity's `@intrinsic` fields — the trait's own frame, never a persisted column.
     pub intrinsic_fields: Vec<String>,
 }
@@ -318,26 +321,37 @@ pub fn apply_read_access(
     }
     let evaluator = Evaluator::new();
     let before = rows.len();
-    rows.retain(|row| {
-        let mut row_ctx = ctx.clone();
-        row_ctx.set_entity(row.clone());
-        for predicate_value in [policy, filter].into_iter().flatten() {
-            let predicate: SExpression = predicate_value.clone().into();
-            match evaluator.evaluate(&predicate, &row_ctx) {
+    let predicates: Vec<SExpression> = [policy, filter]
+        .into_iter()
+        .flatten()
+        .map(|predicate| predicate.clone().into())
+        .collect();
+    let mut row_ctx = ctx.clone();
+    let candidates = std::mem::take(rows);
+    for row in candidates {
+        let shared = std::sync::Arc::new(row);
+        row_ctx.entity = std::sync::Arc::clone(&shared);
+        let mut keep = true;
+        for predicate in &predicates {
+            match evaluator.evaluate(predicate, &row_ctx) {
                 Ok(v) if v.is_truthy() => continue,
-                Ok(_) => return false,
+                Ok(_) => keep = false,
                 Err(err) => {
                     tracing::warn!(
                         entity_type,
                         error = %err,
                         "read access predicate failed to evaluate; row dropped"
                     );
-                    return false;
+                    keep = false;
                 }
             }
+            break;
         }
-        true
-    });
+        row_ctx.entity = std::sync::Arc::clone(&ctx.entity);
+        if keep {
+            rows.push(std::sync::Arc::try_unwrap(shared).unwrap_or_else(|held| (*held).clone()));
+        }
+    }
     tracing::debug!(
         target: crate::logging::ns::RUNTIME_FETCH,
         entity = %entity_type,
@@ -490,10 +504,9 @@ pub fn is_access_denied_error(msg: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::evaluator::ValueMap;
     use super::*;
     use crate::evaluator::BindingContextBuilder;
-    
+    use crate::evaluator::ValueMap;
 
     fn row(id: &str, owner: &str) -> Value {
         let mut m = ValueMap::new();

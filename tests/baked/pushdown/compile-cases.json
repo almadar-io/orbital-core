@@ -1,0 +1,1351 @@
+{
+  "name": "pushdown-compile-cases",
+  "entity": "Ticket",
+  "requiredFields": [
+    "id",
+    "priority",
+    "status"
+  ],
+  "note": "Each case is one fetch's filter and/or @read policy compiled for the entity's required fields. `compiled` is the RowQuery slot(s) the TS compiler (core row-predicate.ts) and the Rust compiler (orbital-core row_query.rs compile_predicate) both produce; `interpreted` is the reason of kernel.fetch.pushdown-fallback when the fetch stays on the interpreter.",
+  "cases": [
+    {
+      "name": "order-required",
+      "why": "an ordering comparison on a required field compiles",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          ">",
+          [
+            "object/get",
+            "@entity",
+            "priority"
+          ],
+          3
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "compare",
+            "field": "priority",
+            "op": ">",
+            "value": 3
+          }
+        }
+      }
+    },
+    {
+      "name": "order-optional",
+      "why": "an ordering comparison on a field that may be missing stays interpreted: the evaluator reads missing as below a number",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          ">",
+          [
+            "object/get",
+            "@entity",
+            "score"
+          ],
+          3
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "order-optional-flipped",
+      "why": "the constant on the left flips the operator and changes nothing about the decision",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "<",
+          3,
+          [
+            "object/get",
+            "@entity",
+            "score"
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "order-on-id",
+      "why": "id is always required",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          ">",
+          [
+            "object/get",
+            "@entity",
+            "id"
+          ],
+          "a"
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "compare",
+            "field": "id",
+            "op": ">",
+            "value": "a"
+          }
+        }
+      }
+    },
+    {
+      "name": "order-optional-inside-and",
+      "why": "one undecidable conjunct keeps the whole filter interpreted (no conjunct is dropped)",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ],
+          [
+            "<=",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            3
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "order-required-under-not",
+      "why": "a required ordering field stays compilable under not",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "not",
+          [
+            "<",
+            [
+              "object/get",
+              "@entity",
+              "priority"
+            ],
+            3
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "not",
+            "of": {
+              "kind": "compare",
+              "field": "priority",
+              "op": "<",
+              "value": 3
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "equals-optional",
+      "why": "equality has no null gap",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "score"
+          ],
+          3
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "compare",
+            "field": "score",
+            "op": "==",
+            "value": 3
+          }
+        }
+      }
+    },
+    {
+      "name": "not-equals-optional",
+      "why": "!= has no null gap",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "!=",
+          [
+            "object/get",
+            "@entity",
+            "score"
+          ],
+          3
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "compare",
+            "field": "score",
+            "op": "!=",
+            "value": 3
+          }
+        }
+      }
+    },
+    {
+      "name": "equals-null",
+      "why": "= null is isNull",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "score"
+          ],
+          null
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "isNull",
+            "field": "score",
+            "isNull": true
+          }
+        }
+      }
+    },
+    {
+      "name": "not-equals-null",
+      "why": "!= null is not isNull",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "!=",
+          [
+            "object/get",
+            "@entity",
+            "score"
+          ],
+          null
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "isNull",
+            "field": "score",
+            "isNull": false
+          }
+        }
+      }
+    },
+    {
+      "name": "member-top-level",
+      "why": "includes errors on a missing operand in the evaluator, which drops the row: equal to a false leaf in a top-level chain",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "a",
+            "b"
+          ],
+          [
+            "object/get",
+            "@entity",
+            "title"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "member",
+            "field": "title",
+            "values": [
+              "a",
+              "b"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "member-in-and-chain",
+      "why": "still a top-level and chain",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            "array/includes",
+            [
+              "a",
+              "b"
+            ],
+            [
+              "object/get",
+              "@entity",
+              "title"
+            ]
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "all",
+            "of": [
+              {
+                "kind": "member",
+                "field": "title",
+                "values": [
+                  "a",
+                  "b"
+                ]
+              },
+              {
+                "kind": "compare",
+                "field": "status",
+                "op": "==",
+                "value": "open"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "member-under-or",
+      "why": "an error under or drops the row while the predicate could still hold through the other branch",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "array/includes",
+            [
+              "a",
+              "b"
+            ],
+            [
+              "object/get",
+              "@entity",
+              "title"
+            ]
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "member-under-not",
+      "why": "an error under not drops the row while not(false) holds",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "not",
+          [
+            "array/includes",
+            [
+              "a",
+              "b"
+            ],
+            [
+              "object/get",
+              "@entity",
+              "title"
+            ]
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "member-and-inside-or",
+      "why": "an and nested in an or is no longer a top-level chain",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "and",
+            [
+              "array/includes",
+              [
+                "a",
+                "b"
+              ],
+              [
+                "object/get",
+                "@entity",
+                "title"
+              ]
+            ],
+            [
+              "=",
+              [
+                "object/get",
+                "@entity",
+                "status"
+              ],
+              "open"
+            ]
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "closed"
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "member-under-or-required",
+      "why": "a required field cannot be missing, so includes compiles anywhere",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "array/includes",
+            [
+              "open",
+              "closed"
+            ],
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ]
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "priority"
+            ],
+            1
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "any",
+            "of": [
+              {
+                "kind": "member",
+                "field": "status",
+                "values": [
+                  "open",
+                  "closed"
+                ]
+              },
+              {
+                "kind": "compare",
+                "field": "priority",
+                "op": "==",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "has-element-top-level",
+      "why": "array/includes over a list field, top level",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "object/get",
+            "@entity",
+            "tags"
+          ],
+          "a"
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "hasElement",
+            "field": "tags",
+            "value": "a"
+          }
+        }
+      }
+    },
+    {
+      "name": "has-element-under-not",
+      "why": "same error rule as member",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "not",
+          [
+            "array/includes",
+            [
+              "object/get",
+              "@entity",
+              "tags"
+            ],
+            "a"
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "contains-top-level",
+      "why": "case-sensitive substring, top level",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "str/includes",
+          [
+            "object/get",
+            "@entity",
+            "title"
+          ],
+          "Alpha"
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "contains",
+            "field": "title",
+            "text": "Alpha",
+            "caseSensitive": true
+          }
+        }
+      }
+    },
+    {
+      "name": "contains-under-or",
+      "why": "str/includes errors on a missing operand",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "str/includes",
+            [
+              "object/get",
+              "@entity",
+              "title"
+            ],
+            "Alpha"
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "contains-ci-top-level",
+      "why": "lower-cased haystack, lower-cased needle",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "str/includes",
+          [
+            "str/lower",
+            [
+              "object/get",
+              "@entity",
+              "title"
+            ]
+          ],
+          "alpha"
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "contains",
+            "field": "title",
+            "text": "alpha",
+            "caseSensitive": false
+          }
+        }
+      }
+    },
+    {
+      "name": "contains-ci-upper-needle",
+      "why": "a case-insensitive needle that is not already lower case has no predicate form",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "str/includes",
+          [
+            "str/lower",
+            [
+              "object/get",
+              "@entity",
+              "title"
+            ]
+          ],
+          "Alpha"
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "contains-ci-under-not",
+      "why": "the lower-cased form errors on a missing operand too",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "not",
+          [
+            "str/includes",
+            [
+              "str/lower",
+              [
+                "object/get",
+                "@entity",
+                "title"
+              ]
+            ],
+            "alpha"
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "policy-with-viewer",
+      "why": "@user folds to the viewer's id",
+      "bindings": {
+        "user": {
+          "id": "u1",
+          "role": "member"
+        }
+      },
+      "sexpr": {
+        "readPolicy": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "owner"
+          ],
+          "@user.id"
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "policy": {
+            "kind": "compare",
+            "field": "owner",
+            "op": "==",
+            "value": "u1"
+          }
+        }
+      }
+    },
+    {
+      "name": "policy-without-viewer",
+      "why": "a policy that cannot be specialised hides every row",
+      "bindings": {},
+      "sexpr": {
+        "readPolicy": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "owner"
+          ],
+          "@user.id"
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "policy": {
+            "kind": "const",
+            "value": false
+          }
+        }
+      }
+    },
+    {
+      "name": "filter-without-viewer",
+      "why": "a filter that cannot be specialised is interpreted",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "owner"
+          ],
+          "@user.id"
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "policy-and-filter",
+      "why": "both compile and are carried separately",
+      "bindings": {
+        "user": {
+          "id": "u1",
+          "role": "member"
+        }
+      },
+      "sexpr": {
+        "readPolicy": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "owner"
+          ],
+          "@user.id"
+        ],
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ],
+          "open"
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "policy": {
+            "kind": "compare",
+            "field": "owner",
+            "op": "==",
+            "value": "u1"
+          },
+          "filter": {
+            "kind": "compare",
+            "field": "status",
+            "op": "==",
+            "value": "open"
+          }
+        }
+      }
+    },
+    {
+      "name": "payload-list-membership",
+      "why": "a list binding folds to the member values",
+      "bindings": {
+        "payload": {
+          "ids": [
+            "a",
+            "b"
+          ]
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          "@payload.ids",
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "member",
+            "field": "status",
+            "values": [
+              "a",
+              "b"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "function-call-on-field",
+      "why": "a function call on a field has no predicate form",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "str/lower",
+            [
+              "object/get",
+              "@entity",
+              "title"
+            ]
+          ],
+          "x"
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "two-fields",
+      "why": "a comparison between two fields has no predicate form",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "title"
+          ],
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "row-path",
+      "why": "a nested path is not a flat field",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "a.b"
+          ],
+          1
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "unknown-operator",
+      "why": "an operator with no predicate form",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/some",
+          [
+            "object/get",
+            "@entity",
+            "tags"
+          ],
+          [
+            "lambda",
+            [
+              "t"
+            ],
+            [
+              "=",
+              "?t",
+              "a"
+            ]
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "boolean-literal",
+      "why": "a boolean literal is a const",
+      "bindings": {},
+      "sexpr": {
+        "filter": true
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "const",
+            "value": true
+          }
+        }
+      }
+    },
+    {
+      "name": "or-of-equalities",
+      "why": "or maps to any",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "closed"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "any",
+            "of": [
+              {
+                "kind": "compare",
+                "field": "status",
+                "op": "==",
+                "value": "open"
+              },
+              {
+                "kind": "compare",
+                "field": "status",
+                "op": "==",
+                "value": "closed"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "order-guarded-not-null",
+      "why": "a presence guard among the direct conjuncts makes the ordering on an optional field compile: a null field fails the whole conjunction in both worlds",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            "!=",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            null
+          ],
+          [
+            ">",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            3
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "all",
+            "of": [
+              {
+                "kind": "isNull",
+                "field": "score",
+                "isNull": false
+              },
+              {
+                "kind": "compare",
+                "field": "score",
+                "op": ">",
+                "value": 3
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "order-guarded-after",
+      "why": "the guard may follow the ordering: the conjunction is false for a null field either way",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            ">",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            3
+          ],
+          [
+            "not",
+            [
+              "=",
+              [
+                "object/get",
+                "@entity",
+                "score"
+              ],
+              null
+            ]
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "all",
+            "of": [
+              {
+                "kind": "compare",
+                "field": "score",
+                "op": ">",
+                "value": 3
+              },
+              {
+                "kind": "not",
+                "of": {
+                  "kind": "isNull",
+                  "field": "score",
+                  "isNull": true
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "order-guarded-required-number",
+      "why": "validate/required is a null check on a field ordered against a number",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            "validate/required",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ]
+          ],
+          [
+            "<=",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            3
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "all",
+            "of": [
+              {
+                "kind": "isNull",
+                "field": "score",
+                "isNull": false
+              },
+              {
+                "kind": "compare",
+                "field": "score",
+                "op": "<=",
+                "value": 3
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "order-guarded-nested",
+      "why": "a guard covers the orderings nested under or inside the same and",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            "!=",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            null
+          ],
+          [
+            "or",
+            [
+              ">",
+              [
+                "object/get",
+                "@entity",
+                "score"
+              ],
+              9
+            ],
+            [
+              "<",
+              [
+                "object/get",
+                "@entity",
+                "score"
+              ],
+              1
+            ]
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "all",
+            "of": [
+              {
+                "kind": "isNull",
+                "field": "score",
+                "isNull": false
+              },
+              {
+                "kind": "any",
+                "of": [
+                  {
+                    "kind": "compare",
+                    "field": "score",
+                    "op": ">",
+                    "value": 9
+                  },
+                  {
+                    "kind": "compare",
+                    "field": "score",
+                    "op": "<",
+                    "value": 1
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "order-guard-other-field",
+      "why": "a guard on another field covers nothing",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            "!=",
+            [
+              "object/get",
+              "@entity",
+              "title"
+            ],
+            null
+          ],
+          [
+            ">",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            3
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "order-guard-under-or",
+      "why": "a guard that is a disjunct is no guard",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "!=",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            null
+          ],
+          [
+            ">",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            3
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "order-guard-in-sibling-and",
+      "why": "a guard inside a nested and covers only that and's own conjuncts",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            "and",
+            [
+              "!=",
+              [
+                "object/get",
+                "@entity",
+                "score"
+              ],
+              null
+            ],
+            true
+          ],
+          [
+            ">",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            3
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "null-semantics"
+      }
+    },
+    {
+      "name": "validate-required-without-number-ordering",
+      "why": "validate/required also rejects an empty string or list, so it is a null check only next to a number ordering",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            "validate/required",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ]
+          ],
+          [
+            "==",
+            [
+              "object/get",
+              "@entity",
+              "score"
+            ],
+            3
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    }
+  ]
+}

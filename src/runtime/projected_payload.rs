@@ -14,10 +14,21 @@ pub fn projected_payload<'a>(
 ) -> ValueMap {
     let mut out = ValueMap::new();
     for field in fields {
-        let Some(projection) = &field.projected_from else { continue };
-        let Some(row) = rows_for(&projection.type_name).and_then(|rows| rows.first()) else { continue };
-        let value = row.get_path(&projection.field).cloned().unwrap_or(Value::Null);
-        let value = if field.field_type.starts_with('[') { Value::Array(vec![value]) } else { value };
+        let Some(projection) = &field.projected_from else {
+            continue;
+        };
+        let Some(row) = rows_for(&projection.type_name).and_then(|rows| rows.first()) else {
+            continue;
+        };
+        let value = row
+            .get_path(&projection.field)
+            .cloned()
+            .unwrap_or(Value::Null);
+        let value = if field.field_type.starts_with('[') {
+            Value::Array(vec![value])
+        } else {
+            value
+        };
         out.insert(field.name.clone(), value);
     }
     out
@@ -34,8 +45,12 @@ pub fn projected_through_mapping<'a>(
     let projected = projected_payload(target_fields, rows_for);
     let mut out = ValueMap::new();
     for (target_field, expr) in mapping {
-        let SExpression::String(binding) = expr else { continue };
-        let Some(source_field) = binding.strip_prefix("@payload.") else { continue };
+        let SExpression::String(binding) = expr else {
+            continue;
+        };
+        let Some(source_field) = binding.strip_prefix("@payload.") else {
+            continue;
+        };
         if source_field.contains('.') {
             continue;
         }

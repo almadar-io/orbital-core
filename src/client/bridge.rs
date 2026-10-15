@@ -7,6 +7,7 @@
 //! conversion logic.
 
 use crate::client::http::BridgeError;
+use crate::runtime::row_query::{RowPage, RowSetRef};
 use crate::{EventRequest, EventResponse, Value};
 
 /// Abstract event transport. `Send + Sync` so the desktop/game clients can move an
@@ -40,6 +41,15 @@ pub trait ServerBridge: Send + Sync {
             request.target_trait.as_deref(),
             request.payload.clone().unwrap_or(Value::Null),
         )
+    }
+
+    /// `reference` resolved by the server that holds the rows, for the viewer this bridge is signed in as (the
+    /// server's one resolver, `@read` applied there). A bridge with no such route refuses rather than answering
+    /// an empty page.
+    fn resolve_rows(&self, _reference: &RowSetRef) -> Result<RowPage, BridgeError> {
+        Err(BridgeError::InvalidRequest(
+            "this bridge cannot resolve a row set".to_string(),
+        ))
     }
 
     /// Run one scheduled tick of `trait_name` (effects + guard) against the in-memory
@@ -82,6 +92,10 @@ impl ServerBridge for crate::client::http::SyncServerBridge {
         // Disambiguate from the trait method (same name) — posts `request` AS-IS,
         // preserving `traits`/`entity_by_trait`/`client_id` the default impl drops.
         crate::client::http::SyncServerBridge::send_request(self, orbital, request)
+    }
+
+    fn resolve_rows(&self, reference: &RowSetRef) -> Result<RowPage, BridgeError> {
+        crate::client::http::SyncServerBridge::resolve_rows(self, reference)
     }
 }
 
@@ -219,6 +233,12 @@ impl KernelBridge {
 }
 
 impl ServerBridge for KernelBridge {
+    fn resolve_rows(&self, reference: &RowSetRef) -> Result<RowPage, BridgeError> {
+        self.kernel
+            .resolve_rows(reference, &self.kernel.get_current_user())
+            .map_err(BridgeError::Server)
+    }
+
     /// A `mount` request runs every seed's lifecycle event in one dispatch, as
     /// `orbital-server`'s event route does; anything else is a single event.
     fn send_request(

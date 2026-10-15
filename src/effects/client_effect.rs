@@ -63,9 +63,16 @@ impl ClientEffect {
     /// shape did — this is that convenience, kept in one place instead of re-merged at
     /// every call site.
     pub fn render_ui_value(&self) -> Option<Value> {
-        let ClientEffect::RenderUi { config, props, .. } = self else { return None };
-        let mut merged = config.clone().unwrap_or_else(|| Value::Object(Default::default()));
-        if let (Some(extra), Some(base)) = (props.as_ref().and_then(Value::as_object), merged.as_object_mut()) {
+        let ClientEffect::RenderUi { config, props, .. } = self else {
+            return None;
+        };
+        let mut merged = config
+            .clone()
+            .unwrap_or_else(|| Value::Object(Default::default()));
+        if let (Some(extra), Some(base)) = (
+            props.as_ref().and_then(Value::as_object),
+            merged.as_object_mut(),
+        ) {
             for (k, v) in extra {
                 base.insert(k.clone(), v.clone());
             }
@@ -77,11 +84,19 @@ impl ClientEffect {
         match effect {
             Effect::RenderUi { slot, content } => Some(ClientEffect::RenderUi {
                 slot: slot.clone(),
-                config: if content.is_null() { None } else { Some(content.clone()) },
+                config: if content.is_null() {
+                    None
+                } else {
+                    Some(content.clone())
+                },
                 props: None,
                 priority: None,
             }),
-            Effect::Navigate { path, params, options } => Some(ClientEffect::Navigate {
+            Effect::Navigate {
+                path,
+                params,
+                options,
+            } => Some(ClientEffect::Navigate {
                 path: path.clone(),
                 params: params.as_ref().map(|p| Value::Object(p.clone())),
                 options: options.clone(),
@@ -95,7 +110,10 @@ impl ClientEffect {
 /// `Some(value)` serializes as itself; `None` serializes as JSON `null` — the array
 /// grammar has no "absent slot", only a present-but-null one, once a later element
 /// forces the tuple to that arity.
-fn serialize_opt_value<S: SerializeSeq>(seq: &mut S, value: Option<&Value>) -> Result<(), S::Error> {
+fn serialize_opt_value<S: SerializeSeq>(
+    seq: &mut S,
+    value: Option<&Value>,
+) -> Result<(), S::Error> {
     match value {
         Some(v) => seq.serialize_element(v),
         None => seq.serialize_element(&Value::Null),
@@ -108,7 +126,12 @@ impl Serialize for ClientEffect {
         S: Serializer,
     {
         match self {
-            ClientEffect::RenderUi { slot, config, props, priority } => {
+            ClientEffect::RenderUi {
+                slot,
+                config,
+                props,
+                priority,
+            } => {
                 let len = if priority.is_some() {
                     5
                 } else if props.is_some() {
@@ -131,7 +154,11 @@ impl Serialize for ClientEffect {
                 }
                 seq.end()
             }
-            ClientEffect::Navigate { path, params, options } => {
+            ClientEffect::Navigate {
+                path,
+                params,
+                options,
+            } => {
                 let len = if options.is_some() {
                     4
                 } else if params.is_some() {
@@ -182,9 +209,7 @@ impl<'de> Visitor<'de> for ClientEffectVisitor {
             .ok_or_else(|| DeError::custom("client-effect tuple: missing tag"))?
             .to_string();
 
-        let opt = |v: Option<&Value>| -> Option<Value> {
-            v.filter(|x| !x.is_null()).cloned()
-        };
+        let opt = |v: Option<&Value>| -> Option<Value> { v.filter(|x| !x.is_null()).cloned() };
 
         match tag.as_str() {
             "render-ui" => {
@@ -203,7 +228,12 @@ impl<'de> Visitor<'de> for ClientEffectVisitor {
                     .get(4)
                     .and_then(|v| if v.is_null() { None } else { v.as_number() })
                     .map(|n| n as u32);
-                Ok(ClientEffect::RenderUi { slot, config, props, priority })
+                Ok(ClientEffect::RenderUi {
+                    slot,
+                    config,
+                    props,
+                    priority,
+                })
             }
             "navigate" => {
                 if items.len() < 2 {
@@ -218,14 +248,23 @@ impl<'de> Visitor<'de> for ClientEffectVisitor {
                 let params = opt(items.get(2));
                 let options = match items.get(3) {
                     Some(v) if !v.is_null() => Some(NavigateOptions {
-                        crumb: v.get_path("crumb").and_then(Value::as_str).map(str::to_string),
+                        crumb: v
+                            .get_path("crumb")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
                     }),
                     _ => None,
                 };
-                Ok(ClientEffect::Navigate { path, params, options })
+                Ok(ClientEffect::Navigate {
+                    path,
+                    params,
+                    options,
+                })
             }
             "navigate-back" => Ok(ClientEffect::NavigateBack),
-            other => Err(DeError::custom(format!("unknown client-effect tag: {other}"))),
+            other => Err(DeError::custom(format!(
+                "unknown client-effect tag: {other}"
+            ))),
         }
     }
 }
@@ -241,9 +280,8 @@ impl<'de> Deserialize<'de> for ClientEffect {
 
 #[cfg(test)]
 mod tests {
-    use crate::evaluator::ValueMap;
     use super::*;
-    
+    use crate::evaluator::ValueMap;
 
     fn roundtrip(effect: &ClientEffect, expected_json: &str) {
         let json = serde_json::to_string(effect).unwrap();
@@ -325,10 +363,7 @@ mod tests {
             )]))),
             priority: Some(1),
         };
-        roundtrip(
-            &effect,
-            r#"["render-ui","toast",{},{"message":"Saved"},1]"#,
-        );
+        roundtrip(&effect, r#"["render-ui","toast",{},{"message":"Saved"},1]"#);
     }
 
     #[test]
@@ -364,8 +399,7 @@ mod tests {
         // Arity-2 is what we EMIT for no params; but arity-3 with a null params slot
         // must still decode as the no-params case (the wire is broader than what we
         // choose to emit — TS may send `undefined` there, which JSON-stringifies null).
-        let decoded: ClientEffect =
-            serde_json::from_str(r#"["navigate","/notes",null]"#).unwrap();
+        let decoded: ClientEffect = serde_json::from_str(r#"["navigate","/notes",null]"#).unwrap();
         assert_eq!(decoded, effect);
     }
 
@@ -377,7 +411,9 @@ mod tests {
                 "id".to_string(),
                 Value::String("42".to_string()),
             )]))),
-            options: Some(NavigateOptions { crumb: Some("Note 42".to_string()) }),
+            options: Some(NavigateOptions {
+                crumb: Some("Note 42".to_string()),
+            }),
         };
         roundtrip(
             &effect,
@@ -426,11 +462,19 @@ mod tests {
 
     #[test]
     fn from_effect_navigate() {
-        let effect = Effect::Navigate { path: "/notes".to_string(), params: None, options: None };
+        let effect = Effect::Navigate {
+            path: "/notes".to_string(),
+            params: None,
+            options: None,
+        };
         let client = ClientEffect::from_effect(&effect).unwrap();
         assert_eq!(
             client,
-            ClientEffect::Navigate { path: "/notes".to_string(), params: None, options: None }
+            ClientEffect::Navigate {
+                path: "/notes".to_string(),
+                params: None,
+                options: None
+            }
         );
     }
 
@@ -439,7 +483,9 @@ mod tests {
         let effect = Effect::Navigate {
             path: "/notes/:id".to_string(),
             params: None,
-            options: Some(NavigateOptions { crumb: Some("My Note".to_string()) }),
+            options: Some(NavigateOptions {
+                crumb: Some("My Note".to_string()),
+            }),
         };
         let client = ClientEffect::from_effect(&effect).unwrap();
         assert_eq!(
@@ -447,7 +493,9 @@ mod tests {
             ClientEffect::Navigate {
                 path: "/notes/:id".to_string(),
                 params: None,
-                options: Some(NavigateOptions { crumb: Some("My Note".to_string()) }),
+                options: Some(NavigateOptions {
+                    crumb: Some("My Note".to_string())
+                }),
             }
         );
     }
@@ -475,8 +523,14 @@ mod tests {
             priority: None,
         };
         let merged = effect.render_ui_value().unwrap();
-        assert_eq!(merged.get_path("type").and_then(Value::as_str), Some("form"));
-        assert_eq!(merged.get_path("title").and_then(Value::as_str), Some("fresh"));
+        assert_eq!(
+            merged.get_path("type").and_then(Value::as_str),
+            Some("form")
+        );
+        assert_eq!(
+            merged.get_path("title").and_then(Value::as_str),
+            Some("fresh")
+        );
     }
 
     #[test]
@@ -486,7 +540,10 @@ mod tests {
 
     #[test]
     fn from_effect_non_client_effect_is_none() {
-        let effect = Effect::Emit { event: "X".to_string(), payload: Value::Null };
+        let effect = Effect::Emit {
+            event: "X".to_string(),
+            payload: Value::Null,
+        };
         assert_eq!(ClientEffect::from_effect(&effect), None);
     }
 }

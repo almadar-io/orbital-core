@@ -4,22 +4,25 @@
 //! and a server-side persistence adapter so the kernel can read and write entity
 //! data without knowing which environment it is running in.
 
+use super::row_query::{
+    apply_write, CreateIds, QueryRun, RowIdPage, RowPage, RowQuery, RowTable, RowWriteBatch,
+    RowWriteFailureMode, RowWriteOp, RowWriteOutcome, ScanControl,
+};
 use crate::evaluator::Value;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-/// Abstract source for entity data.
+/// Abstract source for entity data. Rows travel as `Arc<Value>`, so a read hands out a pointer, not a copy.
 pub trait EntitySource: Send + Sync {
     /// Read an entity by type and ID.
-    fn read(&self, entity_type: &str, id: &str) -> Result<Value, String>;
+    fn read(&self, entity_type: &str, id: &str) -> Result<Arc<Value>, String>;
 
     /// The row, or `None` when no such row exists. A store that tracks absence says so here; the default
     /// reads the row and takes `Ok(Null)` as absent, so an `Err` stays a failure rather than a miss.
-    fn find(&self, entity_type: &str, id: &str) -> Result<Option<Value>, String> {
-        match self.read(entity_type, id)? {
-            Value::Null => Ok(None),
-            row => Ok(Some(row)),
-        }
+    fn find(&self, entity_type: &str, id: &str) -> Result<Option<Arc<Value>>, String> {
+        let row = self.read(entity_type, id)?;
+        Ok(if row.is_null() { None } else { Some(row) })
     }
 
     /// Write entity data, creating or updating as needed.
@@ -38,7 +41,52 @@ pub trait EntitySource: Send + Sync {
     fn count(&self) -> usize;
 
     /// List all entities of a given type (empty vec if none).
-    fn list(&self, entity_type: &str) -> Result<Vec<Value>, String>;
+    fn list(&self, entity_type: &str) -> Result<Vec<Arc<Value>>, String>;
+
+    /// Offer each row of `entity_type` to `visit` until it says stop. The default lists the table and
+    /// wraps each row; a store that holds `Arc` rows overrides it and hands out pointers.
+    fn scan(
+        &self,
+        entity_type: &str,
+        visit: &mut dyn FnMut(&Arc<Value>) -> ScanControl,
+    ) -> Result<(), String> {
+        for row in self.list(entity_type)? {
+            if visit(&row) == ScanControl::Stop {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// The page of rows matching `query.policy AND query.filter`, ordered and windowed. The default runs the
+    /// query over [`Self::scan`]; a store with a native query overrides it. `None` = this source cannot answer.
+    fn query_page(&self, entity_type: &str, query: &RowQuery) -> Option<Result<RowPage, String>> {
+        let mut run = QueryRun::new(query);
+        if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
+            return Some(Err(e));
+        }
+        Some(Ok(run.finish()))
+    }
+
+    /// The ids of the page `query_page` would return, no row cloned.
+    fn query_ids(&self, entity_type: &str, query: &RowQuery) -> Option<Result<RowIdPage, String>> {
+        let mut run = QueryRun::new(query);
+        if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
+            return Some(Err(e));
+        }
+        Some(Ok(run.finish_ids()))
+    }
+
+    /// One conditional write (the row is tested and written in one step). `None` = not supported here.
+    fn write_where(&self, _op: &RowWriteOp) -> Option<Result<RowWriteOutcome, String>> {
+        None
+    }
+
+    /// A batch of conditional writes: `atomic` all-or-nothing, `stop` ending at the first failure. `None` = not
+    /// supported here; nothing was written.
+    fn write_batch(&self, _batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
+        None
+    }
 
     /// Bind `entity_type` to its `persistent:` collection. Entities bound to one
     /// collection are one table (JS `MockPersistenceAdapter`, the TS shell); a
@@ -50,7 +98,7 @@ pub trait EntitySource: Send + Sync {
 #[derive(Debug, Default)]
 pub struct InMemoryEntityCache {
     /// Rows per entity in insertion order, as the JS store's `Map`.
-    data: RwLock<HashMap<String, indexmap::IndexMap<String, Value>>>,
+    data: RwLock<HashMap<String, RowTable>>,
     /// Mints ids for id-less creates, one counter across entity types (JS `InMemoryPersistence`).
     id_counter: std::sync::atomic::AtomicUsize,
     /// Entity name -> its bound collection: the store key it reads and writes.
@@ -71,10 +119,50 @@ impl InMemoryEntityCache {
             .cloned()
             .unwrap_or_else(|| entity_type.to_string())
     }
+
+    fn next_id(&self, entity_type: &str) -> String {
+        let n = self
+            .id_counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        format!("{entity_type}-{n}")
+    }
+
+    /// Apply `ops` under one write lock; `atomic` restores every table on a failure.
+    fn apply_batch(&self, batch: &RowWriteBatch) -> Vec<RowWriteOutcome> {
+        let mut cache = self.data.write();
+        let snapshot = (batch.on_failure == RowWriteFailureMode::Atomic && batch.ops.len() > 1)
+            .then(|| cache.clone());
+        let mut outcomes: Vec<RowWriteOutcome> = Vec::with_capacity(batch.ops.len());
+        for op in &batch.ops {
+            let entity = op.entity_type().to_string();
+            let table = cache.entry(self.store_key(&entity)).or_default();
+            let mut mint = || self.next_id(&entity);
+            let outcome = apply_write(table, op, &mut CreateIds::Mint(&mut mint));
+            let applied = outcome.applied();
+            outcomes.push(outcome);
+            if !applied {
+                if batch.on_failure == RowWriteFailureMode::Atomic {
+                    if let Some(snapshot) = snapshot {
+                        *cache = snapshot;
+                    }
+                    let failing = outcomes.pop().unwrap_or(RowWriteOutcome::RolledBack);
+                    let mut undone: Vec<RowWriteOutcome> = outcomes
+                        .iter()
+                        .map(|_| RowWriteOutcome::RolledBack)
+                        .collect();
+                    undone.push(failing);
+                    return undone;
+                }
+                break;
+            }
+        }
+        outcomes
+    }
 }
 
 impl EntitySource for InMemoryEntityCache {
-    fn read(&self, entity_type: &str, id: &str) -> Result<Value, String> {
+    fn read(&self, entity_type: &str, id: &str) -> Result<Arc<Value>, String> {
         let cache = self.data.read();
         cache
             .get(&self.store_key(entity_type))
@@ -83,7 +171,7 @@ impl EntitySource for InMemoryEntityCache {
             .ok_or_else(|| format!("Entity not found in cache: {}:{}", entity_type, id))
     }
 
-    fn find(&self, entity_type: &str, id: &str) -> Result<Option<Value>, String> {
+    fn find(&self, entity_type: &str, id: &str) -> Result<Option<Arc<Value>>, String> {
         Ok(self
             .data
             .read()
@@ -104,7 +192,7 @@ impl EntitySource for InMemoryEntityCache {
         // (e.g. board `current*` / tabs `activeTab`). Incoming wins on conflict; the
         // canonical `id` is stamped last. With no existing record — or a non-object on
         // either side — this degrades to a plain insert (first write / scalar entity).
-        let merged = match (type_cache.get(id), data) {
+        let merged = match (type_cache.get(id).map(|row| &**row), data) {
             (Some(Value::Object(existing)), Value::Object(incoming)) => {
                 let mut obj = existing.clone();
                 for (k, v) in incoming {
@@ -118,7 +206,7 @@ impl EntitySource for InMemoryEntityCache {
         if let Some(obj) = record.as_object_mut() {
             obj.insert("id".to_string(), Value::String(id.to_string()));
         }
-        type_cache.insert(id.to_string(), record.clone());
+        type_cache.insert(id.to_string(), Arc::new(record.clone()));
         Ok(record)
     }
 
@@ -129,13 +217,7 @@ impl EntitySource for InMemoryEntityCache {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                let n = self
-                    .id_counter
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                    + 1;
-                format!("{entity_type}-{n}")
-            });
+            .unwrap_or_else(|| self.next_id(entity_type));
         let data = match data {
             Value::Object(obj) if !obj.contains_key("id") => {
                 let mut obj = obj.clone();
@@ -171,10 +253,10 @@ impl EntitySource for InMemoryEntityCache {
             .sum()
     }
 
-    fn list(&self, entity_type: &str) -> Result<Vec<Value>, String> {
+    fn list(&self, entity_type: &str) -> Result<Vec<Arc<Value>>, String> {
         let key = self.store_key(entity_type);
         let cache = self.data.read();
-        let rows: Vec<Value> = cache
+        let rows: Vec<Arc<Value>> = cache
             .get(&key)
             .map(|type_cache| type_cache.values().cloned().collect())
             .unwrap_or_default();
@@ -188,6 +270,41 @@ impl EntitySource for InMemoryEntityCache {
         Ok(rows)
     }
 
+    /// Pointer copies under the read lock; the lock is released before any predicate runs.
+    fn scan(
+        &self,
+        entity_type: &str,
+        visit: &mut dyn FnMut(&Arc<Value>) -> ScanControl,
+    ) -> Result<(), String> {
+        let rows: Vec<Arc<Value>> = self
+            .data
+            .read()
+            .get(&self.store_key(entity_type))
+            .map(|type_cache| type_cache.values().cloned().collect())
+            .unwrap_or_default();
+        for row in &rows {
+            if visit(row) == ScanControl::Stop {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_where(&self, op: &RowWriteOp) -> Option<Result<RowWriteOutcome, String>> {
+        let batch = RowWriteBatch {
+            ops: vec![op.clone()],
+            on_failure: RowWriteFailureMode::Stop,
+        };
+        Some(Ok(self
+            .apply_batch(&batch)
+            .pop()
+            .unwrap_or(RowWriteOutcome::RolledBack)))
+    }
+
+    fn write_batch(&self, batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
+        Some(Ok(self.apply_batch(batch)))
+    }
+
     fn bind_collection(&self, entity_type: &str, collection: &str) {
         self.collections
             .write()
@@ -197,8 +314,8 @@ impl EntitySource for InMemoryEntityCache {
 
 #[cfg(test)]
 mod tests {
-    use crate::evaluator::ValueMap;
     use super::*;
+    use crate::evaluator::ValueMap;
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
         let mut m = ValueMap::new();

@@ -17,7 +17,7 @@ pub struct StateMachineManager {
     core: StateMachineCore,
 
     /// Registered trait definitions by name
-    trait_definitions: HashMap<String, TraitDefinition>,
+    trait_definitions: HashMap<String, Arc<TraitDefinition>>,
 
     /// Current state for each trait instance
     states: HashMap<TraitInstanceId, TraitState>,
@@ -59,7 +59,7 @@ impl StateMachineManager {
     /// Register a trait definition
     pub fn register_trait(&mut self, trait_def: TraitDefinition) {
         self.trait_definitions
-            .insert(trait_def.name.clone(), trait_def);
+            .insert(trait_def.name.clone(), Arc::new(trait_def));
     }
 
     /// Register multiple trait definitions
@@ -71,7 +71,7 @@ impl StateMachineManager {
 
     /// Get a registered trait definition
     pub fn get_trait(&self, name: &str) -> Option<&TraitDefinition> {
-        self.trait_definitions.get(name)
+        self.trait_definitions.get(name).map(|t| &**t)
     }
 
     /// Register an entity store for count queries
@@ -172,7 +172,7 @@ impl StateMachineManager {
         let mut ctx = base_ctx.child();
         ctx.set_entity_stores(Arc::clone(entity_stores));
 
-        let result = core.process_event(&trait_def.state_machine, &current_state, payload, &ctx)?;
+        let result = core.process_event_shared(trait_def, &current_state, payload, &ctx)?;
 
         if result.executed {
             if let Some(new_state) = &result.new_state {
@@ -221,7 +221,7 @@ impl StateMachineManager {
         let ctx = Self::build_context_with(state, entity_stores);
 
         // Process through core
-        let result = core.process_event(&trait_def.state_machine, &current_state, payload, &ctx)?;
+        let result = core.process_event_shared(trait_def, &current_state, payload, &ctx)?;
 
         // Update state if transition executed
         if result.executed {
@@ -275,7 +275,7 @@ impl StateMachineManager {
         ctx.set_entity(entity_data);
 
         // Process through core
-        let result = core.process_event(&trait_def.state_machine, &current_state, payload, &ctx)?;
+        let result = core.process_event_shared(trait_def, &current_state, payload, &ctx)?;
 
         // Update state if transition executed
         if result.executed {
@@ -404,8 +404,8 @@ pub struct ManagerStats {
 
 #[cfg(test)]
 mod tests {
-    use crate::evaluator::ValueMap;
     use super::*;
+    use crate::evaluator::ValueMap;
     use crate::schema::{StateDefinition, StateMachine, StringOrArray, TransitionDefinition};
 
     fn create_user_management_trait() -> TraitDefinition {
@@ -624,7 +624,7 @@ mod tests {
 
         assert!(result.executed);
         assert_eq!(result.new_state, Some("browsing".to_string()));
-        assert_eq!(result.effects.len(), 2); // persist + emit
+        assert_eq!(result.effects().len(), 2); // persist + emit
     }
 
     #[test]
@@ -793,7 +793,7 @@ mod tests {
             )
             .unwrap();
         assert!(result.executed);
-        assert_eq!(result.effects.len(), 2); // persist + emit
+        assert_eq!(result.effects().len(), 2); // persist + emit
         assert_eq!(
             manager
                 .get_state("UserManagement", None)
@@ -933,10 +933,10 @@ mod tests {
                     guard: Some(
                         serde_json::from_str(r#"["=", "@user.role", "clinician"]"#).unwrap(),
                     ),
-                    effects: Some(vec![
-                        serde_json::from_str(r#"["set", "@entity.limitSeen", "@config.limit"]"#)
-                            .unwrap(),
-                    ]),
+                    effects: Some(vec![serde_json::from_str(
+                        r#"["set", "@entity.limitSeen", "@config.limit"]"#,
+                    )
+                    .unwrap()]),
                 }],
             },
             ticks: None,
@@ -995,6 +995,9 @@ mod tests {
         let result2 = manager2
             .process_event_with_ctx("TicketOwner", None, &payload, &other_ctx)
             .unwrap();
-        assert!(!result2.executed, "a non-clinician role must fail the @user.role guard");
+        assert!(
+            !result2.executed,
+            "a non-clinician role must fail the @user.role guard"
+        );
     }
 }

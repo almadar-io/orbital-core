@@ -32,6 +32,7 @@ pub use kind::OperatorKind;
 mod anim;
 mod array;
 mod csv;
+mod digest;
 mod ease;
 mod geo;
 mod grid;
@@ -50,6 +51,7 @@ mod vector;
 pub use anim::*;
 pub use array::*;
 pub use csv::*;
+pub use digest::*;
 pub use ease::*;
 pub use geo::*;
 pub use grid::*;
@@ -290,6 +292,11 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "trimEnd" | "str/trimEnd" => K::StrTrimEndOp,
         "str/repeat" => K::StrRepeatOp,
         "str/reverse" => K::StrReverseOp,
+        "str/encode-uri-component" => K::StrEncodeUriComponentOp,
+        "base64/encode" => K::Base64EncodeOp,
+        "base64/decode" => K::Base64DecodeOp,
+        "hash/sha256" => K::HashSha256Op,
+        "hmac/sha256" => K::HmacSha256Op,
         "titleCase" | "str/titleCase" => K::StrTitleCaseOp,
         "camelCase" | "str/camelCase" => K::StrCamelCaseOp,
         "kebabCase" | "str/kebabCase" => K::StrKebabCaseOp,

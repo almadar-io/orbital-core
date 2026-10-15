@@ -122,6 +122,14 @@ impl ClientKernel {
 
     /// Seed entity rows so a subsequent INIT `fetch`/`list` on `entity_type` returns
     /// them (mirrors `KernelBridge::seed`, sharing the same [`seed_into`] body).
+    /// A row-set reference resolved by the kernel's one resolver ([`crate::runtime::RuntimeKernel::resolve_rows`]).
+    pub fn resolve_rows(
+        &self,
+        reference: &crate::runtime::row_query::RowSetRef,
+    ) -> Result<crate::runtime::row_query::RowPage, String> {
+        self.embedded.resolve_rows(reference)
+    }
+
     pub fn seed(&self, entity_type: &str, rows: Vec<Value>) {
         seed_into(self.embedded.entities().as_ref(), entity_type, &rows);
     }
