@@ -55,6 +55,9 @@ pub struct OirModule {
     /// The program's `egress` origins: the only hosts its `http` effects may reach.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub egress: Vec<String>,
+    /// The program's `os/` grants (closed by default): what its `os/` effects may touch.
+    #[serde(skip_serializing_if = "crate::runtime::os_grants::OsGrants::is_empty", default)]
+    pub os_grants: crate::runtime::os_grants::OsGrants,
     /// Entity names this module `expects` rather than declares — the consumer
     /// side of `expects entity X` / `expects identity X`. NAMES ONLY: no
     /// `OirEntity` is synthesized, so codegen and persistence never mistake an
@@ -133,6 +136,7 @@ impl OirModule {
             services: vec![],
             browser_services: vec![],
             egress: vec![],
+            os_grants: Default::default(),
             expected_entities: vec![],
             locales: vec![],
             named_types: std::collections::BTreeMap::new(),
@@ -599,6 +603,9 @@ pub enum OirType {
     /// `url` is a `data:` URI in mock mode or an object-storage URL in
     /// production. Not a semantic string: it names a stored artifact.
     File,
+    /// Binary value; standard padded base64 string at run time, never
+    /// implicitly a `string`.
+    Bytes,
     Json,
     /// Renderable UI content (a `node`-typed field/knob): a pattern node or
     /// array of them. Distinct from `Json` so codegen can emit the canonical
@@ -773,6 +780,7 @@ pub fn field_shape(field: &FieldDefinition) -> OirType {
         FieldType::Image => OirType::Image,
         FieldType::Money => OirType::Money,
         FieldType::File => OirType::File,
+        FieldType::Bytes => OirType::Bytes,
         FieldType::Array => {
             let inner = field
                 .items

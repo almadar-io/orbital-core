@@ -117,11 +117,17 @@ pub(crate) fn relative(from: &str, to: &str) -> Result<String, String> {
     let to = components(to);
     let shared = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
     if from[shared..].iter().any(|c| c == "..") {
-        return Err("the start path climbs above the shared base, so the route is unknown".to_string());
+        return Err(
+            "the start path climbs above the shared base, so the route is unknown".to_string(),
+        );
     }
     let mut steps: Vec<&str> = vec![".."; from.len() - shared];
     steps.extend(to[shared..].iter().map(String::as_str));
-    Ok(if steps.is_empty() { ".".to_string() } else { steps.join("/") })
+    Ok(if steps.is_empty() {
+        ".".to_string()
+    } else {
+        steps.join("/")
+    })
 }
 
 fn invalid(op: &str, message: String) -> OrbitalError {
@@ -146,7 +152,11 @@ pub struct OsPathNormalizeOp;
 impl Operator for OsPathNormalizeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-normalize", == 1);
-        Ok(Value::String(normalize(&path_arg(&args[0], ctx, "os/path-normalize")?)))
+        Ok(Value::String(normalize(&path_arg(
+            &args[0],
+            ctx,
+            "os/path-normalize",
+        )?)))
     }
 }
 
@@ -155,7 +165,11 @@ pub struct OsPathBaseOp;
 impl Operator for OsPathBaseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-base", == 1);
-        Ok(Value::String(base(&path_arg(&args[0], ctx, "os/path-base")?)))
+        Ok(Value::String(base(&path_arg(
+            &args[0],
+            ctx,
+            "os/path-base",
+        )?)))
     }
 }
 
@@ -195,7 +209,11 @@ pub struct OsPathIsAbsoluteOp;
 impl Operator for OsPathIsAbsoluteOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-is-absolute", == 1);
-        Ok(Value::Bool(is_absolute(&path_arg(&args[0], ctx, "os/path-is-absolute")?)))
+        Ok(Value::Bool(is_absolute(&path_arg(
+            &args[0],
+            ctx,
+            "os/path-is-absolute",
+        )?)))
     }
 }
 
@@ -340,14 +358,32 @@ mod tests {
 
     #[test]
     fn the_operators_are_wired_by_name() {
-        assert_eq!(text(serde_json::json!(["os/path-join", "/a", "b", "../c"])), "/a/c");
-        assert_eq!(text(serde_json::json!(["os/path-normalize", "a//b/../c/"])), "a/c");
-        assert_eq!(text(serde_json::json!(["os/path-base", "/a/b.txt"])), "b.txt");
+        assert_eq!(
+            text(serde_json::json!(["os/path-join", "/a", "b", "../c"])),
+            "/a/c"
+        );
+        assert_eq!(
+            text(serde_json::json!(["os/path-normalize", "a//b/../c/"])),
+            "a/c"
+        );
+        assert_eq!(
+            text(serde_json::json!(["os/path-base", "/a/b.txt"])),
+            "b.txt"
+        );
         assert_eq!(text(serde_json::json!(["os/path-dir", "/a/b.txt"])), "/a");
         assert_eq!(text(serde_json::json!(["os/path-ext", "/a/b.txt"])), ".txt");
-        assert_eq!(text(serde_json::json!(["os/path-relative", "/a/b", "/a/c"])), "../c");
-        assert_eq!(eval(serde_json::json!(["os/path-is-absolute", "/a"])).ok(), Some(Value::Bool(true)));
-        assert_eq!(eval(serde_json::json!(["os/path-is-absolute", "a"])).ok(), Some(Value::Bool(false)));
+        assert_eq!(
+            text(serde_json::json!(["os/path-relative", "/a/b", "/a/c"])),
+            "../c"
+        );
+        assert_eq!(
+            eval(serde_json::json!(["os/path-is-absolute", "/a"])).ok(),
+            Some(Value::Bool(true))
+        );
+        assert_eq!(
+            eval(serde_json::json!(["os/path-is-absolute", "a"])).ok(),
+            Some(Value::Bool(false))
+        );
     }
 
     #[test]

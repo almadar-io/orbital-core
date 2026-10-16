@@ -148,6 +148,9 @@ pub enum Effect {
     /// `n` bytes of host CSPRNG output, journaled; success carries `{ value: base64url, no padding }`.
     RandomBytes {
         bytes: Value,
+        /// The `key:` expression, resolved to a non-empty string; echoed as `key` in the success and failure payloads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<FetchEmit>,
     },
@@ -1006,16 +1009,17 @@ fn parse_os(op: OsOp, args: &[SExpression]) -> Option<Effect> {
     })
 }
 
-/// `["random-bytes", n, { emit? }?]`.
+/// `["random-bytes", n, { key?, emit? }?]`.
 fn parse_random_bytes(args: &[SExpression]) -> Option<Effect> {
     if !(1..=2).contains(&args.len()) {
         return None;
     }
-    let emit = args
-        .get(1)
-        .and_then(|options| parse_emit_config(&Value::from(options.clone())));
+    let trailing = args.get(1).map(|options| Value::from(options.clone()));
+    let key = trailing.as_ref().and_then(|o| o.as_object()).and_then(|o| o.get("key")).cloned();
+    let emit = trailing.as_ref().and_then(parse_emit_config);
     Some(Effect::RandomBytes {
         bytes: Value::from(args[0].clone()),
+        key,
         emit,
     })
 }
@@ -1294,7 +1298,7 @@ mod tests {
         let random: SExpression =
             serde_json::from_str(r#"["random-bytes", 32, {"emit": {"success": "S", "failure": "F"}}]"#).unwrap();
         match parse_effect(&random).unwrap() {
-            Effect::RandomBytes { bytes, emit } => {
+            Effect::RandomBytes { bytes, emit, .. } => {
                 assert_eq!(bytes, Value::Number(32.0));
                 assert_eq!(emit.and_then(|e| e.success).as_deref(), Some("S"));
             }

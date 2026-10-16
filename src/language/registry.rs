@@ -477,18 +477,25 @@ impl ServiceRegistryData {
     }
 }
 
+/// The registry is written from TS contracts: its list type `T[]` is the `.lolo` `[T]`.
+fn lolo_spelling(t: &str) -> String {
+    match t.strip_suffix("[]").filter(|base| !base.is_empty()) {
+        Some(base) => format!("[{}]", lolo_spelling(base)),
+        None => t.to_string(),
+    }
+}
+
 fn response_shape_fields(shape: &serde_json::Map<String, serde_json::Value>) -> Vec<ResponseShapeField> {
     let mut fields: Vec<ResponseShapeField> = shape
         .iter()
         .map(|(name, value)| ResponseShapeField {
             name: name.clone(),
             field_type: match value {
-                serde_json::Value::String(t) => t.clone(),
+                serde_json::Value::String(t) => lolo_spelling(t),
                 serde_json::Value::Object(o) => o
                     .get("type")
                     .and_then(serde_json::Value::as_str)
-                    .unwrap_or("any")
-                    .to_string(),
+                    .map_or_else(|| "any".to_string(), lolo_spelling),
                 _ => "any".to_string(),
             },
         })
@@ -967,6 +974,30 @@ pub fn known_contexts() -> HashSet<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_contract_list_type_reads_in_the_lolo_spelling() {
+        let shape: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+            r#"{"steps":"AgentActivity[]","grid":"number[][]","name":"string","tags":{"type":"string[]"}}"#,
+        )
+        .unwrap();
+        let types: Vec<(String, String)> = response_shape_fields(&shape)
+            .into_iter()
+            .map(|f| (f.name, f.field_type))
+            .collect();
+        assert_eq!(
+            types,
+            [
+                ("grid".to_string(), "[[number]]".to_string()),
+                ("name".to_string(), "string".to_string()),
+                ("steps".to_string(), "[AgentActivity]".to_string()),
+                ("tags".to_string(), "[string]".to_string()),
+            ]
+        );
+        assert!(crate::type_compat::set_value_type_compatible("[AgentActivity]", &types[2].1));
+        assert!(!crate::type_compat::set_value_type_compatible("[string]", &types[2].1));
+    }
+
 
     fn shaped_registry() -> ServiceRegistryData {
         parse_service_registry_data(

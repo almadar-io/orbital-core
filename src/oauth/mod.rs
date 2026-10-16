@@ -397,6 +397,9 @@ pub fn discovery_url(issuer: &Url) -> Url {
 }
 
 
+/// Borrowed form pairs of a token-style POST.
+type FormPairs<'a> = Vec<(&'a str, &'a str)>;
+
 impl OidcProcessor {
     pub fn new(provider: &str, client_id: &str, client_secret: &str) -> Self {
         Self {
@@ -680,7 +683,7 @@ impl OidcProcessor {
     fn client_credentials<'a>(
         &'a self,
         mut pairs: Vec<(&'a str, &'a str)>,
-    ) -> (Vec<(String, String)>, Vec<(&'a str, &'a str)>) {
+    ) -> (Vec<(String, String)>, FormPairs<'a>) {
         let mut headers = Vec::new();
         match self.client_auth {
             ClientAuth::Post => {

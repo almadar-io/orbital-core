@@ -1357,17 +1357,32 @@ impl ExprLowerer {
     }
 
     fn resolve_random_bytes_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
-        // Format: ["random-bytes", n, { emit? }?]
+        // Format: ["random-bytes", n, { key?, emit? }?]
         if !(1..=2).contains(&args.len()) {
             return Err(LowerError::InvalidSExpr(
                 "random-bytes takes a byte count and optional options".to_string(),
             ));
         }
-        let emit = self.resolve_emit_only_options("random-bytes", args.get(1))?;
-        Ok(OirExpr::effect(OirEffect::random_bytes(
-            self.resolve_sexpr(&args[0])?,
+        let (key, emit) = match args.get(1) {
+            None | Some(SExpression::Null) => (None, None),
+            Some(SExpression::Object(options)) => (
+                match options.get("key") {
+                    None | Some(SExpression::Null) => None,
+                    Some(k) => Some(self.resolve_sexpr(k)?),
+                },
+                self.extract_emit_config(options)?,
+            ),
+            Some(other) => {
+                return Err(LowerError::InvalidSExpr(format!(
+                    "(random-bytes …) options must be an object, got {other:?}"
+                )))
+            }
+        };
+        Ok(OirExpr::effect(OirEffect::RandomBytes {
+            bytes: self.resolve_sexpr(&args[0])?,
+            key,
             emit,
-        )))
+        }))
     }
 
     fn resolve_credential_effect(

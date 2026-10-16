@@ -31,6 +31,7 @@ pub use arg_types::{actual_of, operator_signature};
 pub use kind::OperatorKind;
 mod anim;
 mod array;
+mod bytes;
 mod csv;
 mod digest;
 mod ease;
@@ -52,6 +53,7 @@ mod xml;
 
 pub use anim::*;
 pub use array::*;
+pub use bytes::*;
 pub use csv::*;
 pub use digest::*;
 pub use ease::*;
@@ -306,6 +308,12 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "str/decode-uri-component" => K::StrDecodeUriComponentOp,
         "str/uri-component-valid" => K::StrUriComponentValidOp,
         "str/to-number" => K::StrToNumberOp,
+        "bytes/from-string" => K::BytesFromStringOp,
+        "bytes/to-string" => K::BytesToStringOp,
+        "bytes/length" => K::BytesLengthOp,
+        "bytes/slice" => K::BytesSliceOp,
+        "bytes/concat" => K::BytesConcatOp,
+        "bytes/equals" => K::BytesEqualsOp,
         "base64/encode" => K::Base64EncodeOp,
         "base64/decode" => K::Base64DecodeOp,
         "base64/valid" => K::Base64ValidOp,

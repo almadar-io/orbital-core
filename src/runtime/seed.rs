@@ -432,6 +432,9 @@ fn sample_value(
             Entropy::Seeded(rng) => rng.int(1.0, 250.0),
             Entropy::Index => (index as f64) * 10.0,
         })),
+        FieldType::Bytes => Some(Value::String(crate::codec::base64_encode(
+            format!("{}-{}", slug(name), index).as_bytes(),
+        ))),
         FieldType::Money => Some(Value::Number(match entropy {
             Entropy::Seeded(rng) => rng.int(10.0, 900.0),
             Entropy::Index => (index as f64) * 10.0,
@@ -2033,6 +2036,19 @@ mod policy_tests {
         let f = field_json(json!({ "name": "total", "type": "money", "mock": "250000, 84000" }));
         let rows = sample_rows(&entity("E", None, vec![f]), 2);
         assert_eq!(cell(&rows, 1, "total"), Value::Number(84000.0));
+    }
+
+    #[test]
+    fn a_bytes_field_seeds_decodable_base64() {
+        let f = field_json(json!({ "name": "payload", "type": "bytes" }));
+        let rows = sample_rows(&entity("E", None, vec![f]), 2);
+        match cell(&rows, 1, "payload") {
+            Value::String(s) => {
+                assert!(!s.is_empty());
+                assert!(crate::codec::base64_decode(&s).is_ok(), "{s}");
+            }
+            other => panic!("expected a base64 string, got {other:?}"),
+        }
     }
 
     #[test]

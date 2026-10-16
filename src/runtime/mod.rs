@@ -18,6 +18,7 @@ pub mod http_request;
 pub mod http_service;
 pub mod oauth_flow;
 pub mod os;
+pub mod os_grants;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod os_host;
 pub mod kernel;

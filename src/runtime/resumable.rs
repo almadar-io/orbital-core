@@ -1545,6 +1545,9 @@ pub struct HttpHost<'a> {
     pub egress: &'a [String],
     /// Receives each event of a stream, with the call site whose `onMessage` route it belongs to.
     pub on_event: &'a dyn Fn(Option<&CallSite>, Value),
+    /// The native `os/` answerer's grants and handles; `None` denies every `os/` ask.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub os: Option<&'a crate::runtime::os_host::OsHost<'a>>,
 }
 
 /// A request whose resolved address is not public is refused unless its origin is an IP literal listed in egress.
@@ -1598,12 +1601,12 @@ fn os_random(_bytes: u32) -> Result<Vec<u8>, String> {
 
 /// An [`IoRequest::Os`] answered by the native answerer; wasm hosts answer `Os` themselves.
 #[cfg(not(target_arch = "wasm32"))]
-fn answer_os_host(request: &IoRequest) -> IoAnswer {
-    crate::runtime::os_host::answer_os(request)
+fn answer_os_host(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer {
+    crate::runtime::os_host::answer_os(host.and_then(|h| h.os), request)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn answer_os_host(_request: &IoRequest) -> IoAnswer {
+fn answer_os_host(_host: Option<&HttpHost<'_>>, _request: &IoRequest) -> IoAnswer {
     IoAnswer::Os(Err(OsError::new(OsErrorKind::Unsupported, "os: the host must answer Os")))
 }
 
@@ -1673,7 +1676,7 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
         }
         (IoRequest::SecretRotate { .. }, None) => IoAnswer::SecretRotate(Err(NO_HTTP_HOST.to_string())),
         (IoRequest::Random { bytes }, _) => IoAnswer::Random(os_random(*bytes)),
-        (IoRequest::Os { .. }, _) => answer_os_host(request),
+        (IoRequest::Os { .. }, _) => answer_os_host(host, request),
         (IoRequest::CredentialStatus { name, principal }, Some(host)) => {
             IoAnswer::CredentialStatus(host.secrets.secret_of(name, principal.as_deref()).map(|value| {
                 crate::runtime::http_service::credential_status_connected(
@@ -1858,6 +1861,7 @@ mod http_replay_tests {
             secrets: &Vaulted,
             egress: &[],
             on_event: &on_event,
+            os: None,
         };
         let request = IoRequest::HttpStream {
             request: get("https://8.8.8.8/x"),
@@ -2046,7 +2050,7 @@ mod http_replay_tests {
     #[test]
     fn the_native_answerer_is_reached_through_the_one_dispatch_point() {
         let ask = os_ask(OsOp::ReadFile, "/a");
-        assert!(matches!(answer_http(None, &ask), IoAnswer::Os(Err(OsError { kind: OsErrorKind::Unsupported, .. }))));
+        assert!(matches!(answer_http(None, &ask), IoAnswer::Os(Err(OsError { kind: OsErrorKind::Denied, .. }))));
         assert!(!matches!(answer_http(None, &IoRequest::CancelCall { key: "k".into() }), IoAnswer::Os(_)));
     }
 
@@ -2088,7 +2092,7 @@ mod http_replay_tests {
     fn a_blocking_host_answers_credential_asks_per_principal() {
         let transport = Canned(Vec::new());
         let on_event = |_: Option<&CallSite>, _: Value| {};
-        let host = HttpHost { transport: &transport, secrets: &PerUser, egress: &[], on_event: &on_event };
+        let host = HttpHost { transport: &transport, secrets: &PerUser, egress: &[], on_event: &on_event, os: None };
         let status = |principal: Option<&str>| {
             answer_http(
                 Some(&host),

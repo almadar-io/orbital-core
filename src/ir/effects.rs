@@ -236,6 +236,8 @@ pub enum OirEffect {
     RandomBytes {
         bytes: OirExpr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<OirEmitConfig>,
     },
 
@@ -824,7 +826,7 @@ impl OirEffect {
 
     /// Create a random-bytes effect
     pub fn random_bytes(bytes: OirExpr, emit: Option<OirEmitConfig>) -> Self {
-        Self::RandomBytes { bytes, emit }
+        Self::RandomBytes { bytes, key: None, emit }
     }
 
     /// Create an `os/<op>` effect
@@ -1059,8 +1061,14 @@ impl OirEffect {
                         .for_each(|b| bindings.push(b));
                 }
             }
-            Self::RandomBytes { bytes: expr, .. }
-            | Self::CredentialStatus {
+            Self::RandomBytes { bytes, key, .. } => {
+                for expr in std::iter::once(bytes).chain(key.as_ref()) {
+                    expr.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
+                }
+            }
+            Self::CredentialStatus {
                 credential: expr, ..
             }
             | Self::CredentialForget {
@@ -1317,8 +1325,11 @@ impl OirEffect {
                 out.extend(args.iter());
                 push_opt(&mut out, key);
             }
-            Self::RandomBytes { bytes: expr, .. }
-            | Self::CredentialStatus {
+            Self::RandomBytes { bytes, key, .. } => {
+                out.push(bytes);
+                push_opt(&mut out, key);
+            }
+            Self::CredentialStatus {
                 credential: expr, ..
             }
             | Self::CredentialForget {

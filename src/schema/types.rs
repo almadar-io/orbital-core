@@ -89,6 +89,10 @@ pub struct OrbitalSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress: Option<Vec<String>>,
 
+    /// The `os/` grants (`fs`, `exec`, `net`, `env`, `stdio`, `sys`, `desktop`): what the program's `os/` effects may touch.
+    #[serde(rename = "osGrants", default, skip_serializing_if = "Option::is_none")]
+    pub os_grants: Option<crate::runtime::os_grants::OsGrants>,
+
     /// Pages served by `uses lazy` behaviors, each loaded from its own `.orb`
     /// when opened.
     #[serde(rename = "lazyPages", default, skip_serializing_if = "Option::is_none")]
@@ -2355,6 +2359,9 @@ pub enum FieldType {
     /// `data:` URI in mock/playground mode (size-ceilinged) or an
     /// object-storage URL in production.
     File,
+    /// Binary value. A standard padded base64 string at run time; the type, not
+    /// the representation, keeps it from mixing with `string`.
+    Bytes,
     Array,
     Object,
     Enum,

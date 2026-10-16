@@ -524,6 +524,18 @@ fn oauth2_token_request_cache_name_and_reply() {
 }
 
 #[test]
+fn a_token_reply_accepts_expires_in_as_a_numeric_string() {
+    let ttl = |body: &str| parse_token_reply(&response(200, &[], body), "access_token", Some("expires_in"), 0);
+    assert_eq!(ttl(r#"{"access_token":"a","expires_in":"3600"}"#), Ok(("a".to_string(), 3_600_000)));
+    assert_eq!(ttl(r#"{"access_token":"a","expires_in":3600}"#), Ok(("a".to_string(), 3_600_000)));
+    assert!(ttl(r#"{"access_token":"a","expires_in":"36x"}"#).is_err());
+    assert!(ttl(r#"{"access_token":"a","expires_in":""}"#).is_err());
+    assert!(ttl(r#"{"access_token":"a","expires_in":"-1"}"#).is_err());
+    assert!(ttl(r#"{"access_token":"a","expires_in":"inf"}"#).is_err());
+    assert!(ttl(r#"{"access_token":"a","expires_in":-1}"#).is_err());
+}
+
+#[test]
 fn next_link_reads_rel_next_among_several_entries() {
     let r = response(200, &[("Link", r#"<https://a/x?page=1>; rel="prev", <https://a/x?page=3>; rel="next", <https://a/x?page=9>; rel="last""#)], "");
     assert_eq!(next_link(&r).as_deref(), Some("https://a/x?page=3"));

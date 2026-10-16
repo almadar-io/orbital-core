@@ -108,6 +108,10 @@ pub trait TargetTypeRenderer {
     fn image(&self) -> Self::Out {
         self.string(None)
     }
+    /// Binary value — a base64 string at rest in every target language.
+    fn bytes(&self) -> Self::Out {
+        self.string(None)
+    }
     /// Monetary amount — numeric at rest in every target language; the type
     /// exists so display surfaces can dispatch currency formatting. Override
     /// only if a target grows a native money type.
@@ -266,6 +270,12 @@ pub trait TargetTypeRenderer {
         let _ = self;
         TypeMappingClass::Widening
     }
+    /// Same shared decision as [`TargetTypeRenderer::classify_email`]: the
+    /// binary meaning is erased to base64 text.
+    fn classify_bytes(&self) -> TypeMappingClass {
+        let _ = self;
+        TypeMappingClass::Widening
+    }
     /// Pair decision: renders via `number()` but the currency semantics of a
     /// monetary amount are erased — `Widening` even where `number` is
     /// `Faithful` (table row 12 in every shell).
@@ -388,6 +398,7 @@ pub fn render_type<R: TargetTypeRenderer + ?Sized>(
         OirType::Phone => r.phone(),
         OirType::Uuid => r.uuid(),
         OirType::Image => r.image(),
+        OirType::Bytes => r.bytes(),
         OirType::Money => r.money(),
         OirType::File => r.file(),
         OirType::Json => r.json(),
@@ -443,6 +454,7 @@ pub fn classify_type<R: TargetTypeRenderer + ?Sized>(
         OirType::Phone => r.classify_phone(),
         OirType::Uuid => r.classify_uuid(),
         OirType::Image => r.classify_image(),
+        OirType::Bytes => r.classify_bytes(),
         OirType::Money => r.classify_money(),
         OirType::File => r.classify_file(),
         OirType::Json => r.classify_json(),

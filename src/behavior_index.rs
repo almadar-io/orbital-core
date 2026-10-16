@@ -144,7 +144,7 @@ fn header_lines(text: &str) -> impl Iterator<Item = &str> {
             && t["orbital".len()..]
                 .chars()
                 .next()
-                .map_or(true, |c| !(c.is_alphanumeric() || c == '_')))
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_')))
     })
 }
 
@@ -243,9 +243,9 @@ pub fn leading_header_comments(text: &str) -> Option<String> {
                 }
             } else if line.starts_with("app ") && line.ends_with('[') {
                 in_bracket = true;
-            } else if line.starts_with("app ") && line.ends_with(']') {
-                header_done = true;
-            } else if line.len() >= 2 && line.starts_with('"') && line.ends_with('"') {
+            } else if (line.starts_with("app ") && line.ends_with(']'))
+                || (line.len() >= 2 && line.starts_with('"') && line.ends_with('"'))
+            {
                 header_done = true;
             }
             continue;

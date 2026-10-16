@@ -1775,7 +1775,7 @@ impl EffectExecutor {
             ) {
                 PersistPrep::Push(p) => prepared.push(*p),
                 PersistPrep::Refused(refused) => {
-                    let detail = (*refused).error.unwrap_or_else(|| "not executed".to_string());
+                    let detail = refused.error.unwrap_or_else(|| "not executed".to_string());
                     return batch_failure(b, &detail);
                 }
                 PersistPrep::Legacy => {

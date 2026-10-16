@@ -156,7 +156,7 @@ pub const HTTP_STREAM_EVENT_SHAPE: &[ShapeField] = &[
     field("key", "string"),
 ];
 
-/// `random-bytes` hands back the bytes as base64url without padding.
+/// `random-bytes` hands back the bytes as base64url without padding; a keyed call adds its `key`.
 pub const RANDOM_BYTES_SHAPE: &[ShapeField] = &[field("value", "string")];
 
 /// `credential-status` and `credential-forget` hand back whether the credential is connected.
@@ -414,7 +414,7 @@ pub fn failure_payload(operator: &str, keyed: bool) -> ProducedPayload {
     }
     match operator {
         "http" | "browser/beacon" => ProducedPayload::Shape(HTTP_FAILURE_SHAPE),
-        "browser/page-facts" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
+        "browser/page-facts" | "random-bytes" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
         "random-bytes" | "credential-status" | "credential-forget" | "browser/page-facts" => ProducedPayload::Shape(HOST_FAILURE_SHAPE),
         "oauth-authorize" => ProducedPayload::Shape(OAUTH_AUTHORIZE_FAILURE_SHAPE),
         "oauth-connection-status" | "oauth-connection-forget" => ProducedPayload::Shape(OAUTH_FAILURE_SHAPE),
@@ -498,6 +498,7 @@ mod tests {
             assert_eq!(failure_payload(op, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
         }
         assert_eq!(failure_payload("random-bytes", false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
+        assert_eq!(failure_payload("random-bytes", true), ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE));
         assert_eq!(
             undeclared_reads(&["value", "bytes"], &success_payload("random-bytes", CallVariant::Plain), &[]),
             vec!["bytes"]

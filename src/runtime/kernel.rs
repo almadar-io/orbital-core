@@ -35,6 +35,7 @@ use crate::effects::ServiceCaller;
 use crate::error::{EvalError, OrbitalError};
 use crate::oauth::ask::{OAuthFailureReason, OAuthReply};
 use crate::runtime::os::{OsError, OsErrorKind};
+use crate::runtime::os_grants::OsGrants;
 use crate::evaluator::ValueMap;
 use crate::util::DispatchVisits;
 use crate::{
@@ -257,6 +258,8 @@ pub struct RuntimeKernel {
     entity_defaults: Arc<RwLock<HashMap<String, Arc<Value>>>>,
     /// The `egress` origins the registered programs declare: the only hosts the `http` effect may reach.
     egress: Arc<RwLock<Vec<String>>>,
+    /// The `os/` grants the registered programs declare, unioned.
+    os_grants: Arc<RwLock<OsGrants>>,
     /// The trait whose effects are running and whether its step is a follow-on of the dispatch:
     /// what a `call-service` is stamped with.
     step_site: Arc<RwLock<Option<(String, bool)>>>,
@@ -976,6 +979,7 @@ impl RuntimeKernel {
             entity_definitions,
             entity_defaults: Arc::new(RwLock::new(HashMap::new())),
             egress: Arc::new(RwLock::new(Vec::new())),
+            os_grants: Arc::new(RwLock::new(OsGrants::default())),
             step_site: Arc::new(RwLock::new(None)),
             capture_children: Arc::new(RwLock::new(HashMap::new())),
             composed_callsite: Arc::new(RwLock::new(ValueMap::new())),
@@ -1039,6 +1043,11 @@ impl RuntimeKernel {
         self
     }
 
+    /// The `os/` grants every registered program declares, unioned: what a host builds its `OsHost` from.
+    pub fn os_grants(&self) -> OsGrants {
+        self.os_grants.read().clone()
+    }
+
     /// Register a schema with the kernel.
     pub fn register_schema(&self, mut schema: OrbitalSchema) -> Result<(), KernelError> {
         schema.bind_unlinked_traits_to_host_entity();
@@ -1049,6 +1058,9 @@ impl RuntimeKernel {
                     egress.push(origin.clone());
                 }
             }
+        }
+        if let Some(declared) = &schema.os_grants {
+            self.os_grants.write().union(declared);
         }
         let schema_name = schema.name.clone();
         info!(schema = %schema_name, "Registering schema");
@@ -3480,33 +3492,52 @@ impl RuntimeKernel {
         })
     }
 
+    /// `random-bytes`: `count` bytes of host CSPRNG output as base64url, or the failure.
+    fn run_random_bytes(&self, effect: &Effect, bytes: &Value) -> EffectResult {
+        let count = match bytes {
+            Value::Number(n) if n.fract() == 0.0 && (1.0..=RANDOM_BYTES_MAX).contains(n) => *n as u32,
+            other => {
+                return EffectResult::failed(
+                    effect.clone(),
+                    &format!(
+                        "random-bytes: the byte count must be an integer from 1 to {RANDOM_BYTES_MAX}, got {}",
+                        other.to_string_value()
+                    ),
+                )
+            }
+        };
+        match self.io.random(count) {
+            Ok(raw) => EffectResult::executed_with_value(
+                effect.clone(),
+                Value::Object(ValueMap::from([(
+                    "value".to_string(),
+                    Value::String(codec::base64url_encode(&raw)),
+                )])),
+            ),
+            Err(message) => EffectResult::failed(effect.clone(), &message),
+        }
+    }
+
     /// Run `random-bytes`, `credential-status` or `credential-forget` through one journaled ask.
     fn run_host_effect(&self, effect: &Effect, ctx: &BindingContext) -> EffectResult {
         let principal = ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
         match effect {
-            Effect::RandomBytes { bytes, .. } => {
-                let count = match bytes {
-                    Value::Number(n) if n.fract() == 0.0 && (1.0..=RANDOM_BYTES_MAX).contains(n) => *n as u32,
-                    other => {
-                        return EffectResult::failed(
-                            effect.clone(),
-                            &format!(
-                                "random-bytes: the byte count must be an integer from 1 to {RANDOM_BYTES_MAX}, got {}",
-                                other.to_string_value()
-                            ),
-                        )
-                    }
-                };
-                match self.io.random(count) {
-                    Ok(raw) => EffectResult::executed_with_value(
-                        effect.clone(),
-                        Value::Object(ValueMap::from([(
-                            "value".to_string(),
-                            Value::String(codec::base64url_encode(&raw)),
-                        )])),
-                    ),
-                    Err(message) => EffectResult::failed(effect.clone(), &message),
+            Effect::RandomBytes { bytes, key, .. } => {
+                let mut result = self.run_random_bytes(effect, bytes);
+                if let Some(key) = key {
+                    let payload = match result.return_value.take() {
+                        Some(Value::Object(mut fields)) => {
+                            fields.insert("key".to_string(), key.clone());
+                            Value::Object(fields)
+                        }
+                        _ => Value::Object(ValueMap::from([
+                            ("error".to_string(), Value::String(result.error.clone().unwrap_or_default())),
+                            ("key".to_string(), key.clone()),
+                        ])),
+                    };
+                    result.return_value = Some(payload);
                 }
+                result
             }
             Effect::CredentialStatus { credential, .. } | Effect::CredentialForget { credential, .. } => {
                 let status = matches!(effect, Effect::CredentialStatus { .. });
@@ -3639,6 +3670,20 @@ impl RuntimeKernel {
             Ok(None) => return Self::oauth_failed(effect, OAuthFailureReason::UnconfiguredClient),
             Err(message) => return EffectResult::failed(effect.clone(), &message),
         };
+        if let Some(slot) = &decl.client_secret {
+            let secret_who = match slot.scope {
+                http_request::SecretScope::App => None,
+                http_request::SecretScope::User => match principal {
+                    Some(principal) => Some(principal),
+                    None => return Self::oauth_failed(effect, OAuthFailureReason::NotSignedIn),
+                },
+            };
+            match self.io.secret(&slot.name, secret_who) {
+                Ok(Some(_)) => {}
+                Ok(None) => return Self::oauth_failed(effect, OAuthFailureReason::UnconfiguredClient),
+                Err(message) => return EffectResult::failed(effect.clone(), &message),
+            }
+        }
         let meta = match &decl.server {
             OAuthServerDecl::Endpoints { .. } => declared_metadata(&decl.server),
             OAuthServerDecl::Issuer(issuer) => {
@@ -4887,8 +4932,9 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
-        Effect::RandomBytes { bytes, emit } => Effect::RandomBytes {
+        Effect::RandomBytes { bytes, key, emit } => Effect::RandomBytes {
             bytes: ctx.resolve_value_checked(&bytes)?.into_owned(),
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
         Effect::CredentialStatus { credential, emit } => Effect::CredentialStatus {
@@ -8106,5 +8152,70 @@ mod circuit_step_tests {
         assert_eq!(result.fired_arm, None);
         assert_eq!(result.guards.len(), 2);
         assert!(result.effect_runs.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod os_grants_tests {
+    use super::*;
+    use crate::runtime::entity_source::InMemoryEntityCache;
+    use crate::runtime::os_grants::{DesktopKind, FsMode, StdioKind};
+    use serde_json::json;
+    use std::path::Path;
+
+    fn schema(name: &str, grants: serde_json::Value) -> OrbitalSchema {
+        serde_json::from_value(json!({ "name": name, "osGrants": grants, "orbitals": [] })).unwrap()
+    }
+
+    fn kernel() -> RuntimeKernel {
+        RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        )
+    }
+
+    #[test]
+    fn a_kernel_with_no_grant_declaring_program_grants_nothing() {
+        let k = kernel();
+        k.register_schema(
+            serde_json::from_value(json!({ "name": "plain", "orbitals": [] })).unwrap(),
+        )
+        .unwrap();
+        assert!(k.os_grants().is_empty());
+    }
+
+    #[test]
+    fn the_registered_programs_grants_are_unioned_without_duplicates() {
+        let k = kernel();
+        k.register_schema(schema(
+            "a",
+            json!({ "fs": [{ "glob": "/data/**", "modes": ["read"] }], "exec": ["git"], "stdio": ["out"] }),
+        ))
+        .unwrap();
+        k.register_schema(schema(
+            "b",
+            json!({ "fs": [{ "glob": "/data/**", "modes": ["read"] }, { "glob": "/tmp/**", "modes": ["write"] }],
+                    "exec": ["git", "ls"], "desktop": ["notify"] }),
+        ))
+        .unwrap();
+        let grants = k.os_grants();
+        assert_eq!(grants.fs.len(), 2);
+        assert_eq!(grants.exec, vec!["git".to_string(), "ls".to_string()]);
+        assert!(grants.fs_allows(Path::new("/data/a"), FsMode::Read));
+        assert!(grants.fs_allows(Path::new("/tmp/a"), FsMode::Write));
+        assert!(!grants.fs_allows(Path::new("/tmp/a"), FsMode::Read));
+        assert!(grants.stdio_allows(StdioKind::Out));
+        assert!(grants.desktop_allows(DesktopKind::Notify));
+    }
+
+    #[test]
+    fn grants_round_trip_through_the_schema_json() {
+        let s = schema("a", json!({ "env": ["HOME"] }));
+        let back = serde_json::to_value(&s).unwrap();
+        assert_eq!(back["osGrants"]["env"], json!(["HOME"]));
+        let plain: OrbitalSchema =
+            serde_json::from_value(json!({ "name": "p", "orbitals": [] })).unwrap();
+        assert!(serde_json::to_value(&plain).unwrap().get("osGrants").is_none());
     }
 }

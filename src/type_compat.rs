@@ -217,6 +217,8 @@ pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
             OirType::Number | OirType::Integer => Some(Coercion::Widen(WidenKind::MoneyNumber)),
             _ => None,
         },
+        // Bytes is an opaque base64 string at rest: only bytes (identity, caught above) fits.
+        OirType::Bytes => None,
         // The object family (Struct/Union/Map/File/TypeRef) and the json family
         // (Json/SExpr) are mutually compatible.
         OirType::Struct { .. }
@@ -353,6 +355,7 @@ fn parse_compat_type(s: &str) -> CompatType {
         "phone" => CompatType::Ty(OirType::Phone),
         "uuid" => CompatType::Ty(OirType::Uuid),
         "image" => CompatType::Ty(OirType::Image),
+        "bytes" => CompatType::Ty(OirType::Bytes),
         "trait" => CompatType::Ty(OirType::Trait),
         "orbital" => CompatType::Ty(OirType::Orbital),
         "behavior" => CompatType::Ty(OirType::Behavior),
@@ -617,6 +620,7 @@ pub fn oir_type_kind(t: &crate::ir::OirType) -> String {
         OirType::Phone => "phone".to_string(),
         OirType::Uuid => "uuid".to_string(),
         OirType::Image => "image".to_string(),
+        OirType::Bytes => "bytes".to_string(),
         // Money is numeric at rest; File is the canonical struct value.
         OirType::Money => "number".to_string(),
         OirType::File => "object".to_string(),
@@ -1028,6 +1032,19 @@ mod compat_tests {
         assert!(set_value_type_compatible("int", "int"));
         assert!(!set_value_type_compatible("number", "int"));
         assert!(!set_value_type_compatible("int", "number"));
+    }
+
+    #[test]
+    fn bytes_is_not_implicitly_a_string() {
+        assert!(set_value_type_compatible("bytes", "bytes"));
+        assert!(!set_value_type_compatible("bytes", "string"));
+        assert!(!set_value_type_compatible("string", "bytes"));
+        assert!(!set_value_type_compatible("number", "bytes"));
+        assert!(set_value_type_compatible("any", "bytes"));
+        assert!(super::sub(&Bytes, &Bytes).is_some());
+        assert_eq!(super::sub(&String, &Bytes), None);
+        assert_eq!(super::sub(&Bytes, &String), None);
+        assert_eq!(super::oir_type_kind(&Bytes), "bytes");
     }
 
     #[test]

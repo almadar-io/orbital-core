@@ -2267,10 +2267,12 @@ pub fn parse_token_reply(
     let ttl_ms = match expires_field.and_then(|field| json.get(field)) {
         None | Some(serde_json::Value::Null) => 0,
         Some(value) => {
-            let seconds = value
-                .as_f64()
-                .filter(|n| n.is_finite() && *n >= 0.0)
-                .ok_or_else(|| format!("token reply has an invalid {}", expires_field.unwrap_or_default()))?;
+            let seconds = match value {
+                serde_json::Value::String(text) => text.parse::<f64>().ok(),
+                other => other.as_f64(),
+            }
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .ok_or_else(|| format!("token reply has an invalid {}", expires_field.unwrap_or_default()))?;
             ((seconds * 1000.0) as u64).saturating_sub(margin_ms)
         }
     };
@@ -2785,7 +2787,7 @@ impl From<&HttpAnswer> for HttpAnswerWire {
                     .into(),
             },
             HttpAnswer::Beacon(r) => Self::Beacon {
-                result: r.as_ref().map(Clone::clone).map_err(HttpFailureWire::from).into(),
+                result: r.as_ref().map_err(HttpFailureWire::from).cloned().into(),
             },
             HttpAnswer::Random(r) => Self::Random {
                 result: r.as_ref().map(|bytes| codec::base64_encode(bytes)).map_err(Clone::clone).into(),

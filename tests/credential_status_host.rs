@@ -66,6 +66,7 @@ fn with_host(secrets: &Secrets, check: impl FnOnce(&HttpHost<'_>)) {
         secrets,
         egress: &[],
         on_event: &on_event,
+        os: None,
     };
     check(&host);
 }

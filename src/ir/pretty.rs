@@ -203,6 +203,7 @@ impl PrettyPrinter {
             OirType::Phone => "Phone".to_string(),
             OirType::Uuid => "Uuid".to_string(),
             OirType::Image => "Image".to_string(),
+            OirType::Bytes => "Bytes".to_string(),
             OirType::Money => "Money".to_string(),
             OirType::File => "File".to_string(),
             OirType::Json => "Json".to_string(),

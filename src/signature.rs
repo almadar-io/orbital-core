@@ -346,6 +346,7 @@ fn concrete(name: &str) -> Option<OirType> {
         "boolean" => OirType::Boolean,
         "date" => OirType::Date,
         "datetime" => OirType::DateTime,
+        "bytes" => OirType::Bytes,
         "sexpr" => OirType::SExpr,
         "trait" => OirType::Trait,
         "orbital" => OirType::Orbital,

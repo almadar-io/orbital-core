@@ -149,6 +149,21 @@ fn a_host_failure_fires_the_failure_route() {
 }
 
 #[test]
+fn a_keyed_random_bytes_echoes_its_key_in_success_and_failure_and_an_unkeyed_one_adds_none() {
+    let keyed = |count: Json| json!(["random-bytes", count, {"key": "@payload.principal", "emit": {"success": "OK", "failure": "BAD"}}]);
+    let (ok, _) = run(keyed(json!(2)), go(None), |_| IoAnswer::Random(Ok(vec![0xfb, 0xff])));
+    assert_eq!(payload_of(&ok, "OK"), json!({ "value": "-_8", "key": "evil" }));
+    let (down, _) = run(keyed(json!(2)), go(None), |_| IoAnswer::Random(Err("entropy source down".to_string())));
+    assert_eq!(payload_of(&down, "BAD"), json!({ "error": "entropy source down", "key": "evil" }));
+    let (bad_count, _) = run(keyed(json!(0)), go(None), |request| panic!("asked {request:?}"));
+    assert_eq!(payload_of(&bad_count, "BAD")["key"], "evil");
+    let (plain, _) = run(json!(["random-bytes", 2, routes()]), go(None), |_| IoAnswer::Random(Ok(vec![0xfb, 0xff])));
+    assert_eq!(payload_of(&plain, "OK"), json!({ "value": "-_8" }));
+    let (empty, _) = run(json!(["random-bytes", 2, {"key": "", "emit": {"success": "OK", "failure": "BAD"}}]), go(None), |request| panic!("asked {request:?}"));
+    assert!(emitted(&empty).iter().all(|(event, _)| *event != "OK"), "an empty key never draws");
+}
+
+#[test]
 fn explicit_app_status_uses_the_app_slot_with_or_without_a_viewer() {
     for user in [None, signed_in()] {
         let (response, seen) = run(
@@ -977,6 +992,18 @@ mod oauth {
         let (response, _) = host.run(call, user("u1"));
         assert_eq!(failure(&response), ("unconfigured-client".to_string(), "NOT_CONFIGURED".to_string()));
         assert_eq!(host.http_count(), before);
+    }
+
+    #[test]
+    fn authorize_with_an_unset_client_secret_fails_unconfigured_client_and_a_set_one_still_authorizes() {
+        let host = Host::new();
+        host.run(discovery(), user("u1"));
+        let mut other = client();
+        other["clientSecret"] = json!("MISSING");
+        let (response, _) = host.run(json!(["oauth-authorize", other, {"redirectUri":"https://a/cb"}, routes()]), user("u1"));
+        assert_eq!(failure(&response).0, "unconfigured-client");
+        let (control, _) = host.run(authorize("u1"), user("u1"));
+        assert!(payload_of(&control, "OK")["authUrl"].as_str().unwrap().contains("state="));
     }
 
     fn mock_client() -> Json {
