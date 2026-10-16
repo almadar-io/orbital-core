@@ -11,7 +11,7 @@
 use crate::schema::PayloadTypeWhen;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 // ============================================================================
@@ -883,22 +883,18 @@ pub fn get_pattern(pattern_type: &str) -> Option<&'static EmbeddedPattern> {
 // ============================================================================
 //
 // `@almadar/std` and `@almadar-io/behaviors` (and any other behavior package)
-// are installed, not baked — names are looked up from each discovered
-// package's own `orb.index` JSON, never embedded here (Phase 2 of
-// Almadar_Behavior_Packages.md removed the last embedded behavior data; the
-// resolution order the loader documents — Phase 1 ruling 3 — is unchanged).
+// are installed, not baked: a name is known when an installed package ships a
+// behavior file of that name (`behavior_index::indexed_names`).
 
-/// Returns true if `name` is a known behavior: a key in any installed
-/// behavior package's `orb.index`. This call site has no `LoaderConfig`/
-/// `packages` to reuse, so it re-discovers from `current_dir()` / the user
-/// store, same as `CompilerOptions::from_env`.
+/// Returns true if `name` is a behavior an installed behavior package ships. This
+/// call site has no `LoaderConfig`/`packages` to reuse, so it re-discovers from
+/// `current_dir()` / the user store, same as `CompilerOptions::from_env`.
 pub fn is_known_behavior(name: &str) -> bool {
     installed_behavior_index_contains(name)
 }
 
-/// True when `name` is a key in any installed behavior package's `orb.index`
-/// JSON file (the on-disk twin of the embedded std map). Package discovery +
-/// each index file's names are memoized per index path.
+/// True when `name` is shipped by any installed behavior package. Package discovery +
+/// each package's names are memoized per registry root.
 fn installed_behavior_index_contains(name: &str) -> bool {
     let Ok(cwd) = std::env::current_dir() else {
         return false;
@@ -909,32 +905,26 @@ fn installed_behavior_index_contains(name: &str) -> bool {
     };
     packages
         .iter()
-        .any(|pkg| package_index_names(&pkg.index).contains(name))
+        .any(|pkg| package_behavior_names(pkg).contains(name))
 }
 
-/// Behavior names declared in a package's `orb.index` JSON file (the same
-/// `{"behaviors": {<name>: {...}}}` shape as the baked std registry).
-fn package_index_names(index_path: &Path) -> HashSet<String> {
+fn package_behavior_names(pkg: &crate::behavior_packages::BehaviorPackage) -> HashSet<String> {
     use std::sync::Mutex;
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, HashSet<String>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = pkg.registry.root().to_path_buf();
     if let Some(names) = cache
         .lock()
-        .expect("package index name cache poisoned")
-        .get(index_path)
+        .expect("package behavior name cache poisoned")
+        .get(&key)
     {
         return names.clone();
     }
-    let names: HashSet<String> = std::fs::read_to_string(index_path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .and_then(|v| v.get("behaviors").and_then(|b| b.as_object().cloned()))
-        .map(|obj| obj.keys().cloned().collect())
-        .unwrap_or_default();
+    let names = crate::behavior_index::indexed_names(pkg).unwrap_or_default();
     cache
         .lock()
-        .expect("package index name cache poisoned")
-        .insert(index_path.to_path_buf(), names.clone());
+        .expect("package behavior name cache poisoned")
+        .insert(key, names.clone());
     names
 }
 

@@ -240,5 +240,229 @@
     ],
     "error": true,
     "source": "invalid"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "1970-01-01"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: epoch"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-02-29"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: leap day"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: day after leap day"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2100-03-01"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: 2100 is not leap"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2000-03-01"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: 2000 is leap"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "1969-12-31"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: pre-1970"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "1900-03-01"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: 1900 is not leap"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01T13:45:10Z"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: time of day"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01T13:45:10.250Z"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: fraction ms"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01T13:45:10.5Z"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: short fraction"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01T13:45:10+02:00"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: positive offset"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01T13:45:10-05:30"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: negative offset"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01T00:30:00+01:00"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: offset crosses day"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "1969-12-31T23:59:59Z"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: pre-1970 time"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01T13:45Z"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: no seconds"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01T13:45:10"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: no offset reads as UTC"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01T13:45"
+    ],
+    "expect": true,
+    "source": "valid mirror of time/parse: datetime-local form, UTC"
+  },
+  {
+    "expr": [
+      "time/valid",
+      ""
+    ],
+    "expect": false,
+    "source": "valid mirror of time/parse: invalid"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "not a date"
+    ],
+    "expect": false,
+    "source": "valid mirror of time/parse: invalid"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-02-30"
+    ],
+    "expect": false,
+    "source": "valid mirror of time/parse: invalid"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2100-02-29"
+    ],
+    "expect": false,
+    "source": "valid mirror of time/parse: invalid"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-13-01"
+    ],
+    "expect": false,
+    "source": "valid mirror of time/parse: invalid"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-00-10"
+    ],
+    "expect": false,
+    "source": "valid mirror of time/parse: invalid"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01T25:00:00Z"
+    ],
+    "expect": false,
+    "source": "valid mirror of time/parse: invalid"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-3-1"
+    ],
+    "expect": false,
+    "source": "valid mirror of time/parse: invalid"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "20280301"
+    ],
+    "expect": false,
+    "source": "valid mirror of time/parse: invalid"
+  },
+  {
+    "expr": [
+      "time/valid",
+      "2028-03-01T13:45:10+2:00"
+    ],
+    "expect": false,
+    "source": "valid mirror of time/parse: invalid"
+  },
+  {
+    "expr": [
+      "time/valid",
+      null
+    ],
+    "expect": false,
+    "source": "null is false"
   }
 ]

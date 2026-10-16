@@ -25,7 +25,7 @@ fn quantize_matches_ts_math() {
     assert_eq!(z.scale, 1.0);
     assert_eq!(z.bytes, vec![0, 0]);
     // scale rounded to 6 significant digits like toPrecision(6)
-    let r = quantize(&[0.123456789, -0.01]);
+    let r = quantize(&[f32::from_bits(0x3dfc_d6ea), -0.01]);
     assert_eq!(r.scale, 0.123457f32);
 }
 

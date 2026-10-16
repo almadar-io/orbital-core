@@ -13,6 +13,8 @@ use super::{
     SnapshotWire,
 };
 use crate::effects::{ClientEffect, EventRequest, EventResponse, NavigateOptions};
+use crate::oauth::ask::{OAuthAsk, OAuthConnectionRow, OAuthProvider, OAuthReply, OAuthTokenGrant, PendingTake};
+use crate::oauth::Pending;
 use crate::runtime::canvas_theme::CanvasTheme;
 use crate::runtime::motion::ResolvedMotion;
 use crate::runtime::row_query::{
@@ -100,6 +102,41 @@ declared_by_hand!(
     "RowPredicate",
     "{ kind: \"compare\", field: string, op: RowCompareOp, value: FieldValue } | { kind: \"member\", field: string, values: Array<FieldValue> } | { kind: \"hasElement\", field: string, value: FieldValue } | { kind: \"contains\", field: string, text: string, caseSensitive: boolean } | { kind: \"isNull\", field: string, isNull: boolean } | { kind: \"all\", of: Array<RowPredicate> } | { kind: \"any\", of: Array<RowPredicate> } | { kind: \"not\", of: RowPredicate } | { kind: \"const\", value: boolean }",
     [RowCompareOp]
+);
+declared_by_hand!(OAuthProvider, "OAuthProvider", "\"google\" | \"github\" | \"auth0\"");
+declared_by_hand!(
+    Pending,
+    "OAuthPendingGrant",
+    "{ provider: string, redirectUri: string, verifier: string, subject: string | null, scopes: Array<string> }"
+);
+declared_by_hand!(
+    OAuthTokenGrant,
+    "OAuthTokenGrant",
+    "{ accessToken: string, refreshToken: string | null, expiresIn: number, tokenType: string, scope: Array<string> | null, subject: string | null }"
+);
+declared_by_hand!(
+    OAuthConnectionRow,
+    "OAuthConnectionRow",
+    "{ provider: OAuthProvider, connected: boolean, account: string, avatarUrl: string, scope: Array<string>, connectedAt: string }",
+    [OAuthProvider]
+);
+declared_by_hand!(
+    PendingTake,
+    "OAuthPendingTake",
+    "{ found: \"missing\" } | { found: \"expired\" } | { found: \"grant\", grant: OAuthPendingGrant }",
+    [Pending]
+);
+declared_by_hand!(
+    OAuthAsk,
+    "OAuthAsk",
+    "{ ask: \"pendingPut\", state: string, grant: OAuthPendingGrant, ttlMs: number } | { ask: \"pendingTake\", state: string } | { ask: \"connectionAvailable\" } | { ask: \"connectionSave\", provider: OAuthProvider, grant: OAuthTokenGrant } | { ask: \"connectionStatus\", provider: OAuthProvider } | { ask: \"connectionRemove\", provider: OAuthProvider } | { ask: \"subjectRemember\", accessToken: string, subject: string } | { ask: \"subjectLookup\", accessToken: string } | { ask: \"subjectForget\", accessToken: string } | { ask: \"metadataGet\", issuer: string } | { ask: \"metadataPut\", issuer: string, metadata: { [key in string]: JsonValue } } | { ask: \"clock\" } | { ask: \"mockTokenPut\", accessToken: string, refreshToken: string, expiresAtMs: number, provider: OAuthProvider } | { ask: \"mockTokenRefresh\", refreshToken: string, newAccessToken: string, expiresAtMs: number } | { ask: \"mockTokenRevoke\", token: string } | { ask: \"mockTokenCheck\", accessToken: string }",
+    [Pending, OAuthTokenGrant, OAuthProvider]
+);
+declared_by_hand!(
+    OAuthReply,
+    "OAuthReply",
+    "{ reply: \"done\" } | { reply: \"flag\", value: boolean } | { reply: \"taken\", taken: OAuthPendingTake } | { reply: \"row\", row: OAuthConnectionRow } | { reply: \"subject\", subject: string | null } | { reply: \"metadata\", metadata: { [key in string]: JsonValue } | null } | { reply: \"millis\", value: number } | { reply: \"mockToken\", state: \"missing\" | \"expired\" | \"valid\", provider: OAuthProvider | null }",
+    [PendingTake, OAuthConnectionRow]
 );
 declared_by_hand!(CanvasTheme, "CanvasTheme", "JsonObject");
 declared_by_hand!(ResolvedMotion, "ResolvedMotion", "JsonObject");

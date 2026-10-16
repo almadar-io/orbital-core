@@ -29,6 +29,8 @@
 //! with the baked registry — drift fails a build rather than waiting to be
 //! noticed in a corpus sweep.
 
+use crate::runtime::os::OsOp;
+
 /// The shape an operator's success emit carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProducedPayload {
@@ -73,6 +75,9 @@ pub enum CallVariant<'a> {
     PersistAction(&'a str),
     /// An `http` call site that carries `paginate`.
     HttpPaginate,
+    HttpPresign,
+    /// An `http` call whose auth is `oauth-client` with this op.
+    HttpOAuth(crate::oauth::client::OAuthOp),
 }
 
 /// `persist delete` hands back the deleted row's id plus a tombstone flag —
@@ -98,6 +103,27 @@ pub const HTTP_REPLY_SHAPE: &[ShapeField] = &[
     field("key", "string"),
 ];
 
+/// `browser/beacon` hands back how the host took the request, never a collector reply: `sent`, the route taken
+/// (`queue` | `fetch`), the keepalive fetch's `status` (`null` when the queue accepted it or the fetch threw) and
+/// the call's key (`null` unkeyed).
+pub const HTTP_BEACON_SHAPE: &[ShapeField] = &[
+    field("sent", "boolean"),
+    field("via", "string"),
+    field("status", "number"),
+    field("key", "string"),
+];
+
+/// `browser/page-facts` hands back the page facts flat: whether there is a page, and each fact (a fact that was
+/// not requested keeps its default and is not readable).
+pub const PAGE_FACTS_SHAPE: &[ShapeField] = &[
+    field("available", "boolean"),
+    field("hostname", "string"),
+    field("referrer", "string"),
+    field("screenWidth", "number"),
+];
+
+pub const HTTP_PRESIGN_SHAPE: &[ShapeField] = &[field("url", "string"), field("key", "string")];
+
 /// `http` with `paginate` hands back the pages it walked, the collected items and the last reply.
 pub const HTTP_PAGED_SHAPE: &[ShapeField] = &[
     field("pages", "number"),
@@ -106,12 +132,19 @@ pub const HTTP_PAGED_SHAPE: &[ShapeField] = &[
     field("key", "string"),
 ];
 
-/// An `http` failure: the message, its kind (`timeout`, `failed`, `refused`, `unconfigured`), the credential a
-/// missing one names (`null` for every other kind) and the call's key.
+/// An `http` failure: the message, its kind (`timeout`, `failed`, `refused`, `unconfigured`, `oauth`,
+/// `unavailable`), the credential a missing one names, the leg that failed (`phase`: `grant`, `request` or
+/// `null`), the status of a failed grant reply (`grantStatus`), the public `code` and closed `reason` of an
+/// `oauth` failure (each `null` for every other kind) and the call's key.
 pub const HTTP_FAILURE_SHAPE: &[ShapeField] = &[
     field("error", "string"),
     field("kind", "string"),
     field("credential", "string"),
+    field("phase", "string"),
+    field("grantStatus", "number"),
+    field("grantBody", "string"),
+    field("code", "string"),
+    field("reason", "string"),
     field("key", "string"),
 ];
 
@@ -129,6 +162,62 @@ pub const RANDOM_BYTES_SHAPE: &[ShapeField] = &[field("value", "string")];
 /// `credential-status` and `credential-forget` hand back whether the credential is connected.
 pub const CREDENTIAL_SHAPE: &[ShapeField] = &[field("connected", "boolean")];
 
+/// `oauth-authorize` hands back the URL to send the user to and the state the callback returns.
+pub const OAUTH_AUTHORIZE_SHAPE: &[ShapeField] = &[field("authUrl", "string"), field("state", "string"), field("key", "string")];
+
+/// An `oauth-authorize` failure: the OAuth failure beside the call's key.
+pub const OAUTH_AUTHORIZE_FAILURE_SHAPE: &[ShapeField] =
+    &[field("error", "string"), field("code", "string"), field("reason", "string"), field("key", "string")];
+
+/// `oauth-connection-status`, `oauth-connection-forget` and an `oauth-client` `connect`: a caller's connection row.
+pub const OAUTH_CONNECTION_SHAPE: &[ShapeField] = &[
+    field("provider", "string"),
+    field("connected", "boolean"),
+    field("account", "string"),
+    field("avatarUrl", "string"),
+    field("scope", "array"),
+    field("connectedAt", "string"),
+];
+
+pub const OAUTH_CONNECT_SHAPE: &[ShapeField] = &[
+    field("provider", "string"),
+    field("connected", "boolean"),
+    field("account", "string"),
+    field("avatarUrl", "string"),
+    field("scope", "array"),
+    field("connectedAt", "string"),
+    field("key", "string"),
+];
+
+pub const OAUTH_DISCOVERY_SHAPE: &[ShapeField] = &[field("issuer", "string"), field("key", "string")];
+
+pub const OAUTH_CODE_SHAPE: &[ShapeField] = &[
+    field("accessToken", "string"),
+    field("refreshToken", "string"),
+    field("expiresIn", "number"),
+    field("tokenType", "string"),
+    field("scope", "array"),
+    field("subject", "string"),
+    field("key", "string"),
+];
+
+pub const OAUTH_REFRESH_SHAPE: &[ShapeField] =
+    &[field("accessToken", "string"), field("expiresIn", "number"), field("key", "string")];
+
+pub const OAUTH_REVOKE_SHAPE: &[ShapeField] = &[field("revoked", "boolean"), field("key", "string")];
+
+pub const OAUTH_USERINFO_SHAPE: &[ShapeField] = &[
+    field("sub", "string"),
+    field("email", "string"),
+    field("name", "string"),
+    field("picture", "string"),
+    field("key", "string"),
+];
+
+/// An OAuth effect's failure: the fixed safe message, the public code and the closed reason.
+pub const OAUTH_FAILURE_SHAPE: &[ShapeField] =
+    &[field("error", "string"), field("code", "string"), field("reason", "string")];
+
 /// A host effect's failure: the message.
 pub const HOST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
 
@@ -138,6 +227,136 @@ pub const KEYED_CALL_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), 
 /// `persist batch` hands back a summary of the attempted operations.
 pub const PERSIST_BATCH_FIELDS: &[&str] = &["operations", "completedCount", "totalCount"];
 
+const OS_NONE: &[ShapeField] = &[];
+const OS_DATA: &[ShapeField] = &[field("data", "string")];
+const OS_BYTES: &[ShapeField] = &[field("bytes", "number")];
+const OS_FD: &[ShapeField] = &[field("fd", "number")];
+const OS_READ: &[ShapeField] = &[field("data", "string"), field("eof", "boolean")];
+const OS_OFFSET: &[ShapeField] = &[field("offset", "number")];
+const OS_TARGET: &[ShapeField] = &[field("target", "string")];
+const OS_ENTRIES: &[ShapeField] = &[field("entries", "array")];
+const OS_PATHS: &[ShapeField] = &[field("paths", "array")];
+const OS_PATH: &[ShapeField] = &[field("path", "string")];
+const OS_STAT: &[ShapeField] = &[
+    field("kind", "string"),
+    field("size", "number"),
+    field("mode", "number"),
+    field("uid", "number"),
+    field("gid", "number"),
+    field("atime", "number"),
+    field("mtime", "number"),
+    field("ctime", "number"),
+];
+const OS_OK: &[ShapeField] = &[field("ok", "boolean")];
+const OS_SPAWNED: &[ShapeField] = &[
+    field("pid", "number"),
+    field("stdin", "number"),
+    field("stdout", "number"),
+    field("stderr", "number"),
+];
+const OS_EXIT: &[ShapeField] = &[field("code", "number"), field("signal", "string")];
+const OS_PID: &[ShapeField] = &[field("pid", "number")];
+const OS_VALUE: &[ShapeField] = &[field("value", "string")];
+const OS_NAMES: &[ShapeField] = &[field("names", "array")];
+const OS_EOF: &[ShapeField] = &[field("eof", "boolean")];
+const OS_TTY_SIZE: &[ShapeField] = &[field("rows", "number"), field("cols", "number")];
+const OS_SOCK: &[ShapeField] = &[field("sock", "number")];
+const OS_ACCEPTED: &[ShapeField] = &[field("sock", "number"), field("peer", "string")];
+const OS_RECVFROM: &[ShapeField] = &[field("data", "string"), field("peer", "string")];
+const OS_ADDRESSES: &[ShapeField] = &[field("addresses", "array")];
+const OS_NANOS: &[ShapeField] = &[field("nanos", "number")];
+const OS_UID: &[ShapeField] = &[field("uid", "number")];
+const OS_GID: &[ShapeField] = &[field("gid", "number")];
+const OS_USERNAME: &[ShapeField] = &[field("username", "string")];
+const OS_GROUP: &[ShapeField] = &[field("gid", "number"), field("members", "array")];
+const OS_EVENT_FILE: &[ShapeField] = &[
+    field("path", "string"),
+    field("name", "string"),
+    field("dir", "string"),
+    field("timestamp", "number"),
+    field("kind", "string"),
+];
+const OS_EVENT_PROCESS: &[ShapeField] = &[
+    field("pid", "number"),
+    field("name", "string"),
+    field("exitCode", "number"),
+    field("signal", "string"),
+    field("args", "array"),
+    field("duration", "number"),
+];
+const OS_EVENT_SIGNAL: &[ShapeField] = &[field("signal", "string")];
+const OS_EVENT_ENV: &[ShapeField] = &[field("name", "string"), field("value", "string")];
+const OS_EVENT_PORT: &[ShapeField] = &[field("port", "number"), field("open", "boolean")];
+const OS_EVENT_CRON: &[ShapeField] = &[field("scheduledAt", "number")];
+
+/// An `os/` failure: the message and its closed kind (`denied`, `not-found`, `exists`, `invalid`, `io`,
+/// `timeout`, `unsupported`, `closed`).
+pub const OS_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("kind", "string")];
+
+/// What one `os/` operation emits: its final answer on `emit.success`, and each event of a stream on
+/// `emit.onMessage` (opaque for a single-answer op). The system-information and desktop ops state no
+/// payload in the contract, so theirs is opaque.
+struct OsContract {
+    success: ProducedPayload,
+    event: ProducedPayload,
+}
+
+fn os_contract(op: OsOp) -> OsContract {
+    let single = |shape: &'static [ShapeField]| OsContract {
+        success: ProducedPayload::Shape(shape),
+        event: ProducedPayload::Opaque,
+    };
+    let stream = |success: &'static [ShapeField], event: &'static [ShapeField]| OsContract {
+        success: ProducedPayload::Shape(success),
+        event: ProducedPayload::Shape(event),
+    };
+    let unstated = || OsContract { success: ProducedPayload::Opaque, event: ProducedPayload::Opaque };
+    match op {
+        OsOp::ReadFile => single(OS_DATA),
+        OsOp::WriteFile | OsOp::AppendFile | OsOp::Write | OsOp::Send | OsOp::Sendto | OsOp::StdoutWrite
+        | OsOp::StderrWrite => single(OS_BYTES),
+        OsOp::Open => single(OS_FD),
+        OsOp::Read | OsOp::Recv => single(OS_READ),
+        OsOp::Seek => single(OS_OFFSET),
+        OsOp::Close | OsOp::Truncate | OsOp::Fsync | OsOp::Copy | OsOp::Rename | OsOp::Remove | OsOp::Link
+        | OsOp::Symlink | OsOp::Mkdir | OsOp::Rmdir | OsOp::Chdir | OsOp::Chmod | OsOp::Chown | OsOp::Utimes
+        | OsOp::Kill | OsOp::Setenv | OsOp::Unsetenv | OsOp::Shutdown => single(OS_NONE),
+        OsOp::Readlink => single(OS_TARGET),
+        OsOp::WatchFiles => stream(OS_NONE, OS_EVENT_FILE),
+        OsOp::ListDir => single(OS_ENTRIES),
+        OsOp::Glob => single(OS_PATHS),
+        OsOp::Mktemp | OsOp::Realpath | OsOp::Cwd => single(OS_PATH),
+        OsOp::Stat | OsOp::Lstat => single(OS_STAT),
+        OsOp::Access | OsOp::Exists | OsOp::Isatty => single(OS_OK),
+        OsOp::Spawn => single(OS_SPAWNED),
+        OsOp::Wait => single(OS_EXIT),
+        OsOp::Pid | OsOp::Ppid => single(OS_PID),
+        OsOp::WatchProcess => stream(OS_NONE, OS_EVENT_PROCESS),
+        OsOp::WatchSignal => stream(OS_NONE, OS_EVENT_SIGNAL),
+        OsOp::Getenv => single(OS_VALUE),
+        OsOp::Environ => single(OS_NAMES),
+        OsOp::WatchEnv => stream(OS_NONE, OS_EVENT_ENV),
+        OsOp::StdinRead => stream(OS_EOF, OS_DATA),
+        OsOp::TtySize => single(OS_TTY_SIZE),
+        OsOp::TcpConnect | OsOp::UdpBind => single(OS_SOCK),
+        OsOp::TcpListen => stream(OS_SOCK, OS_ACCEPTED),
+        OsOp::Recvfrom => single(OS_RECVFROM),
+        OsOp::DnsResolve => single(OS_ADDRESSES),
+        OsOp::WatchPort => stream(OS_NONE, OS_EVENT_PORT),
+        OsOp::ClockMonotonic => single(OS_NANOS),
+        OsOp::Uid => single(OS_UID),
+        OsOp::Gid => single(OS_GID),
+        OsOp::Username => single(OS_USERNAME),
+        OsOp::GroupOf => single(OS_GROUP),
+        OsOp::WatchCron => stream(OS_NONE, OS_EVENT_CRON),
+        OsOp::CpuUsage | OsOp::MemoryInfo | OsOp::Uptime | OsOp::LoadAvg | OsOp::Hostname | OsOp::Uname
+        | OsOp::DiskUsage | OsOp::Mounts | OsOp::DiskIo | OsOp::NetworkInterfaces | OsOp::NetworkStats
+        | OsOp::NetworkConnected | OsOp::DefaultGateway | OsOp::BatteryStatus | OsOp::AcPower
+        | OsOp::ThermalZones | OsOp::Notify | OsOp::Speak | OsOp::BrightnessGet | OsOp::BrightnessSet
+        | OsOp::VolumeGet | OsOp::VolumeSet | OsOp::VolumeMute | OsOp::Suspend | OsOp::Hibernate => unstated(),
+    }
+}
+
 /// What `operator` emits on success at a call site.
 ///
 /// `variant` carries what the call site adds to the operator's contract:
@@ -146,6 +365,9 @@ pub const PERSIST_BATCH_FIELDS: &[&str] = &["operations", "completedCount", "tot
 /// [`ProducedPayload::Opaque`] rather than guessing "create" -- a wrong guess
 /// would report against the wrong contract), or an `http` call's `paginate`.
 pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload {
+    if let Some(op) = OsOp::from_name(operator) {
+        return os_contract(op).success;
+    }
     match operator {
         "persist" => match variant {
             CallVariant::PersistAction("create" | "upsert" | "update") => ProducedPayload::EntityRow,
@@ -158,10 +380,26 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
         "fetch" | "ref" => ProducedPayload::Fields(FETCH_WRAPPER_FIELDS),
         "http" => match variant {
             CallVariant::HttpPaginate => ProducedPayload::Shape(HTTP_PAGED_SHAPE),
+            CallVariant::HttpPresign => ProducedPayload::Shape(HTTP_PRESIGN_SHAPE),
+            CallVariant::HttpOAuth(op) => {
+                use crate::oauth::client::OAuthOp;
+                ProducedPayload::Shape(match op {
+                    OAuthOp::Discovery => OAUTH_DISCOVERY_SHAPE,
+                    OAuthOp::Code => OAUTH_CODE_SHAPE,
+                    OAuthOp::Connect => OAUTH_CONNECT_SHAPE,
+                    OAuthOp::Refresh => OAUTH_REFRESH_SHAPE,
+                    OAuthOp::Revoke => OAUTH_REVOKE_SHAPE,
+                    OAuthOp::Userinfo => OAUTH_USERINFO_SHAPE,
+                })
+            }
             _ => ProducedPayload::Shape(HTTP_REPLY_SHAPE),
         },
+        "browser/beacon" => ProducedPayload::Shape(HTTP_BEACON_SHAPE),
+        "browser/page-facts" => ProducedPayload::Shape(PAGE_FACTS_SHAPE),
         "random-bytes" => ProducedPayload::Shape(RANDOM_BYTES_SHAPE),
         "credential-status" | "credential-forget" => ProducedPayload::Shape(CREDENTIAL_SHAPE),
+        "oauth-authorize" => ProducedPayload::Shape(OAUTH_AUTHORIZE_SHAPE),
+        "oauth-connection-status" | "oauth-connection-forget" => ProducedPayload::Shape(OAUTH_CONNECTION_SHAPE),
         // `call-service` and `set` declare `any`; nothing to compare against.
         _ => ProducedPayload::Opaque,
     }
@@ -171,16 +409,25 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
 /// `key`: only a keyed `call-service` failure has a known shape (`{ error, key }`);
 /// an unkeyed one stays opaque. `http` always echoes its key.
 pub fn failure_payload(operator: &str, keyed: bool) -> ProducedPayload {
+    if OsOp::from_name(operator).is_some() {
+        return ProducedPayload::Shape(OS_FAILURE_SHAPE);
+    }
     match operator {
-        "http" => ProducedPayload::Shape(HTTP_FAILURE_SHAPE),
-        "random-bytes" | "credential-status" | "credential-forget" => ProducedPayload::Shape(HOST_FAILURE_SHAPE),
+        "http" | "browser/beacon" => ProducedPayload::Shape(HTTP_FAILURE_SHAPE),
+        "browser/page-facts" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
+        "random-bytes" | "credential-status" | "credential-forget" | "browser/page-facts" => ProducedPayload::Shape(HOST_FAILURE_SHAPE),
+        "oauth-authorize" => ProducedPayload::Shape(OAUTH_AUTHORIZE_FAILURE_SHAPE),
+        "oauth-connection-status" | "oauth-connection-forget" => ProducedPayload::Shape(OAUTH_FAILURE_SHAPE),
         "call-service" | "call_service" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
         _ => ProducedPayload::Opaque,
     }
 }
 
-/// What `operator` emits on `emit.onMessage`: only an `http` `stream` has one.
+/// What `operator` emits on `emit.onMessage`: an `http` `stream`, or each event of a streaming `os/` op.
 pub fn message_payload(operator: &str) -> ProducedPayload {
+    if let Some(op) = OsOp::from_name(operator) {
+        return os_contract(op).event;
+    }
     match operator {
         "http" => ProducedPayload::Shape(HTTP_STREAM_EVENT_SHAPE),
         _ => ProducedPayload::Opaque,
@@ -389,5 +636,21 @@ mod tests {
             ProducedPayload::Opaque
         );
         assert!(undeclared_reads(&["whatever"], &ProducedPayload::Opaque, &[]).is_empty());
+    }
+
+    #[test]
+    fn an_oauth_connect_emit_has_no_token_field_to_read_and_a_code_emit_has() {
+        use crate::oauth::client::OAuthOp;
+        let connect = success_payload("http", CallVariant::HttpOAuth(OAuthOp::Connect));
+        assert_eq!(undeclared_reads(&["accessToken", "connected"], &connect, &[]), vec!["accessToken"]);
+        let code = success_payload("http", CallVariant::HttpOAuth(OAuthOp::Code));
+        assert!(undeclared_reads(&["accessToken", "refreshToken", "expiresIn"], &code, &[]).is_empty());
+        let status = success_payload("oauth-connection-status", CallVariant::Plain);
+        assert!(undeclared_reads(&["connected", "scope"], &status, &[]).is_empty());
+        assert_eq!(
+            undeclared_reads(&["reason"], &failure_payload("oauth-authorize", false), &[]),
+            Vec::<&str>::new()
+        );
+        assert_eq!(undeclared_reads(&["token"], &failure_payload("oauth-authorize", false), &[]), vec!["token"]);
     }
 }

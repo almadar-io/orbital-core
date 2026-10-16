@@ -303,6 +303,100 @@ pub fn sanitize_identifier(name: &str, keywords: &[&str]) -> String {
     }
 }
 
+pub fn js_number_from_text(text: &str) -> f64 {
+    let text = text.trim_matches(|c| {
+        matches!(c,
+            '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' |
+            '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' |
+            '\u{205f}' | '\u{3000}' | '\u{feff}'
+        )
+    });
+    if text.is_empty() {
+        return 0.0;
+    }
+    for (prefix, width) in [
+        ("0x", 4),
+        ("0X", 4),
+        ("0b", 1),
+        ("0B", 1),
+        ("0o", 3),
+        ("0O", 3),
+    ] {
+        if let Some(digits) = text.strip_prefix(prefix) {
+            return js_radix_number(digits, width);
+        }
+    }
+    let (sign, unsigned) = match text.strip_prefix('-') {
+        Some(rest) => (-1.0, rest),
+        None => (1.0, text.strip_prefix('+').unwrap_or(text)),
+    };
+    if unsigned == "Infinity" {
+        return sign * f64::INFINITY;
+    }
+    if !unsigned.starts_with(|c: char| c.is_ascii_digit() || c == '.')
+        || !unsigned
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'))
+        || !unsigned.bytes().any(|b| b.is_ascii_digit())
+    {
+        return f64::NAN;
+    }
+    unsigned
+        .parse::<f64>()
+        .map_or(f64::NAN, |number| sign * number)
+}
+
+fn js_radix_number(digits: &str, width: u32) -> f64 {
+    if digits.is_empty() {
+        return f64::NAN;
+    }
+    let mut length = 0;
+    let mut significand = 0_u64;
+    let mut guard = false;
+    let mut sticky = false;
+    for byte in digits.bytes() {
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return f64::NAN,
+        };
+        if digit >= 1 << width {
+            return f64::NAN;
+        }
+        for shift in (0..width).rev() {
+            let bit = u64::from((digit >> shift) & 1);
+            if length == 0 && bit == 0 {
+                continue;
+            }
+            length += 1;
+            match length {
+                1..=53 => significand = (significand << 1) | bit,
+                54 => guard = bit != 0,
+                _ => sticky |= bit != 0,
+            }
+        }
+    }
+    if length <= 53 {
+        return significand as f64;
+    }
+    if length > 1024 {
+        return f64::INFINITY;
+    }
+    let mut exponent = length - 1;
+    if guard && (sticky || significand & 1 != 0) {
+        significand += 1;
+    }
+    if significand == 1 << 53 {
+        significand >>= 1;
+        exponent += 1;
+    }
+    if exponent > 1023 {
+        return f64::INFINITY;
+    }
+    f64::from_bits(((exponent + 1023) << 52) | (significand & ((1 << 52) - 1)))
+}
+
 /// A number as JavaScript's `String(n)` prints it (ECMA-262 Number::toString):
 /// shortest round-trip digits, exponent form below 1e-6 and from 1e21.
 pub fn js_number_string(n: f64) -> String {

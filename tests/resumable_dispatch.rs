@@ -712,9 +712,10 @@ impl Shuffle {
 /// Run every flight at once; each round answers a pseudo-randomly chosen pending await, so an answer
 /// arrives after other dispatches have gone on and in no fixed order.
 fn fly(flights: &mut [Flight], seed: u64, wrong: &dyn Fn(usize, &IoRequest) -> Option<IoAnswer>) {
-    let answers: Vec<Box<dyn Fn(&IoRequest) -> IoAnswer>> = flights
+    type HostAnswer = Box<dyn Fn(&IoRequest) -> IoAnswer>;
+    let answers: Vec<HostAnswer> = flights
         .iter()
-        .map(|f| Box::new(host_answers(&f.setup, &f.store)) as Box<dyn Fn(&IoRequest) -> IoAnswer>)
+        .map(|f| Box::new(host_answers(&f.setup, &f.store)) as HostAnswer)
         .collect();
     let mut shuffle = Shuffle(seed);
     loop {

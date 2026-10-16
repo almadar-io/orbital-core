@@ -8,6 +8,7 @@
 //! - Event bus for cross-orbital communication
 //! - Effect executor with environment-aware routing
 
+pub mod behavior_index;
 pub mod behavior_packages;
 pub mod sidecar_store;
 pub mod vector_store;
@@ -32,6 +33,7 @@ pub mod ir;
 pub mod logging;
 pub mod messages;
 pub mod oal;
+pub mod oauth;
 pub mod renderer_coverage;
 pub mod renderer_packs;
 pub mod route;

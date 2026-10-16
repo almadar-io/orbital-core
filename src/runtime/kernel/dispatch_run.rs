@@ -421,7 +421,7 @@ impl RuntimeKernel {
                 return Err(DispatchError::Resume(diverged));
             }
             if let Some(request) = end.pending {
-                if matches!(result, Ok(_)) {
+                if result.is_ok() {
                     return Err(DispatchError::Kernel(KernelError::Internal(
                         "a dispatch step committed while it awaited host I/O".to_string(),
                     )));
@@ -860,7 +860,6 @@ impl RuntimeKernel {
                 RepaintJob {
                     composed_with: composed_with.clone(),
                     keep_composed,
-                    composed_by: composed_by.clone(),
                     visited: Arc::clone(&job.visited),
                 },
             ));

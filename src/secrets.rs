@@ -12,10 +12,12 @@ use serde_json::{Map, Value};
 
 pub const CREDENTIAL_NOT_SECRET_CODE: &str = "ORB_HTTP_AUTH_CREDENTIAL_NOT_SECRET";
 pub const SECRET_OUTSIDE_AUTH_CODE: &str = "ORB_SECRET_OUTSIDE_AUTH";
+pub const CREDENTIAL_STATUS_SLOT_INVALID_CODE: &str = "ORB_CREDENTIAL_STATUS_SLOT_INVALID";
 
 /// One breach of the secret-flow rules, located by program path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretFlowViolation {
+    CredentialStatusSlotInvalid { path: String },
     /// An `http` auth credential slot that is not a `secret`-typed knob.
     CredentialNotSecret { path: String, slot: String },
     /// A `secret`-typed knob read anywhere but an auth credential slot.
@@ -25,6 +27,7 @@ pub enum SecretFlowViolation {
 impl SecretFlowViolation {
     pub fn code(&self) -> &'static str {
         match self {
+            Self::CredentialStatusSlotInvalid { .. } => CREDENTIAL_STATUS_SLOT_INVALID_CODE,
             Self::CredentialNotSecret { .. } => CREDENTIAL_NOT_SECRET_CODE,
             Self::OutsideAuth { .. } => SECRET_OUTSIDE_AUTH_CODE,
         }
@@ -32,12 +35,17 @@ impl SecretFlowViolation {
 
     pub fn path(&self) -> &str {
         match self {
-            Self::CredentialNotSecret { path, .. } | Self::OutsideAuth { path } => path,
+            Self::CredentialNotSecret { path, .. }
+            | Self::OutsideAuth { path }
+            | Self::CredentialStatusSlotInvalid { path } => path,
         }
     }
 
     pub fn message(&self) -> String {
         match self {
+            Self::CredentialStatusSlotInvalid { .. } => {
+                "credential-status: expected a secret knob or { credential, scope: app | user }".to_string()
+            }
             Self::CredentialNotSecret { slot, .. } if slot.starts_with("credential-") => {
                 format!("`{slot}` takes a `secret`-typed config knob (@config.<knob>)")
             }
@@ -52,6 +60,9 @@ impl SecretFlowViolation {
 
     pub fn suggestion(&self) -> &'static str {
         match self {
+            Self::CredentialStatusSlotInvalid { .. } => {
+                "Use a secret knob directly, or { credential: @config.<knob>, scope: app | user }"
+            }
             Self::CredentialNotSecret { .. } => {
                 "Declare `<knob>: secret = \"CREDENTIAL_NAME\"` in config and pass @config.<knob>"
             }
@@ -68,6 +79,9 @@ pub fn credential_slots(scheme: &str) -> &'static [&'static str] {
         "bearer" | "api-key" | "hmac-sha256" => &["credential"],
         "basic" => &["user", "credential"],
         "oauth2-client" | "token-exchange" => &["clientId", "clientSecret"],
+        "jwt-bearer" => &["key"],
+        "aws-sigv4" => &["accessKeyId", "secretAccessKey", "sessionToken"],
+        "vapid" => &["privateKey"],
         _ => &[],
     }
 }
@@ -96,6 +110,14 @@ fn token_body_fields(auth: &Map<String, Value>) -> impl Iterator<Item = (&String
         .flat_map(|body| body.values())
         .filter_map(Value::as_object)
         .flatten()
+}
+
+pub fn auth_uses_user_credentials(auth: &Map<String, Value>) -> bool {
+    let is_user = |value: &Value| slot_credential(value).is_some()
+        && value.as_object().and_then(|slot| slot.get("scope")).and_then(Value::as_str) == Some("user");
+    let scheme = auth.get("scheme").and_then(Value::as_str).unwrap_or("");
+    credential_slots(scheme).iter().filter_map(|key| auth.get(*key)).any(is_user)
+        || (scheme == "token-exchange" && token_body_fields(auth).any(|(_, value)| is_user(value)))
 }
 
 /// `knob` of a whole-string `@config.<knob>` read (no deeper path).
@@ -174,10 +196,31 @@ fn http_request(items: &[Value]) -> Option<&Map<String, Value>> {
 
 fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
     each_http_call(expr, &mut |items| check_credential_slots(items, secrets, path, out));
+    each_oauth_authorize(expr, &mut |items| {
+        if let Some(client) = items.get(1) {
+            check_oauth_client(client, secrets, path, out);
+        }
+    });
     each_credential_effect(expr, &mut |head, items| {
-        let is_secret_knob = items
-            .get(1)
-            .and_then(Value::as_str)
+        let credential = if head == "credential-status" {
+            let slot = items
+                .get(1)
+                .and_then(|selection| serde_json::from_value::<crate::Value>(selection.clone()).ok())
+                .and_then(|selection| {
+                    crate::runtime::http_request::parse_credential_status_slot(&selection).ok()
+                });
+            let Some(slot) = slot else {
+                out.push(SecretFlowViolation::CredentialStatusSlotInvalid {
+                    path: path.to_string(),
+                });
+                return;
+            };
+            Some(slot.name)
+        } else {
+            items.get(1).and_then(Value::as_str).map(str::to_string)
+        };
+        let is_secret_knob = credential
+            .as_deref()
             .and_then(config_knob)
             .is_some_and(|knob| secrets.contains(&knob));
         if !is_secret_knob {
@@ -189,6 +232,44 @@ fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
     });
     if !secrets.is_empty() {
         scan_reads(expr, secrets, path, out);
+    }
+}
+
+/// `oauth-authorize`: its first argument is an OAuth client object whose `clientId` / `clientSecret` are credential slots.
+fn is_oauth_authorize(items: &[Value]) -> bool {
+    items.first().and_then(Value::as_str) == Some("oauth-authorize")
+}
+
+/// The credential slots of an OAuth client object (`oauth-client` auth, `oauth-authorize`).
+const OAUTH_CLIENT_SLOTS: [&str; 2] = ["clientId", "clientSecret"];
+
+fn check_oauth_client(client: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
+    let Some(client) = client.as_object() else { return };
+    for slot in OAUTH_CLIENT_SLOTS {
+        let Some(value) = client.get(slot) else { continue };
+        let is_secret_knob = slot_credential(value)
+            .and_then(config_knob)
+            .is_some_and(|knob| secrets.contains(&knob));
+        if !is_secret_knob {
+            out.push(SecretFlowViolation::CredentialNotSecret {
+                path: path.to_string(),
+                slot: format!("client.{slot}"),
+            });
+        }
+    }
+}
+
+/// Reads of a secret inside an OAuth client object other than its credential slots.
+fn scan_oauth_client_reads(client: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
+    match client {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if !OAUTH_CLIENT_SLOTS.contains(&key.as_str()) {
+                    scan_reads(value, secrets, path, out);
+                }
+            }
+        }
+        other => scan_reads(other, secrets, path, out),
     }
 }
 
@@ -205,6 +286,25 @@ fn each_http_call<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a [Value])) {
         Value::Object(map) => {
             for value in map.values() {
                 each_http_call(value, visit);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn each_oauth_authorize<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a [Value])) {
+    match expr {
+        Value::Array(items) => {
+            if is_oauth_authorize(items) {
+                visit(items);
+            }
+            for item in items {
+                each_oauth_authorize(item, visit);
+            }
+        }
+        Value::Object(map) => {
+            for value in map.values() {
+                each_oauth_authorize(value, visit);
             }
         }
         _ => {}
@@ -237,6 +337,15 @@ fn check_credential_slots(items: &[Value], secrets: &[&str], path: &str, out: &m
     let Some(scheme) = auth.get("scheme").and_then(Value::as_str) else {
         return;
     };
+    if scheme == "oauth-client" {
+        if let Some(client) = auth.get("client") {
+            check_oauth_client(client, secrets, path, out);
+        }
+        for client in auth.get("clients").and_then(Value::as_object).into_iter().flat_map(Map::values) {
+            check_oauth_client(client, secrets, path, out);
+        }
+        return;
+    }
     let mut check = |slot: String, value: &Value| {
         let is_secret_knob = slot_credential(value)
             .and_then(config_knob)
@@ -259,6 +368,9 @@ fn check_credential_slots(items: &[Value], secrets: &[&str], path: &str, out: &m
                 check(format!("body.{name}"), value);
             }
         }
+        if let Some(credential) = auth.get("rotate").and_then(Value::as_object).and_then(|rotate| rotate.get("credential")) {
+            check("rotate.credential".to_string(), credential);
+        }
     }
 }
 
@@ -279,10 +391,27 @@ fn scan_reads(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
         Value::Array(items) => {
             let http = is_http(items);
             let credential = credential_effect(items).is_some();
+            let authorize = is_oauth_authorize(items);
             for (index, item) in items.iter().enumerate() {
                 match (http, item) {
+                    _ if authorize && index == 1 => scan_oauth_client_reads(item, secrets, path, out),
                     (true, Value::Object(request)) => scan_request_reads(request, secrets, path, out),
-                    _ if credential && index == 1 => {}
+                    _ if credential && index == 1 => {
+                        if items.first().and_then(Value::as_str) == Some("credential-status") {
+                            if let Value::Object(selection) = item {
+                                for (key, value) in selection {
+                                    let allowed_leaf = key == "credential"
+                                        && value
+                                            .as_str()
+                                            .and_then(config_knob)
+                                            .is_some_and(|knob| secrets.contains(&knob));
+                                    if !allowed_leaf {
+                                        scan_reads(value, secrets, path, out);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     _ => scan_reads(item, secrets, path, out),
                 }
             }
@@ -307,12 +436,25 @@ fn scan_request_reads(request: &Map<String, Value>, secrets: &[&str], path: &str
                         continue;
                     }
                     match (scheme, slot.as_str(), slot_value) {
+                        (Some("oauth-client"), "client", client) => scan_oauth_client_reads(client, secrets, path, out),
+                        (Some("oauth-client"), "clients", Value::Object(clients)) => {
+                            for client in clients.values() {
+                                scan_oauth_client_reads(client, secrets, path, out);
+                            }
+                        }
                         (Some("token-exchange"), "body", Value::Object(body)) => {
                             for fields in body.values() {
                                 for (_, field) in fields.as_object().into_iter().flatten() {
                                     if !is_slot_object(field) {
                                         scan_reads(field, secrets, path, out);
                                     }
+                                }
+                            }
+                        }
+                        (Some("token-exchange"), "rotate", Value::Object(rotate)) => {
+                            for (key, value) in rotate {
+                                if key != "credential" {
+                                    scan_reads(value, secrets, path, out);
                                 }
                             }
                         }
@@ -355,6 +497,10 @@ mod tests {
             json!({ "scheme": "bearer", "credential": "@config.plain" }),
             json!({ "scheme": "bearer", "credential": "LITERAL" }),
             json!({ "scheme": "bearer", "credential": "@config.missing" }),
+            json!({ "scheme": "jwt-bearer", "key": "@config.plain" }),
+            json!({ "scheme": "vapid", "privateKey": "@config.plain" }),
+            json!({ "scheme": "aws-sigv4", "accessKeyId": "@config.plain", "secretAccessKey": "@config.apiKey" }),
+            json!({ "scheme": "aws-sigv4", "accessKeyId": "@config.apiKey", "secretAccessKey": "@config.apiKey", "sessionToken": "@config.plain" }),
             json!({ "scheme": "basic", "user": "alice", "credential": "@config.apiKey" }),
             json!({ "scheme": "oauth2-client", "tokenUrl": "https://a.example", "clientId": "@config.apiKey", "clientSecret": "@payload.s" }),
         ] {
@@ -367,12 +513,45 @@ mod tests {
     fn control_secret_knobs_in_every_credential_slot_are_clean() {
         for auth in [
             json!({ "scheme": "bearer", "credential": "@config.apiKey" }),
+            json!({ "scheme": "jwt-bearer", "key": "@config.apiKey" }),
+            json!({ "scheme": "vapid", "privateKey": {"credential":"@config.apiKey","scope":"user"} }),
+            json!({ "scheme": "aws-sigv4", "accessKeyId": "@config.apiKey", "secretAccessKey": {"credential":"@config.apiKey","scope":"user"}, "sessionToken":"@config.apiKey" }),
             json!({ "scheme": "basic", "user": "@config.apiKey", "credential": "@config.apiKey" }),
             json!({ "scheme": "api-key", "credential": "@config.apiKey", "name": "k", "in": "header" }),
             json!({ "scheme": "hmac-sha256", "credential": "@config.apiKey", "name": "S", "signs": "@payload.m", "encoding": "hex" }),
         ] {
             assert!(codes(&program(config(), call(json!({ "auth": auth.clone() })))).is_empty(), "{auth}");
         }
+    }
+
+    fn rotating(credential: Value) -> Value {
+        call(json!({ "auth": {
+            "scheme": "token-exchange", "tokenUrl": "https://a.example", "grant": "refresh_token",
+            "body": { "form": { "refresh_token": { "credential": "@config.apiKey" } } },
+            "rotate": { "field": "refresh_token", "credential": credential }
+        } }))
+    }
+
+    #[test]
+    fn a_rotate_credential_is_an_auth_slot_that_must_be_a_secret_knob() {
+        for ok in [json!("@config.apiKey"), json!({ "credential": "@config.apiKey", "scope": "user" })] {
+            assert!(codes(&program(config(), rotating(ok.clone()))).is_empty(), "{ok}");
+        }
+        for bad in [json!("@config.plain"), json!("LITERAL"), json!({ "credential": "@config.plain" })] {
+            let found = secret_flow_violations(&program(config(), rotating(bad.clone())));
+            assert_eq!(found.len(), 1, "{bad}");
+            assert!(matches!(&found[0], SecretFlowViolation::CredentialNotSecret { slot, .. } if slot == "rotate.credential"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_secret_read_in_another_rotate_key_is_outside_auth() {
+        let p = program(config(), call(json!({ "auth": {
+            "scheme": "token-exchange", "tokenUrl": "https://a.example", "grant": "refresh_token",
+            "body": { "form": { "refresh_token": { "credential": "@config.apiKey" } } },
+            "rotate": { "field": "@config.apiKey", "credential": "@config.apiKey" }
+        } })));
+        assert_eq!(codes(&p), vec![SECRET_OUTSIDE_AUTH_CODE]);
     }
 
     fn exchange(body: Value) -> Value {
@@ -505,5 +684,29 @@ mod tests {
     #[test]
     fn a_program_without_orbitals_has_no_violations() {
         assert!(secret_flow_violations(&json!({})).is_empty());
+    }
+
+    fn oauth_client(id: &str, secret: &str) -> Value {
+        json!({ "tag": "google", "mode": "real", "issuer": "https://idp.example.com", "clientId": id, "clientSecret": secret, "clientAuth": "post" })
+    }
+
+    fn oauth_call(client: Value, code: &str) -> Value {
+        json!([["http", "POST", "oauth-endpoint", "token",
+            { "auth": { "scheme": "oauth-client", "op": "code", "client": client, "code": code, "state": "@payload.state" } },
+            { "emit": { "success": "OK" } }]])
+    }
+
+    #[test]
+    fn oauth_client_and_authorize_slots_must_be_secret_knobs_and_nothing_else_may_read_one() {
+        let clean = program(config(), oauth_call(oauth_client("@config.apiKey", "@config.apiKey"), "@payload.code"));
+        assert!(codes(&clean).is_empty(), "{:?}", secret_flow_violations(&clean));
+        let bad = secret_flow_violations(&program(config(), oauth_call(oauth_client("@config.plain", "@config.apiKey"), "@payload.code")));
+        assert!(matches!(&bad[..], [SecretFlowViolation::CredentialNotSecret { slot, .. }] if slot == "client.clientId"), "{bad:?}");
+        let leaked = codes(&program(config(), oauth_call(oauth_client("@config.apiKey", "@config.apiKey"), "@config.apiKey")));
+        assert_eq!(leaked, vec![SECRET_OUTSIDE_AUTH_CODE]);
+        let authorize = |client: Value| program(config(), json!([["oauth-authorize", client, { "redirectUri": "https://a/cb" }, { "emit": { "success": "OK" } }]]));
+        assert!(codes(&authorize(oauth_client("@config.apiKey", "@config.apiKey"))).is_empty());
+        let bad = secret_flow_violations(&authorize(oauth_client("@config.apiKey", "LITERAL")));
+        assert!(matches!(&bad[..], [SecretFlowViolation::CredentialNotSecret { slot, .. }] if slot == "client.clientSecret"), "{bad:?}");
     }
 }

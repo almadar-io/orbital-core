@@ -251,27 +251,36 @@ impl SExpression {
         out
     }
 
-    fn collect_value_leaves<'a>(&'a self, walk: &ValueWalk<'_>, out: &mut Vec<&'a SExpression>) {
-        let SExpression::Array(arr) = self else {
-            out.push(self);
-            return;
-        };
-        let Some(op) = arr.first().and_then(SExpression::as_str) else {
-            out.push(self);
-            return;
-        };
-        let args = &arr[1..];
-        let plan = plan_value_sources(
+    /// Direct argument slots selected by the same declared provenance plan as `value_leaves`.
+    pub fn value_source_slots(&self, walk: &ValueWalk<'_>) -> Option<Vec<ValueSlot>> {
+        let op = self.operator()?;
+        let args = self.arguments()?;
+        plan_value_sources(
             walk,
             op,
             args.len(),
             |i| args[i].is_lambda_form(walk),
             args.first().is_some_and(SExpression::is_statically_false),
-        );
-        let Some(slots) = plan else {
+        )
+    }
+
+    pub fn sequential_bindings(&self) -> Option<SequentialBindings<'_>> {
+        if self.operator()? != "let" {
+            return None;
+        }
+        SequentialBindings::from_args(self.arguments()?)
+    }
+
+    fn collect_value_leaves<'a>(&'a self, walk: &ValueWalk<'_>, out: &mut Vec<&'a SExpression>) {
+        let SExpression::Array(arr) = self else {
             out.push(self);
             return;
         };
+        let Some(slots) = self.value_source_slots(walk) else {
+            out.push(self);
+            return;
+        };
+        let args = &arr[1..];
         for slot in slots {
             match slot {
                 ValueSlot::Arg(i) => args[i].collect_value_leaves(walk, out),
@@ -636,9 +645,33 @@ pub struct ValueWalk<'r> {
     pub skip_dead_branches: bool,
 }
 
+/// The ordered initializer/body slots evaluated by the canonical `let` form.
+#[derive(Debug)]
+pub struct SequentialBindings<'a> {
+    pub bindings: Vec<(&'a str, &'a SExpression)>,
+    pub body: &'a SExpression,
+}
+
+impl<'a> SequentialBindings<'a> {
+    pub fn from_args(args: &'a [SExpression]) -> Option<Self> {
+        let bindings = args.first()?.as_array()?;
+        let body = args.get(1)?;
+        Some(Self {
+            bindings: bindings
+                .iter()
+                .filter_map(|binding| {
+                    let pair = binding.as_array()?;
+                    Some((pair.first()?.as_str()?, pair.get(1)?))
+                })
+                .collect(),
+            body,
+        })
+    }
+}
+
 /// One argument slot a declared kind resolves through.
 #[derive(Debug, Clone, Copy)]
-enum ValueSlot {
+pub enum ValueSlot {
     Arg(usize),
     LambdaBody(usize),
 }

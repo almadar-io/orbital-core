@@ -5,7 +5,7 @@
 use orbital_core::evaluator::BindingContext;
 use orbital_core::runtime::entity_access::apply_read_access;
 use orbital_core::runtime::resumable::{
-    BlockingHost, HostAnswered, IoAnswer, IoReply, IoRequest, Progress,
+    BlockingHost, DispatchOutcomes, HostAnswered, IoAnswer, IoReply, IoRequest, Progress,
 };
 use orbital_core::runtime::row_query::{
     apply_write, apply_write_batch, compile_predicate, query_unsupported_reason, resolve_row_set,
@@ -641,10 +641,7 @@ fn fly(
     event: &str,
     host: &InMemoryEntityCache,
     override_with: &dyn Fn(&IoRequest) -> Option<IoAnswer>,
-) -> (
-    Vec<IoRequest>,
-    Result<Vec<(String, orbital_core::runtime::ProcessEventResult)>, String>,
-) {
+) -> (Vec<IoRequest>, Result<DispatchOutcomes, String>) {
     let mut log = Vec::new();
     let mut progress = kernel
         .start_dispatch("Tickets", None, event, Value::Null, None, None)

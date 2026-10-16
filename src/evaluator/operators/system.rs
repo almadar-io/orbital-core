@@ -303,7 +303,7 @@ fn parse_iso_instant(text: &str) -> Option<i64> {
 /// time/parse - RFC 3339 / ISO 8601 date or date-time to epoch ms; anything else is an error.
 pub struct TimeParseOp;
 impl Operator for TimeParseOp {
-    fn evaluate(&self, args: &[SExpr], ctx: &BindingContext) -> EvalResult {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/parse", 1);
 
         let date_str = match eval_expr(&args[0], ctx)? {
@@ -319,6 +319,22 @@ impl Operator for TimeParseOp {
             Some(ms) => Ok(Value::Number(ms as f64)),
             None => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
                 "time/parse: \"{date_str}\" is not an ISO 8601 date or date-time"
+            )))),
+        }
+    }
+}
+
+/// time/valid - true iff time/parse would succeed; null is false
+pub struct TimeValidOp;
+impl Operator for TimeValidOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "time/valid", 1);
+        match eval_expr(&args[0], ctx)? {
+            Value::Null => Ok(Value::Bool(false)),
+            Value::String(s) => Ok(Value::Bool(parse_iso_instant(&s).is_some())),
+            other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                "time/valid: expected a string argument, got {}",
+                other.type_name()
             )))),
         }
     }

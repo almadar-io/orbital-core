@@ -528,5 +528,173 @@
     ],
     "error": true,
     "source": "non-string input"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      ""
+    ],
+    "expect": true,
+    "source": "valid mirror of base64/decode: RFC 4648 section 10"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zg=="
+    ],
+    "expect": true,
+    "source": "valid mirror of base64/decode: RFC 4648 section 10"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zm8="
+    ],
+    "expect": true,
+    "source": "valid mirror of base64/decode: RFC 4648 section 10"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zm9v"
+    ],
+    "expect": true,
+    "source": "valid mirror of base64/decode: RFC 4648 section 10"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zm9vYg=="
+    ],
+    "expect": true,
+    "source": "valid mirror of base64/decode: RFC 4648 section 10"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zm9vYmE="
+    ],
+    "expect": true,
+    "source": "valid mirror of base64/decode: RFC 4648 section 10"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zm9vYmFy"
+    ],
+    "expect": true,
+    "source": "valid mirror of base64/decode: RFC 4648 section 10"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "aMOpbGxvIHfDtnJsZCDinJMg8J+YgA=="
+    ],
+    "expect": true,
+    "source": "valid mirror of base64/decode: UTF-8 non-ASCII"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zg"
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zm9"
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zm9v!"
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zg=a"
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "=Zg="
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zm 9v"
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zm9v\n"
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Z"
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "Zh=="
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "-_8="
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "/w=="
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      "gA=="
+    ],
+    "expect": false,
+    "source": "valid mirror of base64/decode: invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
+  },
+  {
+    "op": "base64/valid",
+    "args": [
+      null
+    ],
+    "expect": false,
+    "source": "null is false"
   }
 ]

@@ -62,6 +62,10 @@ fn record_nonce(base: &[u8], counter: u64) -> [u8; 12] {
     nonce
 }
 
+pub fn ephemeral_private_key(bytes: &[u8;32]) -> Result<SecretKey, WebpushError> {
+    SecretKey::from_slice(bytes).map_err(|_| fail("Private key is not valid for specified curve."))
+}
+
 /// `encryptionHelper.encrypt(p256dh, auth, payload, 'aes128gcm').cipherText`.
 pub fn encrypt_aes128gcm(
     user_public_key: &str,
@@ -83,8 +87,7 @@ pub fn encrypt_aes128gcm(
         ));
     }
 
-    let secret_key = SecretKey::from_slice(ephemeral_private_key)
-        .map_err(|_| fail("Private key is not valid for specified curve."))?;
+    let secret_key = self::ephemeral_private_key(ephemeral_private_key)?;
     let sender_public = secret_key.public_key().to_encoded_point(false);
     let receiver = PublicKey::from_sec1_bytes(&user_public)
         .map_err(|_| fail("Public key is not valid for specified curve"))?;
@@ -276,7 +279,10 @@ mod tests {
         // header (16 salt + 4 rs + 1 idlen + 65 key) + 3 records
         assert_eq!(long.len(), 86 + big.len() + 3 * (1 + TAG_LENGTH));
         let short = encrypt_aes128gcm(ua, auth, &big[..10], &key32(7), &[3u8; 16]).unwrap();
-        assert_ne!(long[86..96], short[86..96]);
+        assert_eq!(long[86..96], short[86..96]);
+        assert_ne!(long[96], short[96]);
+        let second_record = 86 + 4079 + 1 + TAG_LENGTH;
+        assert_ne!(long[86..96], long[second_record..second_record + 10]);
         let other = encrypt_aes128gcm(ua, auth, &big[..10], &key32(8), &[3u8; 16]).unwrap();
         assert_ne!(short, other);
     }

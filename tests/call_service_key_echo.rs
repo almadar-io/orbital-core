@@ -81,6 +81,14 @@ fn a_keyed_success_carries_the_key_beside_the_result_fields() {
 }
 
 #[test]
+fn a_call_service_key_expression_is_evaluated_before_dispatch() {
+    let mut options = routes(true);
+    options["key"] = json!(["str/concat", "j", "ob"]);
+    let response = run(options, ok());
+    assert_eq!(payload(&response, "OK").get_path("key").and_then(Value::as_str), Some("job"));
+}
+
+#[test]
 fn an_unkeyed_success_is_unchanged() {
     let response = run(routes(false), ok());
     assert!(payload(&response, "OK").get_path("key").is_none());

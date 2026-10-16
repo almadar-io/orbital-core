@@ -45,9 +45,7 @@ fn collapse(text: &str) -> String {
 
 fn is_name(name: &str) -> bool {
     let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_alphabetic() || c == '_')
+    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
         && chars.all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
@@ -88,12 +86,7 @@ fn parse_tree(text: &str) -> Result<Node, OrbitalError> {
     let mut stack: Vec<(String, Node)> = Vec::new();
     let mut root: Option<Node> = None;
 
-    fn close(
-        stack: &mut Vec<(String, Node)>,
-        root: &mut Option<Node>,
-        name: String,
-        node: Node,
-    ) {
+    fn close(stack: &mut [(String, Node)], root: &mut Option<Node>, name: String, node: Node) {
         match stack.last_mut() {
             Some((_, parent)) => {
                 parent.full.push_str(&node.full);
@@ -205,6 +198,24 @@ pub(crate) fn parse_xml(text: &str) -> Result<Value, OrbitalError> {
     parse_tree(text).map(to_value)
 }
 
+pub struct XmlValidOp;
+impl Operator for XmlValidOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        if args.len() != 1 {
+            return Err(OrbitalError::Eval(EvalError::InvalidArgument(
+                "xml/valid: expected exactly one argument".into(),
+            )));
+        }
+        match eval_expr(&args[0], ctx)? {
+            Value::String(text) => Ok(Value::Bool(parse_tree(&text).is_ok())),
+            other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+                expected: "string".into(),
+                actual: other.type_name().into(),
+            })),
+        }
+    }
+}
+
 pub struct XmlParseOp;
 impl Operator for XmlParseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -242,7 +253,10 @@ mod tests {
 
     #[test]
     fn an_xml_space_set_excludes_the_no_break_space() {
-        assert_eq!(string(&parse_xml("<a>\u{a0}x\u{a0}</a>").unwrap()), "\u{a0}x\u{a0}");
+        assert_eq!(
+            string(&parse_xml("<a>\u{a0}x\u{a0}</a>").unwrap()),
+            "\u{a0}x\u{a0}"
+        );
     }
 
     #[test]

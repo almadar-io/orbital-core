@@ -1,0 +1,774 @@
+[
+  {
+    "expr": [
+      "json/valid",
+      "null"
+    ],
+    "expect": true,
+    "source": "D15 valid null"
+  },
+  {
+    "expr": [
+      "json/valid",
+      " \t\r\nnull \r\n"
+    ],
+    "expect": true,
+    "source": "D15 JSON whitespace around null"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "{}"
+    ],
+    "expect": true,
+    "source": "D15 empty object"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "[]"
+    ],
+    "expect": true,
+    "source": "D15 empty array"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "{\"rows\":[{\"id\":1,\"value\":null}],\"ok\":true}"
+    ],
+    "expect": true,
+    "source": "D15 nested object and array"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "[null,false,0,\"\"]"
+    ],
+    "expect": true,
+    "source": "D15 mixed scalar array"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "{\"a\":1,\"a\":2}"
+    ],
+    "expect": true,
+    "source": "D15 duplicate object keys are syntactically valid"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "{\"__proto__\":{\"polluted\":true}}"
+    ],
+    "expect": true,
+    "source": "D15 prototype-named key is ordinary JSON syntax"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"hello\""
+    ],
+    "expect": true,
+    "source": "D15 string scalar"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"\""
+    ],
+    "expect": true,
+    "source": "D15 empty string scalar"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"héllo 🛰️\""
+    ],
+    "expect": true,
+    "source": "D15 Unicode string"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"\\\"\\\\\\/\\b\\f\\n\\r\\t\""
+    ],
+    "expect": true,
+    "source": "D15 all short escapes"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"\\u0000\\u001f\\u2028\\u2029\""
+    ],
+    "expect": true,
+    "source": "D15 escaped Unicode controls"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"\\ud83d\\ude80\""
+    ],
+    "expect": true,
+    "source": "D15 escaped surrogate pair"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"\\ud800\""
+    ],
+    "expect": true,
+    "source": "D15 JavaScript accepts an escaped lone high surrogate"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"\\udc00\""
+    ],
+    "expect": true,
+    "source": "D15 JavaScript accepts an escaped lone low surrogate"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"line separator \""
+    ],
+    "expect": true,
+    "source": "D15 raw Unicode line separators inside a string"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "true"
+    ],
+    "expect": true,
+    "source": "D15 true scalar"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "false"
+    ],
+    "expect": true,
+    "source": "D15 false scalar"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "0"
+    ],
+    "expect": true,
+    "source": "D15 zero"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "-0"
+    ],
+    "expect": true,
+    "source": "D15 negative zero"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "12"
+    ],
+    "expect": true,
+    "source": "D15 positive integer"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "-12"
+    ],
+    "expect": true,
+    "source": "D15 negative integer"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "0.5"
+    ],
+    "expect": true,
+    "source": "D15 fraction"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "-0.5"
+    ],
+    "expect": true,
+    "source": "D15 negative fraction"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "1e3"
+    ],
+    "expect": true,
+    "source": "D15 exponent"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "1E+3"
+    ],
+    "expect": true,
+    "source": "D15 uppercase signed exponent"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "1e-3"
+    ],
+    "expect": true,
+    "source": "D15 negative exponent"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "9007199254740993"
+    ],
+    "expect": true,
+    "source": "D15 integer rounding does not invalidate syntax"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "1e400"
+    ],
+    "expect": true,
+    "source": "D15 JavaScript accepts positive exponent overflow"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "-1e400"
+    ],
+    "expect": true,
+    "source": "D15 JavaScript accepts negative exponent overflow"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "-1e-9999"
+    ],
+    "expect": true,
+    "source": "D15 JavaScript accepts signed underflow"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "{\"value\":1e400}"
+    ],
+    "expect": true,
+    "source": "D15 overflow inside an object"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "[1e400,-1e400]"
+    ],
+    "expect": true,
+    "source": "D15 overflow inside an array"
+  },
+  {
+    "expr": [
+      "json/valid",
+      ""
+    ],
+    "expect": false,
+    "source": "D15 empty input"
+  },
+  {
+    "expr": [
+      "json/valid",
+      " \t\r\n"
+    ],
+    "expect": false,
+    "source": "D15 whitespace without a value"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "undefined"
+    ],
+    "expect": false,
+    "source": "D15 undefined is not JSON"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "NaN"
+    ],
+    "expect": false,
+    "source": "D15 NaN is not JSON"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "Infinity"
+    ],
+    "expect": false,
+    "source": "D15 Infinity literal is not JSON"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "+1"
+    ],
+    "expect": false,
+    "source": "D15 leading plus is not JSON"
+  },
+  {
+    "expr": [
+      "json/valid",
+      ".5"
+    ],
+    "expect": false,
+    "source": "D15 leading decimal point is not JSON"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "1."
+    ],
+    "expect": false,
+    "source": "D15 trailing decimal point is not JSON"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "01"
+    ],
+    "expect": false,
+    "source": "D15 leading zero is not JSON"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "-01"
+    ],
+    "expect": false,
+    "source": "D15 negative leading zero"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "0x10"
+    ],
+    "expect": false,
+    "source": "D15 hexadecimal is not JSON"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "1e"
+    ],
+    "expect": false,
+    "source": "D15 incomplete exponent"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "1e+"
+    ],
+    "expect": false,
+    "source": "D15 incomplete signed exponent"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "1e400x"
+    ],
+    "expect": false,
+    "source": "D15 garbage after exponent overflow"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "null false"
+    ],
+    "expect": false,
+    "source": "D15 multiple top-level values"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "{}tail"
+    ],
+    "expect": false,
+    "source": "D15 trailing garbage"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "{\"a\":1,}"
+    ],
+    "expect": false,
+    "source": "D15 trailing object comma"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "[1,]"
+    ],
+    "expect": false,
+    "source": "D15 trailing array comma"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "[,1]"
+    ],
+    "expect": false,
+    "source": "D15 leading array comma"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "[1,,2]"
+    ],
+    "expect": false,
+    "source": "D15 array elision"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "{'a':1}"
+    ],
+    "expect": false,
+    "source": "D15 single-quoted object key"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "{a:1}"
+    ],
+    "expect": false,
+    "source": "D15 unquoted object key"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "{\"a\":}"
+    ],
+    "expect": false,
+    "source": "D15 missing object value"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "{\"a\":1"
+    ],
+    "expect": false,
+    "source": "D15 unterminated object"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "[1,2"
+    ],
+    "expect": false,
+    "source": "D15 unterminated array"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"unterminated"
+    ],
+    "expect": false,
+    "source": "D15 unterminated string"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"\\q\""
+    ],
+    "expect": false,
+    "source": "D15 invalid short escape"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"\\u12xz\""
+    ],
+    "expect": false,
+    "source": "D15 invalid Unicode escape"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"\\u123\""
+    ],
+    "expect": false,
+    "source": "D15 short Unicode escape"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"raw\nnewline\""
+    ],
+    "expect": false,
+    "source": "D15 raw newline inside a string"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "\"raw\u0000nul\""
+    ],
+    "expect": false,
+    "source": "D15 raw NUL inside a string"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "// comment\nnull"
+    ],
+    "expect": false,
+    "source": "D15 line comment"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "/*comment*/null"
+    ],
+    "expect": false,
+    "source": "D15 block comment"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "﻿null"
+    ],
+    "expect": false,
+    "source": "D15 BOM is not JSON whitespace"
+  },
+  {
+    "expr": [
+      "json/valid",
+      " null"
+    ],
+    "expect": false,
+    "source": "D15 nonbreaking space is not JSON whitespace"
+  },
+  {
+    "expr": [
+      "json/valid",
+      " null"
+    ],
+    "expect": false,
+    "source": "D15 line separator is not JSON whitespace"
+  },
+  {
+    "expr": [
+      "json/valid",
+      [
+        "str/concat",
+        [
+          "str/repeat",
+          "[",
+          256
+        ],
+        "null",
+        [
+          "str/repeat",
+          "]",
+          256
+        ]
+      ]
+    ],
+    "expect": true,
+    "source": "D15 JavaScript accepts nesting beyond serde default depth"
+  },
+  {
+    "expr": [
+      "json/valid",
+      [
+        "str/concat",
+        [
+          "str/repeat",
+          "[",
+          256
+        ],
+        "null",
+        [
+          "str/repeat",
+          "]",
+          255
+        ]
+      ]
+    ],
+    "expect": false,
+    "source": "D15 long nested array with a missing close"
+  },
+  {
+    "expr": [
+      "json/valid",
+      [
+        "str/repeat",
+        "9",
+        4096
+      ]
+    ],
+    "expect": true,
+    "source": "D15 JavaScript accepts a 4096-digit overflowing number"
+  },
+  {
+    "expr": [
+      "json/valid",
+      [
+        "str/concat",
+        [
+          "str/repeat",
+          "9",
+          4096
+        ],
+        "x"
+      ]
+    ],
+    "expect": false,
+    "source": "D15 garbage after a 4096-digit number"
+  },
+  {
+    "expr": [
+      "json/valid",
+      [
+        "str/concat",
+        "0.",
+        [
+          "str/repeat",
+          "0",
+          4096
+        ],
+        "1"
+      ]
+    ],
+    "expect": true,
+    "source": "D15 JavaScript accepts a long underflowing fraction"
+  },
+  {
+    "expr": [
+      "json/valid",
+      [
+        "str/concat",
+        "1e",
+        [
+          "str/repeat",
+          "9",
+          4096
+        ]
+      ]
+    ],
+    "expect": true,
+    "source": "D15 JavaScript accepts a 4096-digit exponent"
+  },
+  {
+    "expr": [
+      "json/valid",
+      [
+        "str/concat",
+        "1e",
+        [
+          "str/repeat",
+          "9",
+          4096
+        ],
+        "+"
+      ]
+    ],
+    "expect": false,
+    "source": "D15 garbage after a long exponent"
+  },
+  {
+    "expr": [
+      "json/valid",
+      [
+        "str/concat",
+        "\"",
+        [
+          "str/repeat",
+          "x",
+          4096
+        ],
+        "\""
+      ]
+    ],
+    "expect": true,
+    "source": "D15 long JSON string"
+  },
+  {
+    "expr": [
+      "json/valid",
+      [
+        "str/concat",
+        "\"",
+        [
+          "str/repeat",
+          "x",
+          4096
+        ]
+      ]
+    ],
+    "expect": false,
+    "source": "D15 unterminated long JSON string"
+  },
+  {
+    "expr": [
+      "json/valid",
+      42
+    ],
+    "error": true,
+    "source": "D15 number input is rejected"
+  },
+  {
+    "expr": [
+      "json/valid",
+      true
+    ],
+    "error": true,
+    "source": "D15 boolean input is rejected"
+  },
+  {
+    "expr": [
+      "json/valid",
+      null
+    ],
+    "error": true,
+    "source": "D15 null input is rejected rather than confused with the string null"
+  },
+  {
+    "expr": [
+      "json/valid",
+      {}
+    ],
+    "error": true,
+    "source": "D15 object input is rejected"
+  },
+  {
+    "expr": [
+      "json/valid",
+      [
+        1,
+        2
+      ]
+    ],
+    "error": true,
+    "source": "D15 array input is rejected"
+  },
+  {
+    "expr": [
+      "json/valid"
+    ],
+    "error": true,
+    "source": "D15 missing argument is rejected"
+  },
+  {
+    "expr": [
+      "json/valid",
+      "null",
+      "Row"
+    ],
+    "error": true,
+    "source": "D15 type witness or extra argument is rejected"
+  }
+]

@@ -256,7 +256,7 @@ impl BindingContext {
     /// it; otherwise `None` (a bare `@` not followed by a word char). Grammar mirrors the
     /// JS runtime's binding token: `@[\w]+(\[\d+\])*(\.[\w]+(\[\d+\])*)*`. Hand-rolled (no
     /// `regex` dep) so orbital-core stays lean.
-    fn binding_token_end(s: &str, at: usize) -> Option<usize> {
+    pub fn binding_token_end(s: &str, at: usize) -> Option<usize> {
         let bytes = s.as_bytes();
         if at >= bytes.len() || bytes[at] != b'@' {
             return None;

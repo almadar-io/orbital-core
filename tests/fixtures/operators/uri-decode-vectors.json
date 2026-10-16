@@ -1,0 +1,409 @@
+[
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   ""
+  ],
+  "expect": "",
+  "source": "empty"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "abc"
+  ],
+  "expect": "abc",
+  "source": "plain ASCII untouched"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "a%20b"
+  ],
+  "expect": "a b",
+  "source": "space"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%3B%2C%2F%3F%3A%40%26%3D%2B%24%23"
+  ],
+  "expect": ";,/?:@&=+$#",
+  "source": "reserved characters decode (unlike decodeURI)"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "a+b"
+  ],
+  "expect": "a+b",
+  "source": "plus is not a space"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "a%2Bb"
+  ],
+  "expect": "a+b",
+  "source": "%2B decodes to plus"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%2f%3a%e2%9c%93"
+  ],
+  "expect": "/:✓",
+  "source": "lowercase hex"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%C3%A9"
+  ],
+  "expect": "é",
+  "source": "two-byte UTF-8"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%E2%9C%93"
+  ],
+  "expect": "✓",
+  "source": "three-byte UTF-8"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%F0%9F%98%80"
+  ],
+  "expect": "😀",
+  "source": "four-byte UTF-8 (emoji)"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "é✓😀"
+  ],
+  "expect": "é✓😀",
+  "source": "raw non-ASCII passes through"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "caf%C3%A9 %F0%9F%98%80 100%25"
+  ],
+  "expect": "café 😀 100%",
+  "source": "mixed literal and escaped"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%2520"
+  ],
+  "expect": "%20",
+  "source": "decoded once, not twice"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%00"
+  ],
+  "expect": "\u0000",
+  "source": "NUL byte"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%7E%21%2A%27%28%29"
+  ],
+  "expect": "~!*'()",
+  "source": "unreserved marks escaped"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   null
+  ],
+  "expect": null,
+  "source": "null input yields null"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%"
+  ],
+  "error": true,
+  "source": "lone percent"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "abc%"
+  ],
+  "error": true,
+  "source": "trailing percent"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%2"
+  ],
+  "error": true,
+  "source": "truncated escape"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%G0"
+  ],
+  "error": true,
+  "source": "bad first hex digit"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%0G"
+  ],
+  "error": true,
+  "source": "bad second hex digit"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%%20"
+  ],
+  "error": true,
+  "source": "percent followed by percent"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%é1"
+  ],
+  "error": true,
+  "source": "non-ASCII where hex is required"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%C3"
+  ],
+  "error": true,
+  "source": "truncated two-byte sequence"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%E2%9C"
+  ],
+  "error": true,
+  "source": "truncated three-byte sequence"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%F0%9F%98"
+  ],
+  "error": true,
+  "source": "truncated four-byte sequence"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%C3%28"
+  ],
+  "error": true,
+  "source": "invalid continuation byte"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%C3a"
+  ],
+  "error": true,
+  "source": "lead byte followed by a literal"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%80"
+  ],
+  "error": true,
+  "source": "lone continuation byte"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%FF"
+  ],
+  "error": true,
+  "source": "byte never valid in UTF-8"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%C0%80"
+  ],
+  "error": true,
+  "source": "overlong two-byte encoding"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%ED%A0%80"
+  ],
+  "error": true,
+  "source": "UTF-16 surrogate encoded in UTF-8"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   "%F4%90%80%80"
+  ],
+  "error": true,
+  "source": "code point above U+10FFFF"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   1
+  ],
+  "error": true,
+  "source": "non-string input"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   [
+    "str/encode-uri-component",
+    "a b&c=d/é"
+   ]
+  ],
+  "expect": "a b&c=d/é",
+  "source": "round trip: decode(encode(x)) = x"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   [
+    "str/encode-uri-component",
+    "😀✓é"
+   ]
+  ],
+  "expect": "😀✓é",
+  "source": "round trip: decode(encode(x)) = x"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   [
+    "str/encode-uri-component",
+    ";,/?:@&=+$#%+"
+   ]
+  ],
+  "expect": ";,/?:@&=+$#%+",
+  "source": "round trip: decode(encode(x)) = x"
+ },
+ {
+  "op": "str/decode-uri-component",
+  "args": [
+   [
+    "str/encode-uri-component",
+    ""
+   ]
+  ],
+  "expect": "",
+  "source": "round trip: decode(encode(x)) = x"
+ },
+ {
+  "op": "str/uri-component-valid",
+  "args": [
+   "a%20b"
+  ],
+  "expect": true,
+  "source": "valid: well-formed escape"
+ },
+ {
+  "op": "str/uri-component-valid",
+  "args": [
+   ""
+  ],
+  "expect": true,
+  "source": "valid: empty"
+ },
+ {
+  "op": "str/uri-component-valid",
+  "args": [
+   "a+b%2B"
+  ],
+  "expect": true,
+  "source": "valid: plus and %2B"
+ },
+ {
+  "op": "str/uri-component-valid",
+  "args": [
+   "%F0%9F%98%80"
+  ],
+  "expect": true,
+  "source": "valid: four-byte UTF-8"
+ },
+ {
+  "op": "str/uri-component-valid",
+  "args": [
+   "%"
+  ],
+  "expect": false,
+  "source": "invalid: lone percent"
+ },
+ {
+  "op": "str/uri-component-valid",
+  "args": [
+   "%G0"
+  ],
+  "expect": false,
+  "source": "invalid: bad hex"
+ },
+ {
+  "op": "str/uri-component-valid",
+  "args": [
+   "%C0%80"
+  ],
+  "expect": false,
+  "source": "invalid: overlong"
+ },
+ {
+  "op": "str/uri-component-valid",
+  "args": [
+   "%ED%A0%80"
+  ],
+  "expect": false,
+  "source": "invalid: encoded surrogate"
+ },
+ {
+  "op": "str/uri-component-valid",
+  "args": [
+   null
+  ],
+  "expect": false,
+  "source": "null is false"
+ },
+ {
+  "op": "str/uri-component-valid",
+  "args": [
+   1
+  ],
+  "error": true,
+  "source": "non-string input"
+ },
+ {
+  "op": "str/uri-component-valid",
+  "args": [
+   [
+    "str/encode-uri-component",
+    "a b&c=d/é😀"
+   ]
+  ],
+  "expect": true,
+  "source": "round trip: encoded text is valid"
+ }
+]

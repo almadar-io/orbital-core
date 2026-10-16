@@ -4,12 +4,23 @@
 //! expands to exactly the inline code the operators used before this module
 //! split, so behavior is unchanged.
 
-/// Require at least `$n` arguments, else return an `ArityMismatch` error.
+/// Require an argument count, else return an `ArityMismatch` error.
 ///
-/// Two forms:
 /// - `require_arity!(args, "op", 1)` for the single-arg `args.is_empty()` check.
 /// - `require_arity!(args, "op", >= 2)` for the `args.len() < n` check.
+/// - `require_arity!(args, "op", == 2)` for the `args.len() != n` check.
 macro_rules! require_arity {
+    ($args:expr, $op:expr, == $n:expr) => {
+        if $args.len() != $n {
+            return Err($crate::error::OrbitalError::Eval(
+                $crate::error::EvalError::ArityMismatch {
+                    operator: $op.to_string(),
+                    expected: $n,
+                    actual: $args.len(),
+                },
+            ));
+        }
+    };
     ($args:expr, $op:expr, 1) => {
         if $args.is_empty() {
             return Err($crate::error::OrbitalError::Eval(

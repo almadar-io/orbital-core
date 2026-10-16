@@ -3,10 +3,13 @@
 
 use crate::effects::{ServiceCaller, SubstrateFailure};
 use crate::runtime::resumable::{
-    CallRoutes, CallSite, IoAnswer, IoReply, IoRequest, PendingRequest, RequestId,
+    CallRoutes, CallSite, IoAnswer, IoReply, IoRequest, PageFacts, PendingRequest, RequestId,
 };
-use crate::runtime::http_request::StreamFraming;
+use crate::ir::PageFactField;
+use crate::oauth::ask::{OAuthAsk, OAuthReply};
+use crate::runtime::http_request::{BeaconOutcome, StreamFraming};
 use crate::runtime::http_service::{HttpRequest, HttpResponse, TransportError};
+use crate::runtime::os::{OsError, OsOp};
 use base64::Engine;
 use crate::runtime::row_query::{
     RowIdPage, RowPage, RowProjection, RowQuery, RowWriteBatch, RowWriteOutcome,
@@ -325,6 +328,16 @@ pub enum IoRequestWire {
         site: Option<CallSiteWire>,
     },
     #[serde(rename_all = "camelCase")]
+    HttpBeacon {
+        request: HttpRequestWire,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<CallSiteWire>,
+    },
+    #[serde(rename_all = "camelCase")]
+    PageFacts { fields: Vec<PageFactFieldWire> },
+    #[serde(rename_all = "camelCase")]
     Secret {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -340,7 +353,30 @@ pub enum IoRequestWire {
         principal: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
+    SecretRotate {
+        name: String,
+        #[cfg_attr(test, ts(type = "string"))]
+        value: SecretText,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
+    },
+    #[serde(rename = "oauth", rename_all = "camelCase")]
+    OAuth {
+        ask: OAuthAsk,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
     Random { bytes: u32 },
+    #[serde(rename_all = "camelCase")]
+    Os {
+        op: OsOp,
+        args: Vec<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<CallSiteWire>,
+    },
     #[serde(rename_all = "camelCase")]
     CredentialStatus {
         name: String,
@@ -353,6 +389,78 @@ pub enum IoRequestWire {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         principal: Option<String>,
     },
+}
+
+/// A page fact `browser/page-facts` reads.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PageFactFieldWire {
+    Hostname,
+    Referrer,
+    ScreenWidth,
+}
+
+impl From<PageFactField> for PageFactFieldWire {
+    fn from(field: PageFactField) -> Self {
+        match field {
+            PageFactField::Hostname => Self::Hostname,
+            PageFactField::Referrer => Self::Referrer,
+            PageFactField::ScreenWidth => Self::ScreenWidth,
+        }
+    }
+}
+
+impl From<PageFactFieldWire> for PageFactField {
+    fn from(field: PageFactFieldWire) -> Self {
+        match field {
+            PageFactFieldWire::Hostname => Self::Hostname,
+            PageFactFieldWire::Referrer => Self::Referrer,
+            PageFactFieldWire::ScreenWidth => Self::ScreenWidth,
+        }
+    }
+}
+
+/// The page facts a host read: `available` is false when there is no page.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageFactsWire {
+    pub available: bool,
+    pub hostname: String,
+    pub referrer: String,
+    pub screen_width: Option<f64>,
+}
+
+/// How a host took a beacon: its queue accepted it, or one keepalive fetch answered `status`.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "via", rename_all = "camelCase")]
+pub enum BeaconOutcomeWire {
+    Queue,
+    Fetch { status: u16 },
+    /// The host has no beacon port.
+    Unavailable { message: String },
+}
+
+impl From<BeaconOutcome> for BeaconOutcomeWire {
+    fn from(outcome: BeaconOutcome) -> Self {
+        match outcome {
+            BeaconOutcome::Queued => Self::Queue,
+            BeaconOutcome::Fetched { status } => Self::Fetch { status },
+            BeaconOutcome::Unavailable { message } => Self::Unavailable { message },
+        }
+    }
+}
+
+impl From<BeaconOutcomeWire> for BeaconOutcome {
+    fn from(outcome: BeaconOutcomeWire) -> Self {
+        match outcome {
+            BeaconOutcomeWire::Queue => Self::Queued,
+            BeaconOutcomeWire::Fetch { status } => Self::Fetched { status },
+            BeaconOutcomeWire::Unavailable { message } => Self::Unavailable { message },
+        }
+    }
 }
 
 /// How a streamed `http` reply is framed.
@@ -431,6 +539,12 @@ pub enum IoAnswerWire {
     Http {
         result: Settled<HttpResponseWire, HttpFailureWire>,
     },
+    HttpBeacon {
+        result: Settled<BeaconOutcomeWire, HttpFailureWire>,
+    },
+    PageFacts {
+        result: Settled<PageFactsWire, String>,
+    },
     Secret {
         #[cfg_attr(test, ts(type = "Settled<string | null, string>"))]
         result: Settled<Option<SecretText>, String>,
@@ -438,15 +552,25 @@ pub enum IoAnswerWire {
     SecretSet {
         result: Settled<(), String>,
     },
+    SecretRotate {
+        result: Settled<(), String>,
+    },
     /// The random bytes, standard base64.
     Random {
         result: Settled<String, String>,
+    },
+    Os {
+        result: Settled<Value, OsError>,
     },
     CredentialStatus {
         result: Settled<bool, String>,
     },
     CredentialForget {
         result: Settled<(), String>,
+    },
+    #[serde(rename = "oauth")]
+    OAuth {
+        result: Settled<OAuthReply, String>,
     },
 }
 
@@ -471,6 +595,7 @@ pub struct IoReplyWire {
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
+#[expect(clippy::large_enum_variant, reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs")]
 pub enum ServerProgressWire {
     Done {
         response: EventResponse,
@@ -613,6 +738,14 @@ impl From<IoRequestWire> for IoRequest {
                 framing: framing.into(),
                 site: site.map(CallSite::from),
             },
+            IoRequestWire::HttpBeacon { request, key, site } => Self::HttpBeacon {
+                request: request.into(),
+                key,
+                site: site.map(CallSite::from),
+            },
+            IoRequestWire::PageFacts { fields } => Self::PageFacts {
+                fields: fields.into_iter().map(PageFactField::from).collect(),
+            },
             IoRequestWire::Secret { name, principal } => Self::Secret { name, principal },
             IoRequestWire::SecretSet {
                 name,
@@ -625,13 +758,25 @@ impl From<IoRequestWire> for IoRequest {
                 ttl_ms,
                 principal,
             },
+            IoRequestWire::SecretRotate { name, value, principal } => Self::SecretRotate {
+                name,
+                value: value.into_inner(),
+                principal,
+            },
             IoRequestWire::Random { bytes } => Self::Random { bytes },
+            IoRequestWire::Os { op, args, key, site } => Self::Os {
+                op,
+                args,
+                key,
+                site: site.map(CallSite::from),
+            },
             IoRequestWire::CredentialStatus { name, principal } => {
                 Self::CredentialStatus { name, principal }
             }
             IoRequestWire::CredentialForget { name, principal } => {
                 Self::CredentialForget { name, principal }
             }
+            IoRequestWire::OAuth { ask, principal } => Self::OAuth { ask, principal },
         }
     }
 }
@@ -717,6 +862,14 @@ impl From<&IoRequest> for IoRequestWire {
                 framing: StreamFramingWire::from(*framing),
                 site: site.as_ref().map(CallSiteWire::from),
             },
+            IoRequest::HttpBeacon { request, key, site } => Self::HttpBeacon {
+                request: HttpRequestWire::from(request),
+                key: key.clone(),
+                site: site.as_ref().map(CallSiteWire::from),
+            },
+            IoRequest::PageFacts { fields } => Self::PageFacts {
+                fields: fields.iter().copied().map(PageFactFieldWire::from).collect(),
+            },
             IoRequest::Secret { name, principal } => Self::Secret {
                 name: name.clone(),
                 principal: principal.clone(),
@@ -732,7 +885,18 @@ impl From<&IoRequest> for IoRequestWire {
                 ttl_ms: *ttl_ms,
                 principal: principal.clone(),
             },
+            IoRequest::SecretRotate { name, value, principal } => Self::SecretRotate {
+                name: name.clone(),
+                value: SecretText::new(value.clone()),
+                principal: principal.clone(),
+            },
             IoRequest::Random { bytes } => Self::Random { bytes: *bytes },
+            IoRequest::Os { op, args, key, site } => Self::Os {
+                op: *op,
+                args: args.clone(),
+                key: key.clone(),
+                site: site.as_ref().map(CallSiteWire::from),
+            },
             IoRequest::CredentialStatus { name, principal } => Self::CredentialStatus {
                 name: name.clone(),
                 principal: principal.clone(),
@@ -741,6 +905,7 @@ impl From<&IoRequest> for IoRequestWire {
                 name: name.clone(),
                 principal: principal.clone(),
             },
+            IoRequest::OAuth { ask, principal } => Self::OAuth { ask: ask.clone(), principal: principal.clone() },
         }
     }
 }
@@ -809,10 +974,32 @@ impl From<&IoAnswer> for IoAnswerWire {
                     .map_err(HttpFailureWire::from)
                     .into(),
             },
+            IoAnswer::HttpBeacon(r) => Self::HttpBeacon {
+                result: r
+                    .as_ref()
+                    .map(|outcome| BeaconOutcomeWire::from(outcome.clone()))
+                    .map_err(HttpFailureWire::from)
+                    .into(),
+            },
+            IoAnswer::PageFacts(r) => Self::PageFacts {
+                result: r
+                    .as_ref()
+                    .map(|facts| PageFactsWire {
+                        available: facts.available,
+                        hostname: facts.hostname.clone(),
+                        referrer: facts.referrer.clone(),
+                        screen_width: facts.screen_width,
+                    })
+                    .map_err(Clone::clone)
+                    .into(),
+            },
             IoAnswer::Secret(r) => Self::Secret {
                 result: r.clone().map(|value| value.map(SecretText::new)).into(),
             },
             IoAnswer::SecretSet(r) => Self::SecretSet {
+                result: r.clone().into(),
+            },
+            IoAnswer::SecretRotate(r) => Self::SecretRotate {
                 result: r.clone().into(),
             },
             IoAnswer::Random(r) => Self::Random {
@@ -822,12 +1009,14 @@ impl From<&IoAnswer> for IoAnswerWire {
                     .map_err(Clone::clone)
                     .into(),
             },
+            IoAnswer::Os(r) => Self::Os { result: r.clone().into() },
             IoAnswer::CredentialStatus(r) => Self::CredentialStatus {
                 result: r.clone().into(),
             },
             IoAnswer::CredentialForget(r) => Self::CredentialForget {
                 result: r.clone().into(),
             },
+            IoAnswer::OAuth(r) => Self::OAuth { result: r.clone().into() },
         }
     }
 }
@@ -861,19 +1050,35 @@ impl From<IoAnswerWire> for IoAnswer {
                 let result: Result<HttpResponseWire, HttpFailureWire> = result.into();
                 Self::Http(result.map(HttpResponse::from).map_err(TransportError::from))
             }
+            IoAnswerWire::HttpBeacon { result } => {
+                let result: Result<BeaconOutcomeWire, HttpFailureWire> = result.into();
+                Self::HttpBeacon(result.map(BeaconOutcome::from).map_err(TransportError::from))
+            }
+            IoAnswerWire::PageFacts { result } => {
+                let result: Result<PageFactsWire, String> = result.into();
+                Self::PageFacts(result.map(|facts| PageFacts {
+                    available: facts.available,
+                    hostname: facts.hostname,
+                    referrer: facts.referrer,
+                    screen_width: facts.screen_width,
+                }))
+            }
             IoAnswerWire::Secret { result } => {
                 let result: Result<Option<SecretText>, String> = result.into();
                 Self::Secret(result.map(|value| value.map(SecretText::into_inner)))
             }
             IoAnswerWire::SecretSet { result } => Self::SecretSet(result.into()),
+            IoAnswerWire::SecretRotate { result } => Self::SecretRotate(result.into()),
             IoAnswerWire::Random { result } => {
                 let result: Result<String, String> = result.into();
                 Self::Random(result.and_then(|text| {
                     crate::codec::base64_decode(&text).map_err(|e| format!("random: not base64: {e}"))
                 }))
             }
+            IoAnswerWire::Os { result } => Self::Os(result.into()),
             IoAnswerWire::CredentialStatus { result } => Self::CredentialStatus(result.into()),
             IoAnswerWire::CredentialForget { result } => Self::CredentialForget(result.into()),
+            IoAnswerWire::OAuth { result } => Self::OAuth(result.into()),
         }
     }
 }

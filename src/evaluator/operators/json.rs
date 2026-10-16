@@ -8,6 +8,10 @@
 use super::macros::*;
 use super::*;
 
+fn parse_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, serde_json::Error> {
+    serde_json::from_str(text)
+}
+
 fn json_to_value(json: serde_json::Value) -> Value {
     match json {
         serde_json::Value::Null => Value::Null,
@@ -61,9 +65,32 @@ impl Operator for JsonParseOp {
         let Value::String(s) = val else {
             return Ok(Value::Null);
         };
-        Ok(serde_json::from_str::<serde_json::Value>(&s)
+        Ok(parse_json::<serde_json::Value>(&s)
             .map(json_to_value)
             .unwrap_or(Value::Null))
+    }
+}
+
+pub struct JsonValidOp;
+impl Operator for JsonValidOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        if args.len() != 1 {
+            return Err(OrbitalError::Eval(EvalError::InvalidArgument(
+                "json/valid: expected exactly one argument".into(),
+            )));
+        }
+        match eval_expr(&args[0], ctx)? {
+            Value::String(text) => {
+                // Syntax validity must not depend on numeric or Unicode value conversion.
+                Ok(Value::Bool(
+                    parse_json::<serde::de::IgnoredAny>(&text).is_ok(),
+                ))
+            }
+            other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+                expected: "string".into(),
+                actual: other.type_name().into(),
+            })),
+        }
     }
 }
 

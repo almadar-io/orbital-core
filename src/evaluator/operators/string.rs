@@ -20,6 +20,24 @@ impl Operator for ConcatOp {
 }
 
 pub struct UpperOp;
+pub struct StrToNumberOp;
+impl Operator for StrToNumberOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        if args.len() != 1 {
+            return Err(OrbitalError::Eval(EvalError::InvalidArgument(
+                "str/to-number: expected exactly one argument".into(),
+            )));
+        }
+        match eval_expr(&args[0], ctx)? {
+            Value::String(text) => Ok(Value::Number(crate::str_utils::js_number_from_text(&text))),
+            other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+                expected: "string".into(),
+                actual: other.type_name().into(),
+            })),
+        }
+    }
+}
+
 impl Operator for UpperOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "upper", 1);

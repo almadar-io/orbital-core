@@ -15,12 +15,28 @@ use serde_json::{json, Value as Json};
 const ORIGIN: &str = "https://api.example.com";
 const AUTH_ORIGIN: &str = "https://auth.example.com";
 const TOKEN_URL: &str = "https://auth.example.com/token";
-const CACHE: &str = "oauth2:https://auth.example.com/token|cid_name";
 
 fn options() -> Json {
     json!({ "key": "job", "emit": {
         "success": "SEARCHED", "failure": "SEARCH_FAILED", "cancelled": "SEARCH_CANCELLED", "onMessage": "STEP"
     } })
+}
+
+#[test]
+fn native_sigv4_signing_uses_the_same_stamp_as_authored_now_expressions() {
+    let request = json!({"headers":{"X-Dispatch-Now":["str/concat","@now"]},"auth":{
+        "scheme":"aws-sigv4","accessKeyId":"ID","secretAccessKey":"SECRET","region":"us-east-1","service":"s3"}});
+    let (_, seen) = run(schema(call(ORIGIN,request)),ask(),|request| match request {
+        IoRequest::Secret { .. } => IoAnswer::Secret(Ok(Some("dummy".into()))),
+        IoRequest::Http { request, .. } => {
+            let stamp = request.headers.iter().find(|(name,_)| name == "X-Dispatch-Now").unwrap().1.parse::<i64>().unwrap();
+            let expected = orbital_core::codec::sigv4::amz_date(stamp).1;
+            assert!(request.headers.iter().any(|(name,value)| name == "x-amz-date" && value == &expected));
+            IoAnswer::Http(Ok(HttpResponse {status:200,headers:vec![],body:b"ok".to_vec()}))
+        }
+        other => panic!("unexpected {other:?}"),
+    });
+    assert_eq!(seen.iter().filter(|request| matches!(request,IoRequest::Http { .. })).count(),1);
 }
 
 fn bearer(request: Json) -> Json {
@@ -140,6 +156,44 @@ fn payload_of<'a>(response: &'a EventResponse, event: &str) -> &'a Value {
         .find(|(e, _)| *e == event)
         .and_then(|(_, p)| p)
         .unwrap_or_else(|| panic!("no {event} with a payload in {:?}", emitted(response)))
+}
+
+#[test]
+fn a_http_parse_refusal_echoes_the_evaluated_key_without_asking_the_host() {
+    let effect = call(ORIGIN, json!({"bogus":true}));
+    let (response, seen) = run(schema(effect), ask(), |request| panic!("refusal sent {request:?}"));
+    assert!(seen.is_empty());
+    let payload = payload_of(&response, "SEARCH_FAILED");
+    assert_eq!(payload.get_path("key").and_then(Value::as_str), Some("job"));
+    assert_eq!(payload.get_path("kind").and_then(Value::as_str), Some("refused"));
+}
+
+#[test]
+fn a_http_key_expression_is_evaluated_and_echoed() {
+    for key in [json!(["str/concat", "request:", "@payload.q"]), json!("@payload.q"), json!("fixed")] {
+        let expected = match &key {
+            Json::Array(_) => "request:cats",
+            Json::String(value) if value == "@payload.q" => "cats",
+            _ => "fixed",
+        };
+        let mut opts = options();
+        opts["key"] = key;
+        let effect = json!(["http", "GET", ORIGIN, "/search", {}, opts]);
+        let (response, seen) = run(schema(effect), ask(), keyed_host(reply(200, &[], "ok")));
+        assert!(matches!(&seen[0], IoRequest::Http { key: Some(key), .. } if key == expected), "{seen:?}");
+        assert_eq!(payload_of(&response, "SEARCHED").get_path("key").and_then(Value::as_str), Some(expected));
+    }
+}
+
+#[test]
+fn a_http_key_that_evaluates_to_a_non_string_never_sends() {
+    for key in [json!(["+", 1, 2]), json!(17), json!(null), json!("")] {
+        let mut opts = options();
+        opts["key"] = key;
+        let effect = json!(["http", "GET", ORIGIN, "/search", {}, opts]);
+        let (_, seen) = run(schema(effect), ask(), |request| panic!("invalid key sent {request:?}"));
+        assert!(seen.is_empty());
+    }
 }
 
 fn http_asks(seen: &[IoRequest]) -> Vec<&HttpRequest> {
@@ -313,7 +367,7 @@ fn a_url_leaving_the_origin_through_the_path_is_refused_without_an_http_ask() {
 }
 
 #[test]
-fn a_missing_credential_is_refused_without_an_http_ask() {
+fn a_missing_credential_is_unconfigured_without_an_http_ask() {
     let effect = call(ORIGIN, bearer(json!({})));
     let (response, seen) = run(schema(effect), ask(), |request| match request {
         IoRequest::Secret { .. } => IoAnswer::Secret(Ok(None)),
@@ -321,7 +375,9 @@ fn a_missing_credential_is_refused_without_an_http_ask() {
     });
     assert!(http_asks(&seen).is_empty(), "{seen:?}");
     let payload = payload_of(&response, "SEARCH_FAILED");
-    assert_eq!(field_str(payload, "kind"), "refused");
+    assert_eq!(field_str(payload, "kind"), "unconfigured");
+    assert_eq!(field_str(payload, "credential"), "api_key_name");
+    assert_eq!(field_str(payload, "key"), "job");
     assert!(field_str(payload, "error").contains("api_key_name"));
 }
 
@@ -442,10 +498,25 @@ fn oauth_effect() -> Json {
     )
 }
 
+fn oauth_refreshing_effect() -> Json {
+    call(
+        ORIGIN,
+        json!({ "auth": { "scheme": "oauth2-client", "tokenUrl": TOKEN_URL, "onUnauthorized": "refresh",
+            "clientId": "cid_name", "clientSecret": "csec_name" } }),
+    )
+}
+
+fn oauth_cache_name() -> String {
+    let effect = oauth_effect();
+    let request = serde_json::from_value(effect[4].clone()).unwrap();
+    let spec = orbital_core::runtime::http_request::parse_http_call(HttpMethod::Get,ORIGIN,"/search",&request).unwrap();
+    orbital_core::runtime::http_request::token_cache_name(spec.auth.as_ref().unwrap()).unwrap()
+}
+
 fn oauth_host(cached: Option<&'static str>, replies: Vec<IoAnswer>) -> impl FnMut(&IoRequest) -> IoAnswer {
     let mut replies = replies.into_iter();
     move |request| match request {
-        IoRequest::Secret { name, .. } if name == CACHE => IoAnswer::Secret(Ok(cached.map(str::to_string))),
+        IoRequest::Secret { name, .. } if name == &oauth_cache_name() => IoAnswer::Secret(Ok(cached.map(str::to_string))),
         IoRequest::Secret { name, .. } if name == "cid_name" => IoAnswer::Secret(Ok(Some("the-id".to_string()))),
         IoRequest::Secret { name, .. } if name == "csec_name" => IoAnswer::Secret(Ok(Some("the-secret".to_string()))),
         IoRequest::SecretSet { .. } => IoAnswer::SecretSet(Ok(())),
@@ -494,14 +565,14 @@ fn an_oauth2_cache_miss_grants_keeps_the_token_and_uses_it() {
             _ => None,
         })
         .expect("the token is kept");
-    assert_eq!(stored, (CACHE, "tok", 3_600_000));
+    assert_eq!(stored, (oauth_cache_name().as_str(), "tok", 3_600_000));
     assert_eq!(header(http_asks(&seen)[1], "Authorization"), Some("Bearer tok"));
 }
 
 #[test]
 fn a_401_refreshes_the_token_once_and_retries() {
     let (response, seen) = run(
-        schema(oauth_effect()),
+        schema(oauth_refreshing_effect()),
         ask(),
         oauth_host(
             Some("stale"),
@@ -514,9 +585,20 @@ fn a_401_refreshes_the_token_once_and_retries() {
 }
 
 #[test]
-fn a_second_401_is_the_reply_and_asks_nothing_more() {
+fn by_default_a_401_is_the_reply_with_no_second_grant() {
     let (response, seen) = run(
         schema(oauth_effect()),
+        ask(),
+        oauth_host(Some("stale"), vec![reply(401, &[], "expired")]),
+    );
+    assert_eq!(urls(&seen), ["https://api.example.com/search"], "{seen:?}");
+    assert_eq!(payload_of(&response, "SEARCHED").get_path("status").and_then(Value::as_number), Some(401.0));
+}
+
+#[test]
+fn a_second_401_is_the_reply_and_asks_nothing_more() {
+    let (response, seen) = run(
+        schema(oauth_refreshing_effect()),
         ask(),
         oauth_host(
             Some("stale"),
@@ -569,4 +651,331 @@ fn a_stream_asks_http_stream_with_its_framing_and_call_site() {
     assert_eq!(site.trait_name, "Fetcher");
     assert_eq!(site.emit.on_message.as_deref(), Some("STEP"));
     assert_eq!(state(&response), Some("done"));
+}
+
+fn retry_backoff_delays(backoff_ms: u64, max: u32) -> Vec<Option<u64>> {
+    let effect = call(
+        ORIGIN,
+        json!({ "retry": { "max": max, "on": ["5xx"], "backoffMs": backoff_ms } }),
+    );
+    let (response, seen) = run(schema(effect), ask(), |request| match request {
+        IoRequest::Http { .. } => reply(503, &[], "unavailable"),
+        other => panic!("unexpected {other:?}"),
+    });
+    assert_eq!(state(&response), Some("done"));
+    assert_eq!(
+        payload_of(&response, "SEARCHED")
+            .get_path("status")
+            .and_then(Value::as_number),
+        Some(503.0)
+    );
+    let delays: Vec<Option<u64>> = seen
+        .iter()
+        .filter_map(|request| match request {
+            IoRequest::Http { delay_ms, .. } => Some(*delay_ms),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(delays.len(), max as usize + 1);
+    assert_eq!(delays[0], None);
+    delays
+}
+
+#[test]
+fn retry_backoff_saturates_after_the_u64_shift_boundary() {
+    let delays = retry_backoff_delays(1, 66);
+    assert_eq!(delays[1], Some(1));
+    assert_eq!(delays[63], Some(1u64 << 62));
+    assert_eq!(delays[64], Some(1u64 << 63));
+    assert_eq!(delays[65], Some(u64::MAX));
+    assert_eq!(delays[66], Some(u64::MAX));
+}
+
+#[test]
+fn retry_backoff_zero_stays_zero_after_the_u64_shift_boundary() {
+    let delays = retry_backoff_delays(0, 66);
+    assert!(delays.iter().skip(1).all(|delay| *delay == Some(0)));
+}
+
+#[test]
+fn retry_backoff_large_base_saturates_before_the_u64_shift_boundary() {
+    assert_eq!(
+        retry_backoff_delays(1u64 << 62, 4),
+        [
+            None,
+            Some(1u64 << 62),
+            Some(1u64 << 63),
+            Some(u64::MAX),
+            Some(u64::MAX),
+        ]
+    );
+}
+
+mod browser_effects {
+    // `browser/page-facts` and `browser/beacon` through the kernel (docs/Almadar_Embedded_Kernel.md, G-CROSS-221):
+    // page facts are one journaled host ask answered flat with the unrequested facts at their defaults; a beacon is
+    // built and egress-checked by the one http driver and only then handed to the host, which answers how it took it.
+
+    use orbital_core::embed::{EmbeddedServer, ServerProgress};
+    use orbital_core::ir::PageFactField;
+    use orbital_core::runtime::http_request::BeaconOutcome;
+    use orbital_core::runtime::http_service::TransportError;
+    use orbital_core::runtime::resumable::{IoAnswer, IoReply, IoRequest, PageFacts};
+    use orbital_core::{EventRequest, EventResponse, OrbitalSchema, Value};
+    use serde_json::{json, Value as Json};
+
+    const COLLECTOR: &str = "https://collector.example.com";
+
+    fn schema(effect: Json) -> OrbitalSchema {
+        serde_json::from_value(json!({
+            "name": "App",
+            "egress": [COLLECTOR],
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Probe", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }, { "name": "failed" }, { "name": "stopped" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "GO", "effects": [effect] },
+                            { "from": "idle", "to": "done", "event": "OK" },
+                            { "from": "idle", "to": "failed", "event": "BAD" },
+                            { "from": "idle", "to": "stopped", "event": "STOPPED" }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn go() -> EventRequest {
+        EventRequest {
+            event: "GO".to_string(),
+            target_trait: Some("Probe".to_string()),
+            payload: Some(serde_json::from_value(json!({ "body": "hello" })).unwrap()),
+            ..Default::default()
+        }
+    }
+
+    fn run(effect: Json, mut host: impl FnMut(&IoRequest) -> IoAnswer) -> (EventResponse, Vec<IoRequest>) {
+        let server = EmbeddedServer::new(schema(effect)).unwrap();
+        let mut seen = Vec::new();
+        let mut progress = server.start("Main", go()).unwrap();
+        loop {
+            match progress {
+                ServerProgress::Done(response) => return (response, seen),
+                ServerProgress::Await { flight, requests } => {
+                    let replies = requests
+                        .into_iter()
+                        .map(|pending| IoReply {
+                            id: pending.id,
+                            answer: match &pending.request {
+                                IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
+                                other => {
+                                    seen.push(other.clone());
+                                    host(other)
+                                }
+                            },
+                        })
+                        .collect();
+                    progress = server.resume(flight, replies).unwrap();
+                }
+            }
+        }
+    }
+
+    fn emitted(response: &EventResponse) -> Vec<(&str, Option<&Value>)> {
+        response.emitted_events.iter().map(|e| (e.event.as_str(), e.payload.as_ref())).collect()
+    }
+
+    fn payload_of(response: &EventResponse, event: &str) -> Json {
+        let found = emitted(response)
+            .into_iter()
+            .find(|(e, _)| *e == event)
+            .unwrap_or_else(|| panic!("{event} was not emitted: {:?}", emitted(response)));
+        serde_json::to_value(found.1).unwrap()
+    }
+
+    fn routes() -> Json {
+        json!({ "emit": { "success": "OK", "failure": "BAD", "cancelled": "STOPPED" } })
+    }
+
+    fn facts(hostname: &str, referrer: &str, width: Option<f64>) -> PageFacts {
+        PageFacts { available: true, hostname: hostname.into(), referrer: referrer.into(), screen_width: width }
+    }
+
+    // --- page facts ---------------------------------------------------------------------------------------------
+
+    #[test]
+    fn page_facts_ask_the_host_once_in_list_order_and_emit_flat() {
+        let (response, seen) = run(json!(["browser/page-facts", ["referrer", "screenWidth"], routes()]), |request| match request {
+            IoRequest::PageFacts { .. } => IoAnswer::PageFacts(Ok(facts("ignored.example", "https://r.example/", Some(1280.0)))),
+            other => panic!("the fixture asks for {other:?}"),
+        });
+        assert_eq!(seen, vec![IoRequest::PageFacts { fields: vec![PageFactField::Referrer, PageFactField::ScreenWidth] }]);
+        assert_eq!(
+            payload_of(&response, "OK"),
+            json!({ "available": true, "hostname": "", "referrer": "https://r.example/", "screenWidth": 1280.0 })
+        );
+    }
+
+    #[test]
+    fn page_facts_keep_unrequested_facts_at_their_defaults_whatever_the_host_answers() {
+        let (response, _) = run(json!(["browser/page-facts", ["hostname"], routes()]), |_| {
+            IoAnswer::PageFacts(Ok(facts("site.example", "https://leak.example/", Some(99.0))))
+        });
+        assert_eq!(
+            payload_of(&response, "OK"),
+            json!({ "available": true, "hostname": "site.example", "referrer": "", "screenWidth": null })
+        );
+    }
+
+    #[test]
+    fn page_facts_with_no_page_are_available_false_with_the_defaults() {
+        let (response, _) = run(json!(["browser/page-facts", ["hostname", "referrer", "screenWidth"], routes()]), |_| {
+            IoAnswer::PageFacts(Ok(PageFacts { available: false, hostname: "x".into(), referrer: "y".into(), screen_width: Some(5.0) }))
+        });
+        assert_eq!(
+            payload_of(&response, "OK"),
+            json!({ "available": false, "hostname": "", "referrer": "", "screenWidth": null })
+        );
+    }
+
+    #[test]
+    fn page_facts_a_getter_that_throws_is_the_failure_route_not_no_page() {
+        let (response, _) = run(json!(["browser/page-facts", ["hostname"], routes()]), |_| {
+            IoAnswer::PageFacts(Err("referrer blocked".into()))
+        });
+        assert_eq!(payload_of(&response, "BAD"), json!({ "error": "referrer blocked" }));
+        assert!(!emitted(&response).iter().any(|(e, _)| *e == "OK"));
+    }
+
+    #[test]
+    fn page_facts_refuse_a_bad_field_list_without_asking_the_host() {
+        for fields in [json!([]), json!(["userAgent"]), json!(["hostname", "hostname"]), json!("hostname")] {
+            let (response, seen) = run(json!(["browser/page-facts", fields, routes()]), |request| panic!("refusal asked {request:?}"));
+            assert!(seen.is_empty());
+            assert!(payload_of(&response, "BAD").get("error").is_some());
+        }
+    }
+
+    // --- beacon -------------------------------------------------------------------------------------------------
+
+    fn beacon(url: &str) -> Json {
+        json!(["browser/beacon", url, { "text": "@payload.body", "key": "k1" }, routes()])
+    }
+
+    #[test]
+    fn a_queued_beacon_is_sent_via_queue_with_the_built_text_plain_request() {
+        let (response, seen) = run(beacon("https://collector.example.com/api/event?v=1"), |request| match request {
+            IoRequest::HttpBeacon { .. } => IoAnswer::HttpBeacon(Ok(BeaconOutcome::Queued)),
+            other => panic!("the fixture asks for {other:?}"),
+        });
+        let [IoRequest::HttpBeacon { request, key, .. }] = seen.as_slice() else { panic!("one beacon ask expected: {seen:?}") };
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.url, "https://collector.example.com/api/event?v=1");
+        assert_eq!(request.body, b"hello".to_vec());
+        assert!(request.headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v == "text/plain"));
+        assert_eq!(key.as_deref(), Some("k1"));
+        assert_eq!(payload_of(&response, "OK"), json!({ "sent": true, "via": "queue", "status": null, "key": "k1" }));
+    }
+
+    #[test]
+    fn a_fetched_beacon_reports_the_status_only_and_2xx_is_sent() {
+        for (status, sent) in [(200u16, true), (202, true), (204, true), (299, true), (300, false), (400, false), (500, false)] {
+            let (response, _) = run(beacon("https://collector.example.com/e"), |_| {
+                IoAnswer::HttpBeacon(Ok(BeaconOutcome::Fetched { status }))
+            });
+            assert_eq!(
+                payload_of(&response, "OK"),
+                json!({ "sent": sent, "via": "fetch", "status": f64::from(status), "key": "k1" }),
+                "status {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_beacon_whose_fetch_throws_is_sent_false_via_fetch_not_a_failure() {
+        let (response, _) = run(beacon("https://collector.example.com/e"), |_| {
+            IoAnswer::HttpBeacon(Err(TransportError::Failed("network down".into())))
+        });
+        assert_eq!(payload_of(&response, "OK"), json!({ "sent": false, "via": "fetch", "status": null, "key": "k1" }));
+    }
+
+    #[test]
+    fn an_undeclared_origin_is_refused_before_the_host_is_asked() {
+        let (response, seen) = run(beacon("https://elsewhere.example.com/e"), |request| panic!("egress denial asked {request:?}"));
+        assert!(seen.is_empty());
+        let payload = payload_of(&response, "BAD");
+        assert_eq!(payload.get("kind"), Some(&json!("refused")));
+        assert_eq!(payload.get("key"), Some(&json!("k1")));
+    }
+
+    #[test]
+    fn a_relative_or_non_http_url_is_a_typed_refusal_never_a_send() {
+        for url in ["/api/event", "api/event", "ftp://collector.example.com/e", "//collector.example.com/e", "https://collector.example.com/e#frag"] {
+            let (response, seen) = run(beacon(url), |request| panic!("{url} asked {request:?}"));
+            assert!(seen.is_empty(), "{url}");
+            assert_eq!(payload_of(&response, "BAD").get("kind"), Some(&json!("refused")), "{url}");
+        }
+    }
+
+    #[test]
+    fn a_beacon_request_carries_text_and_nothing_else() {
+        for request in [json!({}), json!({ "text": 5 }), json!({ "text": "x", "json": {} }), json!({ "text": "x", "auth": {} })] {
+            let (response, seen) = run(
+                json!(["browser/beacon", "https://collector.example.com/e", request, routes()]),
+                |r| panic!("invalid beacon asked {r:?}"),
+            );
+            assert!(seen.is_empty());
+            assert_eq!(payload_of(&response, "BAD").get("kind"), Some(&json!("refused")));
+        }
+    }
+
+    #[test]
+    fn a_beacon_key_is_optional_and_echoes_null_when_absent() {
+        let (response, seen) = run(
+            json!(["browser/beacon", "https://collector.example.com/e", { "text": "x" }, routes()]),
+            |_| IoAnswer::HttpBeacon(Ok(BeaconOutcome::Queued)),
+        );
+        assert!(matches!(seen.as_slice(), [IoRequest::HttpBeacon { key: None, .. }]));
+        assert_eq!(payload_of(&response, "OK"), json!({ "sent": true, "via": "queue", "status": null, "key": null }));
+    }
+
+    #[test]
+    fn a_cancelled_beacon_fires_the_cancelled_route_and_not_success() {
+        let (response, _) = run(beacon("https://collector.example.com/e"), |_| IoAnswer::ServiceCancelled);
+        assert_eq!(payload_of(&response, "STOPPED"), json!({ "key": "k1" }));
+        assert!(!emitted(&response).iter().any(|(e, _)| *e == "OK"));
+    }
+
+
+    #[test]
+    fn page_facts_key_is_evaluated_and_echoed_on_success_and_failure_and_absent_means_no_key_field() {
+        let keyed = |key: Json| json!(["browser/page-facts", ["hostname"], { "key": key, "emit": { "success": "OK", "failure": "BAD" } }]);
+        let (response, _) = run(keyed(json!(["str/concat", "k:", "@payload.body"])), |_| {
+            IoAnswer::PageFacts(Ok(facts("site.example", "", None)))
+        });
+        assert_eq!(
+            payload_of(&response, "OK"),
+            json!({ "available": true, "hostname": "site.example", "referrer": "", "screenWidth": null, "key": "k:hello" })
+        );
+        let (response, _) = run(keyed(json!("fixed")), |_| IoAnswer::PageFacts(Err("blocked".into())));
+        assert_eq!(payload_of(&response, "BAD"), json!({ "error": "blocked", "key": "fixed" }));
+        let (response, _) = run(json!(["browser/page-facts", ["hostname"], routes()]), |_| {
+            IoAnswer::PageFacts(Ok(facts("site.example", "", None)))
+        });
+        assert!(payload_of(&response, "OK").get("key").is_none());
+    }
+
+    #[test]
+    fn page_facts_key_that_is_not_a_non_empty_string_never_asks_the_host() {
+        for key in [json!(17), json!(null), json!(""), json!(["+", 1, 2])] {
+            let (_, seen) = run(
+                json!(["browser/page-facts", ["hostname"], { "key": key, "emit": { "success": "OK", "failure": "BAD" } }]),
+                |request| panic!("invalid key asked {request:?}"),
+            );
+            assert!(seen.is_empty());
+        }
+    }
 }

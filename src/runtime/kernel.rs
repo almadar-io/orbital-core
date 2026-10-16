@@ -33,6 +33,8 @@ use crate::effects::{
 use crate::codec;
 use crate::effects::ServiceCaller;
 use crate::error::{EvalError, OrbitalError};
+use crate::oauth::ask::{OAuthFailureReason, OAuthReply};
+use crate::runtime::os::{OsError, OsErrorKind};
 use crate::evaluator::ValueMap;
 use crate::util::DispatchVisits;
 use crate::{
@@ -98,8 +100,6 @@ struct RepaintJob {
     composed_with: Value,
     /// Walking through a child that was not repainted: its children keep the payload they were last composed with.
     keep_composed: bool,
-    /// The children the firing transition composes; `None` = every capture child.
-    composed_by: Option<Vec<String>>,
     /// The children this walk has repainted, shared by every job of one walk.
     visited: Arc<parking_lot::Mutex<HashSet<String>>>,
 }
@@ -2772,7 +2772,6 @@ impl RuntimeKernel {
                     RepaintJob {
                         composed_with: payload.clone(),
                         keep_composed: false,
-                        composed_by: None,
                         visited: Arc::clone(&visited),
                     },
                 )
@@ -3288,7 +3287,7 @@ impl RuntimeKernel {
                     let verdict = self.io.take_call_verdict();
                     self.io.set_call_site(None);
                     let key = match &resolved {
-                        Effect::CallService { key, .. } => key.clone(),
+                        Effect::CallService { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
                         _ => None,
                     };
                     if verdict == Some(CallVerdict::Cancelled) {
@@ -3307,7 +3306,7 @@ impl RuntimeKernel {
                         return;
                     };
                     let key = match &resolved {
-                        Effect::Http { key, .. } => key.clone(),
+                        Effect::Http { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
                         _ => None,
                     };
                     let (result, verdict) = if self.effect_executor.environment().is_client() {
@@ -3315,7 +3314,7 @@ impl RuntimeKernel {
                     } else {
                         self.io.set_call_site(self.call_site_of(emit.as_ref()));
                         let principal = ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
-                        let mut result = self.run_http(&resolved, principal.as_deref());
+                        let mut result = self.run_http(&resolved, principal.as_deref(), ctx.now);
                         let verdict = self.io.take_call_verdict();
                         self.io.set_call_site(None);
                         if verdict == Some(CallVerdict::Cancelled) {
@@ -3326,6 +3325,64 @@ impl RuntimeKernel {
                     let completion = emit.as_ref().and_then(|e| {
                         keyed_call_completion_emit(e, &result, verdict, key.as_deref())
                     });
+                    effect_results.push(result);
+                    effect_results.extend(completion);
+                }
+                Effect::Os { emit, .. } => {
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    let key = match &resolved {
+                        Effect::Os { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        _ => None,
+                    };
+                    let (result, verdict) = if self.effect_executor.environment().is_client() {
+                        (self.effect_executor.execute(&resolved, ctx), None)
+                    } else {
+                        self.io.set_call_site(self.call_site_of(emit.as_ref()));
+                        let mut result = self.run_os(&resolved);
+                        let verdict = self.io.take_call_verdict();
+                        self.io.set_call_site(None);
+                        if verdict == Some(CallVerdict::Cancelled) {
+                            result = EffectResult::executed(resolved);
+                        }
+                        (result, verdict)
+                    };
+                    let completion = emit.as_ref().and_then(|e| {
+                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
+                    });
+                    effect_results.push(result);
+                    effect_results.extend(completion);
+                }
+                Effect::BrowserBeacon { emit, .. } => {
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    let key = match &resolved {
+                        Effect::BrowserBeacon { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        _ => None,
+                    };
+                    self.io.set_call_site(self.call_site_of(emit.as_ref()));
+                    let mut result = self.run_beacon(&resolved);
+                    let verdict = self.io.take_call_verdict();
+                    self.io.set_call_site(None);
+                    if verdict == Some(CallVerdict::Cancelled) {
+                        result = EffectResult::executed(resolved);
+                    }
+                    let completion = emit
+                        .as_ref()
+                        .and_then(|e| keyed_call_completion_emit(e, &result, verdict, key.as_deref()));
+                    effect_results.push(result);
+                    effect_results.extend(completion);
+                }
+                Effect::BrowserPageFacts { emit, .. } => {
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    let result = self.run_page_facts(&resolved);
+                    let completion = emit
+                        .as_ref()
+                        .and_then(|e| keyed_call_completion_emit(e, &result, None, None));
                     effect_results.push(result);
                     effect_results.extend(completion);
                 }
@@ -3349,7 +3406,10 @@ impl RuntimeKernel {
                 }
                 Effect::RandomBytes { emit, .. }
                 | Effect::CredentialStatus { emit, .. }
-                | Effect::CredentialForget { emit, .. } => {
+                | Effect::CredentialForget { emit, .. }
+                | Effect::OAuthAuthorize { emit, .. }
+                | Effect::OAuthConnectionStatus { emit, .. }
+                | Effect::OAuthConnectionForget { emit, .. } => {
                     let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
                         return;
                     };
@@ -3451,20 +3511,33 @@ impl RuntimeKernel {
             Effect::CredentialStatus { credential, .. } | Effect::CredentialForget { credential, .. } => {
                 let status = matches!(effect, Effect::CredentialStatus { .. });
                 let head = if status { "credential-status" } else { "credential-forget" };
-                let Some(principal) = principal else {
-                    return EffectResult::failed(effect.clone(), &format!("{head}: nobody is signed in"));
+                if !status || !matches!(credential, Value::Object(_)) {
+                    if principal.is_none() {
+                        return EffectResult::failed(effect.clone(), &format!("{head}: nobody is signed in"));
+                    }
+                    if !matches!(credential, Value::String(_)) {
+                        return EffectResult::failed(
+                            effect.clone(),
+                            &format!("{head}: the credential must be a secret knob's name"),
+                        );
+                    }
+                }
+                let slot = match http_request::parse_credential_status_slot(credential) {
+                    Ok(slot) => slot,
+                    Err(error) => return EffectResult::failed(effect.clone(), &error.message()),
                 };
-                let Value::String(name) = credential else {
-                    return EffectResult::failed(
-                        effect.clone(),
-                        &format!("{head}: the credential must be a secret knob's name"),
-                    );
+                let principal = match slot.scope {
+                    http_request::SecretScope::App => None,
+                    http_request::SecretScope::User => match principal.as_deref() {
+                        Some(principal) => Some(principal),
+                        None => return EffectResult::failed(effect.clone(), &format!("{head}: nobody is signed in")),
+                    },
                 };
                 let answer = if status {
-                    self.io.credential_status(name, Some(&principal))
+                    self.io.credential_status(&slot.name, principal)
                 } else {
                     self.io
-                        .credential_forget(name, Some(&principal))
+                        .credential_forget(&slot.name, principal)
                         .map(|()| false)
                 };
                 match answer {
@@ -3478,13 +3551,174 @@ impl RuntimeKernel {
                     Err(message) => EffectResult::failed(effect.clone(), &message),
                 }
             }
+            Effect::OAuthAuthorize { client, options, .. } => {
+                self.run_oauth_authorize(effect, client, options, principal.as_deref())
+            }
+            Effect::OAuthConnectionStatus { provider, .. } | Effect::OAuthConnectionForget { provider, .. } => {
+                self.run_oauth_connection(effect, provider, principal.as_deref())
+            }
             other => EffectResult::noop(other.clone(), "not a host effect"),
+        }
+    }
+
+    fn oauth_failed(effect: &Effect, reason: OAuthFailureReason) -> EffectResult {
+        let payload = Value::Object(ValueMap::from([
+            ("error".to_string(), Value::String(reason.message().to_string())),
+            ("code".to_string(), Value::String(reason.code().to_string())),
+            ("reason".to_string(), Value::String(reason.as_str().to_string())),
+        ]));
+        http_failure(effect, payload)
+    }
+
+    /// `oauth-authorize`: build the authorization URL and keep the pending grant (PKCE verifier, subject) with the
+    /// host. The state and verifier come from two journaled `Random` asks; the verifier never reaches the payload.
+    fn run_oauth_authorize(
+        &self,
+        effect: &Effect,
+        client: &Value,
+        options: &Value,
+        principal: Option<&str>,
+    ) -> EffectResult {
+        let key = match effect {
+            Effect::OAuthAuthorize { key: Some(key), .. } => match crate::effects::call_key_text(key) {
+                Ok(text) => Value::String(text.to_string()),
+                Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
+            },
+            _ => Value::Null,
+        };
+        let mut result = self.authorize_inner(effect, client, options, principal);
+        let payload = match result.return_value.take() {
+            Some(Value::Object(mut fields)) => {
+                fields.insert("key".to_string(), key);
+                Value::Object(fields)
+            }
+            _ => Value::Object(ValueMap::from([
+                ("error".to_string(), Value::String(result.error.clone().unwrap_or_default())),
+                ("key".to_string(), key),
+            ])),
+        };
+        result.return_value = Some(payload);
+        result
+    }
+
+    fn authorize_inner(
+        &self,
+        effect: &Effect,
+        client: &Value,
+        options: &Value,
+        principal: Option<&str>,
+    ) -> EffectResult {
+        use crate::oauth::ask::OAuthAsk;
+        use crate::oauth::client::OAuthServerDecl;
+        use crate::oauth::client::OAuthMode;
+        use crate::runtime::oauth_flow::{
+            build_authorization, build_mock_authorization, declared_metadata, plan_authorize, FlowFailure, MOCK_PENDING_TTL_MS,
+        };
+        let plan = match plan_authorize(client, options) {
+            Ok(plan) => plan,
+            Err(message) => return EffectResult::failed(effect.clone(), &message),
+        };
+        let decl = &plan.client;
+        if decl.mode == OAuthMode::Mock {
+            let state_bytes = match self.io.random(16) {
+                Ok(bytes) => bytes,
+                Err(message) => return EffectResult::failed(effect.clone(), &message),
+            };
+            let (auth_url, state, pending) = build_mock_authorization(&plan, &state_bytes);
+            return self.keep_pending_grant(effect, auth_url, state, pending, MOCK_PENDING_TTL_MS, principal);
+        }
+        let who = match decl.client_id.scope {
+            http_request::SecretScope::App => None,
+            http_request::SecretScope::User => match principal {
+                Some(principal) => Some(principal),
+                None => return Self::oauth_failed(effect, OAuthFailureReason::NotSignedIn),
+            },
+        };
+        let client_id = match self.io.secret(&decl.client_id.name, who) {
+            Ok(Some(id)) => id,
+            Ok(None) => return Self::oauth_failed(effect, OAuthFailureReason::UnconfiguredClient),
+            Err(message) => return EffectResult::failed(effect.clone(), &message),
+        };
+        let meta = match &decl.server {
+            OAuthServerDecl::Endpoints { .. } => declared_metadata(&decl.server),
+            OAuthServerDecl::Issuer(issuer) => {
+                match self.io.oauth(&OAuthAsk::MetadataGet { issuer: issuer.clone() }, principal) {
+                    Ok(OAuthReply::Metadata { metadata }) => metadata,
+                    Ok(_) | Err(_) => return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
+                }
+            }
+        };
+        let Some(meta) = meta else {
+            return Self::oauth_failed(effect, OAuthFailureReason::MetadataInvalid);
+        };
+        let (state_bytes, verifier_bytes) = match (self.io.random(32), self.io.random(32)) {
+            (Ok(state), Ok(verifier)) => (state, verifier),
+            (Err(message), _) | (_, Err(message)) => return EffectResult::failed(effect.clone(), &message),
+        };
+        let (auth_url, state, pending) = match build_authorization(&plan, &client_id, &meta, state_bytes, verifier_bytes) {
+            Ok(built) => built,
+            Err(FlowFailure::Reason(reason)) => return Self::oauth_failed(effect, reason),
+            Err(FlowFailure::Refused(refusal)) => return EffectResult::failed(effect.clone(), &refusal.message()),
+            Err(FlowFailure::Transport(_)) => return Self::oauth_failed(effect, OAuthFailureReason::ResponseInvalid),
+        };
+        self.keep_pending_grant(effect, auth_url, state, pending, 10 * 60 * 1000, principal)
+    }
+
+    /// Hand the pending grant to the host and report the authorization URL and state.
+    fn keep_pending_grant(
+        &self,
+        effect: &Effect,
+        auth_url: String,
+        state: String,
+        pending: crate::oauth::Pending,
+        ttl_ms: u64,
+        principal: Option<&str>,
+    ) -> EffectResult {
+        use crate::oauth::ask::OAuthAsk;
+        let put = OAuthAsk::PendingPut { state: state.clone(), grant: pending, ttl_ms };
+        match self.io.oauth(&put, principal) {
+            Ok(OAuthReply::Done) => EffectResult::executed_with_value(
+                effect.clone(),
+                Value::Object(ValueMap::from([
+                    ("authUrl".to_string(), Value::String(auth_url)),
+                    ("state".to_string(), Value::String(state)),
+                ])),
+            ),
+            Ok(_) | Err(_) => Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
+        }
+    }
+
+    /// `oauth-connection-status` / `oauth-connection-forget`: store first, then caller (the legacy order).
+    fn run_oauth_connection(&self, effect: &Effect, provider: &Value, principal: Option<&str>) -> EffectResult {
+        use crate::oauth::ask::{OAuthAsk, OAuthProvider};
+        let status = matches!(effect, Effect::OAuthConnectionStatus { .. });
+        let head = if status { "oauth-connection-status" } else { "oauth-connection-forget" };
+        let provider = match provider {
+            Value::String(word) => match OAuthProvider::parse(word) {
+                Some(provider) => provider,
+                None => return EffectResult::failed(effect.clone(), &format!("{head}: provider must be google, github or auth0, not `{word}`")),
+            },
+            _ => return EffectResult::failed(effect.clone(), &format!("{head}: provider must be a provider word")),
+        };
+        match self.io.oauth(&OAuthAsk::ConnectionAvailable, principal) {
+            Ok(OAuthReply::Flag { value: true }) => {}
+            Ok(_) | Err(_) => return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
+        }
+        let Some(caller) = principal.filter(|p| !p.is_empty()) else {
+            return Self::oauth_failed(effect, OAuthFailureReason::NotSignedIn);
+        };
+        let ask = if status { OAuthAsk::ConnectionStatus { provider } } else { OAuthAsk::ConnectionRemove { provider } };
+        match self.io.oauth(&ask, Some(caller)) {
+            Ok(OAuthReply::Row { row }) => {
+                EffectResult::executed_with_value(effect.clone(), crate::runtime::oauth_flow::row_value(&row))
+            }
+            Ok(_) | Err(_) => Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
         }
     }
 
     /// Run an `http` effect by answering the asks of its `HttpCallDriver`, each journaled; the driver owns
     /// credentials, OAuth, pagination and streaming.
-    fn run_http(&self, effect: &Effect, principal: Option<&str>) -> EffectResult {
+    fn run_http(&self, effect: &Effect, principal: Option<&str>, now_ms: Option<f64>) -> EffectResult {
         use http_request::{HttpAnswer, HttpAsk, HttpCallDriver, HttpStep, SecretScope};
         let owner = |scope: SecretScope| match scope {
             SecretScope::App => Ok(None),
@@ -3501,7 +3735,10 @@ impl RuntimeKernel {
         else {
             return EffectResult::noop(effect.clone(), "not an http effect");
         };
-        let key = key.as_deref();
+        let key = match key.as_ref().map(crate::effects::call_key_text).transpose() {
+            Ok(key) => key,
+            Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
+        };
         let spec = match http_request::parse_http_call(
             *method,
             &origin.to_string_value(),
@@ -3509,10 +3746,13 @@ impl RuntimeKernel {
             request,
         ) {
             Ok(spec) => spec,
-            Err(refusal) => return http_failure(effect, http_request::refusal_payload(&refusal)),
+            Err(refusal) => return http_failure(effect, http_request::with_key(
+                http_request::refusal_payload(&refusal), &key.map(str::to_string),
+            )),
         };
         let egress = self.egress.read().clone();
-        let (mut driver, mut step) = HttpCallDriver::start(spec, egress, key.map(str::to_string));
+        let (mut driver, mut step) =
+            HttpCallDriver::start_as(spec, egress, key.map(str::to_string), now_ms, principal.map(str::to_string));
         loop {
             match step {
                 HttpStep::Done(Ok(payload)) => {
@@ -3532,6 +3772,9 @@ impl RuntimeKernel {
                         } => HttpAnswer::SecretSet(
                             owner(scope).and_then(|who| self.io.store_secret(&name, &value, ttl_ms, who)),
                         ),
+                        HttpAsk::SecretRotate { name, value, scope } => HttpAnswer::SecretRotate(
+                            owner(scope).and_then(|who| self.io.rotate_secret(&name, &value, who)),
+                        ),
                         HttpAsk::Random { bytes } => HttpAnswer::Random(self.io.random(bytes)),
                         HttpAsk::Http { request, delay_ms } => {
                             HttpAnswer::Http(self.io.http_send(&request, key, delay_ms))
@@ -3539,6 +3782,10 @@ impl RuntimeKernel {
                         HttpAsk::HttpStream { request, framing } => {
                             HttpAnswer::Http(self.io.http_stream(&request, key, framing))
                         }
+                        HttpAsk::Beacon { .. } => {
+                            return EffectResult::failed(effect.clone(), "an http call asked for a beacon")
+                        }
+                        HttpAsk::OAuth { ask } => HttpAnswer::OAuth(self.io.oauth(&ask, principal)),
                     };
                     if self.io.suspended() {
                         return EffectResult::failed(effect.clone(), AWAITING_HOST);
@@ -3546,6 +3793,135 @@ impl RuntimeKernel {
                     step = driver.resume(answer);
                 }
             }
+        }
+    }
+
+    /// Run an `os/<op>` effect through one journaled ask. A streaming op needs a key, so `cancel-call` can end it.
+    fn run_os(&self, effect: &Effect) -> EffectResult {
+        let Effect::Os { op, args, key, .. } = effect else {
+            return EffectResult::noop(effect.clone(), "not an os effect");
+        };
+        let key = match key.as_ref().map(crate::effects::call_key_text).transpose() {
+            Ok(key) => key,
+            Err(error) => return os_failure(effect, &OsError::new(OsErrorKind::Invalid, error.to_string())),
+        };
+        if op.is_stream() && key.is_none() {
+            return os_failure(
+                effect,
+                &OsError::new(OsErrorKind::Invalid, format!("{}: a stream needs a key", op.name())),
+            );
+        }
+        match self.io.os(*op, args, key) {
+            Ok(payload) => EffectResult::executed_with_value(effect.clone(), payload),
+            Err(error) => os_failure(effect, &error),
+        }
+    }
+
+    /// Run a `browser/beacon`: the one http driver parses, builds and egress-checks the request, and only the
+    /// built request reaches the host's beacon port. A kernel with no host to answer fails `unavailable`.
+    fn run_beacon(&self, effect: &Effect) -> EffectResult {
+        use http_request::{HttpAnswer, HttpAsk, HttpCallDriver, HttpStep};
+        let Effect::BrowserBeacon { url, request, key, .. } = effect else {
+            return EffectResult::noop(effect.clone(), "not a beacon effect");
+        };
+        let key = match key.as_ref().map(crate::effects::call_key_text).transpose() {
+            Ok(key) => key.map(str::to_string),
+            Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
+        };
+        let Value::String(url) = url else {
+            return http_failure(
+                effect,
+                http_request::with_key(
+                    http_request::refusal_payload(&http_request::HttpRefusal::Invalid(
+                        "a beacon URL must be a string".to_string(),
+                    )),
+                    &key,
+                ),
+            );
+        };
+        let spec = match http_request::parse_beacon_call(url, request) {
+            Ok(spec) => spec,
+            Err(refusal) => {
+                return http_failure(effect, http_request::with_key(http_request::refusal_payload(&refusal), &key))
+            }
+        };
+        let egress = self.egress.read().clone();
+        let (mut driver, mut step) = HttpCallDriver::start(spec, egress, key.clone());
+        loop {
+            match step {
+                HttpStep::Done(Ok(payload)) => return EffectResult::executed_with_value(effect.clone(), payload),
+                HttpStep::Done(Err(payload)) => return http_failure(effect, payload),
+                HttpStep::Ask(HttpAsk::Beacon { request }) => {
+                    let Some(outcome) = self.io.http_beacon(&request, key.as_deref()) else {
+                        return http_failure(
+                            effect,
+                            http_request::with_key(
+                                http_request::unavailable_payload("browser/beacon: no host answers beacons"),
+                                &key,
+                            ),
+                        );
+                    };
+                    if self.io.suspended() {
+                        return EffectResult::failed(effect.clone(), AWAITING_HOST);
+                    }
+                    step = driver.resume(HttpAnswer::Beacon(outcome));
+                }
+                HttpStep::Ask(_) => {
+                    return EffectResult::failed(effect.clone(), "a beacon call asked for something other than a beacon")
+                }
+            }
+        }
+    }
+
+    /// Run a `browser/page-facts`: one journaled ask, answered flat, every fact not asked for at its default.
+    fn run_page_facts(&self, effect: &Effect) -> EffectResult {
+        let Effect::BrowserPageFacts { fields, key, .. } = effect else {
+            return EffectResult::noop(effect.clone(), "not a page-facts effect");
+        };
+        let key = key.as_ref().and_then(Value::as_str).map(str::to_string);
+        let failed = |message: &str| {
+            let mut result = EffectResult::failed(effect.clone(), message);
+            if let Some(key) = &key {
+                result.return_value = Some(Value::Object(ValueMap::from([
+                    ("error".to_string(), Value::String(message.to_string())),
+                    ("key".to_string(), Value::String(key.clone())),
+                ])));
+            }
+            result
+        };
+        let fields = match page_fact_fields(fields) {
+            Ok(fields) => fields,
+            Err(message) => return failed(&message),
+        };
+        match self.io.page_facts(&fields) {
+            Ok(facts) => {
+                use crate::ir::PageFactField;
+                let live = facts.available;
+                let pick = |field: PageFactField| live && fields.contains(&field);
+                let mut payload = ValueMap::from([
+                        ("available".to_string(), Value::Bool(live)),
+                        (
+                            "hostname".to_string(),
+                            Value::String(if pick(PageFactField::Hostname) { facts.hostname } else { String::new() }),
+                        ),
+                        (
+                            "referrer".to_string(),
+                            Value::String(if pick(PageFactField::Referrer) { facts.referrer } else { String::new() }),
+                        ),
+                        (
+                            "screenWidth".to_string(),
+                            match facts.screen_width {
+                                Some(width) if pick(PageFactField::ScreenWidth) => Value::Number(width),
+                                _ => Value::Null,
+                            },
+                        ),
+                    ]);
+                if let Some(key) = &key {
+                    payload.insert("key".to_string(), Value::String(key.clone()));
+                }
+                EffectResult::executed_with_value(effect.clone(), Value::Object(payload))
+            }
+            Err(message) => failed(&message),
         }
     }
 
@@ -4470,7 +4846,7 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             service,
             method,
             args,
-            key: key.map(|k| resolve_key(&k, ctx)),
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
         Effect::Http {
@@ -4485,11 +4861,31 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             origin: ctx.resolve_value_checked(&origin)?.into_owned(),
             path: ctx.resolve_value_checked(&path)?.into_owned(),
             request: resolve_http_request(&request, ctx)?,
-            key: key.map(|k| resolve_key(&k, ctx)),
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
+            emit,
+        },
+        Effect::BrowserPageFacts { fields, key, emit } => Effect::BrowserPageFacts {
+            fields: ctx.resolve_value_checked(&fields)?.into_owned(),
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
+            emit,
+        },
+        Effect::BrowserBeacon { url, request, key, emit } => Effect::BrowserBeacon {
+            url: ctx.resolve_value_checked(&url)?.into_owned(),
+            request: ctx.resolve_value_checked(&request)?.into_owned(),
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
         Effect::CancelCall { key } => Effect::CancelCall {
             key: resolve_key(&key, ctx),
+        },
+        Effect::Os { op, args, key, emit } => Effect::Os {
+            op,
+            args: args
+                .iter()
+                .map(|arg| ctx.resolve_value_checked(arg).map(std::borrow::Cow::into_owned))
+                .collect::<Result<_, EvalError>>()?,
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
+            emit,
         },
         Effect::RandomBytes { bytes, emit } => Effect::RandomBytes {
             bytes: ctx.resolve_value_checked(&bytes)?.into_owned(),
@@ -4501,6 +4897,20 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
         },
         Effect::CredentialForget { credential, emit } => Effect::CredentialForget {
             credential: ctx.resolve_value_checked(&credential)?.into_owned(),
+            emit,
+        },
+        Effect::OAuthAuthorize { client, options, key, emit } => Effect::OAuthAuthorize {
+            client: ctx.resolve_value_checked(&client)?.into_owned(),
+            options: ctx.resolve_value_checked(&options)?.into_owned(),
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
+            emit,
+        },
+        Effect::OAuthConnectionStatus { provider, emit } => Effect::OAuthConnectionStatus {
+            provider: ctx.resolve_value_checked(&provider)?.into_owned(),
+            emit,
+        },
+        Effect::OAuthConnectionForget { provider, emit } => Effect::OAuthConnectionForget {
+            provider: ctx.resolve_value_checked(&provider)?.into_owned(),
             emit,
         },
         other => other,
@@ -4536,6 +4946,17 @@ fn resolve_effect_result(result: EffectResult, ctx: &BindingContext) -> EffectRe
         }
         Err(fault) => EffectResult::failed(result.effect, &OrbitalError::Eval(fault).to_string()),
     }
+}
+
+/// A failed `os/` effect: its failure payload (`{ error, kind }`) rides the result's value.
+fn os_failure(effect: &Effect, error: &OsError) -> EffectResult {
+    http_failure(
+        effect,
+        Value::Object(ValueMap::from([
+            ("error".to_string(), Value::String(error.message.clone())),
+            ("kind".to_string(), Value::String(error.kind.as_str().to_string())),
+        ])),
+    )
 }
 
 /// A failed `http` whose failure payload (`{ error, kind }`) rides the result's value.
@@ -4591,6 +5012,33 @@ fn resolve_key(key: &str, ctx: &BindingContext) -> String {
     ctx.resolve_value(&Value::String(key.to_string()))
         .into_owned()
         .to_string_value()
+}
+
+/// The fields a `browser/page-facts` asks for: a non-empty, duplicate-free list of the closed words.
+fn page_fact_fields(value: &Value) -> Result<Vec<crate::ir::PageFactField>, String> {
+    use crate::ir::PageFactField;
+    let Value::Array(words) = value else {
+        return Err("browser/page-facts: the fields must be a list of hostname, referrer, screenWidth".to_string());
+    };
+    if words.is_empty() {
+        return Err("browser/page-facts: the fields must name at least one fact".to_string());
+    }
+    let mut fields = Vec::with_capacity(words.len());
+    for word in words {
+        let text = word.to_string_value();
+        let field = PageFactField::parse(&text)
+            .ok_or_else(|| format!("browser/page-facts: {text} is not one of hostname, referrer, screenWidth"))?;
+        if fields.contains(&field) {
+            return Err(format!("browser/page-facts: {text} is listed twice"));
+        }
+        fields.push(field);
+    }
+    Ok(fields)
+}
+
+fn resolve_call_key(key: &Value, ctx: &BindingContext) -> Result<Value, EvalError> {
+    let value = ctx.resolve_value_checked(key)?;
+    crate::effects::call_key_text(&value).map(|text| Value::String(text.to_string()))
 }
 
 #[cfg(test)]
@@ -4654,7 +5102,7 @@ mod call_key_tests {
         else {
             panic!("expected CallService");
         };
-        assert_eq!(key.as_deref(), Some("b-7"));
+        assert_eq!(key.as_ref().and_then(Value::as_str), Some("b-7"));
     }
 
     #[test]
@@ -4770,9 +5218,15 @@ fn is_thrown_failure(result: &EffectResult) -> bool {
         Effect::CallService { emit, .. }
         | Effect::Http { emit, .. }
         | Effect::Custom { emit, .. }
+        | Effect::BrowserPageFacts { emit, .. }
+        | Effect::BrowserBeacon { emit, .. }
         | Effect::RandomBytes { emit, .. }
+        | Effect::Os { emit, .. }
         | Effect::CredentialStatus { emit, .. }
-        | Effect::CredentialForget { emit, .. } => !routed(emit),
+        | Effect::CredentialForget { emit, .. }
+        | Effect::OAuthAuthorize { emit, .. }
+        | Effect::OAuthConnectionStatus { emit, .. }
+        | Effect::OAuthConnectionForget { emit, .. } => !routed(emit),
         _ => false,
     }
 }

@@ -15,7 +15,7 @@ pub use embed_tokens::{
 pub use format::format_sexpr;
 pub use sexpr::{SObject, 
     json_value_leaves, json_value_leaves_mut, MappedChildren, OperatorLookup, OperatorReturn,
-    SExpression, ValueWalk,
+    SExpression, SequentialBindings, ValueSlot, ValueWalk,
 };
 pub use types::*;
 

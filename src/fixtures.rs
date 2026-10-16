@@ -43,6 +43,7 @@ struct Fixtures {
     quote_cases: String,
     quasiquote_cases: String,
     behavior_apply_cases: String,
+    binding_path_cases: String,
 }
 
 fn read(path: &Path) -> String {
@@ -87,6 +88,7 @@ fn load(dir: &Path) -> Fixtures {
         quote_cases: read(&dir.join("quote/cases.json")),
         quasiquote_cases: read(&dir.join("quasiquote/cases.json")),
         behavior_apply_cases: read(&dir.join("behavior-apply/cases.json")),
+        binding_path_cases: read(&dir.join("binding-path/cases.json")),
     }
 }
 
@@ -139,4 +141,9 @@ pub fn quasiquote_cases() -> &'static str {
 /// `fixtures/behavior-apply/cases.json`.
 pub fn behavior_apply_cases() -> &'static str {
     &fixtures().behavior_apply_cases
+}
+
+/// `fixtures/binding-path/cases.json`.
+pub fn binding_path_cases() -> &'static str {
+    &fixtures().binding_path_cases
 }

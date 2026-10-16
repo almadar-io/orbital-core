@@ -382,17 +382,77 @@ impl Operator for ArrayAppendOp {
     }
 }
 
-/// array/sort - Sort array
+fn sort_rank(v: &Value) -> u8 {
+    match v {
+        Value::Null => 0,
+        Value::Bool(_) => 1,
+        Value::Number(_) => 2,
+        Value::String(_) => 3,
+        Value::Array(_) => 4,
+        _ => 5,
+    }
+}
+
+/// Total order (so `sort_by` can never panic): null < boolean < number (NaN last) < string < array < other,
+/// then by value. Twin of almadar-evaluator `compareSortValues`.
+fn sort_order(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (ra, rb) = (sort_rank(a), sort_rank(b));
+    if ra != rb {
+        return ra.cmp(&rb);
+    }
+    match (a, b) {
+        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        (Value::Number(x), Value::Number(y)) => match (x.is_nan(), y.is_nan()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            _ => x.partial_cmp(y).unwrap_or(Ordering::Equal),
+        },
+        (Value::String(x), Value::String(y)) => x.cmp(y),
+        _ => Ordering::Equal,
+    }
+}
+
+/// array/sort `(arr, key?, dir?)` - sorted copy; `key` orders objects by that field (null or empty = the
+/// elements themselves), `dir` is "asc" (default) or anything else for descending. Stable. Twin of
+/// almadar-evaluator `evalArraySort`.
 pub struct ArraySortOp;
 impl Operator for ArraySortOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "sort", 1);
         let arr = eval_expr(&args[0], ctx)?;
-
         let mut array = require_array!(arr);
 
-        // Sort by comparing values
-        array.sort_by(|a, b| a.compare(b).unwrap_or(std::cmp::Ordering::Equal));
+        let key = match args.get(1) {
+            Some(k) => match eval_expr(k, ctx)? {
+                Value::Null => None,
+                Value::String(s) if s.is_empty() => None,
+                Value::String(s) => Some(s),
+                _ => {
+                    return Err(OrbitalError::Eval(EvalError::TypeMismatch {
+                        expected: "string".to_string(),
+                        actual: "sort key".to_string(),
+                    }))
+                }
+            },
+            None => None,
+        };
+        let ascending = match args.get(2) {
+            Some(d) => eval_expr(d, ctx)?.as_str() == Some("asc"),
+            None => true,
+        };
+
+        let field = |v: &Value| -> Value {
+            match &key {
+                Some(k) => v.as_object().and_then(|o| o.get(k)).cloned().unwrap_or(Value::Null),
+                None => v.clone(),
+            }
+        };
+        array.sort_by(|a, b| {
+            let ord = sort_order(&field(a), &field(b));
+            if ascending { ord } else { ord.reverse() }
+        });
 
         Ok(Value::Array(array))
     }
@@ -1159,5 +1219,105 @@ impl Operator for ArrayNearestOp {
         result.insert("score".to_string(), Value::Number(best_score));
         result.insert("margin".to_string(), Value::Number(margin));
         Ok(Value::Object(result))
+    }
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use crate::{BindingContextBuilder, Evaluator};
+    use serde_json::json;
+
+    fn sort(args: serde_json::Value) -> Result<serde_json::Value, String> {
+        let ctx = BindingContextBuilder::new().build();
+        let sexpr = serde_json::from_value(args).unwrap();
+        Evaluator::new()
+            .evaluate(&sexpr, &ctx)
+            .map(|v| serde_json::to_value(v).unwrap())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn sort_numbers_asc_desc() {
+        assert_eq!(sort(json!(["array/sort", [3, 1, 2]])).unwrap(), json!([1.0, 2.0, 3.0]));
+        assert_eq!(sort(json!(["array/sort", [3, 1, 2], null, "desc"])).unwrap(), json!([3.0, 2.0, 1.0]));
+        assert_eq!(sort(json!(["array/sort", [3, 1, 2], null, "asc"])).unwrap(), json!([1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn sort_strings_by_code_point() {
+        assert_eq!(sort(json!(["array/sort", ["b", "a", "B", "é"]])).unwrap(), json!(["B", "a", "b", "é"]));
+        assert_eq!(sort(json!(["array/sort", ["b", "a", "B", "é"], null, "desc"])).unwrap(), json!(["é", "b", "a", "B"]));
+    }
+
+    #[test]
+    fn sort_objects_by_key_asc_desc() {
+        let rows = json!([{"price": 3}, {"price": 9}, {"price": 5}]);
+        assert_eq!(
+            sort(json!(["array/sort", rows, "price", "desc"])).unwrap(),
+            json!([{"price": 9.0}, {"price": 5.0}, {"price": 3.0}])
+        );
+        assert_eq!(
+            sort(json!(["array/sort", rows, "price"])).unwrap(),
+            json!([{"price": 3.0}, {"price": 5.0}, {"price": 9.0}])
+        );
+        // a direction word in the key slot is a key, never a direction
+        assert_eq!(sort(json!(["array/sort", [3, 1, 2], "asc"])).unwrap(), json!([3.0, 1.0, 2.0]));
+    }
+
+    #[test]
+    fn sort_equal_keys_keep_input_order_both_directions() {
+        let rows = json!([{"k": 1, "i": "a"}, {"k": 0, "i": "b"}, {"k": 1, "i": "c"}, {"k": 1, "i": "d"}]);
+        assert_eq!(
+            sort(json!(["array/sort", rows, "k", "desc"])).unwrap(),
+            json!([{"k": 1.0, "i": "a"}, {"k": 1.0, "i": "c"}, {"k": 1.0, "i": "d"}, {"k": 0.0, "i": "b"}])
+        );
+        assert_eq!(
+            sort(json!(["array/sort", rows, "k"])).unwrap(),
+            json!([{"k": 0.0, "i": "b"}, {"k": 1.0, "i": "a"}, {"k": 1.0, "i": "c"}, {"k": 1.0, "i": "d"}])
+        );
+    }
+
+    #[test]
+    fn sort_unknown_direction_is_descending() {
+        assert_eq!(sort(json!(["array/sort", [1, 3, 2], null, "bogus"])).unwrap(), json!([3.0, 2.0, 1.0]));
+    }
+
+    #[test]
+    fn sort_missing_and_null_keys_keep_every_row() {
+        let rows = json!([{"k": 2}, {}, {"k": 1}, {"k": null}]);
+        assert_eq!(sort(json!(["array/sort", rows, "k"])).unwrap().as_array().unwrap().len(), 4);
+        assert_eq!(sort(json!(["array/sort", rows, "k", "desc"])).unwrap().as_array().unwrap().len(), 4);
+        assert_eq!(
+            sort(json!(["array/sort", [{"k": 2}, {"k": null}, {"k": 1}], "k"])).unwrap(),
+            json!([{"k": null}, {"k": 1.0}, {"k": 2.0}])
+        );
+    }
+
+    #[test]
+    fn sort_astral_after_high_bmp() {
+        assert_eq!(
+            sort(json!(["array/sort", ["\u{FF5E}", "\u{1F600}", "a"]])).unwrap(),
+            json!(["a", "\u{FF5E}", "\u{1F600}"])
+        );
+    }
+
+    #[test]
+    fn sort_mixed_types_follow_the_type_rank() {
+        let mixed = json!([2, "a", true, 1, null, [1], "B", {"x": 1}, false]);
+        assert_eq!(
+            sort(json!(["array/sort", mixed])).unwrap(),
+            json!([null, false, true, 1.0, 2.0, "B", "a", [1.0], {"x": 1.0}])
+        );
+        assert_eq!(
+            sort(json!(["array/sort", mixed, null, "desc"])).unwrap(),
+            json!([{"x": 1.0}, [1.0], "a", "B", 2.0, 1.0, true, false, null])
+        );
+    }
+
+    #[test]
+    fn sort_empty_and_null() {
+        assert_eq!(sort(json!(["array/sort", []])).unwrap(), json!([]));
+        assert_eq!(sort(json!(["array/sort", [], "k", "desc"])).unwrap(), json!([]));
+        assert!(sort(json!(["array/sort", null])).is_err());
     }
 }

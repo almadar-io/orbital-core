@@ -180,32 +180,21 @@ impl Operator for LetOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "let", >= 2);
 
-        // First arg should be bindings: [["name", value], ["name2", value2], ...]
-        let bindings = match &args[0] {
-            SExpression::Array(arr) => arr,
-            _ => {
-                return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "array of bindings".to_string(),
-                    actual: "non-array".to_string(),
-                }))
-            }
+        let Some(scope) = crate::schema::SequentialBindings::from_args(args) else {
+            return Err(OrbitalError::Eval(EvalError::TypeMismatch {
+                expected: "array of bindings".to_string(),
+                actual: "non-array".to_string(),
+            }));
         };
 
         let mut child_ctx = ctx.child();
 
-        for binding in bindings {
-            if let SExpression::Array(pair) = binding {
-                if pair.len() >= 2 {
-                    if let SExpression::String(name) = &pair[0] {
-                        let value = eval_expr(&pair[1], &child_ctx)?;
-                        child_ctx.set_local(name, value);
-                    }
-                }
-            }
+        for (name, initializer) in scope.bindings {
+            let value = eval_expr(initializer, &child_ctx)?;
+            child_ctx.set_local(name, value);
         }
 
-        // Evaluate body in child context
-        eval_expr(&args[1], &child_ctx)
+        eval_expr(scope.body, &child_ctx)
     }
 }
 

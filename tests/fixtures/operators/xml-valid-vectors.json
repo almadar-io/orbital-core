@@ -1,0 +1,573 @@
+[
+  {
+    "expr": [
+      "xml/valid",
+      "<a>hello</a>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: leaf element is its text"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a/>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: empty element is the empty string"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a></a>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: empty element, explicit close"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>  x \n\t y   z </a>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: whitespace collapsed and trimmed"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a id=\"7\" kind=\"k\">t</a>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: attributes read as @name, text as #text"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<link href=\"u\" rel=\"alternate\"/>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: attribute-only element has no #text"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<p>\n  <name>Ada</name>\n  <age>36</age>\n</p>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: children by name; container whitespace is not text"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<p><t>a</t><t>b</t><t>c</t></p>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: repeated children are a list"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<p><t>a</t></p>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: a single child stays a scalar"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<p><x>1</x><y>2</y><x>3</x></p>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: repeats need not be adjacent"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a:r xmlns:a=\"urn:u\" xmlns=\"urn:d\"><a:x a:k=\"v\">1</a:x><y>2</y></a:r>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: namespaces ignored by local name, xmlns declarations dropped"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>1 &lt; 2 &amp; &#65;&#x42; &quot;&apos;&gt;</a>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: predefined and numeric entities"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a><![CDATA[ <raw> &amp; ]]></a>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: CDATA is literal text"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- c --><a>x<!-- m -->y<?pi z?></a>\n<!-- end -->"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: declaration, comments and processing instructions ignored"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<!DOCTYPE a><a>x</a>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: a doctype without an internal subset is ignored"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<t>A <i>Bare</i>\n  Entry</t>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: text with inline markup flattens to its text"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<n a=\"1\">x <b>y</b> z</n>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: attributes plus mixed content keep children and the full text"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a x=\"a &amp; b\" y='q'/>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: attribute entities and single quotes"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<r><e k=\"1\"/><e k=\"2\"/></r>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: repeated attribute-only elements"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<r><é>ü</é></r>"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: non-ASCII names and text"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      ""
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: empty text has no root"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "plain text"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: text is not XML"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: unclosed element"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a></b>"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: mismatched close"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a><b></a></b>"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: crossed elements"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a/><b/>"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: two roots"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>x</a>trailing"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: text after the root"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>&bogus;</a>"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: unknown entity"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a x=1/>"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: unquoted attribute"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a x=\"1\" x=\"2\"/>"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: duplicate attribute"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a><!-- open </a>"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: unterminated comment"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>&#xZZ;</a>"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: bad character reference"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<1a/>"
+    ],
+    "expect": false,
+    "source": "D15 XML existing parser: invalid name"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<feed xmlns=\"http://www.w3.org/2005/Atom\">\n  <id>http://arxiv.org/api/feed</id>\n  <title>ArXiv Query</title>\n  <entry>\n    <id>http://arxiv.org/abs/1706.03762v7</id>\n    <updated>2023-08-02T00:41:18Z</updated>\n    <published>2017-06-12T17:57:34Z</published>\n    <title>Attention Is All\n      You Need</title>\n    <summary>  The dominant sequence transduction models\n    are based on complex recurrent networks.  </summary>\n    <author>\n      <name>Ashish Vaswani</name>\n    </author>\n    <author><name> Noam Shazeer </name></author>\n    <link href=\"http://arxiv.org/abs/1706.03762v7\" rel=\"alternate\" type=\"text/html\"/>\n    <link title=\"pdf\" href=\"http://arxiv.org/pdf/1706.03762v7\" rel=\"related\" type=\"application/pdf\"/>\n    <arxiv:primary_category xmlns:arxiv=\"http://arxiv.org/schemas/atom\" term=\"cs.CL\" scheme=\"http://arxiv.org/schemas/atom\"/>\n  </entry>\n  <entry>\n    <id>http://arxiv.org/abs/2001.00001v1</id>\n    <published>2020-01-01T00:00:00Z</published>\n    <title>A <i>Bare</i> Entry</title>\n    <summary>Only an id link.</summary>\n  </entry>\n</feed>\n"
+    ],
+    "expect": true,
+    "source": "D15 XML existing parser: arXiv search.json Atom feed (orbital-integrations fixture)"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>0</a>"
+    ],
+    "expect": true,
+    "source": "D15 XML zero-looking text is valid"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>false</a>"
+    ],
+    "expect": true,
+    "source": "D15 XML false-looking text is valid"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>null</a>"
+    ],
+    "expect": true,
+    "source": "D15 XML null-looking text is valid"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a> \t\r\n </a>"
+    ],
+    "expect": true,
+    "source": "D15 XML blank leaf text is valid"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      " \t\r\n<a/> \t\r\n"
+    ],
+    "expect": true,
+    "source": "D15 XML XML whitespace around the root"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<feed xmlns=\"http://www.w3.org/2005/Atom\"/>"
+    ],
+    "expect": true,
+    "source": "D15 XML empty namespaced Atom feed"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<atom:feed xmlns:atom=\"http://www.w3.org/2005/Atom\"><atom:entry><atom:title>x</atom:title></atom:entry></atom:feed>"
+    ],
+    "expect": true,
+    "source": "D15 XML prefixed Atom feed"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><IsTruncated>false</IsTruncated></ListBucketResult>"
+    ],
+    "expect": true,
+    "source": "D15 XML empty namespaced S3 listing"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<ListBucketResult><Contents><Key>a</Key></Contents><Contents><Key>b</Key></Contents></ListBucketResult>"
+    ],
+    "expect": true,
+    "source": "D15 XML repeated S3 listing entries"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>&#x1F680;</a>"
+    ],
+    "expect": true,
+    "source": "D15 XML non-BMP character reference"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a attr='false'/>"
+    ],
+    "expect": true,
+    "source": "D15 XML falsy-looking attribute value"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      " \t\r\n"
+    ],
+    "expect": false,
+    "source": "D15 XML whitespace alone has no root"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "null"
+    ],
+    "expect": false,
+    "source": "D15 XML null text outside an element"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "before<a/>"
+    ],
+    "expect": false,
+    "source": "D15 XML text before the root"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "</a>"
+    ],
+    "expect": false,
+    "source": "D15 XML unexpected closing tag"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a><![CDATA[open</a>"
+    ],
+    "expect": false,
+    "source": "D15 XML unterminated CDATA"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<![CDATA[text]]><a/>"
+    ],
+    "expect": false,
+    "source": "D15 XML CDATA outside the root"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<?xml version=\"1.0\""
+    ],
+    "expect": false,
+    "source": "D15 XML unterminated processing instruction"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a x=\"open/>"
+    ],
+    "expect": false,
+    "source": "D15 XML unterminated attribute"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>&amp</a>"
+    ],
+    "expect": false,
+    "source": "D15 XML unterminated entity"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>&#0;</a>"
+    ],
+    "expect": false,
+    "source": "D15 XML zero character reference"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>&#xD800;</a>"
+    ],
+    "expect": false,
+    "source": "D15 XML surrogate character reference"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>&#x110000;</a>"
+    ],
+    "expect": false,
+    "source": "D15 XML out-of-range character reference"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a/><b></b>"
+    ],
+    "expect": false,
+    "source": "D15 XML second explicit root"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a>"
+    ],
+    "expect": false,
+    "source": "D15 XML missing close paired with empty leaf"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      [
+        "str/concat",
+        [
+          "str/repeat",
+          "<a>",
+          256
+        ],
+        [
+          "str/repeat",
+          "</a>",
+          256
+        ]
+      ]
+    ],
+    "expect": true,
+    "source": "D15 XML iteratively parsed depth256"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      [
+        "str/concat",
+        [
+          "str/repeat",
+          "<a>",
+          256
+        ],
+        [
+          "str/repeat",
+          "</a>",
+          255
+        ]
+      ]
+    ],
+    "expect": false,
+    "source": "D15 XML depth256 with a missing close"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      null
+    ],
+    "error": true,
+    "source": "D15 XML null input is a type error"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      42
+    ],
+    "error": true,
+    "source": "D15 XML number input is a type error"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      false
+    ],
+    "error": true,
+    "source": "D15 XML boolean input is a type error"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      {}
+    ],
+    "error": true,
+    "source": "D15 XML object input is a type error"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      [
+        1,
+        2
+      ]
+    ],
+    "error": true,
+    "source": "D15 XML array input is a type error"
+  },
+  {
+    "expr": [
+      "xml/valid"
+    ],
+    "error": true,
+    "source": "D15 XML missing argument is an arity error"
+  },
+  {
+    "expr": [
+      "xml/valid",
+      "<a/>",
+      "Row"
+    ],
+    "error": true,
+    "source": "D15 XML shape witness is an excess argument"
+  }
+]

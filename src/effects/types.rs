@@ -4,9 +4,21 @@
 
 use crate::evaluator::Value;
 use crate::evaluator::ValueMap;
+use crate::error::EvalError;
 use crate::runtime::http_request::HttpMethod;
+use crate::runtime::os::{accepts_arity, split_envelope, OsOp};
 use crate::schema::SExpression;
 use serde::{Deserialize, Serialize};
+
+pub(crate) fn call_key_text(value: &Value) -> Result<&str, EvalError> {
+    match value {
+        Value::String(text) if !text.is_empty() => Ok(text),
+        _ => Err(EvalError::InvalidArgument(format!(
+            "call key must evaluate to a non-empty string, got {}",
+            value.to_string_value()
+        ))),
+    }
+}
 
 /// Runtime environment for effect execution
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -109,9 +121,9 @@ pub enum Effect {
         service: String,
         method: String,
         args: Value,
-        /// Evaluated `key:` option naming the call for `cancel-call`.
+        /// The `key:` expression, resolved to a string before dispatch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<String>,
+        key: Option<Value>,
         /// Completion events: `success` carries the service's result, `failure` `{ error }`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<FetchEmit>,
@@ -125,7 +137,7 @@ pub enum Effect {
         path: Value,
         request: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<String>,
+        key: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<FetchEmit>,
     },
@@ -136,6 +148,17 @@ pub enum Effect {
     /// `n` bytes of host CSPRNG output, journaled; success carries `{ value: base64url, no padding }`.
     RandomBytes {
         bytes: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// One `os/<op>` operation (`docs/Almadar_OS_Operators.md`): the host answers it, keyed and routed
+    /// like `http`; a streaming op delivers its events to `emit.on_message`.
+    Os {
+        op: OsOp,
+        args: Vec<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<FetchEmit>,
     },
@@ -151,6 +174,31 @@ pub enum Effect {
     /// Drop the credential named by `credential` the host holds.
     CredentialForget {
         credential: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// Start an OAuth authorization: success carries `{ authUrl, state }`.
+    OAuthAuthorize {
+        client: Value,
+        options: Value,
+        /// Names the call: evaluated to a non-empty string and echoed in the success and failure payloads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// The signed-in user's connection to `provider`; success carries the connection row.
+    OAuthConnectionStatus {
+        provider: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// Drop the signed-in user's connection to `provider`.
+    OAuthConnectionForget {
+        provider: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<FetchEmit>,
     },
@@ -225,6 +273,28 @@ pub enum Effect {
         emit: Option<FetchEmit>,
     },
 
+    /// Read the requested page facts through the host (client-site). `fields` is the list of bare words
+    /// (`hostname`, `referrer`, `screenWidth`), checked when the effect runs.
+    BrowserPageFacts {
+        fields: Value,
+        /// The `key:` expression, resolved to a non-empty string; echoed as `key` in the success and failure payloads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// POST `request.text` to the absolute `url` through the host's beacon port (client-site). Built and
+    /// egress-checked by the one http driver.
+    BrowserBeacon {
+        url: Value,
+        request: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
     /// Generic/unknown effect (for extensibility). A substrate op's trailing `{ emit }`
     /// object is split into `emit`: `success` carries `{ result }`, `failure` `{ error }`.
     Custom {
@@ -251,8 +321,12 @@ impl Effect {
             Effect::Http { .. } => "http",
             Effect::CancelCall { .. } => "cancel-call",
             Effect::RandomBytes { .. } => "random-bytes",
+            Effect::Os { op, .. } => op.name(),
             Effect::CredentialStatus { .. } => "credential-status",
             Effect::CredentialForget { .. } => "credential-forget",
+            Effect::OAuthAuthorize { .. } => "oauth-authorize",
+            Effect::OAuthConnectionStatus { .. } => "oauth-connection-status",
+            Effect::OAuthConnectionForget { .. } => "oauth-connection-forget",
             Effect::RenderUi { .. } => "render-ui",
             Effect::Navigate { .. } => "navigate",
             Effect::NavigateBack => "navigate-back",
@@ -260,6 +334,8 @@ impl Effect {
             Effect::Despawn { .. } => "despawn",
             Effect::Log { .. } => "log",
             Effect::Fetch { .. } => "fetch",
+            Effect::BrowserPageFacts { .. } => "browser/page-facts",
+            Effect::BrowserBeacon { .. } => "browser/beacon",
             Effect::Custom { name, .. } => name,
         }
     }
@@ -526,6 +602,10 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
     let op = arr[0].as_str()?;
     let args = &arr[1..];
 
+    if let Some(os_op) = OsOp::from_name(op) {
+        return parse_os(os_op, args);
+    }
+
     match op {
         "emit" => parse_emit(args),
         "set" => parse_set(args),
@@ -537,6 +617,11 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
         "random-bytes" => parse_random_bytes(args),
         "credential-status" => parse_credential(args, true),
         "credential-forget" => parse_credential(args, false),
+        "oauth-authorize" => parse_oauth_authorize(args),
+        "oauth-connection-status" => parse_oauth_connection(args, true),
+        "oauth-connection-forget" => parse_oauth_connection(args, false),
+        "browser/page-facts" => parse_page_facts(args),
+        "browser/beacon" => parse_beacon(args),
         "render-ui" => parse_render_ui(args),
         "navigate" => parse_navigate(args),
         "navigate-back" => Some(Effect::NavigateBack),
@@ -607,6 +692,9 @@ pub fn is_known_effect_name(op: &str) -> bool {
             | "random-bytes"
             | "credential-status"
             | "credential-forget"
+            | "oauth-authorize"
+            | "oauth-connection-status"
+            | "oauth-connection-forget"
             | "render-ui"
             | "navigate"
             | "navigate-back"
@@ -809,8 +897,7 @@ fn parse_call_service(args: &[SExpression]) -> Option<Effect> {
     let key = match args.get(3) {
         Some(SExpression::Object(options)) => options
             .get("key")
-            .and_then(|k| k.as_str())
-            .map(str::to_string),
+            .map(|key| Value::from(key.clone())),
         _ => None,
     };
     let emit = args
@@ -843,14 +930,77 @@ fn parse_http(args: &[SExpression]) -> Option<Effect> {
         .as_ref()
         .and_then(|o| o.as_object())
         .and_then(|o| o.get("key"))
-        .and_then(|k| k.as_str())
-        .map(str::to_string);
+        .cloned();
     let emit = options.as_ref().and_then(parse_emit_config);
     Some(Effect::Http {
         method,
         origin,
         path,
         request,
+        key,
+        emit,
+    })
+}
+
+/// `["browser/page-facts", [field, …], { emit? }?]`.
+fn parse_page_facts(args: &[SExpression]) -> Option<Effect> {
+    if !(1..=2).contains(&args.len()) {
+        return None;
+    }
+    let options = args.get(1).map(|e| Value::from(e.clone()));
+    let key = options
+        .as_ref()
+        .and_then(|o| o.as_object())
+        .and_then(|o| o.get("key"))
+        .cloned();
+    let emit = options.as_ref().and_then(parse_emit_config);
+    Some(Effect::BrowserPageFacts {
+        fields: Value::from(args[0].clone()),
+        key,
+        emit,
+    })
+}
+
+/// `["browser/beacon", url, { text, key? }, { key?, emit? }?]`; `key` may ride either object.
+fn parse_beacon(args: &[SExpression]) -> Option<Effect> {
+    if !(2..=3).contains(&args.len()) {
+        return None;
+    }
+    let mut request = Value::from(args[1].clone());
+    let mut key = None;
+    if let Value::Object(map) = &mut request {
+        key = map.shift_remove("key");
+    }
+    let options = args.get(2).map(|e| Value::from(e.clone()));
+    if let Some(k) = options.as_ref().and_then(|o| o.as_object()).and_then(|o| o.get("key")) {
+        key = Some(k.clone());
+    }
+    let emit = options.as_ref().and_then(parse_emit_config);
+    Some(Effect::BrowserBeacon {
+        url: Value::from(args[0].clone()),
+        request,
+        key,
+        emit,
+    })
+}
+
+/// `["os/<op>", args…, { key?, emit? }?]`; the envelope is told from the op's own options object by
+/// [`split_envelope`], and the positional count must be one the op takes.
+fn parse_os(op: OsOp, args: &[SExpression]) -> Option<Effect> {
+    let (positional, envelope) = split_envelope(op, args);
+    if !accepts_arity(op, positional.len()) {
+        return None;
+    }
+    let options = envelope.map(|fields| Value::from(SExpression::Object(fields.clone())));
+    let key = options
+        .as_ref()
+        .and_then(|o| o.as_object())
+        .and_then(|o| o.get("key"))
+        .cloned();
+    let emit = options.as_ref().and_then(parse_emit_config);
+    Some(Effect::Os {
+        op,
+        args: positional.iter().map(|e| Value::from(e.clone())).collect(),
         key,
         emit,
     })
@@ -883,6 +1033,38 @@ fn parse_credential(args: &[SExpression], status: bool) -> Option<Effect> {
         Effect::CredentialStatus { credential, emit }
     } else {
         Effect::CredentialForget { credential, emit }
+    })
+}
+
+/// `["oauth-authorize", client, options, { key?, emit? }?]`.
+fn parse_oauth_authorize(args: &[SExpression]) -> Option<Effect> {
+    if !(2..=3).contains(&args.len()) {
+        return None;
+    }
+    let trailing = args.get(2).map(|options| Value::from(options.clone()));
+    let key = trailing.as_ref().and_then(|o| o.as_object()).and_then(|o| o.get("key")).cloned();
+    let emit = trailing.as_ref().and_then(parse_emit_config);
+    Some(Effect::OAuthAuthorize {
+        client: Value::from(args[0].clone()),
+        options: Value::from(args[1].clone()),
+        key,
+        emit,
+    })
+}
+
+/// `["oauth-connection-status" | "oauth-connection-forget", provider, { emit? }?]`.
+fn parse_oauth_connection(args: &[SExpression], status: bool) -> Option<Effect> {
+    if !(1..=2).contains(&args.len()) {
+        return None;
+    }
+    let provider = Value::from(args[0].clone());
+    let emit = args
+        .get(1)
+        .and_then(|options| parse_emit_config(&Value::from(options.clone())));
+    Some(if status {
+        Effect::OAuthConnectionStatus { provider, emit }
+    } else {
+        Effect::OAuthConnectionForget { provider, emit }
     })
 }
 
@@ -1014,6 +1196,27 @@ mod tests {
     }
 
     #[test]
+    fn the_oauth_effects_parse_with_their_arity_and_reject_the_rest() {
+        let parse = |src: &str| parse_effect(&serde_json::from_str::<SExpression>(src).unwrap());
+        assert!(matches!(
+            parse(r#"["oauth-authorize", {"tag":"google"}, {"redirectUri":"u"}, {"emit":{"success":"OK"}}]"#),
+            Some(Effect::OAuthAuthorize { emit: Some(_), .. })
+        ));
+        assert!(matches!(parse(r#"["oauth-authorize", {}, {}]"#), Some(Effect::OAuthAuthorize { emit: None, .. })));
+        assert!(matches!(parse(r#"["oauth-connection-status", "google"]"#), Some(Effect::OAuthConnectionStatus { .. })));
+        assert!(matches!(
+            parse(r#"["oauth-connection-forget", "github", {"emit":{"success":"OK"}}]"#),
+            Some(Effect::OAuthConnectionForget { emit: Some(_), .. })
+        ));
+        for src in [r#"["oauth-authorize", {}]"#, r#"["oauth-authorize", {}, {}, {}, {}]"#, r#"["oauth-connection-status"]"#, r#"["oauth-connection-forget", "a", {}, {}]"#] {
+            assert!(parse(src).is_none(), "{src}");
+        }
+        for head in ["oauth-authorize", "oauth-connection-status", "oauth-connection-forget"] {
+            assert!(is_known_effect_name(head), "{head}");
+        }
+    }
+
+    #[test]
     fn client_kind_matches_kinds() {
         // Every client-effect variant reports a kind that is listed in CLIENT_EFFECT_KINDS...
         let client_variants = [
@@ -1071,7 +1274,7 @@ mod tests {
         )
         .unwrap();
         match parse_effect(&expr).unwrap() {
-            Effect::CallService { key, .. } => assert_eq!(key.as_deref(), Some("batch-1")),
+            Effect::CallService { key, .. } => assert_eq!(key.as_ref().and_then(Value::as_str), Some("batch-1")),
             other => panic!("expected CallService, got {other:?}"),
         }
     }
@@ -1113,6 +1316,40 @@ mod tests {
             let expr: SExpression = serde_json::from_str(src).unwrap();
             assert!(parse_effect(&expr).is_none(), "{src}");
         }
+    }
+
+    #[test]
+    fn parse_os_effects_read_args_key_and_emit_and_every_op_is_known() {
+        let expr: SExpression = serde_json::from_str(
+            r#"["os/spawn", "git", ["status"], {"cwd": "/r"}, {"key": "p", "emit": {"success": "S", "onMessage": "M"}}]"#,
+        )
+        .unwrap();
+        match parse_effect(&expr).unwrap() {
+            Effect::Os { op, args, key, emit } => {
+                assert_eq!(op, OsOp::Spawn);
+                assert_eq!(args.len(), 3);
+                assert_eq!(key, Some(Value::String("p".to_string())));
+                let emit = emit.unwrap();
+                assert_eq!((emit.success.as_deref(), emit.on_message.as_deref()), (Some("S"), Some("M")));
+            }
+            other => panic!("expected Os, got {other:?}"),
+        }
+        let plain: SExpression = serde_json::from_str(r#"["os/cwd"]"#).unwrap();
+        assert!(matches!(parse_effect(&plain), Some(Effect::Os { op: OsOp::Cwd, key: None, emit: None, .. })));
+        for op in OsOp::ALL {
+            assert!(is_known_effect_name(op.name()));
+        }
+        assert_eq!(parse_effect(&plain).unwrap().operator(), "os/cwd");
+    }
+
+    #[test]
+    fn parse_os_effects_refuse_the_wrong_arity_and_the_unknown_ops_still_fall_to_custom() {
+        for src in [r#"["os/cwd", "x"]"#, r#"["os/read-file"]"#, r#"["os/read-file", "a", "b", "c"]"#, r#"["os/tcp-connect", "h"]"#] {
+            let expr: SExpression = serde_json::from_str(src).unwrap();
+            assert!(parse_effect(&expr).is_none(), "{src}");
+        }
+        let unknown: SExpression = serde_json::from_str(r#"["os/watch-http", "/x"]"#).unwrap();
+        assert!(matches!(parse_effect(&unknown), Some(Effect::Custom { .. })));
     }
 
     #[test]
@@ -1409,7 +1646,7 @@ mod tests {
         .unwrap();
         match parse_effect(&expr).unwrap() {
             Effect::CallService { key, emit, .. } => {
-                assert_eq!(key.as_deref(), Some("k1"));
+                assert_eq!(key.as_ref().and_then(Value::as_str), Some("k1"));
                 let emit = emit.expect("emit parsed");
                 assert_eq!(emit.success.as_deref(), Some("EMBEDDED"));
                 assert_eq!(emit.failure.as_deref(), Some("EMBED_FAILED"));

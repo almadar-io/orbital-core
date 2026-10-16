@@ -5,7 +5,7 @@
 use super::response::ServerEffectCode;
 use super::runs_on::{runs_on, RunsOn};
 use super::types::{
-    Effect, EffectResult, FetchDeliver, LogLevel, PersistOperation, RuntimeEnvironment,
+    call_key_text, Effect, EffectResult, FetchDeliver, LogLevel, PersistOperation, RuntimeEnvironment,
 };
 use crate::evaluator::ValueMap;
 use crate::evaluator::{BindingContext, Evaluator, Value};
@@ -663,13 +663,25 @@ impl EffectExecutor {
                 args,
                 key,
                 ..
-            } => self.do_call_service(service, method, args, key.as_deref(), ctx),
+            } => match key.as_ref().map(call_key_text).transpose() {
+                Ok(key) => self.do_call_service(service, method, args, key, ctx),
+                Err(error) => EffectResult::failed(effect.clone(), &error.to_string()),
+            },
             Effect::Http { .. } => {
                 EffectResult::noop(effect.clone(), "http is run by the kernel, which owns its host I/O")
             }
             Effect::CancelCall { key } => self.do_cancel_call(key),
-            Effect::RandomBytes { .. } | Effect::CredentialStatus { .. } | Effect::CredentialForget { .. } => {
+            Effect::RandomBytes { .. }
+            | Effect::Os { .. }
+            | Effect::CredentialStatus { .. }
+            | Effect::CredentialForget { .. }
+            | Effect::OAuthAuthorize { .. }
+            | Effect::OAuthConnectionStatus { .. }
+            | Effect::OAuthConnectionForget { .. } => {
                 EffectResult::noop(effect.clone(), "host effects are run by the kernel, which owns its host I/O")
+            }
+            Effect::BrowserPageFacts { .. } | Effect::BrowserBeacon { .. } => {
+                EffectResult::noop(effect.clone(), "browser host effects are run by the kernel, which owns its host I/O")
             }
             Effect::RenderUi { slot, content } => self.do_render_ui(slot, content),
             Effect::Navigate {
@@ -1419,10 +1431,10 @@ impl EffectExecutor {
         let data = Self::without_intrinsic(resolved_data, &scope.intrinsic);
         let refuse = |effect: Effect, e: String, code: Option<ServerEffectCode>| {
             let failed = EffectResult::failed(effect, &e);
-            PersistPrep::Refused(match code {
+            PersistPrep::Refused(Box::new(match code {
                 Some(code) => failed.with_code(code),
                 None => failed,
-            })
+            }))
         };
         let (op, row_id, guard) = match operation {
             PersistOperation::Read => return PersistPrep::Legacy,
@@ -1572,7 +1584,7 @@ impl EffectExecutor {
                 result_effect.clone(),
             ) {
                 PersistPrep::Push(prepared) => pending.push((k, *prepared)),
-                PersistPrep::Refused(result) => out[k] = Some(result),
+                PersistPrep::Refused(result) => out[k] = Some(*result),
                 PersistPrep::Legacy => {
                     self.flush_writes(&mut pending, &mut out, ctx);
                     out[k] = Some(self.persist_resolved(
@@ -1763,7 +1775,7 @@ impl EffectExecutor {
             ) {
                 PersistPrep::Push(p) => prepared.push(*p),
                 PersistPrep::Refused(refused) => {
-                    let detail = refused.error.unwrap_or_else(|| "not executed".to_string());
+                    let detail = (*refused).error.unwrap_or_else(|| "not executed".to_string());
                     return batch_failure(b, &detail);
                 }
                 PersistPrep::Legacy => {
@@ -2013,7 +2025,7 @@ impl EffectExecutor {
             service: service.to_string(),
             method: method.to_string(),
             args: args.clone(),
-            key: key.map(str::to_string),
+            key: key.map(Value::from),
             emit: None,
         };
 
@@ -2244,7 +2256,7 @@ struct PreparedWrite {
 /// How one evaluated persist reaches the store.
 enum PersistPrep {
     Push(Box<PreparedWrite>),
-    Refused(EffectResult),
+    Refused(Box<EffectResult>),
     Legacy,
 }
 
@@ -2314,6 +2326,16 @@ mod tests {
     use crate::evaluator::ValueMap;
     use crate::events::shared_bus;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn persist_prep_stays_pointer_sized() {
+        let size = std::mem::size_of::<PersistPrep>();
+        let maximum = 3 * std::mem::size_of::<usize>();
+        assert!(
+            size <= maximum,
+            "PersistPrep uses {size} bytes; expected at most {maximum} bytes"
+        );
+    }
 
     #[derive(Default)]
     struct RecordingService {
@@ -2725,7 +2747,7 @@ mod tests {
         assert!(result
             .error
             .as_deref()
-            .is_some_and(|e| crate::runtime::entity_access::is_access_denied_error(e)));
+            .is_some_and(crate::runtime::entity_access::is_access_denied_error));
 
         // The row must genuinely survive — the denial is real, not cosmetic.
         assert!(persistence.read("Note", "note-1").is_ok());

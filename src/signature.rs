@@ -35,6 +35,8 @@ pub enum Known {
     Absent,
 }
 
+pub type LambdaResult<'a> = &'a (dyn Fn(&[Option<OirType>]) -> Option<OirType> + 'a);
+
 /// One argument of a call, as the checker sees it.
 pub struct Actual<'a> {
     /// What is known of the argument's value; `None` when nothing is (an absent value, an unresolved binding).
@@ -45,7 +47,7 @@ pub struct Actual<'a> {
     pub texts: Option<Vec<String>>,
     /// The result type of the argument when it is a lambda, given the types of its parameters (`None` for a
     /// parameter whose type is not known). `Some` marks the argument a lambda.
-    pub lambda: Option<&'a dyn Fn(&[Option<OirType>]) -> Option<OirType>>,
+    pub lambda: Option<LambdaResult<'a>>,
 }
 
 impl<'a> Actual<'a> {
@@ -158,6 +160,14 @@ impl CallBindings {
     }
 }
 
+/// Declared argument positions for a unique field projection relationship.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldProjection {
+    pub source_arg: usize,
+    pub key_arg: usize,
+    pub default_arg: Option<usize>,
+}
+
 /// An operator's declared parameters and result.
 #[derive(Clone, Copy)]
 pub struct Signature<'a> {
@@ -186,6 +196,36 @@ impl<'a> Signature<'a> {
 
     pub fn returns(&self) -> &'a OperatorTypeRef {
         self.returns
+    }
+
+    pub fn field_projection(&self) -> Option<FieldProjection> {
+        use OperatorTypeRefKind as K;
+
+        let OperatorTypeRef::Tagged(K::FieldOf { of }) = self.returns else {
+            return None;
+        };
+        let mut source_arg = None;
+        let mut key_arg = None;
+        let mut default_arg = None;
+        for (index, param) in self.params.iter().enumerate() {
+            let OperatorTypeRef::Tagged(kind) = &param.ty else {
+                continue;
+            };
+            let slot = match kind {
+                K::Var { name, .. } if name == of => &mut source_arg,
+                K::KeyOf { of: variable } if variable == of => &mut key_arg,
+                K::FieldOf { of: variable } if variable == of => &mut default_arg,
+                _ => continue,
+            };
+            if slot.replace(index).is_some() {
+                return None;
+            }
+        }
+        Some(FieldProjection {
+            source_arg: source_arg?,
+            key_arg: key_arg?,
+            default_arg,
+        })
     }
 
     /// The position of the parameter that names the result's declared shape (`json/parse`'s second).
@@ -602,7 +642,7 @@ fn bind_type(
         return Ok(());
     }
     if matches!(known, Known::Void) {
-        return bind_void(formal, actual, b, mode);
+        return bind_void(formal, actual, b);
     }
     match formal {
         OperatorTypeRef::Primitive(name) => {
@@ -912,7 +952,6 @@ fn bind_void(
     formal: &OperatorTypeRef,
     actual: &Actual<'_>,
     b: &mut CallBindings,
-    mode: Mode,
 ) -> Result<(), Mismatch> {
     use OperatorTypeRefKind as K;
     let OperatorTypeRef::Tagged(kind) = formal else {
@@ -929,12 +968,12 @@ fn bind_void(
             b.voided.insert(name.clone());
             Ok(())
         }
-        K::Sexpr { of: Some(of) } | K::Binding { shape: Some(of) } => bind_void(of, actual, b, mode),
+        K::Sexpr { of: Some(of) } | K::Binding { shape: Some(of) } => bind_void(of, actual, b),
         K::Sexpr { of: None } | K::Binding { shape: None } => Ok(()),
         K::Union { of } => {
             for member in of {
                 let mut trial = b.clone();
-                if bind_void(member, actual, &mut trial, mode).is_ok() {
+                if bind_void(member, actual, &mut trial).is_ok() {
                     *b = trial;
                     return Ok(());
                 }
@@ -2284,5 +2323,148 @@ mod tests {
     fn a_member_of_a_value_that_is_program_data_is_held_as_such() {
         let app = call(&get(), &[ty(OirType::Orbital), text("app")], Mode::Static).unwrap();
         assert_eq!(app, Some(OirType::map(OirType::String, OirType::SExpr)));
+    }
+
+    mod field_projection_contract {
+        use super::*;
+
+        fn projection(operator: &EmbeddedOperator) -> Option<(usize, usize, Option<usize>)> {
+            Signature::of(operator)
+                .field_projection()
+                .map(|projection| (projection.source_arg, projection.key_arg, projection.default_arg))
+        }
+
+        #[test]
+        fn field_projection_uses_the_existing_declared_get_relationship() {
+            assert_eq!(projection(&get()), Some((0, 1, Some(2))));
+            assert_eq!(projection(&get_of_record_or_list()), Some((0, 1, Some(2))));
+        }
+
+        #[test]
+        fn field_projection_can_have_no_default_formal() {
+            let operator = op(
+                json!([p("value", record("R")), p("selector", json!({ "kind": "keyOf", "of": "R" }))]),
+                json!({ "kind": "fieldOf", "of": "R" }),
+                Some(2),
+            );
+            assert_eq!(projection(&operator), Some((0, 1, None)));
+        }
+
+        #[test]
+        fn field_projection_ignores_names_categories_and_parameter_positions() {
+            for name in ["object/get", "domain/project-member"] {
+                let mut operator = op(
+                    json!([
+                        p("chosen", json!({ "kind": "keyOf", "of": "LedgerRow" })),
+                        p("otherwise", json!({ "kind": "fieldOf", "of": "LedgerRow" })),
+                        p("unrelated", json!("boolean")),
+                        p("document", record("LedgerRow")),
+                    ]),
+                    json!({ "kind": "fieldOf", "of": "LedgerRow" }),
+                    Some(4),
+                );
+                operator.category = format!("custom-{name}");
+                operator.description = name.into();
+                assert_eq!(projection(&operator), Some((3, 0, Some(1))), "{name}");
+            }
+        }
+
+        #[test]
+        fn field_projection_requires_a_direct_field_of_return() {
+            for returns in [
+                json!("string"),
+                var("R"),
+                json!({ "kind": "keyOf", "of": "R" }),
+                list(json!({ "kind": "fieldOf", "of": "R" })),
+            ] {
+                let mut operator = get();
+                operator.return_type = serde_json::from_value(returns).unwrap();
+                assert_eq!(projection(&operator), None);
+            }
+        }
+
+        #[test]
+        fn field_projection_refuses_a_mismatched_source_variable() {
+            let operator = op(
+                json!([p("obj", record("Other")), p("key", json!({ "kind": "keyOf", "of": "R" }))]),
+                json!({ "kind": "fieldOf", "of": "R" }),
+                Some(2),
+            );
+            assert_eq!(projection(&operator), None);
+        }
+
+        #[test]
+        fn field_projection_refuses_a_mismatched_key_variable() {
+            let operator = op(
+                json!([p("obj", record("R")), p("key", json!({ "kind": "keyOf", "of": "Other" }))]),
+                json!({ "kind": "fieldOf", "of": "R" }),
+                Some(2),
+            );
+            assert_eq!(projection(&operator), None);
+        }
+
+        #[test]
+        fn field_projection_refuses_a_mismatched_return_variable() {
+            let mut operator = get();
+            operator.return_type = serde_json::from_value(json!({ "kind": "fieldOf", "of": "Other" })).unwrap();
+            assert_eq!(projection(&operator), None);
+        }
+
+        #[test]
+        fn field_projection_refuses_ambiguous_sources() {
+            let operator = op(
+                json!([p("first", record("R")), p("second", record("R")), p("key", json!({ "kind": "keyOf", "of": "R" }))]),
+                json!({ "kind": "fieldOf", "of": "R" }),
+                Some(3),
+            );
+            assert_eq!(projection(&operator), None);
+        }
+
+        #[test]
+        fn field_projection_refuses_ambiguous_keys() {
+            let operator = op(
+                json!([p("obj", record("R")), p("first", json!({ "kind": "keyOf", "of": "R" })), p("second", json!({ "kind": "keyOf", "of": "R" }))]),
+                json!({ "kind": "fieldOf", "of": "R" }),
+                Some(3),
+            );
+            assert_eq!(projection(&operator), None);
+        }
+
+        #[test]
+        fn field_projection_refuses_ambiguous_defaults() {
+            let operator = op(
+                json!([p("obj", record("R")), p("key", json!({ "kind": "keyOf", "of": "R" })), p("first", json!({ "kind": "fieldOf", "of": "R" })), p("second", json!({ "kind": "fieldOf", "of": "R" }))]),
+                json!({ "kind": "fieldOf", "of": "R" }),
+                Some(4),
+            );
+            assert_eq!(projection(&operator), None);
+        }
+
+        #[test]
+        fn field_projection_only_counts_relationships_for_the_return_variable() {
+            let operator = op(
+                json!([
+                    p("other", record("Other")),
+                    p("otherKey", json!({ "kind": "keyOf", "of": "Other" })),
+                    p("obj", record("R")),
+                    p("key", json!({ "kind": "keyOf", "of": "R" })),
+                    p("unrelated", json!({ "kind": "fieldOf", "of": "Other" })),
+                ]),
+                json!({ "kind": "fieldOf", "of": "R" }),
+                Some(5),
+            );
+            assert_eq!(projection(&operator), Some((2, 3, None)));
+        }
+
+        #[test]
+        fn field_projection_does_not_unwrap_nested_formals() {
+            for params in [
+                json!([p("obj", list(record("R"))), p("key", json!({ "kind": "keyOf", "of": "R" }))]),
+                json!([p("obj", record("R")), p("key", list(json!({ "kind": "keyOf", "of": "R" })))]),
+            ] {
+                let operator = op(params, json!({ "kind": "fieldOf", "of": "R" }), Some(2));
+                assert_eq!(projection(&operator), None);
+            }
+        }
     }
 }

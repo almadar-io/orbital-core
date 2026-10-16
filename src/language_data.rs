@@ -342,6 +342,7 @@ static LANGUAGE_DATA: OnceLock<LanguageData> = OnceLock::new();
 /// Installs the language data process-wide, for hosts that cannot walk
 /// `node_modules` (wasm, tests). Returns the data back if something was
 /// already installed or lazily loaded.
+#[expect(clippy::result_large_err, reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs")]
 pub fn install_language_data(data: LanguageData) -> Result<(), LanguageData> {
     LANGUAGE_DATA.set(data)
 }

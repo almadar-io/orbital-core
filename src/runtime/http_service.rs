@@ -157,10 +157,27 @@ pub trait SecretSource: Send + Sync {
             Some(_) => Err(NO_USER_CREDENTIALS.to_string()),
         }
     }
+    /// Replace the credential `name` of `principal` (or the app-wide one when `None`) with `value`, durably: a
+    /// rotated refresh token, unlike [`Self::store_secret_of`]'s expiring derived secret.
+    fn rotate_secret_of(&self, _name: &str, _value: &str, _principal: Option<&str>) -> Result<(), String> {
+        Err("this host keeps no rotatable credentials".to_string())
+    }
+    /// Answer what an `oauth-client` flow asks a host to keep (pending grants, connections, metadata, clock).
+    fn oauth_of(
+        &self,
+        _ask: &crate::oauth::ask::OAuthAsk,
+        _principal: Option<&str>,
+    ) -> Result<crate::oauth::ask::OAuthReply, String> {
+        Err("this host keeps no OAuth state".to_string())
+    }
     /// Drop the credential `name` of `principal` (or the app-wide one when `None`).
     fn forget_of(&self, _name: &str, _principal: Option<&str>) -> Result<(), String> {
         Err("this host keeps no credentials to forget".to_string())
     }
+}
+
+pub fn credential_status_connected(value: Option<&str>, principal: Option<&str>) -> bool {
+    value.is_some_and(|value| principal.is_some() || !value.is_empty())
 }
 
 const NO_USER_CREDENTIALS: &str = "this host keeps no user-scoped credentials";

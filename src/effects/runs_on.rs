@@ -31,10 +31,12 @@ impl RunsOn {
 /// Every effect operator whose site is not `any`, by registry name.
 pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("atomic", RunsOn::Server),
+    ("browser/beacon", RunsOn::Client),
     ("browser/clipboard-read", RunsOn::Client),
     ("browser/clipboard-write", RunsOn::Client),
     ("browser/geolocation-current", RunsOn::Client),
     ("browser/open-file-picker", RunsOn::Client),
+    ("browser/page-facts", RunsOn::Client),
     ("browser/push-subscribe", RunsOn::Client),
     ("call-service", RunsOn::Server),
     ("cancel-call", RunsOn::Server),
@@ -45,6 +47,9 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("http", RunsOn::Server),
     ("navigate", RunsOn::Client),
     ("navigate-back", RunsOn::Client),
+    ("oauth-authorize", RunsOn::Server),
+    ("oauth-connection-forget", RunsOn::Server),
+    ("oauth-connection-status", RunsOn::Server),
     ("os/debounce", RunsOn::Server),
     ("os/watch-cron", RunsOn::Server),
     ("os/watch-env", RunsOn::Server),
@@ -273,6 +278,9 @@ pub fn ir_effect_site(effect: &OirEffect, residence: &Residence) -> RunsOn {
 /// Site of an effect operator by registry name; `Any` for every effect not in
 /// [`EFFECT_SITES`] (and for a name that is not an effect at all).
 pub fn runs_on(operator: &str) -> RunsOn {
+    if crate::runtime::os::OsOp::from_name(operator).is_some() {
+        return RunsOn::Server;
+    }
     if let Some((_, site)) = EFFECT_SITES.iter().find(|(name, _)| *name == operator) {
         return *site;
     }
@@ -296,6 +304,48 @@ pub fn effect_operator(effect: &OirEffect) -> &'static str {
 /// Site of an IR effect.
 pub fn effect_runs_on(effect: &OirEffect) -> RunsOn {
     runs_on(effect_operator(effect))
+}
+
+/// True when `expr`'s tree calls an effect whose site is `server`, at any
+/// depth — the one predicate the dispatch rule (`runtime::dispatch_mode`) and
+/// the validator's local-trait contract share.
+///
+/// Fold-aware: an `if`/`when` branch whose condition is statically false
+/// (`SExpression::is_statically_false` — e.g. `@config.selfFetch` inlined to
+/// `false`) can never run, so its effects are not server work.
+pub fn sexpr_runs_server_effect(expr: &crate::schema::SExpression, residence: &Residence) -> bool {
+    use crate::schema::SExpression;
+    let recur = |e: &SExpression| sexpr_runs_server_effect(e, residence);
+    match expr {
+        SExpression::Array(arr) => {
+            let head = arr.first().and_then(|e| e.as_str());
+            if matches!(head, Some("if") | Some("when")) && arr.len() >= 3 {
+                let then_live = !arr[1].is_statically_false();
+                return (then_live && recur(&arr[2]))
+                    || (head == Some("if") && arr.get(3).is_some_and(recur))
+                    || (head == Some("when") && then_live && arr[3..].iter().any(recur));
+            }
+            // Binding positions name values: a `let` pair's name and a
+            // `fn`/`lambda` param list are never calls.
+            if head == Some("let") && arr.len() >= 2 {
+                let bound_live = match &arr[1] {
+                    SExpression::Array(pairs) => pairs.iter().any(|pair| match pair {
+                        SExpression::Array(p) => p.iter().skip(1).any(recur),
+                        other => recur(other),
+                    }),
+                    other => recur(other),
+                };
+                return bound_live || arr[2..].iter().any(recur);
+            }
+            if matches!(head, Some("fn") | Some("lambda")) && arr.len() >= 3 {
+                return arr[2..].iter().any(recur);
+            }
+            matches!(head, Some(op) if effect_site(op, &arr[1..], residence) == RunsOn::Server)
+                || arr.iter().any(recur)
+        }
+        SExpression::Object(obj) => obj.values().any(recur),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -515,47 +565,5 @@ mod tests {
         assert_eq!(effect_runs_on(&swap), RunsOn::Server);
         assert_eq!(effect_runs_on(&OirEffect::fetch("Task")), RunsOn::Server);
         assert_eq!(effect_runs_on(&OirEffect::emit("X")), RunsOn::Any);
-    }
-}
-
-/// True when `expr`'s tree calls an effect whose site is `server`, at any
-/// depth — the one predicate the dispatch rule (`runtime::dispatch_mode`) and
-/// the validator's local-trait contract share.
-///
-/// Fold-aware: an `if`/`when` branch whose condition is statically false
-/// (`SExpression::is_statically_false` — e.g. `@config.selfFetch` inlined to
-/// `false`) can never run, so its effects are not server work.
-pub fn sexpr_runs_server_effect(expr: &crate::schema::SExpression, residence: &Residence) -> bool {
-    use crate::schema::SExpression;
-    let recur = |e: &SExpression| sexpr_runs_server_effect(e, residence);
-    match expr {
-        SExpression::Array(arr) => {
-            let head = arr.first().and_then(|e| e.as_str());
-            if matches!(head, Some("if") | Some("when")) && arr.len() >= 3 {
-                let then_live = !arr[1].is_statically_false();
-                return (then_live && recur(&arr[2]))
-                    || (head == Some("if") && arr.get(3).is_some_and(recur))
-                    || (head == Some("when") && then_live && arr[3..].iter().any(recur));
-            }
-            // Binding positions name values: a `let` pair's name and a
-            // `fn`/`lambda` param list are never calls.
-            if head == Some("let") && arr.len() >= 2 {
-                let bound_live = match &arr[1] {
-                    SExpression::Array(pairs) => pairs.iter().any(|pair| match pair {
-                        SExpression::Array(p) => p.iter().skip(1).any(recur),
-                        other => recur(other),
-                    }),
-                    other => recur(other),
-                };
-                return bound_live || arr[2..].iter().any(recur);
-            }
-            if matches!(head, Some("fn") | Some("lambda")) && arr.len() >= 3 {
-                return arr[2..].iter().any(recur);
-            }
-            matches!(head, Some(op) if effect_site(op, &arr[1..], residence) == RunsOn::Server)
-                || arr.iter().any(recur)
-        }
-        SExpression::Object(obj) => obj.values().any(recur),
-        _ => false,
     }
 }

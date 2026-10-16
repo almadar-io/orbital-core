@@ -21,6 +21,15 @@ pub fn lower_sexpr(sexpr: &SExpression) -> Result<OirExpr, LowerError> {
     ExprLowerer.resolve_sexpr(sexpr)
 }
 
+/// The existing lowering decision that distinguishes a registered call from literal array data.
+pub fn recognized_call_head(sexpr: &SExpression) -> Option<&str> {
+    let op = sexpr.operator()?;
+    (crate::language::registry::is_known_operator(op)
+        || crate::evaluator::get_operator(op).is_some()
+        || crate::effects::is_known_effect_name(op))
+        .then_some(op)
+}
+
 /// A `(list …)` literal marker, stripped; any other array unchanged.
 pub fn strip_literal_list_marker(arr: &[SExpression]) -> &[SExpression] {
     match arr.first() {
@@ -92,7 +101,7 @@ impl ExprLowerer {
                 // Prevents G44 (`["positive", "negative", "neutral"]` →
                 // `positive("negative", "neutral")` and TS2304) without
                 // misclassifying `str/concat`, `agent/generate`, etc.
-                if let Some(SExpression::String(op)) = arr.first() {
+                if let Some(op) = recognized_call_head(sexpr) {
                     // Discriminate against the CANONICAL operator registry
                     // (`@almadar/std` canonical-operators.json, baked via the sync
                     // tool) — the single source of record — first, then the
@@ -103,12 +112,7 @@ impl ExprLowerer {
                     // (G-LOLO-OP-ARRAY-DEMOTION). Corpus-verified: every
                     // canonical-headed array is a call; data lists never use a
                     // canonical head.
-                    let is_known = crate::language::registry::is_known_operator(op)
-                        || crate::evaluator::get_operator(op).is_some()
-                        || crate::effects::is_known_effect_name(op);
-                    if is_known {
-                        return self.resolve_sexpr_call(op, &arr[1..]);
-                    }
+                    return self.resolve_sexpr_call(op, &arr[1..]);
                 }
 
                 // Regular array literal
@@ -229,6 +233,9 @@ impl ExprLowerer {
             "random-bytes" => self.resolve_random_bytes_effect(args),
             "credential-status" => self.resolve_credential_effect(args, true),
             "credential-forget" => self.resolve_credential_effect(args, false),
+            "oauth-authorize" => self.resolve_oauth_authorize_effect(args),
+            "oauth-connection-status" => self.resolve_oauth_connection_effect(args, true),
+            "oauth-connection-forget" => self.resolve_oauth_connection_effect(args, false),
 
             // Resource operators
             "ref" => self.resolve_ref_effect(args),
@@ -353,11 +360,79 @@ impl ExprLowerer {
                     emit: emit_cfg,
                 }))
             }
+            "browser/page-facts" => {
+                let Some(SExpression::Array(words)) = args.first() else {
+                    return Err(LowerError::InvalidSExpr(
+                        "browser/page-facts takes a list of page facts (hostname, referrer, screenWidth)".to_string(),
+                    ));
+                };
+                let mut fields = Vec::with_capacity(words.len());
+                for word in words {
+                    let word = self.sexpr_as_str(word, "(browser/page-facts …) a page fact")?;
+                    let field = crate::ir::PageFactField::parse(&word).ok_or_else(|| {
+                        LowerError::InvalidSExpr(format!(
+                            "(browser/page-facts …) \"{word}\" is not one of hostname referrer screenWidth"
+                        ))
+                    })?;
+                    fields.push(field);
+                }
+                let emit_cfg = self.extract_watch_only_emit(&args[1..])?;
+                let key = match args.get(1) {
+                    Some(SExpression::Object(options)) => match options.get("key") {
+                        None | Some(SExpression::Null) => None,
+                        Some(k) => Some(self.resolve_sexpr(k)?),
+                    },
+                    _ => None,
+                };
+                Ok(OirExpr::effect(OirEffect::BrowserPageFacts {
+                    fields,
+                    key,
+                    emit: emit_cfg,
+                }))
+            }
+            "browser/beacon" => {
+                if !(1..=3).contains(&args.len()) {
+                    return Err(LowerError::InvalidSExpr(
+                        "browser/beacon takes a URL, then a request and options".to_string(),
+                    ));
+                }
+                let url = self.resolve_sexpr(&args[0])?;
+                let request_expr = args.get(1).ok_or_else(|| {
+                    LowerError::InvalidSExpr("browser/beacon requires a request carrying `text`".to_string())
+                })?;
+                let mut request = request_expr.clone();
+                let mut key = None;
+                if let SExpression::Object(fields) = &mut request {
+                    if let Some(k) = fields.shift_remove("key") {
+                        key = Some(self.resolve_sexpr(&k)?);
+                    }
+                }
+                let request = self.resolve_sexpr(&request)?;
+                let emit_cfg = match args.get(2) {
+                    Some(SExpression::Object(options)) => {
+                        if let Some(k) = options.get("key") {
+                            key = Some(self.resolve_sexpr(k)?);
+                        }
+                        self.extract_emit_config(options)?
+                    }
+                    _ => None,
+                };
+                Ok(OirExpr::effect(OirEffect::BrowserBeacon {
+                    url,
+                    request,
+                    key,
+                    emit: emit_cfg,
+                }))
+            }
             "browser/push-subscribe" => {
                 let emit_cfg = self.extract_watch_only_emit(args)?;
                 Ok(OirExpr::effect(OirEffect::BrowserPushSubscribe {
                     emit: emit_cfg,
                 }))
+            }
+
+            op_name if crate::runtime::os::OsOp::from_name(op_name).is_some() => {
+                self.resolve_os_effect(op_name, args)
             }
 
             // Agent operators — lowered as Custom effects so backend can codegen TypeScript
@@ -1250,6 +1325,37 @@ impl ExprLowerer {
         }
     }
 
+    fn resolve_os_effect(&self, name: &str, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+        // Format: ["os/<op>", args…, { key?, emit? }?]
+        use crate::runtime::os::{accepts_arity, split_envelope, OsOp};
+        let op = OsOp::from_name(name)
+            .ok_or_else(|| LowerError::InvalidSExpr(format!("{name} is not an os operation")))?;
+        let (positional, envelope) = split_envelope(op, args);
+        if !accepts_arity(op, positional.len()) {
+            return Err(LowerError::InvalidSExpr(format!(
+                "{name} takes {} to {} arguments, got {}",
+                op.min_args(),
+                op.max_args(),
+                positional.len()
+            )));
+        }
+        let (key, emit) = match envelope {
+            None => (None, None),
+            Some(options) => (
+                match options.get("key") {
+                    None | Some(SExpression::Null) => None,
+                    Some(k) => Some(self.resolve_sexpr(k)?),
+                },
+                self.extract_emit_config(options)?,
+            ),
+        };
+        let resolved = positional
+            .iter()
+            .map(|a| self.resolve_sexpr(a))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(OirExpr::effect(OirEffect::os(op, resolved, key, emit)))
+    }
+
     fn resolve_random_bytes_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
         // Format: ["random-bytes", n, { emit? }?]
         if !(1..=2).contains(&args.len()) {
@@ -1286,6 +1392,57 @@ impl ExprLowerer {
             OirEffect::credential_status(credential, emit)
         } else {
             OirEffect::credential_forget(credential, emit)
+        }))
+    }
+
+    fn resolve_oauth_authorize_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+        // Format: ["oauth-authorize", client, options, { key?, emit? }?]
+        if !(2..=3).contains(&args.len()) {
+            return Err(LowerError::InvalidSExpr(
+                "oauth-authorize takes a client, its options and optional key and emit options".to_string(),
+            ));
+        }
+        let (key, emit) = match args.get(2) {
+            None | Some(SExpression::Null) => (None, None),
+            Some(SExpression::Object(options)) => (
+                match options.get("key") {
+                    None | Some(SExpression::Null) => None,
+                    Some(k) => Some(self.resolve_sexpr(k)?),
+                },
+                self.extract_emit_config(options)?,
+            ),
+            Some(other) => {
+                return Err(LowerError::InvalidSExpr(format!(
+                    "(oauth-authorize …) options must be an object, got {other:?}"
+                )))
+            }
+        };
+        Ok(OirExpr::effect(OirEffect::OAuthAuthorize {
+            client: self.resolve_sexpr(&args[0])?,
+            options: self.resolve_sexpr(&args[1])?,
+            key,
+            emit,
+        }))
+    }
+
+    fn resolve_oauth_connection_effect(
+        &self,
+        args: &[SExpression],
+        status: bool,
+    ) -> Result<OirExpr, LowerError> {
+        // Format: ["oauth-connection-status" | "oauth-connection-forget", provider, { emit? }?]
+        let head = if status { "oauth-connection-status" } else { "oauth-connection-forget" };
+        if !(1..=2).contains(&args.len()) {
+            return Err(LowerError::InvalidSExpr(format!(
+                "{head} takes a provider word and optional options"
+            )));
+        }
+        let emit = self.resolve_emit_only_options(head, args.get(1))?;
+        let provider = self.resolve_sexpr(&args[0])?;
+        Ok(OirExpr::effect(if status {
+            OirEffect::OAuthConnectionStatus { provider, emit }
+        } else {
+            OirEffect::OAuthConnectionForget { provider, emit }
         }))
     }
 

@@ -64,6 +64,7 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Returns the cache path of `sidecar`, downloading and verifying it first when absent.
 /// A bad cached file or a bad download never stays in the cache.
+#[expect(clippy::result_large_err, reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs")]
 pub fn ensure_sidecar(
     package: &str,
     version: &str,

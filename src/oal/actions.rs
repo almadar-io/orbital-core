@@ -4,6 +4,7 @@ use crate::evaluator::ValueMap;
 use crate::error::{EvalError, OrbitalError};
 use crate::evaluator::{eval_expr, BindingContext, EvalResult, Operator, Value};
 use crate::schema::SExpression;
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
 // ============================================================================
@@ -545,7 +546,7 @@ mod tests {
         let result = op.evaluate(&[], &ctx);
         assert!(result.is_ok());
         if let Ok(Value::Number(n)) = result {
-            assert!(n >= 0.0 && n <= 100.0);
+            assert!((0.0..=100.0).contains(&n));
         } else {
             panic!("Expected number value");
         }

@@ -688,6 +688,17 @@ impl PrettyPrinter {
                 self.write_expr(key);
                 self.write(")");
             }
+            OirEffect::Os { op, args, .. } => {
+                self.write(op.name());
+                self.write("(");
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.write_expr(arg);
+                }
+                self.write(")");
+            }
             OirEffect::RandomBytes { bytes: expr, .. } => {
                 self.write("random-bytes(");
                 self.write_expr(expr);
@@ -700,6 +711,23 @@ impl PrettyPrinter {
             }
             OirEffect::CredentialForget { credential: expr, .. } => {
                 self.write("credential-forget(");
+                self.write_expr(expr);
+                self.write(")");
+            }
+            OirEffect::OAuthAuthorize { client, options, .. } => {
+                self.write("oauth-authorize(");
+                self.write_expr(client);
+                self.write(", ");
+                self.write_expr(options);
+                self.write(")");
+            }
+            OirEffect::OAuthConnectionStatus { provider: expr, .. } => {
+                self.write("oauth-connection-status(");
+                self.write_expr(expr);
+                self.write(")");
+            }
+            OirEffect::OAuthConnectionForget { provider: expr, .. } => {
+                self.write("oauth-connection-forget(");
                 self.write_expr(expr);
                 self.write(")");
             }
@@ -840,6 +868,21 @@ impl PrettyPrinter {
             }
             OirEffect::BrowserPushSubscribe { .. } => {
                 self.write("browser/push-subscribe()");
+            }
+            OirEffect::BrowserPageFacts { fields, .. } => {
+                let words: Vec<&str> = fields.iter().map(|f| f.as_str()).collect();
+                self.write(&format!("browser/page-facts([{}])", words.join(", ")));
+            }
+            OirEffect::BrowserBeacon { url, request, key, .. } => {
+                self.write("browser/beacon(");
+                self.write_expr(url);
+                self.write(", ");
+                self.write_expr(request);
+                if let Some(k) = key {
+                    self.write(", ");
+                    self.write_expr(k);
+                }
+                self.write(")");
             }
         }
     }

@@ -1,7 +1,9 @@
 //! Storage-related operators: disk usage, mount points
 
 use crate::evaluator::ValueMap;
-use crate::error::{EvalError, OrbitalError};
+#[cfg(target_os = "linux")]
+use crate::error::EvalError;
+use crate::error::OrbitalError;
 use crate::evaluator::{eval_expr, BindingContext, EvalResult, Operator, Value};
 use crate::schema::SExpression;
 

@@ -9,10 +9,10 @@
 //! - Math: min, max, clamp, abs, floor, ceil, round
 //! - Control flow: do, when, let
 
-use crate::evaluator::ValueMap;
 use super::context::BindingContext;
 use super::value::Value;
 use crate::error::{EvalError, OrbitalError};
+use crate::evaluator::ValueMap;
 use crate::schema::SExpression;
 
 /// Result type for operator evaluation
@@ -42,6 +42,7 @@ mod logic;
 mod math;
 mod noise;
 mod object;
+mod os_path;
 mod path;
 mod string;
 mod system;
@@ -62,6 +63,7 @@ pub use logic::*;
 pub use math::*;
 pub use noise::*;
 pub use object::*;
+pub use os_path::*;
 pub use path::*;
 pub use string::*;
 pub use system::*;
@@ -145,12 +147,14 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         // JSON
         "json/parse" => K::JsonParseOp,
         "json/stringify" => K::JsonStringifyOp,
+        "json/valid" => K::JsonValidOp,
 
         // CSV
         "csv/parse" => K::CsvParseOp,
 
         // XML
         "xml/parse" => K::XmlParseOp,
+        "xml/valid" => K::XmlValidOp,
 
         // Path building (for dynamic field paths in set effect)
         "path" => K::PathOp,
@@ -216,6 +220,7 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "time/isBefore" | "isBefore" => K::TimeIsBeforeOp,
         "time/isAfter" | "isAfter" => K::TimeIsAfterOp,
         "time/parse" => K::TimeParseOp,
+        "time/valid" => K::TimeValidOp,
         "time/format" => K::TimeFormatOp,
 
         // Phase 2.6: Validation Operations
@@ -298,9 +303,14 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "str/repeat" => K::StrRepeatOp,
         "str/reverse" => K::StrReverseOp,
         "str/encode-uri-component" => K::StrEncodeUriComponentOp,
+        "str/decode-uri-component" => K::StrDecodeUriComponentOp,
+        "str/uri-component-valid" => K::StrUriComponentValidOp,
+        "str/to-number" => K::StrToNumberOp,
         "base64/encode" => K::Base64EncodeOp,
         "base64/decode" => K::Base64DecodeOp,
+        "base64/valid" => K::Base64ValidOp,
         "hash/sha256" => K::HashSha256Op,
+        "hash/md5" => K::HashMd5Op,
         "hmac/sha256" => K::HmacSha256Op,
         "titleCase" | "str/titleCase" => K::StrTitleCaseOp,
         "camelCase" | "str/camelCase" => K::StrCamelCaseOp,
@@ -506,6 +516,15 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         // path/*
         "path/astar" => K::PathAstarOp,
         "path/reachable" => K::PathReachableOp,
+
+        // os/path-* (string math, no OS access)
+        "os/path-join" => K::OsPathJoinOp,
+        "os/path-normalize" => K::OsPathNormalizeOp,
+        "os/path-base" => K::OsPathBaseOp,
+        "os/path-dir" => K::OsPathDirOp,
+        "os/path-ext" => K::OsPathExtOp,
+        "os/path-relative" => K::OsPathRelativeOp,
+        "os/path-is-absolute" => K::OsPathIsAbsoluteOp,
 
         _ => return None,
     };

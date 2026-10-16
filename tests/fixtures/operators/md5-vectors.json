@@ -1,0 +1,200 @@
+[
+  {
+    "op": "hash/md5",
+    "args": [
+      "",
+      "hex"
+    ],
+    "expect": "d41d8cd98f00b204e9800998ecf8427e",
+    "source": "RFC 1321 appendix A.5"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "YQ==",
+      "hex"
+    ],
+    "expect": "0cc175b9c0f1b6a831c399e269772661",
+    "source": "RFC 1321 appendix A.5"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "YWJj",
+      "hex"
+    ],
+    "expect": "900150983cd24fb0d6963f7d28e17f72",
+    "source": "RFC 1321 appendix A.5"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "bWVzc2FnZSBkaWdlc3Q=",
+      "hex"
+    ],
+    "expect": "f96b697d7cb7938d525a2f31aaf161d0",
+    "source": "RFC 1321 appendix A.5"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=",
+      "hex"
+    ],
+    "expect": "c3fcd3d76192e4007dfb496cca67e13b",
+    "source": "RFC 1321 appendix A.5"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk=",
+      "hex"
+    ],
+    "expect": "d174ab98d277d9f5a5611c2c9f419d9f",
+    "source": "RFC 1321 appendix A.5"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTA=",
+      "hex"
+    ],
+    "expect": "57edf4a22be3c955ac49da2e2107b67a",
+    "source": "RFC 1321 appendix A.5"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "YWJj",
+      "base64"
+    ],
+    "expect": "kAFQmDzST7DWlj99KOF/cg==",
+    "source": "RFC 1321 appendix A.5, base64 digest"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "",
+      "base64"
+    ],
+    "expect": "1B2M2Y8AsgTpgAmY7PhCfg==",
+    "source": "RFC 1321 appendix A.5, base64 digest"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "AP+Afw==",
+      "hex"
+    ],
+    "expect": "35913419231430075897c28e5e159b65",
+    "source": "arbitrary non-UTF-8 bytes"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==",
+      "hex"
+    ],
+    "expect": "e2c865db4162bed963bfaa9ef6ac18f0",
+    "source": "all byte values"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ==",
+      "hex"
+    ],
+    "expect": "cabe45dcc9ae5b66ba86600cca6b8ba8",
+    "source": "multi-block input"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "aMOpbGxvIHfDtnJsZCDinJMg8J+YgA==",
+      "hex"
+    ],
+    "expect": "89aa2b820ceff5e2668f906e050e431d",
+    "source": "UTF-8 text supplied as its bytes"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "aMOpbGxvIHfDtnJsZCDinJMg8J+YgA==",
+      "base64"
+    ],
+    "expect": "iaorggzv9eJmj5BuBQ5DHQ==",
+    "source": "UTF-8 text supplied as its bytes, base64 digest"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "YWJj",
+      "octal"
+    ],
+    "error": true,
+    "source": "invalid: digest encoding"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "YWJj",
+      "HEX"
+    ],
+    "error": true,
+    "source": "invalid: digest encoding is case-sensitive"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "YWJ",
+      "hex"
+    ],
+    "error": true,
+    "source": "invalid: unpadded base64"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "YW Jj",
+      "hex"
+    ],
+    "error": true,
+    "source": "invalid: whitespace in base64"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "YWJj\n",
+      "hex"
+    ],
+    "error": true,
+    "source": "invalid: trailing newline in base64"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "_-8=",
+      "hex"
+    ],
+    "error": true,
+    "source": "invalid: url-safe alphabet"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      "Zh==",
+      "hex"
+    ],
+    "error": true,
+    "source": "invalid: non-canonical trailing bits"
+  },
+  {
+    "op": "hash/md5",
+    "args": [
+      5,
+      "hex"
+    ],
+    "error": true,
+    "source": "invalid: non-string bytes argument"
+  }
+]

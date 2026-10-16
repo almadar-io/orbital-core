@@ -10,7 +10,7 @@ use std::path::PathBuf;
 struct Case {
     expr: Json,
     #[serde(default)]
-    expect: Option<f64>,
+    expect: Option<Json>,
     #[serde(default)]
     error: bool,
 }
@@ -19,12 +19,13 @@ fn crate_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
 
-fn eval(expr: &Json) -> Result<f64, String> {
+fn eval(expr: &Json) -> Result<Json, String> {
     let sexpr = serde_json::from_value(expr.clone()).map_err(|e| e.to_string())?;
     let ctx = BindingContextBuilder::new().build();
     match Evaluator::new().evaluate(&sexpr, &ctx).map_err(|e| e.to_string())? {
-        Value::Number(n) => Ok(n),
-        other => Err(format!("not a number: {other:?}")),
+        Value::Number(n) => Ok(Json::from(n as i64)),
+        Value::Bool(b) => Ok(Json::Bool(b)),
+        other => Err(format!("not a number or boolean: {other:?}")),
     }
 }
 

@@ -121,8 +121,10 @@ operator_kind! {
     JoinOp => JoinOp,
     JsonParseOp => JsonParseOp,
     JsonStringifyOp => JsonStringifyOp,
+    JsonValidOp => JsonValidOp,
     CsvParseOp => CsvParseOp,
     XmlParseOp => XmlParseOp,
+    XmlValidOp => XmlValidOp,
     LastOp => LastOp,
     LeOp => LeOp,
     LetOp => LetOp,
@@ -208,9 +210,14 @@ operator_kind! {
     StrReplaceOp => StrReplaceOp,
     StrReverseOp => StrReverseOp,
     StrEncodeUriComponentOp => StrEncodeUriComponentOp,
+    StrDecodeUriComponentOp => StrDecodeUriComponentOp,
+    StrUriComponentValidOp => StrUriComponentValidOp,
+    StrToNumberOp => StrToNumberOp,
     Base64EncodeOp => Base64EncodeOp,
     Base64DecodeOp => Base64DecodeOp,
+    Base64ValidOp => Base64ValidOp,
     HashSha256Op => HashSha256Op,
+    HashMd5Op => HashMd5Op,
     HmacSha256Op => HmacSha256Op,
     StrSliceOp => StrSliceOp,
     StrSnakeCaseOp => StrSnakeCaseOp,
@@ -239,6 +246,7 @@ operator_kind! {
     TimeMonthOp => TimeMonthOp,
     TimeNowOp => TimeNowOp,
     TimeParseOp => TimeParseOp,
+    TimeValidOp => TimeValidOp,
     TimeSecondOp => TimeSecondOp,
     TimeSubtractOp => TimeSubtractOp,
     TimeTodayOp => TimeTodayOp,
@@ -333,6 +341,14 @@ operator_kind! {
     NoiseFbmOp => NoiseFbmOp,
     PathAstarOp => PathAstarOp,
     PathReachableOp => PathReachableOp,
+
+    OsPathJoinOp => OsPathJoinOp,
+    OsPathNormalizeOp => OsPathNormalizeOp,
+    OsPathBaseOp => OsPathBaseOp,
+    OsPathDirOp => OsPathDirOp,
+    OsPathExtOp => OsPathExtOp,
+    OsPathRelativeOp => OsPathRelativeOp,
+    OsPathIsAbsoluteOp => OsPathIsAbsoluteOp,
 }
 
 impl OperatorKind {
@@ -358,9 +374,12 @@ impl OperatorKind {
     /// types that parameter, whatever it is named and however the callback is written.
     pub fn callback_index_position(&self) -> Option<usize> {
         match self {
-            Self::MapOp | Self::FilterOp | Self::CountOp | Self::FindOp | Self::ArrayEveryOp | Self::ArraySomeOp => {
-                Some(1)
-            }
+            Self::MapOp
+            | Self::FilterOp
+            | Self::CountOp
+            | Self::FindOp
+            | Self::ArrayEveryOp
+            | Self::ArraySomeOp => Some(1),
             _ => None,
         }
     }

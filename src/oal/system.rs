@@ -1,7 +1,9 @@
 //! System information operators: CPU, memory, uptime
 
 use crate::evaluator::ValueMap;
-use crate::error::{EvalError, OrbitalError};
+#[cfg(target_os = "linux")]
+use crate::error::EvalError;
+use crate::error::OrbitalError;
 use crate::evaluator::{BindingContext, EvalResult, Operator, Value};
 use crate::schema::SExpression;
 
@@ -377,7 +379,7 @@ mod tests {
         let result = op.evaluate(&[], &ctx);
         assert!(result.is_ok());
         if let Ok(Value::Number(n)) = result {
-            assert!(n >= 0.0 && n <= 100.0);
+            assert!((0.0..=100.0).contains(&n));
         } else {
             panic!("Expected number value");
         }

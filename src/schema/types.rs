@@ -1568,6 +1568,7 @@ pub struct EntityRefExtends {
 ///    object, so it only fires when the JSON is a literal string.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
+#[expect(clippy::large_enum_variant, reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs")]
 pub enum EntityRef {
     /// Extends form: inherit an imported entity and append fields
     Extends(EntityRefExtends),
@@ -3582,8 +3583,7 @@ pub struct ListenDefinition {
 
     /// Source-scope descriptor parsed from the `.lolo` authoring layer.
     /// See the runtime-side `ListenSourceDescriptor` for the matching shape.
-    /// `None` means the listen entry is a local payload-declaration only
-    /// (pure type metadata, no bus subscription).
+    /// `None` subscribes without a source restriction; local payload declarations do not lower here.
     #[serde(rename = "source", skip_serializing_if = "Option::is_none")]
     pub source: Option<ListenSource>,
 }
@@ -4816,7 +4816,7 @@ mod tests {
         let round_tripped = serde_json::to_value(&back).expect("serializes again");
         assert_eq!(json, round_tripped);
         assert_eq!(back.color.unwrap().primary, Some("#14b8a6".to_string()));
-        assert_eq!(back.illustration.unwrap().style.is_some(), true);
+        assert!(back.illustration.unwrap().style.is_some());
     }
 
     /// `ThemeVariant` (the dark-mode override shape) carries the same

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{OirBinding, OirExpr, OirPattern};
 use crate::runtime::http_request::HttpMethod;
+use crate::runtime::os::OsOp;
 
 /// Configuration for the `emit:` option on async/reactive data operators.
 ///
@@ -238,6 +239,17 @@ pub enum OirEffect {
         emit: Option<OirEmitConfig>,
     },
 
+    /// One `os/<op>` operation (`docs/Almadar_OS_Operators.md`): the host answers it, keyed and routed like
+    /// `http`; a streaming op delivers its events to `emit.on_message`. Server-only.
+    Os {
+        op: OsOp,
+        args: Vec<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
     /// Whether the host holds the credential named by the `secret` knob `credential`; success
     /// carries `{ connected }`. Server-only.
     CredentialStatus {
@@ -249,6 +261,30 @@ pub enum OirEffect {
     /// Drop the credential named by the `secret` knob `credential`. Server-only.
     CredentialForget {
         credential: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
+    /// Start an OAuth authorization for `client`; success carries `{ authUrl, state }`. Server-only.
+    OAuthAuthorize {
+        client: OirExpr,
+        options: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
+    /// The signed-in user's connection to the provider word `provider`. Server-only.
+    OAuthConnectionStatus {
+        provider: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
+    /// Drop the signed-in user's connection to the provider word `provider`. Server-only.
+    OAuthConnectionForget {
+        provider: OirExpr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<OirEmitConfig>,
     },
@@ -397,6 +433,28 @@ pub enum OirEffect {
         emit: Option<OirEmitConfig>,
     },
 
+    /// Read the requested page facts, in list order. Success `result` is `PAGE_FACTS_SHAPE`:
+    /// `{ available, hostname, referrer, screenWidth }`; a fact that was not requested keeps its default.
+    BrowserPageFacts {
+        fields: Vec<PageFactField>,
+        /// String-typed expression echoed as `key` in the success and failure payloads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
+    /// POST `request.text` (the request object) to the absolute `url` as `text/plain` through the browser's beacon queue,
+    /// falling back to one `keepalive` fetch. Built and egress-checked by the one http driver.
+    BrowserBeacon {
+        url: OirExpr,
+        request: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
     /// Subscribe this browser to Web Push (registers the shared service worker,
     /// fetches the host's VAPID public key, calls PushManager.subscribe).
     /// Success `result` = `{ endpoint, p256dh, auth }` — flat strings, ready to
@@ -406,6 +464,33 @@ pub enum OirEffect {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<OirEmitConfig>,
     },
+}
+
+/// One page fact `browser/page-facts` can read. The closed set; list order is read order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PageFactField {
+    Hostname,
+    Referrer,
+    ScreenWidth,
+}
+
+impl PageFactField {
+    /// Every fact, in the spelling a program writes it.
+    pub const ALL: [PageFactField; 3] = [Self::Hostname, Self::Referrer, Self::ScreenWidth];
+
+    /// The bare word a program writes (`hostname`, `referrer`, `screenWidth`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hostname => "hostname",
+            Self::Referrer => "referrer",
+            Self::ScreenWidth => "screenWidth",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|f| f.as_str() == word)
+    }
 }
 
 /// The canonical set of substrate-operator prefixes. A substrate operator is
@@ -742,6 +827,11 @@ impl OirEffect {
         Self::RandomBytes { bytes, emit }
     }
 
+    /// Create an `os/<op>` effect
+    pub fn os(op: OsOp, args: Vec<OirExpr>, key: Option<OirExpr>, emit: Option<OirEmitConfig>) -> Self {
+        Self::Os { op, args, key, emit }
+    }
+
     /// Create a credential-status effect
     pub fn credential_status(credential: OirExpr, emit: Option<OirEmitConfig>) -> Self {
         Self::CredentialStatus { credential, emit }
@@ -772,8 +862,12 @@ impl OirEffect {
             Self::Http { .. } => "http",
             Self::CancelCall { .. } => "cancel-call",
             Self::RandomBytes { .. } => "random-bytes",
+            Self::Os { op, .. } => op.name(),
             Self::CredentialStatus { .. } => "credential-status",
             Self::CredentialForget { .. } => "credential-forget",
+            Self::OAuthAuthorize { .. } => "oauth-authorize",
+            Self::OAuthConnectionStatus { .. } => "oauth-connection-status",
+            Self::OAuthConnectionForget { .. } => "oauth-connection-forget",
             Self::Spawn { .. } => "spawn",
             Self::Despawn { .. } => "despawn",
             Self::Log { .. } => "log",
@@ -793,6 +887,8 @@ impl OirEffect {
             Self::BrowserClipboardWrite { .. } => "browser/clipboard-write",
             Self::BrowserGeolocationCurrent { .. } => "browser/geolocation-current",
             Self::BrowserPushSubscribe { .. } => "browser/push-subscribe",
+            Self::BrowserPageFacts { .. } => "browser/page-facts",
+            Self::BrowserBeacon { .. } => "browser/beacon",
         }
     }
 
@@ -949,12 +1045,32 @@ impl OirEffect {
                     .into_iter()
                     .for_each(|b| bindings.push(b));
             }
+            Self::Os { args, key, .. } => {
+                for expr in args.iter().chain(key) {
+                    expr.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
+                }
+            }
+            Self::OAuthAuthorize { client, options, key, .. } => {
+                for expr in [Some(client), Some(options), key.as_ref()].into_iter().flatten() {
+                    expr.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
+                }
+            }
             Self::RandomBytes { bytes: expr, .. }
             | Self::CredentialStatus {
                 credential: expr, ..
             }
             | Self::CredentialForget {
                 credential: expr, ..
+            }
+            | Self::OAuthConnectionStatus {
+                provider: expr, ..
+            }
+            | Self::OAuthConnectionForget {
+                provider: expr, ..
             } => {
                 expr.collect_bindings()
                     .into_iter()
@@ -1093,6 +1209,16 @@ impl OirEffect {
             }
             Self::BrowserClipboardRead { .. } => {}
             Self::BrowserPushSubscribe { .. } => {}
+            Self::BrowserPageFacts { key, .. } => {
+                if let Some(k) = key {
+                    k.collect_bindings().into_iter().for_each(|b| bindings.push(b));
+                }
+            }
+            Self::BrowserBeacon { url, request, key, .. } => {
+                for e in [Some(url), Some(request), key.as_ref()].into_iter().flatten() {
+                    e.collect_bindings().into_iter().for_each(|b| bindings.push(b));
+                }
+            }
             Self::BrowserClipboardWrite { text, .. } => {
                 text.collect_bindings()
                     .into_iter()
@@ -1187,13 +1313,28 @@ impl OirEffect {
                 push_opt(&mut out, key);
             }
             Self::CancelCall { key } => out.push(key),
+            Self::Os { args, key, .. } => {
+                out.extend(args.iter());
+                push_opt(&mut out, key);
+            }
             Self::RandomBytes { bytes: expr, .. }
             | Self::CredentialStatus {
                 credential: expr, ..
             }
             | Self::CredentialForget {
                 credential: expr, ..
+            }
+            | Self::OAuthConnectionStatus {
+                provider: expr, ..
+            }
+            | Self::OAuthConnectionForget {
+                provider: expr, ..
             } => out.push(expr),
+            Self::OAuthAuthorize { client, options, key, .. } => {
+                out.push(client);
+                out.push(options);
+                push_opt(&mut out, key);
+            }
             Self::Spawn { props, .. } => out.push(props),
             Self::Despawn { entity_id } => out.push(entity_id),
             Self::Log { message, .. } => out.push(message),
@@ -1240,6 +1381,12 @@ impl OirEffect {
             Self::BrowserClipboardWrite { text, .. } => out.push(text),
             Self::BrowserGeolocationCurrent { options, .. } => push_opt(&mut out, options),
             Self::BrowserPushSubscribe { .. } => {}
+            Self::BrowserPageFacts { key, .. } => push_opt(&mut out, key),
+            Self::BrowserBeacon { url, request, key, .. } => {
+                out.push(url);
+                out.push(request);
+                push_opt(&mut out, key);
+            }
         }
         out
     }

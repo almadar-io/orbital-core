@@ -1,7 +1,9 @@
 //! Network-related operators: interfaces, stats, connectivity
 
 use crate::evaluator::ValueMap;
-use crate::error::{EvalError, OrbitalError};
+#[cfg(target_os = "linux")]
+use crate::error::EvalError;
+use crate::error::OrbitalError;
 use crate::evaluator::{BindingContext, EvalResult, Operator, Value};
 use crate::schema::SExpression;
 

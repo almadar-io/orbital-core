@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 /// Where a server dispatch stands.
 #[derive(Debug)]
+#[expect(clippy::large_enum_variant, reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs")]
 pub enum ServerProgress {
     Done(EventResponse),
     Await {

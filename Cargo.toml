@@ -26,14 +26,16 @@ chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
 semver = "1"
 sha2 = "0.10"
+md-5 = "0.10"
 base64 = "0.22"
 quick-xml = "0.38"
 tokio = { version = "1.0", features = ["full"], optional = true }
 # `Instant` that works on wasm32 (performance.now); std's panics there.
 web-time = "1.1"
-aes-gcm = "0.10"
-p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pem"] }
-rsa = { version = "0.9", default-features = false, features = ["std", "pem", "sha2"] }
+# Crypto entropy comes from the journaled host, never dependency-default OS RNGs.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+p256 = { version = "0.13", default-features = false, features = ["alloc", "ecdh", "ecdsa", "pem"] }
+rsa = { version = "0.9", default-features = false, features = ["pem", "sha2"] }
 url = "2"
 ureq = { version = "2.9", default-features = false, features = ["json"], optional = true }
 

@@ -16,6 +16,10 @@ pub mod entity_source;
 pub mod external_inputs;
 pub mod http_request;
 pub mod http_service;
+pub mod oauth_flow;
+pub mod os;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod os_host;
 pub mod kernel;
 pub mod key_chord;
 pub mod listener;

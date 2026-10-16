@@ -11,11 +11,14 @@
 use crate::effects::{ServiceCaller, ServiceHandler, SubstrateFailure, SubstrateHandler};
 use crate::evaluator::Value;
 use crate::runtime::entity_source::EntitySource;
-use crate::runtime::http_request::{self, StreamFraming};
+use crate::ir::PageFactField;
+use crate::oauth::ask::{OAuthAsk, OAuthReply};
+use crate::runtime::http_request::{self, BeaconOutcome, StreamFraming};
 use crate::runtime::http_service::{
     HttpRequest, HttpResponse, SecretSource, Transport, TransportError,
 };
 use crate::runtime::kernel::{DispatchRun, KernelError};
+use crate::runtime::os::{OsError, OsErrorKind, OsOp};
 use crate::runtime::process_result::ProcessEventResult;
 use crate::runtime::row_query::{
     guard_unsupported_reason, query_unsupported_reason, QueryCapabilities, QueryRun, RowIdPage,
@@ -114,6 +117,16 @@ pub enum IoRequest {
         framing: StreamFraming,
         site: Option<CallSite>,
     },
+    /// The built request of a `browser/beacon`: the host queues it or sends one keepalive fetch, and answers how.
+    HttpBeacon {
+        request: HttpRequest,
+        key: Option<String>,
+        site: Option<CallSite>,
+    },
+    /// The page facts a `browser/page-facts` asks for, in read order.
+    PageFacts {
+        fields: Vec<PageFactField>,
+    },
     /// A credential by name. `principal` is the dispatch's `@user` id for a user-scoped credential
     /// (set by the kernel, never by the program); `None` is the app-wide credential.
     Secret {
@@ -127,9 +140,23 @@ pub enum IoRequest {
         ttl_ms: u64,
         principal: Option<String>,
     },
+    /// Replace the credential `name` the host holds with `value`, durably (a rotated refresh token).
+    SecretRotate {
+        name: String,
+        value: String,
+        principal: Option<String>,
+    },
     /// `bytes` of CSPRNG output, journaled so a replay sees the same bytes.
     Random {
         bytes: u32,
+    },
+    /// One `os/<op>` effect. A streaming op sets `site`: the host dispatches each event to its route, then
+    /// answers [`IoAnswer::Os`] with the final reply. `key` lets `cancel-call` abort the ask in flight.
+    Os {
+        op: OsOp,
+        args: Vec<Value>,
+        key: Option<String>,
+        site: Option<CallSite>,
     },
     /// Whether the host holds a value for the credential `name` (for `principal` when set).
     CredentialStatus {
@@ -139,6 +166,11 @@ pub enum IoRequest {
     /// Drop the credential `name` the host holds (for `principal` when set).
     CredentialForget {
         name: String,
+        principal: Option<String>,
+    },
+    /// What an OAuth flow asks the host to persist (`principal` is set by the kernel, never by the program).
+    OAuth {
+        ask: OAuthAsk,
         principal: Option<String>,
     },
 }
@@ -194,11 +226,25 @@ pub enum IoAnswer {
     Cancelled(Result<(), String>),
     Substrate(Result<Value, SubstrateFailure>),
     Http(Result<HttpResponse, TransportError>),
+    HttpBeacon(Result<BeaconOutcome, TransportError>),
+    PageFacts(Result<PageFacts, String>),
     Secret(Result<Option<String>, String>),
     SecretSet(Result<(), String>),
+    SecretRotate(Result<(), String>),
     Random(Result<Vec<u8>, String>),
+    Os(Result<Value, OsError>),
     CredentialStatus(Result<bool, String>),
     CredentialForget(Result<(), String>),
+    OAuth(Result<OAuthReply, String>),
+}
+
+/// What the page offered: `available` is false when there is no page; the other facts are as read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageFacts {
+    pub available: bool,
+    pub hostname: String,
+    pub referrer: String,
+    pub screen_width: Option<f64>,
 }
 
 struct Redacted;
@@ -287,6 +333,13 @@ impl std::fmt::Debug for IoRequest {
                 .field("framing", framing)
                 .field("site", site)
                 .finish(),
+            Self::HttpBeacon { request, key, site } => f
+                .debug_struct("HttpBeacon")
+                .field("request", request)
+                .field("key", key)
+                .field("site", site)
+                .finish(),
+            Self::PageFacts { fields } => f.debug_struct("PageFacts").field("fields", fields).finish(),
             Self::Secret { name, principal } => f
                 .debug_struct("Secret")
                 .field("name", name)
@@ -304,7 +357,20 @@ impl std::fmt::Debug for IoRequest {
                 .field("ttl_ms", ttl_ms)
                 .field("principal", principal)
                 .finish(),
+            Self::SecretRotate { name, principal, .. } => f
+                .debug_struct("SecretRotate")
+                .field("name", name)
+                .field("value", &Redacted)
+                .field("principal", principal)
+                .finish(),
             Self::Random { bytes } => f.debug_struct("Random").field("bytes", bytes).finish(),
+            Self::Os { op, args, key, site } => f
+                .debug_struct("Os")
+                .field("op", op)
+                .field("args", args)
+                .field("key", key)
+                .field("site", site)
+                .finish(),
             Self::CredentialStatus { name, principal } => f
                 .debug_struct("CredentialStatus")
                 .field("name", name)
@@ -313,6 +379,11 @@ impl std::fmt::Debug for IoRequest {
             Self::CredentialForget { name, principal } => f
                 .debug_struct("CredentialForget")
                 .field("name", name)
+                .field("principal", principal)
+                .finish(),
+            Self::OAuth { ask, principal } => f
+                .debug_struct("OAuth")
+                .field("ask", ask)
                 .field("principal", principal)
                 .finish(),
         }
@@ -336,6 +407,8 @@ impl std::fmt::Debug for IoAnswer {
             Self::Cancelled(r) => f.debug_tuple("Cancelled").field(r).finish(),
             Self::Substrate(r) => f.debug_tuple("Substrate").field(r).finish(),
             Self::Http(r) => f.debug_tuple("Http").field(r).finish(),
+            Self::HttpBeacon(r) => f.debug_tuple("HttpBeacon").field(r).finish(),
+            Self::PageFacts(r) => f.debug_tuple("PageFacts").field(r).finish(),
             Self::Secret(r) => {
                 let shown: Result<Option<Redacted>, &String> = match r {
                     Ok(value) => Ok(value.as_ref().map(|_| Redacted)),
@@ -344,6 +417,7 @@ impl std::fmt::Debug for IoAnswer {
                 f.debug_tuple("Secret").field(&shown).finish()
             }
             Self::SecretSet(r) => f.debug_tuple("SecretSet").field(r).finish(),
+            Self::SecretRotate(r) => f.debug_tuple("SecretRotate").field(r).finish(),
             Self::Random(r) => {
                 let shown: Result<Redacted, &String> = match r {
                     Ok(_) => Ok(Redacted),
@@ -351,8 +425,16 @@ impl std::fmt::Debug for IoAnswer {
                 };
                 f.debug_tuple("Random").field(&shown).finish()
             }
+            Self::Os(r) => {
+                let shown: Result<Redacted, &OsError> = match r {
+                    Ok(_) => Ok(Redacted),
+                    Err(error) => Err(error),
+                };
+                f.debug_tuple("Os").field(&shown).finish()
+            }
             Self::CredentialStatus(r) => f.debug_tuple("CredentialStatus").field(r).finish(),
             Self::CredentialForget(r) => f.debug_tuple("CredentialForget").field(r).finish(),
+            Self::OAuth(r) => f.debug_tuple("OAuth").field(r).finish(),
         }
     }
 }
@@ -396,11 +478,19 @@ impl IoAnswer {
                     IoRequest::Http { .. } | IoRequest::HttpStream { .. },
                     IoAnswer::Http(_) | IoAnswer::ServiceCancelled
                 )
+                | (
+                    IoRequest::HttpBeacon { .. },
+                    IoAnswer::HttpBeacon(_) | IoAnswer::ServiceCancelled
+                )
+                | (IoRequest::PageFacts { .. }, IoAnswer::PageFacts(_))
                 | (IoRequest::Secret { .. }, IoAnswer::Secret(_))
                 | (IoRequest::SecretSet { .. }, IoAnswer::SecretSet(_))
+                | (IoRequest::SecretRotate { .. }, IoAnswer::SecretRotate(_))
                 | (IoRequest::Random { .. }, IoAnswer::Random(_))
+                | (IoRequest::Os { .. }, IoAnswer::Os(_) | IoAnswer::ServiceCancelled)
                 | (IoRequest::CredentialStatus { .. }, IoAnswer::CredentialStatus(_))
                 | (IoRequest::CredentialForget { .. }, IoAnswer::CredentialForget(_))
+                | (IoRequest::OAuth { .. }, IoAnswer::OAuth(_))
         )
     }
 }
@@ -420,6 +510,7 @@ pub struct IoReply {
 }
 
 /// Where a resumable dispatch stands.
+#[expect(clippy::large_enum_variant, reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs")]
 pub enum Progress<T> {
     Done(T),
     Await {
@@ -510,6 +601,7 @@ impl std::fmt::Debug for ResolveContinuation {
 
 /// Where a resolve stands: the resolved page, or the requests the host answers next.
 #[derive(Debug)]
+#[expect(clippy::large_enum_variant, reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs")]
 pub enum ResolveProgress {
     Done(RowPage),
     Await {
@@ -549,6 +641,8 @@ struct StepLedger {
 
 /// The error a handler returns when the step cannot get an answer yet; the step's result is dropped.
 pub(crate) const AWAITING_HOST: &str = "awaiting host I/O";
+
+pub(crate) const NO_PAGE_FACTS_HOST: &str = "browser/page-facts: no host answers page facts";
 
 /// The error a call settled `Cancelled` carries, as JS's `untilAborted` rejects.
 const CALL_CANCELLED: &str = "The call was cancelled";
@@ -1114,6 +1208,35 @@ impl IoPort {
         }
     }
 
+    /// The built request of a beacon, or `None` when no host is attached to answer it.
+    pub(crate) fn http_beacon(
+        &self,
+        request: &HttpRequest,
+        key: Option<&str>,
+    ) -> Option<Result<BeaconOutcome, TransportError>> {
+        match self.ask(|| IoRequest::HttpBeacon {
+            request: request.clone(),
+            key: key.map(str::to_string),
+            site: self.site.lock().clone(),
+        }) {
+            Asked::Direct => None,
+            Asked::Answer(IoAnswer::HttpBeacon(out)) => Some(out),
+            Asked::Answer(IoAnswer::ServiceCancelled) => {
+                *self.verdict.lock() = Some(CallVerdict::Cancelled);
+                Some(Err(TransportError::Failed(CALL_CANCELLED.to_string())))
+            }
+            Asked::Answer(_) | Asked::Withheld => Some(Err(TransportError::Failed(AWAITING_HOST.to_string()))),
+        }
+    }
+
+    pub(crate) fn page_facts(&self, fields: &[PageFactField]) -> Result<PageFacts, String> {
+        match self.ask(|| IoRequest::PageFacts { fields: fields.to_vec() }) {
+            Asked::Direct => Err(NO_PAGE_FACTS_HOST.to_string()),
+            Asked::Answer(IoAnswer::PageFacts(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
     fn http_answer(&self, answer: IoAnswer) -> Result<HttpResponse, TransportError> {
         match answer {
             IoAnswer::Http(out) => out,
@@ -1152,6 +1275,47 @@ impl IoPort {
             Asked::Direct => Err(NO_HTTP_HOST.to_string()),
             Asked::Answer(IoAnswer::SecretSet(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn rotate_secret(&self, name: &str, value: &str, principal: Option<&str>) -> Result<(), String> {
+        match self.ask(|| IoRequest::SecretRotate {
+            name: name.to_string(),
+            value: value.to_string(),
+            principal: principal.map(str::to_string),
+        }) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::SecretRotate(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    /// One OAuth ask, journaled; a kernel with no host to answer has no OAuth state.
+    pub(crate) fn oauth(&self, ask: &OAuthAsk, principal: Option<&str>) -> Result<OAuthReply, String> {
+        match self.ask(|| IoRequest::OAuth { ask: ask.clone(), principal: principal.map(str::to_string) }) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::OAuth(out)) => out.and_then(|reply| {
+                if ask.accepts(&reply) { Ok(reply) } else { Err("the host answered an OAuth ask with the wrong reply".to_string()) }
+            }),
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    /// One `os/<op>` ask, journaled. A streaming op carries the call site its events dispatch to.
+    pub(crate) fn os(&self, op: OsOp, args: &[Value], key: Option<&str>) -> Result<Value, OsError> {
+        match self.ask(|| IoRequest::Os {
+            op,
+            args: args.to_vec(),
+            key: key.map(str::to_string),
+            site: if op.is_stream() { self.site.lock().clone() } else { None },
+        }) {
+            Asked::Direct => Err(OsError::new(OsErrorKind::Unsupported, NO_HTTP_HOST)),
+            Asked::Answer(IoAnswer::Os(out)) => out,
+            Asked::Answer(IoAnswer::ServiceCancelled) => {
+                *self.verdict.lock() = Some(CallVerdict::Cancelled);
+                Err(OsError::new(OsErrorKind::Closed, CALL_CANCELLED))
+            }
+            Asked::Answer(_) | Asked::Withheld => Err(OsError::new(OsErrorKind::Io, AWAITING_HOST)),
         }
     }
 
@@ -1340,11 +1504,16 @@ impl BlockingHost<'_> {
             }),
             IoRequest::Http { .. }
             | IoRequest::HttpStream { .. }
+            | IoRequest::HttpBeacon { .. }
+            | IoRequest::PageFacts { .. }
             | IoRequest::Secret { .. }
             | IoRequest::SecretSet { .. }
+            | IoRequest::SecretRotate { .. }
             | IoRequest::Random { .. }
+            | IoRequest::Os { .. }
             | IoRequest::CredentialStatus { .. }
-            | IoRequest::CredentialForget { .. } => answer_http(None, request),
+            | IoRequest::CredentialForget { .. }
+            | IoRequest::OAuth { .. } => answer_http(None, request),
         }
     }
 
@@ -1353,11 +1522,16 @@ impl BlockingHost<'_> {
         match request {
             IoRequest::Http { .. }
             | IoRequest::HttpStream { .. }
+            | IoRequest::HttpBeacon { .. }
+            | IoRequest::PageFacts { .. }
             | IoRequest::Secret { .. }
             | IoRequest::SecretSet { .. }
+            | IoRequest::SecretRotate { .. }
             | IoRequest::Random { .. }
+            | IoRequest::Os { .. }
             | IoRequest::CredentialStatus { .. }
-            | IoRequest::CredentialForget { .. } => answer_http(Some(http), request),
+            | IoRequest::CredentialForget { .. }
+            | IoRequest::OAuth { .. } => answer_http(Some(http), request),
             other => self.answer(other),
         }
     }
@@ -1422,7 +1596,18 @@ fn os_random(_bytes: u32) -> Result<Vec<u8>, String> {
     Err("random: the host must answer Random".to_string())
 }
 
-/// Answer an [`IoRequest::Http`] / `HttpStream` / `Secret` / `SecretSet` / `Random` / `CredentialStatus` /
+/// An [`IoRequest::Os`] answered by the native answerer; wasm hosts answer `Os` themselves.
+#[cfg(not(target_arch = "wasm32"))]
+fn answer_os_host(request: &IoRequest) -> IoAnswer {
+    crate::runtime::os_host::answer_os(request)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn answer_os_host(_request: &IoRequest) -> IoAnswer {
+    IoAnswer::Os(Err(OsError::new(OsErrorKind::Unsupported, "os: the host must answer Os")))
+}
+
+/// Answer an [`IoRequest::Http`] / `HttpStream` / `Secret` / `SecretSet` / `Random` / `Os` / `CredentialStatus` /
 /// `CredentialForget` with `host`; with no host an `http` request fails.
 pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer {
     match (request, host) {
@@ -1454,6 +1639,18 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
             reply.body = Vec::new();
             reply
         })),
+        (IoRequest::HttpBeacon { request, .. }, Some(host)) => IoAnswer::HttpBeacon(
+            blocking_send(host, request).map(|reply| BeaconOutcome::Fetched { status: reply.status }),
+        ),
+        (IoRequest::HttpBeacon { .. }, None) => {
+            IoAnswer::HttpBeacon(Err(TransportError::Failed(NO_HTTP_HOST.to_string())))
+        }
+        (IoRequest::PageFacts { .. }, _) => IoAnswer::PageFacts(Ok(PageFacts {
+            available: false,
+            hostname: String::new(),
+            referrer: String::new(),
+            screen_width: None,
+        })),
         (IoRequest::Http { .. } | IoRequest::HttpStream { .. }, None) => {
             IoAnswer::Http(Err(TransportError::Failed(NO_HTTP_HOST.to_string())))
         }
@@ -1471,13 +1668,27 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
             Some(host),
         ) => IoAnswer::SecretSet(host.secrets.store_secret_of(name, value, *ttl_ms, principal.as_deref())),
         (IoRequest::SecretSet { .. }, None) => IoAnswer::SecretSet(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::SecretRotate { name, value, principal }, Some(host)) => {
+            IoAnswer::SecretRotate(host.secrets.rotate_secret_of(name, value, principal.as_deref()))
+        }
+        (IoRequest::SecretRotate { .. }, None) => IoAnswer::SecretRotate(Err(NO_HTTP_HOST.to_string())),
         (IoRequest::Random { bytes }, _) => IoAnswer::Random(os_random(*bytes)),
+        (IoRequest::Os { .. }, _) => answer_os_host(request),
         (IoRequest::CredentialStatus { name, principal }, Some(host)) => {
-            IoAnswer::CredentialStatus(host.secrets.secret_of(name, principal.as_deref()).map(|v| v.is_some()))
+            IoAnswer::CredentialStatus(host.secrets.secret_of(name, principal.as_deref()).map(|value| {
+                crate::runtime::http_service::credential_status_connected(
+                    value.as_deref(),
+                    principal.as_deref(),
+                )
+            }))
         }
         (IoRequest::CredentialForget { name, principal }, Some(host)) => {
             IoAnswer::CredentialForget(host.secrets.forget_of(name, principal.as_deref()))
         }
+        (IoRequest::OAuth { ask, principal }, Some(host)) => {
+            IoAnswer::OAuth(host.secrets.oauth_of(ask, principal.as_deref()))
+        }
+        (IoRequest::OAuth { .. }, None) => IoAnswer::OAuth(Err(NO_HTTP_HOST.to_string())),
         (IoRequest::CredentialStatus { .. }, None) => IoAnswer::CredentialStatus(Err(NO_HTTP_HOST.to_string())),
         (IoRequest::CredentialForget { .. }, None) => IoAnswer::CredentialForget(Err(NO_HTTP_HOST.to_string())),
         _ => IoAnswer::Service(Err("not an HTTP request".to_string())),
@@ -1756,6 +1967,87 @@ mod http_replay_tests {
         assert!(end.pending.is_none() && end.diverged.is_none());
         let (_, end) = port.run_step(recorded, || port.random(5));
         assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
+    }
+
+    fn os_ask(op: OsOp, path: &str) -> IoRequest {
+        IoRequest::Os { op, args: vec![Value::String(path.to_string())], key: None, site: None }
+    }
+
+    fn os_ok() -> IoAnswer {
+        IoAnswer::Os(Ok(Value::Object(crate::evaluator::ValueMap::from([(
+            "data".to_string(),
+            Value::String("hi".to_string()),
+        )]))))
+    }
+
+    #[test]
+    fn an_os_ask_is_journaled_and_replayed_without_asking_again() {
+        let port = port();
+        let args = [Value::String("/a".to_string())];
+        let recorded = vec![Exchange::new(os_ask(OsOp::ReadFile, "/a"), os_ok())];
+        let (out, end) = port.run_step(recorded.clone(), || port.os(OsOp::ReadFile, &args, None));
+        assert_eq!(out.map(|v| v.get_path("data").map(Value::to_string_value)), Ok(Some("hi".to_string())));
+        assert!(end.pending.is_none() && end.diverged.is_none());
+    }
+
+    #[test]
+    fn a_changed_os_ask_is_diverged() {
+        let port = port();
+        let recorded = vec![Exchange::new(os_ask(OsOp::ReadFile, "/a"), os_ok())];
+        let other_path = [Value::String("/b".to_string())];
+        let (_, end) = port.run_step(recorded.clone(), || port.os(OsOp::ReadFile, &other_path, None));
+        assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
+        let same_path = [Value::String("/a".to_string())];
+        let (_, end) = port.run_step(recorded.clone(), || port.os(OsOp::WriteFile, &same_path, None));
+        assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
+        let (_, end) = port.run_step(recorded, || port.os(OsOp::ReadFile, &same_path, Some("k")));
+        assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
+    }
+
+    #[test]
+    fn an_os_failure_answer_replays_as_the_same_failure() {
+        let port = port();
+        let failure = OsError::new(OsErrorKind::NotFound, "no such file");
+        let recorded = vec![Exchange::new(os_ask(OsOp::Stat, "/gone"), IoAnswer::Os(Err(failure.clone())))];
+        let (out, end) = port.run_step(recorded, || port.os(OsOp::Stat, &[Value::String("/gone".to_string())], None));
+        assert_eq!(out, Err(failure));
+        assert!(end.diverged.is_none());
+    }
+
+    #[test]
+    fn an_os_ask_is_answered_only_by_an_os_answer_or_a_cancel() {
+        let ask = os_ask(OsOp::ReadFile, "/a");
+        assert!(os_ok().answers(&ask));
+        assert!(IoAnswer::ServiceCancelled.answers(&ask));
+        assert!(!IoAnswer::Random(Ok(vec![1])).answers(&ask));
+        assert!(!IoAnswer::Http(Err(TransportError::Failed("x".into()))).answers(&ask));
+        assert!(!os_ok().answers(&IoRequest::Random { bytes: 1 }));
+        assert!(!os_ok().answers(&IoRequest::CancelCall { key: "k".into() }));
+    }
+
+    #[test]
+    fn only_a_streaming_os_ask_carries_the_call_site() {
+        let port = port();
+        port.set_call_site(Some(CallSite {
+            orbital: None,
+            trait_name: "T".into(),
+            follow_on: false,
+            emit: CallRoutes::default(),
+        }));
+        let (_, end) = port.run_step(Vec::new(), || port.os(OsOp::ReadFile, &[Value::Null], None));
+        let Some(IoRequest::Os { site, .. }) = end.pending else { panic!("expected a pending os ask") };
+        assert!(site.is_none());
+        let (_, end) = port.run_step(Vec::new(), || port.os(OsOp::StdinRead, &[], Some("k")));
+        let Some(IoRequest::Os { site, key, .. }) = end.pending else { panic!("expected a pending os ask") };
+        assert_eq!(site.map(|s| s.trait_name), Some("T".to_string()));
+        assert_eq!(key.as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn the_native_answerer_is_reached_through_the_one_dispatch_point() {
+        let ask = os_ask(OsOp::ReadFile, "/a");
+        assert!(matches!(answer_http(None, &ask), IoAnswer::Os(Err(OsError { kind: OsErrorKind::Unsupported, .. }))));
+        assert!(!matches!(answer_http(None, &IoRequest::CancelCall { key: "k".into() }), IoAnswer::Os(_)));
     }
 
     #[test]

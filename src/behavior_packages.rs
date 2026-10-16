@@ -20,7 +20,9 @@ pub struct BehaviorPackage {
     pub prefix: String,
     pub root: PathBuf,
     pub registry: RegistrySource,
-    pub index: PathBuf,
+    /// The package's own `files` allowlist (`package.json`), as written; it bounds which behaviors under
+    /// [`Self::registry`] the package ships (see [`Self::ships`]).
+    pub files: Vec<String>,
     /// The `.lolo` tree (`orb.source`) the package's contracts are lowered from;
     /// `None` when the manifest declares only a materialized `orb.registry`.
     pub lolo_source: Option<PathBuf>,
@@ -35,6 +37,26 @@ pub struct BehaviorPackage {
     /// taking precedence over `dependencies` when both are present.
     pub core_range: Option<String>,
     pub is_link: bool,
+}
+
+impl BehaviorPackage {
+    /// Whether the behavior file at `path` is one the package ships: covered by a `files` entry that
+    /// lies on the declared registry/source tree, or every file when no entry does (a package that
+    /// declares nothing about the tree ships all of it).
+    pub fn ships(&self, path: &Path) -> bool {
+        let root = self.registry.root();
+        let on_tree: Vec<PathBuf> = self
+            .files
+            .iter()
+            .map(|f| self.root.join(f))
+            .filter(|f| f.starts_with(root) || root.starts_with(f))
+            .collect();
+        on_tree.is_empty() || on_tree.iter().any(|f| path.starts_with(f))
+    }
+
+    pub fn registry_is_locked(&self) -> bool {
+        self.sidecars.iter().any(|sidecar| sidecar.cache_path.as_path() == self.registry.root())
+    }
 }
 
 /// Where a package's behavior programs come from — decided by its manifest, never
@@ -159,6 +181,12 @@ fn read_sidecar_lock(
 
 #[derive(Debug, Error)]
 pub enum DiscoverError {
+    #[error("behavior name '{name}' is declared by both {path_a:?} and {path_b:?}")]
+    DuplicateBehaviorName {
+        name: String,
+        path_a: PathBuf,
+        path_b: PathBuf,
+    },
     #[error("invalid sidecars.lock.json at {path:?}: {reason}")]
     InvalidSidecarLock { path: PathBuf, reason: String },
     #[error("behavior prefix '{prefix}' is declared by both {package_a} ({path_a:?}) and {package_b} ({path_b:?})")]
@@ -182,6 +210,82 @@ pub enum DiscoverError {
         path: PathBuf,
         source: std::io::Error,
     },
+}
+
+pub fn index_registry_source(
+    source: &RegistrySource,
+) -> Result<HashMap<String, PathBuf>, DiscoverError> {
+    let mut index = HashMap::new();
+    let mut visited = HashSet::new();
+    let mut stack = vec![source.root().to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let io = |source| DiscoverError::Io { path: dir.clone(), source };
+        let canonical = fs::canonicalize(&dir).map_err(io)?;
+        if !visited.insert(canonical) {
+            continue;
+        }
+        let mut entries = fs::read_dir(&dir)
+            .map_err(io)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io)?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|source| DiscoverError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            let is_dir = if file_type.is_symlink() {
+                fs::metadata(&path)
+                    .map_err(|source| DiscoverError::Io { path: path.clone(), source })?
+                    .is_dir()
+            } else {
+                file_type.is_dir()
+            };
+            if is_dir {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == source.extension()) {
+                if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
+                    insert_registry_path(&mut index, name.to_string(), path)?;
+                }
+            }
+        }
+    }
+    Ok(index)
+}
+
+fn insert_registry_path(
+    index: &mut HashMap<String, PathBuf>,
+    name: String,
+    path: PathBuf,
+) -> Result<(), DiscoverError> {
+    match index.entry(name) {
+        std::collections::hash_map::Entry::Occupied(entry) => Err(DiscoverError::DuplicateBehaviorName {
+            name: entry.key().clone(),
+            path_a: entry.get().clone(),
+            path_b: path,
+        }),
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(path);
+            Ok(())
+        }
+    }
+}
+
+pub fn index_registry_sources<'a>(
+    sources: impl IntoIterator<Item = &'a RegistrySource>,
+) -> Result<HashMap<String, PathBuf>, DiscoverError> {
+    let mut sources: Vec<_> = sources.into_iter().collect();
+    sources.sort_by(|a, b| a.root().cmp(b.root()));
+    let mut index = HashMap::new();
+    for source in sources {
+        let mut entries: Vec<_> = index_registry_source(source)?.into_iter().collect();
+        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        for (name, path) in entries {
+            insert_registry_path(&mut index, name, path)?;
+        }
+    }
+    Ok(index)
 }
 
 /// Node-style walk-up from `start_dir`: keeps installed behavior packages,
@@ -212,6 +316,9 @@ pub fn discover_with_cache(
     }
 
     check_prefix_conflicts(&found)?;
+    for package in found.iter().filter(|package| !package.registry_is_locked()) {
+        index_registry_source(&package.registry)?;
+    }
     Ok(found)
 }
 
@@ -461,7 +568,7 @@ fn scan_node_modules(
 /// carries `orb.language` (language data, see `language_data`) and is not a
 /// behavior package. A block with ANY behavior field is a behavior package,
 /// so a malformed one (say `registry` without `prefix`) still errors loudly.
-const BEHAVIOR_BLOCK_FIELDS: [&str; 4] = ["prefix", "registry", "source", "index"];
+const BEHAVIOR_BLOCK_FIELDS: [&str; 3] = ["prefix", "registry", "source"];
 
 fn is_behavior_block(orb: &Map<String, Value>) -> bool {
     BEHAVIOR_BLOCK_FIELDS.iter().any(|f| orb.contains_key(*f))
@@ -479,7 +586,6 @@ fn build_package(
     let prefix = require_str(orb, "prefix", package_json_path)?;
     let registry_rel = optional_str(orb, "registry", package_json_path)?;
     let source_rel = optional_str(orb, "source", package_json_path)?;
-    let index_rel = require_str(orb, "index", package_json_path)?;
     let compiler_range = require_str(orb, "compiler", package_json_path)?;
     let vectors_rel = optional_str(orb, "vectors", package_json_path)?;
     let std_peer_range = peer_dependency(top, "@almadar/std");
@@ -525,7 +631,6 @@ fn build_package(
             })
         }
     };
-    let (index, index_locked) = declared(&index_rel);
     let lolo_source = source_rel.as_ref().map(|rel| root.join(rel));
     let vectors_declared: Option<(PathBuf, bool)> = vectors_rel.as_deref().map(declared);
     let vectors: Option<PathBuf> = vectors_declared.as_ref().map(|(p, _)| p.clone());
@@ -540,7 +645,6 @@ fn build_package(
             &registry.root().to_path_buf(),
             registry_locked,
         ),
-        ("index", &index, index_locked),
     ] {
         if !locked && !path.exists() {
             return Err(DiscoverError::MissingDeclaredPath {
@@ -566,7 +670,7 @@ fn build_package(
         prefix,
         root,
         registry,
-        index,
+        files: package_files(top),
         lolo_source,
         vectors,
         sidecars,
@@ -604,6 +708,15 @@ fn require_str(
             reason: format!("missing field '{field}'"),
         }),
     }
+}
+
+fn package_files(top: &Map<String, Value>) -> Vec<String> {
+    top.get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f.as_str().map(|f| f.trim_end_matches('/').to_string()))
+        .collect()
 }
 
 fn peer_dependency(top: &Map<String, Value>, name: &str) -> Option<String> {
@@ -680,8 +793,7 @@ mod tests {
         fs::create_dir_all(&pkg_dir).unwrap();
         let registry_dir = pkg_dir.join("behaviors/registry");
         fs::create_dir_all(&registry_dir).unwrap();
-        fs::write(registry_dir.join("x.orb"), "{}").unwrap();
-        fs::write(pkg_dir.join("behaviors/behaviors-registry.json"), "{}").unwrap();
+        fs::write(registry_dir.join(format!("{prefix}-x.orb")), "{}").unwrap();
         fs::create_dir_all(pkg_dir.join("dist")).unwrap();
         fs::write(pkg_dir.join("dist/vectors.vec"), "x").unwrap();
 
@@ -691,7 +803,6 @@ mod tests {
             "orb": {
                 "prefix": prefix,
                 "registry": "behaviors/registry",
-                "index": "behaviors/behaviors-registry.json",
                 "vectors": "dist/vectors.vec",
                 "compiler": ">=4.10.0"
             },
@@ -796,23 +907,6 @@ mod tests {
         let cache = tmp.path().join("cache");
         let found = discover_with_cache(tmp.path(), &tmp.path().join("store"), &cache).unwrap();
         assert_eq!(found[0].vectors, Some(cache.join(SHA)));
-    }
-
-    #[test]
-    fn locked_non_vectors_path_absent_from_package_passes() {
-        let tmp = TestTempDir::new("lock-index");
-        let nm = tmp.path().join("node_modules");
-        let pkg_dir = fake_package(&nm, "pkg-a", "pa", "1.0.0");
-        fs::remove_file(pkg_dir.join("behaviors/behaviors-registry.json")).unwrap();
-        write_lock(
-            &pkg_dir,
-            serde_json::json!({ "behaviors/behaviors-registry.json": lock_entry(2) }),
-        );
-        let cache = tmp.path().join("cache");
-        let found = discover_with_cache(tmp.path(), &tmp.path().join("store"), &cache).unwrap();
-        assert_eq!(found[0].index, cache.join(SHA));
-        let vectors = found[0].vectors.as_ref().unwrap();
-        assert!(vectors.starts_with(&found[0].root));
     }
 
     #[test]
@@ -992,7 +1086,6 @@ mod tests {
             fs::canonicalize(node_modules.join("@almadar-io/behaviors")).unwrap()
         );
         assert!(pkg.registry.root().exists());
-        assert!(pkg.index.exists());
         assert_eq!(pkg.lolo_source, None);
     }
 
@@ -1038,6 +1131,64 @@ mod tests {
         );
     }
 
+    fn live_package(node_modules: &Path, name: &str, prefix: &str, files: &[&str]) -> PathBuf {
+        let pkg_dir = fake_package(node_modules, name, prefix, "1.0.0");
+        let lolo = pkg_dir.join("behaviors/lolo");
+        for file in files {
+            let path = lolo.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "").unwrap();
+        }
+        let raw = fs::read_to_string(pkg_dir.join("package.json")).unwrap();
+        let mut pkg_json: Value = serde_json::from_str(&raw).unwrap();
+        let orb = pkg_json["orb"].as_object_mut().unwrap();
+        orb.remove("registry");
+        orb.insert("source".to_string(), Value::String("behaviors/lolo".to_string()));
+        fs::write(pkg_dir.join("package.json"), serde_json::to_string_pretty(&pkg_json).unwrap()).unwrap();
+        pkg_dir
+    }
+
+    fn discover_in(tmp: &TestTempDir) -> Result<Vec<BehaviorPackage>, DiscoverError> {
+        fs::write(tmp.path().join("package.json"), "{}").unwrap();
+        discover(tmp.path(), &tmp.path().join("unused-user-store"))
+    }
+
+    #[test]
+    fn unique_behavior_names_in_a_package_pass() {
+        let tmp = TestTempDir::new("unique-names");
+        live_package(&tmp.path().join("node_modules"), "pkg-a", "pkg-a", &["infra/atoms/std-a.lolo", "ui/atoms/std-b.lolo"]);
+        assert_eq!(discover_in(&tmp).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn same_behavior_name_twice_in_one_package_is_refused_naming_both_files() {
+        let tmp = TestTempDir::new("dup-names");
+        live_package(
+            &tmp.path().join("node_modules"),
+            "pkg-a",
+            "pkg-a",
+            &["infra/atoms/std-calendar.lolo", "ui/core/atoms/std-calendar.lolo"],
+        );
+        match discover_in(&tmp).unwrap_err() {
+            DiscoverError::DuplicateBehaviorName { name, path_a, path_b } => {
+                assert_eq!(name, "std-calendar");
+                let both = format!("{path_a:?}{path_b:?}");
+                assert!(both.contains("infra/atoms/std-calendar.lolo"), "{both}");
+                assert!(both.contains("ui/core/atoms/std-calendar.lolo"), "{both}");
+            }
+            other => panic!("expected DuplicateBehaviorName, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn same_behavior_name_in_two_different_packages_is_not_a_discovery_error() {
+        let tmp = TestTempDir::new("cross-package-names");
+        let node_modules = tmp.path().join("node_modules");
+        live_package(&node_modules, "pkg-a", "pkg-a", &["atoms/std-shared.lolo"]);
+        live_package(&node_modules, "pkg-b", "pkg-b", &["atoms/std-shared.lolo"]);
+        assert_eq!(discover_in(&tmp).unwrap().len(), 2);
+    }
+
     #[test]
     fn prefix_conflict_between_two_names() {
         let tmp = TestTempDir::new("prefix-conflict");
@@ -1069,13 +1220,13 @@ mod tests {
         fs::write(tmp.path().join("package.json"), "{}").unwrap();
         let node_modules = tmp.path().join("node_modules");
         let pkg_dir = fake_package(&node_modules, "pkg-a", "pkg-a-prefix", "1.0.0");
-        fs::remove_file(pkg_dir.join("behaviors/behaviors-registry.json")).unwrap();
+        fs::remove_dir_all(pkg_dir.join("behaviors/registry")).unwrap();
 
         let err = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap_err();
         match err {
             DiscoverError::MissingDeclaredPath { package, field, .. } => {
                 assert_eq!(package, "pkg-a");
-                assert_eq!(field, "index");
+                assert_eq!(field, "registry");
             }
             other => panic!("expected MissingDeclaredPath, got {other:?}"),
         }
