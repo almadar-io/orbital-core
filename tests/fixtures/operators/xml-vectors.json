@@ -404,5 +404,221 @@
       ]
     },
     "source": "arXiv search.json Atom feed (orbital-integrations fixture)"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<p><t>a</t></p>",
+      "Row"
+    ],
+    "expect": {
+      "t": "a"
+    },
+    "source": "control: no list paths, a single child is the value itself"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<p><t>a</t></p>",
+      "Row",
+      [
+        "list",
+        [
+          "list",
+          "t"
+        ]
+      ]
+    ],
+    "expect": {
+      "t": [
+        "a"
+      ]
+    },
+    "source": "a declared list field with one child is a one-element list"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<p><t>a</t><t>b</t></p>",
+      "Row",
+      [
+        "list",
+        [
+          "list",
+          "t"
+        ]
+      ]
+    ],
+    "expect": {
+      "t": [
+        "a",
+        "b"
+      ]
+    },
+    "source": "a declared list field with repeated children is unchanged"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<p><t>a</t><n>1</n></p>",
+      "Row",
+      [
+        "list",
+        [
+          "list",
+          "t"
+        ]
+      ]
+    ],
+    "expect": {
+      "t": [
+        "a"
+      ],
+      "n": "1"
+    },
+    "source": "a field not declared a list keeps its single child as the value"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<p><n>1</n></p>",
+      "Row",
+      [
+        "list",
+        [
+          "list",
+          "t"
+        ]
+      ]
+    ],
+    "expect": {
+      "n": "1"
+    },
+    "source": "an absent list field stays absent"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<p><t/></p>",
+      "Row",
+      [
+        "list",
+        [
+          "list",
+          "t"
+        ]
+      ]
+    ],
+    "expect": {
+      "t": [
+        ""
+      ]
+    },
+    "source": "an empty list element is a one-element list of the empty string"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<a>hi</a>",
+      "Row",
+      [
+        "list",
+        [
+          "list",
+          "t"
+        ]
+      ]
+    ],
+    "expect": "hi",
+    "source": "a text-only root is its text, whatever the paths"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<feed><entry><author><name>A</name></author></entry></feed>",
+      "Row",
+      [
+        "list",
+        [
+          "list",
+          "entry"
+        ],
+        [
+          "list",
+          "entry",
+          "author"
+        ]
+      ]
+    ],
+    "expect": {
+      "entry": [
+        {
+          "author": [
+            {
+              "name": "A"
+            }
+          ]
+        }
+      ]
+    },
+    "source": "a list nested in a list element is a list"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<feed><entry><author><name>A</name></author></entry><entry><title>t</title></entry></feed>",
+      "Row",
+      [
+        "list",
+        [
+          "list",
+          "entry"
+        ],
+        [
+          "list",
+          "entry",
+          "author"
+        ]
+      ]
+    ],
+    "expect": {
+      "entry": [
+        {
+          "author": [
+            {
+              "name": "A"
+            }
+          ]
+        },
+        {
+          "title": "t"
+        }
+      ]
+    },
+    "source": "a nested list is wrapped per element and stays absent where absent"
+  },
+  {
+    "op": "xml/parse",
+    "args": [
+      "<feed><entry><author><name>A</name></author></entry></feed>",
+      "Row",
+      [
+        "list",
+        [
+          "list",
+          "entry"
+        ]
+      ]
+    ],
+    "expect": {
+      "entry": [
+        {
+          "author": {
+            "name": "A"
+          }
+        }
+      ]
+    },
+    "source": "control: a nested field absent from the paths keeps its single child as the value"
   }
 ]

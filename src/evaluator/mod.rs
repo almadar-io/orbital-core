@@ -35,7 +35,7 @@ mod value;
 
 pub use context::{BindingContext, BindingContextBuilder};
 pub use operators::{
-    actual_of, callback_index_position, eval_expr, get_operator, operator_signature, raw_callback_params, EvalResult, Operator,
+    actual_of, bake_list_shapes, callback_index_position, eval_expr, get_operator, operator_signature, raw_callback_params, EvalResult, Operator,
     TimeUnit, TIME_UNIT_VOCABULARY,
 };
 pub(crate) use operators::value_to_json;

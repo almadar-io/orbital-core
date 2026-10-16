@@ -13,6 +13,11 @@
 //! - any other element is an object of its attributes and children, plus `#text` when it has text of its own;
 //! - text is every descendant text node in document order, whitespace runs collapsed to one space and trimmed.
 //!
+//! `(xml/parse s Shape paths)` — the compiler rewrites a call whose `Shape` declares list fields into this three-argument
+//! form (`bake_list_shapes`): `paths` is `(list (list "a" "b") ...)`, every field path (through nested shapes and list
+//! elements) whose declared type is a list. With it, such a path always reads as a list (one child becomes a
+//! one-element list, an absent one stays absent); without it the two-argument rules above are unchanged.
+//!
 //! The five predefined entities, character references and CDATA read as text; the declaration, comments,
 //! processing instructions and a doctype are ignored. Malformed XML (no root, a second root, text outside the
 //! root, mismatched or unclosed tags, an unknown entity, a duplicate attribute, an invalid name) is an evaluation
@@ -20,6 +25,7 @@
 
 use super::macros::*;
 use super::*;
+use crate::schema::{Orbital, OrbitalSchema, PayloadField};
 use quick_xml::escape::resolve_xml_entity;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
@@ -198,6 +204,146 @@ pub(crate) fn parse_xml(text: &str) -> Result<Value, OrbitalError> {
     parse_tree(text).map(to_value)
 }
 
+/// Make every list-typed path of `paths` (relative to `value`) a list: a lone child is wrapped, an absent one stays
+/// absent, and the rest of a path descends into each element of a list.
+fn apply_list_paths(value: &mut Value, paths: &[Vec<String>]) {
+    match value {
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| apply_list_paths(item, paths)),
+        Value::Object(map) => {
+            let mut heads: Vec<&str> = paths
+                .iter()
+                .filter_map(|p| p.first())
+                .map(String::as_str)
+                .collect();
+            heads.dedup();
+            for head in heads {
+                let Some(child) = map.get_mut(head) else {
+                    continue;
+                };
+                if paths.iter().any(|p| p.len() == 1 && p[0] == head)
+                    && !matches!(child, Value::Array(_))
+                {
+                    *child = Value::Array(vec![std::mem::replace(child, Value::Null)]);
+                }
+                let rest: Vec<Vec<String>> = paths
+                    .iter()
+                    .filter(|p| p.len() > 1 && p[0] == head)
+                    .map(|p| p[1..].to_vec())
+                    .collect();
+                if !rest.is_empty() {
+                    apply_list_paths(child, &rest);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn list_paths_of(value: Value) -> Result<Vec<Vec<String>>, OrbitalError> {
+    let malformed = || bad("the list-path argument must be a list of lists of field names");
+    let Value::Array(paths) = value else {
+        return Err(malformed());
+    };
+    paths
+        .into_iter()
+        .map(|path| match path {
+            Value::Array(segments) => segments
+                .into_iter()
+                .map(|s| match s {
+                    Value::String(name) => Ok(name),
+                    _ => Err(malformed()),
+                })
+                .collect(),
+            _ => Err(malformed()),
+        })
+        .collect()
+}
+
+/// The dotted-path descriptor of a declared shape: every field path whose type is a list, nested shapes and list
+/// elements walked through. An attribute (`@name`) is always a string, so a path never runs through one.
+pub fn list_paths(fields: &[PayloadField]) -> Vec<Vec<String>> {
+    fn walk(fields: &[PayloadField], prefix: &[String], out: &mut Vec<Vec<String>>) {
+        for field in fields {
+            if field.name.starts_with('@') {
+                continue;
+            }
+            let mut path = prefix.to_vec();
+            path.push(field.name.clone());
+            if field.field_type.starts_with('[') {
+                out.push(path.clone());
+            }
+            if let Some(children) = &field.properties {
+                walk(children, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(fields, &[], &mut out);
+    out
+}
+
+fn bake_value(
+    node: &mut serde_json::Value,
+    types: &std::collections::BTreeMap<String, Vec<PayloadField>>,
+) -> bool {
+    use serde_json::Value as J;
+    let mut changed = false;
+    match node {
+        J::Array(items) => {
+            if let [J::String(op), _, J::String(shape)] = items.as_slice() {
+                if op == "xml/parse" {
+                    if let Some(fields) = types.get(shape) {
+                        let paths = list_paths(fields);
+                        if !paths.is_empty() {
+                            let mut descriptor = vec![J::String("list".into())];
+                            descriptor.extend(paths.into_iter().map(|path| {
+                                let mut entry = vec![J::String("list".into())];
+                                entry.extend(path.into_iter().map(J::String));
+                                J::Array(entry)
+                            }));
+                            items.push(J::Array(descriptor));
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            for item in items.iter_mut() {
+                changed |= bake_value(item, types);
+            }
+        }
+        J::Object(map) => {
+            for child in map.values_mut() {
+                changed |= bake_value(child, types);
+            }
+        }
+        _ => {}
+    }
+    changed
+}
+
+/// Rewrite every `(xml/parse s Shape)` whose `Shape` is one of its orbital's declared struct aliases and declares
+/// list fields into `(xml/parse s Shape paths)`. Idempotent: a call that already carries `paths` is left alone, and
+/// so is a bare name no orbital declares (the validator reports it).
+pub fn bake_list_shapes(schema: &mut OrbitalSchema) -> Result<(), serde_json::Error> {
+    for orbital in &mut schema.orbitals {
+        let Some(types) = orbital.types.clone().filter(|t| !t.is_empty()) else {
+            continue;
+        };
+        let mut tree = serde_json::to_value(&*orbital)?;
+        if let Some(object) = tree.as_object_mut() {
+            object.remove("types");
+        }
+        if bake_value(&mut tree, &types) {
+            let mut baked: Orbital = serde_json::from_value(tree)?;
+            baked.types = Some(types);
+            *orbital = baked;
+        }
+    }
+    Ok(())
+}
+
 pub struct XmlValidOp;
 impl Operator for XmlValidOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -220,9 +366,17 @@ pub struct XmlParseOp;
 impl Operator for XmlParseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "xml/parse", >= 2);
+        let paths = match args.get(2) {
+            Some(expr) => list_paths_of(eval_expr(expr, ctx)?)?,
+            None => Vec::new(),
+        };
         match eval_expr(&args[0], ctx)? {
             Value::Null => Ok(Value::Null),
-            Value::String(text) => parse_xml(&text),
+            Value::String(text) => {
+                let mut value = parse_xml(&text)?;
+                apply_list_paths(&mut value, &paths);
+                Ok(value)
+            }
             other => Err(bad(format!(
                 "expected a string argument, got {}",
                 other.type_name()
@@ -256,6 +410,150 @@ mod tests {
         assert_eq!(
             string(&parse_xml("<a>\u{a0}x\u{a0}</a>").unwrap()),
             "\u{a0}x\u{a0}"
+        );
+    }
+
+    fn field(name: &str, ty: &str, properties: Option<Vec<PayloadField>>) -> PayloadField {
+        PayloadField {
+            properties,
+            ..serde_json::from_value(serde_json::json!({ "name": name, "type": ty })).unwrap()
+        }
+    }
+
+    fn feed() -> Vec<PayloadField> {
+        vec![
+            field("title", "string", None),
+            field("@href", "[string]", None),
+            field(
+                "entry",
+                "[object]",
+                Some(vec![
+                    field("id", "string", None),
+                    field(
+                        "author",
+                        "[object]",
+                        Some(vec![field("name", "string", None)]),
+                    ),
+                    field(
+                        "owner",
+                        "object",
+                        Some(vec![field("tags", "[string]", None)]),
+                    ),
+                ]),
+            ),
+        ]
+    }
+
+    #[test]
+    fn list_paths_walk_nested_shapes_and_list_elements_but_never_an_attribute() {
+        assert_eq!(
+            list_paths(&feed()),
+            vec![
+                vec!["entry".to_string()],
+                vec!["entry".to_string(), "author".to_string()],
+                vec!["entry".to_string(), "owner".to_string(), "tags".to_string()],
+            ]
+        );
+        assert!(
+            list_paths(&[field("a", "string", None)]).is_empty(),
+            "control: no list field, no paths"
+        );
+    }
+
+    #[test]
+    fn list_paths_wrap_a_lone_child_at_every_depth_and_leave_the_rest() {
+        let paths = list_paths(&feed());
+        let mut value = parse_xml(
+            "<f><title>t</title><entry><id>1</id><author><name>A</name></author><owner><tags>x</tags></owner></entry></f>",
+        )
+        .unwrap();
+        apply_list_paths(&mut value, &paths);
+        let json = serde_json::to_value(&value).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "title": "t",
+                "entry": [{ "id": "1", "author": [{ "name": "A" }], "owner": { "tags": ["x"] } }]
+            })
+        );
+        let mut absent = parse_xml("<f><title>t</title></f>").unwrap();
+        apply_list_paths(&mut absent, &paths);
+        assert_eq!(
+            serde_json::to_value(&absent).unwrap(),
+            serde_json::json!({ "title": "t" })
+        );
+        let mut bare = parse_xml("<f><entry><id>1</id></entry></f>").unwrap();
+        apply_list_paths(&mut bare, &[]);
+        assert_eq!(
+            serde_json::to_value(&bare).unwrap(),
+            serde_json::json!({ "entry": { "id": "1" } })
+        );
+    }
+
+    fn schema_with(call: serde_json::Value, types: serde_json::Value) -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "app",
+            "orbitals": [{
+                "name": "O",
+                "entity": { "name": "E", "persistence": "runtime", "fields": [] },
+                "traits": [{
+                    "name": "T",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [{ "key": "GO" }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [["set", "@entity.x", call]] }]
+                    }
+                }],
+                "types": types
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn baked_call(schema: &OrbitalSchema) -> serde_json::Value {
+        let tree = serde_json::to_value(schema).unwrap();
+        tree["orbitals"][0]["traits"][0]["stateMachine"]["transitions"][0]["effects"][0][2].clone()
+    }
+
+    #[test]
+    fn bake_appends_the_list_paths_to_a_call_naming_a_declared_shape() {
+        let types = serde_json::json!({ "Feed": [{ "name": "entry", "type": "[object]", "properties": [{ "name": "id", "type": "string" }] }] });
+        let mut schema = schema_with(
+            serde_json::json!(["xml/parse", "@payload.body", "Feed"]),
+            types,
+        );
+        bake_list_shapes(&mut schema).unwrap();
+        let expected = serde_json::json!([
+            "xml/parse",
+            "@payload.body",
+            "Feed",
+            ["list", ["list", "entry"]]
+        ]);
+        assert_eq!(baked_call(&schema), expected);
+        bake_list_shapes(&mut schema).unwrap();
+        assert_eq!(baked_call(&schema), expected, "idempotent");
+    }
+
+    #[test]
+    fn bake_leaves_a_shape_without_lists_and_an_undeclared_name_bare() {
+        let flat = serde_json::json!({ "Row": [{ "name": "id", "type": "string" }] });
+        let mut schema = schema_with(
+            serde_json::json!(["xml/parse", "@payload.body", "Row"]),
+            flat.clone(),
+        );
+        bake_list_shapes(&mut schema).unwrap();
+        assert_eq!(
+            baked_call(&schema),
+            serde_json::json!(["xml/parse", "@payload.body", "Row"])
+        );
+        let mut undeclared = schema_with(
+            serde_json::json!(["xml/parse", "@payload.body", "Nope"]),
+            flat,
+        );
+        bake_list_shapes(&mut undeclared).unwrap();
+        assert_eq!(
+            baked_call(&undeclared),
+            serde_json::json!(["xml/parse", "@payload.body", "Nope"])
         );
     }
 
