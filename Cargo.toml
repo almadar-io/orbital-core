@@ -8,36 +8,13 @@ description = "Core types and runtime for Orbital schema execution"
 
 [features]
 default = []
-async = ["tokio"]
-# The blocking HTTP `ServerBridge` (`client::http::SyncServerBridge`).
-client-http = ["dep:ureq"]
+async = ["orbital-core-base/async"]
+client-http = ["orbital-core-runtime/client-http"]
 
 [dependencies]
-indexmap = { version = "2", features = ["serde"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
-serde_path_to_error = "0.1"
-thiserror = "1.0"
-lru = "0.12"
-lazy_static = "1.4"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-chrono = { version = "0.4", features = ["serde"] }
-parking_lot = "0.12"
-semver = "1"
-sha2 = "0.10"
-md-5 = "0.10"
-base64 = "0.22"
-quick-xml = "0.38"
-tokio = { version = "1.0", features = ["full"], optional = true }
-# `Instant` that works on wasm32 (performance.now); std's panics there.
-web-time = "1.1"
-# Crypto entropy comes from the journaled host, never dependency-default OS RNGs.
-aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
-p256 = { version = "0.13", default-features = false, features = ["alloc", "ecdh", "ecdsa", "pem"] }
-rsa = { version = "0.9", default-features = false, features = ["pem", "sha2"] }
-url = "2"
-ureq = { version = "2.9", default-features = false, features = ["json"], optional = true }
+orbital-core-base = { path = "crates/base" }
+orbital-core-eval = { path = "crates/eval" }
+orbital-core-runtime = { path = "crates/runtime" }
 
 [dev-dependencies]
 tempfile = "3.10"
@@ -46,6 +23,7 @@ tokio = { version = "1.0", features = ["full", "rt", "macros"] }
 syn = { version = "2", features = ["full"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 ts-rs = "12.0.1"
+serde_json = { version = "1.0", features = ["preserve_order"] }
 
 [[bench]]
 name = "parity_fixtures"
@@ -57,12 +35,3 @@ harness = false
 
 # `std::time::SystemTime::now()` / `chrono::Utc::now()` panic on bare wasm32; the wasm
 # build reads the clock through `js_sys::Date` (see `time_util`). wasm32-only.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-getrandom = "0.2"
-
-# os/ host: signals, uid/gid, statvfs, getloadavg, uname (POSIX calls std does not expose).
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"

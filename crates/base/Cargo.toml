@@ -1,0 +1,39 @@
+[package]
+name = "orbital-core-base"
+version = "18.0.0"
+edition = "2021"
+license = "BUSL-1.1"
+repository = "https://github.com/almadar-io/orbital-core"
+description = "orbital-core layer: base"
+
+[dependencies]
+indexmap = { version = "2", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_path_to_error = "0.1"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+semver = "1"
+sha2 = "0.10"
+md-5 = "0.10"
+base64 = "0.22"
+tokio = { version = "1.0", features = ["full"], optional = true }
+p256 = { version = "0.13", default-features = false, features = ["alloc", "ecdh", "ecdsa", "pem"] }
+rsa = { version = "0.9", default-features = false, features = ["pem", "sha2"] }
+ts-rs = { version = "12.0.1", optional = true }
+
+[features]
+ts-export = ["dep:ts-rs"]
+async = ["dep:tokio"]
+
+[dev-dependencies]
+tempfile = "3.10"
+tokio = { version = "1.0", features = ["full", "rt", "macros"] }
+syn = { version = "2", features = ["full"] }
+orbital-core = { path = "../.." }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
