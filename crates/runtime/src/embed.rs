@@ -3,6 +3,7 @@
 //! [`wire`] types out; every decision (leg routing, merged responses, the tick clock's frame,
 //! repaints) is made here.
 
+pub mod eval_wire;
 pub mod server;
 pub mod wire;
 

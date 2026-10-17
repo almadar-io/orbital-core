@@ -3,7 +3,7 @@
 //! Mirrors the TS verifier's `Frame` (`packages/almadar-verify/src/observer/types.ts`),
 //! trimmed to what the headless kernel circuit can witness.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub use crate::planner::Variant;
@@ -22,7 +22,8 @@ pub struct Cause {
 /// Per-frame outcome. `Inconclusive` means the hermetic preamble could not place the
 /// machine in `from`, so the step's transition could not be exercised — it is a coverage
 /// gap, NOT a transition failure (avoids mislabeling unreachable setups as bugs).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FrameStatus {
     Pass,
@@ -34,7 +35,8 @@ pub enum FrameStatus {
 }
 
 /// Why a [`FrameStatus::Gap`] step was not driven.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GapReason {
     /// The step's event is the reply route (`emit.success`, `cancelled`, `onMessage`, or a failure no
@@ -44,13 +46,16 @@ pub enum GapReason {
 }
 
 /// A transition a dispatch fired after its seed (a cascaded emit or listener).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FiredHop {
+    #[serde(rename = "trait")]
     pub trait_name: String,
     pub from: String,
     pub event: String,
     pub to: String,
     /// Position of the arm among the state's `from --event-->` arms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arm: Option<usize>,
 }
 

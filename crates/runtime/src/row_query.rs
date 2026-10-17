@@ -182,6 +182,9 @@ pub struct QueryCapabilities {
     pub exact_total: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ids_only: Option<bool>,
+    /// `nearest` is pushed down: the store ranks by cosine similarity itself (EXEC-FETCH-2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nearest: Option<bool>,
 }
 
 impl QueryCapabilities {
@@ -209,6 +212,7 @@ impl QueryCapabilities {
             window: true,
             exact_total: true,
             ids_only: Some(true),
+            nearest: Some(true),
         }
     }
 }
@@ -262,6 +266,7 @@ pub enum QueryUnsupportedReason {
     OrderField,
     Window,
     ExactTotal,
+    Nearest,
 }
 
 impl QueryUnsupportedReason {
@@ -273,6 +278,7 @@ impl QueryUnsupportedReason {
             Self::OrderField => "order-field",
             Self::Window => "window",
             Self::ExactTotal => "exact-total",
+            Self::Nearest => "nearest",
         }
     }
 }
@@ -410,6 +416,9 @@ pub fn query_unsupported_reason(
             return Some(QueryUnsupportedReason::ValueKindUnsupported);
         }
     }
+    if query.nearest.is_some() {
+        return (capabilities.nearest != Some(true)).then_some(QueryUnsupportedReason::Nearest);
+    }
     if let RowOrderableFields::Listed { fields } = &capabilities.orderable_fields {
         if !fields.contains(&effective_row_order(query).field) {
             return Some(QueryUnsupportedReason::OrderField);
@@ -495,15 +504,6 @@ pub fn effective_row_order(query: &RowQuery) -> RowOrder {
     query.order.clone().unwrap_or_else(default_row_order)
 }
 
-/// The row's `id` as text; empty when it has none.
-pub fn row_id(row: &Value) -> String {
-    match row_field(row, "id") {
-        Some(Value::String(s)) => s.clone(),
-        Some(other) if !other.is_null() => other.to_string(),
-        _ => String::new(),
-    }
-}
-
 // ----- running a query ------------------------------------------------------------------------
 
 /// What a scan visitor tells its source.
@@ -542,8 +542,14 @@ impl<'q> QueryRun<'q> {
         ScanControl::Continue
     }
 
-    /// The window's pointers in order, and the total.
-    fn window(mut self) -> (Vec<Arc<Value>>, usize) {
+    /// The window's pointers in order, and the total. A `nearest` query is the nearest `k` of the matches,
+    /// with no order, offset or limit, and its total is the count returned (EXEC-FETCH-2).
+    fn window(mut self) -> Result<(Vec<Arc<Value>>, usize), String> {
+        if let Some(nearest) = &self.query.nearest {
+            let rows = nearest_rows(self.matched, nearest)?;
+            let total = rows.len();
+            return Ok((rows, total));
+        }
         let offset = self.query.offset.unwrap_or(0);
         let order = effective_row_order(self.query);
         let cmp = |a: &Arc<Value>, b: &Arc<Value>| compare_rows(a, b, &order);
@@ -567,30 +573,30 @@ impl<'q> QueryRun<'q> {
         } else {
             self.total
         };
-        (window, total)
+        Ok((window, total))
     }
 
     /// The page: only the window's rows are cloned.
-    pub fn finish(self) -> RowPage {
-        let (window, total) = self.window();
-        RowPage {
+    pub fn finish(self) -> Result<RowPage, String> {
+        let (window, total) = self.window()?;
+        Ok(RowPage {
             rows: window.iter().map(|r| (**r).clone()).collect(),
             total,
-        }
+        })
     }
 
     /// The ids of the page, no row cloned.
-    pub fn finish_ids(self) -> RowIdPage {
-        let (window, total) = self.window();
-        RowIdPage {
+    pub fn finish_ids(self) -> Result<RowIdPage, String> {
+        let (window, total) = self.window()?;
+        Ok(RowIdPage {
             ids: window.iter().map(|r| row_id(r)).collect(),
             total,
-        }
+        })
     }
 }
 
-/// The reference run of a query over `rows`.
-pub fn run_query<'a>(rows: impl IntoIterator<Item = &'a Arc<Value>>, query: &RowQuery) -> RowPage {
+/// The reference run of a query over `rows`; fails only for a `nearest` query the rows cannot answer.
+pub fn run_query<'a>(rows: impl IntoIterator<Item = &'a Arc<Value>>, query: &RowQuery) -> Result<RowPage, String> {
     let mut run = QueryRun::new(query);
     for row in rows {
         if run.visit(row) == ScanControl::Stop {
@@ -601,7 +607,7 @@ pub fn run_query<'a>(rows: impl IntoIterator<Item = &'a Arc<Value>>, query: &Row
 }
 
 /// The reference run of an ids-only query over `rows`: the same window as [`run_query`].
-pub fn run_ids<'a>(rows: impl IntoIterator<Item = &'a Arc<Value>>, query: &RowQuery) -> RowIdPage {
+pub fn run_ids<'a>(rows: impl IntoIterator<Item = &'a Arc<Value>>, query: &RowQuery) -> Result<RowIdPage, String> {
     let mut run = QueryRun::new(query);
     for row in rows {
         if run.visit(row) == ScanControl::Stop {
@@ -633,17 +639,22 @@ pub fn resolve_row_set<'a>(
         filter: reference.query.filter.clone(),
         ..RowQuery::default()
     };
-    let matching = run_query(rows, &query);
+    let matching = run_query(rows, &query).expect("a query without nearest cannot fail");
     let by_id: std::collections::HashMap<String, &Value> =
         matching.rows.iter().map(|r| (row_id(r), r)).collect();
-    let resolved = reference
+    let resolved: Vec<Value> = reference
         .ids
         .iter()
         .filter_map(|id| by_id.get(id).map(|r| (*r).clone()))
         .collect();
+    let total = if reference.query.nearest.is_some() {
+        resolved.len()
+    } else {
+        matching.total
+    };
     RowPage {
         rows: resolved,
-        total: matching.total,
+        total,
     }
 }
 
@@ -1349,6 +1360,6 @@ pub fn order_of(field: &str, descending: bool) -> Result<RowOrder, NotExpressibl
 }
 
 #[allow(unused_imports)]
-use orbital_core_base::row_set::{row_field, is_missing, same_value, order_values, compare_leaf, fold_case};
+use orbital_core_base::row_set::{nearest_rows, row_field, is_missing, same_value, order_values, compare_leaf, fold_case};
 #[allow(unused_imports)]
-pub use orbital_core_base::row_set::{RowCompareOp, RowPredicate, RowDirection, RowOrder, RowTotalMode, RowQuery, RowSetRef, ROW_SET_MARKER, row_set_marker};
+pub use orbital_core_base::row_set::{row_id, RowNearest, RowCompareOp, RowPredicate, RowDirection, RowOrder, RowTotalMode, RowQuery, RowSetRef, ROW_SET_MARKER, row_set_marker};

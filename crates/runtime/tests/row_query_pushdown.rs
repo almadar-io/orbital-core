@@ -100,14 +100,14 @@ fn every_query_case_runs_to_its_recorded_page_and_round_trips_its_json() {
             norm(&case["query"]),
             "{name}: wire form"
         );
-        let page = run_query(&rows, &query);
+        let page = run_query(&rows, &query).unwrap();
         assert_eq!(ids_of(&page.rows), expected_ids(&case["expect"]), "{name}");
         assert_eq!(
             page.total as u64,
             case["expect"]["total"].as_u64().unwrap(),
             "{name}: total"
         );
-        let idp = run_ids(&rows, &query);
+        let idp = run_ids(&rows, &query).unwrap();
         assert_eq!(
             idp.ids,
             expected_ids(&case["expect"]),
@@ -252,7 +252,7 @@ fn compiled_and_interpreted_select_the_same_rows_over_missing_and_null_fields() 
             filter: Some(predicate),
             ..RowQuery::default()
         };
-        let page = run_query(&rows, &query);
+        let page = run_query(&rows, &query).unwrap();
         assert_eq!(
             ids_of(&page.rows),
             ids_of(&interpreted),
@@ -283,7 +283,8 @@ fn ordering_on_a_required_field_agrees_with_the_interpreter() {
                 filter: Some(predicate),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
         assert_eq!(ids_of(&page.rows), ids_of(&interpreted), "{op}");
         assert!(!interpreted.is_empty());
     }
@@ -509,7 +510,7 @@ fn every_id_and_resolve_case_matches() {
     for case in f["idCases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
         let q: RowQuery = serde_json::from_value(case["query"].clone()).unwrap();
-        let got = run_ids(&rows, &q);
+        let got = run_ids(&rows, &q).unwrap();
         assert_eq!(got.ids, expected_ids(&case["expect"]), "{name}");
         assert_eq!(
             got.total as u64,
@@ -569,7 +570,8 @@ fn schema() -> OrbitalSchema {
             "entity": { "name": "Ticket", "persistence": "persistent", "collection": "tickets",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" },
                            { "name": "status", "type": "string" }, { "name": "score", "type": "number", "required": true },
-                           { "name": "owner", "type": "string" }],
+                           { "name": "owner", "type": "string" },
+                           { "name": "embedding", "type": "array", "items": { "name": "component", "type": "number" } }],
                 "read_policy": ["=", ["object/get", "@entity", "owner"], "u1"],
                 "update_policy": [">", ["object/get", "@entity", "score"], 0] },
             "traits": [{
@@ -582,6 +584,23 @@ fn schema() -> OrbitalSchema {
                                 "emit": { "success": "LISTED" } }]] },
                         { "from": "idle", "to": "idle", "event": "LIST_UNORDERED", "effects": [
                             ["fetch", "Ticket", { "filter": ["=", ["object/get", "@entity", "status"], "open"], "limit": 2,
+                                "emit": { "success": "LISTED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "NEAREST", "effects": [
+                            ["fetch", "Ticket", { "filter": ["=", ["object/get", "@entity", "status"], "open"],
+                                "nearest": { "field": "embedding", "vector": [1, 0], "k": 2 },
+                                "emit": { "success": "LISTED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "NEAREST_IDS", "effects": [
+                            ["fetch", "Ticket", { "filter": ["=", ["object/get", "@entity", "status"], "open"], "deliver": "ids",
+                                "nearest": { "field": "embedding", "vector": [1, 0], "k": 2 },
+                                "emit": { "success": "LISTED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "NEAREST_WRONG_LENGTH", "effects": [
+                            ["fetch", "Ticket", { "nearest": { "field": "embedding", "vector": [1, 0, 0], "k": 2 },
+                                "emit": { "success": "LISTED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "NEAREST_NO_K", "effects": [
+                            ["fetch", "Ticket", { "nearest": { "field": "embedding", "vector": [1, 0], "k": 0 },
+                                "emit": { "success": "LISTED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "NEAREST_WITH_LIMIT", "effects": [
+                            ["fetch", "Ticket", { "limit": 1, "nearest": { "field": "embedding", "vector": [1, 0], "k": 2 },
                                 "emit": { "success": "LISTED" } }]] },
                         { "from": "idle", "to": "idle", "event": "BUMP", "effects": [
                             ["persist", "update", "Ticket", { "id": "t1", "score": 7 }],
@@ -600,6 +619,13 @@ fn schema() -> OrbitalSchema {
                             ["persist", "upsert", "Ticket", { "id": "t2", "title": "second", "score": 2, "owner": "u1" }]] },
                         { "from": "idle", "to": "idle", "event": "UPSERT_T1", "effects": [
                             ["persist", "upsert", "Ticket", { "id": "t1", "title": "replaced", "score": 5, "owner": "u1" }]] },
+                        { "from": "idle", "to": "idle", "event": "BATCH_TAKEN", "effects": [
+                            ["persist", "batch", [["create", "Ticket", { "id": "t2", "title": "again", "score": 1, "owner": "u1" }]]]] },
+                        { "from": "idle", "to": "idle", "event": "BATCH_MISSING", "effects": [
+                            ["persist", "batch", [["update", "Ticket", "nope", { "score": 9 }]]]] },
+                        { "from": "idle", "to": "idle", "event": "BATCH_TAKEN_AFTER_OK", "effects": [
+                            ["persist", "batch", [["update", "Ticket", "t1", { "score": 7 }],
+                                ["create", "Ticket", { "id": "t2", "title": "again", "score": 1, "owner": "u1" }]]]] },
                         { "from": "idle", "to": "idle", "event": "MAKE_BATCH", "effects": [
                             ["persist", "batch", [["update", "Ticket", "t1", { "score": 7 }],
                                 ["create", "Ticket", { "id": "t6", "title": "new", "score": 1, "owner": "u1" }]]]] }
@@ -625,6 +651,29 @@ fn seeded() -> Arc<InMemoryEntityCache> {
             .unwrap();
     }
     cache
+}
+
+fn seeded_vectors() -> Arc<InMemoryEntityCache> {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    for r in [
+        json!({ "id": "v1", "status": "open", "score": 1, "owner": "u1", "embedding": [1, 0] }),
+        json!({ "id": "v2", "status": "open", "score": 1, "owner": "u1", "embedding": [0, 1] }),
+        json!({ "id": "v3", "status": "open", "score": 1, "owner": "u1", "embedding": [1, 1] }),
+        json!({ "id": "v4", "status": "closed", "score": 1, "owner": "u1", "embedding": [1, 0] }),
+        json!({ "id": "v5", "status": "open", "score": 1, "owner": "u2", "embedding": [1, 0] }),
+    ] {
+        cache
+            .write("Ticket", r["id"].as_str().unwrap(), &v(&r))
+            .unwrap();
+    }
+    cache
+}
+
+fn failed_effects(out: &[(String, orbital_core_runtime::process_result::ProcessEventResult)]) -> usize {
+    out.iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .filter(|er| er.is_failed())
+        .count()
 }
 
 /// A kernel whose store is a host that answers through `Await`, answering from `host` (a real cache), with
@@ -1181,7 +1230,7 @@ fn a_batch_on_a_store_without_atomic_writes_restores_what_it_applied() {
 fn run_ids_of(rows: Json, query: Json) -> Vec<String> {
     let rows = arcs(&rows);
     let query: RowQuery = serde_json::from_value(query).unwrap();
-    run_ids(rows.iter(), &query).ids
+    run_ids(rows.iter(), &query).unwrap().ids
 }
 
 #[test]
@@ -1230,4 +1279,215 @@ fn a_store_that_cannot_order_by_created_at_declines_an_unordered_query() {
         fields: vec!["id".to_string(), "createdAt".to_string()],
     };
     assert!(query_unsupported_reason(&caps, &RowQuery::default()).is_none());
+}
+
+// ----- nearest (EXEC-FETCH-2) -------------------------------------------------------------------
+
+fn nearest_case_reasons(caps: &QueryCapabilities) -> Vec<(String, Option<String>)> {
+    let f = fixture("query-cases.json");
+    f["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|case| {
+            let q: RowQuery = serde_json::from_value(case["query"].clone()).unwrap();
+            (
+                case["name"].as_str().unwrap().to_string(),
+                query_unsupported_reason(caps, &q).map(|r| r.as_str().to_string()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn nearest_error_cases_fail_with_their_reason_and_the_paired_valid_cases_do_not() {
+    let f = fixture("query-cases.json");
+    let rows = arcs(&f["rows"]);
+    let errors = f["errorCases"].as_array().unwrap();
+    assert!(!errors.is_empty());
+    for case in errors {
+        let name = case["name"].as_str().unwrap();
+        let query: RowQuery = serde_json::from_value(case["query"].clone()).expect(name);
+        let want = case["expect"]["error"].as_str().unwrap();
+        let got = run_query(&rows, &query).unwrap_err();
+        assert!(got.contains(want), "{name}: {got}");
+        assert!(run_ids(&rows, &query).unwrap_err().contains(want), "{name}: ids");
+        let cache = InMemoryEntityCache::new();
+        for r in &rows {
+            cache.write("Ticket", r.as_object().unwrap()["id"].as_str().unwrap(), r).unwrap();
+        }
+        assert!(cache.query_page("Ticket", &query).unwrap().unwrap_err().contains(want), "{name}: source");
+        // control: the same filter with a well-formed vector answers
+        let mut valid = query.clone();
+        if let Some(n) = valid.nearest.as_mut() {
+            n.vector = vec![1.0, 0.0, 0.0];
+        }
+        assert!(run_query(&rows, &valid).is_ok(), "{name}: control");
+    }
+}
+
+#[test]
+fn a_store_without_the_nearest_capability_is_never_asked_and_one_with_it_is() {
+    let mut without = QueryCapabilities::full();
+    without.nearest = None;
+    for (name, reason) in nearest_case_reasons(&without) {
+        let expected = name.starts_with("nearest-").then(|| "nearest".to_string());
+        assert_eq!(reason, expected, "{name}");
+    }
+    for (name, reason) in nearest_case_reasons(&QueryCapabilities::full()) {
+        assert_eq!(reason, None, "{name}");
+    }
+}
+
+#[test]
+fn the_kernel_computes_nearest_over_a_listing_when_the_store_lacks_the_capability() {
+    let k = host_kernel();
+    let (log, out) = fly(&k, "NEAREST", &seeded_vectors(), &|_| None);
+    assert!(
+        data_requests(&log)
+            .iter()
+            .all(|r| matches!(r, IoRequest::ListRows { .. })),
+        "{log:?}"
+    );
+    assert_eq!(listed(&out.unwrap()), vec!["v1", "v3"]);
+    // control: a store declaring every query form but nearest is listed too, with the same answer
+    let k = host_kernel();
+    let mut caps = QueryCapabilities::full();
+    caps.nearest = None;
+    k.set_query_capabilities("Ticket", caps);
+    let (log, out) = fly(&k, "NEAREST", &seeded_vectors(), &|_| None);
+    assert!(
+        data_requests(&log)
+            .iter()
+            .all(|r| matches!(r, IoRequest::ListRows { .. })),
+        "{log:?}"
+    );
+    assert_eq!(listed(&out.unwrap()), vec!["v1", "v3"]);
+}
+
+#[test]
+fn a_store_with_the_nearest_capability_gets_the_query_and_only_the_page_crosses() {
+    let k = host_kernel();
+    k.set_query_capabilities("Ticket", QueryCapabilities::full());
+    let (log, out) = fly(&k, "NEAREST", &seeded_vectors(), &|r| match r {
+        IoRequest::QueryRows {
+            query,
+            project: RowProjection::Rows,
+            ..
+        } => Some(IoAnswer::Page(Ok(seeded_vectors()
+            .query_page("Ticket", query)
+            .unwrap()
+            .unwrap()))),
+        _ => None,
+    });
+    let data = data_requests(&log);
+    assert_eq!(data.len(), 1, "{log:?}");
+    let IoRequest::QueryRows { query, .. } = data[0] else {
+        panic!("{log:?}")
+    };
+    let nearest = query.nearest.as_ref().expect("nearest travels with the query");
+    assert_eq!((nearest.field.as_str(), nearest.k), ("embedding", 2));
+    assert!(query.order.is_none() && query.limit.is_none() && query.offset.is_none());
+    assert_eq!(listed(&out.unwrap()), vec!["v1", "v3"]);
+}
+
+#[test]
+fn a_nearest_fetch_that_cannot_run_fails_the_effect() {
+    for event in ["NEAREST_WRONG_LENGTH", "NEAREST_NO_K", "NEAREST_WITH_LIMIT"] {
+        let k = host_kernel();
+        let (_, out) = fly(&k, event, &seeded_vectors(), &|_| None);
+        assert_eq!(failed_effects(&out.unwrap()), 1, "{event}");
+    }
+    // control: the well-formed fetch does not fail
+    let k = host_kernel();
+    let (_, out) = fly(&k, "NEAREST", &seeded_vectors(), &|_| None);
+    assert_eq!(failed_effects(&out.unwrap()), 0);
+}
+
+#[test]
+fn a_nearest_fetch_delivered_by_reference_carries_the_query_and_counts_what_it_returned() {
+    let k = host_kernel();
+    let (_, out) = fly(&k, "NEAREST_IDS", &seeded_vectors(), &|_| None);
+    let out = out.unwrap();
+    let references: Vec<_> = out
+        .iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .filter_map(|er| er.return_value.as_ref())
+        .flat_map(orbital_core_runtime::row_query::row_sets_in)
+        .collect();
+    assert_eq!(references.len(), 1, "{references:?}");
+    assert_eq!(references[0].ids, vec!["v1", "v3"]);
+    assert_eq!(references[0].total, 2);
+    assert_eq!(references[0].query.nearest.as_ref().map(|n| n.k), Some(2));
+    // control: the same fetch delivering rows returns the same two rows
+    let k = host_kernel();
+    let (_, out) = fly(&k, "NEAREST", &seeded_vectors(), &|_| None);
+    assert_eq!(listed(&out.unwrap()), vec!["v1", "v3"]);
+}
+
+#[test]
+fn resolving_a_nearest_reference_totals_the_rows_still_resolving_and_a_plain_one_recounts() {
+    let rows = arcs(&json!([
+        { "id": "a", "status": "open", "embedding": [1, 0] },
+        { "id": "b", "status": "open", "embedding": [0, 1] },
+        { "id": "c", "status": "open", "embedding": [1, 1] }
+    ]));
+    let reference = |nearest: Json| -> RowSetRef {
+        serde_json::from_value(json!({
+            "entityType": "T", "ids": ["a", "c"], "total": 2,
+            "query": { "filter": { "kind": "compare", "field": "status", "op": "==", "value": "open" }, "nearest": nearest }
+        }))
+        .unwrap()
+    };
+    let near = reference(json!({ "field": "embedding", "vector": [1, 0], "k": 2 }));
+    let got = resolve_row_set(rows.iter(), &near, None);
+    assert_eq!((ids_of(&got.rows), got.total), (vec!["a".to_string(), "c".to_string()], 2));
+    // control: without nearest the total re-counts every match of the filter
+    let mut plain = near.clone();
+    plain.query.nearest = None;
+    let got = resolve_row_set(rows.iter(), &plain, None);
+    assert_eq!((ids_of(&got.rows), got.total), (vec!["a".to_string(), "c".to_string()], 3));
+}
+
+fn batch_results(k: &RuntimeKernel, event: &str, host: &InMemoryEntityCache) -> Vec<orbital_core_base::effect_types::EffectResult> {
+    fly(k, event, host, &|_| None)
+        .1
+        .unwrap()
+        .into_iter()
+        .flat_map(|(_, r)| r.effect_results)
+        .collect()
+}
+
+/// EXEC-STEP-8 and the batch rules: a create of a taken id fails `duplicate-id`, an update of a missing row fails
+/// `not-found`, with the failing index and how many ran before it; the same on a store that runs the batch pushed
+/// down and on one that does not.
+#[test]
+fn a_batch_op_that_cannot_apply_fails_the_batch_with_its_code_index_and_count() {
+    for pushed in [false, true] {
+        for (event, code, index, completed) in [
+            ("BATCH_TAKEN", orbital_core_base::bus_event::ServerEffectCode::DuplicateId, 0, 0),
+            ("BATCH_MISSING", orbital_core_base::bus_event::ServerEffectCode::NotFound, 0, 0),
+            ("BATCH_TAKEN_AFTER_OK", orbital_core_base::bus_event::ServerEffectCode::DuplicateId, 1, 1),
+        ] {
+            let k = host_kernel();
+            if pushed {
+                k.set_write_capabilities("Ticket", WriteCapabilities::full());
+            }
+            let host = seeded();
+            let results = batch_results(&k, event, &host);
+            let failed: Vec<_> = results.iter().filter(|er| er.is_failed()).collect();
+            assert_eq!(failed.len(), 1, "{event} pushed={pushed}: {results:?}");
+            assert_eq!(failed[0].code, Some(code), "{event} pushed={pushed}");
+            let at = failed[0].batch_failure.as_ref().expect("a batch failure names its operation");
+            assert_eq!((at.index, at.completed_count), (index, completed), "{event} pushed={pushed}");
+            assert!(host.read("Ticket", "nope").is_err(), "{event}: nothing was created");
+        }
+        // control: a batch of ops that all apply succeeds
+        let k = host_kernel();
+        if pushed {
+            k.set_write_capabilities("Ticket", WriteCapabilities::full());
+        }
+        let results = batch_results(&k, "MAKE_BATCH", &seeded());
+        assert!(!results.iter().any(|er| er.is_failed()), "pushed={pushed}: {results:?}");
+    }
 }

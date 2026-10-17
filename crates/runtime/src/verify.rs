@@ -3,8 +3,12 @@
 //! `orb verify` and an in-browser client run the same walk.
 
 pub mod driver;
+pub mod flows;
 pub mod frame;
 pub mod observers;
+pub mod payload_solve;
+pub mod plan_wire;
+pub mod precondition;
 pub mod report;
 
 pub use report::Report;
@@ -88,7 +92,15 @@ fn verify_with_harness(
     let mut frames: Vec<frame::Frame> = Vec::new();
     // Failure-route steps are never driven: they are credited from the transitions a request step's
     // own dispatch fired, resolved once every step has run.
-    let mut failure_steps: Vec<(usize, Option<usize>)> = Vec::new();
+    let mut credit_steps: Vec<plan_wire::CreditStep> = Vec::new();
+    let credit_step = |step: &planner::Step, fired: Vec<frame::FiredHop>| plan_wire::CreditStep {
+        trait_name: step.trait_name.clone(),
+        from: step.from.clone(),
+        event: step.event.clone(),
+        arm: step.arm,
+        reply: step.reply,
+        fired,
+    };
     let ctx = harness.entity_ctx(schema);
     // The roster's default persona (or none), read once so a per-step role
     // rewrite always restores exactly what the caller bound — never a
@@ -100,10 +112,8 @@ fn verify_with_harness(
             .as_deref()
             .map(|e| harness.effective_seed_id(e));
         for step in planner::plan_trait(td, &ctx, seed_id.as_deref()) {
-            if let Some(route) = step.reply {
-                if route == planner::ReplyRoute::Failure {
-                    failure_steps.push((frames.len(), step.arm));
-                }
+            if step.reply.is_some() {
+                credit_steps.push(credit_step(&step, Vec::new()));
                 frames.push(harness.not_driven(
                     &step,
                     frames.len(),
@@ -132,25 +142,17 @@ fn verify_with_harness(
             if role.is_some() {
                 harness.set_persona(default_persona.clone());
             }
+            credit_steps.push(credit_step(&step, frame.fired.clone()));
             frames.push(frame);
         }
     }
-    for (at, arm) in failure_steps {
-        let cause = frames[at].cause.clone();
-        let credited = frames.iter().flat_map(|f| f.fired.iter()).find(|hop| {
-            hop.trait_name == cause.trait_name
-                && hop.from == cause.from
-                && hop.event == cause.event
-                && hop.arm == arm.or(hop.arm)
-        });
-        if let Some(hop) = credited.cloned() {
-            let frame = &mut frames[at];
-            frame.state_before = hop.from;
-            frame.state_after = hop.to;
-            frame.executed = true;
-            frame.status = frame::FrameStatus::Pass;
-            frame.gap = None;
-        }
+    for credit in plan_wire::credit_failure_routes(&credit_steps) {
+        let frame = &mut frames[credit.index];
+        frame.state_before = credit.state_before;
+        frame.state_after = credit.state_after;
+        frame.executed = true;
+        frame.status = frame::FrameStatus::Pass;
+        frame.gap = None;
     }
     let mut verdicts = observers::run_all(&frames);
     verdicts.push(observers::ref_trait_invariant(&selected));

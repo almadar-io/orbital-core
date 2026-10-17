@@ -7,6 +7,7 @@ use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::value::ValueMap;
 use crate::verify::frame::{Cause, EffectSummary, FiredHop, Frame, FrameStatus, GapReason};
 use crate::planner::Variant;
+use crate::verify::plan_wire::{self, Expectation, ObservedEffect, Observation};
 use crate::planner::{self, Step};
 use orbital_core_base::client_effect::ClientEffect;
 use orbital_core_base::effect_types::{Effect, EffectOutcome, EffectResult};
@@ -23,7 +24,7 @@ use crate::process_result::ProcessEventResult;
 use crate::resumable::{drive_blocking, BlockingHost, IoAnswer, IoRequest};
 use std::sync::Arc;
 
-const ENTITY_ID: &str = "verify";
+pub(crate) const ENTITY_ID: &str = "verify";
 
 /// What one fired event left behind: executed, new state, effects, deferred bindings and the arm the kernel
 /// selected among the `from --event-->` arms.
@@ -190,17 +191,16 @@ impl Harness {
 
         let entity_counts = self.entity_counts(step.linked_entity.as_deref());
 
-        // A step is only conclusive if the preamble actually placed us in `from`.
-        let status = if state_before != step.from {
-            FrameStatus::Inconclusive
-        } else if step.arm.is_some_and(|arm| !step.solved || fired_arm != Some(arm)) {
-            // The arm's guard could not be met by a payload, or an earlier arm took the payload first.
-            FrameStatus::Inconclusive
-        } else if step_passes(step, &state_before, &state_after, executed, &effects) {
-            FrameStatus::Pass
-        } else {
-            FrameStatus::Fail
-        };
+        let status = plan_wire::judge(
+            &Expectation::from_step(step),
+            &Observation {
+                state_before: state_before.clone(),
+                state_after: state_after.clone(),
+                fired_arm,
+                effects: effects.iter().map(ObservedEffect::from_summary).collect(),
+            },
+        )
+        .status;
 
         Frame {
             index,
@@ -356,22 +356,6 @@ impl Harness {
         }
         counts
     }
-}
-
-/// Does the step reach its declared target (with no failed effect)? A GUARDED transition
-/// that held at `from` under a generic synthesized payload is treated as passing here —
-/// the guard legitimately rejected it; the `Inconclusive` status (from a failed preamble)
-/// is decided separately by the caller.
-fn step_passes(
-    step: &Step,
-    before: &str,
-    after: &str,
-    _executed: bool,
-    effects: &[EffectSummary],
-) -> bool {
-    let no_failed = !effects.iter().any(|e| e.outcome == "failed" && e.routed.is_none());
-    let reached_target = step.to_states.iter().any(|s| s == after);
-    no_failed && (reached_target || (step.guarded && step.arm.is_none() && after == before))
 }
 
 fn summarize_effect(result: &EffectResult) -> EffectSummary {

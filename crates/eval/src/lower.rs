@@ -914,6 +914,11 @@ impl ExprLowerer {
                     None
                 };
 
+                let nearest = match obj.get("nearest") {
+                    None | Some(SExpression::Null) => None,
+                    Some(expr) => Some(self.resolve_sexpr(expr)?),
+                };
+
                 let emit_cfg = self.extract_emit_config(obj)?;
 
                 if let Some(id) = id {
@@ -935,12 +940,14 @@ impl ExprLowerer {
                 if let OirEffect::Fetch {
                     offset: ref mut off,
                     include: ref mut inc,
+                    nearest: ref mut near,
                     emit: ref mut em,
                     ..
                 } = effect
                 {
                     *off = offset;
                     *inc = include;
+                    *near = nearest;
                     *em = emit_cfg;
                 }
                 return Ok(OirExpr::effect(effect));
@@ -2001,6 +2008,34 @@ mod tests {
             .collect_bindings()
             .iter()
             .any(|b| b.root == OirBindingRoot::Entity));
+    }
+
+    fn fetch_with(options: serde_json::Value) -> OirEffect {
+        let expr: SExpression =
+            serde_json::from_value(serde_json::json!(["fetch", "Doc", options])).unwrap();
+        match lower_sexpr(&expr).expect("lowers") {
+            OirExpr::Effect { effect } => *effect,
+            other => panic!("not an effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_fetch_nearest_option_lowers_with_its_bindings_and_without_it_the_field_is_absent() {
+        let OirEffect::Fetch { nearest, .. } = fetch_with(serde_json::json!({
+            "nearest": { "field": "embedding", "vector": "@entity.embedding", "k": 3 }
+        })) else {
+            panic!("not a fetch")
+        };
+        let nearest = nearest.expect("nearest lowered");
+        assert!(nearest
+            .collect_bindings()
+            .iter()
+            .any(|b| b.root == OirBindingRoot::Entity));
+        // control: no option, no field
+        let OirEffect::Fetch { nearest, .. } = fetch_with(serde_json::json!({ "limit": 2 })) else {
+            panic!("not a fetch")
+        };
+        assert!(nearest.is_none());
     }
 
     #[test]

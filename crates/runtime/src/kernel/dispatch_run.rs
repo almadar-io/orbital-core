@@ -6,13 +6,13 @@
 
 use super::envelope::Origin;
 use super::*;
-use orbital_core_base::envelope::{DeliverRefusal, DeliverRefusalKind, Envelope, EnvelopeVerdict};
 use crate::effects::response::MountSeed;
-use orbital_core_base::value::ValueMap;
 use crate::resumable::{
     accept_replies, number_requests, DispatchContinuation, DispatchError, DispatchOutcomes,
     IoReply, Progress,
 };
+use orbital_core_base::envelope::{DeliverRefusal, DeliverRefusalKind, Envelope, EnvelopeVerdict};
+use orbital_core_base::value::ValueMap;
 
 /// Why a unit stopped short: a kernel error, or an I/O answer the unit does not have yet (the unit
 /// has put the run and the kernel back as they were before it).
@@ -208,7 +208,10 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        self.require_payload(seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())), &payload)?;
+        self.require_payload(
+            seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
+            &payload,
+        )?;
         let run = self.run_of_mount(seeds, entity_id, payload);
         self.run_straight_through(run)
     }
@@ -236,7 +239,10 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
-        self.require_payload(seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())), &payload)?;
+        self.require_payload(
+            seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
+            &payload,
+        )?;
         let run = self.run_of_mount(seeds, entity_id, payload);
         self.drive_resumable(Self::continuation_of(run))
     }
@@ -259,6 +265,7 @@ impl RuntimeKernel {
             journal: Vec::new(),
             pending: Vec::new(),
             next_id: 0,
+            reads: Default::default(),
         }
     }
 
@@ -338,11 +345,12 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> DispatchRun {
-        let lifecycle_targets: Vec<String> = if orbital_core_base::events::is_bus_excluded_event(event_name) {
-            traits.to_vec()
-        } else {
-            Vec::new()
-        };
+        let lifecycle_targets: Vec<String> =
+            if orbital_core_base::events::is_bus_excluded_event(event_name) {
+                traits.to_vec()
+            } else {
+                Vec::new()
+            };
         let (payload, awaiting) = take_awaiting_sidecar(payload);
         let plans = traits
             .iter()
@@ -426,7 +434,8 @@ impl RuntimeKernel {
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         loop {
             let journal = std::mem::take(&mut c.journal);
-            let (result, end) = self.io.run_step(journal, || self.unit(&mut c.run));
+            let (result, end) = self.io.run_step_reading(journal, std::mem::take(&mut c.reads), || self.unit(&mut c.run));
+            c.reads = end.reads;
             if let Some(diverged) = end.diverged {
                 return Err(DispatchError::Resume(diverged));
             }
@@ -539,7 +548,12 @@ impl RuntimeKernel {
             .entity_definitions
             .read()
             .get(&entity_type)
-            .is_some_and(|def| matches!(def.persistence, Some(orbital_core_base::schema::Persistence::Runtime)));
+            .is_some_and(|def| {
+                matches!(
+                    def.persistence,
+                    Some(orbital_core_base::schema::Persistence::Runtime)
+                )
+            });
         let listed = self.entity_source.list(&entity_type);
         if self.io.suspended() {
             return Err(Fault::Suspended);
@@ -585,10 +599,7 @@ impl RuntimeKernel {
     }
 
     fn begin_seed(&self, plan: SeedPlan) -> SeedRun {
-        let now = self
-            .dispatch_now
-            .read()
-            .unwrap_or_else(|| self.clock_now());
+        let now = self.dispatch_now.read().unwrap_or_else(|| self.clock_now());
         let SeedPlan {
             trait_name,
             entity_id,
@@ -866,9 +877,7 @@ impl RuntimeKernel {
                     result.effect_runs.iter().map(|run| &run.effect).collect();
                 (
                     job.keep_composed,
-                    Some(crate::callsite_capture::embedded_by_effects(
-                        def, &authored,
-                    )),
+                    Some(crate::callsite_capture::embedded_by_effects(def, &authored)),
                 )
             }
             _ => (true, None),
@@ -935,7 +944,9 @@ impl RuntimeKernel {
             cascade.queue.push_front(item);
             return Err(Fault::Suspended);
         }
-        if !item.completion && visited.contains(&item.trait_name, &item.event, &from, &item.payload, &frame) {
+        if !item.completion
+            && visited.contains(&item.trait_name, &item.event, &from, &item.payload, &frame)
+        {
             return Ok(true);
         }
         let view = memory.view(&item.trait_name, &item.delivery);
@@ -1087,7 +1098,12 @@ impl RuntimeKernel {
         InboundStart::Admitted(Box::new(self.drive_resumable(Self::continuation_of(run))))
     }
 
-    fn run_of_envelope(&self, event: String, payload: Value, admitted: super::envelope::Admitted) -> DispatchRun {
+    fn run_of_envelope(
+        &self,
+        event: String,
+        payload: Value,
+        admitted: super::envelope::Admitted,
+    ) -> DispatchRun {
         let mut run = self.run_of_each(&admitted.targets, None, &event, payload, None, None);
         run.origin.inbound = Some(admitted.inbound);
         run

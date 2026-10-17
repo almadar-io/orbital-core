@@ -21,7 +21,7 @@ fn schema() -> OrbitalSchema {
                   "stateMachine": {
                       "states": [{ "name": "ready", "isInitial": true }],
                       "transitions": [
-                          { "from": "ready", "to": "ready", "event": "SEND", "guard": ["!=", "@entity.content", ""],
+                          { "from": "ready", "to": "ready", "event": "SEND", "guard": ["validate/required", "@entity.content"],
                             "effects": [["emit", "SAVE", { "content": "@entity.content" }]] }
                       ]
                   } },

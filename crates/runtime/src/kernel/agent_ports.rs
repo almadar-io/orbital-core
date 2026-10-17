@@ -158,6 +158,7 @@ impl RuntimeKernel {
             include: None,
             deliver: FetchDeliver::Rows,
             total: None,
+            nearest: None,
             emit: None,
         };
         let fetched = self.effect_executor.execute(&fetch, ctx);

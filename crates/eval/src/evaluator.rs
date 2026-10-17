@@ -31,6 +31,7 @@
 
 pub mod context;
 pub mod operators;
+pub mod trace;
 
 pub use crate::evaluator::operators::arg_types::{actual_of, operator_signature};
 pub use crate::evaluator::operators::system::{TimeUnit, TIME_UNIT_VOCABULARY};
@@ -316,6 +317,21 @@ mod tests {
             "Evaluation error: Type mismatch: expected number, got string"
         );
         assert_eq!(eval(r#"["=", 1, null]"#), Value::Bool(false));
+    }
+
+    #[test]
+    fn a_list_is_equal_to_the_empty_list_only_when_it_is_empty() {
+        assert_eq!(eval(r#"["!=", ["list", 1, 2], ["list"]]"#), Value::Bool(true));
+        assert_eq!(eval(r#"["=", ["list", 1, 2], ["list"]]"#), Value::Bool(false));
+        assert_eq!(eval(r#"["=", ["list"], ["list", "a"]]"#), Value::Bool(false));
+        assert_eq!(eval(r#"["=", ["list"], ["list"]]"#), Value::Bool(true));
+        assert_eq!(eval(r#"["!=", ["list", 1, 2], ["list", 1, 2]]"#), Value::Bool(false));
+    }
+
+    #[test]
+    fn control_lists_of_other_lengths_compare_as_before() {
+        assert_eq!(eval(r#"["=", ["list", 1, 2], ["list", 3]]"#), Value::Bool(false));
+        assert_eq!(eval(r#"["=", ["list", 1, 2], ["list", 1, 2]]"#), Value::Bool(true));
     }
 
     #[test]
@@ -701,6 +717,19 @@ mod tests {
         assert_eq!(eval(r#"["ceil", 3.2]"#), Value::Number(4.0));
         assert_eq!(eval(r#"["round", 3.5]"#), Value::Number(4.0));
         assert_eq!(eval(r#"["round", 3.4]"#), Value::Number(3.0));
+    }
+
+    #[test]
+    fn round_honours_its_decimals_argument() {
+        assert_eq!(eval(r#"["math/round", 3.14159, 3]"#), Value::Number(3.142));
+        assert_eq!(eval(r#"["math/round", 3.456, 2]"#), Value::Number(3.46));
+        assert_eq!(eval(r#"["math/round", 343.55749, 1]"#), Value::Number(343.6));
+    }
+
+    #[test]
+    fn control_round_with_zero_or_no_decimals_rounds_to_an_integer() {
+        assert_eq!(eval(r#"["math/round", 3.14159, 0]"#), Value::Number(3.0));
+        assert_eq!(eval(r#"["math/round", 3.6]"#), Value::Number(4.0));
     }
 
     // ========================================================================
@@ -2672,5 +2701,48 @@ mod tests {
             let err = eval_err(&format!(r#"["{op}", [3, "7", true, "x"]]"#));
             assert!(err.contains("number") && err.contains("string"), "{op}: {err}");
         }
+    }
+
+    fn names(v: Value) -> Vec<String> {
+        let Value::Array(rows) = v else { panic!("expected a list") };
+        rows.iter()
+            .map(|r| r.as_object().and_then(|o| o.get("name")).and_then(Value::as_str).unwrap().to_string())
+            .collect()
+    }
+
+    /// `str/collate` orders by the CLDR root collation: case-insensitive first, accents beside their letter.
+    #[test]
+    fn str_collate_orders_by_the_root_collation() {
+        assert_eq!(eval(r#"["str/collate", "apple", "Banana"]"#), Value::Number(-1.0));
+        assert_eq!(eval(r#"["str/collate", "Banana", "apple"]"#), Value::Number(1.0));
+        assert_eq!(eval(r#"["str/collate", "\u00e9crou", "Zed"]"#), Value::Number(-1.0));
+        assert_eq!(eval(r#"["str/collate", "same", "same"]"#), Value::Number(0.0));
+        assert_eq!(eval(r#"["str/collate", "a", "A"]"#), Value::Number(-1.0), "lower case first at the third level");
+        assert_eq!(eval(r#"["str/collate", null, "a"]"#), Value::Null);
+        let mistyped = eval_err(r#"["str/collate", 1, "a"]"#);
+        assert!(mistyped.contains("string") && mistyped.contains("number"), "{mistyped}");
+        eval_err(r#"["str/collate", "a"]"#);
+    }
+
+    /// `str/collate-key` makes `array/sort` collate: `Banana, Zed, apple, écrou` sorts to `apple, Banana, écrou, Zed`.
+    #[test]
+    fn str_collate_key_sorts_by_collation() {
+        let keyed = r#"["array/map", ["Banana", "Zed", "apple", "\u00e9crou"], ["fn", "n", {"name": "@n", "k": ["str/collate-key", "@n"]}]]"#;
+        assert_eq!(
+            names(eval(&format!(r#"["array/sort", {keyed}, "k"]"#))),
+            ["apple", "Banana", "\u{e9}crou", "Zed"]
+        );
+        assert_eq!(
+            names(eval(&format!(r#"["array/sort", {keyed}, "name"]"#))),
+            ["Banana", "Zed", "apple", "\u{e9}crou"],
+            "control: sorting by the name itself is code-point order"
+        );
+        assert_eq!(eval(r#"["str/collate-key", null]"#), Value::Null);
+        assert_eq!(
+            eval(r#"["str/collate-key", "a"]"#),
+            eval(r#"["str/collate-key", "a"]"#),
+            "deterministic"
+        );
+        assert_ne!(eval(r#"["str/collate-key", "a"]"#), eval(r#"["str/collate-key", "b"]"#));
     }
 }

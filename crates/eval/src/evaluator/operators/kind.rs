@@ -173,6 +173,8 @@ operator_kind! {
     SplitOp => SplitOp,
     StrCamelCaseOp => StrCamelCaseOp,
     StrCapitalizeOp => StrCapitalizeOp,
+    StrCollateKeyOp => StrCollateKeyOp,
+    StrCollateOp => StrCollateOp,
     StrDefaultOp => StrDefaultOp,
     StrEndsWithOp => StrEndsWithOp,
     StrIncludesOp => StrIncludesOp,

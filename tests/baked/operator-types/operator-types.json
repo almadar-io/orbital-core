@@ -1566,6 +1566,50 @@
       }
     },
     {
+      "name": "array/nth: an entry pair of unlike types is indexed",
+      "expr": [
+        "array/nth",
+        [
+          "array/nth",
+          [
+            "object/entries",
+            {
+              "a": {
+                "b": 1
+              }
+            }
+          ],
+          0
+        ],
+        1
+      ],
+      "expect": {
+        "value": {
+          "b": 1
+        }
+      }
+    },
+    {
+      "name": "array/nth: an entry pair with a number value is indexed",
+      "expr": [
+        "array/nth",
+        [
+          "array/nth",
+          [
+            "object/entries",
+            {
+              "a": 1
+            }
+          ],
+          0
+        ],
+        1
+      ],
+      "expect": {
+        "value": 1
+      }
+    },
+    {
       "name": "array/partition: [\"array/partition\",[{\"price\":30},{\"price\":80}],[\"fn\",\"x\",[\">\",\"@x.price\",50]]]",
       "expr": [
         "array/partition",

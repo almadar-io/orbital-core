@@ -10,9 +10,9 @@
 
 use super::row_query::row_sets_in;
 use orbital_core_base::row_set::RowSetRef;
-use orbital_core_eval::evaluator::operators::get_operator;
-use orbital_core_eval::evaluator::context::BindingContext;
 use orbital_core_base::value::Value;
+use orbital_core_eval::evaluator::context::BindingContext;
+use orbital_core_eval::evaluator::operators::get_operator;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -89,6 +89,16 @@ impl RenderStore {
             self.instances
                 .remove(&(trait_name.to_string(), entity_id.to_string()));
         }
+    }
+
+    /// What `trait_name` last painted on each slot, as the content the host holds, in paint order.
+    pub(crate) fn held(&self, trait_name: &str, entity_id: &str) -> Vec<(String, Value)> {
+        self.instances
+            .get(&(trait_name.to_string(), entity_id.to_string()))
+            .into_iter()
+            .flatten()
+            .map(|s| (s.slot.clone(), s.resolved.clone()))
+            .collect()
     }
 
     /// A newer paint of `slot` by `trait_name` (the host's) replaces whatever the kernel last rendered

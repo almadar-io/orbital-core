@@ -635,8 +635,53 @@ fn merge_list_shapes(a: &OirType, b: &OirType) -> Option<OirType> {
             _ => None,
         }
     };
-    let (x, y) = (element_of(a)?, element_of(b)?);
-    agrees(&x, &y).then(|| OirType::array(x))
+    if let (Some(x), Some(y)) = (element_of(a), element_of(b)) {
+        if agrees(&x, &y) {
+            return Some(OirType::array(x));
+        }
+    }
+    joined_tuples(&[a.clone(), b.clone()]).map(|items| OirType::Tuple { items })
+}
+
+/// The positions of tuples of any lengths, an absent slot where they differ or one is shorter: the op tuples of a
+/// `persist batch` (`create` 3 wide, `update` 4) are one list. A list of one type is a tuple of it (`["delete" "Row"
+/// id]` is `[string]`), and joins when a tuple has a slot of that type. `None` unless one entry is a tuple that mixes
+/// types, so lists of unlike scalars stay two types whatever their lengths.
+fn joined_tuples(entries: &[OirType]) -> Option<Vec<OirType>> {
+    let mut tuples: Vec<Vec<OirType>> = Vec::new();
+    let mut lists: Vec<OirType> = Vec::new();
+    for entry in entries {
+        match unwrap_optional(entry) {
+            OirType::Tuple { items } if !items.is_empty() => tuples.push(items.clone()),
+            OirType::Array { inner } => lists.push((**inner).clone()),
+            _ => return None,
+        }
+    }
+    let mixes_types = tuples.iter().any(|items| {
+        let mut present = items.iter().filter(|t| !is_absent_slot(t));
+        present.next().is_some_and(|first| present.any(|t| t != first))
+    });
+    if !mixes_types {
+        return None;
+    }
+    let width = tuples.iter().map(|items| items.len()).max()?;
+    for element in lists {
+        if !tuples.iter().any(|items| items.contains(&element)) {
+            return None;
+        }
+        tuples.push(vec![element; width]);
+    }
+    Some(
+        (0..width)
+            .map(|slot| {
+                let mut at = tuples.iter().map(|items| items.get(slot));
+                match at.next().flatten() {
+                    Some(first) if at.all(|other| other == Some(first)) => first.clone(),
+                    _ => absent_slot(),
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Whether `ty` is the type of the empty list literal: a list with no slot.
@@ -751,6 +796,15 @@ fn bind_type(
                         bind_type(of, &element(inner), b, mode)?;
                         bind_literal_keys(of, actual, b, mode)
                     }
+                    // A list position that binds each item afresh (`[E each]`) takes a tuple of unlike types item by item.
+                    OirType::Tuple { items }
+                        if !items.is_empty() && matches!(&**of, OperatorTypeRef::Tagged(K::Var { each: true, .. })) =>
+                    {
+                        for item in items {
+                            bind_type(of, &element(item), b, mode)?;
+                        }
+                        Ok(())
+                    }
                     // A tuple of one type is a list of it; one of many types has no element type to bind.
                     OirType::Tuple { items } => match items.split_first() {
                         Some((first, rest)) if rest.iter().all(|t| agrees(first, t)) => {
@@ -761,6 +815,11 @@ fn bind_type(
                         // design, so a list of unlike tuples is a list.
                         Some(_) if shared_tuple(items).is_some() => {
                             let merged = shared_tuple(items).unwrap_or_default();
+                            bind_type(of, &element(&OirType::Tuple { items: merged }), b, mode)?;
+                            bind_literal_keys(of, actual, b, mode)
+                        }
+                        Some(_) if joined_tuples(items).is_some() => {
+                            let merged = joined_tuples(items).unwrap_or_default();
                             bind_type(of, &element(&OirType::Tuple { items: merged }), b, mode)?;
                             bind_literal_keys(of, actual, b, mode)
                         }
@@ -1506,9 +1565,16 @@ mod tests {
             "control: a pair is not a number"
         );
         let triple = OirType::Tuple { items: vec![OirType::String, OirType::Number, OirType::String] };
+        assert_eq!(
+            call(&eq, &[ty(pair(OirType::String, OirType::Number)), ty(triple)], Mode::Runtime),
+            Ok(Some(OirType::Tuple { items: vec![OirType::String, OirType::Number, absent_slot()] })),
+            "tuples of unlike widths are one shape: the positions they share"
+        );
+        let word = OirType::Tuple { items: vec![OirType::String] };
+        let digits = OirType::Tuple { items: vec![OirType::Number, OirType::Number] };
         assert!(
-            call(&eq, &[ty(pair(OirType::String, OirType::Number)), ty(triple)], Mode::Runtime).is_err(),
-            "control: unlike pairs and triples are not one shape"
+            call(&eq, &[ty(word), ty(digits)], Mode::Runtime).is_err(),
+            "control: lists of unlike scalars are not one shape, whatever their lengths"
         );
         let numbers = OirType::Tuple { items: vec![OirType::Number, OirType::Number] };
         assert_eq!(
@@ -1546,7 +1612,11 @@ mod tests {
         let lengths = OirType::Tuple {
             items: vec![pair(OirType::String, OirType::Number), OirType::Tuple { items: vec![OirType::String] }],
         };
-        assert!(call(&count, &[ty(lengths)], Mode::Static).is_err(), "control: tuples of different lengths");
+        assert_eq!(call(&count, &[ty(lengths)], Mode::Static), Ok(Some(OirType::Number)), "tuples of different widths");
+        let uniform = OirType::Tuple {
+            items: vec![OirType::Tuple { items: vec![OirType::Number, OirType::Number] }, OirType::Tuple { items: vec![OirType::String] }],
+        };
+        assert!(call(&count, &[ty(uniform)], Mode::Static).is_err(), "control: lists of unlike scalars of different lengths");
         let scalars = OirType::Tuple { items: vec![OirType::Number, OirType::String] };
         assert!(call(&count, &[ty(scalars)], Mode::Static).is_err(), "control: unlike scalars");
     }
@@ -2229,6 +2299,51 @@ mod tests {
         );
         let heterogeneous = OirType::Tuple { items: vec![OirType::Number, OirType::String] };
         assert!(is_undetermined(call(&prepend, &[ty(heterogeneous), ty(OirType::String)], Mode::Static)));
+    }
+
+    fn nth_operator() -> EmbeddedOperator {
+        let each = json!({ "kind": "var", "name": "E", "each": true });
+        op(
+            json!([p("arr", json!({ "kind": "union", "of": [list(var("T")), list(each)] })), p("index", json!("number"))]),
+            var("T"),
+            Some(2),
+        )
+    }
+
+    #[test]
+    fn a_pair_of_unlike_types_is_indexed_by_array_nth_and_a_list_still_types_its_element() {
+        let nth = nth_operator();
+        let pair = OirType::Tuple { items: vec![OirType::String, OirType::Number] };
+        assert!(call(&nth, &[ty(pair), ty(OirType::Number)], Mode::Static).is_ok(), "an unlike pair is addressable");
+        assert_eq!(
+            call(&nth, &[ty(s_arr(OirType::Number)), ty(OirType::Number)], Mode::Static),
+            Ok(Some(OirType::Number)),
+            "control: a list of one type still gives its element type"
+        );
+        assert!(
+            call(&nth, &[ty(OirType::Number), ty(OirType::Number)], Mode::Static).is_err(),
+            "control: a number is no list"
+        );
+    }
+
+    #[test]
+    fn tuples_of_unlike_widths_are_one_list() {
+        let prepend = op(json!([p("arr", list(var("T"))), p("item", var("T"))]), list(var("T")), Some(2));
+        let tuple = |items: Vec<OirType>| OirType::Tuple { items };
+        let delete = tuple(vec![OirType::String, OirType::String, OirType::String]);
+        let update = tuple(vec![OirType::String, OirType::String, OirType::String, OirType::Number]);
+        assert!(call(&prepend, &[ty(s_arr(update.clone())), ty(delete.clone())], Mode::Static).is_ok());
+        assert!(call(&prepend, &[ty(s_arr(delete.clone())), ty(update.clone())], Mode::Static).is_ok());
+        assert!(
+            call(&prepend, &[ty(s_arr(update.clone())), ty(s_arr(OirType::String))], Mode::Static).is_ok(),
+            "a list of strings is the delete tuple"
+        );
+        let list = op(json!([p("arr", list(var("T")))]), list(var("T")), Some(1));
+        assert!(call(&list, &[ty(tuple(vec![delete.clone(), update.clone(), delete]))], Mode::Static).is_ok());
+        assert!(
+            call(&prepend, &[ty(s_arr(OirType::Boolean)), ty(update)], Mode::Static).is_err(),
+            "control: a list of booleans takes no tuple with no boolean slot"
+        );
     }
 
     #[test]

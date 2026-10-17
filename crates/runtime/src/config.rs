@@ -40,6 +40,10 @@ pub struct KernelConfig {
     /// The deployment unit this kernel runs (a key of the program's `deployment`). `None` is no placement:
     /// every `emit` stays on the local worklist.
     pub unit: Option<String>,
+
+    /// The rows of `[runtime]` entities live in the kernel's own memory and are never a host ask (the server role
+    /// that answers its I/O through `Progress::Await`). `false` (the default) leaves them to the entity source.
+    pub runtime_rows_in_kernel: bool,
 }
 
 /// A host-supplied millisecond clock for dispatch stamps.
@@ -63,6 +67,7 @@ impl std::fmt::Debug for KernelConfig {
             .field("substrate_handler", &self.substrate_handler.is_some())
             .field("clock", &self.clock.is_some())
             .field("unit", &self.unit)
+            .field("runtime_rows_in_kernel", &self.runtime_rows_in_kernel)
             .finish()
     }
 }
@@ -79,6 +84,7 @@ impl Default for KernelConfig {
             substrate_handler: None,
             clock: None,
             unit: None,
+            runtime_rows_in_kernel: false,
         }
     }
 }

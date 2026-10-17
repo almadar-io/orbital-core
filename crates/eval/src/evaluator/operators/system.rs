@@ -1369,12 +1369,10 @@ impl Operator for FnOp {
         };
 
         // Store body as-is (not evaluated yet)
-        let body = args[1].clone();
+        let body = std::sync::Arc::new(args[1].clone());
+        super::super::trace::adopt(&body, &args[1]);
 
-        Ok(Value::Lambda {
-            params,
-            body: std::sync::Arc::new(body),
-        })
+        Ok(Value::Lambda { params, body })
     }
 }
 

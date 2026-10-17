@@ -22,9 +22,11 @@ use super::get_operator;
 use crate::evaluator::operators::kind::OperatorKind;
 use orbital_core_base::error::{EvalError, OrbitalError};
 use orbital_core_base::ir::types::OirType;
-use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::language::registry::{OperatorTypeRef, OperatorTypeRefKind};
-use orbital_core_base::signature::{absent_slot, Actual, CallBindings, Known, Mismatch, Mode, Signature};
+use orbital_core_base::schema::sexpr::SExpression;
+use orbital_core_base::signature::{
+    absent_slot, Actual, CallBindings, Known, Mismatch, Mode, Signature,
+};
 use orbital_core_base::value::Value;
 
 /// The signatures of the operators the evaluator checks, by operator.
@@ -115,10 +117,12 @@ fn views(value: &Value, formal: Option<&OperatorTypeRef>) -> Vec<Known> {
         let positions = items
             .iter()
             .enumerate()
-            .map(|(i, item)| match views(item, slots.get(i)).into_iter().next() {
-                Some(Known::Type(ty)) => ty,
-                _ => absent_slot(),
-            })
+            .map(
+                |(i, item)| match views(item, slots.get(i)).into_iter().next() {
+                    Some(Known::Type(ty)) => ty,
+                    _ => absent_slot(),
+                },
+            )
             .collect();
         return vec![Known::Type(OirType::Tuple { items: positions })];
     }
@@ -152,8 +156,14 @@ fn list_views<E>(
             }
         }
     };
-    let tuple_formal = matches!(element_formal, Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Tuple { .. })));
-    let nested_formal = matches!(element_formal, Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Array { .. })));
+    let tuple_formal = matches!(
+        element_formal,
+        Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Tuple { .. }))
+    );
+    let nested_formal = matches!(
+        element_formal,
+        Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Array { .. }))
+    );
     let mut inner: Vec<Vec<OirType>> = Vec::new();
     for item in items {
         match item {
@@ -213,13 +223,18 @@ fn inner_list_positions(item: &Value) -> Option<Vec<OirType>> {
         })
         .map(|ty| ty.unwrap_or_else(absent_slot))
         .collect();
-    positions.iter().any(|ty| *ty != absent_slot()).then_some(positions)
+    positions
+        .iter()
+        .any(|ty| *ty != absent_slot())
+        .then_some(positions)
 }
 
 /// Whether the entries of a list differ in type: such a list is a tuple.
 fn is_tuple(positions: &[OirType]) -> bool {
     let mut present = positions.iter().filter(|ty| **ty != absent_slot());
-    present.next().is_some_and(|first| present.any(|ty| ty != first))
+    present
+        .next()
+        .is_some_and(|first| present.any(|ty| ty != first))
 }
 
 /// A list's own type: a list of its entries' one type, or a tuple of their types.
@@ -233,35 +248,29 @@ fn settle_positions(positions: Vec<OirType>) -> OirType {
     }
 }
 
-/// The element types of a list of lists. Lists of one length of which one is a tuple are one element type, the
-/// positions they share with an absent slot where they differ, so a list of unlike tuples is a list; every other
-/// list is a list of its entries' type, and two of unlike entries stay two types.
-fn settle_inner_lists(mut types: Vec<Vec<OirType>>, mut out: Vec<OirType>) -> Vec<OirType> {
-    while let Some(first) = types.pop() {
-        let length = first.len();
-        let mut group = vec![first];
-        let mut rest = Vec::new();
-        for other in types {
-            if other.len() == length { group.push(other) } else { rest.push(other) }
-        }
-        types = rest;
-        if group.iter().any(|positions| is_tuple(positions)) {
-            let mut merged = group.pop().unwrap_or_default();
-            for positions in &group {
-                for (slot, other) in merged.iter_mut().zip(positions) {
-                    if slot != other {
-                        *slot = absent_slot();
-                    }
+/// The element types of a list of lists. When any of them is a tuple they are one element type, whatever their
+/// lengths: the positions they share, an absent slot where they differ or one is shorter, so a list of unlike
+/// tuples (the op tuples of a `persist batch`) is a list. Without a tuple each list is a list of its entries' type,
+/// and two of unlike entries stay two types.
+fn settle_inner_lists(types: Vec<Vec<OirType>>, mut out: Vec<OirType>) -> Vec<OirType> {
+    if types.iter().any(|positions| is_tuple(positions)) {
+        let width = types.iter().map(Vec::len).max().unwrap_or(0);
+        let merged = (0..width)
+            .map(|slot| {
+                let mut at = types.iter().map(|positions| positions.get(slot));
+                match at.next().flatten() {
+                    Some(first) if at.all(|other| other == Some(first)) => first.clone(),
+                    _ => absent_slot(),
                 }
-            }
-            out.push(OirType::Tuple { items: merged });
-        } else {
-            for positions in group {
-                let element = settle_positions(positions);
-                if !out.contains(&element) {
-                    out.push(element);
-                }
-            }
+            })
+            .collect();
+        out.push(OirType::Tuple { items: merged });
+        return out;
+    }
+    for positions in types {
+        let element = settle_positions(positions);
+        if !out.contains(&element) {
+            out.push(element);
         }
     }
     out
@@ -369,12 +378,24 @@ pub fn check_argument(index: usize, value: &Value) -> Result<(), OrbitalError> {
         let signature = top.signature;
         if !matches!(value, Value::Array(_)) {
             return signature
-                .bind(&mut top.bindings, index, &actual_of_known(scalar_known(value)), Mode::Runtime)
+                .bind(
+                    &mut top.bindings,
+                    index,
+                    &actual_of_known(scalar_known(value)),
+                    Mode::Runtime,
+                )
                 .map_err(to_eval_error);
         }
         let formal = signature.formal(index);
         // A list handed to a bare variable is one value, typed by the type of each of its entries.
-        if matches!(formal, Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Var { .. }))) {
+        if matches!(
+            formal,
+            Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Var { .. }))
+        ) {
+            // An empty list (or one of nulls) has no entry to type, so it binds nothing: `(!= xs [])` holds for any `xs`.
+            if matches!(value, Value::Array(items) if items.iter().all(Value::is_null)) {
+                return Ok(());
+            }
             if let Some(positions) = inner_list_positions(value) {
                 return signature
                     .bind(
@@ -386,16 +407,25 @@ pub fn check_argument(index: usize, value: &Value) -> Result<(), OrbitalError> {
                     .map_err(to_eval_error);
             }
         }
-        if let (Value::Array(items), false) =
-            (value, matches!(formal, Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Tuple { .. }))))
-        {
+        if let (Value::Array(items), false) = (
+            value,
+            matches!(
+                formal,
+                Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Tuple { .. }))
+            ),
+        ) {
             let element_formal = match formal {
                 Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Array { of })) => Some(&**of),
                 _ => None,
             };
             return list_views(items, element_formal, &mut |known| {
                 signature
-                    .bind(&mut top.bindings, index, &actual_of_known(Some(known)), Mode::Runtime)
+                    .bind(
+                        &mut top.bindings,
+                        index,
+                        &actual_of_known(Some(known)),
+                        Mode::Runtime,
+                    )
                     .map_err(to_eval_error)
             });
         }
@@ -552,11 +582,16 @@ mod tests {
         let op: &'static EmbeddedOperator = Box::leak(Box::new(op));
         let exprs: Vec<SExpression> = args.iter().map(|_| SExpression::Null).collect();
         let _frame = CallFrame::enter(Signature::of(op), &exprs);
-        args.iter().enumerate().try_for_each(|(i, v)| check_argument(i, v))
+        args.iter()
+            .enumerate()
+            .try_for_each(|(i, v)| check_argument(i, v))
     }
 
     fn list_of_var() -> EmbeddedOperator {
-        operator(json!([{ "name": "arr", "type": { "kind": "array", "of": { "kind": "var", "name": "T" } } }]), Some(1))
+        operator(
+            json!([{ "name": "arr", "type": { "kind": "array", "of": { "kind": "var", "name": "T" } } }]),
+            Some(1),
+        )
     }
 
     fn pair(a: Value, b: Value) -> Value {
@@ -566,28 +601,112 @@ mod tests {
     #[test]
     fn a_list_of_heterogeneous_tuples_is_a_list() {
         let op = list_of_var;
-        let entries = Value::Array(vec![pair(s("a"), num(1.0)), pair(s("b"), s("x")), pair(s("c"), num(2.0))]);
-        assert_eq!(check_rt(op(), &[entries]).map_err(|e| e.to_string()), Ok(()));
+        let entries = Value::Array(vec![
+            pair(s("a"), num(1.0)),
+            pair(s("b"), s("x")),
+            pair(s("c"), num(2.0)),
+        ]);
+        assert_eq!(
+            check_rt(op(), &[entries]).map_err(|e| e.to_string()),
+            Ok(())
+        );
         let same_shape = Value::Array(vec![pair(s("a"), num(1.0)), pair(s("b"), num(2.0))]);
         assert!(check_rt(op(), &[same_shape]).is_ok());
-        let records = Value::Array(vec![Value::Object(ValueMap::new()), Value::Object(ValueMap::new())]);
+        let records = Value::Array(vec![
+            Value::Object(ValueMap::new()),
+            Value::Object(ValueMap::new()),
+        ]);
         assert!(check_rt(op(), &[records]).is_ok());
+    }
+
+    fn op_tuple(action: &str, widths: usize) -> Value {
+        let mut items = vec![s(action), s("Row"), s("id")];
+        if widths > 3 {
+            items.push(Value::Object(ValueMap::new()));
+        }
+        Value::Array(items)
+    }
+
+    #[test]
+    fn a_list_of_op_tuples_of_unlike_widths_is_a_list() {
+        let ops = Value::Array(vec![
+            op_tuple("delete", 3),
+            op_tuple("update", 4),
+            op_tuple("delete", 3),
+        ]);
+        assert_eq!(
+            check_rt(list_of_var(), &[ops.clone()]).map_err(|e| e.to_string()),
+            Ok(())
+        );
+        let updates = Value::Array(vec![op_tuple("update", 4), op_tuple("update", 4)]);
+        assert_eq!(
+            check_rt(append(), &[updates, op_tuple("delete", 3)]).map_err(|e| e.to_string()),
+            Ok(())
+        );
+        let deletes = Value::Array(vec![op_tuple("delete", 3)]);
+        assert_eq!(
+            check_rt(append(), &[deletes, op_tuple("update", 4)]).map_err(|e| e.to_string()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn control_op_tuples_of_unlike_widths_do_not_join_a_list_of_scalars() {
+        let numbers = Value::Array(vec![num(1.0), num(2.0)]);
+        assert!(check_rt(append(), &[numbers, op_tuple("update", 4)]).is_err());
+        let mixed = Value::Array(vec![op_tuple("update", 4), num(1.0)]);
+        assert!(check_rt(list_of_var(), &[mixed]).is_err());
+    }
+
+    fn nth() -> EmbeddedOperator {
+        operator(
+            json!([
+                { "name": "arr", "type": { "kind": "union", "of": [
+                    { "kind": "array", "of": { "kind": "var", "name": "T" } },
+                    { "kind": "array", "of": { "kind": "var", "name": "E", "each": true } }
+                ] } },
+                { "name": "index", "type": "number" },
+            ]),
+            Some(2),
+        )
+    }
+
+    #[test]
+    fn a_pair_of_unlike_types_is_indexed_by_array_nth() {
+        let entry = Value::Array(vec![s("a"), Value::Object(ValueMap::new())]);
+        assert_eq!(check_rt(nth(), &[entry, num(1.0)]).map_err(|e| e.to_string()), Ok(()));
+        let entry = Value::Array(vec![s("a"), num(1.0)]);
+        assert_eq!(check_rt(nth(), &[entry, num(1.0)]).map_err(|e| e.to_string()), Ok(()));
+        let numbers = Value::Array(vec![num(1.0), num(2.0)]);
+        assert_eq!(check_rt(nth(), &[numbers, num(0.0)]).map_err(|e| e.to_string()), Ok(()));
+    }
+
+    #[test]
+    fn control_an_operator_without_the_each_position_still_refuses_an_unlike_pair() {
+        let entry = Value::Array(vec![s("a"), num(1.0)]);
+        assert!(check_rt(list_of_var(), &[entry]).is_err());
+        assert!(check_rt(nth(), &[Value::Array(vec![s("a")]), s("0")]).is_err(), "a non-number index is refused");
     }
 
     #[test]
     fn control_a_mixed_scalar_list_is_still_refused() {
         let op = list_of_var;
         assert!(check_rt(op(), &[Value::Array(vec![num(1.0), s("a")])]).is_err());
-        let lists = Value::Array(vec![Value::Array(vec![num(1.0)]), Value::Array(vec![s("a")])]);
+        let lists = Value::Array(vec![
+            Value::Array(vec![num(1.0)]),
+            Value::Array(vec![s("a")]),
+        ]);
         assert!(check_rt(op(), &[lists]).is_err());
     }
 
     #[test]
     fn control_a_tuple_of_the_wrong_length_is_still_refused() {
-        let op = || operator(
-            json!([{ "name": "entries", "type": { "kind": "array", "of": { "kind": "tuple", "items": ["string", "number"] } } }]),
-            Some(1),
-        );
+        let op = || {
+            operator(
+                json!([{ "name": "entries", "type": { "kind": "array", "of": { "kind": "tuple", "items": ["string", "number"] } } }]),
+                Some(1),
+            )
+        };
         assert!(check_rt(op(), &[Value::Array(vec![pair(s("a"), num(1.0))])]).is_ok());
         let short = Value::Array(vec![pair(s("a"), num(1.0)), Value::Array(vec![s("b")])]);
         assert!(check_rt(op(), &[short]).is_err());
@@ -606,8 +725,15 @@ mod tests {
 
     #[test]
     fn pairs_whose_values_differ_in_type_are_entries_of_a_record() {
-        let mixed = Value::Array(vec![pair(s("a"), num(1.0)), pair(s("b"), s("x")), pair(s("c"), Value::Bool(true))]);
-        assert_eq!(check_rt(from_entries(), &[mixed]).map_err(|e| e.to_string()), Ok(()));
+        let mixed = Value::Array(vec![
+            pair(s("a"), num(1.0)),
+            pair(s("b"), s("x")),
+            pair(s("c"), Value::Bool(true)),
+        ]);
+        assert_eq!(
+            check_rt(from_entries(), &[mixed]).map_err(|e| e.to_string()),
+            Ok(())
+        );
         let same = Value::Array(vec![pair(s("a"), num(1.0)), pair(s("b"), num(2.0))]);
         assert!(check_rt(from_entries(), &[same]).is_ok());
     }
@@ -634,7 +760,10 @@ mod tests {
     #[test]
     fn a_pair_of_other_value_types_appends_to_a_list_of_pairs() {
         let acc = Value::Array(vec![pair(s("a"), num(1.0))]);
-        assert_eq!(check_rt(append(), &[acc.clone(), pair(s("b"), s("x"))]).map_err(|e| e.to_string()), Ok(()));
+        assert_eq!(
+            check_rt(append(), &[acc.clone(), pair(s("b"), s("x"))]).map_err(|e| e.to_string()),
+            Ok(())
+        );
         assert!(check_rt(append(), &[acc, pair(s("b"), num(2.0))]).is_ok());
     }
 
@@ -642,9 +771,15 @@ mod tests {
     fn control_a_pair_does_not_append_to_a_list_of_numbers_or_of_triples() {
         let numbers = Value::Array(vec![num(1.0), num(2.0)]);
         assert!(check_rt(append(), &[numbers, pair(s("b"), num(2.0))]).is_err());
+        let strings = Value::Array(vec![pair(s("a"), s("b"))]);
+        assert!(check_rt(append(), &[strings, pair(num(1.0), num(2.0))]).is_err());
+    }
+
+    #[test]
+    fn a_tuple_of_another_width_joins_a_list_of_tuples() {
         let pairs = Value::Array(vec![pair(s("a"), num(1.0))]);
         let triple = Value::Array(vec![s("b"), num(2.0), s("c")]);
-        assert!(check_rt(append(), &[pairs, triple]).is_err());
+        assert!(check_rt(append(), &[pairs, triple]).is_ok());
     }
 
     #[test]

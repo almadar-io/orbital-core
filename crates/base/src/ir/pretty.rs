@@ -561,9 +561,14 @@ impl PrettyPrinter {
                 entity_type,
                 id,
                 filter,
+                nearest,
                 ..
             } => {
                 self.write(&format!("fetch(\"{}\"", entity_type));
+                if let Some(n) = nearest {
+                    self.write(", nearest: ");
+                    self.write_expr(n);
+                }
                 if let Some(id_expr) = id {
                     self.write(", id: ");
                     self.write_expr(id_expr);

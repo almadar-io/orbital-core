@@ -538,7 +538,8 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     assert_eq!(size_of::<ServerProgress>(), 440, "ServerProgress");
     assert_eq!(size_of::<ServerProgressWire>(), 440, "ServerProgressWire");
     assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 688, "Progress");
-    assert_eq!(size_of::<ResolveProgress>(), 488, "ResolveProgress");
+    // 496: a `RowQuery` carries its `nearest` selection (EXEC-FETCH-2) behind a box, 8 bytes; inline it was 56 (544).
+    assert_eq!(size_of::<ResolveProgress>(), 496, "ResolveProgress");
     assert_eq!(size_of::<EntityRef>(), 544, "EntityRef");
     assert_eq!(size_of::<SidecarError>(), 144, "SidecarError");
     assert_eq!(size_of::<LanguageData>(), 216, "LanguageData");

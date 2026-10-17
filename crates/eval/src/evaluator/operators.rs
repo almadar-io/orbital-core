@@ -314,6 +314,8 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "str/decode-uri-component" => K::StrDecodeUriComponentOp,
         "str/uri-component-valid" => K::StrUriComponentValidOp,
         "str/to-number" => K::StrToNumberOp,
+        "str/collate" => K::StrCollateOp,
+        "str/collate-key" => K::StrCollateKeyOp,
         "bytes/from-string" => K::BytesFromStringOp,
         "bytes/to-string" => K::BytesToStringOp,
         "bytes/length" => K::BytesLengthOp,
@@ -511,6 +513,13 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
 /// Core expression evaluator - used by operators. An operator's argument is checked against the type the
 /// operator table declares for its position (`arg_types`).
 pub fn eval_expr(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
+    if super::trace::is_active() {
+        return super::trace::step(expr, ctx, eval_checked);
+    }
+    eval_checked(expr, ctx)
+}
+
+fn eval_checked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
     let slot = arg_types::argument_slot(expr);
     let value = eval_unchecked(expr, ctx)?;
     if let Some(index) = slot {

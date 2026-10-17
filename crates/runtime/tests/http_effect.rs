@@ -185,6 +185,34 @@ fn a_http_key_expression_is_evaluated_and_echoed() {
     }
 }
 
+fn unkeyed_effect() -> Json {
+    json!(["http", "GET", ORIGIN, "/search", {}, { "emit": { "success": "SEARCHED", "failure": "SEARCH_FAILED" } }])
+}
+
+#[test]
+fn an_unkeyed_http_reply_and_failure_carry_a_null_key() {
+    let (response, _) = run(schema(unkeyed_effect()), ask(), |_| reply(200, &[], "ok"));
+    let payload = payload_of(&response, "SEARCHED");
+    assert_eq!(payload.get_path("key"), Some(&Value::Null));
+    assert_eq!(payload.get_path("status"), Some(&Value::Number(200.0)));
+    let (response, _) = run(schema(unkeyed_effect()), ask(), |_| IoAnswer::Http(Err(TransportError::TimedOut)));
+    let payload = payload_of(&response, "SEARCH_FAILED");
+    assert_eq!(payload.get_path("key"), Some(&Value::Null));
+    assert_eq!(payload.get_path("kind").and_then(Value::as_str), Some("timeout"));
+}
+
+#[test]
+fn control_a_keyed_http_reply_and_failure_echo_the_key() {
+    let (response, _) = run(schema(call(ORIGIN, json!({}))), ask(), keyed_host(reply(200, &[], "ok")));
+    assert_eq!(payload_of(&response, "SEARCHED").get_path("key").and_then(Value::as_str), Some("job"));
+    let (response, _) = run(
+        schema(call(ORIGIN, json!({}))),
+        ask(),
+        keyed_host(IoAnswer::Http(Err(TransportError::TimedOut))),
+    );
+    assert_eq!(payload_of(&response, "SEARCH_FAILED").get_path("key").and_then(Value::as_str), Some("job"));
+}
+
 #[test]
 fn a_http_key_that_evaluates_to_a_non_string_never_sends() {
     for key in [json!(["+", 1, 2]), json!(17), json!(null), json!("")] {

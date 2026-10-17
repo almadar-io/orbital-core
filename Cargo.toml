@@ -10,6 +10,7 @@ description = "Core types and runtime for Orbital schema execution"
 default = []
 async = ["orbital-core-base/async"]
 client-http = ["orbital-core-runtime/client-http"]
+native-transport = ["orbital-core-runtime/native-transport"]
 
 [dependencies]
 orbital-core-base = { path = "crates/base" }

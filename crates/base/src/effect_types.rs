@@ -305,6 +305,10 @@ pub enum Effect {
         /// `none` (ruled Q12): the store skips counting every match; the success payload carries no `totalCount`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         total: Option<crate::row_set::RowTotalMode>,
+        /// `{ field, vector, k }` (an object of expressions, evaluated at execution): the nearest `k` rows by cosine
+        /// similarity among those `filter` admits (EXEC-FETCH-2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nearest: Option<Value>,
         /// Completion events fired after the fetch resolves (`success` carries the rows
         /// as `{ data: [...] }`; `failure` fires on error). Drives `loading` → `loaded`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1006,7 +1010,7 @@ fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
     let entity_type = args[0].as_str()?.to_string();
 
     // Parse optional config object
-    let (id, filter, limit, offset, order_by, include, deliver, total, emit) = if let Some(config) = args.get(1) {
+    let (id, filter, limit, offset, order_by, include, deliver, total, nearest, emit) = if let Some(config) = args.get(1) {
         let config_value = Value::from(config.clone());
         if let Some(obj) = config_value.as_object() {
             let option = |key: &str| obj.get(key).filter(|v| !v.is_null()).cloned();
@@ -1030,13 +1034,14 @@ fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
                 Some("none") => Some(crate::row_set::RowTotalMode::None),
                 _ => None,
             };
+            let nearest = option("nearest");
             let emit = parse_emit_config(&config_value);
-            (id, filter, limit, offset, order_by, include, deliver, total, emit)
+            (id, filter, limit, offset, order_by, include, deliver, total, nearest, emit)
         } else {
-            (None, None, None, None, None, None, FetchDeliver::Rows, None, None)
+            (None, None, None, None, None, None, FetchDeliver::Rows, None, None, None)
         }
     } else {
-        (None, None, None, None, None, None, FetchDeliver::Rows, None, None)
+        (None, None, None, None, None, None, FetchDeliver::Rows, None, None, None)
     };
 
     Some(Effect::Fetch {
@@ -1049,6 +1054,7 @@ fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
         include,
         deliver,
         total,
+        nearest,
         emit,
     })
 }
@@ -1567,6 +1573,7 @@ mod tests {
                 include: None,
                 deliver: FetchDeliver::Rows,
                 total: None,
+                nearest: None,
                 emit: None,
             }
             .client_kind(),
@@ -2085,6 +2092,25 @@ mod tests {
             panic!("not a fetch")
         };
         assert_eq!(total, None);
+    }
+
+    #[test]
+    fn parse_fetch_reads_the_nearest_option() {
+        let nearest_of = |config: &str| {
+            let expr: SExpression =
+                serde_json::from_str(&format!(r#"["fetch", "Doc", {config}]"#)).unwrap();
+            match parse_effect(&expr).unwrap() {
+                Effect::Fetch { nearest, .. } => nearest,
+                other => panic!("not a fetch: {other:?}"),
+            }
+        };
+        let got = nearest_of(r#"{"nearest": {"field": "embedding", "vector": "@payload.v", "k": 3}}"#)
+            .expect("nearest kept");
+        let members = got.as_object().expect("an object");
+        assert_eq!(members.get("field").and_then(Value::as_str), Some("embedding"));
+        assert!(members.get("k").is_some());
+        assert!(nearest_of(r#"{"limit": 5}"#).is_none());
+        assert!(nearest_of(r#"{"nearest": null}"#).is_none());
     }
 
     #[test]

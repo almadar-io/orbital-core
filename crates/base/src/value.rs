@@ -178,6 +178,15 @@ impl Value {
         }
     }
 
+    /// The text of this value as a string operator reads it: absence (`null`) is the empty string, as the
+    /// compiled TypeScript's `join('')` and `toUpperCase()` over a missing value read it.
+    pub fn to_text(&self) -> String {
+        match self {
+            Value::Null => String::new(),
+            other => other.to_string_value(),
+        }
+    }
+
     /// Convert to string representation
     pub fn to_string_value(&self) -> String {
         match self {

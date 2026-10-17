@@ -1917,6 +1917,34 @@ mod os_twin {
 
     #[test]
     fn os_twin_fixture_replay() {
+        replay(false);
+    }
+
+    #[test]
+    fn os_twin_fixture_replay_through_the_native_host() {
+        replay(true);
+    }
+
+    struct NoNetwork;
+
+    impl orbital_core_runtime::http_service::Transport for NoNetwork {
+        fn send(
+            &self,
+            _: &orbital_core_runtime::http_service::HttpRequest,
+        ) -> Result<orbital_core_runtime::http_service::HttpResponse, orbital_core_runtime::http_service::TransportError> {
+            Err(orbital_core_runtime::http_service::TransportError::Failed("no network".to_string()))
+        }
+    }
+
+    struct NoSecrets;
+
+    impl orbital_core_runtime::http_service::SecretSource for NoSecrets {
+        fn secret(&self, _: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
+    fn replay(through_native_host: bool) {
         let path = fixture_path();
         let Ok(raw) = std::fs::read_to_string(&path) else {
             eprintln!("os_twin_fixture_replay: {} is absent (standalone checkout); skipped", path.display());
@@ -1948,12 +1976,21 @@ mod os_twin {
         vars.insert("closedPort".into(), json!(closed));
 
         let grants: OsGrants = serde_json::from_value(substitute(&vars, &fixture["grants"])).unwrap();
-        let handles = OsHandles::default();
+        let handles = Shared::new(OsHandles::default());
         let (told, rx) = channel();
         handles.completions.set_sink(Shared::new(Collect(StdMutex::new(told))));
         let mut arrived: HashMap<String, Json> = HashMap::new();
         let on_event = |_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {};
         let host = OsHost { grants: &grants, handles: &handles, on_event: &on_event };
+        let native = orbital_core_runtime::native_host::NativeHost::new(
+            Shared::new(orbital_core_runtime::entity_source::InMemoryEntityCache::new()),
+            Shared::new(NoNetwork),
+            Shared::new(NoSecrets),
+            Vec::new(),
+            grants.clone(),
+            handles.clone(),
+            Shared::new(|_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {}),
+        );
 
         let steps = fixture["steps"].as_array().unwrap();
         assert!(steps.len() > 70);
@@ -1973,7 +2010,7 @@ mod os_twin {
             let key = step.get("key").and_then(Json::as_str).map(str::to_string);
             let site = key.as_ref().map(|_| routed_site());
             let request = IoRequest::Os { op, args, key: key.clone(), site };
-            let answered = answer_os(Some(&host), &request);
+            let answered = if through_native_host { native.answer(&request) } else { answer_os(Some(&host), &request) };
             if let Some(deferred) = step.get("deferred") {
                 assert!(matches!(answered, IoAnswer::ServiceDeferred), "{name}: {answered:?}");
                 if deferred != "pending" {

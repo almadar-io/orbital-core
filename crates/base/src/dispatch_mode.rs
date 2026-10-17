@@ -231,6 +231,7 @@ mod tests {
                 offset: None,
                 limit: None,
                 include: None,
+                nearest: None,
                 emit: None,
             }),
         }

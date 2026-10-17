@@ -109,6 +109,9 @@ pub enum OirEffect {
         /// Relation fields to populate via populateRelations()
         #[serde(skip_serializing_if = "Option::is_none")]
         include: Option<Vec<String>>,
+        /// `{ field, vector, k }` as one object expression: the nearest `k` rows by cosine similarity (EXEC-FETCH-2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nearest: Option<OirExpr>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<OirEmitConfig>,
     },
@@ -630,6 +633,7 @@ impl OirEffect {
             offset: None,
             limit: None,
             include: None,
+            nearest: None,
             emit: None,
         }
     }
@@ -644,6 +648,7 @@ impl OirEffect {
             offset: None,
             limit: None,
             include: None,
+            nearest: None,
             emit: None,
         }
     }
@@ -658,6 +663,7 @@ impl OirEffect {
             offset: None,
             limit: None,
             include: None,
+            nearest: None,
             emit: None,
         }
     }
@@ -677,6 +683,7 @@ impl OirEffect {
             offset: None,
             limit,
             include: None,
+            nearest: None,
             emit: None,
         }
     }
@@ -1044,7 +1051,12 @@ impl OirEffect {
                         .for_each(|b| bindings.push(b));
                 }
             }
-            Self::Fetch { id, filter, .. } => {
+            Self::Fetch { id, filter, nearest, .. } => {
+                if let Some(n) = nearest {
+                    n.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
+                }
                 if let Some(id_expr) = id {
                     id_expr
                         .collect_bindings()
@@ -1437,6 +1449,7 @@ impl OirEffect {
                 order_by,
                 offset,
                 limit,
+                nearest,
                 ..
             } => {
                 push_opt(&mut out, id);
@@ -1444,6 +1457,7 @@ impl OirEffect {
                 push_opt(&mut out, order_by);
                 push_opt(&mut out, offset);
                 push_opt(&mut out, limit);
+                push_opt(&mut out, nearest);
             }
             Self::Persist { data, .. } => out.push(data),
             Self::PersistBatch { ops, .. } => out.push(ops),
@@ -1823,6 +1837,7 @@ mod tests {
             limit: None,
             offset: None,
             include: None,
+            nearest: None,
             emit: Some(cfg.clone()),
         };
         let json = serde_json::to_value(&eff).unwrap();
@@ -1841,6 +1856,20 @@ mod tests {
         } else {
             panic!("expected Fetch");
         }
+    }
+
+    #[test]
+    fn fetch_nearest_serializes_only_when_set() {
+        let plain = serde_json::to_value(OirEffect::fetch("Doc")).unwrap();
+        assert!(plain.get("nearest").is_none());
+        let mut eff = OirEffect::fetch("Doc");
+        if let OirEffect::Fetch { nearest, .. } = &mut eff {
+            *nearest = Some(OirExpr::number(3.0));
+        }
+        let json = serde_json::to_value(&eff).unwrap();
+        assert!(json.get("nearest").is_some());
+        let round: OirEffect = serde_json::from_value(json).unwrap();
+        assert_eq!(round, eff);
     }
 
     #[test]

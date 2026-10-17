@@ -12,7 +12,7 @@ fn schema() -> OrbitalSchema {
         "name": "App",
         "orbitals": [{
             "name": "Main",
-            "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "entity": { "name": "Item", "persistence": "persistent", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
                 { "name": "Bridge", "linkedEntity": "Item",
                   "stateMachine": {
@@ -152,4 +152,78 @@ fn a_persist_the_host_refused_is_failed_with_its_error() {
     let hop = &response.transitions.as_ref().unwrap()[0];
     assert_eq!(hop.effects[0].status, HopEffectStatus::Failed);
     assert_eq!(hop.effects[0].error.as_deref(), Some("disk full"));
+}
+
+// `[runtime]` rows live in the kernel's memory: reading or writing one is never a host ask (EXEC-TICK-5 and D-5 keep their
+// rules, only where the rows live moved). The same `emit-fanout` program the benchmark runs made 6 `readRow` asks per `go`.
+mod runtime_rows {
+    use super::*;
+
+    fn fanout(persistence: &str) -> OrbitalSchema {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../packages/almadar-parity/fixtures/scenarios/emit-fanout.json");
+        let mut doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json");
+        doc["schema"]["orbitals"][0]["entity"]["persistence"] = json!(persistence);
+        serde_json::from_value(doc["schema"].clone()).expect("schema")
+    }
+
+    fn go(schema: OrbitalSchema) -> (EventResponse, Vec<IoRequest>) {
+        let server = EmbeddedServer::new(schema).unwrap();
+        let request = EventRequest { event: "GO".to_string(), target_trait: Some("Src".to_string()), ..Default::default() };
+        let mut seen = Vec::new();
+        let mut progress = server.start("Main", request).unwrap();
+        loop {
+            match progress {
+                ServerProgress::Done(response) => return (response, seen),
+                ServerProgress::Await { flight, requests } => {
+                    let replies = requests
+                        .into_iter()
+                        .map(|pending| {
+                            seen.push(pending.request.clone());
+                            IoReply { id: pending.id, answer: IoAnswer::Row(Ok(orbital_core_base::value::Value::Null)) }
+                        })
+                        .collect();
+                    progress = server.resume(flight, replies).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_dispatch_over_a_runtime_entity_makes_no_host_ask() {
+        let (response, seen) = go(fanout("runtime"));
+        assert!(seen.is_empty(), "{seen:?}");
+        assert_eq!(response.states.get("Sink").map(String::as_str), Some("done"));
+        assert_eq!(response.emitted_events.len(), 4);
+    }
+
+    #[test]
+    fn control_a_persistent_entity_still_asks_the_host_for_its_row_but_only_once_per_dispatch() {
+        let (response, seen) = go(fanout("persistent"));
+        let oracle = adapter_calls()["emitFanoutPersistent"]["frameReads"].as_u64().expect("oracle") as usize;
+        assert_eq!(seen.len(), oracle, "{seen:?}");
+        assert!(seen.iter().all(|r| matches!(r, IoRequest::ReadRow { .. })), "{seen:?}");
+        assert_eq!(response.states.get("Sink").map(String::as_str), Some("done"));
+        assert_eq!(response.emitted_events.len(), 4);
+    }
+
+    fn adapter_calls() -> serde_json::Value {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../packages/almadar-runtime/test/fixtures/adapter-calls.json");
+        serde_json::from_str(&std::fs::read_to_string(path).expect("oracle")).expect("oracle json")
+    }
+
+    #[test]
+    fn a_runtime_create_is_kept_in_the_kernel_and_asks_nothing() {
+        let server = EmbeddedServer::new(schema_with_runtime_saver()).unwrap();
+        let request = EventRequest { event: "SAVE".to_string(), target_trait: Some("Saver".to_string()), ..Default::default() };
+        let ServerProgress::Done(response) = server.start("Main", request).unwrap() else { panic!("a runtime create asked the host") };
+        assert_eq!(response.states.get("Saver").map(String::as_str), Some("saved"));
+        let hop = &response.transitions.as_ref().unwrap()[0];
+        assert_eq!(hop.effects[0].status, HopEffectStatus::Executed);
+    }
+
+    fn schema_with_runtime_saver() -> OrbitalSchema {
+        let mut doc = serde_json::to_value(schema()).unwrap();
+        doc["orbitals"][0]["entity"]["persistence"] = json!("runtime");
+        serde_json::from_value(doc).unwrap()
+    }
 }

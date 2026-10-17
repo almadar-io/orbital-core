@@ -204,7 +204,15 @@ impl Operator for RoundOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "round", 1);
         let val = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(Value::Number(val.round()))
+        let decimals = match args.get(1) {
+            Some(arg) => require_number!(eval_expr(arg, ctx)?),
+            None => 0.0,
+        };
+        if decimals == 0.0 {
+            return Ok(Value::Number(val.round()));
+        }
+        let factor = 10f64.powf(decimals);
+        Ok(Value::Number((val * factor).round() / factor))
     }
 }
 

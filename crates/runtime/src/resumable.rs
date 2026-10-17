@@ -760,6 +760,8 @@ pub struct DispatchContinuation {
     pub(crate) journal: Vec<Exchange>,
     pub(crate) pending: Vec<PendingRequest>,
     pub(crate) next_id: u64,
+    /// The rows the host has answered for this dispatch, kept across its steps (see [`ReadCache`]).
+    pub(crate) reads: Arc<ReadCache>,
 }
 
 impl std::fmt::Debug for DispatchContinuation {
@@ -815,9 +817,16 @@ impl Exchange {
     }
 }
 
+/// The rows a dispatch has read from the host, by (entity type, id); `None` is a row the host answered as absent. A
+/// dispatch asks the host for a row once: its later steps read the answer, until the kernel writes that entity type.
+/// A step that stops to await the host keeps none of its own reads or invalidations (its replay makes them again from
+/// the journal), so the journal and the cache never both answer the same read.
+pub(crate) type ReadCache = HashMap<(String, String), Option<Arc<Value>>>;
+
 /// What the replayed step left behind: the request it could not go on without, or a request that
 /// disagrees with the recorded one.
 pub(crate) struct StepEnd {
+    pub(crate) reads: Arc<ReadCache>,
     pub(crate) journal: Vec<Exchange>,
     pub(crate) pending: Asks,
     pub(crate) diverged: Option<ResumeError>,
@@ -855,6 +864,8 @@ impl Claimed {
 
 struct StepLedger {
     thread: ThreadId,
+    reads: Arc<ReadCache>,
+    reads_at_start: Arc<ReadCache>,
     journal: Vec<Exchange>,
     claimed: Claimed,
     pending: Asks,
@@ -916,6 +927,10 @@ pub(crate) struct IoPort {
     noticed: Mutex<HashSet<String>>,
     /// The kernel's configured clock: when set, the time a driver reads (TLS) is this clock's, not a host ask.
     clock: Option<crate::config::DispatchClock>,
+    /// `[runtime]` entities live in `memory` and are never a host ask, when the kernel is configured to own them.
+    runtime_in_kernel: bool,
+    runtime_types: RwLock<HashSet<String>>,
+    memory: crate::entity_source::InMemoryEntityCache,
 }
 
 struct Installed<'a> {
@@ -947,7 +962,50 @@ impl IoPort {
             write_capabilities: RwLock::new(HashMap::new()),
             noticed: Mutex::new(HashSet::new()),
             clock: None,
+            runtime_in_kernel: false,
+            runtime_types: RwLock::new(HashSet::new()),
+            memory: crate::entity_source::InMemoryEntityCache::new(),
         }
+    }
+
+    /// Serve the rows of `[runtime]` entities from the kernel's own memory instead of asking the host.
+    pub(crate) fn with_runtime_rows(mut self, in_kernel: bool) -> Self {
+        self.runtime_in_kernel = in_kernel;
+        self
+    }
+
+    /// `entity_type` is a `[runtime]` entity: its rows live in the kernel when the kernel owns them.
+    pub(crate) fn claim_runtime(&self, entity_type: &str) {
+        if self.runtime_in_kernel {
+            self.runtime_types.write().insert(entity_type.to_string());
+        }
+    }
+
+    fn local(&self, entity_type: &str) -> bool {
+        self.runtime_in_kernel && self.runtime_types.read().contains(entity_type)
+    }
+
+    /// Where the rows of `entity_type` are read and written when no resumable step is in flight.
+    fn source_for(&self, entity_type: &str) -> &dyn EntitySource {
+        if self.local(entity_type) {
+            &self.memory
+        } else {
+            self.source.as_ref()
+        }
+    }
+
+    /// The entity a row request addresses, when it is one a kernel-owned `[runtime]` entity answers itself.
+    fn local_entity<'r>(&self, request: &'r IoRequest) -> Option<&'r str> {
+        let entity = match request {
+            IoRequest::ReadRow { entity_type, .. }
+            | IoRequest::ListRows { entity_type }
+            | IoRequest::QueryRows { entity_type, .. }
+            | IoRequest::CreateRow { entity_type, .. }
+            | IoRequest::WriteRow { entity_type, .. }
+            | IoRequest::DeleteRow { entity_type, .. } => entity_type.as_str(),
+            _ => return None,
+        };
+        self.local(entity).then_some(entity)
     }
 
     /// This port reads time from `clock`, the kernel's configured dispatch clock (`KernelConfig.clock`).
@@ -1042,10 +1100,22 @@ impl IoPort {
         journal: Vec<Exchange>,
         step: impl FnOnce() -> R,
     ) -> (R, StepEnd) {
+        self.run_step_reading(journal, Arc::default(), step)
+    }
+
+    /// [`Self::run_step`] with the rows the dispatch has already read: the step reads them without asking.
+    pub(crate) fn run_step_reading<R>(
+        &self,
+        journal: Vec<Exchange>,
+        reads: Arc<ReadCache>,
+        step: impl FnOnce() -> R,
+    ) -> (R, StepEnd) {
         let gate = self.gate.lock();
         *self.ledger.lock() = Some(StepLedger {
             thread: std::thread::current().id(),
             claimed: Claimed::default(),
+            reads_at_start: reads.clone(),
+            reads,
             journal,
             pending: Asks::new(),
             keys: HashSet::new(),
@@ -1061,17 +1131,49 @@ impl IoPort {
         drop(installed);
         let end = match ledger {
             Some(l) => StepEnd {
+                reads: if l.pending.is_empty() && l.diverged.is_none() { l.reads } else { l.reads_at_start },
                 journal: l.journal,
                 pending: l.pending,
                 diverged: l.diverged,
             },
             None => StepEnd {
+                reads: Arc::default(),
                 journal: Vec::new(),
                 pending: Asks::new(),
                 diverged: None,
             },
         };
         (result, end)
+    }
+
+    /// The row the dispatch already read from the host, when the step in flight may answer from it.
+    fn read_before(&self, entity_type: &str, id: &str) -> Option<Option<Arc<Value>>> {
+        let slot = self.ledger.lock();
+        let ledger = slot.as_ref()?;
+        if ledger.thread != std::thread::current().id() || ledger.blocked || ledger.diverged.is_some() {
+            return None;
+        }
+        ledger.reads.get(&(entity_type.to_string(), id.to_string())).cloned()
+    }
+
+    fn remember_read(&self, entity_type: &str, id: &str, row: Option<Arc<Value>>) {
+        if self.local(entity_type) {
+            return;
+        }
+        if let Some(ledger) = self.ledger.lock().as_mut() {
+            if ledger.thread == std::thread::current().id() {
+                Arc::make_mut(&mut ledger.reads).insert((entity_type.to_string(), id.to_string()), row);
+            }
+        }
+    }
+
+    /// The kernel wrote `entity_type`: what the dispatch read of it is no longer what the host holds.
+    fn forget_reads(&self, entity_type: &str) {
+        if let Some(ledger) = self.ledger.lock().as_mut() {
+            if ledger.thread == std::thread::current().id() && ledger.reads.keys().any(|(t, _)| t == entity_type) {
+                Arc::make_mut(&mut ledger.reads).retain(|(t, _), _| t != entity_type);
+            }
+        }
     }
 
     /// Serve `request` from the journal, or record it. A keyed `call-service` is matched to its recorded
@@ -1128,6 +1230,13 @@ impl IoPort {
                     Asked::Withheld
                 }
             }
+            None if !ledger.blocked && self.local_entity(&request).is_some() => {
+                let answer = BlockingHost { source: &self.memory, service: None, substrate: None }.answer(&request);
+                ledger.journal.push(Exchange::new(request, answer.clone()));
+                let at = ledger.journal.len() - 1;
+                ledger.claimed.claim(at);
+                Asked::Answer(answer)
+            }
             None if keyed.is_some() && !ledger.blocked => {
                 ledger.pending.push(request);
                 Asked::Answer(IoAnswer::ServiceDeferred)
@@ -1175,13 +1284,23 @@ impl EntitySource for IoPort {
     }
 
     fn find(&self, entity_type: &str, id: &str) -> Result<Option<Arc<Value>>, String> {
+        if let Some(read) = self.read_before(entity_type, id) {
+            return Ok(read);
+        }
         match self.ask(|| IoRequest::ReadRow {
             entity_type: entity_type.to_string(),
             id: id.to_string(),
         }) {
-            Asked::Direct => self.source.find(entity_type, id),
-            Asked::Answer(IoAnswer::Row(Ok(Value::Null))) => Ok(None),
-            Asked::Answer(IoAnswer::Row(row)) => row.map(|r| Some(Arc::new(r))),
+            Asked::Direct => self.source_for(entity_type).find(entity_type, id),
+            Asked::Answer(IoAnswer::Row(Ok(Value::Null))) => {
+                self.remember_read(entity_type, id, None);
+                Ok(None)
+            }
+            Asked::Answer(IoAnswer::Row(row)) => row.map(|r| {
+                let row = Arc::new(r);
+                self.remember_read(entity_type, id, Some(row.clone()));
+                Some(row)
+            }),
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
     }
@@ -1192,8 +1311,11 @@ impl EntitySource for IoPort {
             id: id.to_string(),
             data: data.clone(),
         }) {
-            Asked::Direct => self.source.write(entity_type, id, data),
-            Asked::Answer(IoAnswer::Row(row)) => row,
+            Asked::Direct => self.source_for(entity_type).write(entity_type, id, data),
+            Asked::Answer(IoAnswer::Row(row)) => {
+                self.forget_reads(entity_type);
+                row
+            }
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
     }
@@ -1203,8 +1325,11 @@ impl EntitySource for IoPort {
             entity_type: entity_type.to_string(),
             data: data.clone(),
         }) {
-            Asked::Direct => self.source.create(entity_type, data),
-            Asked::Answer(IoAnswer::Row(row)) => row,
+            Asked::Direct => self.source_for(entity_type).create(entity_type, data),
+            Asked::Answer(IoAnswer::Row(row)) => {
+                self.forget_reads(entity_type);
+                row
+            }
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
     }
@@ -1214,25 +1339,29 @@ impl EntitySource for IoPort {
             entity_type: entity_type.to_string(),
             id: id.to_string(),
         }) {
-            Asked::Direct => self.source.delete(entity_type, id),
-            Asked::Answer(IoAnswer::Deleted(done)) => done,
+            Asked::Direct => self.source_for(entity_type).delete(entity_type, id),
+            Asked::Answer(IoAnswer::Deleted(done)) => {
+                self.forget_reads(entity_type);
+                done
+            }
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
     }
 
     fn clear(&self) {
-        self.source.clear()
+        self.source.clear();
+        self.memory.clear();
     }
 
     fn count(&self) -> usize {
-        self.source.count()
+        self.source.count() + self.memory.count()
     }
 
     fn list(&self, entity_type: &str) -> Result<Vec<Arc<Value>>, String> {
         match self.ask(|| IoRequest::ListRows {
             entity_type: entity_type.to_string(),
         }) {
-            Asked::Direct => self.source.list(entity_type),
+            Asked::Direct => self.source_for(entity_type).list(entity_type),
             Asked::Answer(IoAnswer::Rows(rows)) => rows,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -1244,7 +1373,7 @@ impl EntitySource for IoPort {
         visit: &mut dyn FnMut(&Arc<Value>) -> ScanControl,
     ) -> Result<(), String> {
         if self.direct() {
-            return self.source.scan(entity_type, visit);
+            return self.source_for(entity_type).scan(entity_type, visit);
         }
         for row in self.list(entity_type)? {
             if visit(&row) == ScanControl::Stop {
@@ -1256,7 +1385,7 @@ impl EntitySource for IoPort {
 
     fn query_page(&self, entity_type: &str, query: &RowQuery) -> Option<Result<RowPage, String>> {
         if self.direct() {
-            return self.source.query_page(entity_type, query);
+            return self.source_for(entity_type).query_page(entity_type, query);
         }
         let capabilities = self.query_capabilities.read().get(entity_type).cloned();
         if let Some(capabilities) = capabilities {
@@ -1272,7 +1401,7 @@ impl EntitySource for IoPort {
                     query: query.clone(),
                     project: RowProjection::Rows,
                 }) {
-                    Asked::Direct => return self.source.query_page(entity_type, query),
+                    Asked::Direct => return self.source_for(entity_type).query_page(entity_type, query),
                     Asked::Answer(IoAnswer::Page(page)) => {
                         return Some(page.and_then(|page| {
                             echo_checked(entity_type, query, &page)?;
@@ -1295,12 +1424,12 @@ impl EntitySource for IoPort {
         if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
             return Some(Err(e));
         }
-        Some(Ok(run.finish()))
+        Some(run.finish())
     }
 
     fn query_ids(&self, entity_type: &str, query: &RowQuery) -> Option<Result<RowIdPage, String>> {
         if self.direct() {
-            return self.source.query_ids(entity_type, query);
+            return self.source_for(entity_type).query_ids(entity_type, query);
         }
         let capabilities = self.query_capabilities.read().get(entity_type).cloned();
         if let Some(capabilities) = capabilities {
@@ -1318,7 +1447,7 @@ impl EntitySource for IoPort {
                     query: query.clone(),
                     project: RowProjection::Ids,
                 }) {
-                    Asked::Direct => return self.source.query_ids(entity_type, query),
+                    Asked::Direct => return self.source_for(entity_type).query_ids(entity_type, query),
                     Asked::Answer(IoAnswer::IdPage(page)) => return Some(page),
                     Asked::Answer(IoAnswer::QueryUnsupported(detail)) => self.notice(
                         "kernel.fetch.pushdown-fallback",
@@ -1336,7 +1465,7 @@ impl EntitySource for IoPort {
         if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
             return Some(Err(e));
         }
-        Some(Ok(run.finish_ids()))
+        Some(run.finish_ids())
     }
 
     fn write_where(&self, op: &RowWriteOp) -> Option<Result<RowWriteOutcome, String>> {
@@ -1404,7 +1533,12 @@ impl IoPort {
             batch: batch.clone(),
         }) {
             Asked::Direct => self.source.write_batch(batch),
-            Asked::Answer(IoAnswer::Wrote(outcomes)) => Some(outcomes),
+            Asked::Answer(IoAnswer::Wrote(outcomes)) => {
+                for op in &batch.ops {
+                    self.forget_reads(op.entity_type());
+                }
+                Some(outcomes)
+            }
             Asked::Answer(IoAnswer::WriteUnsupported(detail)) => {
                 let entity = batch.ops.first().map_or("", |op| op.entity_type());
                 self.notice(
@@ -3081,5 +3215,65 @@ mod http_replay_tests {
             matches!(accept_replies(&pending, vec![reply(0), reply(0), reply(1)]), Err(ResumeError::Duplicate(id)) if id.raw() == 0)
         );
         assert!(accept_replies(&pending, vec![reply(1), reply(0)]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod read_cache_tests {
+    use super::*;
+
+    fn port() -> IoPort {
+        IoPort::new(Arc::new(HostAnswered), None, None)
+    }
+
+    fn row(id: &str) -> Value {
+        serde_json::from_value(serde_json::json!({ "id": id })).unwrap()
+    }
+
+    fn read(id: &str) -> IoRequest {
+        IoRequest::ReadRow { entity_type: "T".to_string(), id: id.to_string() }
+    }
+
+    fn read_answer(id: &str) -> Exchange {
+        Exchange::new(read(id), IoAnswer::Row(Ok(row(id))))
+    }
+
+    #[test]
+    fn a_row_read_twice_in_a_dispatch_is_asked_once() {
+        let port = port();
+        let (found, end) = port.run_step(vec![read_answer("1")], || (port.find("T", "1"), port.find("T", "1")));
+        assert!(matches!(&found, (Ok(Some(_)), Ok(Some(_)))), "{found:?}");
+        assert!(end.pending.is_empty() && end.diverged.is_none());
+    }
+
+    #[test]
+    fn a_later_step_reads_what_an_earlier_one_was_answered_and_asks_only_for_a_new_row() {
+        let port = port();
+        let (_, first) = port.run_step(vec![read_answer("1")], || port.find("T", "1"));
+        let (_, second) = port.run_step_reading(Vec::new(), first.reads, || (port.find("T", "1"), port.find("T", "2")));
+        assert_eq!(second.pending.as_slice(), &[read("2")]);
+    }
+
+    #[test]
+    fn control_a_write_to_the_entity_makes_the_next_read_ask_again() {
+        let port = port();
+        let write = Exchange::new(
+            IoRequest::WriteRow { entity_type: "T".to_string(), id: "1".to_string(), data: row("1") },
+            IoAnswer::Row(Ok(row("1"))),
+        );
+        let (_, end) = port.run_step(vec![read_answer("1"), write], || {
+            port.find("T", "1").unwrap();
+            port.write("T", "1", &row("1")).unwrap();
+            port.find("T", "1")
+        });
+        assert_eq!(end.pending.as_slice(), &[read("1")]);
+    }
+
+    #[test]
+    fn a_step_that_stops_for_the_host_keeps_none_of_its_reads() {
+        let port = port();
+        let (_, end) = port.run_step(vec![read_answer("1")], || (port.find("T", "1"), port.find("T", "2")));
+        assert_eq!(end.pending.as_slice(), &[read("2")]);
+        assert!(end.reads.is_empty(), "{:?}", end.reads.keys().collect::<Vec<_>>());
     }
 }

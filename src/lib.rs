@@ -111,6 +111,14 @@ pub mod runtime {
     pub use orbital_core_runtime::oauth_flow;
     #[cfg(not(target_arch = "wasm32"))]
     pub use orbital_core_runtime::os_host;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use orbital_core_runtime::native_host;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use orbital_core_runtime::credentials;
+    #[cfg(feature = "native-transport")]
+    pub use orbital_core_runtime::native_transport;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use orbital_core_runtime::credential_store;
     pub mod listener {
         pub use orbital_core_base::listen_match::matches_listen_source;
         pub use orbital_core_runtime::listener::*;

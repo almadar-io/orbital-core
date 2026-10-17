@@ -63,7 +63,7 @@ pub trait EntitySource: Send + Sync {
         if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
             return Some(Err(e));
         }
-        Some(Ok(run.finish()))
+        Some(run.finish())
     }
 
     /// The ids of the page `query_page` would return, no row cloned.
@@ -72,7 +72,7 @@ pub trait EntitySource: Send + Sync {
         if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
             return Some(Err(e));
         }
-        Some(Ok(run.finish_ids()))
+        Some(run.finish_ids())
     }
 
     /// One conditional write (the row is tested and written in one step). `None` = not supported here.

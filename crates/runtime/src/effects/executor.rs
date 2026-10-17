@@ -13,7 +13,7 @@ use orbital_core_base::events::types::Event;
 use orbital_core_base::events::bus::SharedEventBus;
 use crate::entity_access::{check_mutation_access, missing_required_fields, scope_fetched_rows, EntityAccessTable};
 use crate::row_query::{compare_rows, compile_predicate, default_row_order, PredicateRole, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome};
-use orbital_core_base::row_set::{RowDirection, RowOrder, RowPredicate, RowSetRef, RowTotalMode};
+use orbital_core_base::row_set::{nearest_rows, RowDirection, RowNearest, RowOrder, RowPredicate, RowSetRef, RowTotalMode};
 use orbital_core_base::schema::sexpr::SExpression;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -102,9 +102,16 @@ pub trait FetchHandler: Send + Sync {
         offset: Option<usize>,
         include: Option<&Vec<String>>,
         total: RowTotalMode,
+        nearest: Option<&RowNearest>,
         ctx: &BindingContext,
     ) -> Result<FetchPage, String> {
         let _ = total;
+        if let Some(nearest) = nearest {
+            let page = self.fetch(entity_type, id, filter, None, None, include, ctx)?;
+            let rows = nearest_rows(page.rows.into_iter().map(Arc::new).collect(), nearest)?;
+            let rows: Vec<Value> = rows.iter().map(|row| (**row).clone()).collect();
+            return Ok(FetchPage { total: rows.len(), rows });
+        }
         let default_order = default_row_order();
         match (order, id) {
             (None, Some(_)) => self.fetch(entity_type, id, filter, limit, offset, include, ctx),
@@ -134,6 +141,7 @@ pub trait FetchHandler: Send + Sync {
         _limit: Option<usize>,
         _offset: Option<usize>,
         _total: RowTotalMode,
+        _nearest: Option<&RowNearest>,
         _ctx: &BindingContext,
     ) -> Result<RowSetRef, String> {
         Err(format!(
@@ -641,6 +649,7 @@ impl EffectExecutor {
                 include,
                 deliver,
                 total,
+                nearest,
                 emit: _,
             } => self.do_fetch(
                 entity_type,
@@ -652,6 +661,7 @@ impl EffectExecutor {
                 include.as_ref(),
                 *deliver,
                 total.unwrap_or(RowTotalMode::Exact),
+                nearest.as_ref(),
                 ctx,
             ),
             Effect::CallService {
@@ -818,6 +828,51 @@ impl EffectExecutor {
                 }
             }
         }
+    }
+
+    /// A fetch's `nearest: { field, vector, k }`, each member evaluated at execution (EXEC-FETCH-2). It excludes
+    /// `id`, `orderBy`, `offset` and `limit`; a `k` that is not a positive integer fails the fetch.
+    fn resolve_nearest(
+        &self,
+        nearest: Option<&Value>,
+        id: Option<&Value>,
+        order_by: Option<&Value>,
+        limit: Option<&Value>,
+        offset: Option<&Value>,
+        ctx: &BindingContext,
+    ) -> Result<Option<Box<RowNearest>>, String> {
+        let Some(nearest) = nearest else { return Ok(None) };
+        if id.is_some() || order_by.is_some() || limit.is_some() || offset.is_some() {
+            return Err("nearest cannot be combined with id, orderBy, offset or limit".to_string());
+        }
+        let Value::Object(members) = nearest else {
+            return Err("nearest must be { field, vector, k }".to_string());
+        };
+        let member = |name: &str| -> Result<Value, String> {
+            let expr = members
+                .get(name)
+                .ok_or_else(|| format!("nearest needs `{name}`"))?;
+            let sexpr: SExpression = expr.clone().into();
+            Evaluator::new().evaluate(&sexpr, ctx).map_err(|e| e.to_string())
+        };
+        let Value::String(field) = member("field")? else {
+            return Err("nearest `field` must be a string".to_string());
+        };
+        let Value::Array(items) = member("vector")? else {
+            return Err("nearest `vector` must be a [number]".to_string());
+        };
+        let vector = items
+            .iter()
+            .map(|item| match item {
+                Value::Number(n) => Ok(*n),
+                _ => Err("nearest `vector` must be a [number]".to_string()),
+            })
+            .collect::<Result<Vec<f64>, String>>()?;
+        let k = match member("k")? {
+            Value::Number(n) if n >= 1.0 && n.fract() == 0.0 => n as usize,
+            _ => return Err("nearest `k` must be a positive integer".to_string()),
+        };
+        Ok(Some(Box::new(RowNearest { field, vector, k })))
     }
 
     /// A fetch `limit`/`offset`, evaluated at execution; only a positive number applies (as `effect-stage.ts`).
@@ -1934,6 +1989,7 @@ impl EffectExecutor {
         include: Option<&Vec<String>>,
         deliver: FetchDeliver,
         total_mode: RowTotalMode,
+        nearest: Option<&Value>,
         ctx: &BindingContext,
     ) -> EffectResult {
         let effect = Effect::Fetch {
@@ -1946,11 +2002,19 @@ impl EffectExecutor {
             include: include.cloned(),
             deliver,
             total: (total_mode == RowTotalMode::None).then_some(RowTotalMode::None),
+            nearest: nearest.cloned(),
             emit: None,
         };
         let counted = |total: usize| (total_mode == RowTotalMode::Exact).then_some(total);
 
         if let Some(fetch_handler) = &self.fetch_handler {
+            let nearest = match self.resolve_nearest(nearest, id, order_by, limit, offset, ctx) {
+                Ok(nearest) => nearest,
+                Err(e) => {
+                    error!(entity_type = entity_type, error = %e, "Fetch effect failed");
+                    return Self::fetch_failed(effect, &e);
+                }
+            };
             let resolved = self.resolve_fetch_id(id, ctx).and_then(|id| {
                 Ok((
                     id,
@@ -1988,6 +2052,7 @@ impl EffectExecutor {
                     limit,
                     offset,
                     total_mode,
+                    nearest.as_deref(),
                     ctx,
                 ) {
                     Ok(reference) => {
@@ -2014,6 +2079,7 @@ impl EffectExecutor {
                 offset,
                 include,
                 total_mode,
+                nearest.as_deref(),
                 ctx,
             );
             match fetched {
@@ -2994,6 +3060,7 @@ mod tests {
             include: None,
             deliver: FetchDeliver::Rows,
             total: None,
+            nearest: None,
             emit: None,
         };
 
@@ -3039,6 +3106,7 @@ mod tests {
             include: None,
             deliver: FetchDeliver::Rows,
             total: None,
+            nearest: None,
             emit: None,
         };
 
@@ -3067,6 +3135,7 @@ mod tests {
             include: None,
             deliver: FetchDeliver::Rows,
             total: None,
+            nearest: None,
             emit: None,
         };
 
@@ -3153,6 +3222,7 @@ mod tests {
             include: None,
             deliver: FetchDeliver::Rows,
             total: None,
+            nearest: None,
             emit: None,
         };
 
@@ -3239,6 +3309,7 @@ mod tests {
             include: None,
             deliver: FetchDeliver::Rows,
             total: None,
+            nearest: None,
             emit: None,
         };
 
@@ -3322,6 +3393,7 @@ mod tests {
                 include: None,
                 deliver: FetchDeliver::Rows,
                 total: None,
+                nearest: None,
                 emit: None,
             };
             executor.execute(&effect, ctx)

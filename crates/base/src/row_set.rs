@@ -2,7 +2,7 @@ use crate::value::Value;
 use serde::Deserialize;
 use serde::Serialize;
 use std::cmp::Ordering;
-
+use std::sync::Arc;
 
 /// The comparison operators of a `compare` leaf.
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
@@ -127,6 +127,19 @@ pub struct RowQuery {
     pub limit: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total: Option<RowTotalMode>,
+    /// The nearest `k` rows by cosine similarity among those `policy` and `filter` admit (EXEC-FETCH-2). Excludes
+    /// `order`, `offset` and `limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nearest: Option<Box<RowNearest>>,
+}
+
+/// A vector-similarity query: up to `k` rows ordered by descending cosine similarity of `field` to `vector`.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowNearest {
+    pub field: String,
+    pub vector: Vec<f64>,
+    pub k: usize,
 }
 
 /// A fetched page by reference; `query` re-counts `total` at resolve time (order and window ignored).
@@ -251,5 +264,149 @@ impl RowPredicate {
                 _ => false,
             },
         }
+    }
+}
+/// The row's `id` as text; empty when it has none.
+pub fn row_id(row: &Value) -> String {
+    match row_field(row, "id") {
+        Some(Value::String(s)) => s.clone(),
+        Some(other) if !other.is_null() => other.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The one `nearest` selection (EXEC-FETCH-2), run by the kernel and every in-process store: `rows` are already
+/// admitted by the policy and filter. Cosine similarity `dot / (|q| * |r|)`, descending, ties by `id` ascending,
+/// the first `k`. A row whose field is absent, null or of zero norm is skipped; a stored vector that is not a
+/// `[number]` of the query's length, a zero-norm query or `k = 0` fails.
+pub fn nearest_rows(
+    rows: Vec<Arc<Value>>,
+    nearest: &RowNearest,
+) -> Result<Vec<Arc<Value>>, String> {
+    if nearest.k == 0 {
+        return Err("nearest: k must be a positive integer".to_string());
+    }
+    let query_norm = nearest.vector.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if query_norm == 0.0 {
+        return Err("nearest: the query vector has zero norm".to_string());
+    }
+    let mut scored: Vec<(f64, String, Arc<Value>)> = Vec::new();
+    for row in rows {
+        let stored = match row_field(&row, &nearest.field) {
+            None | Some(Value::Null) => continue,
+            Some(Value::Array(items)) => items,
+            Some(_) => {
+                return Err(format!(
+                    "nearest: field `{}` of row `{}` is not a [number]",
+                    nearest.field,
+                    row_id(&row)
+                ))
+            }
+        };
+        if stored.len() != nearest.vector.len() {
+            return Err(format!(
+                "nearest: field `{}` of row `{}` has {} dimensions, the query has {}",
+                nearest.field,
+                row_id(&row),
+                stored.len(),
+                nearest.vector.len()
+            ));
+        }
+        let (mut dot, mut sum_squares) = (0.0_f64, 0.0_f64);
+        for (item, q) in stored.iter().zip(&nearest.vector) {
+            let Value::Number(x) = item else {
+                return Err(format!(
+                    "nearest: field `{}` of row `{}` is not a [number]",
+                    nearest.field,
+                    row_id(&row)
+                ));
+            };
+            dot += x * q;
+            sum_squares += x * x;
+        }
+        let row_norm = sum_squares.sqrt();
+        if row_norm == 0.0 {
+            continue;
+        }
+        let id = row_id(&row);
+        scored.push((dot / (query_norm * row_norm), id, row));
+    }
+    scored.sort_by(|a, b| {
+        if a.0 == b.0 {
+            a.1.cmp(&b.1)
+        } else {
+            b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal)
+        }
+    });
+    scored.truncate(nearest.k);
+    Ok(scored.into_iter().map(|(_, _, row)| row).collect())
+}
+
+#[cfg(test)]
+mod nearest_tests {
+    use super::*;
+
+    fn row(id: &str, embedding: Option<Value>) -> Arc<Value> {
+        let mut map = crate::value::ValueMap::new();
+        map.insert("id".to_string(), Value::String(id.to_string()));
+        if let Some(v) = embedding {
+            map.insert("embedding".to_string(), v);
+        }
+        Arc::new(Value::Object(map))
+    }
+
+    fn vec_of(xs: &[f64]) -> Value {
+        Value::Array(xs.iter().map(|x| Value::Number(*x)).collect())
+    }
+
+    fn ask(vector: &[f64], k: usize) -> RowNearest {
+        RowNearest {
+            field: "embedding".to_string(),
+            vector: vector.to_vec(),
+            k,
+        }
+    }
+
+    fn ids(rows: &[Arc<Value>]) -> Vec<String> {
+        rows.iter().map(|r| row_id(r)).collect()
+    }
+
+    #[test]
+    fn orders_by_descending_cosine_then_id_and_keeps_k() {
+        let rows = vec![
+            row("c", Some(vec_of(&[0.0, 1.0]))),
+            row("b", Some(vec_of(&[2.0, 0.0]))),
+            row("a", Some(vec_of(&[1.0, 0.0]))),
+            row("d", Some(vec_of(&[1.0, 1.0]))),
+        ];
+        let got = nearest_rows(rows.clone(), &ask(&[1.0, 0.0], 3)).unwrap();
+        assert_eq!(ids(&got), ["a", "b", "d"]);
+        let all = nearest_rows(rows, &ask(&[1.0, 0.0], 10)).unwrap();
+        assert_eq!(ids(&all), ["a", "b", "d", "c"]);
+    }
+
+    #[test]
+    fn skips_absent_null_and_zero_norm_rows() {
+        let rows = vec![
+            row("a", None),
+            row("b", Some(Value::Null)),
+            row("z", Some(vec_of(&[0.0, 0.0]))),
+            row("ok", Some(vec_of(&[1.0, 1.0]))),
+        ];
+        let got = nearest_rows(rows, &ask(&[1.0, 0.0], 5)).unwrap();
+        assert_eq!(ids(&got), ["ok"]);
+    }
+
+    #[test]
+    fn fails_on_dimension_mismatch_zero_query_and_zero_k() {
+        let rows = vec![row("a", Some(vec_of(&[1.0, 0.0, 0.0])))];
+        assert!(nearest_rows(rows.clone(), &ask(&[1.0, 0.0], 1))
+            .unwrap_err()
+            .contains("3 dimensions"));
+        assert!(nearest_rows(rows.clone(), &ask(&[0.0, 0.0, 0.0], 1))
+            .unwrap_err()
+            .contains("zero norm"));
+        assert!(nearest_rows(rows.clone(), &ask(&[1.0, 0.0, 0.0], 0)).is_err());
+        assert!(nearest_rows(rows, &ask(&[1.0, 0.0, 0.0], 1)).is_ok());
     }
 }

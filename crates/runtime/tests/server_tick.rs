@@ -2,12 +2,16 @@
 // tick fires — its trait's mount scope, `appliesTo`, the rows it runs over. JS twins:
 // `almadar-runtime/test/{tick-mount-scope,tick-applies-to-states,pause-ticks}.test.ts`.
 
-use std::sync::Arc;
-use {orbital_core_base::bus_event::tick_event_key, orbital_core_runtime::effects::RunTick};
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
-use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
+use std::sync::Arc;
+use {orbital_core_base::bus_event::tick_event_key, orbital_core_runtime::effects::RunTick};
+use {
+    orbital_core_base::schema::types::OrbitalSchema,
+    orbital_core_base::value::Value,
+    orbital_core_runtime::effects::response::{EventRequest, EventResponse},
+};
 
 fn trait_with_tick(name: &str, emit: &str, background: bool, applies_to: Option<Json>) -> Json {
     let mut tick = json!({ "name": "beat", "interval": 10, "effects": [["emit", emit, {}]] });
@@ -46,9 +50,11 @@ fn schema() -> OrbitalSchema {
     .unwrap()
 }
 
-/// The fixture host: `Cell` holds `rows`; every other request is refused.
+/// `Cell` is a `[runtime]` entity: its `rows` are seeded into the kernel, and the host is asked for nothing.
 fn drive(server: &EmbeddedServer, request: EventRequest, rows: &[&str]) -> EventResponse {
     let mut asked: Vec<IoRequest> = Vec::new();
+    let cells: Vec<Value> = rows.iter().map(|id| row(id)).collect();
+    server.seed_rows("Cell", &cells).unwrap();
     let mut progress = server.start("Board", request).unwrap();
     loop {
         match progress {
@@ -61,9 +67,10 @@ fn drive(server: &EmbeddedServer, request: EventRequest, rows: &[&str]) -> Event
                         IoReply {
                             id: pending.id,
                             answer: match pending.request {
-                                IoRequest::ListRows { .. } => {
-                                    IoAnswer::Rows(Ok(rows.iter().map(|id| Arc::new(row(id))).collect()))
-                                }
+                                IoRequest::ListRows { .. } => IoAnswer::Rows(Ok(rows
+                                    .iter()
+                                    .map(|id| Arc::new(row(id)))
+                                    .collect())),
                                 IoRequest::ReadRow { id, .. } => IoAnswer::Row(Ok(row(&id))),
                                 other => panic!("the fixture asks for {other:?}"),
                             },
@@ -227,4 +234,84 @@ fn a_tick_the_trait_does_not_declare_is_an_inert_rejection() {
         response.rejections.expect("a rejection")[0].code,
         orbital_core_runtime::effects::response::TransitionRejectionCode::NoDispatchableTraits
     );
+}
+
+// EXEC-STEP-5 with EXEC-RENDER-4: a step that does not fire re-renders what the slot holds, not the first arm that enters the state.
+mod unfired_step_render {
+    use super::*;
+
+    fn painter() -> OrbitalSchema {
+        let say =
+            |text: &str| json!(["render-ui", "main", { "type": "typography", "content": text }]);
+        serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Board",
+                "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Painter", "linkedEntity": "Cell",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [{ "key": "INIT", "name": "Init" }, { "key": "GO", "name": "Go" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT", "effects": [say("first")] },
+                            { "from": "idle", "to": "idle", "event": "GO", "effects": [say("second")] }
+                        ]
+                    }
+                }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn send(server: &EmbeddedServer, event: &str) -> EventResponse {
+        drive(
+            server,
+            EventRequest {
+                event: event.to_string(),
+                target_trait: Some("Painter".to_string()),
+                ..Default::default()
+            },
+            &[],
+        )
+    }
+
+    fn painted(response: &EventResponse) -> Vec<String> {
+        response
+            .client_effects
+            .iter()
+            .flatten()
+            .map(|effect| {
+                serde_json::to_value(effect).unwrap()[2]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_unfired_step_repaints_what_the_slot_holds_not_the_first_arm_that_enters_the_state() {
+        let server = EmbeddedServer::new(painter()).unwrap();
+        assert_eq!(painted(&send(&server, "INIT")), ["first"]);
+        assert_eq!(painted(&send(&server, "GO")), ["second"]);
+        let unfired = send(&server, "NOPE");
+        assert!(!unfired.transitioned);
+        assert_eq!(painted(&unfired), ["second"]);
+    }
+
+    #[test]
+    fn control_an_unfired_step_on_a_trait_that_has_painted_nothing_shows_the_state_s_entering_render(
+    ) {
+        let server = EmbeddedServer::new(painter()).unwrap();
+        assert_eq!(painted(&send(&server, "NOPE")), ["first"]);
+    }
+
+    #[test]
+    fn control_a_later_fired_arm_replaces_what_an_unfired_step_repaints() {
+        let server = EmbeddedServer::new(painter()).unwrap();
+        send(&server, "GO");
+        send(&server, "INIT");
+        assert_eq!(painted(&send(&server, "NOPE")), ["first"]);
+    }
 }

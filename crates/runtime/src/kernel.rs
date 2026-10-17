@@ -11,7 +11,7 @@ use super::process_result::{DeliveryEntry, EffectRun, EffectRunStatus, OrbitalDe
 use super::render_store::RenderStore;
 use super::resumable::{CallRoutes, CallSite, CallVerdict, IoPort, AWAITING_HOST};
 use super::row_query::{and_predicates, compile_predicate, default_row_order, query_unsupported_reason, resolve_row_set, NotExpressible, PredicateRole, QueryCapabilities, RowPage, RowWriteBatch, RowWriteOp, RowWriteOutcome, WriteCapabilities};
-use orbital_core_base::row_set::{RowOrder, RowPredicate, RowQuery, RowSetRef, RowTotalMode};
+use orbital_core_base::row_set::{nearest_rows, RowNearest, RowOrder, RowPredicate, RowQuery, RowSetRef, RowTotalMode};
 use super::server_leg::ServerLegCollector;
 use orbital_core_base::theme::{resolve_theme, resolve_theme_default, ResolvedTheme, ThemeMode, ThemePresets};
 use crate::config::KernelConfig;
@@ -34,7 +34,7 @@ use orbital_core_eval::evaluator::context::{BindingContext, BindingContextBuilde
 use orbital_core_eval::evaluator::Evaluator;
 use orbital_core_base::value::Value;
 use orbital_core_base::events::bus::{shared_bus, SharedEventBus};
-use orbital_core_base::schema::types::{EntityDefinition, EntityRef, OrbitalSchema, TraitDefinition, TraitReference};
+use orbital_core_base::schema::types::{EntityDefinition, EntityRef, OrbitalSchema, Persistence, TraitDefinition, TraitReference};
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_eval::state_machine::types::{EventPayload, TraitState};
 use orbital_core_eval::state_machine::manager::StateMachineManager;
@@ -63,7 +63,7 @@ pub enum KernelError {
 
 pub mod agent_ports;
 pub mod dispatch_run;
-mod envelope;
+pub(crate) mod envelope;
 pub mod inbound;
 pub mod resolve_run;
 pub(crate) use dispatch_run::Fault;
@@ -509,6 +509,7 @@ impl EntitySourceHandler {
         limit: Option<usize>,
         offset: Option<usize>,
         total: RowTotalMode,
+        nearest: Option<&RowNearest>,
         ctx: &BindingContext,
         required: &dyn Fn(&str) -> bool,
     ) -> Result<RowQuery, NotExpressible> {
@@ -530,6 +531,7 @@ impl EntitySourceHandler {
             offset,
             limit,
             total: (total == RowTotalMode::None).then_some(RowTotalMode::None),
+            nearest: nearest.map(|n| Box::new(n.clone())),
         })
     }
 
@@ -572,7 +574,7 @@ impl EntitySourceHandler {
                 .map(|id| Value::String(id.clone()))
                 .collect(),
         };
-        let uncounted = reference.query.total == Some(RowTotalMode::None);
+        let uncounted = reference.query.total == Some(RowTotalMode::None) || reference.query.nearest.is_some();
         let wanted = RowQuery {
             policy: combined.clone(),
             filter: Some(and_predicates(reference.query.filter.clone(), Some(member)).unwrap_or(
@@ -649,6 +651,7 @@ impl EntitySourceHandler {
         offset: Option<usize>,
         include: Option<&Vec<String>>,
         total_mode: RowTotalMode,
+        nearest: Option<&RowNearest>,
         ctx: &BindingContext,
     ) -> Result<FetchPage, String> {
         let policy = self
@@ -661,7 +664,7 @@ impl EntitySourceHandler {
         // EXEC-FETCH-1: a collection fetch with no authored order is ordered by `createdAt`, then `id`.
         let default_order = default_row_order();
         let plain_order = match order {
-            None if id.is_none() => Some(&default_order),
+            None if id.is_none() && nearest.is_none() => Some(&default_order),
             other => other,
         };
         if id.is_none() {
@@ -680,6 +683,7 @@ impl EntitySourceHandler {
                 limit,
                 offset,
                 total_mode,
+                nearest,
                 ctx,
                 &required,
             ) {
@@ -764,9 +768,16 @@ impl EntitySourceHandler {
                 if let Some(order) = plain_order {
                     entities = page_ordered_rows(entities, order, offset, limit);
                 }
-                FetchPage {
-                    rows: entities,
-                    total,
+                match nearest {
+                    Some(nearest) => {
+                        let ranked = nearest_rows(entities.into_iter().map(Arc::new).collect(), nearest)?;
+                        let rows: Vec<Value> = ranked.iter().map(|row| (**row).clone()).collect();
+                        FetchPage { total: rows.len(), rows }
+                    }
+                    None => FetchPage {
+                        rows: entities,
+                        total,
+                    },
                 }
             }
         };
@@ -803,7 +814,7 @@ impl FetchHandler for EntitySourceHandler {
         include: Option<&Vec<String>>,
         ctx: &BindingContext,
     ) -> Result<FetchPage, String> {
-        self.fetch_rows(entity_type, id, filter, None, limit, offset, include, RowTotalMode::Exact, ctx)
+        self.fetch_rows(entity_type, id, filter, None, limit, offset, include, RowTotalMode::Exact, None, ctx)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -817,9 +828,10 @@ impl FetchHandler for EntitySourceHandler {
         offset: Option<usize>,
         include: Option<&Vec<String>>,
         total: RowTotalMode,
+        nearest: Option<&RowNearest>,
         ctx: &BindingContext,
     ) -> Result<FetchPage, String> {
-        self.fetch_rows(entity_type, id, filter, order, limit, offset, include, total, ctx)
+        self.fetch_rows(entity_type, id, filter, order, limit, offset, include, total, nearest, ctx)
     }
 
     fn fetch_row_set(
@@ -830,6 +842,7 @@ impl FetchHandler for EntitySourceHandler {
         limit: Option<usize>,
         offset: Option<usize>,
         total: RowTotalMode,
+        nearest: Option<&RowNearest>,
         ctx: &BindingContext,
     ) -> Result<RowSetRef, String> {
         let policy = self
@@ -839,7 +852,7 @@ impl FetchHandler for EntitySourceHandler {
             .and_then(|p| p.read.clone());
         let required_fields = self.required_fields_of(entity_type);
         let required = |field: &str| field == "id" || required_fields.contains(field);
-        let query = Self::compile_fetch(policy.as_ref(), filter, order, limit, offset, total, ctx, &required)
+        let query = Self::compile_fetch(policy.as_ref(), filter, order, limit, offset, total, nearest, ctx, &required)
             .map_err(|why| {
                 format!("{entity_type}: `deliver: ids` needs a fetch expressible as a row query ({why})")
             })?;
@@ -912,7 +925,8 @@ impl RuntimeKernel {
                 config.service_handler.clone(),
                 config.substrate_handler.clone(),
             )
-            .with_clock(config.clock.clone()),
+            .with_clock(config.clock.clone())
+            .with_runtime_rows(config.runtime_rows_in_kernel),
         );
         let entity_source: Arc<dyn EntitySource> = io.clone();
         let entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>> =
@@ -1067,6 +1081,11 @@ impl RuntimeKernel {
         Ok(found)
     }
 
+    /// The `egress` origins every registered program declares, unioned: what a host's transport may reach.
+    pub fn egress(&self) -> Vec<String> {
+        self.egress.read().clone()
+    }
+
     /// The `os/` grants every registered program declares, unioned: what a host builds its `OsHost` from.
     pub fn os_grants(&self) -> OsGrants {
         self.os_grants.read().clone()
@@ -1183,6 +1202,9 @@ impl RuntimeKernel {
                     .chain(orbital.auxiliary_entities.iter().flatten())
                 {
                     if let EntityRef::Inline(def) = entity_ref {
+                        if def.persistence == Some(Persistence::Runtime) {
+                            self.io.claim_runtime(&def.name);
+                        }
                         defs.insert(def.name.clone(), def.clone());
                     }
                 }
@@ -1574,19 +1596,43 @@ impl RuntimeKernel {
                 (*ctx.entity).clone()
             };
 
-            let state_effects = self.get_state_render_effects(
+            // EXEC-STEP-5: a step that does not fire repaints the slots the state renders into; each shows what it
+            // holds now (EXEC-RENDER-4), and a trait that has painted nothing shows the entering transition's render.
+            let held = self.renders.read().held(trait_name, entity_id);
+            let sources = state_render_sources(&trait_def, &current_state.current_state);
+            let mut state_effects = self.get_state_render_effects(
                 &trait_def,
                 &current_state.current_state,
                 &ctx,
                 &entity_data,
             );
-            self.record_renders(
-                trait_name,
-                entity_id,
-                state_render_sources(&trait_def, &current_state.current_state),
-                &state_effects,
-                &ctx,
-            );
+            if held.is_empty() {
+                self.record_renders(trait_name, entity_id, sources, &state_effects, &ctx);
+            } else {
+                let mut slots: Vec<&str> = Vec::new();
+                for (slot, _) in &sources {
+                    if !slots.contains(&slot.as_str()) {
+                        slots.push(slot);
+                    }
+                }
+                state_effects = slots
+                    .into_iter()
+                    .filter_map(|slot| {
+                        let painted = held.iter().find(|(held_slot, _)| held_slot == slot);
+                        match painted {
+                            Some((_, content)) => Some(EffectResult::executed(Effect::RenderUi {
+                                slot: slot.to_string(),
+                                content: content.clone(),
+                            })),
+                            None => state_effects
+                                .iter()
+                                .rev()
+                                .find(|er| matches!(&er.effect, Effect::RenderUi { slot: s, .. } if s == slot))
+                                .cloned(),
+                        }
+                    })
+                    .collect();
+            }
 
             Ok(ProcessEventResult {
                 event: None,
@@ -3335,7 +3381,7 @@ impl RuntimeKernel {
         if let Some(effect) = orbital_core_base::effect_types::parse_effect(effect_expr) {
             match &effect {
                 Effect::Set { path, value } => {
-                    let evaluated_value = if value.as_array().is_some() {
+                    let evaluated_value = if value.as_array().is_some() || value.as_object().is_some() {
                         let sexpr = value_to_sexpr(value);
                         match evaluator.evaluate(&sexpr, ctx) {
                             Ok(v) => v,
@@ -4341,7 +4387,7 @@ impl RuntimeKernel {
             .collect()
     }
 
-    /// Keep a client trait's just-run `render-ui` effects (`sources`: unresolved, in run order;
+    /// Keep a trait's just-run `render-ui` effects (`sources`: unresolved, in run order;
     /// `resolved`: the same effects after binding resolution) so [`Self::rerender_stale`] can
     /// repaint them when the entity they read changes.
     fn record_renders(
@@ -4352,7 +4398,7 @@ impl RuntimeKernel {
         resolved: &[EffectResult],
         ctx: &BindingContext,
     ) {
-        if sources.is_empty() || !self.effect_executor.environment().is_client() {
+        if sources.is_empty() {
             return;
         }
         self.flush_row_writes();
@@ -8520,6 +8566,73 @@ mod set_eval_failure_tests {
             .effect_runs
             .iter()
             .all(|r| r.status != EffectRunStatus::Failed));
+    }
+}
+
+#[cfg(test)]
+mod set_object_literal_tests {
+    //! `set` evaluates the members of an object literal; a literal with none is stored as written.
+    use super::*;
+    use crate::entity_source::InMemoryEntityCache;
+
+    fn row(effect: serde_json::Value) -> Value {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "SetObject",
+            "orbitals": [{
+                "name": "Page",
+                "entity": { "name": "View", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Holder",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [effect] }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        kernel.register_schema(schema).unwrap();
+        let payload: Value = serde_json::from_value(serde_json::json!({ "data": { "id": "abc", "n": 3 } })).unwrap();
+        let outcomes = kernel.dispatch("Holder", None, "GO", payload).unwrap();
+        outcomes.into_iter().find(|(t, _)| t == "Holder").expect("Holder ran").1.entity_data
+    }
+
+    fn prof(row: &Value) -> Value {
+        row.as_object().and_then(|o| o.get("prof")).cloned().expect("prof is set")
+    }
+
+    #[test]
+    fn a_literal_with_computed_members_is_stored_evaluated() {
+        let stored = prof(&row(serde_json::json!(["set", "@entity.prof", {
+            "id": ["object/get", "@payload.data", "id"],
+            "n": ["object/get", "@payload.data", "n"],
+            "label": ["str/concat", "p-", ["object/get", "@payload.data", "id"]],
+            "nested": { "again": ["object/get", "@payload.data", "n"] }
+        }])));
+        let expected: Value = serde_json::from_value(serde_json::json!({
+            "id": "abc", "n": 3, "label": "p-abc", "nested": { "again": 3 }
+        }))
+        .unwrap();
+        assert_eq!(stored, expected);
+    }
+
+    #[test]
+    fn control_a_literal_with_no_computed_member_is_stored_as_written() {
+        let stored = prof(&row(serde_json::json!(["set", "@entity.prof", { "id": "fixed", "n": 7, "tags": ["a", "b"] }])));
+        let expected: Value = serde_json::from_value(serde_json::json!({ "id": "fixed", "n": 7, "tags": ["a", "b"] })).unwrap();
+        assert_eq!(stored, expected);
+    }
+
+    #[test]
+    fn control_a_bound_member_resolves() {
+        let stored = prof(&row(serde_json::json!(["set", "@entity.prof", { "id": "@payload.data.id" }])));
+        let expected: Value = serde_json::from_value(serde_json::json!({ "id": "abc" })).unwrap();
+        assert_eq!(stored, expected);
     }
 }
 

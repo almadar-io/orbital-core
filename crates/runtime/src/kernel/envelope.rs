@@ -42,7 +42,7 @@ pub(super) struct Admitted {
 }
 
 /// `source_payload` through a listener's `with` mapping: the payload the listener's trigger is delivered with.
-pub(super) fn mapped_listen_payload(
+pub(crate) fn mapped_listen_payload(
     evaluator: &Evaluator,
     ctx: &BindingContext,
     mapping: &Option<SObject>,

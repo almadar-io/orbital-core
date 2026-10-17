@@ -34,6 +34,14 @@
     {
       "name": "score",
       "type": "number"
+    },
+    {
+      "name": "embedding",
+      "type": "array",
+      "items": {
+        "name": "component",
+        "type": "number"
+      }
     }
   ],
   "rows": [
@@ -48,7 +56,12 @@
         "a",
         "b"
       ],
-      "score": 10
+      "score": 10,
+      "embedding": [
+        1,
+        0,
+        0
+      ]
     },
     {
       "id": "t02",
@@ -60,7 +73,12 @@
       "tags": [
         "b"
       ],
-      "score": 10
+      "score": 10,
+      "embedding": [
+        2,
+        0,
+        0
+      ]
     },
     {
       "id": "t03",
@@ -70,7 +88,12 @@
       "priority": 2,
       "owner": "u1",
       "tags": [],
-      "score": null
+      "score": null,
+      "embedding": [
+        1,
+        1,
+        0
+      ]
     },
     {
       "id": "t04",
@@ -81,6 +104,11 @@
       "owner": "u3",
       "tags": [
         "c"
+      ],
+      "embedding": [
+        0,
+        1,
+        0
       ]
     },
     {
@@ -93,7 +121,12 @@
       "tags": [
         "a"
       ],
-      "score": 7
+      "score": 7,
+      "embedding": [
+        -1,
+        0,
+        0
+      ]
     },
     {
       "id": "t06",
@@ -106,7 +139,12 @@
         "a",
         "c"
       ],
-      "score": 12
+      "score": 12,
+      "embedding": [
+        3,
+        4,
+        0
+      ]
     },
     {
       "id": "t07",
@@ -119,7 +157,12 @@
         "b",
         "c"
       ],
-      "score": 0
+      "score": 0,
+      "embedding": [
+        1,
+        1,
+        1
+      ]
     },
     {
       "id": "t08",
@@ -129,7 +172,8 @@
       "priority": 1,
       "owner": "u2",
       "tags": [],
-      "score": 5
+      "score": 5,
+      "embedding": null
     },
     {
       "id": "t09",
@@ -151,7 +195,12 @@
       "tags": [
         "c"
       ],
-      "score": 5
+      "score": 5,
+      "embedding": [
+        0,
+        0,
+        1
+      ]
     },
     {
       "id": "t11",
@@ -162,7 +211,12 @@
       "tags": [
         "a"
       ],
-      "score": 12
+      "score": 12,
+      "embedding": [
+        0,
+        0,
+        0
+      ]
     },
     {
       "id": "t12",
@@ -173,7 +227,12 @@
       "tags": [
         "b"
       ],
-      "score": 3
+      "score": 3,
+      "embedding": [
+        0,
+        1,
+        1
+      ]
     }
   ],
   "cases": [
@@ -1542,6 +1601,404 @@
           "t06"
         ],
         "total": 4
+      }
+    },
+    {
+      "name": "nearest-orders-by-cosine-ties-by-id",
+      "why": "descending cosine similarity to [1,0,0]; t01 and t02 point the same way (similarity 1) and keep id order; null, absent and zero-norm vectors are skipped; the nearest k=5 of the eligible rows",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "open",
+            "closed"
+          ],
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "member",
+          "field": "status",
+          "values": [
+            "open",
+            "closed"
+          ]
+        },
+        "nearest": {
+          "field": "embedding",
+          "vector": [
+            1,
+            0,
+            0
+          ],
+          "k": 5
+        }
+      },
+      "expect": {
+        "ids": [
+          "t01",
+          "t02",
+          "t03",
+          "t06",
+          "t07"
+        ],
+        "total": 5
+      }
+    },
+    {
+      "name": "nearest-k-larger-than-matches",
+      "why": "k above the eligible rows returns them all, in order; the zero-norm closed row t11 is skipped",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ],
+          "closed"
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "status",
+          "op": "==",
+          "value": "closed"
+        },
+        "nearest": {
+          "field": "embedding",
+          "vector": [
+            1,
+            0,
+            0
+          ],
+          "k": 10
+        }
+      },
+      "expect": {
+        "ids": [
+          "t03",
+          "t07"
+        ],
+        "total": 2
+      }
+    },
+    {
+      "name": "nearest-prefilter-not-postfilter",
+      "why": "the filter admits rows first, then the nearest k of those: owner u3 holds t04, t07 and t11 (zero norm), so k=2 is t07 then t04, though the global nearest two are t01 and t02",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "owner"
+          ],
+          "u3"
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "owner",
+          "op": "==",
+          "value": "u3"
+        },
+        "nearest": {
+          "field": "embedding",
+          "vector": [
+            1,
+            0,
+            0
+          ],
+          "k": 2
+        }
+      },
+      "expect": {
+        "ids": [
+          "t07",
+          "t04"
+        ],
+        "total": 2
+      }
+    },
+    {
+      "name": "nearest-without-filter-control",
+      "why": "control for nearest-prefilter-not-postfilter: with no filter the global nearest two are t01 and t02",
+      "bindings": {},
+      "sexpr": {},
+      "query": {
+        "nearest": {
+          "field": "embedding",
+          "vector": [
+            1,
+            0,
+            0
+          ],
+          "k": 2
+        }
+      },
+      "expect": {
+        "ids": [
+          "t01",
+          "t02"
+        ],
+        "total": 2
+      }
+    },
+    {
+      "name": "nearest-tie-cut-by-id",
+      "why": "t01 and t02 tie at similarity 1: k=1 keeps the lower id",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "status"
+          ],
+          "open"
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "status",
+          "op": "==",
+          "value": "open"
+        },
+        "nearest": {
+          "field": "embedding",
+          "vector": [
+            1,
+            0,
+            0
+          ],
+          "k": 1
+        }
+      },
+      "expect": {
+        "ids": [
+          "t01"
+        ],
+        "total": 1
+      }
+    },
+    {
+      "name": "nearest-skips-null-and-absent-vectors",
+      "why": "t08 stores a null vector and t09 has none: both are skipped, not failed",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "t08",
+            "t09",
+            "t01"
+          ],
+          [
+            "object/get",
+            "@entity",
+            "id"
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "member",
+          "field": "id",
+          "values": [
+            "t08",
+            "t09",
+            "t01"
+          ]
+        },
+        "nearest": {
+          "field": "embedding",
+          "vector": [
+            1,
+            0,
+            0
+          ],
+          "k": 5
+        }
+      },
+      "expect": {
+        "ids": [
+          "t01"
+        ],
+        "total": 1
+      }
+    },
+    {
+      "name": "nearest-no-admitted-vectors",
+      "why": "only skipped rows are admitted, so a query vector of another length than the stored ones cannot fail: the page is empty",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "t08",
+            "t09"
+          ],
+          [
+            "object/get",
+            "@entity",
+            "id"
+          ]
+        ]
+      },
+      "query": {
+        "filter": {
+          "kind": "member",
+          "field": "id",
+          "values": [
+            "t08",
+            "t09"
+          ]
+        },
+        "nearest": {
+          "field": "embedding",
+          "vector": [
+            1,
+            0
+          ],
+          "k": 3
+        }
+      },
+      "expect": {
+        "ids": [],
+        "total": 0
+      }
+    },
+    {
+      "name": "nearest-policy-applies",
+      "why": "the read policy admits rows before the nearest k: the viewer u1 owns t01, t03, t06 and t10",
+      "bindings": {
+        "user": {
+          "id": "u1",
+          "role": "member"
+        }
+      },
+      "sexpr": {
+        "readPolicy": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "owner"
+          ],
+          "@user.id"
+        ]
+      },
+      "query": {
+        "policy": {
+          "kind": "compare",
+          "field": "owner",
+          "op": "==",
+          "value": "u1"
+        },
+        "nearest": {
+          "field": "embedding",
+          "vector": [
+            1,
+            0,
+            0
+          ],
+          "k": 2
+        }
+      },
+      "expect": {
+        "ids": [
+          "t01",
+          "t03"
+        ],
+        "total": 2
+      }
+    },
+    {
+      "name": "nearest-other-direction",
+      "why": "query [0,1,0]: t04 is exact, t06 (3,4,0) is next at 0.8; t03 and t12 tie at 1/sqrt(2) and keep id order",
+      "bindings": {},
+      "sexpr": {},
+      "query": {
+        "nearest": {
+          "field": "embedding",
+          "vector": [
+            0,
+            1,
+            0
+          ],
+          "k": 4
+        }
+      },
+      "expect": {
+        "ids": [
+          "t04",
+          "t06",
+          "t03",
+          "t12"
+        ],
+        "total": 4
+      }
+    }
+  ],
+  "errorCases": [
+    {
+      "name": "nearest-dimension-mismatch",
+      "why": "a query vector of 2 components against stored vectors of 3 fails the fetch; control: nearest-no-admitted-vectors admits no stored vector, and nearest-orders-by-cosine-ties-by-id uses the matching length",
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "status",
+          "op": "==",
+          "value": "open"
+        },
+        "nearest": {
+          "field": "embedding",
+          "vector": [
+            1,
+            0
+          ],
+          "k": 3
+        }
+      },
+      "expect": {
+        "error": "dimensions"
+      }
+    },
+    {
+      "name": "nearest-zero-query",
+      "why": "a query vector of zero norm has no direction and fails the fetch, even over a single admitted row",
+      "query": {
+        "filter": {
+          "kind": "compare",
+          "field": "id",
+          "op": "==",
+          "value": "t01"
+        },
+        "nearest": {
+          "field": "embedding",
+          "vector": [
+            0,
+            0,
+            0
+          ],
+          "k": 3
+        }
+      },
+      "expect": {
+        "error": "zero norm"
       }
     }
   ]

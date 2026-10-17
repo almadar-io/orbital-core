@@ -10,6 +10,8 @@ pub mod callsite_capture;
 pub mod canvas_theme;
 pub mod config;
 pub mod credential_admin;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod credential_store;
 pub mod dispatch_memory;
 pub mod byte_stream;
 pub mod driver;
@@ -29,6 +31,12 @@ pub mod listener;
 pub mod mock_answer;
 pub mod mock_random;
 pub mod motion;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod native_host;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod credentials;
+#[cfg(feature = "native-transport")]
+pub mod native_transport;
 pub mod payload_validation;
 pub mod persona;
 pub mod process_result;

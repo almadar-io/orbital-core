@@ -438,6 +438,10 @@ pub fn parse_compat_type(s: &str) -> CompatType {
                 "orbital" => OirType::Orbital,
                 "trait" => OirType::Trait,
                 "behavior" => OirType::Behavior,
+                nested if nested.starts_with('[') => match parse_compat_type(nested) {
+                    CompatType::Ty(ty) => ty,
+                    _ => OirType::Json,
+                },
                 _ => OirType::Json,
             };
             CompatType::Ty(OirType::Array { inner: Box::new(inner) })
@@ -722,6 +726,20 @@ mod tests {
         );
         assert!(super::oir_type_satisfies(&OirType::array(OirType::Trait), &super::compat_kind_oir("[trait]")));
         assert!(super::oir_type_satisfies(&OirType::array(OirType::Behavior), &super::compat_kind_oir("[behavior]")));
+    }
+
+    #[test]
+    fn a_declared_list_of_lists_keeps_its_depth() {
+        let lists = OirType::array(OirType::array(OirType::Number));
+        assert!(super::oir_type_satisfies(&lists, &super::compat_kind_oir("[[number]]")));
+        assert!(
+            !super::oir_type_satisfies(&OirType::array(OirType::array(OirType::String)), &super::compat_kind_oir("[[number]]")),
+            "control: a list of string lists is not a list of number lists"
+        );
+        assert!(
+            !super::oir_type_satisfies(&OirType::array(OirType::Number), &super::compat_kind_oir("[[number]]")),
+            "control: a list of numbers is not a list of lists"
+        );
     }
 
     #[test]

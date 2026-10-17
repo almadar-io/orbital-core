@@ -843,20 +843,6 @@
           "render-ui",
           "main",
           {
-            "actions": [
-              {
-                "event": "CREATE",
-                "label": "New Task"
-              }
-            ],
-            "title": "Tasks",
-            "type": "page-header"
-          }
-        ],
-        [
-          "render-ui",
-          "main",
-          {
             "fields": [
               "title",
               "completed",
@@ -878,23 +864,6 @@
         ]
       ],
       "clientEffectsByTrait": [
-        {
-          "traitName": "TaskCRUD",
-          "effect": [
-            "render-ui",
-            "main",
-            {
-              "actions": [
-                {
-                  "event": "CREATE",
-                  "label": "New Task"
-                }
-              ],
-              "title": "Tasks",
-              "type": "page-header"
-            }
-          ]
-        },
         {
           "traitName": "TaskCRUD",
           "effect": [

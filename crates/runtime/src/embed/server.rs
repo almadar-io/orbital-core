@@ -128,6 +128,7 @@ impl EmbeddedServer {
             environment: RuntimeEnvironment::Server,
             service_handler: Some(host.clone() as Arc<dyn ServiceHandler>),
             substrate_handler: Some(host.clone() as Arc<dyn SubstrateHandler>),
+            runtime_rows_in_kernel: true,
             ..KernelConfig::default()
         };
         let kernel = RuntimeKernel::new(
@@ -186,6 +187,19 @@ impl EmbeddedServer {
         }
         if let Some(w) = write {
             self.kernel.set_write_capabilities(entity_type, w);
+        }
+        Ok(())
+    }
+
+    /// Put `rows` into the kernel's own store for `entity_type`, each under its `id`: how a host or a test
+    /// gives a `[runtime]` entity rows, which are never a host ask.
+    pub fn seed_rows(&self, entity_type: &str, rows: &[Value]) -> Result<(), String> {
+        for row in rows {
+            let id = row
+                .get_path("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("seed_rows: a {entity_type} row has no string id"))?;
+            self.kernel.entity_source().write(entity_type, id, row)?;
         }
         Ok(())
     }
