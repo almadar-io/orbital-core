@@ -3,6 +3,7 @@
 //! family modules; this file routes an op to its family and owns the handle tables.
 
 pub mod args;
+pub mod completion;
 pub mod fs;
 pub mod net;
 pub mod process;
@@ -67,6 +68,7 @@ pub struct OsHandles {
     pub fs: fs::FsTable,
     pub process: process::ProcTable,
     pub net: net::NetTable,
+    pub completions: Arc<completion::Completions>,
 }
 
 impl Default for OsHandles {
@@ -76,12 +78,20 @@ impl Default for OsHandles {
             fs: fs::FsTable::new(ids.clone()),
             process: process::ProcTable::default(),
             net: net::NetTable::new(ids),
+            completions: Arc::default(),
         }
     }
 }
 
 impl OsHandles {
+    /// Drop the pending completion of a deferred keyed call, as `cancel-call` of its key does: the operation is
+    /// not stopped, its outcome is never delivered. `false` when the key has none pending.
+    pub fn cancel_completion(&self, key: &str) -> bool {
+        self.completions.cancel(key)
+    }
+
     pub fn close_all(&self) {
+        self.completions.clear();
         self.process.clear();
         self.fs.clear();
         self.net.clear();
@@ -159,6 +169,25 @@ fn dispatch(
     }
 }
 
+/// A keyed call of a completion-deferring op under a declared route runs in the background when the host has a
+/// completion sink; `None` means the call is answered in place. EXEC-QUEUE-10.
+fn defer(
+    op: OsOp,
+    args: &[Value],
+    key: Option<&str>,
+    site: Option<&CallSite>,
+    host: &OsHost<'_>,
+) -> Option<Result<(), OsError>> {
+    let (key, site) = (key?, site?);
+    if !op.defers_completion() || host.handles.completions.sink().is_none() {
+        return None;
+    }
+    Some(match op {
+        OsOp::Wait => process::wait_later(args, key, site, host),
+        _ => return None,
+    })
+}
+
 /// Answer an [`IoRequest::Os`]. With no host every op is `denied`: the `os/` family is closed by default.
 pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
     let IoRequest::Os {
@@ -173,6 +202,12 @@ pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
     let Some(host) = host else {
         return IoAnswer::Os(Err(args::denied(*op, "no os host configured")));
     };
+    if let Some(started) = defer(*op, args, key.as_deref(), site.as_ref(), host) {
+        return match started {
+            Ok(()) => IoAnswer::ServiceDeferred,
+            Err(error) => IoAnswer::Os(Err(error)),
+        };
+    }
     IoAnswer::Os(dispatch(*op, args, key.as_deref(), site.as_ref(), host))
 }
 

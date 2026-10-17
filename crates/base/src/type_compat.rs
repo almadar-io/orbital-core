@@ -336,6 +336,15 @@ impl CompatType {
     }
 }
 
+fn is_string_literal_union(t: &str) -> bool {
+    t.split(" | ").all(|arm| {
+        arm.len() >= 2
+            && arm.starts_with('"')
+            && arm.ends_with('"')
+            && !arm[1..arm.len() - 1].contains(['"', '\\'])
+    })
+}
+
 pub fn parse_compat_type(s: &str) -> CompatType {
     let t = s.trim_end_matches('!');
     match t {
@@ -403,6 +412,8 @@ pub fn parse_compat_type(s: &str) -> CompatType {
             CompatType::Ty(OirType::Array { inner: Box::new(inner) })
         }
         _ if t.starts_with("Map<") && t.ends_with('>') => CompatType::MapTag,
+        // `"a" | "b"`: a closed set of strings is an enum of strings.
+        _ if is_string_literal_union(t) => CompatType::Ty(OirType::Enum { name: t.to_string() }),
         _ if t.chars().next().is_some_and(char::is_uppercase) => CompatType::Named(t.to_string()),
         _ => CompatType::Unknown(t.to_string()),
     }

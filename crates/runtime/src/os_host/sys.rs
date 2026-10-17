@@ -8,11 +8,11 @@
 
 use super::args::{arg_bool, arg_opt, arg_str, denied};
 use super::net::io_error;
-use orbital_core_base::os_grants::{DesktopKind, SysKind};
 use super::OsHost;
-use orbital_core_base::value::{Value, ValueMap};
-use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use crate::resumable::CallSite;
+use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
+use orbital_core_base::os_grants::{DesktopKind, SysKind};
+use orbital_core_base::value::{Value, ValueMap};
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -1337,8 +1337,8 @@ pub(super) fn answer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use {orbital_core_base::os_grants::OsGrants, crate::os_host::OsHandles};
     use std::path::Path;
+    use {crate::os_host::OsHandles, orbital_core_base::os_grants::OsGrants};
 
     fn s(v: &str) -> Value {
         Value::String(v.to_string())
@@ -1545,6 +1545,12 @@ mod tests {
             OsErrorKind::Invalid
         );
         assert_eq!(invalid(OsOp::Notify, &[s("t")]), OsErrorKind::Invalid);
+    }
+
+    #[test]
+    fn desktop_tools_receive_arguments_as_an_array_never_a_shell_line() {
+        let out = run_tool(OsOp::Speak, "/bin/echo", &["a;b", "$(x)", "`y`"]).expect("echo");
+        assert_eq!(out, "a;b $(x) `y`\n");
     }
 
     #[test]

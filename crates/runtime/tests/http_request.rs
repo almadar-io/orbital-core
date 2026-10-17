@@ -1135,6 +1135,41 @@ fn a_retryable_reply_is_asked_again_with_a_growing_delay_then_given_up_on() {
 }
 
 #[test]
+fn delay_ms_is_asked_of_the_host_before_the_first_send_and_only_there() {
+    let (mut d, step) = HttpCallDriver::start(spec(json!({"delayMs": 750, "retry": {"max": 1, "on": ["5xx"], "backoffMs": 100}})), egress(), None);
+    let (first, delay) = http_ask_delay(step);
+    assert_eq!(delay, Some(750));
+    // The retry carries its own backoff, not the first send's delay.
+    let (again, delay) = http_ask_delay(d.resume(HttpAnswer::Http(Ok(response(503, &[], "")))));
+    assert_eq!((again, delay), (first.clone(), Some(100)));
+    // Control: the same request without delayMs asks for no wait, and zero is a wait of zero.
+    let (_, none) = http_ask_delay(HttpCallDriver::start(spec(json!({})), egress(), None).1);
+    assert_eq!(none, None);
+    let (_, zero) = http_ask_delay(HttpCallDriver::start(spec(json!({"delayMs": 0})), egress(), None).1);
+    assert_eq!(zero, Some(0));
+    let (_, null) = http_ask_delay(HttpCallDriver::start(spec(json!({"delayMs": null})), egress(), None).1);
+    assert_eq!(null, None);
+}
+
+#[test]
+fn a_delayed_page_waits_only_before_the_first_page() {
+    let request = json!({"delayMs": 40, "paginate": {"style": "cursor", "param": "after", "next": ["object/get", ["json/parse", "@response.body", {}], "next"], "collect": ["object/get", ["json/parse", "@response.body", {}], "items"], "max": 3}});
+    let (mut d, step) = HttpCallDriver::start(spec(request), egress(), None);
+    assert_eq!(http_ask_delay(step).1, Some(40));
+    let (_, delay) = http_ask_delay(d.resume(HttpAnswer::Http(Ok(response(200, &[], "{\"items\":[1],\"next\":\"c2\"}")))));
+    assert_eq!(delay, None);
+}
+
+#[test]
+fn delay_ms_must_be_a_whole_number_and_not_ride_a_stream_or_presign() {
+    for bad in [json!(-1), json!(1.5), json!("5"), json!(true), json!([1])] {
+        assert!(parse(HttpMethod::Post, "/v1/x", json!({"delayMs": bad.clone()})).is_err(), "{bad}");
+    }
+    assert!(parse(HttpMethod::Post, "/v1/x", json!({"delayMs": 5, "stream": "sse"})).is_err());
+    assert!(parse(HttpMethod::Post, "/v1/x", json!({"delayMs": 5})).is_ok());
+}
+
+#[test]
 fn a_retry_that_succeeds_returns_that_reply() {
     let (mut d, _) = HttpCallDriver::start(retrying(json!({})), egress(), None);
     http_ask_delay(d.resume(HttpAnswer::Http(Ok(response(502, &[], "")))));

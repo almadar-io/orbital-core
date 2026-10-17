@@ -4,9 +4,12 @@
 
 use std::fmt::Write;
 
-use crate::ir::expr::{OirBinaryOp, OirBinding, OirBindingRoot, OirExpr, OirUnaryOp};
 use crate::ir::effects::OirEffect;
-use crate::ir::types::{OirEntity, OirField, OirModule, OirPage, OirPersistence, OirState, OirTrait, OirTransition, OirTransitionFrom, OirType};
+use crate::ir::expr::{OirBinaryOp, OirBinding, OirBindingRoot, OirExpr, OirUnaryOp};
+use crate::ir::types::{
+    OirEntity, OirField, OirModule, OirPage, OirPersistence, OirState, OirTrait, OirTransition,
+    OirTransitionFrom, OirType,
+};
 
 /// Pretty print configuration
 #[derive(Debug, Clone)]
@@ -209,7 +212,11 @@ impl PrettyPrinter {
             OirType::Array { inner } => format!("[{}]", self.format_type(inner)),
             OirType::Tuple { items } => format!(
                 "[{}]",
-                items.iter().map(|t| self.format_type(t)).collect::<Vec<_>>().join(", ")
+                items
+                    .iter()
+                    .map(|t| self.format_type(t))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             OirType::Map { key, value } => {
                 format!(
@@ -703,17 +710,23 @@ impl PrettyPrinter {
                 self.write_expr(expr);
                 self.write(")");
             }
-            OirEffect::CredentialStatus { credential: expr, .. } => {
+            OirEffect::CredentialStatus {
+                credential: expr, ..
+            } => {
                 self.write("credential-status(");
                 self.write_expr(expr);
                 self.write(")");
             }
-            OirEffect::CredentialForget { credential: expr, .. } => {
+            OirEffect::CredentialForget {
+                credential: expr, ..
+            } => {
                 self.write("credential-forget(");
                 self.write_expr(expr);
                 self.write(")");
             }
-            OirEffect::OAuthAuthorize { client, options, .. } => {
+            OirEffect::OAuthAuthorize {
+                client, options, ..
+            } => {
                 self.write("oauth-authorize(");
                 self.write_expr(client);
                 self.write(", ");
@@ -810,13 +823,6 @@ impl PrettyPrinter {
                 self.write_expr(variable);
                 self.write(")");
             }
-            OirEffect::OsDebounce { ms, event_type } => {
-                self.write("os/debounce(");
-                self.write_expr(ms);
-                self.write(", ");
-                self.write_expr(event_type);
-                self.write(")");
-            }
             OirEffect::FetchStream {
                 entity_type,
                 id,
@@ -872,7 +878,31 @@ impl PrettyPrinter {
                 let words: Vec<&str> = fields.iter().map(|f| f.as_str()).collect();
                 self.write(&format!("browser/page-facts([{}])", words.join(", ")));
             }
-            OirEffect::BrowserBeacon { url, request, key, .. } => {
+            OirEffect::BrowserPrompt {
+                text, schema, key, ..
+            } => {
+                self.write("browser/prompt(");
+                self.write_expr(text);
+                self.write(", ");
+                self.write_expr(schema);
+                if let Some(k) = key {
+                    self.write(", ");
+                    self.write_expr(k);
+                }
+                self.write(")");
+            }
+            OirEffect::BrowserEmbed { texts, key, .. } => {
+                self.write("browser/embed(");
+                self.write_expr(texts);
+                if let Some(k) = key {
+                    self.write(", ");
+                    self.write_expr(k);
+                }
+                self.write(")");
+            }
+            OirEffect::BrowserBeacon {
+                url, request, key, ..
+            } => {
                 self.write("browser/beacon(");
                 self.write_expr(url);
                 self.write(", ");
@@ -916,7 +946,10 @@ mod tests {
     #[test]
     fn row_prints_as_the_bare_entity_where_reference_prints_an_arrow() {
         let p = PrettyPrinter::new();
-        assert_eq!(p.format_type(&OirType::array(OirType::row("Revision"))), "[Revision]");
+        assert_eq!(
+            p.format_type(&OirType::array(OirType::row("Revision"))),
+            "[Revision]"
+        );
         assert_eq!(
             p.format_type(&OirType::array(OirType::reference("Revision"))),
             "[-> Revision]"

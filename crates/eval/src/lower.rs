@@ -2,10 +2,10 @@
 //! no schema, only the installed operator table), so it lives here and every
 //! consumer (the compiler's resolver, the shells) shares the one lowering.
 
-use orbital_core_base::ir::expr::{OirBinaryOp, OirBinding, OirBindingRoot, OirExpr};
-use orbital_core_base::ir::effects::{OirEffect, OirEmitConfig};
-use orbital_core_base::ir::types::{OirPattern, OirValue};
 use orbital_core_base::http_wire::HttpMethod;
+use orbital_core_base::ir::effects::{OirEffect, OirEmitConfig};
+use orbital_core_base::ir::expr::{OirBinaryOp, OirBinding, OirBindingRoot, OirExpr};
+use orbital_core_base::ir::types::{OirPattern, OirValue};
 use orbital_core_base::schema::sexpr::SExpression;
 use thiserror::Error;
 
@@ -27,7 +27,7 @@ pub fn recognized_call_head(sexpr: &SExpression) -> Option<&str> {
     (orbital_core_base::language::registry::is_known_operator(op)
         || crate::evaluator::operators::get_operator(op).is_some()
         || orbital_core_base::effect_types::is_known_effect_name(op))
-        .then_some(op)
+    .then_some(op)
 }
 
 /// A `(list …)` literal marker, stripped; any other array unchanged.
@@ -47,7 +47,9 @@ fn lower_raw_callback(op: &str, args: &[SExpression], resolved: &mut [OirExpr]) 
     let Some(params) = crate::evaluator::operators::raw_callback_params(op) else {
         return;
     };
-    let Some(pos) = orbital_core_base::language::registry::get_operator(op).and_then(|m| m.lambda_arg_position) else {
+    let Some(pos) =
+        orbital_core_base::language::registry::get_operator(op).and_then(|m| m.lambda_arg_position)
+    else {
         return;
     };
     let pos = pos as usize;
@@ -148,7 +150,8 @@ impl ExprLowerer {
             // and every registry op flagged `has_side_effects` (os/*,
             // browser/*, set, …). Consistent with `get_arity_rule` (sexpr
             // validator), which returns None for them (C-EMIT-SUBSTRATE).
-            if !orbital_core_base::ir::effects::is_substrate_operator(op) && !meta.has_side_effects {
+            if !orbital_core_base::ir::effects::is_substrate_operator(op) && !meta.has_side_effects
+            {
                 if let Some(max) = meta.max_arity {
                     if (args.len() as u32) > max {
                         return Err(LowerError::InvalidSExpr(format!(
@@ -313,11 +316,6 @@ impl ExprLowerer {
                     emit: emit_cfg,
                 }))
             }
-            "os/debounce" => {
-                let ms = self.resolve_sexpr(&args[0])?;
-                let event_type = self.resolve_sexpr(&args[1])?;
-                Ok(OirExpr::effect(OirEffect::OsDebounce { ms, event_type }))
-            }
 
             // Browser device effects (client host path)
             //
@@ -398,7 +396,9 @@ impl ExprLowerer {
                 }
                 let url = self.resolve_sexpr(&args[0])?;
                 let request_expr = args.get(1).ok_or_else(|| {
-                    LowerError::InvalidSExpr("browser/beacon requires a request carrying `text`".to_string())
+                    LowerError::InvalidSExpr(
+                        "browser/beacon requires a request carrying `text`".to_string(),
+                    )
                 })?;
                 let mut request = request_expr.clone();
                 let mut key = None;
@@ -422,6 +422,36 @@ impl ExprLowerer {
                     request,
                     key,
                     emit: emit_cfg,
+                }))
+            }
+            "browser/prompt" => {
+                if !(2..=3).contains(&args.len()) {
+                    return Err(LowerError::InvalidSExpr(
+                        "browser/prompt takes the text, the response schema text, and optional options".to_string(),
+                    ));
+                }
+                let text = self.resolve_sexpr(&args[0])?;
+                let schema = self.resolve_sexpr(&args[1])?;
+                let (key, emit) = self.resolve_keyed_options(args.get(2))?;
+                Ok(OirExpr::effect(OirEffect::BrowserPrompt {
+                    text,
+                    schema,
+                    key,
+                    emit,
+                }))
+            }
+            "browser/embed" => {
+                if !(1..=2).contains(&args.len()) {
+                    return Err(LowerError::InvalidSExpr(
+                        "browser/embed takes a list of texts and optional options".to_string(),
+                    ));
+                }
+                let texts = self.resolve_sexpr(&args[0])?;
+                let (key, emit) = self.resolve_keyed_options(args.get(1))?;
+                Ok(OirExpr::effect(OirEffect::BrowserEmbed {
+                    texts,
+                    key,
+                    emit,
                 }))
             }
             "browser/push-subscribe" => {
@@ -651,7 +681,9 @@ impl ExprLowerer {
     /// wrapped in the `["list", …]` literal constructor so they resolve as array
     /// values, never as calls to a `create`/`update`/`delete` operator.
     fn resolve_persist_batch_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
-        use orbital_core_base::persist_batch::{batch_entities, classify_ops, is_op_tuple, BatchOps};
+        use orbital_core_base::persist_batch::{
+            batch_entities, classify_ops, is_op_tuple, BatchOps,
+        };
         let ops = args.get(1).ok_or_else(|| {
             LowerError::InvalidSExpr("persist batch requires an operations argument".to_string())
         })?;
@@ -795,17 +827,16 @@ impl ExprLowerer {
                 // Extract include array (accepting the `["list", …]` literal
                 // constructor a config-substituted value carries)
                 let include = if let Some(SExpression::Array(arr)) = obj.get("include") {
-                    let fields: Vec<String> =
-                        strip_literal_list_marker(arr)
-                            .iter()
-                            .filter_map(|v| {
-                                if let SExpression::String(s) = v {
-                                    Some(s.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
+                    let fields: Vec<String> = strip_literal_list_marker(arr)
+                        .iter()
+                        .filter_map(|v| {
+                            if let SExpression::String(s) = v {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
                     if fields.is_empty() {
                         None
                     } else {
@@ -1048,9 +1079,8 @@ impl ExprLowerer {
             &args[0],
             "(set …) argument 1 — the binding target (e.g. @entity.field)",
         )?;
-        let target = OirBinding::parse(&target_str).ok_or_else(|| {
-            LowerError::InvalidSExpr(format!("Invalid binding: {}", target_str))
-        })?;
+        let target = OirBinding::parse(&target_str)
+            .ok_or_else(|| LowerError::InvalidSExpr(format!("Invalid binding: {}", target_str)))?;
         let value = self.resolve_sexpr(&args[1])?;
         if matches!(value, OirExpr::Effect { .. }) {
             return Err(LowerError::InvalidSExpr(
@@ -1171,9 +1201,7 @@ impl ExprLowerer {
 
     fn resolve_log_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
         if args.is_empty() {
-            return Err(LowerError::InvalidSExpr(
-                "log requires message".to_string(),
-            ));
+            return Err(LowerError::InvalidSExpr("log requires message".to_string()));
         }
         let message = self.resolve_sexpr(&args[0])?;
         Ok(OirExpr::effect(OirEffect::log(
@@ -1412,7 +1440,8 @@ impl ExprLowerer {
         // Format: ["oauth-authorize", client, options, { key?, emit? }?]
         if !(2..=3).contains(&args.len()) {
             return Err(LowerError::InvalidSExpr(
-                "oauth-authorize takes a client, its options and optional key and emit options".to_string(),
+                "oauth-authorize takes a client, its options and optional key and emit options"
+                    .to_string(),
             ));
         }
         let (key, emit) = match args.get(2) {
@@ -1444,7 +1473,11 @@ impl ExprLowerer {
         status: bool,
     ) -> Result<OirExpr, LowerError> {
         // Format: ["oauth-connection-status" | "oauth-connection-forget", provider, { emit? }?]
-        let head = if status { "oauth-connection-status" } else { "oauth-connection-forget" };
+        let head = if status {
+            "oauth-connection-status"
+        } else {
+            "oauth-connection-forget"
+        };
         if !(1..=2).contains(&args.len()) {
             return Err(LowerError::InvalidSExpr(format!(
                 "{head} takes a provider word and optional options"
@@ -1521,17 +1554,16 @@ impl ExprLowerer {
                 // Extract include array (accepting the `["list", …]` literal
                 // constructor a config-substituted value carries)
                 let include = if let Some(SExpression::Array(arr)) = obj.get("include") {
-                    let fields: Vec<String> =
-                        strip_literal_list_marker(arr)
-                            .iter()
-                            .filter_map(|v| {
-                                if let SExpression::String(s) = v {
-                                    Some(s.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
+                    let fields: Vec<String> = strip_literal_list_marker(arr)
+                        .iter()
+                        .filter_map(|v| {
+                            if let SExpression::String(s) = v {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
                     if fields.is_empty() {
                         None
                     } else {
@@ -1671,6 +1703,21 @@ impl ExprLowerer {
     /// Extract emit config from a single trailing options object for
     /// `os/watch-*` effects that take no positional secondary args
     /// (cron, signal, env).
+    /// The `key` and `emit` of a keyed call's trailing options object.
+    fn resolve_keyed_options(
+        &self,
+        options: Option<&SExpression>,
+    ) -> Result<(Option<OirExpr>, Option<OirEmitConfig>), LowerError> {
+        let Some(SExpression::Object(options)) = options else {
+            return Ok((None, None));
+        };
+        let key = match options.get("key") {
+            None | Some(SExpression::Null) => None,
+            Some(k) => Some(self.resolve_sexpr(k)?),
+        };
+        Ok((key, self.extract_emit_config(options)?))
+    }
+
     fn extract_watch_only_emit(
         &self,
         tail: &[SExpression],
@@ -1809,21 +1856,37 @@ mod tests {
 
     #[test]
     fn an_operator_call_lowers_and_keeps_its_bindings() {
-        let lowered =
-            lower_sexpr(&call("+", vec![SExpression::Number(1.0), SExpression::String("@entity.count".into())]))
-                .expect("lowers");
-        assert!(lowered.collect_bindings().iter().any(|b| b.root == OirBindingRoot::Entity));
+        let lowered = lower_sexpr(&call(
+            "+",
+            vec![
+                SExpression::Number(1.0),
+                SExpression::String("@entity.count".into()),
+            ],
+        ))
+        .expect("lowers");
+        assert!(lowered
+            .collect_bindings()
+            .iter()
+            .any(|b| b.root == OirBindingRoot::Entity));
     }
 
     #[test]
     fn control_a_literal_lowers_to_itself() {
-        assert_eq!(lower_sexpr(&SExpression::Bool(true)), Ok(OirExpr::bool(true)));
+        assert_eq!(
+            lower_sexpr(&SExpression::Bool(true)),
+            Ok(OirExpr::bool(true))
+        );
     }
 
     #[test]
     fn a_malformed_call_is_an_invalid_sexpr_error() {
         let error = lower_sexpr(&call("if", vec![SExpression::Bool(true)])).unwrap_err();
-        assert!(error.to_string().starts_with("Failed to resolve S-expression: "), "{error}");
+        assert!(
+            error
+                .to_string()
+                .starts_with("Failed to resolve S-expression: "),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1832,5 +1895,13 @@ mod tests {
         assert_eq!(strip_literal_list_marker(&marked), &marked[1..]);
         let bare = [SExpression::String("+".into()), SExpression::Number(1.0)];
         assert_eq!(strip_literal_list_marker(&bare), &bare[..]);
+    }
+
+    #[test]
+    fn the_retired_oal_family_no_longer_resolves_to_an_operator() {
+        use crate::evaluator::operators::get_operator;
+        assert!(get_operator("oal/battery-status").is_none());
+        assert!(get_operator("oal/cpu-usage").is_none());
+        assert!(get_operator("os/path-join").is_some());
     }
 }

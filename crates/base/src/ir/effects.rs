@@ -4,9 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::http_wire::HttpMethod;
 use crate::ir::expr::{OirBinding, OirExpr};
 use crate::ir::types::OirPattern;
-use crate::http_wire::HttpMethod;
 use crate::os::OsOp;
 
 /// Configuration for the `emit:` option on async/reactive data operators.
@@ -376,9 +376,6 @@ pub enum OirEffect {
         emit: Option<OirEmitConfig>,
     },
 
-    /// Configure debounce for an event type
-    OsDebounce { ms: OirExpr, event_type: OirExpr },
-
     /// Stream an LLM/HTTP response: fires on_message per chunk, success on completion,
     /// failure on error. Server-only (mirrors Fetch's field shape, adds on_message emit).
     FetchStream {
@@ -458,6 +455,28 @@ pub enum OirEffect {
         emit: Option<OirEmitConfig>,
     },
 
+    /// Ask the host's on-device model for a reply to `text` that satisfies the JSON Schema text `schema`. Success
+    /// `result` is `PROMPT_SHAPE`: `{ reply, key }`; failure is `MODEL_FAILURE_SHAPE`: `{ error, kind, key }`.
+    BrowserPrompt {
+        text: OirExpr,
+        schema: OirExpr,
+        /// String-typed expression echoed as `key`, and the name `cancel-call` aborts the ask by.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
+    /// Ask the host's on-device embedder for one vector per text. Success `result` is `EMBED_SHAPE`:
+    /// `{ embeddings, key }`; failure is `MODEL_FAILURE_SHAPE`.
+    BrowserEmbed {
+        texts: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
     /// Subscribe this browser to Web Push (registers the shared service worker,
     /// fetches the host's VAPID public key, calls PushManager.subscribe).
     /// Success `result` = `{ endpoint, p256dh, auth }` — flat strings, ready to
@@ -504,14 +523,8 @@ impl PageFactField {
 /// This is the single source of truth: the compiler (`resolve.rs`), the TS
 /// shell (`operator_names.rs`), and the Python shell (`trait_generator.rs`)
 /// all delegate here instead of keeping private in-sync copies.
-const SUBSTRATE_OPERATOR_PREFIXES: &[&str] = &[
-    "llm/",
-    "memory/",
-    "trace/",
-    "session/",
-    "workspace/",
-];
-
+const SUBSTRATE_OPERATOR_PREFIXES: &[&str] =
+    &["llm/", "memory/", "trace/", "session/", "workspace/"];
 
 /// Whether `name` is a substrate operator (one of the `SUBSTRATE_OPERATOR_PREFIXES`
 /// prefixes, or an effect the installed operator table routes to the program host). The canonical predicate —
@@ -827,12 +840,26 @@ impl OirEffect {
 
     /// Create a random-bytes effect
     pub fn random_bytes(bytes: OirExpr, emit: Option<OirEmitConfig>) -> Self {
-        Self::RandomBytes { bytes, key: None, emit }
+        Self::RandomBytes {
+            bytes,
+            key: None,
+            emit,
+        }
     }
 
     /// Create an `os/<op>` effect
-    pub fn os(op: OsOp, args: Vec<OirExpr>, key: Option<OirExpr>, emit: Option<OirEmitConfig>) -> Self {
-        Self::Os { op, args, key, emit }
+    pub fn os(
+        op: OsOp,
+        args: Vec<OirExpr>,
+        key: Option<OirExpr>,
+        emit: Option<OirEmitConfig>,
+    ) -> Self {
+        Self::Os {
+            op,
+            args,
+            key,
+            emit,
+        }
     }
 
     /// Create a credential-status effect
@@ -882,7 +909,6 @@ impl OirEffect {
             Self::OsWatchCron { .. } => "os/watch-cron",
             Self::OsWatchSignal { .. } => "os/watch-signal",
             Self::OsWatchEnv { .. } => "os/watch-env",
-            Self::OsDebounce { .. } => "os/debounce",
             Self::FetchStream { .. } => "fetch-stream",
             Self::SendServer { .. } => "send-server",
             Self::BrowserOpenFilePicker { .. } => "browser/open-file-picker",
@@ -892,6 +918,8 @@ impl OirEffect {
             Self::BrowserPushSubscribe { .. } => "browser/push-subscribe",
             Self::BrowserPageFacts { .. } => "browser/page-facts",
             Self::BrowserBeacon { .. } => "browser/beacon",
+            Self::BrowserPrompt { .. } => "browser/prompt",
+            Self::BrowserEmbed { .. } => "browser/embed",
         }
     }
 
@@ -1055,8 +1083,16 @@ impl OirEffect {
                         .for_each(|b| bindings.push(b));
                 }
             }
-            Self::OAuthAuthorize { client, options, key, .. } => {
-                for expr in [Some(client), Some(options), key.as_ref()].into_iter().flatten() {
+            Self::OAuthAuthorize {
+                client,
+                options,
+                key,
+                ..
+            } => {
+                for expr in [Some(client), Some(options), key.as_ref()]
+                    .into_iter()
+                    .flatten()
+                {
                     expr.collect_bindings()
                         .into_iter()
                         .for_each(|b| bindings.push(b));
@@ -1075,12 +1111,8 @@ impl OirEffect {
             | Self::CredentialForget {
                 credential: expr, ..
             }
-            | Self::OAuthConnectionStatus {
-                provider: expr, ..
-            }
-            | Self::OAuthConnectionForget {
-                provider: expr, ..
-            } => {
+            | Self::OAuthConnectionStatus { provider: expr, .. }
+            | Self::OAuthConnectionForget { provider: expr, .. } => {
                 expr.collect_bindings()
                     .into_iter()
                     .for_each(|b| bindings.push(b));
@@ -1176,15 +1208,6 @@ impl OirEffect {
                     .into_iter()
                     .for_each(|b| bindings.push(b));
             }
-            Self::OsDebounce { ms, event_type } => {
-                ms.collect_bindings()
-                    .into_iter()
-                    .for_each(|b| bindings.push(b));
-                event_type
-                    .collect_bindings()
-                    .into_iter()
-                    .for_each(|b| bindings.push(b));
-            }
             Self::FetchStream { id, filter, .. } => {
                 if let Some(id_expr) = id {
                     id_expr
@@ -1220,12 +1243,40 @@ impl OirEffect {
             Self::BrowserPushSubscribe { .. } => {}
             Self::BrowserPageFacts { key, .. } => {
                 if let Some(k) = key {
-                    k.collect_bindings().into_iter().for_each(|b| bindings.push(b));
+                    k.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
                 }
             }
-            Self::BrowserBeacon { url, request, key, .. } => {
-                for e in [Some(url), Some(request), key.as_ref()].into_iter().flatten() {
-                    e.collect_bindings().into_iter().for_each(|b| bindings.push(b));
+            Self::BrowserBeacon {
+                url, request, key, ..
+            } => {
+                for e in [Some(url), Some(request), key.as_ref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    e.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
+                }
+            }
+            Self::BrowserPrompt {
+                text, schema, key, ..
+            } => {
+                for e in [Some(text), Some(schema), key.as_ref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    e.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
+                }
+            }
+            Self::BrowserEmbed { texts, key, .. } => {
+                for e in [Some(texts), key.as_ref()].into_iter().flatten() {
+                    e.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
                 }
             }
             Self::BrowserClipboardWrite { text, .. } => {
@@ -1336,13 +1387,14 @@ impl OirEffect {
             | Self::CredentialForget {
                 credential: expr, ..
             }
-            | Self::OAuthConnectionStatus {
-                provider: expr, ..
-            }
-            | Self::OAuthConnectionForget {
-                provider: expr, ..
-            } => out.push(expr),
-            Self::OAuthAuthorize { client, options, key, .. } => {
+            | Self::OAuthConnectionStatus { provider: expr, .. }
+            | Self::OAuthConnectionForget { provider: expr, .. } => out.push(expr),
+            Self::OAuthAuthorize {
+                client,
+                options,
+                key,
+                ..
+            } => {
                 out.push(client);
                 out.push(options);
                 push_opt(&mut out, key);
@@ -1376,10 +1428,6 @@ impl OirEffect {
             Self::OsWatchCron { expression, .. } => out.push(expression),
             Self::OsWatchSignal { signal, .. } => out.push(signal),
             Self::OsWatchEnv { variable, .. } => out.push(variable),
-            Self::OsDebounce { ms, event_type } => {
-                out.push(ms);
-                out.push(event_type);
-            }
             Self::FetchStream { id, filter, .. } => {
                 push_opt(&mut out, id);
                 push_opt(&mut out, filter);
@@ -1394,9 +1442,22 @@ impl OirEffect {
             Self::BrowserGeolocationCurrent { options, .. } => push_opt(&mut out, options),
             Self::BrowserPushSubscribe { .. } => {}
             Self::BrowserPageFacts { key, .. } => push_opt(&mut out, key),
-            Self::BrowserBeacon { url, request, key, .. } => {
+            Self::BrowserBeacon {
+                url, request, key, ..
+            } => {
                 out.push(url);
                 out.push(request);
+                push_opt(&mut out, key);
+            }
+            Self::BrowserPrompt {
+                text, schema, key, ..
+            } => {
+                out.push(text);
+                out.push(schema);
+                push_opt(&mut out, key);
+            }
+            Self::BrowserEmbed { texts, key, .. } => {
+                out.push(texts);
                 push_opt(&mut out, key);
             }
         }
@@ -1522,7 +1583,8 @@ mod tests {
         assert_eq!(class.client_action, ClientAction::Ignore);
         assert_eq!(class.server_action, ServerAction::Execute);
 
-        let render = OirEffect::render_ui("main", crate::ir::types::OirPattern::new("entity-table"));
+        let render =
+            OirEffect::render_ui("main", crate::ir::types::OirPattern::new("entity-table"));
         let class = render.classify();
         assert_eq!(class.client_action, ClientAction::Execute);
         assert_eq!(class.server_action, ServerAction::ReturnToClient);
@@ -1692,7 +1754,11 @@ mod tests {
 
     #[test]
     fn unkeyed_call_service_skips_key_field() {
-        let eff = OirEffect::call_service("llm", "generate", OirExpr::object(crate::ir::expr::OirFields::new()));
+        let eff = OirEffect::call_service(
+            "llm",
+            "generate",
+            OirExpr::object(crate::ir::expr::OirFields::new()),
+        );
         let json = serde_json::to_value(&eff).unwrap();
         assert!(json.get("key").is_none(), "{json}");
         assert_eq!(eff.child_exprs().len(), 1);

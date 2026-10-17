@@ -3,15 +3,16 @@
 use super::args::{arg_bytes, arg_i64, arg_opt, arg_str, bytes_value, denied};
 use super::fs::FdEntry;
 use super::OsHost;
-use orbital_core_base::value::{Value, ValueMap};
+use crate::resumable::CallSite;
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::os_grants::{FsMode, StdioKind};
-use crate::resumable::CallSite;
+use orbital_core_base::value::{Value, ValueMap};
 use parking_lot::Mutex;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 const STDIN_CAP: usize = 64 * 1024;
 const STDIN_CHUNK: usize = 8 * 1024;
@@ -19,7 +20,7 @@ const STDIN_CHUNK: usize = 8 * 1024;
 /// Children this program spawned, by pid, and the program's environment overlay (`None` = unset).
 #[derive(Default)]
 pub struct ProcTable {
-    pub(super) children: Mutex<HashMap<i64, std::process::Child>>,
+    pub(super) children: Arc<Mutex<HashMap<i64, std::process::Child>>>,
     env: Mutex<HashMap<String, Option<String>>>,
 }
 
@@ -222,13 +223,22 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     let fds = &host.handles.fs.fds;
     let mut fields = vec![("pid", number(pid))];
     if let Some(s) = child.stdin.take() {
-        fields.push(("stdin", number(fds.insert(FdEntry::ChildStdin(s)))));
+        fields.push((
+            "stdin",
+            number(fds.insert(FdEntry::ChildStdin(Arc::new(Mutex::new(s))))),
+        ));
     }
     if let Some(s) = child.stdout.take() {
-        fields.push(("stdout", number(fds.insert(FdEntry::ChildStdout(s)))));
+        fields.push((
+            "stdout",
+            number(fds.insert(FdEntry::ChildStdout(Arc::new(Mutex::new(s))))),
+        ));
     }
     if let Some(s) = child.stderr.take() {
-        fields.push(("stderr", number(fds.insert(FdEntry::ChildStderr(s)))));
+        fields.push((
+            "stderr",
+            number(fds.insert(FdEntry::ChildStderr(Arc::new(Mutex::new(s))))),
+        ));
     }
     host.handles.process.children.lock().insert(pid, child);
     Ok(object(fields))
@@ -273,6 +283,11 @@ fn wait(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
         ));
     }
     await_exit(pid).map_err(|e| io_error(op, &e))?;
+    reap(pid, table)
+}
+
+fn reap(pid: i64, table: &Mutex<HashMap<i64, std::process::Child>>) -> Result<Value, OsError> {
+    let op = OsOp::Wait;
     let Some(mut child) = table.lock().remove(&pid) else {
         return Err(err(
             OsErrorKind::Closed,
@@ -293,6 +308,52 @@ fn wait(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
         }
     }
     Ok(object(fields))
+}
+
+/// `os/wait` under a completion route: the child is watched on a thread of its own and the call returns at once.
+/// When it ends, the outcome (`{ code?, signal? }`, or the failure) goes to the host's completion sink unless the
+/// key was cancelled first, in which case the child is left unreaped for a later `os/wait`.
+pub(super) fn wait_later(
+    args: &[Value],
+    key: &str,
+    site: &CallSite,
+    host: &OsHost<'_>,
+) -> Result<(), OsError> {
+    let op = OsOp::Wait;
+    let pid = arg_i64(args, 0, op)?;
+    let table = host.handles.process.children.clone();
+    if !table.lock().contains_key(&pid) {
+        return Err(err(
+            OsErrorKind::Closed,
+            op,
+            format!("pid {pid} is not a spawned process"),
+        ));
+    }
+    let completions = host.handles.completions.clone();
+    if !completions.begin(key) {
+        return Err(invalid(
+            op,
+            format!("key {key} already has a completion pending"),
+        ));
+    }
+    let (key, site) = (key.to_string(), site.clone());
+    let watcher = {
+        let (completions, key) = (completions.clone(), key.clone());
+        std::thread::Builder::new()
+            .name(format!("os-wait-{pid}"))
+            .spawn(move || {
+                let awaited = await_exit(pid).map_err(|e| io_error(op, &e));
+                if !completions.is_live(&key) {
+                    return;
+                }
+                let outcome = awaited.and_then(|()| reap(pid, &table));
+                completions.finish(&key, &site, outcome);
+            })
+    };
+    watcher.map(drop).map_err(|e| {
+        completions.cancel(&key);
+        io_error(op, &e)
+    })
 }
 
 #[cfg(unix)]
@@ -594,8 +655,10 @@ pub(super) fn answer(
 
 #[cfg(test)]
 mod tests {
-    use super::super::OsHandles;
+    use super::super::completion::OsCompletionSink;
+    use super::super::{answer_os, OsHandles};
     use super::*;
+    use crate::resumable::{CallRoutes, IoAnswer, IoRequest};
     use orbital_core_base::os_grants::{FsGrant, OsGrants};
 
     fn s(t: &str) -> Value {
@@ -651,8 +714,8 @@ mod tests {
         let mut out = Vec::new();
         h.fs.fds
             .with(fd, |e| match e {
-                FdEntry::ChildStdout(p) => p.read_to_end(&mut out).map(|_| ()),
-                FdEntry::ChildStderr(p) => p.read_to_end(&mut out).map(|_| ()),
+                FdEntry::ChildStdout(p) => p.lock().read_to_end(&mut out).map(|_| ()),
+                FdEntry::ChildStderr(p) => p.lock().read_to_end(&mut out).map(|_| ()),
                 _ => panic!("not a read pipe"),
             })
             .expect("fd")
@@ -752,12 +815,29 @@ mod tests {
     }
 
     #[test]
+    fn command_substitution_in_args_is_never_expanded() {
+        let (g, h) = (grants(), OsHandles::default());
+        let r = spawn_out(
+            &g,
+            &h,
+            "printf %s \"$1\"",
+            &["sh", "$(echo hacked)`echo hacked`"],
+            vec![],
+        );
+        assert_eq!(
+            read_all(&h, int(field(&r, "stdout"))),
+            b"$(echo hacked)`echo hacked`"
+        );
+        call(&g, &h, OsOp::Wait, vec![field(&r, "pid")]).expect("wait");
+    }
+
+    #[test]
     fn the_child_environment_is_cleared_to_the_given_vars() {
         let (g, h) = (grants(), OsHandles::default());
         let r = spawn_out(
             &g,
             &h,
-            "printf %s \"${FOO}|${HOME-unset}|${PATH-unset}\"",
+            "printf %s \"${FOO}|${HOME-unset}|${USER-unset}\"",
             &[],
             vec![("env", object(vec![("FOO", s("bar"))]))],
         );
@@ -870,7 +950,7 @@ mod tests {
         let stdin = int(field(&r, "stdin"));
         h.fs.fds
             .with(stdin, |e| match e {
-                FdEntry::ChildStdin(p) => p.write_all(b"ping\n"),
+                FdEntry::ChildStdin(p) => p.lock().write_all(b"ping\n"),
                 _ => panic!("not stdin"),
             })
             .expect("fd")
@@ -981,5 +1061,186 @@ mod tests {
         assert_eq!(h.process.children.lock().len(), 1);
         h.close_all();
         assert!(h.process.children.lock().is_empty());
+    }
+
+    type Completed = (String, String, Result<Value, OsError>);
+
+    struct Recorder(Mutex<std::sync::mpsc::Sender<Completed>>);
+
+    impl OsCompletionSink for Recorder {
+        fn complete(&self, site: &CallSite, key: &str, outcome: Result<Value, OsError>) {
+            let _ = self
+                .0
+                .lock()
+                .send((site.trait_name.clone(), key.to_string(), outcome));
+        }
+    }
+
+    fn with_sink(h: &OsHandles) -> std::sync::mpsc::Receiver<Completed> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        h.completions.set_sink(Arc::new(Recorder(Mutex::new(tx))));
+        rx
+    }
+
+    fn routed() -> CallSite {
+        CallSite {
+            orbital: None,
+            trait_name: "Sup".to_string(),
+            follow_on: false,
+            emit: CallRoutes {
+                success: Some("CHILD_EXITED".to_string()),
+                failure: Some("CHILD_WAIT_FAILED".to_string()),
+                ..CallRoutes::default()
+            },
+        }
+    }
+
+    fn ask_wait(
+        g: &OsGrants,
+        h: &OsHandles,
+        pid: Value,
+        key: Option<&str>,
+        site: Option<CallSite>,
+    ) -> IoAnswer {
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let host = OsHost {
+            grants: g,
+            handles: h,
+            on_event: &on_event,
+        };
+        answer_os(
+            Some(&host),
+            &IoRequest::Os {
+                op: OsOp::Wait,
+                args: vec![pid],
+                key: key.map(str::to_string),
+                site,
+            },
+        )
+    }
+
+    fn spawn_sleeper(g: &OsGrants, h: &OsHandles) -> Value {
+        field(
+            &call(g, h, OsOp::Spawn, sh("exec sleep 30", &[])).expect("spawn"),
+            "pid",
+        )
+    }
+
+    #[test]
+    fn a_keyed_wait_under_a_route_returns_deferred_at_once_and_completes_with_the_signal() {
+        let (g, h) = (grants(), OsHandles::default());
+        let completed = with_sink(&h);
+        let pid = spawn_sleeper(&g, &h);
+        let started = std::time::Instant::now();
+        let answer = ask_wait(&g, &h, pid.clone(), Some("child-1"), Some(routed()));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "the wait blocked"
+        );
+        assert_eq!(answer, IoAnswer::ServiceDeferred);
+        assert!(completed.try_recv().is_err(), "the child is still running");
+        call(&g, &h, OsOp::Kill, vec![pid, s("TERM")]).expect("kill");
+        let (trait_name, key, outcome) = completed
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("one completion");
+        assert_eq!((trait_name.as_str(), key.as_str()), ("Sup", "child-1"));
+        let done = outcome.expect("the child ended");
+        assert_eq!(field(&done, "signal"), Value::Number(15.0));
+        assert_eq!(field(&done, "code"), Value::Null);
+        assert!(
+            completed
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "exactly one"
+        );
+        assert!(h.process.children.lock().is_empty());
+    }
+
+    #[test]
+    fn control_an_unkeyed_wait_still_blocks_until_the_child_exits() {
+        let (g, h) = (grants(), OsHandles::default());
+        let completed = with_sink(&h);
+        let r = call(&g, &h, OsOp::Spawn, sh("sleep 0.3; exit 4", &[])).expect("spawn");
+        let started = std::time::Instant::now();
+        let answer = ask_wait(&g, &h, field(&r, "pid"), None, None);
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(250),
+            "returned before the child ended"
+        );
+        let done = match answer {
+            IoAnswer::Os(Ok(done)) => done,
+            other => panic!("a plain answer, got {other:?}"),
+        };
+        assert_eq!(field(&done, "code"), Value::Number(4.0));
+        assert!(completed
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .is_err());
+    }
+
+    #[test]
+    fn control_a_keyed_wait_with_no_sink_or_no_route_is_answered_in_place() {
+        let (g, h) = (grants(), OsHandles::default());
+        let r = call(&g, &h, OsOp::Spawn, sh("exit 5", &[])).expect("spawn");
+        let IoAnswer::Os(Ok(done)) = ask_wait(&g, &h, field(&r, "pid"), Some("k"), Some(routed()))
+        else {
+            panic!("no sink answers in place")
+        };
+        assert_eq!(field(&done, "code"), Value::Number(5.0));
+        let completed = with_sink(&h);
+        let r = call(&g, &h, OsOp::Spawn, sh("exit 6", &[])).expect("spawn");
+        let IoAnswer::Os(Ok(done)) = ask_wait(&g, &h, field(&r, "pid"), Some("k"), None) else {
+            panic!("no site answers in place")
+        };
+        assert_eq!(field(&done, "code"), Value::Number(6.0));
+        assert!(completed
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .is_err());
+    }
+
+    #[test]
+    fn a_deferred_wait_of_an_unknown_pid_or_a_reused_key_fails_in_place_and_completes_nothing() {
+        let (g, h) = (grants(), OsHandles::default());
+        let completed = with_sink(&h);
+        let IoAnswer::Os(Err(unknown)) =
+            ask_wait(&g, &h, Value::Number(999_999.0), Some("k"), Some(routed()))
+        else {
+            panic!("an unknown pid fails in place")
+        };
+        assert_eq!(unknown.kind, OsErrorKind::Closed);
+        let pid = spawn_sleeper(&g, &h);
+        assert_eq!(
+            ask_wait(&g, &h, pid.clone(), Some("k"), Some(routed())),
+            IoAnswer::ServiceDeferred
+        );
+        let IoAnswer::Os(Err(reused)) = ask_wait(&g, &h, pid, Some("k"), Some(routed())) else {
+            panic!("a key with a pending completion is refused")
+        };
+        assert_eq!(reused.kind, OsErrorKind::Invalid);
+        assert!(completed.try_recv().is_err());
+        h.close_all();
+    }
+
+    #[test]
+    fn cancelling_the_key_before_the_child_ends_drops_the_completion_and_leaves_the_child_waitable()
+    {
+        let (g, h) = (grants(), OsHandles::default());
+        let completed = with_sink(&h);
+        let pid = spawn_sleeper(&g, &h);
+        assert_eq!(
+            ask_wait(&g, &h, pid.clone(), Some("k"), Some(routed())),
+            IoAnswer::ServiceDeferred
+        );
+        assert!(h.cancel_completion("k"));
+        assert!(!h.cancel_completion("k"));
+        call(&g, &h, OsOp::Kill, vec![pid.clone(), s("TERM")]).expect("kill");
+        assert!(
+            completed
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .is_err(),
+            "a cancelled key completed"
+        );
+        let done =
+            call(&g, &h, OsOp::Wait, vec![pid]).expect("the child was not reaped by the watcher");
+        assert_eq!(field(&done, "signal"), Value::Number(15.0));
     }
 }

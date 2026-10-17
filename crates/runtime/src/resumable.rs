@@ -12,6 +12,7 @@ use crate::effects::executor::{ServiceCaller, ServiceHandler, SubstrateFailure, 
 use orbital_core_base::value::Value;
 use crate::entity_source::EntitySource;
 use orbital_core_base::ir::effects::PageFactField;
+use orbital_core_base::envelope::{Accepted, DeliverRefusal, DeliverRefusalKind, Envelope};
 use orbital_core_base::oauth_ask::{OAuthAsk, OAuthReply};
 use crate::http_request;
 use crate::http_request::{BeaconOutcome, StreamFraming};
@@ -124,6 +125,18 @@ pub enum IoRequest {
     PageFacts {
         fields: Vec<PageFactField>,
     },
+    /// A `browser/prompt`: the on-device model answers with JSON text satisfying the JSON Schema text `schema`.
+    /// `key` lets `cancel-call` abort the ask in flight.
+    Prompt {
+        text: String,
+        schema: String,
+        key: Option<String>,
+    },
+    /// A `browser/embed`: the on-device embedder answers one vector per text, in order.
+    Embed {
+        texts: Vec<String>,
+        key: Option<String>,
+    },
     /// A credential by name. `principal` is the dispatch's `@user` id for a user-scoped credential
     /// (set by the kernel, never by the program); `None` is the app-wide credential.
     Secret {
@@ -169,6 +182,13 @@ pub enum IoRequest {
     OAuth {
         ask: OAuthAsk,
         principal: Option<String>,
+    },
+    /// An `emit` whose declared listener runs in another deployment unit (EXEC-QUEUE-9). `site` is the emitting
+    /// trait's call site; `key` lets `cancel-call` withdraw the ask.
+    Deliver {
+        envelope: Envelope,
+        key: Option<String>,
+        site: CallSite,
     },
 }
 
@@ -225,6 +245,8 @@ pub enum IoAnswer {
     Http(Result<HttpResponse, TransportError>),
     HttpBeacon(Result<BeaconOutcome, TransportError>),
     PageFacts(Result<PageFacts, String>),
+    Prompt(Result<String, ModelFailure>),
+    Embed(Result<Vec<Vec<f64>>, ModelFailure>),
     Secret(Result<Option<String>, String>),
     SecretSet(Result<(), String>),
     SecretRotate(Result<(), String>),
@@ -233,6 +255,42 @@ pub enum IoAnswer {
     CredentialStatus(Result<bool, String>),
     CredentialForget(Result<(), String>),
     OAuth(Result<OAuthReply, String>),
+    Deliver(Result<Accepted, DeliverRefusal>),
+}
+
+/// Why the on-device model or embedder gave no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelFailureKind {
+    /// The host wires no model or embedder.
+    Unconfigured,
+    /// The host has one that cannot answer now (still downloading, not supported on this device).
+    Unavailable,
+    /// The model or embedder answered with an error, or with an answer outside the contract.
+    Failed,
+}
+
+impl ModelFailureKind {
+    /// The word a failure payload carries as `kind`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unconfigured => "unconfigured",
+            Self::Unavailable => "unavailable",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// A `browser/prompt` or `browser/embed` the host could not answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelFailure {
+    pub kind: ModelFailureKind,
+    pub message: String,
+}
+
+impl ModelFailure {
+    pub fn new(kind: ModelFailureKind, message: impl Into<String>) -> Self {
+        Self { kind, message: message.into() }
+    }
 }
 
 /// What the page offered: `available` is false when there is no page; the other facts are as read.
@@ -337,6 +395,13 @@ impl std::fmt::Debug for IoRequest {
                 .field("site", site)
                 .finish(),
             Self::PageFacts { fields } => f.debug_struct("PageFacts").field("fields", fields).finish(),
+            Self::Prompt { text, schema, key } => f
+                .debug_struct("Prompt")
+                .field("text", text)
+                .field("schema", schema)
+                .field("key", key)
+                .finish(),
+            Self::Embed { texts, key } => f.debug_struct("Embed").field("texts", texts).field("key", key).finish(),
             Self::Secret { name, principal } => f
                 .debug_struct("Secret")
                 .field("name", name)
@@ -383,6 +448,12 @@ impl std::fmt::Debug for IoRequest {
                 .field("ask", ask)
                 .field("principal", principal)
                 .finish(),
+            Self::Deliver { envelope, key, site } => f
+                .debug_struct("Deliver")
+                .field("envelope", envelope)
+                .field("key", key)
+                .field("site", site)
+                .finish(),
         }
     }
 }
@@ -406,6 +477,8 @@ impl std::fmt::Debug for IoAnswer {
             Self::Http(r) => f.debug_tuple("Http").field(r).finish(),
             Self::HttpBeacon(r) => f.debug_tuple("HttpBeacon").field(r).finish(),
             Self::PageFacts(r) => f.debug_tuple("PageFacts").field(r).finish(),
+            Self::Prompt(r) => f.debug_tuple("Prompt").field(r).finish(),
+            Self::Embed(r) => f.debug_tuple("Embed").field(r).finish(),
             Self::Secret(r) => {
                 let shown: Result<Option<Redacted>, &String> = match r {
                     Ok(value) => Ok(value.as_ref().map(|_| Redacted)),
@@ -432,12 +505,16 @@ impl std::fmt::Debug for IoAnswer {
             Self::CredentialStatus(r) => f.debug_tuple("CredentialStatus").field(r).finish(),
             Self::CredentialForget(r) => f.debug_tuple("CredentialForget").field(r).finish(),
             Self::OAuth(r) => f.debug_tuple("OAuth").field(r).finish(),
+            Self::Deliver(r) => f.debug_tuple("Deliver").field(r).finish(),
         }
     }
 }
 
 impl IoAnswer {
     fn answers(&self, request: &IoRequest) -> bool {
+        if let (IoRequest::Os { op, key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
+            return op.defers_completion() && key.is_some() && site.is_some();
+        }
         matches!(
             (request, self),
             (
@@ -480,6 +557,8 @@ impl IoAnswer {
                     IoAnswer::HttpBeacon(_) | IoAnswer::ServiceCancelled
                 )
                 | (IoRequest::PageFacts { .. }, IoAnswer::PageFacts(_))
+                | (IoRequest::Prompt { .. }, IoAnswer::Prompt(_) | IoAnswer::ServiceCancelled)
+                | (IoRequest::Embed { .. }, IoAnswer::Embed(_) | IoAnswer::ServiceCancelled)
                 | (IoRequest::Secret { .. }, IoAnswer::Secret(_))
                 | (IoRequest::SecretSet { .. }, IoAnswer::SecretSet(_))
                 | (IoRequest::SecretRotate { .. }, IoAnswer::SecretRotate(_))
@@ -488,6 +567,7 @@ impl IoAnswer {
                 | (IoRequest::CredentialStatus { .. }, IoAnswer::CredentialStatus(_))
                 | (IoRequest::CredentialForget { .. }, IoAnswer::CredentialForget(_))
                 | (IoRequest::OAuth { .. }, IoAnswer::OAuth(_))
+                | (IoRequest::Deliver { .. }, IoAnswer::Deliver(_))
         )
     }
 }
@@ -624,22 +704,73 @@ impl Exchange {
 /// disagrees with the recorded one.
 pub(crate) struct StepEnd {
     pub(crate) journal: Vec<Exchange>,
-    pub(crate) pending: Option<IoRequest>,
+    pub(crate) pending: Asks,
     pub(crate) diverged: Option<ResumeError>,
+}
+
+/// Which journal entries a step has claimed: a prefix counter while answers are claimed in order (no
+/// allocation), and the indices claimed ahead of it when a keyed call is answered out of order.
+#[derive(Default)]
+struct Claimed {
+    prefix: usize,
+    ahead: Vec<usize>,
+}
+
+impl Claimed {
+    fn covers(&self, entries: usize) -> bool {
+        self.prefix >= entries
+    }
+
+    fn has(&self, index: usize) -> bool {
+        index < self.prefix || self.ahead.contains(&index)
+    }
+
+    fn claim(&mut self, index: usize) {
+        if index != self.prefix {
+            self.ahead.push(index);
+            return;
+        }
+        self.prefix += 1;
+        while let Some(at) = self.ahead.iter().position(|&i| i == self.prefix) {
+            self.ahead.swap_remove(at);
+            self.prefix += 1;
+        }
+    }
 }
 
 struct StepLedger {
     thread: ThreadId,
     journal: Vec<Exchange>,
-    cursor: usize,
-    pending: Option<IoRequest>,
+    claimed: Claimed,
+    pending: Asks,
+    keys: HashSet<String>,
+    blocked: bool,
     diverged: Option<ResumeError>,
+}
+
+/// The requests one step leaves outstanding: inline for the common single ask, so a step allocates only once
+/// it has more than one.
+pub(crate) type Asks = smallvec::SmallVec<[IoRequest; 1]>;
+
+/// Give each of `requests` the next id of its dispatch, in issue order.
+pub(crate) fn number_requests(next_id: &mut u64, requests: Asks) -> Vec<PendingRequest> {
+    let mut numbered = Vec::with_capacity(requests.len());
+    for request in requests {
+        let id = RequestId::from_raw(*next_id);
+        *next_id += 1;
+        numbered.push(PendingRequest { id, request });
+    }
+    numbered
 }
 
 /// The error a handler returns when the step cannot get an answer yet; the step's result is dropped.
 pub(crate) const AWAITING_HOST: &str = "awaiting host I/O";
 
 pub(crate) const NO_PAGE_FACTS_HOST: &str = "browser/page-facts: no host answers page facts";
+
+pub(crate) const NO_PROMPT_HOST: &str = "browser/prompt: no on-device model is wired into this host";
+
+pub(crate) const NO_EMBED_HOST: &str = "browser/embed: no on-device embedder is wired into this host";
 
 /// The error a call settled `Cancelled` carries, as JS's `untilAborted` rejects.
 const CALL_CANCELLED: &str = "The call was cancelled";
@@ -774,7 +905,8 @@ impl IoPort {
     /// diverged from its record: the step's result is garbage and must be rolled back.
     pub(crate) fn suspended(&self) -> bool {
         self.ledger.lock().as_ref().is_some_and(|l| {
-            l.thread == std::thread::current().id() && (l.pending.is_some() || l.diverged.is_some())
+            l.thread == std::thread::current().id()
+                && (!l.pending.is_empty() || l.diverged.is_some())
         })
     }
 
@@ -788,9 +920,11 @@ impl IoPort {
         let gate = self.gate.lock();
         *self.ledger.lock() = Some(StepLedger {
             thread: std::thread::current().id(),
+            claimed: Claimed::default(),
             journal,
-            cursor: 0,
-            pending: None,
+            pending: Asks::new(),
+            keys: HashSet::new(),
+            blocked: false,
             diverged: None,
         });
         let installed = Installed {
@@ -808,13 +942,18 @@ impl IoPort {
             },
             None => StepEnd {
                 journal: Vec::new(),
-                pending: None,
+                pending: Asks::new(),
                 diverged: None,
             },
         };
         (result, end)
     }
 
+    /// Serve `request` from the journal, or record it. A keyed `call-service` is matched to its recorded
+    /// answer by key and, with no answer yet, is recorded as one more pending request while the call
+    /// returns the deferred value, so the step goes on and a later keyed call is asked in the same step.
+    /// Every other ask is matched to the first unclaimed journal entry and, with no answer yet, is the
+    /// step's one pending request; any further ask of that kind is withheld unrecorded.
     fn ask(&self, request: impl FnOnce() -> IoRequest) -> Asked {
         let mut slot = self.ledger.lock();
         let Some(ledger) = slot.as_mut() else {
@@ -823,27 +962,82 @@ impl IoPort {
         if ledger.thread != std::thread::current().id() {
             return Asked::Direct;
         }
-        if ledger.pending.is_some() || ledger.diverged.is_some() {
+        if ledger.diverged.is_some() || (ledger.blocked && ledger.claimed.covers(ledger.journal.len())) {
             return Asked::Withheld;
         }
         let request = request();
-        match ledger.journal.get(ledger.cursor) {
-            Some(recorded) if recorded.request == request => {
-                ledger.cursor += 1;
-                Asked::Answer(recorded.answer.clone())
+        let keyed = match &request {
+            IoRequest::CallService { key: Some(key), .. } => Some(key.clone()),
+            _ => None,
+        };
+        if let Some(key) = &keyed {
+            if !ledger.keys.insert(key.clone()) {
+                return Asked::Answer(IoAnswer::Service(Err(format!(
+                    "call-service key '{key}' is already used by another call in this step"
+                ))));
             }
-            Some(recorded) => {
-                ledger.diverged = Some(ResumeError::Diverged {
-                    recorded: Box::new(recorded.request.clone()),
-                    got: Box::new(request),
-                });
-                Asked::Withheld
+        }
+        let claimed = &ledger.claimed;
+        let at = ledger.journal.iter().enumerate().position(|(i, recorded)| {
+            !claimed.has(i)
+                && match &keyed {
+                    Some(key) => matches!(
+                        &recorded.request,
+                        IoRequest::CallService { key: Some(recorded_key), .. } if recorded_key == key
+                    ),
+                    None => true,
+                }
+        });
+        match at {
+            Some(i) => {
+                let recorded = &ledger.journal[i];
+                if recorded.request == request {
+                    let answer = recorded.answer.clone();
+                    ledger.claimed.claim(i);
+                    Asked::Answer(answer)
+                } else {
+                    ledger.diverged = Some(ResumeError::Diverged {
+                        recorded: Box::new(recorded.request.clone()),
+                        got: Box::new(request),
+                    });
+                    Asked::Withheld
+                }
+            }
+            None if keyed.is_some() && !ledger.blocked => {
+                ledger.pending.push(request);
+                Asked::Answer(IoAnswer::ServiceDeferred)
             }
             None => {
-                ledger.pending = Some(request);
+                if ledger.pending.is_empty() && !ledger.blocked {
+                    ledger.pending.push(request);
+                }
+                ledger.blocked = true;
                 Asked::Withheld
             }
         }
+    }
+
+    /// Take the keyed `call-service` this step has recorded as pending out of the step, so it is never sent.
+    /// `false` when the step has no such pending call (or can no longer trust its own state); the cancel is
+    /// then an ask of its own.
+    fn withdraw_pending_call(&self, key: &str) -> bool {
+        let mut slot = self.ledger.lock();
+        let Some(ledger) = slot.as_mut() else {
+            return false;
+        };
+        if ledger.thread != std::thread::current().id()
+            || ledger.blocked
+            || ledger.diverged.is_some()
+        {
+            return false;
+        }
+        let Some(at) = ledger.pending.iter().position(|pending| {
+            matches!(pending, IoRequest::CallService { key: Some(pending_key), .. } if pending_key == key)
+        }) else {
+            return false;
+        };
+        ledger.pending.remove(at);
+        true
     }
 }
 
@@ -1154,6 +1348,9 @@ impl ServiceHandler for IoPort {
     }
 
     fn cancel(&self, key: &str) -> Result<(), String> {
+        if self.withdraw_pending_call(key) {
+            return Ok(());
+        }
         match self.ask(|| IoRequest::CancelCall {
             key: key.to_string(),
         }) {
@@ -1234,6 +1431,36 @@ impl IoPort {
         }
     }
 
+    /// One `browser/prompt` ask. A host that answers it cancelled records the verdict for the kernel's route.
+    pub(crate) fn prompt(&self, text: &str, schema: &str, key: Option<&str>) -> Result<String, ModelFailure> {
+        match self.ask(|| IoRequest::Prompt {
+            text: text.to_string(),
+            schema: schema.to_string(),
+            key: key.map(str::to_string),
+        }) {
+            Asked::Direct => Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_PROMPT_HOST)),
+            Asked::Answer(IoAnswer::Prompt(out)) => out,
+            Asked::Answer(IoAnswer::ServiceCancelled) => {
+                *self.verdict.lock() = Some(CallVerdict::Cancelled);
+                Err(ModelFailure::new(ModelFailureKind::Failed, CALL_CANCELLED))
+            }
+            Asked::Answer(_) | Asked::Withheld => Err(ModelFailure::new(ModelFailureKind::Failed, AWAITING_HOST)),
+        }
+    }
+
+    /// One `browser/embed` ask, as [`Self::prompt`].
+    pub(crate) fn embed(&self, texts: &[String], key: Option<&str>) -> Result<Vec<Vec<f64>>, ModelFailure> {
+        match self.ask(|| IoRequest::Embed { texts: texts.to_vec(), key: key.map(str::to_string) }) {
+            Asked::Direct => Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_EMBED_HOST)),
+            Asked::Answer(IoAnswer::Embed(out)) => out,
+            Asked::Answer(IoAnswer::ServiceCancelled) => {
+                *self.verdict.lock() = Some(CallVerdict::Cancelled);
+                Err(ModelFailure::new(ModelFailureKind::Failed, CALL_CANCELLED))
+            }
+            Asked::Answer(_) | Asked::Withheld => Err(ModelFailure::new(ModelFailureKind::Failed, AWAITING_HOST)),
+        }
+    }
+
     fn http_answer(&self, answer: IoAnswer) -> Result<HttpResponse, TransportError> {
         match answer {
             IoAnswer::Http(out) => out,
@@ -1298,22 +1525,33 @@ impl IoPort {
         }
     }
 
-    /// One `os/<op>` ask, journaled. A streaming op carries the call site its events dispatch to.
+    /// One `os/<op>` ask, journaled. A streaming op, and a keyed op that defers its completion under a declared
+    /// route, carries the call site its events dispatch to; the host may answer the latter `ServiceDeferred`.
     pub(crate) fn os(&self, op: OsOp, args: &[Value], key: Option<&str>) -> Result<Value, OsError> {
         match self.ask(|| IoRequest::Os {
             op,
             args: args.to_vec(),
             key: key.map(str::to_string),
-            site: if op.is_stream() { self.site.lock().clone() } else { None },
+            site: self.os_site(op, key),
         }) {
             Asked::Direct => Err(OsError::new(OsErrorKind::Unsupported, NO_HTTP_HOST)),
             Asked::Answer(IoAnswer::Os(out)) => out,
+            Asked::Answer(IoAnswer::ServiceDeferred) => {
+                *self.verdict.lock() = Some(CallVerdict::Deferred);
+                Ok(Value::Null)
+            }
             Asked::Answer(IoAnswer::ServiceCancelled) => {
                 *self.verdict.lock() = Some(CallVerdict::Cancelled);
                 Err(OsError::new(OsErrorKind::Closed, CALL_CANCELLED))
             }
             Asked::Answer(_) | Asked::Withheld => Err(OsError::new(OsErrorKind::Io, AWAITING_HOST)),
         }
+    }
+
+    fn os_site(&self, op: OsOp, key: Option<&str>) -> Option<CallSite> {
+        let site = self.site.lock().clone()?;
+        let routed = site.emit.success.is_some() || site.emit.failure.is_some();
+        (op.is_stream() || (op.defers_completion() && key.is_some() && routed)).then_some(site)
     }
 
     pub(crate) fn random(&self, bytes: u32) -> Result<Vec<u8>, String> {
@@ -1345,6 +1583,29 @@ impl IoPort {
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
     }
+
+    /// One cross-unit delivery, journaled. A kernel with no step in flight has no router to hand it to: the
+    /// delivery is refused `down`, so the emitter sees it instead of the emit vanishing.
+    pub(crate) fn deliver(&self, envelope: &Envelope, site: CallSite) -> DeliverAsk {
+        match self.ask(|| IoRequest::Deliver {
+            envelope: envelope.clone(),
+            key: None,
+            site,
+        }) {
+            Asked::Answer(IoAnswer::Deliver(out)) => DeliverAsk::Answered(out),
+            Asked::Direct | Asked::Answer(_) => DeliverAsk::Answered(Err(DeliverRefusal {
+                kind: DeliverRefusalKind::Down,
+                id: envelope.id.clone(),
+            })),
+            Asked::Withheld => DeliverAsk::Suspended,
+        }
+    }
+}
+
+/// What a [`IoPort::deliver`] came back with: the host's answer, or no answer yet (the step is suspended).
+pub(crate) enum DeliverAsk {
+    Answered(Result<Accepted, DeliverRefusal>),
+    Suspended,
 }
 
 const NO_HTTP_HOST: &str = "no HTTP host is configured for this kernel";
@@ -1503,6 +1764,8 @@ impl BlockingHost<'_> {
             | IoRequest::HttpStream { .. }
             | IoRequest::HttpBeacon { .. }
             | IoRequest::PageFacts { .. }
+            | IoRequest::Prompt { .. }
+            | IoRequest::Embed { .. }
             | IoRequest::Secret { .. }
             | IoRequest::SecretSet { .. }
             | IoRequest::SecretRotate { .. }
@@ -1510,7 +1773,8 @@ impl BlockingHost<'_> {
             | IoRequest::Os { .. }
             | IoRequest::CredentialStatus { .. }
             | IoRequest::CredentialForget { .. }
-            | IoRequest::OAuth { .. } => answer_http(None, request),
+            | IoRequest::OAuth { .. }
+            | IoRequest::Deliver { .. } => answer_http(None, request),
         }
     }
 
@@ -1521,6 +1785,8 @@ impl BlockingHost<'_> {
             | IoRequest::HttpStream { .. }
             | IoRequest::HttpBeacon { .. }
             | IoRequest::PageFacts { .. }
+            | IoRequest::Prompt { .. }
+            | IoRequest::Embed { .. }
             | IoRequest::Secret { .. }
             | IoRequest::SecretSet { .. }
             | IoRequest::SecretRotate { .. }
@@ -1528,7 +1794,8 @@ impl BlockingHost<'_> {
             | IoRequest::Os { .. }
             | IoRequest::CredentialStatus { .. }
             | IoRequest::CredentialForget { .. }
-            | IoRequest::OAuth { .. } => answer_http(Some(http), request),
+            | IoRequest::OAuth { .. }
+            | IoRequest::Deliver { .. } => answer_http(Some(http), request),
             other => self.answer(other),
         }
     }
@@ -1651,6 +1918,8 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
             referrer: String::new(),
             screen_width: None,
         })),
+        (IoRequest::Prompt { .. }, _) => IoAnswer::Prompt(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_PROMPT_HOST))),
+        (IoRequest::Embed { .. }, _) => IoAnswer::Embed(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_EMBED_HOST))),
         (IoRequest::Http { .. } | IoRequest::HttpStream { .. }, None) => {
             IoAnswer::Http(Err(TransportError::Failed(NO_HTTP_HOST.to_string())))
         }
@@ -1689,6 +1958,10 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
             IoAnswer::OAuth(host.secrets.oauth_of(ask, principal.as_deref()))
         }
         (IoRequest::OAuth { .. }, None) => IoAnswer::OAuth(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::Deliver { envelope, .. }, _) => IoAnswer::Deliver(Err(DeliverRefusal {
+            kind: DeliverRefusalKind::Down,
+            id: envelope.id.clone(),
+        })),
         (IoRequest::CredentialStatus { .. }, None) => IoAnswer::CredentialStatus(Err(NO_HTTP_HOST.to_string())),
         (IoRequest::CredentialForget { .. }, None) => IoAnswer::CredentialForget(Err(NO_HTTP_HOST.to_string())),
         _ => IoAnswer::Service(Err("not an HTTP request".to_string())),
@@ -1699,24 +1972,67 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
 /// that lets a blocking host run the resumable code path.
 pub fn drive_blocking(
     kernel: &crate::kernel::RuntimeKernel,
-    mut progress: Progress<DispatchOutcomes>,
+    progress: Progress<DispatchOutcomes>,
     answer: &dyn Fn(&IoRequest) -> IoAnswer,
+) -> Result<DispatchOutcomes, DispatchError> {
+    drive_with(kernel, progress, |requests| {
+        requests
+            .iter()
+            .map(|p| IoReply { id: p.id, answer: answer(&p.request) })
+            .collect()
+    })
+}
+
+/// [`drive_blocking`] for a host whose answerer is `Sync`: the keyed `call-service` requests of one step run on
+/// scoped threads at the same time (EXEC-QUEUE-8) and every other request is answered in order on this thread.
+pub fn drive_concurrent(
+    kernel: &crate::kernel::RuntimeKernel,
+    progress: Progress<DispatchOutcomes>,
+    answer: &(dyn Fn(&IoRequest) -> IoAnswer + Sync),
+) -> Result<DispatchOutcomes, DispatchError> {
+    drive_with(kernel, progress, |requests| answer_batch(requests, answer))
+}
+
+/// Answer one step's pending requests: each keyed `call-service` on its own scoped thread, the rest in
+/// order on the calling thread. The replies keep the order of `requests`; the kernel matches them by id.
+pub fn answer_batch(
+    requests: &[PendingRequest],
+    answer: &(dyn Fn(&IoRequest) -> IoAnswer + Sync),
+) -> Vec<IoReply> {
+    std::thread::scope(|scope| {
+        let overlapped: Vec<_> = requests
+            .iter()
+            .map(|p| {
+                matches!(p.request, IoRequest::CallService { key: Some(_), .. })
+                    .then(|| scope.spawn(move || answer(&p.request)))
+            })
+            .collect();
+        requests
+            .iter()
+            .zip(overlapped)
+            .map(|(p, handle)| IoReply {
+                id: p.id,
+                answer: match handle {
+                    Some(handle) => handle
+                        .join()
+                        .unwrap_or_else(|_| IoAnswer::Service(Err("the call-service answerer panicked".to_string()))),
+                    None => answer(&p.request),
+                },
+            })
+            .collect()
+    })
+}
+
+fn drive_with(
+    kernel: &crate::kernel::RuntimeKernel,
+    mut progress: Progress<DispatchOutcomes>,
+    mut serve: impl FnMut(&[PendingRequest]) -> Vec<IoReply>,
 ) -> Result<DispatchOutcomes, DispatchError> {
     loop {
         match progress {
             Progress::Done(outcomes) => return Ok(outcomes),
-            Progress::Await {
-                continuation,
-                requests,
-            } => {
-                let replies = requests
-                    .iter()
-                    .map(|p| IoReply {
-                        id: p.id,
-                        answer: answer(&p.request),
-                    })
-                    .collect();
-                progress = kernel.resume(continuation, replies)?;
+            Progress::Await { continuation, requests } => {
+                progress = kernel.resume(continuation, serve(&requests))?;
             }
         }
     }
@@ -1755,6 +2071,62 @@ mod http_replay_tests {
     use super::*;
     use crate::http_request::StreamFraming;
     use std::time::Duration;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn call(id: u64, key: Option<&str>) -> PendingRequest {
+        PendingRequest {
+            id: RequestId(id),
+            request: IoRequest::CallService {
+                service: "svc".to_string(),
+                method: "work".to_string(),
+                args: Value::Null,
+                key: key.map(str::to_string),
+                caller: None,
+                site: None,
+            },
+        }
+    }
+
+    fn widest_overlap(requests: &[PendingRequest]) -> (usize, Vec<IoReply>) {
+        let inflight = AtomicUsize::new(0);
+        let widest = AtomicUsize::new(0);
+        let replies = answer_batch(requests, &|_| {
+            let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+            widest.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(60));
+            inflight.fetch_sub(1, Ordering::SeqCst);
+            IoAnswer::Service(Ok(Value::Null))
+        });
+        (widest.load(Ordering::SeqCst), replies)
+    }
+
+    #[test]
+    fn keyed_calls_of_one_step_are_answered_at_the_same_time_and_in_request_order() {
+        let requests = [call(7, Some("a")), call(8, Some("b")), call(9, Some("c"))];
+        let (widest, replies) = widest_overlap(&requests);
+        assert!(widest >= 2, "keyed calls ran one at a time: {widest}");
+        let ids: Vec<RequestId> = replies.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![RequestId(7), RequestId(8), RequestId(9)]);
+    }
+
+    #[test]
+    fn control_unkeyed_calls_are_answered_one_at_a_time() {
+        let requests = [call(1, None), call(2, None), call(3, None)];
+        let (widest, replies) = widest_overlap(&requests);
+        assert_eq!(widest, 1);
+        assert_eq!(replies.len(), 3);
+    }
+
+    #[test]
+    fn a_panicking_answerer_becomes_a_failed_call_not_a_crashed_host() {
+        let requests = [call(1, Some("a")), call(2, Some("b"))];
+        let replies = answer_batch(&requests, &|request| match request {
+            IoRequest::CallService { key: Some(key), .. } if key == "a" => panic!("boom"),
+            _ => IoAnswer::Service(Ok(Value::Null)),
+        });
+        assert!(matches!(&replies[0].answer, IoAnswer::Service(Err(message)) if message.contains("panicked")));
+        assert!(matches!(&replies[1].answer, IoAnswer::Service(Ok(_))));
+    }
 
     fn get(url: &str) -> HttpRequest {
         HttpRequest {
@@ -1792,7 +2164,7 @@ mod http_replay_tests {
         let port = port();
         let (reply, end) = port.run_step(recorded(&request), || port.http_send(&request, None, None));
         assert_eq!(reply.map(|r| r.status), Ok(200));
-        assert!(end.pending.is_none() && end.diverged.is_none());
+        assert!(end.pending.is_empty() && end.diverged.is_none());
     }
 
     #[test]
@@ -1806,7 +2178,7 @@ mod http_replay_tests {
             "{:?}",
             end.diverged
         );
-        assert!(end.pending.is_none());
+        assert!(end.pending.is_empty());
     }
 
     #[test]
@@ -1822,11 +2194,29 @@ mod http_replay_tests {
     }
 
     #[test]
+    fn a_replayed_step_is_compared_with_its_delay() {
+        let request = get("https://a.example.com/x");
+        let port = port();
+        let delayed = vec![Exchange::new(
+            IoRequest::Http { request: request.clone(), key: None, delay_ms: Some(500), site: None },
+            IoAnswer::Http(Ok(HttpResponse { status: 200, headers: Vec::new(), body: b"ok".to_vec() })),
+        )];
+        let (reply, end) = port.run_step(delayed.clone(), || port.http_send(&request, None, Some(500)));
+        assert_eq!(reply.map(|r| r.status), Ok(200));
+        assert!(end.pending.is_empty() && end.diverged.is_none());
+        // Controls: the same request asked with another delay, or with none, diverges.
+        for asked in [Some(501), None] {
+            let (_, end) = port.run_step(delayed.clone(), || port.http_send(&request, None, asked));
+            assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })), "{asked:?}");
+        }
+    }
+
+    #[test]
     fn a_step_with_no_record_leaves_the_request_pending() {
         let request = get("https://a.example.com/x");
         let port = port();
         let (_, end) = port.run_step(Vec::new(), || port.http_send(&request, None, None));
-        assert!(matches!(end.pending, Some(IoRequest::Http { .. })));
+        assert!(matches!(end.pending.as_slice(), [IoRequest::Http { .. }]));
     }
 
     struct Canned(Vec<u8>);
@@ -1965,7 +2355,7 @@ mod http_replay_tests {
         let recorded = vec![Exchange::new(ask, IoAnswer::Random(Ok(vec![1, 2, 3, 4])))];
         let (bytes, end) = port.run_step(recorded.clone(), || port.random(4));
         assert_eq!(bytes, Ok(vec![1, 2, 3, 4]));
-        assert!(end.pending.is_none() && end.diverged.is_none());
+        assert!(end.pending.is_empty() && end.diverged.is_none());
         let (_, end) = port.run_step(recorded, || port.random(5));
         assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
     }
@@ -1988,7 +2378,7 @@ mod http_replay_tests {
         let recorded = vec![Exchange::new(os_ask(OsOp::ReadFile, "/a"), os_ok())];
         let (out, end) = port.run_step(recorded.clone(), || port.os(OsOp::ReadFile, &args, None));
         assert_eq!(out.map(|v| v.get_path("data").map(Value::to_string_value)), Ok(Some("hi".to_string())));
-        assert!(end.pending.is_none() && end.diverged.is_none());
+        assert!(end.pending.is_empty() && end.diverged.is_none());
     }
 
     #[test]
@@ -2036,12 +2426,72 @@ mod http_replay_tests {
             emit: CallRoutes::default(),
         }));
         let (_, end) = port.run_step(Vec::new(), || port.os(OsOp::ReadFile, &[Value::Null], None));
-        let Some(IoRequest::Os { site, .. }) = end.pending else { panic!("expected a pending os ask") };
+        let [IoRequest::Os { site, .. }] = end.pending.as_slice() else { panic!("expected a pending os ask") };
         assert!(site.is_none());
         let (_, end) = port.run_step(Vec::new(), || port.os(OsOp::StdinRead, &[], Some("k")));
-        let Some(IoRequest::Os { site, key, .. }) = end.pending else { panic!("expected a pending os ask") };
-        assert_eq!(site.map(|s| s.trait_name), Some("T".to_string()));
+        let [IoRequest::Os { site, key, .. }] = end.pending.as_slice() else { panic!("expected a pending os ask") };
+        assert_eq!(site.as_ref().map(|s| s.trait_name.clone()), Some("T".to_string()));
         assert_eq!(key.as_deref(), Some("k"));
+    }
+
+    fn routed_site() -> CallSite {
+        CallSite {
+            orbital: None,
+            trait_name: "T".into(),
+            follow_on: false,
+            emit: CallRoutes { success: Some("DONE".into()), failure: Some("FAILED".into()), ..CallRoutes::default() },
+        }
+    }
+
+    fn wait_ask(key: Option<&str>, site: Option<CallSite>) -> IoRequest {
+        IoRequest::Os { op: OsOp::Wait, args: vec![Value::Number(7.0)], key: key.map(str::to_string), site }
+    }
+
+    #[test]
+    fn a_keyed_wait_under_a_completion_route_carries_the_call_site_and_the_controls_do_not() {
+        let port = port();
+        port.set_call_site(Some(routed_site()));
+        let (_, end) = port.run_step(Vec::new(), || port.os(OsOp::Wait, &[Value::Number(7.0)], Some("k")));
+        let [IoRequest::Os { site, .. }] = end.pending.as_slice() else { panic!("expected a pending os ask") };
+        assert_eq!(site.as_ref().map(|s| s.emit.success.clone()), Some(Some("DONE".to_string())));
+        let (_, end) = port.run_step(Vec::new(), || port.os(OsOp::Wait, &[Value::Number(7.0)], None));
+        let [IoRequest::Os { site, .. }] = end.pending.as_slice() else { panic!("expected a pending os ask") };
+        assert!(site.is_none());
+        let (_, end) = port.run_step(Vec::new(), || port.os(OsOp::Stat, &[Value::Null], Some("k")));
+        let [IoRequest::Os { site, .. }] = end.pending.as_slice() else { panic!("expected a pending os ask") };
+        assert!(site.is_none());
+        port.set_call_site(Some(CallSite { emit: CallRoutes::default(), ..routed_site() }));
+        let (_, end) = port.run_step(Vec::new(), || port.os(OsOp::Wait, &[Value::Number(7.0)], Some("k")));
+        let [IoRequest::Os { site, .. }] = end.pending.as_slice() else { panic!("expected a pending os ask") };
+        assert!(site.is_none());
+    }
+
+    #[test]
+    fn only_a_keyed_wait_with_a_call_site_may_be_answered_deferred() {
+        let deferred = IoAnswer::ServiceDeferred;
+        assert!(deferred.answers(&wait_ask(Some("k"), Some(routed_site()))));
+        assert!(!deferred.answers(&wait_ask(None, Some(routed_site()))));
+        assert!(!deferred.answers(&wait_ask(Some("k"), None)));
+        let stat = IoRequest::Os { op: OsOp::Stat, args: vec![Value::Null], key: Some("k".into()), site: Some(routed_site()) };
+        assert!(!deferred.answers(&stat));
+        assert!(os_ok().answers(&wait_ask(None, None)));
+    }
+
+    #[test]
+    fn a_deferred_wait_returns_null_with_the_deferred_verdict_and_a_plain_answer_leaves_none() {
+        let port = port();
+        port.set_call_site(Some(routed_site()));
+        let ask = wait_ask(Some("k"), Some(routed_site()));
+        let args = [Value::Number(7.0)];
+        let (out, end) = port.run_step(vec![Exchange::new(ask.clone(), IoAnswer::ServiceDeferred)], || {
+            port.os(OsOp::Wait, &args, Some("k"))
+        });
+        assert_eq!(out, Ok(Value::Null));
+        assert_eq!(port.take_call_verdict(), Some(CallVerdict::Deferred));
+        assert!(end.pending.is_empty() && end.diverged.is_none());
+        let (out, _) = port.run_step(vec![Exchange::new(ask, os_ok())], || port.os(OsOp::Wait, &args, Some("k")));
+        assert!(out.is_ok_and(|v| v.get_path("data").is_some()));
+        assert_eq!(port.take_call_verdict(), None);
     }
 
     #[test]
@@ -2124,5 +2574,231 @@ mod http_replay_tests {
             port.http_send(&get("https://a.example.com/x"), None, None).map(|r| r.status),
             Err(TransportError::Failed(NO_HTTP_HOST.to_string()))
         );
+    }
+
+    fn keyed(key: &str) -> IoRequest {
+        IoRequest::CallService {
+            service: "svc".into(),
+            method: "go".into(),
+            args: Value::Null,
+            key: Some(key.into()),
+            caller: None,
+            site: None,
+        }
+    }
+
+    fn answered(key: &str, text: &str) -> Exchange {
+        Exchange::new(
+            keyed(key),
+            IoAnswer::Service(Ok(Value::String(text.into()))),
+        )
+    }
+
+    fn call_keyed(port: &IoPort, key: &str) -> Result<Value, String> {
+        port.call("svc", "go", &Value::Null, Some(key), None)
+    }
+
+    fn call_unkeyed(port: &IoPort) -> Result<Value, String> {
+        port.call("svc", "go", &Value::Null, None, None)
+    }
+
+    #[test]
+    fn keyed_calls_are_all_pending_in_issue_order_and_each_returns_the_deferred_value() {
+        let port = port();
+        let (out, end) = port.run_step(Vec::new(), || {
+            (
+                call_keyed(&port, "a"),
+                call_keyed(&port, "b"),
+                call_keyed(&port, "c"),
+            )
+        });
+        assert_eq!(out, (Ok(Value::Null), Ok(Value::Null), Ok(Value::Null)));
+        assert_eq!(end.pending.as_slice(), vec![keyed("a"), keyed("b"), keyed("c")].as_slice());
+        assert!(end.diverged.is_none());
+        assert_eq!(port.take_call_verdict(), Some(CallVerdict::Deferred));
+    }
+
+    #[test]
+    fn control_an_unkeyed_ask_is_the_one_pending_request_and_withholds_every_later_ask() {
+        let port = port();
+        let (out, end) = port.run_step(Vec::new(), || {
+            (
+                call_unkeyed(&port),
+                call_keyed(&port, "a"),
+                call_unkeyed(&port),
+            )
+        });
+        assert_eq!(out.0, Err(AWAITING_HOST.to_string()));
+        assert_eq!(out.1, Err(AWAITING_HOST.to_string()));
+        assert_eq!(out.2, Err(AWAITING_HOST.to_string()));
+        assert_eq!(end.pending.len(), 1);
+        assert!(matches!(
+            &end.pending[0],
+            IoRequest::CallService { key: None, .. }
+        ));
+    }
+
+    #[test]
+    fn control_an_unkeyed_ask_after_keyed_ones_is_withheld_and_not_recorded() {
+        let port = port();
+        let (out, end) = port.run_step(Vec::new(), || {
+            (
+                call_keyed(&port, "a"),
+                call_unkeyed(&port),
+                call_keyed(&port, "b"),
+            )
+        });
+        assert_eq!(out.0, Ok(Value::Null));
+        assert_eq!(out.1, Err(AWAITING_HOST.to_string()));
+        assert_eq!(out.2, Err(AWAITING_HOST.to_string()));
+        assert_eq!(end.pending.as_slice(), vec![keyed("a")].as_slice());
+    }
+
+    #[test]
+    fn a_keyed_call_is_served_its_answer_by_key_whatever_order_the_journal_holds() {
+        let port = port();
+        let expected = (Ok(Value::String("A".into())), Ok(Value::String("B".into())));
+        for journal in [
+            vec![answered("a", "A"), answered("b", "B")],
+            vec![answered("b", "B"), answered("a", "A")],
+        ] {
+            let (out, end) =
+                port.run_step(journal, || (call_keyed(&port, "a"), call_keyed(&port, "b")));
+            assert_eq!(out, expected);
+            assert!(end.pending.is_empty() && end.diverged.is_none());
+        }
+    }
+
+    #[test]
+    fn control_a_keyed_call_whose_request_changed_since_it_was_recorded_diverges() {
+        let port = port();
+        let (_, end) = port.run_step(vec![answered("a", "A")], || {
+            port.call("svc", "go", &Value::Bool(true), Some("a"), None)
+        });
+        assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
+        let (_, end) = port.run_step(vec![answered("a", "A")], || call_keyed(&port, "b"));
+        assert!(end.diverged.is_none());
+        assert_eq!(end.pending.as_slice(), vec![keyed("b")].as_slice());
+    }
+
+    #[test]
+    fn a_key_used_twice_in_one_step_is_a_visible_error_and_the_first_call_stands() {
+        let port = port();
+        let (out, end) = port.run_step(Vec::new(), || {
+            (call_keyed(&port, "a"), call_keyed(&port, "a"))
+        });
+        assert_eq!(out.0, Ok(Value::Null));
+        assert!(
+            out.1
+                .as_ref()
+                .is_err_and(|e| e.contains("already used by another call")),
+            "{:?}",
+            out.1
+        );
+        assert_eq!(end.pending.as_slice(), vec![keyed("a")].as_slice());
+        let (out, end) = port.run_step(vec![answered("a", "A")], || {
+            (call_keyed(&port, "a"), call_keyed(&port, "a"))
+        });
+        assert_eq!(out.0, Ok(Value::String("A".into())));
+        assert!(
+            out.1
+                .as_ref()
+                .is_err_and(|e| e.contains("already used by another call")),
+            "{:?}",
+            out.1
+        );
+        assert!(end.pending.is_empty());
+    }
+
+    #[test]
+    fn cancelling_a_pending_keyed_call_removes_only_that_request_and_the_cancel_asks_nothing() {
+        let port = port();
+        let (out, end) = port.run_step(Vec::new(), || {
+            let _ = call_keyed(&port, "a");
+            let _ = call_keyed(&port, "b");
+            let _ = call_keyed(&port, "c");
+            port.cancel("b")
+        });
+        assert_eq!(out, Ok(()));
+        assert_eq!(end.pending.as_slice(), vec![keyed("a"), keyed("c")].as_slice());
+    }
+
+    #[test]
+    fn control_cancelling_a_key_that_is_not_pending_in_the_step_is_an_ask_of_its_own() {
+        let port = port();
+        let (out, end) = port.run_step(Vec::new(), || {
+            let _ = call_keyed(&port, "a");
+            port.cancel("zzz")
+        });
+        assert_eq!(out, Err(AWAITING_HOST.to_string()));
+        assert_eq!(end.pending.as_slice(), vec![keyed("a")].as_slice());
+        let (out, end) = port.run_step(Vec::new(), || port.cancel("zzz"));
+        assert_eq!(out, Err(AWAITING_HOST.to_string()));
+        assert_eq!(
+            end.pending.as_slice(),
+            [IoRequest::CancelCall { key: "zzz".into() }]
+        );
+    }
+
+    #[test]
+    fn a_cancelled_call_replays_without_diverging_from_the_answers_of_the_others() {
+        let port = port();
+        let (out, end) = port.run_step(vec![answered("b", "B")], || {
+            let _ = call_keyed(&port, "a");
+            let kept = call_keyed(&port, "b");
+            (kept, port.cancel("a"))
+        });
+        assert_eq!(out, (Ok(Value::String("B".into())), Ok(())));
+        assert!(end.pending.is_empty() && end.diverged.is_none());
+    }
+
+    #[test]
+    fn replies_in_any_order_become_the_same_exchanges_in_issue_order() {
+        let pending: Vec<PendingRequest> = ["a", "b", "c"]
+            .iter()
+            .enumerate()
+            .map(|(i, key)| PendingRequest {
+                id: RequestId::from_raw(i as u64),
+                request: keyed(key),
+            })
+            .collect();
+        let reply = |i: u64| IoReply {
+            id: RequestId::from_raw(i),
+            answer: IoAnswer::Service(Ok(Value::Number(i as f64))),
+        };
+        let in_order = accept_replies(&pending, vec![reply(0), reply(1), reply(2)]).unwrap();
+        for order in [[2, 1, 0], [1, 2, 0], [0, 2, 1], [2, 0, 1], [1, 0, 2]] {
+            let got = accept_replies(&pending, order.iter().map(|i| reply(*i)).collect()).unwrap();
+            assert_eq!(got.len(), in_order.len());
+            for (g, e) in got.iter().zip(&in_order) {
+                assert!(g.request == e.request && g.answer == e.answer);
+            }
+        }
+    }
+
+    #[test]
+    fn replies_that_do_not_fit_the_pending_requests_are_refused_by_kind() {
+        let pending: Vec<PendingRequest> = ["a", "b"]
+            .iter()
+            .enumerate()
+            .map(|(i, key)| PendingRequest {
+                id: RequestId::from_raw(i as u64),
+                request: keyed(key),
+            })
+            .collect();
+        let reply = |i: u64| IoReply {
+            id: RequestId::from_raw(i),
+            answer: IoAnswer::Service(Ok(Value::Null)),
+        };
+        assert!(
+            matches!(accept_replies(&pending, vec![reply(1)]), Err(ResumeError::Unanswered(id)) if id.raw() == 0)
+        );
+        assert!(
+            matches!(accept_replies(&pending, vec![reply(0), reply(1), reply(7)]), Err(ResumeError::Unknown(id)) if id.raw() == 7)
+        );
+        assert!(
+            matches!(accept_replies(&pending, vec![reply(0), reply(0), reply(1)]), Err(ResumeError::Duplicate(id)) if id.raw() == 0)
+        );
+        assert!(accept_replies(&pending, vec![reply(1), reply(0)]).is_ok());
     }
 }

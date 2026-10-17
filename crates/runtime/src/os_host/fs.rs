@@ -1,19 +1,27 @@
 //! The `fs` family: files, descriptors, directories, stat, path effects and file watching.
 
 use super::{HandleSlab, IdCounter, OsHost};
-use orbital_core_base::value::Value;
-use orbital_core_base::os::{OsError, OsOp};
 use crate::resumable::CallSite;
+use orbital_core_base::os::{OsError, OsOp};
+use orbital_core_base::value::Value;
 use parking_lot::Mutex;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// What a descriptor id names: a file, or the end of a pipe to a spawned child (registered by `process`).
 #[allow(dead_code)]
 pub(super) enum FdEntry {
     File(std::fs::File),
-    ChildStdin(std::process::ChildStdin),
-    ChildStdout(std::process::ChildStdout),
-    ChildStderr(std::process::ChildStderr),
+    ChildStdin(Arc<Mutex<std::process::ChildStdin>>),
+    ChildStdout(Arc<Mutex<std::process::ChildStdout>>),
+    ChildStderr(Arc<Mutex<std::process::ChildStderr>>),
+}
+
+/// A pipe end cloned out of the table, so a blocking pipe call never holds the table lock.
+enum PipeEnd {
+    Stdin(Arc<Mutex<std::process::ChildStdin>>),
+    Stdout(Arc<Mutex<std::process::ChildStdout>>),
+    Stderr(Arc<Mutex<std::process::ChildStderr>>),
 }
 
 /// Open descriptors and the virtual working directory; ids come from the counter shared with the net table,
@@ -67,10 +75,10 @@ pub(super) fn answer(
 mod ops {
     use super::super::args::{arg_bool, arg_bytes, arg_i64, arg_opt, arg_str, bytes_value};
     use super::super::{OsHost, FIRST_HANDLE_ID};
-    use super::FdEntry;
-    use orbital_core_base::value::{Value, ValueMap};
+    use super::{FdEntry, PipeEnd};
     use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
     use orbital_core_base::os_grants::{FsGrant, FsMode, OsGrants};
+    use orbital_core_base::value::{Value, ValueMap};
     use std::collections::VecDeque;
     use std::ffi::{CString, OsString};
     use std::fs;
@@ -79,6 +87,7 @@ mod ops {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::path::{Component, Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     const MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -595,22 +604,24 @@ mod ops {
                     )
                 })?;
             let mut buf = Vec::new();
-            self.with_fd(fd, |entry| match entry {
+            let pipe = self.with_fd(fd, |entry| match entry {
                 FdEntry::File(file) => file
                     .take(count)
                     .read_to_end(&mut buf)
-                    .map(|_| ())
+                    .map(|_| None)
                     .map_err(|e| self.fd_io(&e)),
-                FdEntry::ChildStdout(pipe) => {
-                    pipe_read(pipe, count, &mut buf).map_err(|e| self.fd_io(&e))
-                }
-                FdEntry::ChildStderr(pipe) => {
-                    pipe_read(pipe, count, &mut buf).map_err(|e| self.fd_io(&e))
-                }
+                FdEntry::ChildStdout(pipe) => Ok(Some(PipeEnd::Stdout(Arc::clone(pipe)))),
+                FdEntry::ChildStderr(pipe) => Ok(Some(PipeEnd::Stderr(Arc::clone(pipe)))),
                 FdEntry::ChildStdin(_) => {
                     Err(self.err(OsErrorKind::Invalid, format!("fd {fd} is write-only")))
                 }
             })?;
+            match pipe {
+                Some(PipeEnd::Stdout(pipe)) => pipe_read(&mut *pipe.lock(), count, &mut buf),
+                Some(PipeEnd::Stderr(pipe)) => pipe_read(&mut *pipe.lock(), count, &mut buf),
+                _ => Ok(()),
+            }
+            .map_err(|e| self.fd_io(&e))?;
             let eof = count > 0 && buf.is_empty();
             Ok(obj([
                 ("data", bytes_value(&buf)),
@@ -621,14 +632,20 @@ mod ops {
         fn write(&self, args: &[Value]) -> Result<Value, OsError> {
             let fd = self.fd_arg(args, 0)?;
             let data = arg_bytes(args, 1, self.op)?;
-            self.with_fd(fd, |entry| match entry {
-                FdEntry::File(file) => file.write_all(&data).map_err(|e| self.fd_io(&e)),
-                FdEntry::ChildStdin(pipe) => pipe
+            let pipe = self.with_fd(fd, |entry| match entry {
+                FdEntry::File(file) => file
                     .write_all(&data)
-                    .and_then(|_| pipe.flush())
+                    .map(|_| None)
                     .map_err(|e| self.fd_io(&e)),
+                FdEntry::ChildStdin(pipe) => Ok(Some(PipeEnd::Stdin(Arc::clone(pipe)))),
                 _ => Err(self.err(OsErrorKind::Invalid, format!("fd {fd} is read-only"))),
             })?;
+            if let Some(PipeEnd::Stdin(pipe)) = pipe {
+                let mut pipe = pipe.lock();
+                pipe.write_all(&data)
+                    .and_then(|_| pipe.flush())
+                    .map_err(|e| self.fd_io(&e))?;
+            }
             Ok(obj([("bytes", num(data.len() as u64))]))
         }
 
@@ -743,6 +760,18 @@ mod ops {
             Ok(obj([]))
         }
 
+        fn require_tree_removable(&self, dir: &Path) -> Result<(), OsError> {
+            for entry in fs::read_dir(dir).map_err(|e| self.io(dir, &e))? {
+                let entry = entry.map_err(|e| self.io(dir, &e))?;
+                let path = entry.path();
+                self.allow(&path, FsMode::Remove)?;
+                if entry.file_type().map_err(|e| self.io(&path, &e))?.is_dir() {
+                    self.require_tree_removable(&path)?;
+                }
+            }
+            Ok(())
+        }
+
         fn rmdir(&self, args: &[Value]) -> Result<Value, OsError> {
             let path = self.path(arg_str(args, 0, self.op)?, FsMode::Remove, false)?;
             let recursive = match arg_opt(args, 1) {
@@ -757,6 +786,7 @@ mod ops {
                 ));
             }
             if recursive {
+                self.require_tree_removable(&path)?;
                 fs::remove_dir_all(&path)
             } else {
                 fs::remove_dir(&path)
@@ -1050,9 +1080,9 @@ mod tests {
     use super::super::args::bytes_value;
     use super::super::{OsHandles, OsHost};
     use super::*;
-    use orbital_core_base::value::ValueMap;
     use orbital_core_base::os::OsErrorKind;
     use orbital_core_base::os_grants::{FsGrant, FsMode, OsGrants};
+    use orbital_core_base::value::ValueMap;
     use std::fs;
     use std::os::unix::fs::symlink;
     use std::path::Path;
@@ -1448,6 +1478,58 @@ mod tests {
             fx.kind(OsOp::Copy, vec![fx.s("gone"), fx.s("z")]),
             OsErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn recursive_rmdir_needs_the_remove_grant_on_every_entry_and_never_follows_links() {
+        let fx = Fx::new().with_grants(|root| {
+            vec![
+                grant(format!("{}/d", root.display()), &[FsMode::Remove]),
+                grant(format!("{}/ok/**", root.display()), &[FsMode::Remove]),
+                grant(format!("{}/ok", root.display()), &[FsMode::Remove]),
+            ]
+        });
+        fs::create_dir(fx.p("d")).expect("dir");
+        write(&fx.p("d/x"), b"keep");
+        assert_eq!(
+            fx.kind(OsOp::Rmdir, vec![fx.s("d"), Value::Bool(true)]),
+            OsErrorKind::Denied
+        );
+        assert_eq!(fs::read(fx.p("d/x")).expect("kept"), b"keep");
+
+        let outside = tempfile::tempdir().expect("outside");
+        write(&outside.path().join("secret"), b"s");
+        fs::create_dir(fx.p("ok")).expect("dir");
+        symlink(outside.path(), fx.p("ok/link")).expect("link");
+        fx.ok(OsOp::Rmdir, vec![fx.s("ok"), Value::Bool(true)]);
+        assert!(!fx.p("ok").exists());
+        assert!(outside.path().join("secret").exists());
+    }
+
+    #[test]
+    fn a_blocking_pipe_read_does_not_hold_the_descriptor_table() {
+        let fx = Fx::new();
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 2; printf hi"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        let out = child.stdout.take().expect("stdout");
+        let fd = fx
+            .handles
+            .fs
+            .fds
+            .insert(FdEntry::ChildStdout(Arc::new(Mutex::new(out))));
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| fx.ok(OsOp::Read, vec![n(fd), n(16)]));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let started = std::time::Instant::now();
+            assert!(fx.handles.fs.fds.contains(fd));
+            assert!(started.elapsed() < std::time::Duration::from_millis(1000));
+            let read = reader.join().expect("reader");
+            assert_eq!(data_of(&read), b"hi");
+        });
+        child.wait().expect("wait");
     }
 
     #[test]
@@ -1879,10 +1961,7 @@ mod tests {
         );
         assert_eq!(fs::read(fx.p("f")).expect("read"), b"keep");
         assert!(!fx.p("g").exists());
-        assert_eq!(
-            fx.p("f").metadata().expect("meta").permissions().mode() & 0o777 != 0,
-            true
-        );
+        assert!(fx.p("f").metadata().expect("meta").permissions().mode() & 0o777 != 0);
     }
 
     use std::os::unix::fs::PermissionsExt;

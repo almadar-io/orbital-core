@@ -55,6 +55,9 @@ pub struct OirModule {
     /// The program's `egress` origins: the only hosts its `http` effects may reach.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub egress: Vec<String>,
+    /// The program's declared inbound handlers: the `/api/hooks/<name>` deliveries it serves.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub inbound: Vec<crate::inbound::InboundRoute>,
     /// The program's `os/` grants (closed by default): what its `os/` effects may touch.
     #[serde(skip_serializing_if = "crate::os_grants::OsGrants::is_empty", default)]
     pub os_grants: crate::os_grants::OsGrants,
@@ -136,6 +139,7 @@ impl OirModule {
             services: vec![],
             browser_services: vec![],
             egress: vec![],
+            inbound: vec![],
             os_grants: Default::default(),
             expected_entities: vec![],
             locales: vec![],

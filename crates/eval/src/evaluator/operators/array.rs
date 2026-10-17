@@ -1,24 +1,39 @@
 //! Array operators.
 
-use orbital_core_base::value::ValueMap;
 use super::macros::*;
 use super::*;
+use orbital_core_base::value::ValueMap;
 
 /// The numbers `array/max` / `array/min` fold: each element (or its `args[1]` field)
 /// read through `Value::to_number`; an element or field that yields none is skipped.
-fn numbers_of(args: &[SExpression], ctx: &BindingContext, op: &str) -> Result<Vec<f64>, OrbitalError> {
+fn numbers_of(
+    args: &[SExpression],
+    ctx: &BindingContext,
+    op: &str,
+) -> Result<Vec<f64>, OrbitalError> {
     let arr = eval_expr(&args[0], ctx)?;
     let array = require_array!(arr);
     let key = match args.get(1) {
-        Some(k) => Some(eval_expr(k, ctx)?.as_str().map(str::to_string).ok_or_else(|| {
-            OrbitalError::Eval(EvalError::TypeMismatch { expected: "string".to_string(), actual: format!("{op} field") })
-        })?),
+        Some(k) => Some(
+            eval_expr(k, ctx)?
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    OrbitalError::Eval(EvalError::TypeMismatch {
+                        expected: "string".to_string(),
+                        actual: format!("{op} field"),
+                    })
+                })?,
+        ),
         None => None,
     };
     Ok(array
         .iter()
         .filter_map(|item| match &key {
-            Some(k) => item.as_object().and_then(|o| o.get(k)).and_then(Value::to_number),
+            Some(k) => item
+                .as_object()
+                .and_then(|o| o.get(k))
+                .and_then(Value::to_number),
             None => item.to_number(),
         })
         .collect())
@@ -445,13 +460,21 @@ impl Operator for ArraySortOp {
 
         let field = |v: &Value| -> Value {
             match &key {
-                Some(k) => v.as_object().and_then(|o| o.get(k)).cloned().unwrap_or(Value::Null),
+                Some(k) => v
+                    .as_object()
+                    .and_then(|o| o.get(k))
+                    .cloned()
+                    .unwrap_or(Value::Null),
                 None => v.clone(),
             }
         };
         array.sort_by(|a, b| {
             let ord = sort_order(&field(a), &field(b));
-            if ascending { ord } else { ord.reverse() }
+            if ascending {
+                ord
+            } else {
+                ord.reverse()
+            }
         });
 
         Ok(Value::Array(array))
@@ -751,7 +774,10 @@ impl Operator for ArrayGroupByOp {
                 groups.entry(key).or_default().push(item);
             }
             return Ok(Value::Object(
-                groups.into_iter().map(|(k, v)| (k, Value::Array(v))).collect(),
+                groups
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::Array(v)))
+                    .collect(),
             ));
         }
 
@@ -1060,7 +1086,10 @@ impl Operator for ArrayMaxOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/max", 1);
         let numbers = numbers_of(args, ctx, "array/max")?;
-        Ok(numbers.into_iter().reduce(f64::max).map_or(Value::Null, Value::Number))
+        Ok(numbers
+            .into_iter()
+            .reduce(f64::max)
+            .map_or(Value::Null, Value::Number))
     }
 }
 
@@ -1070,7 +1099,10 @@ impl Operator for ArrayMinOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/min", 1);
         let numbers = numbers_of(args, ctx, "array/min")?;
-        Ok(numbers.into_iter().reduce(f64::min).map_or(Value::Null, Value::Number))
+        Ok(numbers
+            .into_iter()
+            .reduce(f64::min)
+            .map_or(Value::Null, Value::Number))
     }
 }
 
@@ -1224,8 +1256,8 @@ impl Operator for ArrayNearestOp {
 
 #[cfg(test)]
 mod sort_tests {
-    use {crate::evaluator::context::BindingContextBuilder, crate::evaluator::Evaluator};
     use serde_json::json;
+    use {crate::evaluator::context::BindingContextBuilder, crate::evaluator::Evaluator};
 
     fn sort(args: serde_json::Value) -> Result<serde_json::Value, String> {
         let ctx = BindingContextBuilder::new().build();
@@ -1238,15 +1270,30 @@ mod sort_tests {
 
     #[test]
     fn sort_numbers_asc_desc() {
-        assert_eq!(sort(json!(["array/sort", [3, 1, 2]])).unwrap(), json!([1.0, 2.0, 3.0]));
-        assert_eq!(sort(json!(["array/sort", [3, 1, 2], null, "desc"])).unwrap(), json!([3.0, 2.0, 1.0]));
-        assert_eq!(sort(json!(["array/sort", [3, 1, 2], null, "asc"])).unwrap(), json!([1.0, 2.0, 3.0]));
+        assert_eq!(
+            sort(json!(["array/sort", [3, 1, 2]])).unwrap(),
+            json!([1.0, 2.0, 3.0])
+        );
+        assert_eq!(
+            sort(json!(["array/sort", [3, 1, 2], null, "desc"])).unwrap(),
+            json!([3.0, 2.0, 1.0])
+        );
+        assert_eq!(
+            sort(json!(["array/sort", [3, 1, 2], null, "asc"])).unwrap(),
+            json!([1.0, 2.0, 3.0])
+        );
     }
 
     #[test]
     fn sort_strings_by_code_point() {
-        assert_eq!(sort(json!(["array/sort", ["b", "a", "B", "é"]])).unwrap(), json!(["B", "a", "b", "é"]));
-        assert_eq!(sort(json!(["array/sort", ["b", "a", "B", "é"], null, "desc"])).unwrap(), json!(["é", "b", "a", "B"]));
+        assert_eq!(
+            sort(json!(["array/sort", ["b", "a", "B", "é"]])).unwrap(),
+            json!(["B", "a", "b", "é"])
+        );
+        assert_eq!(
+            sort(json!(["array/sort", ["b", "a", "B", "é"], null, "desc"])).unwrap(),
+            json!(["é", "b", "a", "B"])
+        );
     }
 
     #[test]
@@ -1261,12 +1308,16 @@ mod sort_tests {
             json!([{"price": 3.0}, {"price": 5.0}, {"price": 9.0}])
         );
         // a direction word in the key slot is a key, never a direction
-        assert_eq!(sort(json!(["array/sort", [3, 1, 2], "asc"])).unwrap(), json!([3.0, 1.0, 2.0]));
+        assert_eq!(
+            sort(json!(["array/sort", [3, 1, 2], "asc"])).unwrap(),
+            json!([3.0, 1.0, 2.0])
+        );
     }
 
     #[test]
     fn sort_equal_keys_keep_input_order_both_directions() {
-        let rows = json!([{"k": 1, "i": "a"}, {"k": 0, "i": "b"}, {"k": 1, "i": "c"}, {"k": 1, "i": "d"}]);
+        let rows =
+            json!([{"k": 1, "i": "a"}, {"k": 0, "i": "b"}, {"k": 1, "i": "c"}, {"k": 1, "i": "d"}]);
         assert_eq!(
             sort(json!(["array/sort", rows, "k", "desc"])).unwrap(),
             json!([{"k": 1.0, "i": "a"}, {"k": 1.0, "i": "c"}, {"k": 1.0, "i": "d"}, {"k": 0.0, "i": "b"}])
@@ -1279,14 +1330,31 @@ mod sort_tests {
 
     #[test]
     fn sort_unknown_direction_is_descending() {
-        assert_eq!(sort(json!(["array/sort", [1, 3, 2], null, "bogus"])).unwrap(), json!([3.0, 2.0, 1.0]));
+        assert_eq!(
+            sort(json!(["array/sort", [1, 3, 2], null, "bogus"])).unwrap(),
+            json!([3.0, 2.0, 1.0])
+        );
     }
 
     #[test]
     fn sort_missing_and_null_keys_keep_every_row() {
         let rows = json!([{"k": 2}, {}, {"k": 1}, {"k": null}]);
-        assert_eq!(sort(json!(["array/sort", rows, "k"])).unwrap().as_array().unwrap().len(), 4);
-        assert_eq!(sort(json!(["array/sort", rows, "k", "desc"])).unwrap().as_array().unwrap().len(), 4);
+        assert_eq!(
+            sort(json!(["array/sort", rows, "k"]))
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert_eq!(
+            sort(json!(["array/sort", rows, "k", "desc"]))
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
         assert_eq!(
             sort(json!(["array/sort", [{"k": 2}, {"k": null}, {"k": 1}], "k"])).unwrap(),
             json!([{"k": null}, {"k": 1.0}, {"k": 2.0}])
@@ -1302,22 +1370,26 @@ mod sort_tests {
     }
 
     #[test]
-    fn sort_mixed_types_follow_the_type_rank() {
+    fn sort_refuses_a_list_of_unlike_element_types() {
         let mixed = json!([2, "a", true, 1, null, [1], "B", {"x": 1}, false]);
-        assert_eq!(
-            sort(json!(["array/sort", mixed])).unwrap(),
-            json!([null, false, true, 1.0, 2.0, "B", "a", [1.0], {"x": 1.0}])
-        );
-        assert_eq!(
-            sort(json!(["array/sort", mixed, null, "desc"])).unwrap(),
-            json!([{"x": 1.0}, [1.0], "a", "B", 2.0, 1.0, true, false, null])
-        );
+        let message = "Evaluation error: Type mismatch: expected number, got string";
+        assert_eq!(sort(json!(["array/sort", mixed])).unwrap_err(), message);
+        assert_eq!(sort(json!(["array/sort", mixed, null, "desc"])).unwrap_err(), message);
+    }
+
+    #[test]
+    fn sort_places_null_first_within_one_element_type() {
+        assert_eq!(sort(json!(["array/sort", [2, null, 1]])).unwrap(), json!([null, 1.0, 2.0]));
+        assert_eq!(sort(json!(["array/sort", [false, null, true]])).unwrap(), json!([null, false, true]));
     }
 
     #[test]
     fn sort_empty_and_null() {
         assert_eq!(sort(json!(["array/sort", []])).unwrap(), json!([]));
-        assert_eq!(sort(json!(["array/sort", [], "k", "desc"])).unwrap(), json!([]));
+        assert_eq!(
+            sort(json!(["array/sort", [], "k", "desc"])).unwrap(),
+            json!([])
+        );
         assert!(sort(json!(["array/sort", null])).is_err());
     }
 }

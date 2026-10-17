@@ -802,6 +802,24 @@ mod oauth {
     }
 
     #[test]
+    fn the_pending_grant_and_the_connection_live_in_the_callers_credentials() {
+        use orbital_core_runtime::http_service::SecretSource;
+        let host = Host::new();
+        let (_, state) = started(&host, "u1");
+        let credentials = host.store.credentials();
+        let grant = format!("oauth:grant:{state}");
+        let held = credentials.secret_of(&grant, None).unwrap().expect("the grant is one app slot keyed by state");
+        assert!(held.contains("\"subject\":\"u1\""), "the authorizing subject travels inside the record");
+        assert_eq!(credentials.secret_of(&grant, Some("u1")), Ok(None));
+        host.run(token_call("connect", "google", &state), user("u1"));
+        assert_eq!(credentials.secret_of(&grant, None), Ok(None), "the grant is consumed");
+        let held = credentials.secret_of("oauth:connection:google", Some("u1")).unwrap().expect("connection kept");
+        assert!(held.contains("AT-SECRET"), "the tokens stay with the credential");
+        assert_eq!(credentials.secret_of("oauth:connection:google", Some("u2")), Ok(None));
+        assert_eq!(credentials.secret_of("oauth:connection:google", None), Ok(None));
+    }
+
+    #[test]
     fn authorize_then_connect_keeps_the_grant_with_the_host_and_shows_the_program_only_the_row() {
         let host = Host::new();
         let (auth_url, state) = started(&host, "u1");
@@ -1240,3 +1258,181 @@ mod oauth {
     }
 }
 
+
+mod os_deferred {
+    use super::*;
+    use orbital_core_base::os::OsOp;
+
+    fn keyed_wait() -> Json {
+        json!(["os/wait", 7, { "key": "k", "emit": { "success": "OK", "failure": "BAD" } }])
+    }
+
+    #[test]
+    fn a_keyed_wait_answered_deferred_commits_the_step_and_fires_no_route() {
+        let (response, seen) = run(keyed_wait(), go(None), |_| IoAnswer::ServiceDeferred);
+        assert_eq!(seen.len(), 1);
+        let IoRequest::Os { op, key, site, .. } = &seen[0] else { panic!("an os ask") };
+        assert_eq!((*op, key.as_deref()), (OsOp::Wait, Some("k")));
+        let site = site.as_ref().expect("a deferrable wait carries its call site");
+        assert_eq!(site.trait_name, "Host");
+        assert_eq!(site.emit.success.as_deref(), Some("OK"));
+        assert_eq!(site.emit.failure.as_deref(), Some("BAD"));
+        assert!(response.success);
+        assert!(emitted(&response).iter().all(|(event, _)| *event != "OK" && *event != "BAD"), "{:?}", emitted(&response));
+    }
+
+    #[test]
+    fn control_the_same_keyed_wait_answered_with_a_result_fires_the_success_route_unchanged() {
+        let (response, _) = run(keyed_wait(), go(None), |_| {
+            IoAnswer::Os(Ok(serde_json::from_value(json!({ "code": 0 })).unwrap()))
+        });
+        assert_eq!(payload_of(&response, "OK"), json!({ "code": 0.0 }));
+    }
+
+    #[test]
+    fn an_unkeyed_wait_answered_deferred_is_a_refused_resume_not_a_silent_success() {
+        let server = EmbeddedServer::new(schema(json!(["os/wait", 7, routes()]))).unwrap();
+        let mut progress = server.start("Main", go(None)).unwrap();
+        loop {
+            let ServerProgress::Await { flight, requests } = progress else { panic!("the wait never asked") };
+            let asked_os = requests.iter().any(|pending| matches!(pending.request, IoRequest::Os { .. }));
+            if asked_os {
+                assert!(requests.iter().all(|pending| !matches!(&pending.request, IoRequest::Os { key: Some(_), .. })));
+            }
+            let replies = requests
+                .into_iter()
+                .map(|pending| IoReply {
+                    id: pending.id,
+                    answer: match pending.request {
+                        IoRequest::Os { .. } => IoAnswer::ServiceDeferred,
+                        _ => IoAnswer::Row(Err("no row".to_string())),
+                    },
+                })
+                .collect();
+            let resumed = server.resume(flight, replies);
+            if asked_os {
+                assert!(resumed.is_err(), "an unkeyed ask has nothing to complete into");
+                return;
+            }
+            progress = resumed.unwrap();
+        }
+    }
+}
+
+#[cfg(unix)]
+mod os_completion {
+    use super::*;
+    use orbital_core_base::effect_types::RuntimeEnvironment;
+    use orbital_core_base::os_grants::OsGrants;
+    use orbital_core_runtime::config::KernelConfig;
+    use orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache};
+    use orbital_core_runtime::kernel::RuntimeKernel;
+    use orbital_core_runtime::os_host::completion::{CompletionAnswerer, CompletionDone, KernelCompletionSink};
+    use orbital_core_runtime::os_host::{answer_os, OsHandles, OsHost};
+    use orbital_core_runtime::resumable::{BlockingHost, CallSite, DispatchError, DispatchOutcomes};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::Duration;
+
+    fn supervisor(child_script: &str) -> OrbitalSchema {
+        serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "code", "type": "number" },
+                    { "name": "key", "type": "string" }
+                ] },
+                "traits": [{ "name": "Sup", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [
+                            { "name": "idle", "isInitial": true }, { "name": "spawning" },
+                            { "name": "waiting" }, { "name": "recorded" }, { "name": "failed" }
+                        ],
+                        "transitions": [
+                            { "from": "idle", "to": "spawning", "event": "GO", "effects": [
+                                ["os/spawn", "/bin/sh", ["-c", child_script], { "stdin": "null" },
+                                    { "emit": { "success": "SPAWNED", "failure": "SPAWN_BAD" } }]
+                            ] },
+                            { "from": "spawning", "to": "waiting", "event": "SPAWNED", "effects": [
+                                ["os/wait", "@payload.pid", { "key": "child",
+                                    "emit": { "success": "CHILD_EXITED", "failure": "CHILD_WAIT_FAILED" } }]
+                            ] },
+                            { "from": "waiting", "to": "recorded", "event": "CHILD_EXITED", "effects": [
+                                ["set", "@entity.code", "@payload.code"],
+                                ["set", "@entity.key", "@payload.key"]
+                            ] },
+                            { "from": "waiting", "to": "failed", "event": "CHILD_WAIT_FAILED" }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    struct Wired {
+        kernel: Arc<RuntimeKernel>,
+        sink: Arc<KernelCompletionSink>,
+        handles: Arc<OsHandles>,
+        done: mpsc::Receiver<(String, Result<usize, String>)>,
+    }
+
+    fn wired(child_script: &str) -> Wired {
+        let store: Arc<dyn EntitySource> = Arc::new(InMemoryEntityCache::new());
+        let kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), KernelConfig::default()));
+        kernel.register_schema(supervisor(child_script)).unwrap();
+        let handles = Arc::new(OsHandles::default());
+        let grants = Arc::new(OsGrants { exec: vec!["/bin/sh".to_string()], ..OsGrants::default() });
+        let answer: Arc<CompletionAnswerer> = {
+            let (handles, grants) = (handles.clone(), grants.clone());
+            Arc::new(move |request: &IoRequest| match request {
+                IoRequest::Os { .. } => {
+                    let on_event = |_: Option<&CallSite>, _: Value| {};
+                    answer_os(Some(&OsHost { grants: &grants, handles: &handles, on_event: &on_event }), request)
+                }
+                other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
+            })
+        };
+        let (tx, done) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let on_done: Arc<CompletionDone> = Arc::new(
+            move |_site: &CallSite, event: &str, result: Result<DispatchOutcomes, DispatchError>| {
+                let summary = result.map(|outcomes| outcomes.len()).map_err(|error| error.to_string());
+                let _ = tx.lock().unwrap().send((event.to_string(), summary));
+            },
+        );
+        let sink = Arc::new(KernelCompletionSink::new(kernel.clone(), answer, on_done));
+        handles.completions.set_sink(sink.clone());
+        Wired { kernel, sink, handles, done }
+    }
+
+    fn go_sup(wired: &Wired) {
+        let progress = wired.kernel.start_dispatch("Sup", None, "GO", Value::Null, None, None).unwrap();
+        wired.sink.drive(progress).unwrap();
+    }
+
+    #[test]
+    fn a_deferred_wait_dispatches_the_child_exit_through_the_kernel_sink_into_a_second_transition() {
+        let wired = wired("exit 3");
+        go_sup(&wired);
+        let (event, summary) = wired.done.recv_timeout(Duration::from_secs(10)).expect("one completion dispatch");
+        assert_eq!(event, "CHILD_EXITED");
+        assert!(summary.is_ok(), "{summary:?}");
+        let held = wired.kernel.snapshot_trait("Sup", None);
+        assert_eq!(held.state, "recorded");
+        assert_eq!(held.entity.get_path("code"), Some(&Value::Number(3.0)));
+        assert_eq!(held.entity.get_path("key"), Some(&Value::String("child".to_string())));
+        assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "exactly one completion");
+    }
+
+    #[test]
+    fn cancelling_the_key_before_the_child_ends_dispatches_no_completion_and_the_trait_keeps_waiting() {
+        let wired = wired("sleep 30");
+        go_sup(&wired);
+        assert_eq!(wired.kernel.snapshot_trait("Sup", None).state, "waiting");
+        assert!(wired.handles.cancel_completion("child"));
+        wired.handles.close_all();
+        assert!(wired.done.recv_timeout(Duration::from_millis(500)).is_err(), "a cancelled key completed");
+        assert_eq!(wired.kernel.snapshot_trait("Sup", None).state, "waiting");
+    }
+}

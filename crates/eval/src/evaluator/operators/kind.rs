@@ -11,7 +11,6 @@
 use super::Operator;
 use crate::evaluator::context::BindingContext;
 use crate::evaluator::operators::*;
-use crate::oal;
 use orbital_core_base::schema::sexpr::SExpression;
 
 /// Generates the `OperatorKind` enum and its `evaluate` dispatch from a list of
@@ -149,30 +148,6 @@ operator_kind! {
     NeOp => NeOp,
     NotOp => NotOp,
     NthOp => NthOp,
-    OalAcPowerOp => oal::OalAcPowerOp,
-    OalBatteryStatusOp => oal::OalBatteryStatusOp,
-    OalBrightnessGetOp => oal::OalBrightnessGetOp,
-    OalBrightnessSetOp => oal::OalBrightnessSetOp,
-    OalCpuUsageOp => oal::OalCpuUsageOp,
-    OalDefaultGatewayOp => oal::OalDefaultGatewayOp,
-    OalDiskIoOp => oal::OalDiskIoOp,
-    OalDiskUsageOp => oal::OalDiskUsageOp,
-    OalHibernateOp => oal::OalHibernateOp,
-    OalHostnameOp => oal::OalHostnameOp,
-    OalLoadAvgOp => oal::OalLoadAvgOp,
-    OalMemoryInfoOp => oal::OalMemoryInfoOp,
-    OalMountsOp => oal::OalMountsOp,
-    OalNetworkConnectedOp => oal::OalNetworkConnectedOp,
-    OalNetworkInterfacesOp => oal::OalNetworkInterfacesOp,
-    OalNetworkStatsOp => oal::OalNetworkStatsOp,
-    OalNotifyOp => oal::OalNotifyOp,
-    OalSpeakOp => oal::OalSpeakOp,
-    OalSuspendOp => oal::OalSuspendOp,
-    OalThermalZonesOp => oal::OalThermalZonesOp,
-    OalUptimeOp => oal::OalUptimeOp,
-    OalVolumeGetOp => oal::OalVolumeGetOp,
-    OalVolumeMuteOp => oal::OalVolumeMuteOp,
-    OalVolumeSetOp => oal::OalVolumeSetOp,
     ObjectCloneOp => ObjectCloneOp,
     ObjectDeepCloneOp => ObjectDeepCloneOp,
     ObjectDeepMergeOp => ObjectDeepMergeOp,
@@ -207,6 +182,7 @@ operator_kind! {
     StrPadStartOp => StrPadStartOp,
     StrRepeatOp => StrRepeatOp,
     StrReplaceAllOp => StrReplaceAllOp,
+    StrReplacePatternOp => StrReplacePatternOp,
     StrReplaceOp => StrReplaceOp,
     StrReverseOp => StrReverseOp,
     StrEncodeUriComponentOp => StrEncodeUriComponentOp,

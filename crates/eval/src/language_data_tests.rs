@@ -1,22 +1,19 @@
 #[allow(unused_imports)]
-use orbital_core_base::language_data::*;
+use crate::language_loader::install_language_bundle;
 #[allow(unused_imports)]
-use crate::language_loader::install_evaluator;
-#[allow(unused_imports)]
-use crate::language_loader::preflight;
+use crate::language_loader::load_operator_data;
 #[allow(unused_imports)]
 use crate::language_loader::operator_data;
 #[allow(unused_imports)]
 use crate::language_loader::operator_data_after_preflight;
 #[allow(unused_imports)]
-use crate::language_loader::load_operator_data;
+use crate::language_loader::preflight;
 #[allow(unused_imports)]
-use crate::language_loader::install_language_bundle;
+use orbital_core_base::language_data::*;
+use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use serde_json::Value;
-
 
 #[cfg(test)]
 mod tests {
@@ -24,18 +21,7 @@ mod tests {
     use orbital_core_base::behavior_packages::discover;
     use serde_json::json;
 
-    fn load_operator_data_for(start: &Path, store: &Path, running: &str) -> Result<OperatorData, LanguageDataError> {
-        super::install_evaluator();
-        super::load_operator_data_for(start, store, running)
-    }
-
-    fn parse_language_bundle(
-        bundle: &str,
-        running: &str,
-    ) -> Result<(LanguageData, OperatorData, Vec<orbital_core_base::i18n::packs::VocabularyPack>), LanguageDataError> {
-        super::install_evaluator();
-        super::parse_language_bundle(bundle, running)
-    }
+    use crate::language_loader::{load_operator_data_for, parse_language_bundle};
 
     struct Tmp(PathBuf);
     impl Tmp {

@@ -35,9 +35,11 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("browser/beacon", RunsOn::Client),
     ("browser/clipboard-read", RunsOn::Client),
     ("browser/clipboard-write", RunsOn::Client),
+    ("browser/embed", RunsOn::Client),
     ("browser/geolocation-current", RunsOn::Client),
     ("browser/open-file-picker", RunsOn::Client),
     ("browser/page-facts", RunsOn::Client),
+    ("browser/prompt", RunsOn::Client),
     ("browser/push-subscribe", RunsOn::Client),
     ("call-service", RunsOn::Server),
     ("cancel-call", RunsOn::Server),
@@ -51,7 +53,6 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("oauth-authorize", RunsOn::Server),
     ("oauth-connection-forget", RunsOn::Server),
     ("oauth-connection-status", RunsOn::Server),
-    ("os/debounce", RunsOn::Server),
     ("os/watch-cron", RunsOn::Server),
     ("os/watch-env", RunsOn::Server),
     ("os/watch-files", RunsOn::Server),
@@ -314,7 +315,10 @@ pub fn effect_runs_on(effect: &OirEffect) -> RunsOn {
 /// Fold-aware: an `if`/`when` branch whose condition is statically false
 /// (`SExpression::is_statically_false` — e.g. `@config.selfFetch` inlined to
 /// `false`) can never run, so its effects are not server work.
-pub fn sexpr_runs_server_effect(expr: &crate::schema::sexpr::SExpression, residence: &Residence) -> bool {
+pub fn sexpr_runs_server_effect(
+    expr: &crate::schema::sexpr::SExpression,
+    residence: &Residence,
+) -> bool {
     use crate::schema::sexpr::SExpression;
     let recur = |e: &SExpression| sexpr_runs_server_effect(e, residence);
     match expr {
@@ -416,17 +420,17 @@ mod tests {
 
     #[test]
     fn a_call_to_a_browser_only_service_runs_on_the_client() {
-        let residence = Residence::none().with_browser_services(["analytics".to_string()]);
+        let residence = Residence::none().with_browser_services(["page".to_string()]);
         assert_eq!(
-            effect_site("call-service", &call("analytics"), &residence),
+            effect_site("call-service", &call("page"), &residence),
             RunsOn::Client
         );
         assert_eq!(
-            effect_site("call-service", &call("github"), &residence),
+            effect_site("call-service", &call("webhook"), &residence),
             RunsOn::Server
         );
         assert_eq!(
-            effect_site("call-service", &call("analytics"), &Residence::none()),
+            effect_site("call-service", &call("page"), &Residence::none()),
             RunsOn::Server,
             "control: no browser services declared"
         );
@@ -440,29 +444,25 @@ mod tests {
     #[test]
     fn the_ir_call_follows_the_same_rule() {
         use crate::ir::expr::OirExpr;
-        let residence = Residence::none().with_browser_services(["analytics".to_string()]);
-        let analytics = OirEffect::call_service("analytics", "pageview", OirExpr::null());
-        let github = OirEffect::call_service("github", "listIssues", OirExpr::null());
-        assert_eq!(ir_effect_site(&analytics, &residence), RunsOn::Client);
-        assert_eq!(ir_effect_site(&github, &residence), RunsOn::Server);
+        let residence = Residence::none().with_browser_services(["page".to_string()]);
+        let page_call = OirEffect::call_service("page", "openTab", OirExpr::null());
+        let webhook_call = OirEffect::call_service("webhook", "send", OirExpr::null());
+        assert_eq!(ir_effect_site(&page_call, &residence), RunsOn::Client);
+        assert_eq!(ir_effect_site(&webhook_call, &residence), RunsOn::Server);
         assert!(
-            OirExpr::effect(analytics.clone()).runs_browser_data_effect(&residence),
+            OirExpr::effect(page_call.clone()).runs_browser_data_effect(&residence),
             "a browser-only call is a browser leg"
         );
-        assert!(!OirExpr::effect(github).runs_browser_data_effect(&residence));
-        assert!(!OirExpr::effect(analytics).runs_browser_data_effect(&Residence::none()));
+        assert!(!OirExpr::effect(webhook_call).runs_browser_data_effect(&residence));
+        assert!(!OirExpr::effect(page_call).runs_browser_data_effect(&Residence::none()));
     }
 
     #[test]
     fn a_browser_only_call_is_not_server_work_for_the_dispatch_rule() {
-        let residence = Residence::none().with_browser_services(["analytics".to_string()]);
-        let expr: crate::schema::sexpr::SExpression = serde_json::from_value(serde_json::json!([
-            "call-service",
-            "analytics",
-            "pageview",
-            {}
-        ]))
-        .expect("expr");
+        let residence = Residence::none().with_browser_services(["page".to_string()]);
+        let expr: crate::schema::sexpr::SExpression =
+            serde_json::from_value(serde_json::json!(["call-service", "page", "openTab", {}]))
+                .expect("expr");
         assert!(!sexpr_runs_server_effect(&expr, &residence));
         assert!(
             sexpr_runs_server_effect(&expr, &Residence::none()),
@@ -473,28 +473,48 @@ mod tests {
     #[test]
     fn the_module_residence_carries_its_stamped_browser_services() {
         let mut module = crate::ir::types::OirModule::new("App", "1.0.0");
-        module.browser_services = vec!["analytics".to_string()];
-        assert!(Residence::of_module(&module).is_browser_service("analytics"));
-        assert!(!Residence::of_module(&module).is_browser_service("github"));
+        module.browser_services = vec!["page".to_string()];
+        assert!(Residence::of_module(&module).is_browser_service("page"));
+        assert!(!Residence::of_module(&module).is_browser_service("webhook"));
     }
 
     fn http(request: serde_json::Value) -> Vec<crate::schema::sexpr::SExpression> {
-        serde_json::from_value(serde_json::json!(["GET", "https://api.example.com", "/x", request]))
-            .expect("args")
+        serde_json::from_value(serde_json::json!([
+            "GET",
+            "https://api.example.com",
+            "/x",
+            request
+        ]))
+        .expect("args")
     }
 
     #[test]
     fn a_keyless_http_call_runs_where_it_is_placed() {
         let r = Residence::none();
-        assert_eq!(effect_site("http", &http(serde_json::json!({})), &r), RunsOn::Client);
         assert_eq!(
-            effect_site("http", &http(serde_json::json!({ "query": { "q": "a" }, "timeoutMs": 5 })), &r),
+            effect_site("http", &http(serde_json::json!({})), &r),
+            RunsOn::Client
+        );
+        assert_eq!(
+            effect_site(
+                "http",
+                &http(serde_json::json!({ "query": { "q": "a" }, "timeoutMs": 5 })),
+                &r
+            ),
             RunsOn::Client
         );
         let bare: Vec<crate::schema::sexpr::SExpression> =
-            serde_json::from_value(serde_json::json!(["GET", "https://api.example.com", "/x"])).expect("args");
-        assert_eq!(effect_site("http", &bare, &r), RunsOn::Client, "no request is keyless");
-        assert_eq!(effect_site("http", &http(serde_json::Value::Null), &r), RunsOn::Client);
+            serde_json::from_value(serde_json::json!(["GET", "https://api.example.com", "/x"]))
+                .expect("args");
+        assert_eq!(
+            effect_site("http", &bare, &r),
+            RunsOn::Client,
+            "no request is keyless"
+        );
+        assert_eq!(
+            effect_site("http", &http(serde_json::Value::Null), &r),
+            RunsOn::Client
+        );
     }
 
     #[test]
@@ -506,7 +526,11 @@ mod tests {
             serde_json::json!({ "auth": "@config.auth" }),
             serde_json::json!("@payload.request"),
         ] {
-            assert_eq!(effect_site("http", &http(request.clone()), &r), RunsOn::Server, "{request}");
+            assert_eq!(
+                effect_site("http", &http(request.clone()), &r),
+                RunsOn::Server,
+                "{request}"
+            );
         }
     }
 
@@ -524,7 +548,10 @@ mod tests {
             *request = Some(OirExpr::object(OirFields::new()));
         }
         assert_eq!(ir_effect_site(&keyless, &r), RunsOn::Client);
-        assert!(OirExpr::effect(keyless.clone()).runs_browser_data_effect(&r), "a keyless call is a browser leg");
+        assert!(
+            OirExpr::effect(keyless.clone()).runs_browser_data_effect(&r),
+            "a keyless call is a browser leg"
+        );
         assert!(!OirExpr::effect(keyless.clone()).runs_server_effect(&r));
         let mut keyed = keyless;
         if let OirEffect::Http { request, .. } = &mut keyed {
@@ -541,17 +568,30 @@ mod tests {
         use crate::value::Value;
         let of = |json: serde_json::Value| serde_json::from_value::<Value>(json).expect("value");
         assert!(resolved_http_is_keyless(&Value::Null));
-        assert!(resolved_http_is_keyless(&of(serde_json::json!({ "query": { "q": "a" } }))));
-        assert!(!resolved_http_is_keyless(&of(serde_json::json!({ "auth": { "scheme": "bearer" } }))));
-        assert!(!resolved_http_is_keyless(&of(serde_json::json!({ "auth": null }))), "an auth key at all is keyed");
+        assert!(resolved_http_is_keyless(&of(
+            serde_json::json!({ "query": { "q": "a" } })
+        )));
+        assert!(!resolved_http_is_keyless(&of(
+            serde_json::json!({ "auth": { "scheme": "bearer" } })
+        )));
+        assert!(
+            !resolved_http_is_keyless(&of(serde_json::json!({ "auth": null }))),
+            "an auth key at all is keyed"
+        );
         assert!(!resolved_http_is_keyless(&of(serde_json::json!("opaque"))));
     }
 
     #[test]
     fn http_auth_classifies_the_request() {
         assert_eq!(http_auth(&http(serde_json::json!({}))), HttpAuth::Keyless);
-        assert_eq!(http_auth(&http(serde_json::json!({ "auth": {} }))), HttpAuth::Keyed);
-        assert_eq!(http_auth(&http(serde_json::json!("@payload.r"))), HttpAuth::Opaque);
+        assert_eq!(
+            http_auth(&http(serde_json::json!({ "auth": {} }))),
+            HttpAuth::Keyed
+        );
+        assert_eq!(
+            http_auth(&http(serde_json::json!("@payload.r"))),
+            HttpAuth::Opaque
+        );
     }
 
     #[test]

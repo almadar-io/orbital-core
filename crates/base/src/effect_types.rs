@@ -298,6 +298,26 @@ pub enum Effect {
         emit: Option<FetchEmit>,
     },
 
+    /// Ask the host's on-device model for a reply to `text` that satisfies the JSON Schema text `schema`
+    /// (client-site, keyed and cancellable like `call-service`).
+    BrowserPrompt {
+        text: Value,
+        schema: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// Ask the host's on-device embedder for one vector per text (client-site, keyed and cancellable).
+    BrowserEmbed {
+        texts: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
     /// Generic/unknown effect (for extensibility). A substrate op's trailing `{ emit }`
     /// object is split into `emit`: `success` carries `{ result }`, `failure` `{ error }`.
     Custom {
@@ -339,6 +359,8 @@ impl Effect {
             Effect::Fetch { .. } => "fetch",
             Effect::BrowserPageFacts { .. } => "browser/page-facts",
             Effect::BrowserBeacon { .. } => "browser/beacon",
+            Effect::BrowserPrompt { .. } => "browser/prompt",
+            Effect::BrowserEmbed { .. } => "browser/embed",
             Effect::Custom { name, .. } => name,
         }
     }
@@ -426,6 +448,9 @@ pub struct EffectResult {
 
     /// Why a failed persist resolved no target row (`ServerEffectResult.code`).
     pub code: Option<crate::bus_event::ServerEffectCode>,
+
+    /// For an `emit`: its cross-unit deliveries that were refused (EXEC-QUEUE-9); each one is a `DELIVERY_REJECTED`.
+    pub refused: Vec<crate::envelope::DeliveryRefused>,
 }
 
 impl EffectResult {
@@ -440,6 +465,7 @@ impl EffectResult {
             total_count: None,
             persist_success: false,
             code: None,
+            refused: Vec::new(),
         }
     }
 
@@ -454,6 +480,7 @@ impl EffectResult {
             total_count: None,
             persist_success: false,
             code: None,
+            refused: Vec::new(),
         }
     }
 
@@ -475,6 +502,7 @@ impl EffectResult {
             total_count: total,
             persist_success: false,
             code: None,
+            refused: Vec::new(),
         }
     }
 
@@ -494,6 +522,7 @@ impl EffectResult {
             total_count: total,
             persist_success: false,
             code: None,
+            refused: Vec::new(),
         }
     }
 
@@ -508,6 +537,7 @@ impl EffectResult {
             total_count: None,
             persist_success: false,
             code: None,
+            refused: Vec::new(),
         }
     }
 
@@ -522,6 +552,7 @@ impl EffectResult {
             total_count: None,
             persist_success: false,
             code: None,
+            refused: Vec::new(),
         }
     }
 
@@ -548,6 +579,7 @@ impl EffectResult {
             total_count: None,
             persist_success: false,
             code: None,
+            refused: Vec::new(),
         }
     }
 
@@ -625,6 +657,8 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
         "oauth-connection-forget" => parse_oauth_connection(args, false),
         "browser/page-facts" => parse_page_facts(args),
         "browser/beacon" => parse_beacon(args),
+        "browser/prompt" => parse_prompt(args),
+        "browser/embed" => parse_embed(args),
         "render-ui" => parse_render_ui(args),
         "navigate" => parse_navigate(args),
         "navigate-back" => Some(Effect::NavigateBack),
@@ -964,6 +998,45 @@ fn parse_page_facts(args: &[SExpression]) -> Option<Effect> {
     })
 }
 
+/// The `key` and `emit` of a trailing options object.
+fn keyed_options(options: Option<&SExpression>) -> (Option<Value>, Option<FetchEmit>) {
+    let options = options.map(|e| Value::from(e.clone()));
+    let key = options
+        .as_ref()
+        .and_then(|o| o.as_object())
+        .and_then(|o| o.get("key"))
+        .cloned();
+    let emit = options.as_ref().and_then(parse_emit_config);
+    (key, emit)
+}
+
+/// `["browser/prompt", text, schemaText, { key?, emit? }?]`.
+fn parse_prompt(args: &[SExpression]) -> Option<Effect> {
+    if !(2..=3).contains(&args.len()) {
+        return None;
+    }
+    let (key, emit) = keyed_options(args.get(2));
+    Some(Effect::BrowserPrompt {
+        text: Value::from(args[0].clone()),
+        schema: Value::from(args[1].clone()),
+        key,
+        emit,
+    })
+}
+
+/// `["browser/embed", [text, …], { key?, emit? }?]`.
+fn parse_embed(args: &[SExpression]) -> Option<Effect> {
+    if !(1..=2).contains(&args.len()) {
+        return None;
+    }
+    let (key, emit) = keyed_options(args.get(1));
+    Some(Effect::BrowserEmbed {
+        texts: Value::from(args[0].clone()),
+        key,
+        emit,
+    })
+}
+
 /// `["browser/beacon", url, { text, key? }, { key?, emit? }?]`; `key` may ride either object.
 fn parse_beacon(args: &[SExpression]) -> Option<Effect> {
     if !(2..=3).contains(&args.len()) {
@@ -1274,7 +1347,7 @@ mod tests {
     #[test]
     fn parse_call_service_reads_the_key_option() {
         let expr: SExpression = serde_json::from_str(
-            r#"["call-service", "llm", "classifyMany", {"items": []}, {"key": "batch-1", "emit": {"cancelled": "C"}}]"#,
+            r#"["call-service", "webhook", "send", {"items": []}, {"key": "batch-1", "emit": {"cancelled": "C"}}]"#,
         )
         .unwrap();
         match parse_effect(&expr).unwrap() {
@@ -1286,7 +1359,7 @@ mod tests {
     #[test]
     fn parse_call_service_without_options_has_no_key() {
         let expr: SExpression =
-            serde_json::from_str(r#"["call-service", "llm", "generate", {}]"#).unwrap();
+            serde_json::from_str(r#"["call-service", "webhook", "send", {}]"#).unwrap();
         match parse_effect(&expr).unwrap() {
             Effect::CallService { key, .. } => assert_eq!(key, None),
             other => panic!("expected CallService, got {other:?}"),
@@ -1374,6 +1447,37 @@ mod tests {
     fn parse_cancel_call_without_a_key_is_not_an_effect() {
         let expr: SExpression = serde_json::from_str(r#"["cancel-call"]"#).unwrap();
         assert!(parse_effect(&expr).is_none());
+    }
+
+    #[test]
+    fn parse_browser_prompt_and_embed_carry_their_key_and_routes() {
+        let prompt: SExpression = serde_json::from_str(
+            r#"["browser/prompt", "@payload.text", "{}", {"key": "batch-1", "emit": {"success": "OK", "failure": "BAD", "cancelled": "STOP"}}]"#,
+        )
+        .unwrap();
+        match parse_effect(&prompt).unwrap() {
+            Effect::BrowserPrompt { text, schema, key, emit } => {
+                assert_eq!(text, Value::String("@payload.text".into()));
+                assert_eq!(schema, Value::String("{}".into()));
+                assert_eq!(key, Some(Value::String("batch-1".into())));
+                assert_eq!(emit.unwrap().cancelled.as_deref(), Some("STOP"));
+            }
+            other => panic!("expected BrowserPrompt, got {other:?}"),
+        }
+        let embed: SExpression = serde_json::from_str(r#"["browser/embed", ["a", "b"]]"#).unwrap();
+        match parse_effect(&embed).unwrap() {
+            Effect::BrowserEmbed { key, emit, .. } => assert!(key.is_none() && emit.is_none()),
+            other => panic!("expected BrowserEmbed, got {other:?}"),
+        }
+        assert_eq!(parse_effect(&embed).unwrap().operator(), "browser/embed");
+    }
+
+    #[test]
+    fn parse_browser_prompt_and_embed_refuse_the_wrong_arity() {
+        for src in [r#"["browser/prompt", "t"]"#, r#"["browser/prompt", "t", "s", {}, {}]"#, r#"["browser/embed"]"#, r#"["browser/embed", [], {}, {}]"#] {
+            let expr: SExpression = serde_json::from_str(src).unwrap();
+            assert!(parse_effect(&expr).is_none(), "{src}");
+        }
     }
 
     #[test]
@@ -1645,7 +1749,7 @@ mod tests {
     #[test]
     fn a_call_service_options_object_carries_its_completion_events() {
         let expr: SExpression = serde_json::from_str(
-            r#"["call-service", "llm", "embed", {"texts": ["a"]}, {"key": "k1", "emit": {"success": "EMBEDDED", "failure": "EMBED_FAILED"}}]"#,
+            r#"["call-service", "webhook", "send", {"texts": ["a"]}, {"key": "k1", "emit": {"success": "EMBEDDED", "failure": "EMBED_FAILED"}}]"#,
         )
         .unwrap();
         match parse_effect(&expr).unwrap() {
@@ -1662,7 +1766,7 @@ mod tests {
     #[test]
     fn control_a_call_service_without_options_declares_no_completion() {
         let expr: SExpression =
-            serde_json::from_str(r#"["call-service", "llm", "embed", {}]"#).unwrap();
+            serde_json::from_str(r#"["call-service", "webhook", "send", {}]"#).unwrap();
         match parse_effect(&expr).unwrap() {
             Effect::CallService { emit, .. } => assert!(emit.is_none()),
             other => panic!("expected CallService, got {other:?}"),

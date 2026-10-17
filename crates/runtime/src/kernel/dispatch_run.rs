@@ -4,10 +4,15 @@
 //! only once all its I/O is answered. A blocking host runs the units straight through; an async host
 //! runs each with the answers recorded so far and gets [`Progress::Await`] at the first one missing.
 
+use super::envelope::Origin;
 use super::*;
+use orbital_core_base::envelope::{DeliverRefusal, DeliverRefusalKind, Envelope, EnvelopeVerdict};
 use crate::effects::response::MountSeed;
 use orbital_core_base::value::ValueMap;
-use crate::resumable::{accept_replies, DispatchContinuation, DispatchError, DispatchOutcomes, IoReply, PendingRequest, Progress, RequestId};
+use crate::resumable::{
+    accept_replies, number_requests, DispatchContinuation, DispatchError, DispatchOutcomes,
+    IoReply, Progress,
+};
 
 /// Why a unit stopped short: a kernel error, or an I/O answer the unit does not have yet (the unit
 /// has put the run and the kernel back as they were before it).
@@ -87,6 +92,7 @@ pub(crate) struct DispatchRun {
     seed: Option<SeedRun>,
     outcomes: DispatchOutcomes,
     locale: Option<String>,
+    origin: Origin,
 }
 
 enum Flow {
@@ -392,6 +398,7 @@ impl RuntimeKernel {
             seed: None,
             outcomes: Vec::new(),
             locale: self.dispatch_locale.read().clone(),
+            origin: self.next_dispatch_origin(),
         }
     }
 
@@ -417,16 +424,14 @@ impl RuntimeKernel {
             if let Some(diverged) = end.diverged {
                 return Err(DispatchError::Resume(diverged));
             }
-            if let Some(request) = end.pending {
+            if !end.pending.is_empty() {
                 if result.is_ok() {
                     return Err(DispatchError::Kernel(KernelError::Internal(
                         "a dispatch step committed while it awaited host I/O".to_string(),
                     )));
                 }
                 c.journal = end.journal;
-                let id = RequestId::from_raw(c.next_id);
-                c.next_id += 1;
-                c.pending = vec![PendingRequest { id, request }];
+                c.pending = number_requests(&mut c.next_id, end.pending);
                 let requests = c.pending.clone();
                 return Ok(Progress::Await {
                     continuation: c,
@@ -448,6 +453,7 @@ impl RuntimeKernel {
             seed,
             outcomes,
             locale,
+            origin,
         } = run;
         let Some(in_flight) = seed.as_mut() else {
             if plans
@@ -467,7 +473,11 @@ impl RuntimeKernel {
         };
         let _stamp = self.hold_stamp(in_flight.now);
         let _locale = self.hold_locale(locale.as_deref());
-        match self.step_seed(in_flight, outcomes)? {
+        let committed_from = origin.emits;
+        self.hold_origin(origin);
+        let stepped = self.step_seed(in_flight, outcomes);
+        self.release_origin(origin, committed_from, stepped.is_ok());
+        match stepped? {
             Flow::More => Ok(Flow::More),
             Flow::Done => {
                 *seed = None;
@@ -1005,5 +1015,57 @@ impl RuntimeKernel {
         }
         cascade.queue.extend(fanned);
         Ok(true)
+    }
+}
+
+/// How an inbound envelope was received: judged and refused, or admitted and started as a dispatch.
+pub enum InboundStart {
+    Declined(EnvelopeVerdict),
+    Admitted(Box<Result<Progress<DispatchOutcomes>, DispatchError>>),
+}
+
+impl RuntimeKernel {
+    /// Run an inbound [`Envelope`] as a fresh dispatch of `envelope.event` with `envelope.payload` at its target,
+    /// carrying the envelope's hop and causal id so the emits it makes continue the chain (EXEC-QUEUE-9). The
+    /// verdict is `Accepted` once the dispatch has run, `Duplicate` for an id already accepted from the sender,
+    /// `Rejected` for `hop-cap`, `unknown-instance`, or `down` when the dispatch itself failed.
+    pub fn dispatch_envelope(&self, envelope: Envelope) -> EnvelopeVerdict {
+        let admitted = match self.admit_envelope(&envelope) {
+            Ok(admitted) => admitted,
+            Err(verdict) => return verdict,
+        };
+        let run = self.run_of_envelope(envelope.event.clone(), envelope.payload.clone(), admitted);
+        match self.run_straight_through(run) {
+            Ok(_) => EnvelopeVerdict::Accepted,
+            Err(error) => {
+                tracing::error!(
+                    target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
+                    envelope = %envelope.id,
+                    error = %error,
+                    "envelope:dispatch-failed",
+                );
+                EnvelopeVerdict::Rejected(DeliverRefusal {
+                    kind: DeliverRefusalKind::Down,
+                    id: envelope.id,
+                })
+            }
+        }
+    }
+
+    /// [`Self::dispatch_envelope`] as a resumable dispatch: the host answers the dispatch's asks, and `Accepted`
+    /// is its `Progress::Done`.
+    pub fn start_dispatch_envelope(&self, envelope: Envelope) -> InboundStart {
+        let admitted = match self.admit_envelope(&envelope) {
+            Ok(admitted) => admitted,
+            Err(verdict) => return InboundStart::Declined(verdict),
+        };
+        let run = self.run_of_envelope(envelope.event, envelope.payload, admitted);
+        InboundStart::Admitted(Box::new(self.drive_resumable(Self::continuation_of(run))))
+    }
+
+    fn run_of_envelope(&self, event: String, payload: Value, admitted: super::envelope::Admitted) -> DispatchRun {
+        let mut run = self.run_of_each(&admitted.targets, None, &event, payload, None, None);
+        run.origin.inbound = Some(admitted.inbound);
+        run
     }
 }

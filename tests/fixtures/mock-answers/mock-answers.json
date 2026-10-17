@@ -62,22 +62,6 @@
     },
     {
       "service": "llm",
-      "action": "call-tools",
-      "params": {},
-      "success": true,
-      "data": {
-        "reply": "mock_reply",
-        "steps": [],
-        "usage": {
-          "promptTokens": 42,
-          "completionTokens": 42,
-          "totalTokens": 42,
-          "modelCalls": 42
-        }
-      }
-    },
-    {
-      "service": "llm",
       "action": "choose",
       "params": {},
       "success": true,
@@ -93,17 +77,6 @@
       "success": true,
       "data": {
         "embeddings": []
-      }
-    },
-    {
-      "service": "ml",
-      "action": "infer",
-      "params": {},
-      "success": true,
-      "data": {
-        "output": {},
-        "confidence": 42,
-        "violations": {}
       }
     },
     {
@@ -344,244 +317,6 @@
       }
     },
     {
-      "service": "github",
-      "action": "cloneRepo",
-      "params": {},
-      "success": true,
-      "data": {
-        "message": "mock_message"
-      }
-    },
-    {
-      "service": "github",
-      "action": "createBranch",
-      "params": {},
-      "success": true,
-      "data": {
-        "message": "mock_message"
-      }
-    },
-    {
-      "service": "github",
-      "action": "commit",
-      "params": {},
-      "success": true,
-      "data": {
-        "message": "mock_message"
-      }
-    },
-    {
-      "service": "github",
-      "action": "push",
-      "params": {},
-      "success": true,
-      "data": {
-        "message": "mock_message"
-      }
-    },
-    {
-      "service": "github",
-      "action": "createPR",
-      "params": {},
-      "success": true,
-      "data": {
-        "number": 42,
-        "url": "mock_url",
-        "title": "mock_title"
-      }
-    },
-    {
-      "service": "github",
-      "action": "getPRComments",
-      "params": {},
-      "success": true,
-      "data": {
-        "comments": [
-          {
-            "id": 42,
-            "body": "mock_body",
-            "user": "mock_user"
-          }
-        ]
-      }
-    },
-    {
-      "service": "github",
-      "action": "listIssues",
-      "params": {},
-      "success": true,
-      "data": {
-        "issues": [
-          {
-            "number": 42,
-            "title": "mock_title",
-            "state": "mock_state"
-          }
-        ]
-      }
-    },
-    {
-      "service": "github",
-      "action": "getIssue",
-      "params": {},
-      "success": true,
-      "data": {
-        "number": 42,
-        "title": "mock_title",
-        "body": "mock_body",
-        "state": "mock_state"
-      }
-    },
-    {
-      "service": "github",
-      "action": "getFile",
-      "params": {},
-      "success": true,
-      "data": {
-        "path": "mock_path",
-        "content": "mock_content",
-        "sha": "mock_sha",
-        "size": 42
-      }
-    },
-    {
-      "service": "github",
-      "action": "listCommits",
-      "params": {},
-      "success": true,
-      "data": {
-        "commits": [
-          {
-            "sha": "mock_sha",
-            "message": "mock_message",
-            "author": "mock_author",
-            "date": "mock_date"
-          }
-        ]
-      }
-    },
-    {
-      "service": "github",
-      "action": "createIssue",
-      "params": {},
-      "success": true,
-      "data": {
-        "number": 42,
-        "title": "mock_title",
-        "url": "mock_url"
-      }
-    },
-    {
-      "service": "stripe",
-      "action": "createPaymentIntent",
-      "params": {},
-      "success": true,
-      "data": {
-        "id": "mock_id",
-        "clientSecret": "mock_clientSecret",
-        "status": "mock_status",
-        "amount": 42,
-        "currency": "mock_currency"
-      }
-    },
-    {
-      "service": "stripe",
-      "action": "confirmPayment",
-      "params": {},
-      "success": true,
-      "data": {
-        "id": "mock_id",
-        "status": "mock_status"
-      }
-    },
-    {
-      "service": "stripe",
-      "action": "refund",
-      "params": {},
-      "success": true,
-      "data": {
-        "id": "mock_id",
-        "status": "mock_status",
-        "amount": 42
-      }
-    },
-    {
-      "service": "stripe",
-      "action": "createCustomer",
-      "params": {},
-      "success": true,
-      "data": {
-        "customerId": "mock_customerId",
-        "email": "mock_email",
-        "almadarUid": "mock_almadarUid"
-      }
-    },
-    {
-      "service": "stripe",
-      "action": "createCheckoutSession",
-      "params": {},
-      "success": true,
-      "data": {
-        "url": "mock_url",
-        "sessionId": "mock_sessionId",
-        "customerId": "mock_customerId"
-      }
-    },
-    {
-      "service": "stripe",
-      "action": "createPortalSession",
-      "params": {},
-      "success": true,
-      "data": {
-        "url": "mock_url",
-        "customerId": "mock_customerId"
-      }
-    },
-    {
-      "service": "stripe",
-      "action": "getSubscription",
-      "params": {},
-      "success": true,
-      "data": {
-        "success": true,
-        "_mock": true,
-        "_action": "getSubscription"
-      }
-    },
-    {
-      "service": "stripe",
-      "action": "createSubscription",
-      "params": {},
-      "success": true,
-      "data": {
-        "success": true,
-        "_mock": true,
-        "_action": "createSubscription"
-      }
-    },
-    {
-      "service": "stripe",
-      "action": "updateSubscription",
-      "params": {},
-      "success": true,
-      "data": {
-        "success": true,
-        "_mock": true,
-        "_action": "updateSubscription"
-      }
-    },
-    {
-      "service": "stripe",
-      "action": "cancelSubscription",
-      "params": {},
-      "success": true,
-      "data": {
-        "success": true,
-        "_mock": true,
-        "_action": "cancelSubscription"
-      }
-    },
-    {
       "service": "llm-integration",
       "action": "generate",
       "params": {},
@@ -643,22 +378,6 @@
     },
     {
       "service": "llm-integration",
-      "action": "call-tools",
-      "params": {},
-      "success": true,
-      "data": {
-        "reply": "mock_reply",
-        "steps": [],
-        "usage": {
-          "promptTokens": 42,
-          "completionTokens": 42,
-          "totalTokens": 42,
-          "modelCalls": 42
-        }
-      }
-    },
-    {
-      "service": "llm-integration",
       "action": "choose",
       "params": {},
       "success": true,
@@ -677,70 +396,6 @@
       }
     },
     {
-      "service": "youtube",
-      "action": "search",
-      "params": {},
-      "success": true,
-      "data": {
-        "success": true,
-        "_mock": true,
-        "_action": "search"
-      }
-    },
-    {
-      "service": "youtube",
-      "action": "getVideo",
-      "params": {},
-      "success": true,
-      "data": {
-        "title": "mock_title",
-        "description": "mock_description",
-        "viewCount": "mock_viewCount",
-        "likeCount": "mock_likeCount"
-      }
-    },
-    {
-      "service": "youtube",
-      "action": "getChannel",
-      "params": {},
-      "success": true,
-      "data": {
-        "name": "mock_name",
-        "description": "mock_description",
-        "subscriberCount": "mock_subscriberCount"
-      }
-    },
-    {
-      "service": "twilio",
-      "action": "sendSMS",
-      "params": {},
-      "success": true,
-      "data": {
-        "sid": "mock_sid",
-        "status": "mock_status"
-      }
-    },
-    {
-      "service": "twilio",
-      "action": "sendWhatsApp",
-      "params": {},
-      "success": true,
-      "data": {
-        "sid": "mock_sid",
-        "status": "mock_status"
-      }
-    },
-    {
-      "service": "email",
-      "action": "send",
-      "params": {},
-      "success": true,
-      "data": {
-        "id": "mock_id",
-        "status": "mock_status"
-      }
-    },
-    {
       "service": "webhook",
       "action": "send",
       "params": {},
@@ -749,17 +404,6 @@
         "status": 42,
         "ok": true,
         "durationMs": 42
-      }
-    },
-    {
-      "service": "push",
-      "action": "send",
-      "params": {},
-      "success": true,
-      "data": {
-        "statusCode": 42,
-        "ok": true,
-        "expired": true
       }
     },
     {
@@ -908,93 +552,6 @@
       "data": {
         "shared": true,
         "permissionId": "mock_permissionId"
-      }
-    },
-    {
-      "service": "metaAds",
-      "action": "getSpend",
-      "params": {},
-      "success": true,
-      "data": {
-        "spend": 42,
-        "currency": "mock_currency",
-        "impressions": 42,
-        "clicks": 42
-      }
-    },
-    {
-      "service": "metaAds",
-      "action": "listCampaigns",
-      "params": {},
-      "success": true,
-      "data": {
-        "campaigns": [
-          {
-            "id": "mock_id",
-            "name": "mock_name",
-            "status": "mock_status",
-            "dailyBudget": 42
-          }
-        ]
-      }
-    },
-    {
-      "service": "accounting",
-      "action": "exportInvoices",
-      "params": {},
-      "success": true,
-      "data": {
-        "content": "mock_content",
-        "filename": "mock_filename",
-        "count": 42
-      }
-    },
-    {
-      "service": "accounting",
-      "action": "exportJournal",
-      "params": {},
-      "success": true,
-      "data": {
-        "content": "mock_content",
-        "filename": "mock_filename",
-        "count": 42
-      }
-    },
-    {
-      "service": "banking",
-      "action": "createRequisition",
-      "params": {},
-      "success": true,
-      "data": {
-        "requisitionId": "mock_requisitionId",
-        "link": "mock_link"
-      }
-    },
-    {
-      "service": "banking",
-      "action": "listAccounts",
-      "params": {},
-      "success": true,
-      "data": {
-        "accounts": []
-      }
-    },
-    {
-      "service": "banking",
-      "action": "listTransactions",
-      "params": {},
-      "success": true,
-      "data": {
-        "transactions": [
-          {
-            "id": "mock_id",
-            "amount": 42,
-            "currency": "mock_currency",
-            "date": "mock_date",
-            "description": "mock_description",
-            "counterparty": "mock_counterparty"
-          }
-        ]
       }
     },
     {
@@ -1389,94 +946,6 @@
       }
     },
     {
-      "service": "oauth",
-      "action": "authorize",
-      "params": {},
-      "success": true,
-      "data": {
-        "authUrl": "mock_authUrl",
-        "state": "mock_state"
-      }
-    },
-    {
-      "service": "oauth",
-      "action": "token",
-      "params": {},
-      "success": true,
-      "data": {
-        "accessToken": "mock_accessToken",
-        "refreshToken": "mock_refreshToken",
-        "expiresIn": 42,
-        "tokenType": "mock_tokenType",
-        "scope": [],
-        "subject": "mock_subject"
-      }
-    },
-    {
-      "service": "oauth",
-      "action": "refresh",
-      "params": {},
-      "success": true,
-      "data": {
-        "accessToken": "mock_accessToken",
-        "expiresIn": 42
-      }
-    },
-    {
-      "service": "oauth",
-      "action": "revoke",
-      "params": {},
-      "success": true,
-      "data": {
-        "revoked": true
-      }
-    },
-    {
-      "service": "oauth",
-      "action": "userinfo",
-      "params": {},
-      "success": true,
-      "data": {
-        "sub": "mock_sub",
-        "email": "mock_email",
-        "name": "mock_name",
-        "picture": "mock_picture"
-      }
-    },
-    {
-      "service": "oauth",
-      "action": "connect",
-      "params": {},
-      "success": true,
-      "data": {
-        "success": true,
-        "_mock": true,
-        "_action": "connect"
-      }
-    },
-    {
-      "service": "oauth",
-      "action": "connection",
-      "params": {},
-      "success": true,
-      "data": {
-        "success": true,
-        "_mock": true,
-        "_action": "connection"
-      }
-    },
-    {
-      "service": "oauth",
-      "action": "disconnect",
-      "params": {},
-      "success": true,
-      "data": {
-        "success": true,
-        "_mock": true,
-        "_action": "disconnect"
-      }
-    },
-    {
       "service": "otel",
       "action": "startSpan",
       "params": {},
@@ -1842,24 +1311,6 @@
       "success": true,
       "data": {
         "body": "mock_body"
-      }
-    },
-    {
-      "service": "arxiv",
-      "action": "search",
-      "params": {},
-      "success": true,
-      "data": {
-        "results": [
-          {
-            "id": "mock_id",
-            "title": "mock_title",
-            "summary": "mock_summary",
-            "authors": [],
-            "published": "mock_published",
-            "url": "mock_url"
-          }
-        ]
       }
     },
     {
@@ -2943,24 +2394,6 @@
             "reason": "mock_reason"
           }
         ]
-      }
-    },
-    {
-      "service": "analytics",
-      "action": "pageview",
-      "params": {},
-      "success": true,
-      "data": {
-        "sent": true
-      }
-    },
-    {
-      "service": "analytics",
-      "action": "track",
-      "params": {},
-      "success": true,
-      "data": {
-        "sent": true
       }
     },
     {

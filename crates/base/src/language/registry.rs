@@ -267,7 +267,7 @@ pub struct EmbeddedOperator {
     /// Argument naming a data effect's target entity; the effect runs where that entity's rows live. Pinned to `crate::effects::ENTITY_ARGS` by `tests/runs_on_drift.rs`.
     #[serde(rename = "entityArgPosition", default)]
     pub entity_arg_position: Option<usize>,
-    /// The host that executes the effect (`program`: the shared program host, `runProgramEffect`); absent when the runtime executes it.
+    /// The host that executes the effect (`program`: the shared program host, `runProgramEffect`; `os`: the `os/` family under a declared grant); absent when the runtime executes it.
     #[serde(default)]
     pub host: Option<String>,
 }
@@ -330,6 +330,14 @@ pub fn program_host_effects() -> impl Iterator<Item = &'static str> {
     operators()
         .iter()
         .filter(|(_, op)| op.host.as_deref() == Some("program"))
+        .map(|(name, _)| name.as_str())
+}
+
+/// Every effect the installed operator table routes to the OS host (`host: "os"`).
+pub fn os_host_effects() -> impl Iterator<Item = &'static str> {
+    operators()
+        .iter()
+        .filter(|(_, op)| op.host.as_deref() == Some("os"))
         .map(|(name, _)| name.as_str())
 }
 
@@ -478,14 +486,35 @@ impl ServiceRegistryData {
 }
 
 /// The registry is written from TS contracts: its list type `T[]` is the `.lolo` `[T]`.
+/// A TS string-literal union `'a' | 'b'` is the `.lolo` `"a" | "b"`.
 pub fn lolo_spelling(t: &str) -> String {
     match t.strip_suffix("[]").filter(|base| !base.is_empty()) {
-        Some(base) => format!("[{}]", lolo_spelling(base)),
-        None => t.to_string(),
+        Some(base) => {
+            let element = base
+                .strip_prefix('(')
+                .and_then(|b| b.strip_suffix(')'))
+                .unwrap_or(base);
+            format!("[{}]", lolo_spelling(element))
+        }
+        None => literal_union_spelling(t).unwrap_or_else(|| t.to_string()),
     }
 }
 
-pub fn response_shape_fields(shape: &serde_json::Map<String, serde_json::Value>) -> Vec<ResponseShapeField> {
+fn literal_union_spelling(t: &str) -> Option<String> {
+    t.split(" | ")
+        .map(|arm| {
+            arm.strip_prefix('\'')
+                .and_then(|a| a.strip_suffix('\''))
+                .filter(|inner| !inner.contains(['\'', '"', '\\']))
+                .map(|inner| format!("\"{inner}\""))
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|arms| arms.join(" | "))
+}
+
+pub fn response_shape_fields(
+    shape: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<ResponseShapeField> {
     let mut fields: Vec<ResponseShapeField> = shape
         .iter()
         .map(|(name, value)| ResponseShapeField {
@@ -616,45 +645,6 @@ mod service_runtimes_tests {
         let data = parse_service_registry_data(r#"{"services":{"old":{}}}"#).unwrap();
         assert!(data.runtimes["old"].is_empty());
     }
-}
-
-/// One inbound-hook declaration a service carries in the services registry:
-/// a provider mount (`POST /api/hooks/:provider`) that verifies with
-/// `credential_env` and dispatches `event` onto the app bus. Codegen derives
-/// per-app provider mounts from invoked services × these entries (I-26).
-#[derive(Debug, Clone, Deserialize)]
-pub struct EmbeddedServiceHook {
-    pub provider: String,
-    pub event: String,
-    #[serde(rename = "credentialEnv")]
-    pub credential_env: String,
-    #[serde(rename = "providerExport")]
-    pub provider_export: String,
-}
-
-/// Service name → declared inbound hooks, from the baked services registry.
-pub fn baked_service_hooks() -> &'static HashMap<String, Vec<EmbeddedServiceHook>> {
-    static MAP: OnceLock<HashMap<String, Vec<EmbeddedServiceHook>>> = OnceLock::new();
-    MAP.get_or_init(|| {
-        #[derive(Deserialize)]
-        struct ServiceEntry {
-            #[serde(default)]
-            hooks: Vec<EmbeddedServiceHook>,
-        }
-        #[derive(Deserialize)]
-        struct ServicesRegistry {
-            #[serde(default)]
-            services: HashMap<String, ServiceEntry>,
-        }
-        let raw = services_json();
-        let registry: ServicesRegistry = serde_json::from_str(raw)
-            .expect("installed services-registry.json is corrupt — reinstall @almadar/core");
-        registry
-            .services
-            .into_iter()
-            .map(|(name, entry)| (name, entry.hooks))
-            .collect()
-    })
 }
 
 /// A single field of an emit/listen payload schema, mirroring trait
@@ -976,6 +966,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_contract_literal_union_reads_in_the_lolo_spelling_and_fits_a_string() {
+        let union = lolo_spelling("'beginner' | 'intermediate' | 'advanced'");
+        assert_eq!(union, r#""beginner" | "intermediate" | "advanced""#);
+        assert!(crate::type_compat::set_value_type_compatible(
+            "string", &union
+        ));
+        assert_eq!(
+            lolo_spelling("('solo' | 'teams')[]"),
+            r#"["solo" | "teams"]"#
+        );
+        assert_eq!(
+            lolo_spelling("string | number"),
+            "string | number",
+            "control: a non-literal union is untouched"
+        );
+        assert_eq!(
+            lolo_spelling("'it''s'"),
+            "'it''s'",
+            "control: not a plain literal, left as written"
+        );
+        assert!(
+            !crate::type_compat::set_value_type_compatible("number", &union),
+            "control: a string union does not fit a number"
+        );
+    }
+
+    #[test]
     fn a_contract_list_type_reads_in_the_lolo_spelling() {
         let shape: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
             r#"{"steps":"AgentActivity[]","grid":"number[][]","name":"string","tags":{"type":"string[]"}}"#,
@@ -994,10 +1011,15 @@ mod tests {
                 ("tags".to_string(), "[string]".to_string()),
             ]
         );
-        assert!(crate::type_compat::set_value_type_compatible("[AgentActivity]", &types[2].1));
-        assert!(!crate::type_compat::set_value_type_compatible("[string]", &types[2].1));
+        assert!(crate::type_compat::set_value_type_compatible(
+            "[AgentActivity]",
+            &types[2].1
+        ));
+        assert!(!crate::type_compat::set_value_type_compatible(
+            "[string]",
+            &types[2].1
+        ));
     }
-
 
     fn shaped_registry() -> ServiceRegistryData {
         parse_service_registry_data(
@@ -1014,18 +1036,35 @@ mod tests {
     fn a_registry_action_exposes_its_response_shape_sorted_and_typed() {
         let registry = shaped_registry();
         let shape = registry.response_shape("files", "upload").expect("shape");
-        let found: Vec<(&str, &str)> =
-            shape.iter().map(|f| (f.name.as_str(), f.field_type.as_str())).collect();
-        assert_eq!(found, vec![("loose", "any"), ("meta", "object"), ("url", "string")]);
+        let found: Vec<(&str, &str)> = shape
+            .iter()
+            .map(|f| (f.name.as_str(), f.field_type.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![("loose", "any"), ("meta", "object"), ("url", "string")]
+        );
     }
 
     #[test]
     fn an_action_without_a_usable_response_shape_has_none() {
         let registry = shaped_registry();
-        assert!(registry.response_shape("files", "ping").is_none(), "empty shape");
-        assert!(registry.response_shape("files", "bare").is_none(), "no shape");
-        assert!(registry.response_shape("files", "missing").is_none(), "unknown action");
-        assert!(registry.response_shape("nope", "upload").is_none(), "unknown service");
+        assert!(
+            registry.response_shape("files", "ping").is_none(),
+            "empty shape"
+        );
+        assert!(
+            registry.response_shape("files", "bare").is_none(),
+            "no shape"
+        );
+        assert!(
+            registry.response_shape("files", "missing").is_none(),
+            "unknown action"
+        );
+        assert!(
+            registry.response_shape("nope", "upload").is_none(),
+            "unknown service"
+        );
     }
 
     // Mobile shells (android/ios) are NO-OP-DISPATCH: they interpret
@@ -1109,6 +1148,17 @@ mod tests {
             "no/such",
         ] {
             assert!(!is_program_host_effect(op), "control: {op}");
+        }
+    }
+
+    #[test]
+    fn os_host_effects_are_the_installed_tables_host_os_operators() {
+        let from_os: std::collections::BTreeSet<&str> = os_host_effects().collect();
+        for op in ["os/read-file", "os/spawn", "os/wait", "os/kill"] {
+            assert!(from_os.contains(op), "{op} in {from_os:?}");
+        }
+        for op in ["os/path-join", "persist", "no/such"] {
+            assert!(!from_os.contains(op), "control: {op}");
         }
     }
 

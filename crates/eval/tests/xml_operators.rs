@@ -72,10 +72,7 @@ fn a_non_string_input_is_an_error_and_a_missing_shape_is_an_arity_error() {
 
 #[test]
 fn the_arxiv_feed_vector_maps_to_what_the_arxiv_provider_returns() {
-    let fixture = crate_path("../orbital-integrations/fixtures/arxiv/search.json");
-    if !fixture.exists() {
-        return;
-    }
+    let fixture = crate_path("tests/fixtures/operators/arxiv-search.json");
     let fixture: Json = serde_json::from_str(&std::fs::read_to_string(fixture).unwrap()).unwrap();
     let body = fixture["exchanges"][0]["response"]["body"].clone();
     let expected = fixture["outcome"]["data"]["results"].clone();

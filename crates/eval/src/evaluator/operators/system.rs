@@ -294,7 +294,11 @@ fn parse_iso_instant(text: &str) -> Option<i64> {
                 return None;
             }
             let offset = (i64::from(oh) * 60 + i64::from(om)) * 60_000;
-            Some(if b[at] == b'-' { ms + offset } else { ms - offset })
+            Some(if b[at] == b'-' {
+                ms + offset
+            } else {
+                ms - offset
+            })
         }
         _ => None,
     }
@@ -626,18 +630,20 @@ impl Operator for ValidateMaxLengthOp {
     }
 }
 
-/// validate/pattern - Regex pattern match
+/// validate/pattern - Match a regex pattern of the shared dialect (see `translate_shared_regex`).
+/// A non-string value, or an invalid or unsupported pattern, is false.
 pub struct ValidatePatternOp;
 impl Operator for ValidatePatternOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/pattern", >= 2);
-        let val = eval_expr(&args[0], ctx)?.to_string_value();
-        let pattern = eval_expr(&args[1], ctx)?.to_string_value();
-
-        // For now, do simple contains check
-        // Full regex would require the regex crate
-        // TODO: Add regex crate dependency for proper pattern matching
-        Ok(Value::Bool(val.contains(&pattern)))
+        let val = eval_expr(&args[0], ctx)?;
+        let pattern = eval_expr(&args[1], ctx)?;
+        let (Value::String(val), Value::String(pattern)) = (val, pattern) else {
+            return Ok(Value::Bool(false));
+        };
+        Ok(Value::Bool(
+            super::string::compile_shared_regex(&pattern).is_some_and(|re| re.is_match(&val)),
+        ))
     }
 }
 
@@ -1399,7 +1405,9 @@ fn unquote_marker(value: &Value) -> Option<usize> {
     match value {
         Value::Array(items) if items.len() == 2 => match (&items[0], &items[1]) {
             (Value::String(h), Value::Number(n))
-                if h == orbital_core_base::schema::quote::UNQUOTE_HEAD && *n >= 0.0 && n.fract() == 0.0 =>
+                if h == orbital_core_base::schema::quote::UNQUOTE_HEAD
+                    && *n >= 0.0
+                    && n.fract() == 0.0 =>
             {
                 Some(*n as usize)
             }
@@ -1510,15 +1518,14 @@ impl Operator for BehaviorApplyOp {
         }
         let value = super::eval_expr(&args[0], ctx)?;
         let overrides = super::eval_expr(&args[1], ctx)?;
-        orbital_core_base::schema::behavior_value::apply_behavior_overrides(&value, &overrides).ok_or_else(
-            || {
+        orbital_core_base::schema::behavior_value::apply_behavior_overrides(&value, &overrides)
+            .ok_or_else(|| {
                 OrbitalError::Eval(EvalError::TypeMismatch {
                     expected: "a behavior value and overrides of its kind".to_string(),
                     actual: "a non-behavior value, or overrides with a key its kind lacks"
                         .to_string(),
                 })
-            },
-        )
+            })
     }
 }
 

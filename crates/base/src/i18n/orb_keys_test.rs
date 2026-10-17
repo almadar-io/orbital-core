@@ -135,11 +135,11 @@ fn collect_file_keys(path: &Path, out: &mut BTreeSet<String>) {
 
 #[test]
 fn schema_serde_keys_are_all_in_en_orb() {
-    let manifest_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let mut keys = BTreeSet::new();
     for rel in [
         "src/schema/types.rs",
-        "src/schema/mod.rs",
+        "src/schema.rs",
         "src/schema/sexpr.rs",
     ] {
         collect_file_keys(&Path::new(manifest_dir).join(rel), &mut keys);

@@ -1,0 +1,2051 @@
+{
+  "caller": {
+    "orbital": "Desk",
+    "trait": "Chat"
+  },
+  "schema": {
+    "name": "AgentPortsApp",
+    "orbitals": [
+      {
+        "name": "Desk",
+        "entity": {
+          "name": "Note",
+          "persistence": "persistent",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string"
+            },
+            {
+              "name": "title",
+              "type": "string"
+            }
+          ]
+        },
+        "auxiliaryEntities": [
+          {
+            "name": "Tag",
+            "persistence": "persistent",
+            "fields": [
+              {
+                "name": "id",
+                "type": "string"
+              }
+            ]
+          }
+        ],
+        "traits": [
+          {
+            "name": "Chat",
+            "scope": "instance",
+            "linkedEntity": "Note",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "name": "Init"
+                },
+                {
+                  "key": "ADD_NOTE",
+                  "name": "Add note",
+                  "external": true,
+                  "description": "Add a note",
+                  "payloadSchema": [
+                    {
+                      "name": "title",
+                      "type": "string",
+                      "required": true
+                    }
+                  ]
+                },
+                {
+                  "key": "CLEAR",
+                  "name": "Clear",
+                  "external": true
+                },
+                {
+                  "key": "SECRET",
+                  "name": "Secret"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "INIT"
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "ADD_NOTE"
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "CLEAR"
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "SECRET"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "Lab",
+        "entity": {
+          "name": "Probe",
+          "persistence": "runtime",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string"
+            }
+          ]
+        },
+        "traits": [
+          {
+            "name": "Bench",
+            "scope": "instance",
+            "linkedEntity": "Probe",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "name": "Init"
+                },
+                {
+                  "key": "RUN",
+                  "name": "Run",
+                  "external": true,
+                  "description": "Run a probe",
+                  "payloadSchema": [
+                    {
+                      "name": "mode",
+                      "type": "string",
+                      "required": true,
+                      "values": [
+                        "fast",
+                        "slow"
+                      ]
+                    },
+                    {
+                      "name": "tags",
+                      "type": "[string]"
+                    },
+                    {
+                      "name": "opts",
+                      "type": "object",
+                      "properties": [
+                        {
+                          "name": "depth",
+                          "type": "number",
+                          "required": true
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "INIT"
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "RUN"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "rows": {
+    "Note": [
+      {
+        "id": "n3",
+        "title": "c"
+      },
+      {
+        "id": "n2",
+        "title": "b",
+        "createdAt": 2
+      },
+      {
+        "id": "n1",
+        "title": "a",
+        "createdAt": 1
+      }
+    ],
+    "Tag": []
+  },
+  "scripted": {
+    "ADD_NOTE": {
+      "success": true,
+      "transitioned": true,
+      "states": {
+        "Chat": "idle"
+      },
+      "emittedEvents": [
+        {
+          "event": "NOTE_ADDED",
+          "payload": {
+            "id": "n9"
+          }
+        },
+        {
+          "event": "TICK"
+        }
+      ]
+    },
+    "CLEAR": {
+      "success": false,
+      "transitioned": false,
+      "states": {},
+      "emittedEvents": [],
+      "rejections": [
+        {
+          "code": "guard-rejected",
+          "trait": "Chat",
+          "event": "CLEAR"
+        }
+      ]
+    },
+    "RUN": {
+      "success": true,
+      "transitioned": false,
+      "states": {},
+      "emittedEvents": []
+    }
+  },
+  "dispatchOutcomes": [
+    {
+      "name": "a rejection names its code",
+      "response": {
+        "success": false,
+        "transitioned": false,
+        "states": {},
+        "emittedEvents": [],
+        "rejections": [
+          {
+            "code": "guard-rejected"
+          },
+          {
+            "code": "no-matching-transition"
+          }
+        ]
+      },
+      "outcome": {
+        "ok": false,
+        "error": "guard-rejected, no-matching-transition"
+      }
+    },
+    {
+      "name": "a rejection wins over a failed guard",
+      "response": {
+        "success": false,
+        "transitioned": false,
+        "states": {},
+        "emittedEvents": [],
+        "rejections": [
+          {
+            "code": "effect-failed"
+          }
+        ],
+        "guardFailed": "Chat.CLEAR"
+      },
+      "outcome": {
+        "ok": false,
+        "error": "effect-failed"
+      }
+    },
+    {
+      "name": "a failed guard",
+      "response": {
+        "success": false,
+        "transitioned": false,
+        "states": {},
+        "emittedEvents": [],
+        "guardFailed": "Chat.CLEAR"
+      },
+      "outcome": {
+        "ok": false,
+        "error": "guard failed: Chat.CLEAR"
+      }
+    },
+    {
+      "name": "an unsuccessful response carries its error",
+      "response": {
+        "success": false,
+        "transitioned": false,
+        "states": {},
+        "emittedEvents": [],
+        "error": "boom"
+      },
+      "outcome": {
+        "ok": false,
+        "error": "boom"
+      }
+    },
+    {
+      "name": "an unsuccessful response with no error",
+      "response": {
+        "success": false,
+        "transitioned": false,
+        "states": {},
+        "emittedEvents": []
+      },
+      "outcome": {
+        "ok": false,
+        "error": "dispatch failed"
+      }
+    },
+    {
+      "name": "a failed effect carries its error",
+      "response": {
+        "success": true,
+        "transitioned": true,
+        "states": {},
+        "emittedEvents": [],
+        "effectResults": [
+          {
+            "effect": "persist",
+            "success": true
+          },
+          {
+            "effect": "call-service",
+            "success": false,
+            "error": "no key"
+          }
+        ]
+      },
+      "outcome": {
+        "ok": false,
+        "error": "no key"
+      }
+    },
+    {
+      "name": "a failed effect with no error names the effect",
+      "response": {
+        "success": true,
+        "transitioned": true,
+        "states": {},
+        "emittedEvents": [],
+        "effectResults": [
+          {
+            "effect": "persist",
+            "success": false
+          }
+        ]
+      },
+      "outcome": {
+        "ok": false,
+        "error": "persist failed"
+      }
+    },
+    {
+      "name": "nothing transitioned",
+      "response": {
+        "success": true,
+        "transitioned": false,
+        "states": {},
+        "emittedEvents": []
+      },
+      "outcome": {
+        "ok": false,
+        "error": "no transition"
+      }
+    },
+    {
+      "name": "a transition lists what it emitted, a payload only when it has one",
+      "response": {
+        "success": true,
+        "transitioned": true,
+        "states": {},
+        "emittedEvents": [
+          {
+            "event": "A",
+            "payload": {
+              "n": 1
+            }
+          },
+          {
+            "event": "B"
+          }
+        ]
+      },
+      "outcome": {
+        "ok": true,
+        "emitted": [
+          {
+            "event": "A",
+            "payload": {
+              "n": 1
+            }
+          },
+          {
+            "event": "B"
+          }
+        ]
+      }
+    },
+    {
+      "name": "control: a transition that emitted nothing",
+      "response": {
+        "success": true,
+        "transitioned": true,
+        "states": {},
+        "emittedEvents": []
+      },
+      "outcome": {
+        "ok": true,
+        "emitted": []
+      }
+    }
+  ],
+  "cases": [
+    {
+      "name": "inputs lists every declared external input with its address and JSON Schema, and the persisted entities",
+      "op": "program/inputs",
+      "args": [],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "inputs": [
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "ADD_NOTE",
+              "address": "Desk.Chat.ADD_NOTE",
+              "description": "Add a note",
+              "payloadSchema": [
+                {
+                  "name": "title",
+                  "type": "string",
+                  "required": true
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ]
+              }
+            },
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "CLEAR",
+              "address": "Desk.Chat.CLEAR",
+              "payloadSchema": [],
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "orbital": "Lab",
+              "trait": "Bench",
+              "event": "RUN",
+              "address": "Lab.Bench.RUN",
+              "description": "Run a probe",
+              "payloadSchema": [
+                {
+                  "name": "mode",
+                  "type": "string",
+                  "required": true,
+                  "values": [
+                    "fast",
+                    "slow"
+                  ]
+                },
+                {
+                  "name": "tags",
+                  "type": "[string]"
+                },
+                {
+                  "name": "opts",
+                  "type": "object",
+                  "properties": [
+                    {
+                      "name": "depth",
+                      "type": "number",
+                      "required": true
+                    }
+                  ]
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "fast",
+                      "slow"
+                    ]
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "opts": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "depth": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "depth"
+                    ]
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              }
+            }
+          ],
+          "entities": [
+            "Note",
+            "Tag"
+          ],
+          "selected": []
+        }
+      }
+    },
+    {
+      "name": "control: the options must be an object",
+      "op": "program/inputs",
+      "args": [
+        "Desk"
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/inputs: the options must be an object"
+      }
+    },
+    {
+      "name": "control: inputs takes only its options",
+      "op": "program/inputs",
+      "args": [
+        {
+          "select": []
+        },
+        {
+          "select": []
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/inputs: takes only options"
+      }
+    },
+    {
+      "name": "select resolves a bare event against the calling trait, in the order given",
+      "op": "program/inputs",
+      "args": [
+        {
+          "select": [
+            {
+              "event": "ADD_NOTE"
+            },
+            {
+              "event": "Lab.Bench.RUN"
+            }
+          ]
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "inputs": [
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "ADD_NOTE",
+              "address": "Desk.Chat.ADD_NOTE",
+              "description": "Add a note",
+              "payloadSchema": [
+                {
+                  "name": "title",
+                  "type": "string",
+                  "required": true
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ]
+              }
+            },
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "CLEAR",
+              "address": "Desk.Chat.CLEAR",
+              "payloadSchema": [],
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "orbital": "Lab",
+              "trait": "Bench",
+              "event": "RUN",
+              "address": "Lab.Bench.RUN",
+              "description": "Run a probe",
+              "payloadSchema": [
+                {
+                  "name": "mode",
+                  "type": "string",
+                  "required": true,
+                  "values": [
+                    "fast",
+                    "slow"
+                  ]
+                },
+                {
+                  "name": "tags",
+                  "type": "[string]"
+                },
+                {
+                  "name": "opts",
+                  "type": "object",
+                  "properties": [
+                    {
+                      "name": "depth",
+                      "type": "number",
+                      "required": true
+                    }
+                  ]
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "fast",
+                      "slow"
+                    ]
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "opts": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "depth": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "depth"
+                    ]
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              }
+            }
+          ],
+          "entities": [
+            "Note",
+            "Tag"
+          ],
+          "selected": [
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "ADD_NOTE",
+              "address": "Desk.Chat.ADD_NOTE",
+              "description": "Add a note",
+              "payloadSchema": [
+                {
+                  "name": "title",
+                  "type": "string",
+                  "required": true
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ]
+              }
+            },
+            {
+              "orbital": "Lab",
+              "trait": "Bench",
+              "event": "RUN",
+              "address": "Lab.Bench.RUN",
+              "description": "Run a probe",
+              "payloadSchema": [
+                {
+                  "name": "mode",
+                  "type": "string",
+                  "required": true,
+                  "values": [
+                    "fast",
+                    "slow"
+                  ]
+                },
+                {
+                  "name": "tags",
+                  "type": "[string]"
+                },
+                {
+                  "name": "opts",
+                  "type": "object",
+                  "properties": [
+                    {
+                      "name": "depth",
+                      "type": "number",
+                      "required": true
+                    }
+                  ]
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "fast",
+                      "slow"
+                    ]
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "opts": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "depth": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "depth"
+                    ]
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "select by Trait.EVENT states the payload the model is shown in place of the input's own",
+      "op": "program/inputs",
+      "args": [
+        {
+          "select": [
+            {
+              "event": "Chat.ADD_NOTE",
+              "payload": [
+                {
+                  "name": "text",
+                  "type": "string",
+                  "required": true
+                },
+                {
+                  "name": "tags",
+                  "type": "[string]",
+                  "values": [
+                    "a",
+                    "b"
+                  ]
+                },
+                {
+                  "name": "meta",
+                  "type": "object",
+                  "properties": [
+                    {
+                      "name": "depth",
+                      "type": "number"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "inputs": [
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "ADD_NOTE",
+              "address": "Desk.Chat.ADD_NOTE",
+              "description": "Add a note",
+              "payloadSchema": [
+                {
+                  "name": "title",
+                  "type": "string",
+                  "required": true
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ]
+              }
+            },
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "CLEAR",
+              "address": "Desk.Chat.CLEAR",
+              "payloadSchema": [],
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "orbital": "Lab",
+              "trait": "Bench",
+              "event": "RUN",
+              "address": "Lab.Bench.RUN",
+              "description": "Run a probe",
+              "payloadSchema": [
+                {
+                  "name": "mode",
+                  "type": "string",
+                  "required": true,
+                  "values": [
+                    "fast",
+                    "slow"
+                  ]
+                },
+                {
+                  "name": "tags",
+                  "type": "[string]"
+                },
+                {
+                  "name": "opts",
+                  "type": "object",
+                  "properties": [
+                    {
+                      "name": "depth",
+                      "type": "number",
+                      "required": true
+                    }
+                  ]
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "fast",
+                      "slow"
+                    ]
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "opts": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "depth": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "depth"
+                    ]
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              }
+            }
+          ],
+          "entities": [
+            "Note",
+            "Tag"
+          ],
+          "selected": [
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "ADD_NOTE",
+              "address": "Desk.Chat.ADD_NOTE",
+              "description": "Add a note",
+              "payloadSchema": [
+                {
+                  "name": "text",
+                  "type": "string",
+                  "required": true
+                },
+                {
+                  "name": "tags",
+                  "type": "[string]",
+                  "values": [
+                    "a",
+                    "b"
+                  ]
+                },
+                {
+                  "name": "meta",
+                  "type": "object",
+                  "properties": [
+                    {
+                      "name": "depth",
+                      "type": "number"
+                    }
+                  ]
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "a",
+                        "b"
+                      ]
+                    }
+                  },
+                  "meta": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "depth": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "control: an empty selection selects nothing",
+      "op": "program/inputs",
+      "args": [
+        {
+          "select": []
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "inputs": [
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "ADD_NOTE",
+              "address": "Desk.Chat.ADD_NOTE",
+              "description": "Add a note",
+              "payloadSchema": [
+                {
+                  "name": "title",
+                  "type": "string",
+                  "required": true
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ]
+              }
+            },
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "CLEAR",
+              "address": "Desk.Chat.CLEAR",
+              "payloadSchema": [],
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "orbital": "Lab",
+              "trait": "Bench",
+              "event": "RUN",
+              "address": "Lab.Bench.RUN",
+              "description": "Run a probe",
+              "payloadSchema": [
+                {
+                  "name": "mode",
+                  "type": "string",
+                  "required": true,
+                  "values": [
+                    "fast",
+                    "slow"
+                  ]
+                },
+                {
+                  "name": "tags",
+                  "type": "[string]"
+                },
+                {
+                  "name": "opts",
+                  "type": "object",
+                  "properties": [
+                    {
+                      "name": "depth",
+                      "type": "number",
+                      "required": true
+                    }
+                  ]
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "fast",
+                      "slow"
+                    ]
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "opts": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "depth": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "depth"
+                    ]
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              }
+            }
+          ],
+          "entities": [
+            "Note",
+            "Tag"
+          ],
+          "selected": []
+        }
+      }
+    },
+    {
+      "name": "control: absent options select nothing",
+      "op": "program/inputs",
+      "args": [
+        null
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "inputs": [
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "ADD_NOTE",
+              "address": "Desk.Chat.ADD_NOTE",
+              "description": "Add a note",
+              "payloadSchema": [
+                {
+                  "name": "title",
+                  "type": "string",
+                  "required": true
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ]
+              }
+            },
+            {
+              "orbital": "Desk",
+              "trait": "Chat",
+              "event": "CLEAR",
+              "address": "Desk.Chat.CLEAR",
+              "payloadSchema": [],
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "orbital": "Lab",
+              "trait": "Bench",
+              "event": "RUN",
+              "address": "Lab.Bench.RUN",
+              "description": "Run a probe",
+              "payloadSchema": [
+                {
+                  "name": "mode",
+                  "type": "string",
+                  "required": true,
+                  "values": [
+                    "fast",
+                    "slow"
+                  ]
+                },
+                {
+                  "name": "tags",
+                  "type": "[string]"
+                },
+                {
+                  "name": "opts",
+                  "type": "object",
+                  "properties": [
+                    {
+                      "name": "depth",
+                      "type": "number",
+                      "required": true
+                    }
+                  ]
+                }
+              ],
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "fast",
+                      "slow"
+                    ]
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "opts": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "depth": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "depth"
+                    ]
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              }
+            }
+          ],
+          "entities": [
+            "Note",
+            "Tag"
+          ],
+          "selected": []
+        }
+      }
+    },
+    {
+      "name": "control: a selected event that is not a declared external input fails the call",
+      "op": "program/inputs",
+      "args": [
+        {
+          "select": [
+            {
+              "event": "Nowhere.GO"
+            }
+          ]
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/inputs: 'Nowhere.GO' is not a declared external input"
+      }
+    },
+    {
+      "name": "control: a selected event that is declared but not an external input fails the call",
+      "op": "program/inputs",
+      "args": [
+        {
+          "select": [
+            {
+              "event": "SECRET"
+            }
+          ]
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/inputs: 'SECRET' is not a declared external input"
+      }
+    },
+    {
+      "name": "control: a select entry must be an object with a text event",
+      "op": "program/inputs",
+      "args": [
+        {
+          "select": [
+            {
+              "event": 3
+            }
+          ]
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/inputs: select must be a list of { event, payload? }"
+      }
+    },
+    {
+      "name": "control: a select entry takes only event and payload",
+      "op": "program/inputs",
+      "args": [
+        {
+          "select": [
+            {
+              "event": "ADD_NOTE",
+              "extra": 1
+            }
+          ]
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/inputs: select must be a list of { event, payload? }"
+      }
+    },
+    {
+      "name": "control: select must be a list",
+      "op": "program/inputs",
+      "args": [
+        {
+          "select": "ADD_NOTE"
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/inputs: select must be a list of { event, payload? }"
+      }
+    },
+    {
+      "name": "control: a select payload must be payload fields",
+      "op": "program/inputs",
+      "args": [
+        {
+          "select": [
+            {
+              "event": "ADD_NOTE",
+              "payload": "x"
+            }
+          ]
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/inputs: a select payload must be a list of payload fields"
+      }
+    },
+    {
+      "name": "control: an option other than select is refused",
+      "op": "program/inputs",
+      "args": [
+        {
+          "run": true
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/inputs: unsupported option \"run\""
+      }
+    },
+    {
+      "name": "read-named returns the rows of a persisted entity, oldest first, an unstamped row last",
+      "op": "persist/read-named",
+      "args": [
+        "Note"
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "entity": "Note",
+          "count": 3,
+          "rows": [
+            {
+              "id": "n1",
+              "title": "a",
+              "createdAt": 1
+            },
+            {
+              "id": "n2",
+              "title": "b",
+              "createdAt": 2
+            },
+            {
+              "id": "n3",
+              "title": "c"
+            }
+          ]
+        }
+      },
+      "text": "{\"entity\":\"Note\",\"count\":3,\"rows\":[{\"id\":\"n1\",\"title\":\"a\",\"createdAt\":1},{\"id\":\"n2\",\"title\":\"b\",\"createdAt\":2},{\"id\":\"n3\",\"title\":\"c\"}]}"
+    },
+    {
+      "name": "read-named reads an auxiliary entity too",
+      "op": "persist/read-named",
+      "args": [
+        "Tag"
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "entity": "Tag",
+          "count": 0,
+          "rows": []
+        }
+      },
+      "text": "{\"entity\":\"Tag\",\"count\":0,\"rows\":[]}"
+    },
+    {
+      "name": "control: a runtime entity is not readable by name",
+      "op": "persist/read-named",
+      "args": [
+        "Probe"
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "persist/read-named: 'Probe' is not a persisted entity of this program",
+        "errors": [
+          {
+            "code": "unknown-entity",
+            "message": "persist/read-named: 'Probe' is not a persisted entity of this program"
+          }
+        ]
+      }
+    },
+    {
+      "name": "control: a name the program does not declare is a typed error",
+      "op": "persist/read-named",
+      "args": [
+        "Ghost"
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "persist/read-named: 'Ghost' is not a persisted entity of this program",
+        "errors": [
+          {
+            "code": "unknown-entity",
+            "message": "persist/read-named: 'Ghost' is not a persisted entity of this program"
+          }
+        ]
+      }
+    },
+    {
+      "name": "control: the name is case sensitive",
+      "op": "persist/read-named",
+      "args": [
+        "note"
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "persist/read-named: 'note' is not a persisted entity of this program",
+        "errors": [
+          {
+            "code": "unknown-entity",
+            "message": "persist/read-named: 'note' is not a persisted entity of this program"
+          }
+        ]
+      }
+    },
+    {
+      "name": "control: the name must be text",
+      "op": "persist/read-named",
+      "args": [
+        7
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "persist/read-named: the entity name must be text"
+      }
+    },
+    {
+      "name": "control: read-named takes exactly the name",
+      "op": "persist/read-named",
+      "args": [],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "persist/read-named: expected the entity name"
+      }
+    },
+    {
+      "name": "dispatch by the qualified address fires the input and answers what it emitted",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Chat.ADD_NOTE",
+        {
+          "title": "x"
+        }
+      ],
+      "dispatched": {
+        "address": "Desk.Chat.ADD_NOTE",
+        "payload": {
+          "title": "x"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": true,
+          "emitted": [
+            {
+              "event": "NOTE_ADDED",
+              "payload": {
+                "id": "n9"
+              }
+            },
+            {
+              "event": "TICK"
+            }
+          ]
+        }
+      },
+      "text": "{\"ok\":true,\"emitted\":[{\"event\":\"NOTE_ADDED\",\"payload\":{\"id\":\"n9\"}},{\"event\":\"TICK\"}]}"
+    },
+    {
+      "name": "dispatch by Trait.EVENT resolves against the calling trait's orbital",
+      "op": "program/dispatch",
+      "args": [
+        "Chat.ADD_NOTE",
+        {
+          "title": "x"
+        }
+      ],
+      "dispatched": {
+        "address": "Desk.Chat.ADD_NOTE",
+        "payload": {
+          "title": "x"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": true,
+          "emitted": [
+            {
+              "event": "NOTE_ADDED",
+              "payload": {
+                "id": "n9"
+              }
+            },
+            {
+              "event": "TICK"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "dispatch by the bare event resolves against the calling trait",
+      "op": "program/dispatch",
+      "args": [
+        "ADD_NOTE",
+        {
+          "title": "x"
+        }
+      ],
+      "dispatched": {
+        "address": "Desk.Chat.ADD_NOTE",
+        "payload": {
+          "title": "x"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": true,
+          "emitted": [
+            {
+              "event": "NOTE_ADDED",
+              "payload": {
+                "id": "n9"
+              }
+            },
+            {
+              "event": "TICK"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "dispatch takes the arguments as JSON text, as a model sends them",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Chat.ADD_NOTE",
+        "{\"title\":\"x\"}"
+      ],
+      "dispatched": {
+        "address": "Desk.Chat.ADD_NOTE",
+        "payload": {
+          "title": "x"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": true,
+          "emitted": [
+            {
+              "event": "NOTE_ADDED",
+              "payload": {
+                "id": "n9"
+              }
+            },
+            {
+              "event": "TICK"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "empty argument text is an empty payload",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Chat.CLEAR",
+        ""
+      ],
+      "dispatched": {
+        "address": "Desk.Chat.CLEAR",
+        "payload": {}
+      },
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "guard-rejected"
+        }
+      }
+    },
+    {
+      "name": "no arguments is an empty payload",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Chat.CLEAR"
+      ],
+      "dispatched": {
+        "address": "Desk.Chat.CLEAR",
+        "payload": {}
+      },
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "guard-rejected"
+        }
+      }
+    },
+    {
+      "name": "a dispatch that did not transition answers why",
+      "op": "program/dispatch",
+      "args": [
+        "Lab.Bench.RUN",
+        {
+          "mode": "fast"
+        }
+      ],
+      "dispatched": {
+        "address": "Lab.Bench.RUN",
+        "payload": {
+          "mode": "fast"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "no transition"
+        }
+      },
+      "text": "{\"ok\":false,\"error\":\"no transition\"}"
+    },
+    {
+      "name": "control: an event that is not a declared external input is refused and never dispatched",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Chat.SECRET",
+        {}
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "'Desk.Chat.SECRET' is not a declared external input"
+        }
+      },
+      "text": "{\"ok\":false,\"error\":\"'Desk.Chat.SECRET' is not a declared external input\"}"
+    },
+    {
+      "name": "control: an unknown address is refused and never dispatched",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Nowhere.GO",
+        {}
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "'Desk.Nowhere.GO' is not a declared external input"
+        }
+      }
+    },
+    {
+      "name": "control: an any-source address names no input",
+      "op": "program/dispatch",
+      "args": [
+        "*.ADD_NOTE",
+        {}
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "'*.ADD_NOTE' is not a declared external input"
+        }
+      }
+    },
+    {
+      "name": "control: arguments that are not JSON are refused and never dispatched",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Chat.ADD_NOTE",
+        "{bad"
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "arguments must be a JSON object"
+        }
+      }
+    },
+    {
+      "name": "control: arguments that are JSON but not an object are refused",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Chat.ADD_NOTE",
+        "[1]"
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "arguments must be a JSON object"
+        }
+      }
+    },
+    {
+      "name": "a stated schema holds the arguments to it: a missing required field",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Chat.ADD_NOTE",
+        {},
+        {
+          "schema": [
+            {
+              "name": "title",
+              "type": "string",
+              "required": true
+            }
+          ]
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "the arguments do not match the tool",
+          "issues": [
+            {
+              "path": "title",
+              "reason": "missing"
+            }
+          ]
+        }
+      },
+      "text": "{\"ok\":false,\"error\":\"the arguments do not match the tool\",\"issues\":[{\"path\":\"title\",\"reason\":\"missing\"}]}"
+    },
+    {
+      "name": "a stated schema reports what a wrong-type argument actually was",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Chat.ADD_NOTE",
+        "{\"title\":5,\"extra\":true}",
+        {
+          "schema": [
+            {
+              "name": "title",
+              "type": "string",
+              "required": true
+            }
+          ]
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "the arguments do not match the tool",
+          "issues": [
+            {
+              "path": "title",
+              "reason": "wrong-type",
+              "expected": "string",
+              "received": "number"
+            },
+            {
+              "path": "extra",
+              "reason": "unknown",
+              "expected": "title"
+            }
+          ]
+        }
+      },
+      "text": "{\"ok\":false,\"error\":\"the arguments do not match the tool\",\"issues\":[{\"path\":\"title\",\"reason\":\"wrong-type\",\"expected\":\"string\",\"received\":\"number\"},{\"path\":\"extra\",\"reason\":\"unknown\",\"expected\":\"title\"}]}"
+    },
+    {
+      "name": "a stated schema checks nested objects, lists and closed value sets",
+      "op": "program/dispatch",
+      "args": [
+        "Lab.Bench.RUN",
+        {
+          "mode": "warp",
+          "tags": [
+            "a",
+            2
+          ],
+          "opts": {
+            "depth": "deep"
+          }
+        },
+        {
+          "schema": [
+            {
+              "name": "mode",
+              "type": "string",
+              "required": true,
+              "values": [
+                "fast",
+                "slow"
+              ]
+            },
+            {
+              "name": "tags",
+              "type": "[string]"
+            },
+            {
+              "name": "opts",
+              "type": "object",
+              "properties": [
+                {
+                  "name": "depth",
+                  "type": "number",
+                  "required": true
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "the arguments do not match the tool",
+          "issues": [
+            {
+              "path": "mode",
+              "reason": "not-one-of",
+              "expected": "fast | slow"
+            },
+            {
+              "path": "tags[1]",
+              "reason": "wrong-type",
+              "expected": "string",
+              "received": "number"
+            },
+            {
+              "path": "opts.depth",
+              "reason": "wrong-type",
+              "expected": "number",
+              "received": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "control: arguments that meet the stated schema are dispatched",
+      "op": "program/dispatch",
+      "args": [
+        "Lab.Bench.RUN",
+        {
+          "mode": "slow",
+          "tags": [
+            "a"
+          ],
+          "opts": {
+            "depth": 2
+          }
+        },
+        {
+          "schema": [
+            {
+              "name": "mode",
+              "type": "string",
+              "required": true,
+              "values": [
+                "fast",
+                "slow"
+              ]
+            },
+            {
+              "name": "tags",
+              "type": "[string]"
+            },
+            {
+              "name": "opts",
+              "type": "object",
+              "properties": [
+                {
+                  "name": "depth",
+                  "type": "number",
+                  "required": true
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "dispatched": {
+        "address": "Lab.Bench.RUN",
+        "payload": {
+          "mode": "slow",
+          "tags": [
+            "a"
+          ],
+          "opts": {
+            "depth": 2
+          }
+        }
+      },
+      "expect": {
+        "ok": true,
+        "result": {
+          "ok": false,
+          "error": "no transition"
+        }
+      }
+    },
+    {
+      "name": "control: the address must be text",
+      "op": "program/dispatch",
+      "args": [
+        3,
+        {}
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/dispatch: the address must be text"
+      }
+    },
+    {
+      "name": "control: the arguments must be an object or text",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Chat.ADD_NOTE",
+        3
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/dispatch: the arguments must be an object or JSON text"
+      }
+    },
+    {
+      "name": "control: an option other than schema is refused",
+      "op": "program/dispatch",
+      "args": [
+        "Desk.Chat.ADD_NOTE",
+        {},
+        {
+          "run": true
+        }
+      ],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/dispatch: unsupported option \"run\""
+      }
+    },
+    {
+      "name": "control: dispatch needs an address",
+      "op": "program/dispatch",
+      "args": [],
+      "dispatched": null,
+      "expect": {
+        "ok": false,
+        "error": "program/dispatch: expected an address, its arguments and optional options"
+      }
+    }
+  ]
+}

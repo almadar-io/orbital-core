@@ -159,8 +159,8 @@ pub fn load_language_data_for(
 }
 
 /// Resolves `@almadar/std` from `start_dir` / `user_store` and reads the
-/// operator table it declares. Refuses a table with a rust-target operator the
-/// evaluator in this binary does not implement. Pure: touches no global state.
+/// operator table it declares; the evaluator crate certifies it
+/// ([`certify_operator_data`]). Pure: touches no global state.
 pub fn load_operator_data(
     start_dir: &Path,
     user_store: &Path,
@@ -175,18 +175,6 @@ pub fn load_operator_data_for(
 ) -> Result<OperatorData, LanguageDataError> {
     let block = read_language_block(STD_PACKAGE, start_dir, user_store, running)?;
     let operators = block.read("operators")?;
-    let missing =
-        unimplemented_rust_operators(&operators).map_err(|reason| LanguageDataError::Invalid {
-            path: block.declared_path("operators").unwrap_or_default(),
-            reason,
-        })?;
-    if !missing.is_empty() {
-        return Err(LanguageDataError::Unimplemented {
-            package: STD_PACKAGE,
-            version: block.pkg.version,
-            operators: missing,
-        });
-    }
     Ok(OperatorData {
         operators,
         std_version: block.pkg.version,
@@ -196,7 +184,7 @@ pub fn load_operator_data_for(
 
 /// Operators whose canonical category targets `rust` but that the evaluator
 /// cannot resolve, sorted.
-pub fn unimplemented_rust_operators(table: &str) -> Result<Vec<String>, String> {
+pub fn unimplemented_rust_operators(table: &str, implemented: OperatorProbe) -> Result<Vec<String>, String> {
     let doc: Value = serde_json::from_str(table).map_err(|e| format!("invalid JSON: {e}"))?;
     let categories = doc
         .get("categories")
@@ -213,13 +201,12 @@ pub fn unimplemented_rust_operators(table: &str) -> Result<Vec<String>, String> 
             .and_then(Value::as_array)
             .is_some_and(|t| t.iter().any(|x| x.as_str() == Some("rust")))
     };
-    let probe = OPERATOR_PROBE.get().ok_or(OPERATOR_PROBE_MISSING)?;
     let mut missing: Vec<String> = operators
         .iter()
         .filter(|(_, meta)| {
             targets_rust(meta.get("category").and_then(Value::as_str).unwrap_or(""))
         })
-        .filter(|(name, _)| !probe(name))
+        .filter(|(name, _)| !implemented(name))
         .map(|(name, _)| name.clone())
         .collect();
     missing.sort();
@@ -395,9 +382,9 @@ pub fn preflight() -> Result<(), LanguageDataError> {
 /// `{ core: { version, compiler, patterns, componentMapping, eventContracts,
 /// services, bindingRules, programTypes, themes: [ThemeDefinition…] }, std: { version, compiler,
 /// operators }, vocabularies: [{ package, version, compiler, vocabulary }] }`.
-/// The same checks apply: each `compiler` range must accept this binary, every
-/// rust-target operator must be implemented, and the language packs must be
-/// unambiguous. The first install wins; a later call leaves the installed data
+/// The same checks apply: each `compiler` range must accept this binary and the
+/// language packs must be unambiguous; the evaluator crate's wrapper also
+/// certifies the operators. The first install wins; a later call leaves the installed data
 /// unchanged.
 pub fn install_language_bundle(bundle: &str) -> Result<(), LanguageDataError> {
     let (language, ops, packs) = parse_language_bundle(bundle, running_version())?;
@@ -473,14 +460,6 @@ pub fn parse_language_bundle(
         .map(Value::to_string)
         .collect();
     let operators = text(std, "operators", "std")?;
-    let missing = unimplemented_rust_operators(&operators).map_err(&invalid)?;
-    if !missing.is_empty() {
-        return Err(LanguageDataError::Unimplemented {
-            package: STD_PACKAGE,
-            version: version(std, "std")?,
-            operators: missing,
-        });
-    }
     let program_types = text(core, "programTypes", "core")?;
     crate::language::program_types::parse(&program_types)
         .map_err(|reason| invalid(format!("`core.programTypes`: {reason}")))?;
@@ -593,11 +572,20 @@ pub fn operator_data_after_preflight() -> &'static OperatorData {
 
 pub type OperatorProbe = fn(&str) -> bool;
 
-static OPERATOR_PROBE: OnceLock<OperatorProbe> = OnceLock::new();
-
-const OPERATOR_PROBE_MISSING: &str =
-    "ORB_EVALUATOR_NOT_REGISTERED: no evaluator registered an operator probe; call orbital_core_eval::language_data::install_evaluator() before loading operator data";
-
-pub fn install_operator_probe(probe: OperatorProbe) {
-    let _ = OPERATOR_PROBE.set(probe);
+/// Refuses an operator table naming a rust-target operator `implemented` rejects.
+pub fn certify_operator_data(data: &OperatorData, implemented: OperatorProbe) -> Result<(), LanguageDataError> {
+    let missing = unimplemented_rust_operators(&data.operators, implemented).map_err(|reason| {
+        LanguageDataError::Invalid {
+            path: data.root.clone(),
+            reason,
+        }
+    })?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(LanguageDataError::Unimplemented {
+        package: STD_PACKAGE,
+        version: data.std_version.clone(),
+        operators: missing,
+    })
 }

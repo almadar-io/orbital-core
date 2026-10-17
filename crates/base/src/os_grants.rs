@@ -1,6 +1,8 @@
 //! The program's `os/` grants (`docs/Almadar_OS_Operators.md` §4): closed by default, matched by pure
 //! total functions. The native answerer re-checks them after `realpath`; the validator reads the same data.
 
+use crate::os::OsOp;
+use crate::schema::sexpr::SExpression;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
 
@@ -50,6 +52,39 @@ pub enum DesktopKind {
     Volume,
     Power,
 }
+
+macro_rules! named_kinds {
+    ($ty:ident { $($variant:ident => $name:literal),+ $(,)? }) => {
+        impl $ty {
+            /// Every kind, in declaration order.
+            pub const ALL: &'static [$ty] = &[$($ty::$variant),+];
+
+            /// The `.lolo` / `.orb` spelling.
+            pub fn name(self) -> &'static str {
+                match self { $($ty::$variant => $name),+ }
+            }
+        }
+    };
+}
+
+named_kinds!(FsMode { Read => "read", Write => "write", Create => "create", Remove => "remove", Meta => "meta" });
+named_kinds!(NetKind { Tcp => "tcp", Udp => "udp", Listen => "listen" });
+named_kinds!(StdioKind { In => "in", Out => "out", Err => "err" });
+named_kinds!(SysKind {
+    Cpu => "cpu",
+    Memory => "memory",
+    Disk => "disk",
+    Network => "network",
+    PowerState => "power-state",
+    Identity => "identity",
+});
+named_kinds!(DesktopKind {
+    Notify => "notify",
+    Speak => "speak",
+    Brightness => "brightness",
+    Volume => "volume",
+    Power => "power",
+});
 
 /// A path glob (`**` any number of segments, `*` and `?` within one) and the modes it grants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,6 +252,347 @@ impl OsGrants {
 
     pub fn desktop_allows(&self, kind: DesktopKind) -> bool {
         self.desktop.contains(&kind)
+    }
+}
+
+
+/// One declared entry (a glob with one mode, a target with one kind, a command, …) as a grant set of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantAtom {
+    /// Where it sits in the set, e.g. `fs[0]`.
+    pub path: String,
+    /// How it reads in a message, e.g. `fs "/data/**" write`.
+    pub label: String,
+    pub grants: OsGrants,
+}
+
+/// A declared entry whose shape cannot match anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryProblem {
+    pub path: String,
+    pub message: String,
+}
+
+fn valid_glob(glob: &str) -> bool {
+    glob.starts_with('/') && !glob.split('/').any(|s| s == "..")
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty() && !name.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+impl OsGrants {
+    /// Every entry split to one mode / kind each, each as a grant set of its own.
+    pub fn atoms(&self) -> Vec<GrantAtom> {
+        let mut out = Vec::new();
+        for (i, g) in self.fs.iter().enumerate() {
+            for mode in &g.modes {
+                out.push(GrantAtom {
+                    path: format!("fs[{i}]"),
+                    label: format!("fs {:?} {}", g.glob, mode.name()),
+                    grants: OsGrants {
+                        fs: vec![FsGrant { glob: g.glob.clone(), modes: vec![*mode] }],
+                        ..OsGrants::default()
+                    },
+                });
+            }
+        }
+        for (i, command) in self.exec.iter().enumerate() {
+            out.push(GrantAtom {
+                path: format!("exec[{i}]"),
+                label: format!("exec {command:?}"),
+                grants: OsGrants { exec: vec![command.clone()], ..OsGrants::default() },
+            });
+        }
+        for (i, g) in self.net.iter().enumerate() {
+            for kind in &g.kinds {
+                out.push(GrantAtom {
+                    path: format!("net[{i}]"),
+                    label: format!("net {:?} {}", g.target, kind.name()),
+                    grants: OsGrants {
+                        net: vec![NetGrant { target: g.target.clone(), kinds: vec![*kind] }],
+                        ..OsGrants::default()
+                    },
+                });
+            }
+        }
+        for (i, name) in self.env.iter().enumerate() {
+            out.push(GrantAtom {
+                path: format!("env[{i}]"),
+                label: format!("env {name:?}"),
+                grants: OsGrants { env: vec![name.clone()], ..OsGrants::default() },
+            });
+        }
+        for (i, kind) in self.stdio.iter().enumerate() {
+            out.push(GrantAtom {
+                path: format!("stdio[{i}]"),
+                label: format!("stdio {}", kind.name()),
+                grants: OsGrants { stdio: vec![*kind], ..OsGrants::default() },
+            });
+        }
+        for (i, kind) in self.sys.iter().enumerate() {
+            out.push(GrantAtom {
+                path: format!("sys[{i}]"),
+                label: format!("sys {}", kind.name()),
+                grants: OsGrants { sys: vec![*kind], ..OsGrants::default() },
+            });
+        }
+        for (i, kind) in self.desktop.iter().enumerate() {
+            out.push(GrantAtom {
+                path: format!("desktop[{i}]"),
+                label: format!("desktop {}", kind.name()),
+                grants: OsGrants { desktop: vec![*kind], ..OsGrants::default() },
+            });
+        }
+        out
+    }
+
+    /// The entries that cannot match anything: a glob that is not absolute or climbs with `..`, a command
+    /// or variable name that is empty or holds whitespace, a `net` target that is not `host:port`, an
+    /// entry with no modes or kinds.
+    pub fn entry_problems(&self) -> Vec<EntryProblem> {
+        let mut out = Vec::new();
+        let mut problem = |path: String, message: String| out.push(EntryProblem { path, message });
+        for (i, g) in self.fs.iter().enumerate() {
+            if !valid_glob(&g.glob) {
+                problem(format!("fs[{i}]"), format!("{:?} is not an absolute glob without `..`", g.glob));
+            }
+            if g.modes.is_empty() {
+                problem(format!("fs[{i}]"), format!("{:?} grants no mode", g.glob));
+            }
+        }
+        for (i, command) in self.exec.iter().enumerate() {
+            if !valid_name(command) {
+                problem(format!("exec[{i}]"), format!("{command:?} is not one command name"));
+            }
+        }
+        for (i, g) in self.net.iter().enumerate() {
+            if split_target(&g.target).is_none() {
+                problem(format!("net[{i}]"), format!("{:?} is not `host:port`", g.target));
+            }
+            if g.kinds.is_empty() {
+                problem(format!("net[{i}]"), format!("{:?} grants no kind", g.target));
+            }
+        }
+        for (i, name) in self.env.iter().enumerate() {
+            if !valid_name(name) || name.contains('=') {
+                problem(format!("env[{i}]"), format!("{name:?} is not a variable name"));
+            }
+        }
+        out
+    }
+}
+
+/// One thing an `os/` call needs from the grants, read from its literal arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OsRequirement {
+    Fs { path: String, mode: FsMode },
+    Exec(String),
+    Net { host: String, port: u16, kinds: Vec<NetKind> },
+    Env(String),
+    Stdio(StdioKind),
+    Sys(SysKind),
+    Desktop(DesktopKind),
+}
+
+impl OsGrants {
+    /// Whether the grants cover `need`.
+    pub fn allows(&self, need: &OsRequirement) -> bool {
+        match need {
+            OsRequirement::Fs { path, mode } => self.fs_allows(Path::new(path), *mode),
+            OsRequirement::Exec(command) => self.exec_allows(command),
+            OsRequirement::Net { host, port, kinds } => {
+                kinds.iter().any(|kind| self.net_allows(host, *port, *kind))
+            }
+            OsRequirement::Env(name) => self.env_allows(name),
+            OsRequirement::Stdio(kind) => self.stdio_allows(*kind),
+            OsRequirement::Sys(kind) => self.sys_allows(*kind),
+            OsRequirement::Desktop(kind) => self.desktop_allows(*kind),
+        }
+    }
+}
+
+/// A target argument the caller cannot read at this point (`deferred`) contributes no requirement.
+type Deferred<'a> = &'a dyn Fn(&SExpression) -> bool;
+
+fn literal<'a>(args: &'a [SExpression], index: usize, deferred: Deferred) -> Result<Option<&'a str>, usize> {
+    match args.get(index) {
+        None => Ok(None),
+        Some(arg) if deferred(arg) => Ok(None),
+        Some(SExpression::String(s)) if !s.starts_with('@') => Ok(Some(s)),
+        Some(_) => Err(index),
+    }
+}
+
+fn literal_port(args: &[SExpression], index: usize, deferred: Deferred) -> Result<Option<u16>, usize> {
+    match args.get(index) {
+        None => Ok(None),
+        Some(arg) if deferred(arg) => Ok(None),
+        Some(SExpression::Number(n)) if n.fract() == 0.0 && (0.0..=65535.0).contains(n) => {
+            Ok(Some(*n as u16))
+        }
+        Some(_) => Err(index),
+    }
+}
+
+fn fs_need(args: &[SExpression], index: usize, mode: FsMode, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
+    Ok(literal(args, index, deferred)?
+        .map(|path| OsRequirement::Fs { path: path.to_string(), mode })
+        .into_iter()
+        .collect())
+}
+
+fn net_need(
+    args: &[SExpression],
+    host: usize,
+    port: usize,
+    kinds: &[NetKind],
+    deferred: Deferred,
+) -> Result<Vec<OsRequirement>, usize> {
+    let (Some(name), Some(port)) = (literal(args, host, deferred)?, literal_port(args, port, deferred)?) else {
+        return Ok(Vec::new());
+    };
+    Ok(vec![OsRequirement::Net { host: name.to_string(), port, kinds: kinds.to_vec() }])
+}
+
+/// The prefix of a glob up to its first wildcard segment, as an absolute path.
+fn glob_prefix(glob: &str) -> String {
+    let fixed: Vec<&str> = glob
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .take_while(|s| !s.contains(['*', '?']))
+        .collect();
+    format!("/{}", fixed.join("/"))
+}
+
+fn open_modes(flags: &str) -> Vec<FsMode> {
+    let mut modes = Vec::new();
+    let writes = flags.starts_with(['w', 'a']);
+    modes.push(if writes { FsMode::Write } else { FsMode::Read });
+    if flags.contains('+') && writes {
+        modes.push(FsMode::Read);
+    }
+    if flags.contains('x') {
+        modes.push(FsMode::Create);
+    }
+    modes
+}
+
+fn spawn_needs(args: &[SExpression], deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
+    let mut needs = Vec::new();
+    if let Some(command) = literal(args, 0, deferred)? {
+        needs.push(OsRequirement::Exec(command.to_string()));
+    }
+    if let Some(SExpression::Object(options)) = args.get(2) {
+        for (key, value) in options {
+            match (key.as_str(), value) {
+                ("cwd", SExpression::String(path)) if !path.starts_with('@') => {
+                    needs.push(OsRequirement::Fs { path: path.clone(), mode: FsMode::Read });
+                }
+                ("cwd", SExpression::Null) => {}
+                ("cwd", value) if deferred(value) => {}
+                ("cwd", _) => return Err(2),
+                ("stdin" | "stdout" | "stderr", SExpression::String(mode)) if mode == "inherit" => {
+                    needs.push(OsRequirement::Stdio(match key.as_str() {
+                        "stdin" => StdioKind::In,
+                        "stdout" => StdioKind::Out,
+                        _ => StdioKind::Err,
+                    }));
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(needs)
+}
+
+/// What the `os/` operation `op` needs from the grants, read from its positional arguments (the call's
+/// `{ key, emit }` envelope already split off). `Err(index)` names the first target argument that is not a
+/// literal. Calls that act on a handle (`fd`, `pid`, `sock`) need nothing: the grant was checked where the
+/// handle was made.
+pub fn os_requirements(op: OsOp, args: &[SExpression]) -> Result<Vec<OsRequirement>, usize> {
+    os_requirements_deferring(op, args, &|_| false)
+}
+
+/// [`os_requirements`] for a caller that checks the program before every target is known: an argument for which
+/// `deferred` is true contributes no requirement instead of being reported as computed.
+pub fn os_requirements_deferring(
+    op: OsOp,
+    args: &[SExpression],
+    deferred: &dyn Fn(&SExpression) -> bool,
+) -> Result<Vec<OsRequirement>, usize> {
+    use OsOp::*;
+    let sys = |kind| Ok(vec![OsRequirement::Sys(kind)]);
+    let desktop = |kind| Ok(vec![OsRequirement::Desktop(kind)]);
+    match op {
+        ReadFile | Readlink | WatchFiles | ListDir | Realpath | Chdir | Stat | Lstat | Access | Exists => {
+            fs_need(args, 0, FsMode::Read, deferred)
+        }
+        WriteFile | AppendFile | Truncate => fs_need(args, 0, FsMode::Write, deferred),
+        Open => {
+            let mut needs = Vec::new();
+            if let (Some(path), Some(flags)) = (literal(args, 0, deferred)?, literal(args, 1, deferred)?) {
+                needs.extend(open_modes(flags).into_iter().map(|mode| OsRequirement::Fs {
+                    path: path.to_string(),
+                    mode,
+                }));
+            }
+            Ok(needs)
+        }
+        Copy => fs_need(args, 0, FsMode::Read, deferred).and_then(|mut n| {
+            n.extend(fs_need(args, 1, FsMode::Create, deferred)?);
+            Ok(n)
+        }),
+        Rename => fs_need(args, 0, FsMode::Remove, deferred).and_then(|mut n| {
+            n.extend(fs_need(args, 1, FsMode::Create, deferred)?);
+            Ok(n)
+        }),
+        Link => fs_need(args, 0, FsMode::Write, deferred).and_then(|mut n| {
+            n.extend(fs_need(args, 1, FsMode::Create, deferred)?);
+            Ok(n)
+        }),
+        Symlink => fs_need(args, 1, FsMode::Create, deferred),
+        Remove | Rmdir => fs_need(args, 0, FsMode::Remove, deferred),
+        Mkdir | Mktemp => fs_need(args, 0, FsMode::Create, deferred),
+        Chmod | Chown | Utimes => fs_need(args, 0, FsMode::Meta, deferred),
+        Glob => Ok(literal(args, 0, deferred)?
+            .map(|glob| OsRequirement::Fs { path: glob_prefix(glob), mode: FsMode::Read })
+            .into_iter()
+            .collect()),
+        Spawn => spawn_needs(args, deferred),
+        Getenv | Setenv | Unsetenv | WatchEnv => Ok(literal(args, 0, deferred)?
+            .map(|name| OsRequirement::Env(name.to_string()))
+            .into_iter()
+            .collect()),
+        StdinRead => Ok(vec![OsRequirement::Stdio(StdioKind::In)]),
+        StdoutWrite => Ok(vec![OsRequirement::Stdio(StdioKind::Out)]),
+        StderrWrite => Ok(vec![OsRequirement::Stdio(StdioKind::Err)]),
+        TcpConnect => net_need(args, 0, 1, &[NetKind::Tcp], deferred),
+        TcpListen => net_need(args, 0, 1, &[NetKind::Listen], deferred),
+        UdpBind => net_need(args, 0, 1, &[NetKind::Udp], deferred),
+        Sendto => net_need(args, 2, 3, &[NetKind::Udp], deferred),
+        DnsResolve => Ok(literal(args, 0, deferred)?
+            .map(|host| OsRequirement::Net {
+                host: host.to_string(),
+                port: 0,
+                kinds: vec![NetKind::Tcp, NetKind::Udp],
+            })
+            .into_iter()
+            .collect()),
+        Uid | Gid | Username | GroupOf | Hostname | Uname => sys(SysKind::Identity),
+        CpuUsage | Uptime | LoadAvg => sys(SysKind::Cpu),
+        MemoryInfo => sys(SysKind::Memory),
+        DiskUsage | Mounts | DiskIo => sys(SysKind::Disk),
+        NetworkInterfaces | NetworkStats | NetworkConnected | DefaultGateway => sys(SysKind::Network),
+        BatteryStatus | AcPower | ThermalZones => sys(SysKind::PowerState),
+        Notify => desktop(DesktopKind::Notify),
+        Speak => desktop(DesktopKind::Speak),
+        BrightnessGet | BrightnessSet => desktop(DesktopKind::Brightness),
+        VolumeGet | VolumeSet | VolumeMute => desktop(DesktopKind::Volume),
+        Suspend | Hibernate => desktop(DesktopKind::Power),
+        Close | Read | Write | Seek | Fsync | Cwd | Wait | Kill | Pid | Ppid | WatchProcess
+        | WatchSignal | Environ | Isatty | TtySize | Send | Recv | Recvfrom | Shutdown | WatchPort
+        | ClockMonotonic | WatchCron => Ok(Vec::new()),
     }
 }
 
@@ -517,5 +893,185 @@ mod tests {
         let empty: OsGrants = serde_json::from_value(json!({})).expect("empty");
         assert!(empty.is_empty());
         assert!(serde_json::from_value::<OsGrants>(json!({"sys": ["gpu"]})).is_err());
+    }
+
+    fn call(op: OsOp, args: serde_json::Value) -> Result<Vec<OsRequirement>, usize> {
+        let args: Vec<SExpression> = serde_json::from_value(args).expect("args");
+        os_requirements(op, &args)
+    }
+
+    fn fs_req(path: &str, mode: FsMode) -> OsRequirement {
+        OsRequirement::Fs { path: path.to_string(), mode }
+    }
+
+    #[test]
+    fn a_file_call_needs_its_literal_path_in_the_mode_the_host_checks() {
+        assert_eq!(call(OsOp::ReadFile, json!(["/data/a"])), Ok(vec![fs_req("/data/a", FsMode::Read)]));
+        assert_eq!(call(OsOp::WriteFile, json!(["/data/a", "x"])), Ok(vec![fs_req("/data/a", FsMode::Write)]));
+        assert_eq!(
+            call(OsOp::Rename, json!(["/a/x", "/b/y"])),
+            Ok(vec![fs_req("/a/x", FsMode::Remove), fs_req("/b/y", FsMode::Create)])
+        );
+        assert_eq!(call(OsOp::Chmod, json!(["/a", 420])), Ok(vec![fs_req("/a", FsMode::Meta)]));
+    }
+
+    #[test]
+    fn a_computed_target_names_the_argument_that_is_not_a_literal() {
+        assert_eq!(call(OsOp::ReadFile, json!(["@payload.path"])), Err(0));
+        assert_eq!(call(OsOp::ReadFile, json!([["path-join", "/a", "b"]])), Err(0));
+        assert_eq!(call(OsOp::Copy, json!(["/a", "@payload.to"])), Err(1));
+        assert_eq!(call(OsOp::TcpConnect, json!(["db.internal", "@payload.port"])), Err(1));
+        assert_eq!(call(OsOp::Open, json!(["/a", "@payload.flags"])), Err(1));
+    }
+
+    #[test]
+    fn open_reads_its_modes_from_the_flags() {
+        assert_eq!(call(OsOp::Open, json!(["/a", "r"])), Ok(vec![fs_req("/a", FsMode::Read)]));
+        assert_eq!(call(OsOp::Open, json!(["/a", "w"])), Ok(vec![fs_req("/a", FsMode::Write)]));
+        assert_eq!(
+            call(OsOp::Open, json!(["/a", "w+x"])),
+            Ok(vec![fs_req("/a", FsMode::Write), fs_req("/a", FsMode::Read), fs_req("/a", FsMode::Create)])
+        );
+    }
+
+    #[test]
+    fn spawn_needs_the_command_its_cwd_and_each_inherited_stream() {
+        let needs = call(OsOp::Spawn, json!(["git", ["status"], {"cwd": "/repo", "stdout": "inherit", "stderr": "pipe"}]))
+            .expect("literal");
+        assert_eq!(
+            needs,
+            vec![
+                OsRequirement::Exec("git".into()),
+                fs_req("/repo", FsMode::Read),
+                OsRequirement::Stdio(StdioKind::Out)
+            ]
+        );
+        assert_eq!(call(OsOp::Spawn, json!(["@payload.cmd", []])), Err(0));
+        assert_eq!(call(OsOp::Spawn, json!(["git", [], {"cwd": "@payload.dir"}])), Err(2));
+        assert_eq!(
+            call(OsOp::Spawn, json!(["git", [], {"cwd": null, "stdin": "null"}])),
+            Ok(vec![OsRequirement::Exec("git".into())])
+        );
+    }
+
+    #[test]
+    fn a_glob_needs_read_on_its_literal_prefix() {
+        assert_eq!(call(OsOp::Glob, json!(["/data/**/*.log"])), Ok(vec![fs_req("/data", FsMode::Read)]));
+        assert_eq!(call(OsOp::Glob, json!(["/*.log"])), Ok(vec![fs_req("/", FsMode::Read)]));
+    }
+
+    #[test]
+    fn sys_desktop_and_net_calls_map_to_their_kind_and_handle_calls_need_nothing() {
+        assert_eq!(call(OsOp::MemoryInfo, json!([])), Ok(vec![OsRequirement::Sys(SysKind::Memory)]));
+        assert_eq!(call(OsOp::Notify, json!(["t", "b"])), Ok(vec![OsRequirement::Desktop(DesktopKind::Notify)]));
+        assert_eq!(
+            call(OsOp::TcpConnect, json!(["db.internal", 5432])),
+            Ok(vec![OsRequirement::Net { host: "db.internal".into(), port: 5432, kinds: vec![NetKind::Tcp] }])
+        );
+        assert_eq!(call(OsOp::Close, json!(["@payload.fd"])), Ok(vec![]));
+        assert_eq!(call(OsOp::Pid, json!([])), Ok(vec![]));
+    }
+
+    #[test]
+    fn allows_is_the_one_dispatch_over_the_family_matchers() {
+        let g = OsGrants {
+            fs: vec![FsGrant { glob: "/data/**".into(), modes: vec![FsMode::Read] }],
+            exec: vec!["git".into()],
+            net: vec![NetGrant { target: "db.internal:5432".into(), kinds: vec![NetKind::Tcp] }],
+            sys: vec![SysKind::Memory],
+            ..OsGrants::default()
+        };
+        assert!(g.allows(&fs_req("/data/a", FsMode::Read)));
+        assert!(!g.allows(&fs_req("/data/a", FsMode::Write)));
+        assert!(g.allows(&OsRequirement::Exec("git".into())));
+        assert!(!g.allows(&OsRequirement::Exec("rm".into())));
+        assert!(g.allows(&OsRequirement::Net { host: "db.internal".into(), port: 5432, kinds: vec![NetKind::Udp, NetKind::Tcp] }));
+        assert!(!g.allows(&OsRequirement::Net { host: "db.internal".into(), port: 5432, kinds: vec![NetKind::Udp] }));
+        assert!(g.allows(&OsRequirement::Sys(SysKind::Memory)));
+        assert!(!g.allows(&OsRequirement::Desktop(DesktopKind::Notify)));
+    }
+
+    #[test]
+    fn an_orbital_holds_the_app_level_plus_its_own_and_the_program_the_union() {
+        let schema: crate::schema::OrbitalSchema = serde_json::from_value(json!({
+            "name": "p", "version": "1.0.0",
+            "osGrants": {"stdio": ["out"]},
+            "orbitals": [
+                {"name": "A", "entity": {"name": "E", "fields": []}, "traits": [], "pages": [],
+                 "osGrants": {"exec": ["git"]}},
+                {"name": "B", "entity": {"name": "F", "fields": []}, "traits": [], "pages": []}
+            ]
+        }))
+        .expect("schema");
+        let a = schema.orbital_os_grants(&schema.orbitals[0]);
+        assert!(a.exec_allows("git") && a.stdio_allows(StdioKind::Out));
+        let b = schema.orbital_os_grants(&schema.orbitals[1]);
+        assert!(!b.exec_allows("git") && b.stdio_allows(StdioKind::Out));
+        let program = schema.program_os_grants();
+        assert!(program.exec_allows("git") && program.stdio_allows(StdioKind::Out));
+        assert!(schema.os_grants_of([&schema.orbitals[1]]).exec.is_empty());
+    }
+
+    #[test]
+    fn every_kind_name_matches_its_serde_spelling() {
+        fn spelling<T: Serialize>(kind: &T) -> String {
+            serde_json::to_value(kind).expect("ser").as_str().expect("str").to_string()
+        }
+        for k in FsMode::ALL { assert_eq!(k.name(), spelling(k)); }
+        for k in NetKind::ALL { assert_eq!(k.name(), spelling(k)); }
+        for k in StdioKind::ALL { assert_eq!(k.name(), spelling(k)); }
+        for k in SysKind::ALL { assert_eq!(k.name(), spelling(k)); }
+        for k in DesktopKind::ALL { assert_eq!(k.name(), spelling(k)); }
+        assert_eq!((FsMode::ALL.len(), NetKind::ALL.len(), StdioKind::ALL.len(), SysKind::ALL.len(), DesktopKind::ALL.len()), (5, 3, 3, 6, 5));
+    }
+
+    #[test]
+    fn atoms_split_one_mode_or_kind_each_and_each_allows_only_itself() {
+        let g = OsGrants {
+            fs: vec![FsGrant { glob: "/d/**".into(), modes: vec![FsMode::Read, FsMode::Write] }],
+            net: vec![NetGrant { target: "h:1".into(), kinds: vec![NetKind::Tcp] }],
+            exec: vec!["git".into()],
+            ..OsGrants::default()
+        };
+        let atoms = g.atoms();
+        assert_eq!(atoms.len(), 4);
+        assert_eq!(atoms[0].path, "fs[0]");
+        assert!(atoms[0].grants.fs_allows(Path::new("/d/x"), FsMode::Read));
+        assert!(!atoms[0].grants.fs_allows(Path::new("/d/x"), FsMode::Write));
+        assert!(atoms[1].grants.fs_allows(Path::new("/d/x"), FsMode::Write));
+        assert_eq!(atoms[2].path, "exec[0]");
+        assert_eq!(atoms[3].path, "net[0]");
+        assert!(OsGrants::default().atoms().is_empty());
+    }
+
+    #[test]
+    fn entry_problems_name_every_shape_that_cannot_match() {
+        let bad = OsGrants {
+            fs: vec![
+                FsGrant { glob: "data/**".into(), modes: vec![FsMode::Read] },
+                FsGrant { glob: "/a/../b".into(), modes: vec![FsMode::Read] },
+                FsGrant { glob: "/ok/**".into(), modes: vec![] },
+            ],
+            exec: vec!["git status".into(), "".into()],
+            net: vec![
+                NetGrant { target: "no-port".into(), kinds: vec![NetKind::Tcp] },
+                NetGrant { target: "h:1".into(), kinds: vec![] },
+            ],
+            env: vec!["A=B".into(), "".into()],
+            ..OsGrants::default()
+        };
+        let paths: Vec<String> = bad.entry_problems().into_iter().map(|p| p.path).collect();
+        assert_eq!(
+            paths,
+            ["fs[0]", "fs[1]", "fs[2]", "exec[0]", "exec[1]", "net[0]", "net[1]", "env[0]", "env[1]"]
+        );
+        let good = OsGrants {
+            fs: vec![FsGrant { glob: "/d/**".into(), modes: vec![FsMode::Read] }],
+            exec: vec!["git".into()],
+            net: vec![NetGrant { target: "[::1]:80".into(), kinds: vec![NetKind::Listen] }],
+            env: vec!["HOME".into()],
+            ..OsGrants::default()
+        };
+        assert!(good.entry_problems().is_empty());
     }
 }

@@ -320,6 +320,9 @@ pub struct HttpCallSpec {
     pub body: HttpBodySpec,
     pub auth: Option<HttpAuth>,
     pub timeout_ms: Option<u64>,
+    /// How long the host waits before it sends the first request; a retry or a next page has its own delay.
+    #[serde(default)]
+    pub delay_ms: Option<u64>,
     pub response_as: ResponseAs,
     pub paginate: Option<HttpPaginate>,
     pub stream: Option<StreamFraming>,
@@ -1075,7 +1078,7 @@ pub fn parse_http_call(
     closed_keys(
         map,
         &[
-            "query", "headers", "json", "form", "text", "bytes", "multipart", "auth", "timeoutMs", "responseAs",
+            "query", "headers", "json", "form", "text", "bytes", "multipart", "auth", "timeoutMs", "delayMs", "responseAs",
             "paginate", "stream", "retry", "formEncoding", "queryEncoding", "presign", "webpush",
         ],
         "request",
@@ -1149,6 +1152,7 @@ pub fn parse_http_call(
         }
     }
     let timeout_ms = parse_timeout_ms(map.get("timeoutMs"))?;
+    let delay_ms = parse_delay_ms(map.get("delayMs"))?;
     let response_as = match map.get("responseAs") {
         None => ResponseAs::Text,
         Some(Value::String(s)) if s == "text" => ResponseAs::Text,
@@ -1186,6 +1190,10 @@ pub fn parse_http_call(
         Some(_) => return invalid("presign must be an object"),
     };
 
+    if delay_ms.is_some() && (stream.is_some() || presign.is_some()) {
+        return invalid("delayMs is not used with stream or presign");
+    }
+
     Ok(HttpCallSpec {
         method,
         origin: origin.to_string(),
@@ -1195,6 +1203,7 @@ pub fn parse_http_call(
         body,
         auth,
         timeout_ms,
+        delay_ms,
         response_as,
         paginate,
         stream,
@@ -2358,6 +2367,7 @@ impl HttpCallDriver {
         principal: Option<String>,
     ) -> (HttpCallDriver, HttpStep) {
         let pending: Vec<CredentialSlot> = credential_slots_needed(&spec).into_iter().rev().collect();
+        let first_delay_ms = spec.delay_ms;
         let mut driver = HttpCallDriver {
             spec,
             now_ms,
@@ -2379,7 +2389,7 @@ impl HttpCallDriver {
             boundary: None,
             retries: 0,
             grant_retries: 0,
-            pending_delay_ms: None,
+            pending_delay_ms: first_delay_ms,
             pending_ttl_ms: None,
             principal,
             oauth: None,
@@ -2993,4 +3003,4 @@ impl HttpCallDriver {
 #[allow(unused_imports)]
 use orbital_core_base::http_wire::{RetryOutcome, invalid, closed_keys, text_field, parse_slot_object, whole_number, check_header, credential, v4_public, v6_public};
 #[allow(unused_imports)]
-pub use orbital_core_base::http_wire::{HttpMethod, SecretScope, CredentialSlot, RetryOn, RetryDelay, HttpRetry, RetryOperand, GrantRequest, HttpRefusal, OriginParts, split_url, parse_origin, parse_origin_prefix, parse_credential_status_slot, is_header_name, is_header_value, parse_http_headers, parse_timeout_ms, parse_grant_request, parse_retry, is_public_address};
+pub use orbital_core_base::http_wire::{HttpMethod, SecretScope, CredentialSlot, RetryOn, RetryDelay, HttpRetry, RetryOperand, GrantRequest, HttpRefusal, OriginParts, split_url, parse_origin, parse_origin_prefix, parse_credential_status_slot, is_header_name, is_header_value, parse_http_headers, parse_timeout_ms, parse_delay_ms, parse_grant_request, parse_retry, is_public_address};

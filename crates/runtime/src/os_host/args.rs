@@ -1,9 +1,9 @@
 //! Argument readers and the bytes encoding shared by every family of the native `os/` answerer.
 
-use orbital_core_base::value::{Value, ValueMap};
-use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
+use orbital_core_base::value::Value;
 
 pub(super) fn denied(op: OsOp, what: &str) -> OsError {
     OsError::new(OsErrorKind::Denied, format!("{}: {what}", op.name()))
@@ -53,13 +53,6 @@ pub(super) fn arg_bool(args: &[Value], i: usize, op: OsOp) -> Result<bool, OsErr
     match arg(args, i, op, "a boolean")? {
         Value::Bool(b) => Ok(*b),
         _ => Err(invalid(op, i, "a boolean")),
-    }
-}
-
-pub(super) fn arg_object(args: &[Value], i: usize, op: OsOp) -> Result<&ValueMap, OsError> {
-    match arg(args, i, op, "an object")? {
-        Value::Object(map) => Ok(map),
-        _ => Err(invalid(op, i, "an object")),
     }
 }
 
@@ -131,13 +124,10 @@ mod tests {
     }
 
     #[test]
-    fn bool_and_object_arguments_are_typed() {
-        let args = [Value::Bool(true), Value::Object(ValueMap::new()), s("x")];
+    fn bool_arguments_are_typed() {
+        let args = [Value::Bool(true), Value::Null, s("x")];
         assert_eq!(arg_bool(&args, 0, OP), Ok(true));
         assert!(arg_bool(&args, 2, OP).is_err());
-        assert!(arg_object(&args, 1, OP).is_ok());
-        assert!(arg_object(&args, 0, OP).is_err());
-        assert!(arg_object(&args, 5, OP).is_err());
     }
 
     #[test]

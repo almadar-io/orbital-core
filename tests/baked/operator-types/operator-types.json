@@ -8983,6 +8983,384 @@
           true
         ]
       }
+    },
+    {
+      "name": "every element: flatten of all-array elements",
+      "expr": [
+        "array/flatten",
+        [
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ]
+      ],
+      "expect": {
+        "value": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "every element: flatten of an empty list",
+      "expr": [
+        "array/flatten",
+        []
+      ],
+      "expect": {
+        "value": []
+      }
+    },
+    {
+      "name": "every element: flatten of empty lists",
+      "expr": [
+        "array/flatten",
+        [
+          [],
+          []
+        ]
+      ],
+      "expect": {
+        "value": []
+      }
+    },
+    {
+      "name": "every element: flatten with an empty list before a typed one",
+      "expr": [
+        "array/flatten",
+        [
+          [],
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ]
+      ],
+      "expect": {
+        "value": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "every element: flatten refuses an object after a good element",
+      "expr": [
+        "array/flatten",
+        [
+          [],
+          {
+            "a": 1
+          }
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "object"
+        }
+      }
+    },
+    {
+      "name": "every element: flatten refuses an object after a typed list",
+      "expr": [
+        "array/flatten",
+        [
+          [
+            1
+          ],
+          {
+            "a": 1
+          }
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "object"
+        }
+      }
+    },
+    {
+      "name": "every element: flatten refuses a number at the end",
+      "expr": [
+        "array/flatten",
+        [
+          [
+            1
+          ],
+          [
+            2
+          ],
+          3
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "every element: nested element of the wrong type at the end",
+      "expr": [
+        "array/flatten",
+        [
+          [
+            1,
+            2
+          ],
+          [
+            3,
+            "x"
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "every element: flatten refuses lists of unlike elements",
+      "expr": [
+        "array/flatten",
+        [
+          [
+            1
+          ],
+          [
+            "a"
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "every element: flatten refuses a list beside a number list",
+      "expr": [
+        "array/flatten",
+        [
+          [
+            1
+          ],
+          [
+            [
+              2
+            ]
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "array"
+        }
+      }
+    },
+    {
+      "name": "every element: unique of all-number elements",
+      "expr": [
+        "array/unique",
+        [
+          1,
+          2,
+          2
+        ]
+      ],
+      "expect": {
+        "value": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "every element: unique ignores null elements",
+      "expr": [
+        "array/unique",
+        [
+          1,
+          null,
+          2
+        ]
+      ],
+      "expect": {
+        "value": [
+          1,
+          null,
+          2
+        ]
+      }
+    },
+    {
+      "name": "every element: unique of an empty list",
+      "expr": [
+        "array/unique",
+        []
+      ],
+      "expect": {
+        "value": []
+      }
+    },
+    {
+      "name": "every element: unique refuses a string at the end of numbers",
+      "expr": [
+        "array/unique",
+        [
+          1,
+          2,
+          "a"
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "every element: unique refuses a number after strings",
+      "expr": [
+        "array/unique",
+        [
+          "a",
+          "b",
+          1
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "every element: unique refuses a mixed tail past a null",
+      "expr": [
+        "array/unique",
+        [
+          1,
+          null,
+          2,
+          true
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": "every element: sum refuses a string at the end",
+      "expr": [
+        "array/sum",
+        [
+          1,
+          2,
+          "3"
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
+        }
+      }
+    },
+    {
+      "name": "every element: fromEntries keeps a null value",
+      "expr": [
+        "object/fromEntries",
+        [
+          [
+            "a",
+            null
+          ],
+          [
+            "b",
+            2
+          ]
+        ]
+      ],
+      "expect": {
+        "value": {
+          "a": null,
+          "b": 2
+        }
+      }
+    },
+    {
+      "name": "every element: fromEntries refuses a key of another type in a later pair",
+      "expr": [
+        "object/fromEntries",
+        [
+          [
+            "a",
+            1
+          ],
+          [
+            2,
+            3
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
+      }
+    },
+    {
+      "name": "every element: fromEntries refuses a pair of the wrong length",
+      "expr": [
+        "object/fromEntries",
+        [
+          [
+            "a",
+            1
+          ],
+          [
+            "b"
+          ]
+        ]
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "array",
+          "actual": "array"
+        }
+      }
     }
   ]
 }

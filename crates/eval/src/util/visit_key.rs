@@ -151,8 +151,8 @@ impl DispatchVisits {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orbital_core_base::value::Value as EValue;
     use orbital_core_base::schema::sexpr::SExpression;
+    use orbital_core_base::value::Value as EValue;
     use serde_json::json;
     use std::sync::Arc;
 

@@ -1,17 +1,16 @@
-pub mod evaluator;
-pub mod lower;
-pub mod oal;
-pub mod state_machine;
-pub mod util;
-pub mod literal_type;
 #[cfg(test)]
 pub mod codec_tests;
-#[cfg(test)]
-pub mod language_data_tests;
+pub mod evaluator;
 #[cfg(test)]
 pub mod ir_expr_tests;
 #[cfg(test)]
-pub mod type_compat_tests;
+pub mod language_data_tests;
+pub mod language_loader;
 #[cfg(test)]
 pub mod language_registry_tests;
-pub mod language_loader;
+pub mod literal_type;
+pub mod lower;
+pub mod state_machine;
+#[cfg(test)]
+pub mod type_compat_tests;
+pub mod util;

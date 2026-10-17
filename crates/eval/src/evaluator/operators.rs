@@ -10,10 +10,10 @@
 //! - Control flow: do, when, let
 
 use super::context::BindingContext;
-use orbital_core_base::value::Value;
 use orbital_core_base::error::{EvalError, OrbitalError};
-use orbital_core_base::value::ValueMap;
 use orbital_core_base::schema::sexpr::SExpression;
+use orbital_core_base::value::Value;
+use orbital_core_base::value::ValueMap;
 
 /// Result type for operator evaluation
 pub type EvalResult = Result<Value, OrbitalError>;
@@ -168,6 +168,7 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "endsWith" | "str/endsWith" => K::StrEndsWithOp,
         "replace" | "str/replace" => K::StrReplaceOp,
         "replaceAll" | "str/replaceAll" => K::StrReplaceAllOp,
+        "str/replace-pattern" => K::StrReplacePatternOp,
         "template" | "str/template" => K::StrTemplateOp,
         "str/indexOf" => K::StrIndexOfOp,
 
@@ -365,44 +366,6 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "format/phone" => K::FormatPhoneOp,
         "format/plural" => K::FormatPluralOp,
         "format/list" => K::FormatListOp,
-
-        // ====================================================================
-        // OAL (Orbital Abstraction Layer) - System-level operators
-        // ====================================================================
-
-        // System Information
-        "oal/cpu-usage" => K::OalCpuUsageOp,
-        "oal/memory-info" => K::OalMemoryInfoOp,
-        "oal/uptime" => K::OalUptimeOp,
-        "oal/load-avg" => K::OalLoadAvgOp,
-        "oal/hostname" => K::OalHostnameOp,
-
-        // Power & Thermal
-        "oal/battery-status" => K::OalBatteryStatusOp,
-        "oal/thermal-zones" => K::OalThermalZonesOp,
-        "oal/ac-power" => K::OalAcPowerOp,
-
-        // Storage
-        "oal/disk-usage" => K::OalDiskUsageOp,
-        "oal/mounts" => K::OalMountsOp,
-        "oal/disk-io" => K::OalDiskIoOp,
-
-        // Network
-        "oal/network-interfaces" => K::OalNetworkInterfacesOp,
-        "oal/network-stats" => K::OalNetworkStatsOp,
-        "oal/network-connected" => K::OalNetworkConnectedOp,
-        "oal/default-gateway" => K::OalDefaultGatewayOp,
-
-        // Actions
-        "oal/notify" => K::OalNotifyOp,
-        "oal/speak" => K::OalSpeakOp,
-        "oal/brightness-get" => K::OalBrightnessGetOp,
-        "oal/brightness-set" => K::OalBrightnessSetOp,
-        "oal/volume-get" => K::OalVolumeGetOp,
-        "oal/volume-set" => K::OalVolumeSetOp,
-        "oal/volume-mute" => K::OalVolumeMuteOp,
-        "oal/suspend" => K::OalSuspendOp,
-        "oal/hibernate" => K::OalHibernateOp,
 
         // ====================================================================
         // Composition (compile-time, parity placeholder)

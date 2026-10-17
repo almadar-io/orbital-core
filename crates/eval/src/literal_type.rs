@@ -1,5 +1,3 @@
-
-
 /// Shallow primitive-kind of a **literal** `SExpression` value, in the same
 /// lowercase-kind vocabulary `set_value_type_compatible` speaks. This is the
 /// single source both the lolo L1 emit-payload / `uses`-config-override check
@@ -17,7 +15,9 @@
 /// computed expression versus a literal array: an `Array` whose head is a known
 /// operator is a call (defer, `None`); anything else — empty, or a head that is
 /// not a known operator (e.g. `["red", "blue"]`) — is a literal array (`"array"`).
-pub fn literal_value_type(value: &orbital_core_base::schema::sexpr::SExpression) -> Option<&'static str> {
+pub fn literal_value_type(
+    value: &orbital_core_base::schema::sexpr::SExpression,
+) -> Option<&'static str> {
     use orbital_core_base::schema::sexpr::SExpression;
     match value {
         SExpression::Number(_) => Some("number"),

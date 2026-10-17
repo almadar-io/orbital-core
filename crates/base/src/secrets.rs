@@ -87,7 +87,7 @@ pub fn credential_slots(scheme: &str) -> &'static [&'static str] {
 }
 
 /// The credential name a slot value carries: a bare `@config.<knob>` string, or a `{ credential, scope? }` object.
-fn slot_credential(value: &Value) -> Option<&str> {
+pub fn slot_credential(value: &Value) -> Option<&str> {
     match value {
         Value::String(s) => Some(s),
         Value::Object(o) if o.keys().all(|k| k == "credential" || k == "scope") => {
@@ -330,23 +330,57 @@ fn each_credential_effect<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a str, &'
     }
 }
 
-fn check_credential_slots(items: &[Value], secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
+/// Every credential slot of an `http` call, named by slot, in the order the secret-flow rules check them.
+fn credential_slot_values(items: &[Value]) -> Vec<(String, &Value)> {
+    let mut out = Vec::new();
     let Some(Value::Object(auth)) = http_request(items).and_then(|r| r.get("auth")) else {
-        return;
+        return out;
     };
     let Some(scheme) = auth.get("scheme").and_then(Value::as_str) else {
-        return;
+        return out;
     };
     if scheme == "oauth-client" {
-        if let Some(client) = auth.get("client") {
-            check_oauth_client(client, secrets, path, out);
+        let clients = auth
+            .get("client")
+            .into_iter()
+            .chain(auth.get("clients").and_then(Value::as_object).into_iter().flat_map(Map::values));
+        for client in clients.filter_map(Value::as_object) {
+            for slot in OAUTH_CLIENT_SLOTS {
+                if let Some(value) = client.get(slot) {
+                    out.push((format!("client.{slot}"), value));
+                }
+            }
         }
-        for client in auth.get("clients").and_then(Value::as_object).into_iter().flat_map(Map::values) {
-            check_oauth_client(client, secrets, path, out);
-        }
-        return;
+        return out;
     }
-    let mut check = |slot: String, value: &Value| {
+    for slot in credential_slots(scheme) {
+        if let Some(value) = auth.get(*slot) {
+            out.push(((*slot).to_string(), value));
+        }
+    }
+    if scheme == "token-exchange" {
+        for (name, value) in token_body_fields(auth) {
+            if is_slot_object(value) {
+                out.push((format!("body.{name}"), value));
+            }
+        }
+        if let Some(credential) = auth.get("rotate").and_then(Value::as_object).and_then(|rotate| rotate.get("credential")) {
+            out.push(("rotate.credential".to_string(), credential));
+        }
+    }
+    out
+}
+
+/// Every credential slot value of every `http` call in `expr`, as written, with its slot name, in walk order.
+/// Read the credential name out of one with [`slot_credential`].
+pub fn http_credential_slots(expr: &Value) -> Vec<(String, &Value)> {
+    let mut out = Vec::new();
+    each_http_call(expr, &mut |items| out.extend(credential_slot_values(items)));
+    out
+}
+
+fn check_credential_slots(items: &[Value], secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
+    for (slot, value) in credential_slot_values(items) {
         let is_secret_knob = slot_credential(value)
             .and_then(config_knob)
             .is_some_and(|knob| secrets.contains(&knob));
@@ -355,21 +389,6 @@ fn check_credential_slots(items: &[Value], secrets: &[&str], path: &str, out: &m
                 path: path.to_string(),
                 slot,
             });
-        }
-    };
-    for slot in credential_slots(scheme) {
-        if let Some(value) = auth.get(*slot) {
-            check((*slot).to_string(), value);
-        }
-    }
-    if scheme == "token-exchange" {
-        for (name, value) in token_body_fields(auth) {
-            if is_slot_object(value) {
-                check(format!("body.{name}"), value);
-            }
-        }
-        if let Some(credential) = auth.get("rotate").and_then(Value::as_object).and_then(|rotate| rotate.get("credential")) {
-            check("rotate.credential".to_string(), credential);
         }
     }
 }
@@ -708,5 +727,18 @@ mod tests {
         assert!(codes(&authorize(oauth_client("@config.apiKey", "@config.apiKey"))).is_empty());
         let bad = secret_flow_violations(&authorize(oauth_client("@config.apiKey", "LITERAL")));
         assert!(matches!(&bad[..], [SecretFlowViolation::CredentialNotSecret { slot, .. }] if slot == "client.clientSecret"), "{bad:?}");
+    }
+
+    #[test]
+    fn http_credential_slots_lists_the_slots_of_every_http_call_and_only_those() {
+        let effects = json!([
+            ["http", "GET", "https://a.example", "/s", { "auth": { "scheme": "bearer", "credential": "STRIPE" } }, { "emit": { "success": "OK" } }],
+            ["if", true, ["http", "GET", "https://a.example", "/t", { "auth": { "scheme": "basic", "user": "u", "credential": { "credential": "DB", "scope": "user" } } }, { "emit": { "success": "OK" } }]],
+            ["http", "GET", "https://a.example", "/open", {}, { "emit": { "success": "OK" } }]
+        ]);
+        let slots = http_credential_slots(&effects);
+        let named: Vec<(&str, Option<&str>)> = slots.iter().map(|(slot, value)| (slot.as_str(), slot_credential(value))).collect();
+        assert_eq!(named, vec![("credential", Some("STRIPE")), ("user", Some("u")), ("credential", Some("DB"))]);
+        assert!(http_credential_slots(&json!([["set", "@entity.x", 1]])).is_empty());
     }
 }

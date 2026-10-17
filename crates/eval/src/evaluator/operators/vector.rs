@@ -5,9 +5,9 @@
 //! Missing `z` reads as 0. All ops are pure and total (degenerate input never
 //! errors — e.g. normalize of a zero-length vector returns the zero vector).
 
-use orbital_core_base::value::ValueMap;
 use super::macros::*;
 use super::*;
+use orbital_core_base::value::ValueMap;
 
 /// Read a vector field, defaulting to 0 when absent.
 pub fn vget(obj: &ValueMap, key: &str) -> f64 {
@@ -31,10 +31,7 @@ pub fn make_vec(x: f64, y: f64, z: f64, with_z: bool) -> Value {
 }
 
 /// Evaluate an argument and require it to be an object (returns empty map when not).
-pub fn eval_obj(
-    arg: &SExpression,
-    ctx: &BindingContext,
-) -> Result<ValueMap, OrbitalError> {
+pub fn eval_obj(arg: &SExpression, ctx: &BindingContext) -> Result<ValueMap, OrbitalError> {
     let v = eval_expr(arg, ctx)?;
     match v {
         Value::Object(o) => Ok(o),

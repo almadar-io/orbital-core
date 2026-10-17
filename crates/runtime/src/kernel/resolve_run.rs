@@ -3,7 +3,9 @@
 //! host answers. The step replays with the recorded answers, as a dispatch does.
 
 use super::*;
-use crate::resumable::{accept_replies, DispatchError, IoReply, PendingRequest, RequestId, ResolveContinuation, ResolveProgress};
+use crate::resumable::{
+    accept_replies, number_requests, DispatchError, IoReply, ResolveContinuation, ResolveProgress,
+};
 
 impl RuntimeKernel {
     /// [`Self::resolve_rows`] as a resumable step: it returns [`ResolveProgress::Await`] at the first read the
@@ -42,16 +44,14 @@ impl RuntimeKernel {
         if let Some(diverged) = end.diverged {
             return Err(DispatchError::Resume(diverged));
         }
-        if let Some(request) = end.pending {
+        if !end.pending.is_empty() {
             if result.is_ok() {
                 return Err(DispatchError::Kernel(KernelError::Internal(
                     "a resolve committed while it awaited host I/O".to_string(),
                 )));
             }
             c.journal = end.journal;
-            let id = RequestId::from_raw(c.next_id);
-            c.next_id += 1;
-            c.pending = vec![PendingRequest { id, request }];
+            c.pending = number_requests(&mut c.next_id, end.pending);
             let requests = c.pending.clone();
             return Ok(ResolveProgress::Await {
                 continuation: c,

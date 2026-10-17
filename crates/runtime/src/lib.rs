@@ -5,6 +5,7 @@
 //! listener wiring — so that `orbital-client` and `orbital-server` become thin
 //! wrappers around a single source of truth.
 
+pub mod agent_ports;
 pub mod callsite_capture;
 pub mod canvas_theme;
 pub mod config;

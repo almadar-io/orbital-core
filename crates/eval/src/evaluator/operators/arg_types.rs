@@ -5,8 +5,8 @@
 //!
 //! The check is the signature's own: each evaluated argument is bound against its declared type by
 //! [`crate::signature`], the one resolver of the signature's type variables, so two arguments bound to one
-//! variable must agree (`= : T, T`, `array/append : [T], T`). A value's type is its kind — a list's is its first
-//! non-null element's, a record's carries no fields — so a `key-of` argument is a static check only.
+//! variable must agree (`= : T, T`, `array/append : [T], T`). A value's type is its kind — a list's is the set of its
+//! elements' types, each bound against the declared element type, a record's carries no fields — so a `key-of` argument is a static check only.
 //!
 //! The check rides the one evaluation entry: [`super::eval_expr`] records the argument slice of the operator
 //! call it dispatches, and the evaluation of an element of that slice is bound at its position. No operator
@@ -21,13 +21,15 @@ use std::sync::OnceLock;
 use super::get_operator;
 use crate::evaluator::operators::kind::OperatorKind;
 use orbital_core_base::error::{EvalError, OrbitalError};
-use orbital_core_base::value::Value;
 use orbital_core_base::ir::types::OirType;
 use orbital_core_base::schema::sexpr::SExpression;
-use orbital_core_base::signature::{Actual, CallBindings, Known, Mismatch, Mode, Signature};
+use orbital_core_base::language::registry::{OperatorTypeRef, OperatorTypeRefKind};
+use orbital_core_base::signature::{absent_slot, Actual, CallBindings, Known, Mismatch, Mode, Signature};
+use orbital_core_base::value::Value;
 
 /// The signatures of the operators the evaluator checks, by operator.
-static SIGNATURES: OnceLock<HashMap<Discriminant<OperatorKind>, Signature<'static>>> = OnceLock::new();
+static SIGNATURES: OnceLock<HashMap<Discriminant<OperatorKind>, Signature<'static>>> =
+    OnceLock::new();
 static LOAD_FAILED: AtomicBool = AtomicBool::new(false);
 
 fn build_signatures() -> HashMap<Discriminant<OperatorKind>, Signature<'static>> {
@@ -81,31 +83,114 @@ pub fn operator_signature(name: &str) -> Option<Signature<'static>> {
     declared_signature(&get_operator(name)?)
 }
 
-/// What is known of an evaluated argument: its kind, and for a list its first element's.
-fn known_of(value: &Value) -> Option<Known> {
+/// What is known of an evaluated scalar argument: its kind. `None` for null and for a lambda.
+fn scalar_known(value: &Value) -> Option<Known> {
     match value {
-        Value::Null | Value::Lambda { .. } => None,
+        Value::Null | Value::Lambda { .. } | Value::Array(_) => None,
         Value::Number(_) => Some(Known::Type(OirType::Number)),
         Value::String(_) => Some(Known::Type(OirType::String)),
         Value::Bool(_) => Some(Known::Type(OirType::Boolean)),
         Value::Object(_) => Some(Known::Type(OirType::Struct { fields: Vec::new() })),
-        Value::Array(items) => {
-            match items.iter().find_map(known_of) {
-                Some(Known::Type(element)) => Some(Known::Type(OirType::array(element))),
-                Some(Known::EmptyList | Known::Absent | Known::Void) | None => Some(Known::EmptyList),
+    }
+}
+
+fn push_unique(into: &mut Vec<Known>, known: Known) {
+    if !into.contains(&known) {
+        into.push(known);
+    }
+}
+
+/// What is known of an evaluated argument, read against the type `formal` declares for it: one entry for a
+/// scalar, and for a list one entry per distinct element type, so every element is bound (a list of unlike
+/// elements raises on the first that disagrees). A tuple position is its own type, a null one absent. An empty
+/// list, or one of nulls, is [`Known::EmptyList`]. A null or a lambda has no entry.
+fn views(value: &Value, formal: Option<&OperatorTypeRef>) -> Vec<Known> {
+    let Value::Array(items) = value else {
+        return scalar_known(value).into_iter().collect();
+    };
+    if let Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Tuple { items: slots })) = formal {
+        if items.is_empty() {
+            return vec![Known::EmptyList];
+        }
+        let positions = items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| match views(item, slots.get(i)).into_iter().next() {
+                Some(Known::Type(ty)) => ty,
+                _ => absent_slot(),
+            })
+            .collect();
+        return vec![Known::Type(OirType::Tuple { items: positions })];
+    }
+    let element_formal = match formal {
+        Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Array { of })) => Some(&**of),
+        _ => None,
+    };
+    let mut out = Vec::new();
+    let _ = list_views(items, element_formal, &mut |known| {
+        push_unique(&mut out, known);
+        Ok::<(), ()>(())
+    });
+    out
+}
+
+/// A list's views without collecting them: every element is read (by reference, no per-element list), and each
+/// distinct element type is handed to `each` once as `[T]`; an empty list, or one of nulls, is [`Known::EmptyList`].
+fn list_views<E>(
+    items: &[Value],
+    element_formal: Option<&OperatorTypeRef>,
+    each: &mut dyn FnMut(Known) -> Result<(), E>,
+) -> Result<(), E> {
+    let mut first: Option<OirType> = None;
+    let mut others: Vec<OirType> = Vec::new();
+    let mut note = |known: Known| {
+        if let Known::Type(element) = known {
+            match &first {
+                None => first = Some(element),
+                Some(seen) if *seen == element => {}
+                Some(_) => {
+                    if !others.contains(&element) {
+                        others.push(element);
+                    }
+                }
             }
+        }
+    };
+    for item in items {
+        match item {
+            Value::Array(_) => views(item, element_formal).into_iter().for_each(&mut note),
+            _ => {
+                if let Some(known) = scalar_known(item) {
+                    note(known);
+                }
+            }
+        }
+    }
+    match first {
+        None => each(Known::EmptyList),
+        Some(element) => {
+            each(Known::Type(OirType::array(element)))?;
+            for other in others {
+                each(Known::Type(OirType::array(other)))?;
+            }
+            Ok(())
         }
     }
 }
 
-/// An evaluated argument as the signature resolver sees it.
-pub fn actual_of(value: &Value) -> Actual<'static> {
+fn actual_of_known(known: Option<Known>) -> Actual<'static> {
     Actual {
-        known: known_of(value),
+        known,
         text: None,
         texts: None,
         lambda: None,
     }
+}
+
+/// An evaluated argument as the signature resolver sees it, read without a declared type: the first entry of its
+/// [`views`].
+pub fn actual_of(value: &Value) -> Actual<'static> {
+    actual_of_known(views(value, None).into_iter().next())
 }
 
 fn to_eval_error(mismatch: Mismatch) -> OrbitalError {
@@ -123,10 +208,12 @@ fn to_eval_error(mismatch: Mismatch) -> OrbitalError {
             actual: reason,
         }),
         // Raised by the static checker only: at run time a missing value is a value, and evaluation is unchanged.
-        Mismatch::MaybeAbsent { operator, operand } => OrbitalError::Eval(EvalError::TypeMismatch {
-            expected: format!("a present operand for `{operator}`"),
-            actual: operand,
-        }),
+        Mismatch::MaybeAbsent { operator, operand } => {
+            OrbitalError::Eval(EvalError::TypeMismatch {
+                expected: format!("a present operand for `{operator}`"),
+                actual: operand,
+            })
+        }
     }
 }
 
@@ -175,7 +262,8 @@ pub fn argument_slot(expr: &SExpression) -> Option<usize> {
         let frames = f.borrow();
         let top = frames.last()?;
         let at = expr as *const SExpression as usize;
-        (at >= top.start && at < top.end).then(|| (at - top.start) / std::mem::size_of::<SExpression>())
+        (at >= top.start && at < top.end)
+            .then(|| (at - top.start) / std::mem::size_of::<SExpression>())
     })
 }
 
@@ -190,17 +278,43 @@ pub fn check_argument(index: usize, value: &Value) -> Result<(), OrbitalError> {
             return Ok(());
         };
         let signature = top.signature;
-        signature
-            .bind(&mut top.bindings, index, &actual_of(value), Mode::Runtime)
-            .map_err(to_eval_error)
+        if !matches!(value, Value::Array(_)) {
+            return signature
+                .bind(&mut top.bindings, index, &actual_of_known(scalar_known(value)), Mode::Runtime)
+                .map_err(to_eval_error);
+        }
+        let formal = signature.formal(index);
+        if let (Value::Array(items), false) =
+            (value, matches!(formal, Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Tuple { .. }))))
+        {
+            let element_formal = match formal {
+                Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Array { of })) => Some(&**of),
+                _ => None,
+            };
+            return list_views(items, element_formal, &mut |known| {
+                signature
+                    .bind(&mut top.bindings, index, &actual_of_known(Some(known)), Mode::Runtime)
+                    .map_err(to_eval_error)
+            });
+        }
+        let mut known: Vec<Option<Known>> = views(value, formal).into_iter().map(Some).collect();
+        if known.is_empty() {
+            known.push(None);
+        }
+        for k in known {
+            signature
+                .bind(&mut top.bindings, index, &actual_of_known(k), Mode::Runtime)
+                .map_err(to_eval_error)?;
+        }
+        Ok(())
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use orbital_core_base::value::ValueMap;
     use super::*;
     use orbital_core_base::language::registry::EmbeddedOperator;
+    use orbital_core_base::value::ValueMap;
     use serde_json::json;
 
     fn operator(params: serde_json::Value, max_arity: Option<u32>) -> EmbeddedOperator {
@@ -218,7 +332,8 @@ mod tests {
             if v.is_null() {
                 continue;
             }
-            sig.bind(&mut b, i, &actual_of(v), Mode::Runtime).map_err(to_eval_error)?;
+            sig.bind(&mut b, i, &actual_of(v), Mode::Runtime)
+                .map_err(to_eval_error)?;
         }
         Ok(())
     }
@@ -298,7 +413,10 @@ mod tests {
             check(&op, &[num(1.0), s("1")]).unwrap_err().to_string(),
             "Evaluation error: Type mismatch: expected number, got string"
         );
-        assert!(check(&op, &[Value::Null, s("1")]).is_ok(), "an absent operand binds nothing");
+        assert!(
+            check(&op, &[Value::Null, s("1")]).is_ok(),
+            "an absent operand binds nothing"
+        );
     }
 
     #[test]
@@ -312,12 +430,20 @@ mod tests {
         );
         assert!(check(&op, &[Value::Array(vec![num(1.0)]), num(2.0)]).is_ok());
         assert_eq!(
-            check(&op, &[Value::Array(vec![num(1.0)]), s("x")]).unwrap_err().to_string(),
+            check(&op, &[Value::Array(vec![num(1.0)]), s("x")])
+                .unwrap_err()
+                .to_string(),
             "Evaluation error: Type mismatch: expected number, got string"
         );
-        assert!(check(&op, &[Value::Array(vec![]), s("x")]).is_ok(), "an empty list binds nothing");
+        assert!(
+            check(&op, &[Value::Array(vec![]), s("x")]).is_ok(),
+            "an empty list binds nothing"
+        );
         assert!(check(&op, &[Value::Array(vec![Value::Null, num(1.0)]), num(2.0)]).is_ok());
-        assert!(check(&op, &[num(5.0), num(2.0)]).is_err(), "a non-list for `[T]`");
+        assert!(
+            check(&op, &[num(5.0), num(2.0)]).is_err(),
+            "a non-list for `[T]`"
+        );
     }
 
     #[test]

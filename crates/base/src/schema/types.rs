@@ -89,9 +89,17 @@ pub struct OrbitalSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress: Option<Vec<String>>,
 
+    /// `inbound: [...]` — the hook names (`/api/hooks/<name>`) the program accepts deliveries on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound: Option<Vec<String>>,
+
     /// The `os/` grants (`fs`, `exec`, `net`, `env`, `stdio`, `sys`, `desktop`): what the program's `os/` effects may touch.
     #[serde(rename = "osGrants", default, skip_serializing_if = "Option::is_none")]
     pub os_grants: Option<crate::os_grants::OsGrants>,
+
+    /// `deployment: { unit: [Orbital, ...] }` — which deployment unit runs each orbital; absent = one unit holding every orbital.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<std::collections::BTreeMap<String, Vec<String>>>,
 
     /// Pages served by `uses lazy` behaviors, each loaded from its own `.orb`
     /// when opened.
@@ -116,6 +124,34 @@ pub struct OrbitalSchema {
 }
 
 impl OrbitalSchema {
+    /// An orbital's effective `os/` grants: the app level plus its own.
+    pub fn orbital_os_grants(&self, orbital: &Orbital) -> crate::os_grants::OsGrants {
+        let mut grants = self.os_grants.clone().unwrap_or_default();
+        if let Some(own) = &orbital.os_grants {
+            grants.union(own);
+        }
+        grants
+    }
+
+    /// The `os/` grants of a set of orbitals: the explicit union of each one's effective grants.
+    pub fn os_grants_of<'a>(
+        &self,
+        orbitals: impl IntoIterator<Item = &'a Orbital>,
+    ) -> crate::os_grants::OsGrants {
+        let mut grants = crate::os_grants::OsGrants::default();
+        for orbital in orbitals {
+            grants.union(&self.orbital_os_grants(orbital));
+        }
+        grants
+    }
+
+    /// The program's `os/` grants: the app level plus every orbital's own.
+    pub fn program_os_grants(&self) -> crate::os_grants::OsGrants {
+        let mut grants = self.os_grants.clone().unwrap_or_default();
+        grants.union(&self.os_grants_of(&self.orbitals));
+        grants
+    }
+
     /// An orbital's inline trait with no `linkedEntity` binds its host orbital's
     /// entity (name + id) — the default `@almadar/runtime`'s `buildTraitIndex`
     /// applies, settled once so the kernel, every shell and every validator
@@ -2007,6 +2043,10 @@ pub struct Orbital {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<HashMap<String, ConfigField>>,
 
+    /// This orbital's own `os/` grants (`orbital Name [ fs: …, exec: … ]`); its effective grants are the app level plus these.
+    #[serde(rename = "osGrants", default, skip_serializing_if = "Option::is_none")]
+    pub os_grants: Option<crate::os_grants::OsGrants>,
+
     /// Domain context metadata
     #[serde(rename = "domainContext", skip_serializing_if = "Option::is_none")]
     pub domain_context: Option<DomainContext>,
@@ -3881,6 +3921,33 @@ pub struct EventDefinition {
     /// external or not): an input the author offers to the program.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listened: Option<bool>,
+
+    /// A declared inbound delivery (`listens { EVENT -> inbound "name" answers ANSWER { … } }`): the host
+    /// carries the HTTP request at `/api/hooks/<name>` and the kernel delivers it to this event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound: Option<InboundDeclaration>,
+}
+
+/// What an inbound event declares: the hook name it receives and the event whose payload answers the request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboundDeclaration {
+    /// The hook name, the `:name` of `/api/hooks/:name`.
+    pub name: String,
+    /// The event the handler emits to answer; its payload is `{ status, body }`.
+    pub answers: String,
+    /// The sender check the kernel makes before the handler runs; its result is the payload's `verified`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifies: Option<InboundVerification>,
+}
+
+/// `verifies "<header>" "<CREDENTIAL>"`: the request header that must equal the named credential. The kernel
+/// compares them in constant time; the credential's value never reaches program data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboundVerification {
+    /// The header name, lower-case.
+    pub header: String,
+    /// The credential name the host resolves.
+    pub credential: String,
 }
 
 /// Transition definition

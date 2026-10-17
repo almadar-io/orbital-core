@@ -152,6 +152,12 @@ impl OsOp {
     pub fn is_stream(self) -> bool {
         self.shape() == OsShape::Stream
     }
+
+    /// Whether a keyed call of the operation that declares a completion route may end after the dispatch that
+    /// asked it, its outcome arriving later as an event of the route (EXEC-QUEUE-10).
+    pub fn defers_completion(self) -> bool {
+        self == OsOp::Wait
+    }
 }
 
 /// Why a host refused or failed an `os/` operation. `denied` is a refusal by grant; `unsupported` means the
@@ -253,6 +259,18 @@ mod tests {
         assert_eq!(OsOp::from_name("os/path-join"), None);
         assert_eq!(OsOp::from_name("read-file"), None);
         assert_eq!(OsOp::from_name("random-bytes"), None);
+    }
+
+    #[test]
+    fn only_wait_defers_its_completion() {
+        let deferring: Vec<&str> = OsOp::ALL
+            .iter()
+            .filter(|op| op.defers_completion())
+            .map(|op| op.name())
+            .collect();
+        assert_eq!(deferring, vec!["os/wait"]);
+        assert!(!OsOp::Wait.is_stream());
+        assert!(!OsOp::Spawn.defers_completion());
     }
 
     #[test]

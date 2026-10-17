@@ -381,7 +381,7 @@ fn completion(effect: Json) -> Setup {
 }
 
 fn service_call(fail: bool) -> Setup {
-    let mut setup = completion(json!(["call-service", "llm", "embed", { "texts": ["a"] }]));
+    let mut setup = completion(json!(["call-service", "webhook", "send", { "texts": ["a"] }]));
     setup.service = Some(Arc::new(Llm { fail }));
     setup
 }
@@ -1427,6 +1427,16 @@ fn the_wire_round_trips_every_request_and_answer() {
             op: "program/eval".into(),
             args: vec![Value::Null],
         },
+        IoRequest::Deliver {
+            envelope: sample_envelope(),
+            key: Some("k".into()),
+            site: CallSite {
+                orbital: Some("Src".into()),
+                trait_name: "Sender".into(),
+                follow_on: false,
+                emit: CallRoutes::default(),
+            },
+        },
     ];
     for request in requests {
         let text = serde_json::to_string(&IoRequestWire::from(&request)).unwrap();
@@ -1446,6 +1456,11 @@ fn the_wire_round_trips_every_request_and_answer() {
             message: "m".into(),
             errors: vec![Value::Null],
         })),
+        IoAnswer::Deliver(Ok(Accepted)),
+        IoAnswer::Deliver(Err(DeliverRefusal {
+            kind: DeliverRefusalKind::MailboxFull,
+            id: "i".into(),
+        })),
     ];
     for answer in answers {
         let text = serde_json::to_string(&IoAnswerWire::from(&answer)).unwrap();
@@ -1461,4 +1476,693 @@ fn the_wire_round_trips_every_request_and_answer() {
             response: Default::default(),
         },
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Kernel-mode overlap: keyed `call-service` asks of one step are outstanding together (EXEC-QUEUE-8)
+// ---------------------------------------------------------------------------------------------
+
+struct EchoArgs;
+
+impl ServiceHandler for EchoArgs {
+    fn call(
+        &self,
+        _s: &str,
+        _m: &str,
+        args: &Value,
+        _k: Option<&str>,
+        _c: Option<&orbital_core_runtime::effects::ServiceCaller>,
+    ) -> Result<Value, String> {
+        Ok(args.clone())
+    }
+    fn cancel(&self, _key: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn call_effect(key: &str, n: u32, event: &str) -> Json {
+    json!(["call-service", "svc", "work", { "n": n }, {
+        "key": key,
+        "emit": { "success": format!("{event}_OK"), "failure": format!("{event}_BAD") }
+    }])
+}
+
+fn fan_out(effects: Vec<Json>, events: &[&str]) -> Setup {
+    let mut transitions =
+        vec![json!({ "from": "idle", "to": "idle", "event": "GO", "effects": effects })];
+    for event in events {
+        for outcome in ["OK", "BAD"] {
+            transitions.push(json!({
+                "from": "idle", "to": "idle", "event": format!("{event}_{outcome}"),
+                "effects": [["set", format!("@entity.{}", event.to_lowercase()), "@payload"]]
+            }));
+        }
+    }
+    let schema = json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Run", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Fan",
+                "linkedEntity": "Run",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": transitions }
+            }]
+        }]
+    });
+    let mut setup = Setup::new(schema, &["Run"], vec![dispatch("Fan", "GO")]);
+    setup.service = Some(Arc::new(EchoArgs));
+    setup
+}
+
+fn three_overlapped() -> Setup {
+    fan_out(
+        vec![
+            call_effect("ka", 1, "KA"),
+            call_effect("kb", 2, "KB"),
+            call_effect("kc", 3, "KC"),
+        ],
+        &["KA", "KB", "KC"],
+    )
+}
+
+fn is_call(request: &IoRequest) -> bool {
+    matches!(request, IoRequest::CallService { .. })
+}
+
+fn key_of(request: &IoRequest) -> Option<String> {
+    match request {
+        IoRequest::CallService { key, .. } => key.clone(),
+        IoRequest::CancelCall { key } => Some(format!("cancel:{key}")),
+        _ => None,
+    }
+}
+
+struct Flown {
+    trace: Json,
+    world: Json,
+    batches: Vec<Vec<IoRequest>>,
+}
+
+impl Flown {
+    fn call_batch(&self) -> &Vec<IoRequest> {
+        self.batches
+            .iter()
+            .find(|batch| batch.iter().any(is_call))
+            .expect("the dispatch awaited its calls")
+    }
+}
+
+/// Run the one step to its end, answering every await at once; a batch of calls is answered in `order`.
+fn fly_ordered(setup: &Setup, order: &[usize]) -> Flown {
+    let (kernel, store) = build(setup, true);
+    let answer = host_answers(setup, &store);
+    let mut batches = Vec::new();
+    let mut progress = start_step(&kernel, &setup.steps[0]);
+    loop {
+        match progress {
+            Progress::Done(outcomes) => {
+                return Flown {
+                    trace: trace_of(&outcomes),
+                    world: world_of(setup, &kernel, &store),
+                    batches,
+                }
+            }
+            Progress::Await {
+                continuation,
+                requests,
+            } => {
+                batches.push(requests.iter().map(|p| p.request.clone()).collect());
+                let replies: Vec<IoReply> = requests
+                    .iter()
+                    .map(|p| IoReply {
+                        id: p.id,
+                        answer: answer(&p.request),
+                    })
+                    .collect();
+                let replies = if order.len() == replies.len()
+                    && requests.iter().all(|p| is_call(&p.request))
+                {
+                    order.iter().map(|&i| replies[i].clone()).collect()
+                } else {
+                    replies
+                };
+                progress = kernel.resume(continuation, replies).unwrap();
+            }
+        }
+    }
+}
+
+type Calls = (
+    RuntimeKernel,
+    Arc<dyn EntitySource>,
+    DispatchContinuation,
+    Vec<PendingRequest>,
+);
+
+/// Answer the awaits that carry no call, and stop at the first await that does.
+fn until_calls(setup: &Setup) -> Calls {
+    let (kernel, store) = build(setup, true);
+    let answer = host_answers(setup, &store);
+    let mut progress = start_step(&kernel, &setup.steps[0]);
+    loop {
+        match progress {
+            Progress::Done(_) => panic!("the dispatch never asked for its calls"),
+            Progress::Await {
+                continuation,
+                requests,
+            } => {
+                if requests.iter().any(|p| is_call(&p.request)) {
+                    return (kernel, store, continuation, requests);
+                }
+                let replies = requests
+                    .iter()
+                    .map(|p| IoReply {
+                        id: p.id,
+                        answer: answer(&p.request),
+                    })
+                    .collect();
+                progress = kernel.resume(continuation, replies).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn keyed_calls_of_one_step_await_together_in_issue_order_with_consecutive_ids() {
+    let setup = three_overlapped();
+    let (_, _, _, requests) = until_calls(&setup);
+    let keys: Vec<Option<String>> = requests.iter().map(|p| key_of(&p.request)).collect();
+    assert_eq!(
+        keys,
+        vec![
+            Some("ka".to_string()),
+            Some("kb".to_string()),
+            Some("kc".to_string())
+        ]
+    );
+    let ids: Vec<u64> = requests.iter().map(|p| p.id.raw()).collect();
+    assert_eq!(ids, vec![ids[0], ids[0] + 1, ids[0] + 2]);
+}
+
+#[test]
+fn overlapped_answers_in_every_order_give_the_blocking_trace_and_one_await_for_all_calls() {
+    let setup = three_overlapped();
+    let (expected, expected_world) = blocking_run(&setup);
+    let text = expected[0].to_string();
+    assert!(
+        text.contains("KA_OK") && text.contains("KB_OK") && text.contains("KC_OK"),
+        "{text}"
+    );
+    let in_order = fly_ordered(&setup, &[0, 1, 2]);
+    assert_eq!(in_order.trace, expected[0]);
+    assert_eq!(in_order.world, expected_world);
+    let call_awaits = in_order
+        .batches
+        .iter()
+        .filter(|b| b.iter().any(is_call))
+        .count();
+    assert_eq!(call_awaits, 1, "{:?}", in_order.batches);
+    assert_eq!(in_order.call_batch().len(), 3);
+    for order in [[0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        let shuffled = fly_ordered(&setup, &order);
+        assert_eq!(shuffled.trace, in_order.trace, "{order:?}");
+        assert_eq!(shuffled.world, in_order.world, "{order:?}");
+    }
+}
+
+#[test]
+fn control_an_answer_given_to_the_wrong_request_changes_the_overlapped_trace() {
+    let setup = three_overlapped();
+    let (expected, _) = blocking_run(&setup);
+    let (kernel, store, continuation, requests) = until_calls(&setup);
+    let answer = host_answers(&setup, &store);
+    let replies = vec![
+        IoReply {
+            id: requests[0].id,
+            answer: answer(&requests[1].request),
+        },
+        IoReply {
+            id: requests[1].id,
+            answer: answer(&requests[0].request),
+        },
+        IoReply {
+            id: requests[2].id,
+            answer: answer(&requests[2].request),
+        },
+    ];
+    let mut progress = kernel.resume(continuation, replies).unwrap();
+    let outcomes = loop {
+        match progress {
+            Progress::Done(outcomes) => break outcomes,
+            Progress::Await {
+                continuation,
+                requests,
+            } => {
+                let replies = requests
+                    .iter()
+                    .map(|p| IoReply {
+                        id: p.id,
+                        answer: answer(&p.request),
+                    })
+                    .collect();
+                progress = kernel.resume(continuation, replies).unwrap();
+            }
+        }
+    };
+    assert_ne!(trace_of(&outcomes), expected[0]);
+}
+
+#[test]
+fn overlapped_requests_refuse_an_unanswered_unknown_or_duplicate_reply() {
+    let setup = three_overlapped();
+    let reply = |p: &PendingRequest| IoReply {
+        id: p.id,
+        answer: IoAnswer::Service(Ok(Value::Null)),
+    };
+
+    let (kernel, _, continuation, requests) = until_calls(&setup);
+    let err = kernel
+        .resume(continuation, vec![reply(&requests[0]), reply(&requests[2])])
+        .unwrap_err();
+    assert!(
+        matches!(err, DispatchError::Resume(ResumeError::Unanswered(id)) if id == requests[1].id),
+        "{err:?}"
+    );
+
+    let (kernel, _, continuation, requests) = until_calls(&setup);
+    let mut replies: Vec<IoReply> = requests.iter().map(reply).collect();
+    replies.push(IoReply {
+        id: RequestId::from_raw(9_999),
+        answer: IoAnswer::Service(Ok(Value::Null)),
+    });
+    let err = kernel.resume(continuation, replies).unwrap_err();
+    assert!(
+        matches!(err, DispatchError::Resume(ResumeError::Unknown(id)) if id == RequestId::from_raw(9_999)),
+        "{err:?}"
+    );
+
+    let (kernel, _, continuation, requests) = until_calls(&setup);
+    let mut replies: Vec<IoReply> = requests.iter().map(reply).collect();
+    replies.push(reply(&requests[1]));
+    let err = kernel.resume(continuation, replies).unwrap_err();
+    assert!(
+        matches!(err, DispatchError::Resume(ResumeError::Duplicate(id)) if id == requests[1].id),
+        "{err:?}"
+    );
+
+    let (kernel, _, continuation, requests) = until_calls(&setup);
+    let replies: Vec<IoReply> = requests.iter().rev().map(reply).collect();
+    assert!(
+        kernel.resume(continuation, replies).is_ok(),
+        "control: all answered, in reverse"
+    );
+}
+
+#[test]
+fn a_key_used_twice_in_one_step_is_a_visible_failure_of_the_second_call() {
+    let setup = fan_out(
+        vec![call_effect("same", 1, "P1"), call_effect("same", 2, "P2")],
+        &["P1", "P2"],
+    );
+    let flown = fly_ordered(&setup, &[]);
+    assert_eq!(flown.call_batch().len(), 1, "{:?}", flown.batches);
+    let text = flown.trace.to_string();
+    assert!(
+        text.contains("already used by another call in this step"),
+        "{text}"
+    );
+    assert!(text.contains("P1_OK") && text.contains("P2_BAD"), "{text}");
+    let control = fly_ordered(&three_overlapped(), &[]);
+    assert!(!control
+        .trace
+        .to_string()
+        .contains("already used by another call"));
+}
+
+#[test]
+fn cancelling_a_pending_call_of_the_step_removes_only_that_request_and_asks_nothing() {
+    let setup = fan_out(
+        vec![
+            call_effect("ka", 1, "KA"),
+            call_effect("kb", 2, "KB"),
+            json!(["cancel-call", "ka"]),
+        ],
+        &["KA", "KB"],
+    );
+    let flown = fly_ordered(&setup, &[]);
+    let keys: Vec<Option<String>> = flown.call_batch().iter().map(key_of).collect();
+    assert_eq!(keys, vec![Some("kb".to_string())]);
+    assert!(
+        flown
+            .batches
+            .iter()
+            .flatten()
+            .all(|r| !matches!(r, IoRequest::CancelCall { .. })),
+        "{:?}",
+        flown.batches
+    );
+    let text = flown.trace.to_string();
+    assert!(
+        text.contains("\"event\":\"KB_OK\"") && !text.contains("\"event\":\"KA_OK\""),
+        "{text}"
+    );
+}
+
+#[test]
+fn control_cancelling_a_call_the_step_did_not_issue_is_an_ask_of_its_own_after_the_calls() {
+    let setup = fan_out(
+        vec![
+            call_effect("ka", 1, "KA"),
+            call_effect("kb", 2, "KB"),
+            json!(["cancel-call", "elsewhere"]),
+        ],
+        &["KA", "KB"],
+    );
+    let flown = fly_ordered(&setup, &[]);
+    let keys: Vec<Option<String>> = flown.call_batch().iter().map(key_of).collect();
+    assert_eq!(keys, vec![Some("ka".to_string()), Some("kb".to_string())]);
+    let later: Vec<Option<String>> = flown
+        .batches
+        .iter()
+        .skip_while(|batch| !batch.iter().any(is_call))
+        .skip(1)
+        .flatten()
+        .filter_map(|r| matches!(r, IoRequest::CancelCall { .. }).then(|| key_of(r)))
+        .collect();
+    assert_eq!(later, vec![Some("cancel:elsewhere".to_string())]);
+    let text = flown.trace.to_string();
+    assert!(text.contains("KA_OK") && text.contains("KB_OK"), "{text}");
+}
+
+#[test]
+fn control_a_read_after_a_keyed_call_is_withheld_until_the_call_is_answered() {
+    let setup = fan_out(
+        vec![call_effect("ka", 1, "KA"), json!(["fetch", "Run"])],
+        &["KA"],
+    );
+    let flown = fly_ordered(&setup, &[]);
+    let call_at = flown
+        .batches
+        .iter()
+        .position(|b| b.iter().any(is_call))
+        .expect("the call was awaited");
+    assert_eq!(flown.batches[call_at].len(), 1, "{:?}", flown.batches);
+    assert!(
+        flown.batches[call_at + 1..]
+            .iter()
+            .flatten()
+            .any(|r| matches!(r, IoRequest::ListRows { entity_type } if entity_type == "Run")),
+        "the read is asked after the call: {:?}",
+        flown.batches
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cross-unit delivery: an emit whose declared listener is placed in another unit is an ask (EXEC-QUEUE-9)
+// ---------------------------------------------------------------------------------------------
+
+use orbital_core_base::envelope::{envelope_id, Accepted, DeliverRefusal, DeliverRefusalKind, Envelope, EnvelopeVerdict, InstanceRef};
+use orbital_core_runtime::kernel::dispatch_run::InboundStart;
+
+fn sample_envelope() -> Envelope {
+    Envelope {
+        id: "i".into(),
+        from: InstanceRef { instance: "api".into(), orbital: "Src".into(), trait_name: Some("Sender".into()) },
+        to: InstanceRef { instance: "web".into(), orbital: "Dst".into(), trait_name: None },
+        event: "GOT".into(),
+        payload: Value::Bool(true),
+        causal_id: "c".into(),
+        hop: 3,
+    }
+}
+
+fn placed_program(deployment: Json, with_watch: bool) -> Json {
+    let mut src_traits = vec![json!({
+        "name": "Sender",
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [["emit", "PING", { "n": 1 }]] }]
+        }
+    })];
+    if with_watch {
+        src_traits.push(json!({
+            "name": "Watch",
+            "listens": [{ "event": "DELIVERY_REJECTED", "triggers": "REFUSED", "source": { "kind": "trait", "trait": "Sender" } }],
+            "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }, { "name": "refused" }],
+                "transitions": [{ "from": "idle", "to": "refused", "event": "REFUSED" }]
+            }
+        }));
+    }
+    json!({
+        "name": "placed",
+        "deployment": deployment,
+        "orbitals": [
+            { "name": "Src", "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] }, "traits": src_traits },
+            { "name": "Dst", "entity": { "name": "Thing", "fields": [{ "name": "id", "type": "string" }] }, "traits": [{
+                "name": "Receiver",
+                "listens": [{ "event": "PING", "triggers": "GOT", "source": { "kind": "orbital", "orbital": "Src", "trait": "Sender" } }],
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "got" }, { "name": "twice" }],
+                    "transitions": [
+                        { "from": "idle", "to": "got", "event": "GOT" },
+                        { "from": "got", "to": "twice", "event": "GOT" }
+                    ]
+                }
+            }] }
+        ]
+    })
+}
+
+fn api_web() -> Json {
+    json!({ "api": ["Src"], "web": ["Dst"] })
+}
+
+fn placed_kernel(program: &Json, unit: Option<&str>) -> (RuntimeKernel, Arc<dyn EntitySource>) {
+    let store: Arc<dyn EntitySource> = Arc::new(InMemoryEntityCache::new());
+    let config = KernelConfig { unit: unit.map(str::to_string), ..KernelConfig::default() };
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config);
+    kernel.register_schema(serde_json::from_value::<OrbitalSchema>(program.clone()).unwrap()).unwrap();
+    (kernel, store)
+}
+
+/// Answer every await of a dispatch: a `Deliver` by `decide`, anything else from the store. Returns the outcomes and
+/// the envelopes the kernel asked the host to deliver, in ask order.
+fn fly_placed(
+    kernel: &RuntimeKernel,
+    store: &Arc<dyn EntitySource>,
+    mut progress: Progress<DispatchOutcomes>,
+    decide: &dyn Fn(&Envelope) -> Result<Accepted, DeliverRefusal>,
+) -> (DispatchOutcomes, Vec<Envelope>) {
+    let mut asked = Vec::new();
+    loop {
+        match progress {
+            Progress::Done(outcomes) => return (outcomes, asked),
+            Progress::Await { continuation, requests } => {
+                let replies = requests
+                    .iter()
+                    .map(|p| {
+                        let answer = match &p.request {
+                            IoRequest::Deliver { envelope, .. } => {
+                                asked.push(envelope.clone());
+                                IoAnswer::Deliver(decide(envelope))
+                            }
+                            other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
+                        };
+                        IoReply { id: p.id, answer }
+                    })
+                    .collect();
+                progress = kernel.resume(continuation, replies).unwrap();
+            }
+        }
+    }
+}
+
+fn accept_all(_: &Envelope) -> Result<Accepted, DeliverRefusal> {
+    Ok(Accepted)
+}
+
+fn go(kernel: &RuntimeKernel, store: &Arc<dyn EntitySource>, decide: &dyn Fn(&Envelope) -> Result<Accepted, DeliverRefusal>) -> (DispatchOutcomes, Vec<Envelope>) {
+    let progress = kernel.start_dispatch("Sender", None, "GO", Value::Null, None, None).unwrap();
+    fly_placed(kernel, store, progress, decide)
+}
+
+fn ran(outcomes: &DispatchOutcomes, trait_name: &str) -> bool {
+    outcomes.iter().any(|(name, result)| name == trait_name && result.executed)
+}
+
+#[test]
+fn a_cross_unit_emit_is_one_deliver_ask_with_its_hop_causal_id_and_a_replay_stable_id() {
+    let program = placed_program(api_web(), false);
+    let (kernel, store) = placed_kernel(&program, Some("api"));
+    let (outcomes, asked) = go(&kernel, &store, &accept_all);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    let envelope = &asked[0];
+    assert_eq!(envelope.hop, 1);
+    assert_eq!(envelope.causal_id, "api#1");
+    assert_eq!(envelope.id, envelope_id("api", "api#1", 1, 0));
+    assert_eq!(envelope.from, InstanceRef { instance: "api".into(), orbital: "Src".into(), trait_name: Some("Sender".into()) });
+    assert_eq!(envelope.to, InstanceRef { instance: "web".into(), orbital: "Dst".into(), trait_name: Some("Receiver".into()) });
+    assert_eq!(envelope.event, "GOT");
+    assert_eq!(j(&envelope.payload), json!({ "n": 1.0 }));
+    assert!(ran(&outcomes, "Sender") && !ran(&outcomes, "Receiver"), "the remote listener is not on the local worklist");
+
+    let (replayed_kernel, replayed_store) = placed_kernel(&program, Some("api"));
+    let (_, replayed) = go(&replayed_kernel, &replayed_store, &accept_all);
+    assert_eq!(replayed, asked, "the same dispatch on a fresh kernel derives the same envelope");
+
+    let (_, second) = go(&kernel, &store, &accept_all);
+    assert_eq!(second[0].causal_id, "api#2");
+    assert_ne!(second[0].id, envelope.id, "the next dispatch has its own id");
+}
+
+#[test]
+fn control_same_unit_no_deployment_and_no_unit_keep_the_emit_on_the_local_worklist() {
+    let same_unit = json!({ "api": ["Src", "Dst"] });
+    for (what, deployment, unit) in [
+        ("same unit", same_unit, Some("api")),
+        ("no deployment", Json::Null, Some("api")),
+        ("no unit", api_web(), None),
+    ] {
+        let (kernel, store) = placed_kernel(&placed_program(deployment, false), unit);
+        let (outcomes, asked) = go(&kernel, &store, &accept_all);
+        assert!(asked.is_empty(), "{what}: {asked:?}");
+        assert!(ran(&outcomes, "Receiver"), "{what}: the listener ran locally");
+    }
+}
+
+#[test]
+fn the_hop_cap_allows_sixteen_and_refuses_the_seventeenth() {
+    let program = placed_program(api_web(), true);
+    let inbound = |hop: u32| Envelope {
+        id: format!("in-{hop}"),
+        from: InstanceRef { instance: "web".into(), orbital: "Dst".into(), trait_name: None },
+        to: InstanceRef { instance: "api".into(), orbital: "Src".into(), trait_name: Some("Sender".into()) },
+        event: "GO".into(),
+        payload: Value::Null,
+        causal_id: "root".into(),
+        hop,
+    };
+    let run = |hop: u32| {
+        let (kernel, store) = placed_kernel(&program, Some("api"));
+        match kernel.start_dispatch_envelope(inbound(hop)) {
+            InboundStart::Admitted(progress) => fly_placed(&kernel, &store, (*progress).unwrap(), &accept_all),
+            InboundStart::Declined(verdict) => panic!("declined: {verdict:?}"),
+        }
+    };
+
+    let (_, asked) = run(15);
+    assert_eq!(asked.len(), 1);
+    assert_eq!((asked[0].hop, asked[0].causal_id.as_str()), (16, "root"), "hop 16 is allowed and keeps the causal id");
+
+    let (outcomes, asked) = run(16);
+    assert!(asked.is_empty(), "hop 17 is refused before any ask: {asked:?}");
+    let (_, sender) = outcomes.iter().find(|(name, _)| name == "Sender").unwrap();
+    let refused: Vec<_> = sender.effect_results.iter().flat_map(|r| &r.refused).collect();
+    assert_eq!(refused.len(), 1);
+    assert_eq!(refused[0].reason, DeliverRefusalKind::HopCap);
+    assert_eq!(refused[0].causal_id, "root");
+    assert!(ran(&outcomes, "Watch"), "the refusal reaches the emitter's listener");
+
+    let (kernel, _) = placed_kernel(&program, Some("api"));
+    assert_eq!(
+        kernel.dispatch_envelope(inbound(17)),
+        EnvelopeVerdict::Rejected(DeliverRefusal { kind: DeliverRefusalKind::HopCap, id: "in-17".into() })
+    );
+    assert_eq!(kernel.dispatch_envelope(inbound(16)), EnvelopeVerdict::Accepted, "control: hop 16 is admitted inbound");
+}
+
+fn arrival(id: &str, instance: &str, orbital: &str, trait_name: Option<&str>) -> Envelope {
+    Envelope {
+        id: id.into(),
+        from: InstanceRef { instance: "api".into(), orbital: "Src".into(), trait_name: Some("Sender".into()) },
+        to: InstanceRef { instance: instance.into(), orbital: orbital.into(), trait_name: trait_name.map(str::to_string) },
+        event: "GOT".into(),
+        payload: Value::Null,
+        causal_id: "c".into(),
+        hop: 1,
+    }
+}
+
+#[test]
+fn an_inbound_envelope_is_accepted_once_then_duplicate_and_unknown_targets_are_rejected() {
+    let (kernel, _) = placed_kernel(&placed_program(api_web(), false), Some("web"));
+    let state = || kernel.snapshot_trait("Receiver", None).state;
+
+    assert_eq!(kernel.dispatch_envelope(arrival("a", "web", "Dst", Some("Receiver"))), EnvelopeVerdict::Accepted);
+    assert_eq!(state(), "got");
+    assert_eq!(kernel.dispatch_envelope(arrival("a", "web", "Dst", Some("Receiver"))), EnvelopeVerdict::Duplicate);
+    assert_eq!(state(), "got", "a duplicate is not dispatched");
+    assert_eq!(kernel.dispatch_envelope(arrival("b", "web", "Dst", Some("Receiver"))), EnvelopeVerdict::Accepted, "control: a new id from the same sender runs");
+    assert_eq!(state(), "twice");
+
+    let mut other_sender = arrival("a", "web", "Dst", Some("Receiver"));
+    other_sender.from.instance = "other".into();
+    assert_eq!(kernel.dispatch_envelope(other_sender), EnvelopeVerdict::Accepted, "control: dedupe is per sender");
+
+    let unknown = |id: &str, instance: &str, orbital: &str, trait_name: Option<&str>| {
+        EnvelopeVerdict::Rejected(DeliverRefusal { kind: DeliverRefusalKind::UnknownInstance, id: id.into() })
+            == kernel.dispatch_envelope(arrival(id, instance, orbital, trait_name))
+    };
+    assert!(unknown("u1", "web", "Nope", None), "an undeclared orbital");
+    assert!(unknown("u2", "web", "Dst", Some("Nope")), "an undeclared trait");
+    assert!(unknown("u3", "web", "Src", Some("Sender")), "an orbital placed in another unit");
+    assert!(unknown("u4", "api", "Dst", Some("Receiver")), "an envelope addressed to another instance");
+    assert_eq!(
+        kernel.dispatch_envelope(arrival("u1", "web", "Dst", Some("Receiver"))),
+        EnvelopeVerdict::Accepted,
+        "control: a rejected id was not journaled"
+    );
+}
+
+#[test]
+fn a_refusal_fires_delivery_rejected_at_a_listening_trait() {
+    let (kernel, store) = placed_kernel(&placed_program(api_web(), true), Some("api"));
+    let refuse = |envelope: &Envelope| Err(DeliverRefusal { kind: DeliverRefusalKind::MailboxFull, id: envelope.id.clone() });
+    let (outcomes, asked) = go(&kernel, &store, &refuse);
+    assert_eq!(asked.len(), 1);
+    assert!(ran(&outcomes, "Watch"));
+    assert_eq!(kernel.snapshot_trait("Watch", None).state, "refused");
+    let (_, watch) = outcomes.iter().find(|(name, _)| name == "Watch").unwrap();
+    assert_eq!(
+        j(&watch.payload),
+        json!({
+            "id": asked[0].id,
+            "to": { "instance": "web", "orbital": "Dst", "trait": "Receiver" },
+            "event": "GOT",
+            "reason": "mailbox-full",
+            "causalId": "api#1",
+        })
+    );
+    let (_, sender) = outcomes.iter().find(|(name, _)| name == "Sender").unwrap();
+    assert!(sender.failure.is_none(), "a heard refusal is not also a step failure");
+
+    let (kernel, store) = placed_kernel(&placed_program(api_web(), true), Some("api"));
+    let (outcomes, _) = go(&kernel, &store, &accept_all);
+    assert!(!ran(&outcomes, "Watch") && kernel.snapshot_trait("Watch", None).state != "refused", "control: an accepted delivery rejects nothing");
+}
+
+#[test]
+fn a_refusal_nobody_listens_for_is_a_visible_failure_of_the_emitting_step() {
+    let (kernel, store) = placed_kernel(&placed_program(api_web(), false), Some("api"));
+    let refuse = |envelope: &Envelope| Err(DeliverRefusal { kind: DeliverRefusalKind::Denied, id: envelope.id.clone() });
+    let (outcomes, asked) = go(&kernel, &store, &refuse);
+    let (_, sender) = outcomes.iter().find(|(name, _)| name == "Sender").unwrap();
+    let failure = sender.failure.as_deref().expect("the refusal is recorded, not dropped");
+    assert!(failure.contains("denied") && failure.contains("DELIVERY_REJECTED") && failure.contains(&asked[0].id), "{failure}");
+    assert_eq!(sender.new_state, "idle", "the new state stands");
+
+    let (kernel, store) = placed_kernel(&placed_program(api_web(), false), Some("api"));
+    let (outcomes, _) = go(&kernel, &store, &accept_all);
+    let (_, sender) = outcomes.iter().find(|(name, _)| name == "Sender").unwrap();
+    assert!(sender.failure.is_none(), "control: an accepted delivery leaves no failure");
+}
+
+#[test]
+fn a_blocking_dispatch_has_no_router_so_the_delivery_is_refused_down() {
+    let (kernel, _) = placed_kernel(&placed_program(api_web(), true), Some("api"));
+    let outcomes = kernel.dispatch("Sender", None, "GO", Value::Null).unwrap();
+    let (_, watch) = outcomes.iter().find(|(name, _)| name == "Watch").expect("the refusal is delivered");
+    assert_eq!(j(&watch.payload)["reason"], json!("down"));
 }

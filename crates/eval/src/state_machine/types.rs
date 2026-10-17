@@ -2,10 +2,10 @@
 //!
 //! Core types for state machine execution.
 
-use orbital_core_base::value::Value;
-use orbital_core_base::value::ValueMap;
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::schema::types::TraitDefinition;
+use orbital_core_base::value::Value;
+use orbital_core_base::value::ValueMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

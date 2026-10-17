@@ -69,7 +69,7 @@ fn a_data_effect_runs_where_its_entity_lives() {
     assert_eq!(effect_site("persist", &[sexpr(json!("create")), sexpr(json!("LocalInvoice"))], &r), RunsOn::Client);
     assert_eq!(effect_site("fetch", &[sexpr(json!("Invoice"))], &r), RunsOn::Server);
     assert_eq!(effect_site("fetch", &[sexpr(json!("@config.entity"))], &r), RunsOn::Server);
-    assert_eq!(effect_site("call-service", &[sexpr(json!("llm"))], &r), RunsOn::Server);
+    assert_eq!(effect_site("call-service", &[sexpr(json!("webhook"))], &r), RunsOn::Server);
     assert_eq!(effect_site("emit", &[sexpr(json!("DONE"))], &r), RunsOn::Any);
 }
 
@@ -120,7 +120,7 @@ fn control_a_runtime_trait_fetching_a_server_entity_stays_optimistic() {
 fn a_local_entity_trait_calling_a_service_is_optimistic() {
     let r = residence();
     let e = entity(json!({ "name": "LocalInvoice", "persistence": "persistent", "collection": "invoices", "local": true, "fields": [] }));
-    let t = trait_on("LocalInvoice", false, json!([["call-service", "llm", "call", {}]]));
+    let t = trait_on("LocalInvoice", false, json!([["call-service", "webhook", "send", {}]]));
     assert_eq!(t.dispatch_mode(Some(&e), &r), DispatchMode::RuntimeOptimistic);
 }
 

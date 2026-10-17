@@ -79,3 +79,33 @@ fn missing_arguments_are_arity_errors() {
     assert!(eval("hash/sha256", &[json!("abc")]).is_err());
     assert!(eval("hmac/sha256", &[json!("k"), json!("m")]).is_err());
 }
+
+#[test]
+fn every_shared_regex_vector_matches() {
+    let raw = std::fs::read_to_string(crate_path("tests/fixtures/operators/regex-vectors.json")).unwrap();
+    let cases: Vec<Case> = serde_json::from_str(&raw).unwrap();
+    assert!(cases.iter().any(|case| case.expect == Some(json!(true))));
+    assert!(cases.iter().any(|case| case.expect == Some(json!(false))));
+    assert!(cases.iter().any(|case| case.error));
+    for case in &cases {
+        let got = eval(&case.op, &case.args);
+        if case.error {
+            assert!(got.is_err(), "{} {:?} must error, got {got:?}", case.op, case.args);
+        } else {
+            assert_eq!(got.as_ref().ok(), case.expect.as_ref(), "{} {:?}", case.op, case.args);
+        }
+    }
+}
+
+#[test]
+fn the_regex_mirror_is_byte_identical_to_the_parity_fixture() {
+    let source = crate_path("../../../packages/almadar-parity/fixtures/operators/regex-vectors.json");
+    if !source.exists() {
+        return;
+    }
+    assert_eq!(
+        std::fs::read(source).unwrap(),
+        std::fs::read(crate_path("tests/fixtures/operators/regex-vectors.json")).unwrap(),
+        "re-copy packages/almadar-parity/fixtures/operators/regex-vectors.json"
+    );
+}

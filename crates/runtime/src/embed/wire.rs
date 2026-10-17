@@ -2,8 +2,9 @@
 //! JSON. Field names are the hosts' contract; `tests/fixtures/embed/golden` pins them.
 
 use crate::effects::executor::{ServiceCaller, SubstrateFailure};
-use crate::resumable::{CallRoutes, CallSite, IoAnswer, IoReply, IoRequest, PageFacts, PendingRequest, RequestId};
+use crate::resumable::{CallRoutes, CallSite, IoAnswer, IoReply, IoRequest, ModelFailure, ModelFailureKind, PageFacts, PendingRequest, RequestId};
 use orbital_core_base::ir::effects::PageFactField;
+use orbital_core_base::envelope::{Accepted, DeliverRefusal, Envelope};
 use orbital_core_base::oauth_ask::{OAuthAsk, OAuthReply};
 use crate::http_request::{BeaconOutcome, StreamFraming};
 use crate::http_service::{HttpRequest, HttpResponse, TransportError};
@@ -338,6 +339,19 @@ pub enum IoRequestWire {
     #[serde(rename_all = "camelCase")]
     PageFacts { fields: Vec<PageFactFieldWire> },
     #[serde(rename_all = "camelCase")]
+    Prompt {
+        text: String,
+        schema: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Embed {
+        texts: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
     Secret {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -367,6 +381,13 @@ pub enum IoRequestWire {
         principal: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
+    Deliver {
+        envelope: Envelope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        site: CallSiteWire,
+    },
+    #[serde(rename_all = "camelCase")]
     Random { bytes: u32 },
     #[serde(rename_all = "camelCase")]
     Os {
@@ -389,6 +410,48 @@ pub enum IoRequestWire {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         principal: Option<String>,
     },
+}
+
+/// Why the on-device model or embedder gave no answer.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelFailureWire {
+    pub kind: ModelFailureKindWire,
+    pub message: String,
+}
+
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelFailureKindWire {
+    Unconfigured,
+    Unavailable,
+    Failed,
+}
+
+impl From<&ModelFailure> for ModelFailureWire {
+    fn from(failure: &ModelFailure) -> Self {
+        Self {
+            kind: match failure.kind {
+                ModelFailureKind::Unconfigured => ModelFailureKindWire::Unconfigured,
+                ModelFailureKind::Unavailable => ModelFailureKindWire::Unavailable,
+                ModelFailureKind::Failed => ModelFailureKindWire::Failed,
+            },
+            message: failure.message.clone(),
+        }
+    }
+}
+
+impl From<ModelFailureWire> for ModelFailure {
+    fn from(wire: ModelFailureWire) -> Self {
+        let kind = match wire.kind {
+            ModelFailureKindWire::Unconfigured => ModelFailureKind::Unconfigured,
+            ModelFailureKindWire::Unavailable => ModelFailureKind::Unavailable,
+            ModelFailureKindWire::Failed => ModelFailureKind::Failed,
+        };
+        ModelFailure::new(kind, wire.message)
+    }
 }
 
 /// A page fact `browser/page-facts` reads.
@@ -545,6 +608,12 @@ pub enum IoAnswerWire {
     PageFacts {
         result: Settled<PageFactsWire, String>,
     },
+    Prompt {
+        result: Settled<String, ModelFailureWire>,
+    },
+    Embed {
+        result: Settled<Vec<Vec<f64>>, ModelFailureWire>,
+    },
     Secret {
         #[cfg_attr(test, ts(type = "Settled<string | null, string>"))]
         result: Settled<Option<SecretText>, String>,
@@ -571,6 +640,9 @@ pub enum IoAnswerWire {
     #[serde(rename = "oauth")]
     OAuth {
         result: Settled<OAuthReply, String>,
+    },
+    Deliver {
+        result: Settled<Accepted, DeliverRefusal>,
     },
 }
 
@@ -746,6 +818,8 @@ impl From<IoRequestWire> for IoRequest {
             IoRequestWire::PageFacts { fields } => Self::PageFacts {
                 fields: fields.into_iter().map(PageFactField::from).collect(),
             },
+            IoRequestWire::Prompt { text, schema, key } => Self::Prompt { text, schema, key },
+            IoRequestWire::Embed { texts, key } => Self::Embed { texts, key },
             IoRequestWire::Secret { name, principal } => Self::Secret { name, principal },
             IoRequestWire::SecretSet {
                 name,
@@ -777,6 +851,11 @@ impl From<IoRequestWire> for IoRequest {
                 Self::CredentialForget { name, principal }
             }
             IoRequestWire::OAuth { ask, principal } => Self::OAuth { ask, principal },
+            IoRequestWire::Deliver { envelope, key, site } => Self::Deliver {
+                envelope,
+                key,
+                site: CallSite::from(site),
+            },
         }
     }
 }
@@ -870,6 +949,15 @@ impl From<&IoRequest> for IoRequestWire {
             IoRequest::PageFacts { fields } => Self::PageFacts {
                 fields: fields.iter().copied().map(PageFactFieldWire::from).collect(),
             },
+            IoRequest::Prompt { text, schema, key } => Self::Prompt {
+                text: text.clone(),
+                schema: schema.clone(),
+                key: key.clone(),
+            },
+            IoRequest::Embed { texts, key } => Self::Embed {
+                texts: texts.clone(),
+                key: key.clone(),
+            },
             IoRequest::Secret { name, principal } => Self::Secret {
                 name: name.clone(),
                 principal: principal.clone(),
@@ -906,6 +994,11 @@ impl From<&IoRequest> for IoRequestWire {
                 principal: principal.clone(),
             },
             IoRequest::OAuth { ask, principal } => Self::OAuth { ask: ask.clone(), principal: principal.clone() },
+            IoRequest::Deliver { envelope, key, site } => Self::Deliver {
+                envelope: envelope.clone(),
+                key: key.clone(),
+                site: CallSiteWire::from(site),
+            },
         }
     }
 }
@@ -993,6 +1086,12 @@ impl From<&IoAnswer> for IoAnswerWire {
                     .map_err(Clone::clone)
                     .into(),
             },
+            IoAnswer::Prompt(r) => Self::Prompt {
+                result: r.as_ref().map(Clone::clone).map_err(ModelFailureWire::from).into(),
+            },
+            IoAnswer::Embed(r) => Self::Embed {
+                result: r.as_ref().map(Clone::clone).map_err(ModelFailureWire::from).into(),
+            },
             IoAnswer::Secret(r) => Self::Secret {
                 result: r.clone().map(|value| value.map(SecretText::new)).into(),
             },
@@ -1017,6 +1116,7 @@ impl From<&IoAnswer> for IoAnswerWire {
                 result: r.clone().into(),
             },
             IoAnswer::OAuth(r) => Self::OAuth { result: r.clone().into() },
+            IoAnswer::Deliver(r) => Self::Deliver { result: r.clone().into() },
         }
     }
 }
@@ -1063,6 +1163,14 @@ impl From<IoAnswerWire> for IoAnswer {
                     screen_width: facts.screen_width,
                 }))
             }
+            IoAnswerWire::Prompt { result } => {
+                let result: Result<String, ModelFailureWire> = result.into();
+                Self::Prompt(result.map_err(ModelFailure::from))
+            }
+            IoAnswerWire::Embed { result } => {
+                let result: Result<Vec<Vec<f64>>, ModelFailureWire> = result.into();
+                Self::Embed(result.map_err(ModelFailure::from))
+            }
             IoAnswerWire::Secret { result } => {
                 let result: Result<Option<SecretText>, String> = result.into();
                 Self::Secret(result.map(|value| value.map(SecretText::into_inner)))
@@ -1079,6 +1187,7 @@ impl From<IoAnswerWire> for IoAnswer {
             IoAnswerWire::CredentialStatus { result } => Self::CredentialStatus(result.into()),
             IoAnswerWire::CredentialForget { result } => Self::CredentialForget(result.into()),
             IoAnswerWire::OAuth { result } => Self::OAuth(result.into()),
+            IoAnswerWire::Deliver { result } => Self::Deliver(result.into()),
         }
     }
 }

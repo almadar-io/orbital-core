@@ -174,6 +174,21 @@ pub trait SecretSource: Send + Sync {
     fn forget_of(&self, _name: &str, _principal: Option<&str>) -> Result<(), String> {
         Err("this host keeps no credentials to forget".to_string())
     }
+    /// Keep `value` as the credential `name` of `principal` (or the app-wide one when `None`) until it is forgotten:
+    /// a durable upsert, unlike [`Self::store_secret_of`]'s expiring derived secret and [`Self::rotate_secret_of`]'s
+    /// replacement of a credential that already exists.
+    fn persist_secret_of(&self, _name: &str, _value: &str, _principal: Option<&str>) -> Result<(), String> {
+        Err("this host keeps no durable credentials".to_string())
+    }
+    /// Remove and return the derived secret `name` of `principal` (or the app-wide one when `None`): the one read
+    /// of a one-use value such as a pending OAuth grant.
+    fn take_secret_of(&self, _name: &str, _principal: Option<&str>) -> Result<Option<String>, String> {
+        Err("this host keeps no derived secrets to take".to_string())
+    }
+    /// Whether [`Self::persist_secret_of`] keeps a value on this host.
+    fn durable_credentials(&self) -> bool {
+        false
+    }
 }
 
 pub fn credential_status_connected(value: Option<&str>, principal: Option<&str>) -> bool {

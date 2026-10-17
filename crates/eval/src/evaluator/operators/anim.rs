@@ -1,8 +1,8 @@
 //! G6 Game: animation operators (`anim/*`). Pure, total.
 
-use orbital_core_base::value::ValueMap;
 use super::macros::*;
 use super::*;
+use orbital_core_base::value::ValueMap;
 
 pub struct AnimFrameAtOp;
 impl Operator for AnimFrameAtOp {

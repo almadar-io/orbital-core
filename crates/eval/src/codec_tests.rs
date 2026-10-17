@@ -1,8 +1,7 @@
+use base64::Engine;
 #[allow(unused_imports)]
 use orbital_core_base::codec::*;
-use base64::Engine;
 use sha2::Digest;
-
 
 #[cfg(test)]
 mod tests {
@@ -26,7 +25,8 @@ mod tests {
     fn eval_op(op: &str, args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
         let mut expr = vec![serde_json::json!(op)];
         expr.extend(args.iter().cloned());
-        let sexpr = serde_json::from_value(serde_json::Value::Array(expr)).map_err(|e| e.to_string())?;
+        let sexpr =
+            serde_json::from_value(serde_json::Value::Array(expr)).map_err(|e| e.to_string())?;
         let ctx = crate::evaluator::context::BindingContextBuilder::new().build();
         crate::evaluator::Evaluator::new()
             .evaluate(&sexpr, &ctx)
@@ -36,8 +36,10 @@ mod tests {
 
     #[test]
     fn decode_uri_component_runs_every_shared_vector() {
-        let cases: Vec<UriDecodeCase> =
-            serde_json::from_str(include_str!("../../../tests/fixtures/operators/uri-decode-vectors.json")).unwrap();
+        let cases: Vec<UriDecodeCase> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/operators/uri-decode-vectors.json"
+        ))
+        .unwrap();
         assert!(cases.iter().any(|c| c.error));
         assert!(cases.iter().any(|c| c.source.starts_with("round trip")));
         for case in cases.iter().filter(|c| c.op == "str/decode-uri-component") {
@@ -47,30 +49,62 @@ mod tests {
                 assert!(valid.is_err(), "{}", case.source);
             } else {
                 let expected = !case.error && !case.args[0].is_null();
-                assert_eq!(valid, Ok(serde_json::json!(expected)), "{:?} ({})", case.args, case.source);
+                assert_eq!(
+                    valid,
+                    Ok(serde_json::json!(expected)),
+                    "{:?} ({})",
+                    case.args,
+                    case.source
+                );
             }
             if case.error {
-                let message = got.expect_err(&format!("{:?} must error ({})", case.args, case.source));
-                assert!(message.contains("URI malformed") || message.contains("expected string"), "{message}");
+                let message =
+                    got.expect_err(&format!("{:?} must error ({})", case.args, case.source));
+                assert!(
+                    message.contains("URI malformed") || message.contains("expected string"),
+                    "{message}"
+                );
             } else {
                 let expected = case.expect.clone().unwrap_or(serde_json::Value::Null);
-                assert_eq!(got.as_ref().ok(), Some(&expected), "{:?} ({})", case.args, case.source);
+                assert_eq!(
+                    got.as_ref().ok(),
+                    Some(&expected),
+                    "{:?} ({})",
+                    case.args,
+                    case.source
+                );
             }
         }
     }
 
     #[test]
     fn uri_component_valid_runs_its_shared_vectors() {
-        let cases: Vec<UriDecodeCase> =
-            serde_json::from_str(include_str!("../../../tests/fixtures/operators/uri-decode-vectors.json")).unwrap();
-        let own: Vec<_> = cases.iter().filter(|c| c.op == "str/uri-component-valid").collect();
-        assert!(own.iter().any(|c| c.error) && own.iter().any(|c| c.expect == Some(serde_json::json!(false))));
+        let cases: Vec<UriDecodeCase> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/operators/uri-decode-vectors.json"
+        ))
+        .unwrap();
+        let own: Vec<_> = cases
+            .iter()
+            .filter(|c| c.op == "str/uri-component-valid")
+            .collect();
+        assert!(
+            own.iter().any(|c| c.error)
+                && own
+                    .iter()
+                    .any(|c| c.expect == Some(serde_json::json!(false)))
+        );
         for case in own {
             let got = eval_op(&case.op, &case.args);
             if case.error {
                 assert!(got.is_err(), "{}", case.source);
             } else {
-                assert_eq!(got, Ok(case.expect.clone().unwrap()), "{:?} ({})", case.args, case.source);
+                assert_eq!(
+                    got,
+                    Ok(case.expect.clone().unwrap()),
+                    "{:?} ({})",
+                    case.args,
+                    case.source
+                );
             }
         }
         assert!(eval_op("str/uri-component-valid", &[]).is_err());
@@ -95,7 +129,10 @@ mod tests {
 
     #[test]
     fn form_value_turns_spaces_into_plus_and_escapes_the_rest() {
-        assert_eq!(form_urlencode_value("a b!~'()é"), "a+b%21%7E%27%28%29%C3%A9");
+        assert_eq!(
+            form_urlencode_value("a b!~'()é"),
+            "a+b%21%7E%27%28%29%C3%A9"
+        );
         assert_eq!(form_urlencode_value("{\"a\":1}"), "%7B%22a%22%3A1%7D");
     }
 
@@ -119,7 +156,13 @@ mod tests {
 
     #[test]
     fn base64_matches_rfc_4648_vectors_and_rejects_garbage() {
-        for (plain, enc) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foobar", "Zm9vYmFy")] {
+        for (plain, enc) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foobar", "Zm9vYmFy"),
+        ] {
             assert_eq!(base64_encode(plain.as_bytes()), enc);
             assert_eq!(base64_decode(enc).unwrap(), plain.as_bytes());
         }
@@ -128,7 +171,9 @@ mod tests {
 
     #[test]
     fn base64_decode_is_strict_rfc_4648() {
-        for bad in ["Zg", "Zm9", "Zh==", "Zm 9v", "Zm9v\n", "-_8=", "Zg=", "=Zg="] {
+        for bad in [
+            "Zg", "Zm9", "Zh==", "Zm 9v", "Zm9v\n", "-_8=", "Zg=", "=Zg=",
+        ] {
             assert!(base64_decode(bad).is_err(), "{bad:?} must be rejected");
         }
         assert_eq!(base64_decode("+/8=").unwrap(), vec![0xfb, 0xff]);
@@ -136,16 +181,26 @@ mod tests {
 
     #[test]
     fn md5_runs_every_shared_vector() {
-        let cases: Vec<UriDecodeCase> =
-            serde_json::from_str(include_str!("../../../tests/fixtures/operators/md5-vectors.json")).unwrap();
-        assert!(cases.iter().any(|c| c.error) && cases.iter().any(|c| c.source.starts_with("RFC 1321")));
+        let cases: Vec<UriDecodeCase> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/operators/md5-vectors.json"
+        ))
+        .unwrap();
+        assert!(
+            cases.iter().any(|c| c.error) && cases.iter().any(|c| c.source.starts_with("RFC 1321"))
+        );
         for case in &cases {
             assert_eq!(case.op, "hash/md5");
             let got = eval_op(&case.op, &case.args);
             if case.error {
                 assert!(got.is_err(), "{:?} must error ({})", case.args, case.source);
             } else {
-                assert_eq!(got.as_ref().ok(), case.expect.as_ref(), "{:?} ({})", case.args, case.source);
+                assert_eq!(
+                    got.as_ref().ok(),
+                    case.expect.as_ref(),
+                    "{:?} ({})",
+                    case.args,
+                    case.source
+                );
             }
         }
         assert!(eval_op("hash/md5", &[serde_json::json!("YWJj")]).is_err());
@@ -158,13 +213,25 @@ mod tests {
             ("a", "0cc175b9c0f1b6a831c399e269772661"),
             ("abc", "900150983cd24fb0d6963f7d28e17f72"),
             ("message digest", "f96b697d7cb7938d525a2f31aaf161d0"),
-            ("abcdefghijklmnopqrstuvwxyz", "c3fcd3d76192e4007dfb496cca67e13b"),
-            ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", "d174ab98d277d9f5a5611c2c9f419d9f"),
-            ("12345678901234567890123456789012345678901234567890123456789012345678901234567890", "57edf4a22be3c955ac49da2e2107b67a"),
+            (
+                "abcdefghijklmnopqrstuvwxyz",
+                "c3fcd3d76192e4007dfb496cca67e13b",
+            ),
+            (
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+                "d174ab98d277d9f5a5611c2c9f419d9f",
+            ),
+            (
+                "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+                "57edf4a22be3c955ac49da2e2107b67a",
+            ),
         ] {
             assert_eq!(hex(&md5(input.as_bytes())), expected, "{input:?}");
         }
-        assert_eq!(hex(&md5(&[0x00, 0xff, 0x80, 0x7f])), "35913419231430075897c28e5e159b65");
+        assert_eq!(
+            hex(&md5(&[0x00, 0xff, 0x80, 0x7f])),
+            "35913419231430075897c28e5e159b65"
+        );
     }
 
     #[test]
@@ -190,7 +257,10 @@ mod tests {
     #[test]
     fn rfc_4231_test_case_6_a_key_longer_than_the_block_is_hashed_first() {
         let long_key = vec![0xaau8; 131];
-        let mac = hmac_sha256(&long_key, b"Test Using Larger Than Block-Size Key - Hash Key First");
+        let mac = hmac_sha256(
+            &long_key,
+            b"Test Using Larger Than Block-Size Key - Hash Key First",
+        );
         assert_eq!(
             hex(&mac),
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"

@@ -1,0 +1,645 @@
+[
+  {
+    "op": "validate/pattern",
+    "args": [
+      "5",
+      "^[0-9]$"
+    ],
+    "expect": true,
+    "source": "digit class matches the whole value"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "^[0-9]$"
+    ],
+    "expect": false,
+    "source": "control: a letter is outside the digit class"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "ABC123",
+      "^[A-Z]{3}[0-9]{3}$"
+    ],
+    "expect": true,
+    "source": "counted repetition"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "ABC12",
+      "^[A-Z]{3}[0-9]{3}$"
+    ],
+    "expect": false,
+    "source": "control: counted repetition too short"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "abc",
+      "b"
+    ],
+    "expect": true,
+    "source": "unanchored pattern searches"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "abc",
+      "^b"
+    ],
+    "expect": false,
+    "source": "control: anchored pattern does not search"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "(?=a)a"
+    ],
+    "expect": false,
+    "source": "lookahead is outside the shared dialect"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "a"
+    ],
+    "expect": true,
+    "source": "control: the same literal without lookahead"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "aa",
+      "(a)\\1"
+    ],
+    "expect": false,
+    "source": "a backreference is outside the shared dialect"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "(?<n>a)"
+    ],
+    "expect": false,
+    "source": "a named group is outside the shared dialect"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "(?i)a"
+    ],
+    "expect": false,
+    "source": "inline flags are outside the shared dialect"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "("
+    ],
+    "expect": false,
+    "source": "an unterminated group is invalid"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "["
+    ],
+    "expect": false,
+    "source": "an unterminated class is invalid"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "a**"
+    ],
+    "expect": false,
+    "source": "a repeated quantifier is invalid"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "*a"
+    ],
+    "expect": false,
+    "source": "a leading quantifier is invalid"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a{",
+      "a{"
+    ],
+    "expect": false,
+    "source": "a lone brace is outside the shared dialect"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "[]"
+    ],
+    "expect": false,
+    "source": "an empty class is outside the shared dialect"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "[a&&b]"
+    ],
+    "expect": false,
+    "source": "class set operations are outside the shared dialect"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "\\p{Foo}"
+    ],
+    "expect": false,
+    "source": "an unknown property is outside the shared dialect"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "[\\D]"
+    ],
+    "expect": false,
+    "source": "a negated shorthand inside a class is outside the shared dialect"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "\\D"
+    ],
+    "expect": true,
+    "source": "control: a negated shorthand outside a class"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a",
+      "\\_"
+    ],
+    "expect": false,
+    "source": "an escaped letter-class punctuation that JS rejects in unicode mode"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "٣",
+      "\\d"
+    ],
+    "expect": false,
+    "source": "digit is ASCII-only"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "3",
+      "\\d"
+    ],
+    "expect": true,
+    "source": "control: ASCII digit"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "é",
+      "\\w"
+    ],
+    "expect": false,
+    "source": "word class is ASCII-only"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "e",
+      "\\w"
+    ],
+    "expect": true,
+    "source": "control: ASCII word character"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "é",
+      "^\\p{L}$"
+    ],
+    "expect": true,
+    "source": "Unicode letter property"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "5",
+      "^\\p{N}$"
+    ],
+    "expect": true,
+    "source": "Unicode number property"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "日本",
+      "^\\p{L}+$"
+    ],
+    "expect": true,
+    "source": "CJK letters"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a\n",
+      "^a$"
+    ],
+    "expect": false,
+    "source": "dollar does not match before a trailing newline"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "\n",
+      "^.$"
+    ],
+    "expect": false,
+    "source": "dot excludes newline"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      " ",
+      "^.$"
+    ],
+    "expect": false,
+    "source": "dot excludes line separator"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "😀",
+      "^.$"
+    ],
+    "expect": true,
+    "source": "dot matches one astral code point"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      " ",
+      "^\\s$"
+    ],
+    "expect": true,
+    "source": "space class includes no-break space"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "﻿",
+      "^\\s$"
+    ],
+    "expect": true,
+    "source": "space class includes the byte order mark"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "",
+      "^\\s$"
+    ],
+    "expect": false,
+    "source": "space class excludes next-line"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a foo b",
+      "\\bfoo\\b"
+    ],
+    "expect": true,
+    "source": "word boundary"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "éfoo",
+      "\\bfoo"
+    ],
+    "expect": true,
+    "source": "word boundary is ASCII-only"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a-",
+      "^[\\w-]+$"
+    ],
+    "expect": true,
+    "source": "shorthand then trailing hyphen in a class"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "A",
+      "\\u0041"
+    ],
+    "expect": true,
+    "source": "four-digit unicode escape"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "A",
+      "\\x41"
+    ],
+    "expect": true,
+    "source": "hex escape"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "a.b",
+      "a\\.b"
+    ],
+    "expect": true,
+    "source": "escaped dot"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "axb",
+      "a\\.b"
+    ],
+    "expect": false,
+    "source": "control: escaped dot is literal"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "xx",
+      "^x{1,2}$"
+    ],
+    "expect": true,
+    "source": "bounded repetition"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "xxx",
+      "^x{1,2}$"
+    ],
+    "expect": false,
+    "source": "control: bounded repetition over the bound"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "ab",
+      "^(?:a|b)+$"
+    ],
+    "expect": true,
+    "source": "non-capturing group with alternation"
+  },
+  {
+    "op": "validate/pattern",
+    "args": [
+      "",
+      ""
+    ],
+    "expect": true,
+    "source": "the empty pattern matches"
+  },
+  {
+    "op": "str/split",
+    "args": [
+      "abc",
+      ""
+    ],
+    "expect": [
+      "a",
+      "b",
+      "c"
+    ],
+    "source": "empty delimiter splits by character"
+  },
+  {
+    "op": "str/split",
+    "args": [
+      "",
+      ""
+    ],
+    "expect": [],
+    "source": "empty string with empty delimiter is empty"
+  },
+  {
+    "op": "str/split",
+    "args": [
+      "a😀b",
+      ""
+    ],
+    "expect": [
+      "a",
+      "😀",
+      "b"
+    ],
+    "source": "empty delimiter splits by Unicode scalar value"
+  },
+  {
+    "op": "str/split",
+    "args": [
+      "a,b,c",
+      ","
+    ],
+    "expect": [
+      "a",
+      "b",
+      "c"
+    ],
+    "source": "control: a non-empty delimiter"
+  },
+  {
+    "op": "str/split",
+    "args": [
+      "abc",
+      "x"
+    ],
+    "expect": [
+      "abc"
+    ],
+    "source": "control: delimiter absent"
+  },
+  {
+    "op": "str/split",
+    "args": [
+      "",
+      ","
+    ],
+    "expect": [
+      ""
+    ],
+    "source": "control: empty string with a non-empty delimiter"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "a1-b22",
+      "[0-9]+",
+      "#"
+    ],
+    "expect": "a#-b#",
+    "source": "global replace"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "héllo, wörld! 123",
+      "[^\\p{L}\\p{N}]",
+      ""
+    ],
+    "expect": "héllowörld123",
+    "source": "strip non letter or number"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "abc",
+      "z",
+      "-"
+    ],
+    "expect": "abc",
+    "source": "control: no match"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "abc",
+      "b",
+      "$&"
+    ],
+    "expect": "a$&c",
+    "source": "the replacement is literal: dollar-ampersand"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "abc",
+      "(b)",
+      "$1"
+    ],
+    "expect": "a$1c",
+    "source": "the replacement is literal: group reference"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "abc",
+      "b",
+      "$$"
+    ],
+    "expect": "a$$c",
+    "source": "the replacement is literal: doubled dollar"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "abc",
+      "x*",
+      "-"
+    ],
+    "expect": "-a-b-c-",
+    "source": "empty matches between characters"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "abc",
+      "b*",
+      "-"
+    ],
+    "expect": "-a--c-",
+    "source": "empty match after a non-empty match"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "a😀b",
+      "x*",
+      "-"
+    ],
+    "expect": "-a-😀-b-",
+    "source": "empty matches advance by code point"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "a😀b",
+      ".",
+      "x"
+    ],
+    "expect": "xxx",
+    "source": "dot matches an astral code point"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "٣3",
+      "\\d",
+      "#"
+    ],
+    "expect": "٣#",
+    "source": "digit class is ASCII-only"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "",
+      "a",
+      "x"
+    ],
+    "expect": "",
+    "source": "empty input"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "abc",
+      "(?=b)",
+      "x"
+    ],
+    "error": true,
+    "source": "lookahead is an error"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "abc",
+      "(",
+      "x"
+    ],
+    "error": true,
+    "source": "an invalid pattern is an error"
+  },
+  {
+    "op": "str/replace-pattern",
+    "args": [
+      "abc",
+      "(a)\\1",
+      "x"
+    ],
+    "error": true,
+    "source": "a backreference is an error"
+  }
+]

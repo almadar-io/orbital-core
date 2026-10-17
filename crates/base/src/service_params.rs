@@ -614,22 +614,33 @@ mod tests {
     }
 
     #[test]
-    fn installed_email_send_matches_the_documented_contract() {
+    fn installed_webhook_send_matches_the_documented_contract() {
         let installed = crate::language::registry::baked_service_registry();
         let mut args = Args::new();
-        for k in [
-            "to",
-            "subject",
-            "body",
-            "from",
-            "htmlBody",
-            "replyTo",
-            "templateId",
-        ] {
+        for k in ["url", "event", "secret"] {
             args.insert(k.into(), ArgKind::String);
         }
-        assert!(validate_params(installed, "email", "send", &args).is_empty());
+        args.insert("payload".into(), ArgKind::Object);
+        assert!(validate_params(installed, "webhook", "send", &args).is_empty());
         args.insert("recipient".into(), ArgKind::String);
-        assert_eq!(validate_params(installed, "email", "send", &args).len(), 1);
+        assert_eq!(
+            validate_params(installed, "webhook", "send", &args).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn installed_webhook_send_requires_url_and_event_and_checks_payload_type() {
+        let installed = crate::language::registry::baked_service_registry();
+        let issues = validate_params(installed, "webhook", "send", &Args::new());
+        assert_eq!(issues.len(), 2);
+        let mut args = Args::new();
+        args.insert("url".into(), ArgKind::String);
+        args.insert("event".into(), ArgKind::String);
+        args.insert("payload".into(), ArgKind::Number);
+        assert_eq!(
+            validate_params(installed, "webhook", "send", &args).len(),
+            1
+        );
     }
 }

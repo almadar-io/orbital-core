@@ -29,9 +29,12 @@ impl Operator for I18nTOp {
 
 #[cfg(test)]
 mod tests {
-    use {crate::evaluator::operators::eval_expr, crate::evaluator::context::BindingContextBuilder, orbital_core_base::value::Value};
     use orbital_core_base::schema::sexpr::SExpression;
     use std::collections::HashMap;
+    use {
+        crate::evaluator::context::BindingContextBuilder, crate::evaluator::operators::eval_expr,
+        orbital_core_base::value::Value,
+    };
 
     fn ctx(locale: &str, messages: &[(&str, &str)]) -> crate::evaluator::context::BindingContext {
         BindingContextBuilder::new()

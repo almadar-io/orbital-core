@@ -21,6 +21,15 @@ use crate::ir::types::{OirField, OirType};
 use crate::language::registry::{EmbeddedOperator, EmbeddedOperatorParam, OperatorTypeRef, OperatorTypeRefKind};
 use crate::type_compat::{oir_type_kind, sub};
 
+/// The slot of a run-time tuple whose value is null: it is absent, so it passes its declared type and binds nothing.
+pub fn absent_slot() -> OirType {
+    OirType::Optional { inner: Box::new(OirType::Json) }
+}
+
+fn is_absent_slot(ty: &OirType) -> bool {
+    matches!(ty, OirType::Optional { inner } if matches!(**inner, OirType::Json))
+}
+
 /// What is known of one argument of a call.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Known {
@@ -716,6 +725,9 @@ fn bind_type(
                     OirType::Tuple { items: slots } if slots.is_empty() => Ok(()),
                     OirType::Tuple { items: slots } if slots.len() == items.len() => {
                         for (slot_formal, slot) in items.iter().zip(slots) {
+                            if is_absent_slot(slot) {
+                                continue;
+                            }
                             bind_type(slot_formal, &element(slot), b, mode)?;
                         }
                         Ok(())

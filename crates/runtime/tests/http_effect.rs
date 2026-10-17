@@ -653,6 +653,53 @@ fn a_stream_asks_http_stream_with_its_framing_and_call_site() {
     assert_eq!(state(&response), Some("done"));
 }
 
+fn http_delays(request: Json) -> Vec<Option<u64>> {
+    let (_, seen) = run(schema(call(ORIGIN, bearer(request))), ask(), |request| match request {
+        IoRequest::Secret { .. } => IoAnswer::Secret(Ok(Some("s3cret".to_string()))),
+        IoRequest::Http { .. } => reply(200, &[], "ok"),
+        other => panic!("unexpected {other:?}"),
+    });
+    seen.iter()
+        .filter_map(|request| match request {
+            IoRequest::Http { delay_ms, .. } => Some(*delay_ms),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn delay_ms_reaches_the_host_on_the_http_ask_and_a_request_without_it_asks_for_no_wait() {
+    assert_eq!(http_delays(json!({ "delayMs": 300 })), vec![Some(300)]);
+    // Controls: no option and an explicit null ask for no wait.
+    assert_eq!(http_delays(json!({})), vec![None]);
+    assert_eq!(http_delays(json!({ "delayMs": null })), vec![None]);
+}
+
+#[test]
+fn a_keyed_request_cancelled_while_it_waits_out_its_delay_fires_the_cancelled_route() {
+    let effect = call(ORIGIN, bearer(json!({ "delayMs": 5000 })));
+    let (response, seen) = run(schema(effect.clone()), ask(), |request| match request {
+        IoRequest::Secret { .. } => IoAnswer::Secret(Ok(Some("s3cret".to_string()))),
+        IoRequest::Http { delay_ms, .. } => {
+            assert_eq!(*delay_ms, Some(5000));
+            IoAnswer::ServiceCancelled
+        }
+        other => panic!("unexpected {other:?}"),
+    });
+    assert_eq!(state(&response), Some("stopped"));
+    assert_eq!(field_str(payload_of(&response, "SEARCH_CANCELLED"), "key"), "job");
+    assert!(emitted(&response).iter().all(|(e, _)| *e != "SEARCHED" && *e != "SEARCH_FAILED"));
+    assert!(seen.iter().any(|r| matches!(r, IoRequest::Http { delay_ms: Some(5000), .. })));
+    // Control: the same delayed request that is not cancelled completes with its reply.
+    let (response, _) = run(schema(effect), ask(), |request| match request {
+        IoRequest::Secret { .. } => IoAnswer::Secret(Ok(Some("s3cret".to_string()))),
+        IoRequest::Http { .. } => reply(200, &[], "ok"),
+        other => panic!("unexpected {other:?}"),
+    });
+    assert_eq!(state(&response), Some("done"));
+    assert!(emitted(&response).iter().all(|(e, _)| *e != "SEARCH_CANCELLED"));
+}
+
 fn retry_backoff_delays(backoff_ms: u64, max: u32) -> Vec<Option<u64>> {
     let effect = call(
         ORIGIN,
@@ -720,7 +767,7 @@ mod browser_effects {
     use orbital_core_base::ir::PageFactField;
     use orbital_core_runtime::http_request::BeaconOutcome;
     use orbital_core_runtime::http_service::TransportError;
-    use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest, PageFacts};
+    use orbital_core_runtime::resumable::{answer_http, IoAnswer, IoReply, IoRequest, ModelFailure, ModelFailureKind, PageFacts};
     use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
     use serde_json::{json, Value as Json};
 
@@ -738,6 +785,7 @@ mod browser_effects {
                         "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }, { "name": "failed" }, { "name": "stopped" }],
                         "transitions": [
                             { "from": "idle", "to": "idle", "event": "GO", "effects": [effect] },
+                            { "from": "idle", "to": "idle", "event": "CANCEL", "effects": [["cancel-call", "job"]] },
                             { "from": "idle", "to": "done", "event": "OK" },
                             { "from": "idle", "to": "failed", "event": "BAD" },
                             { "from": "idle", "to": "stopped", "event": "STOPPED" }
@@ -757,10 +805,14 @@ mod browser_effects {
         }
     }
 
-    fn run(effect: Json, mut host: impl FnMut(&IoRequest) -> IoAnswer) -> (EventResponse, Vec<IoRequest>) {
+    fn run(effect: Json, host: impl FnMut(&IoRequest) -> IoAnswer) -> (EventResponse, Vec<IoRequest>) {
+        run_with(effect, go(), host)
+    }
+
+    fn run_with(effect: Json, request: EventRequest, mut host: impl FnMut(&IoRequest) -> IoAnswer) -> (EventResponse, Vec<IoRequest>) {
         let server = EmbeddedServer::new(schema(effect)).unwrap();
         let mut seen = Vec::new();
-        let mut progress = server.start("Main", go()).unwrap();
+        let mut progress = server.start("Main", request).unwrap();
         loop {
             match progress {
                 ServerProgress::Done(response) => return (response, seen),
@@ -977,5 +1029,182 @@ mod browser_effects {
             );
             assert!(seen.is_empty());
         }
+    }
+
+    // --- on-device model: `browser/prompt` and `browser/embed` ----------------------------------------------------
+    // The twin of `packages/almadar-runtime/test/browser-on-device-model.test.ts`: the same effects, the same host
+    // behaviour, the same emitted payloads.
+
+    const SCHEMA: &str = "{\"type\":\"object\"}";
+
+    fn prompt(key: Option<&str>) -> Json {
+        let options = match key {
+            Some(key) => json!({ "key": key, "emit": routes()["emit"].clone() }),
+            None => routes(),
+        };
+        json!(["browser/prompt", "@payload.body", SCHEMA, options])
+    }
+
+    fn embed(texts: Json, key: Option<&str>) -> Json {
+        let options = match key {
+            Some(key) => json!({ "key": key, "emit": routes()["emit"].clone() }),
+            None => routes(),
+        };
+        json!(["browser/embed", texts, options])
+    }
+
+    fn failure(kind: ModelFailureKind, message: &str) -> ModelFailure {
+        ModelFailure::new(kind, message)
+    }
+
+    #[test]
+    fn a_prompt_asks_the_host_once_with_the_text_and_schema_and_emits_the_reply_with_a_null_key() {
+        let (response, seen) = run(prompt(None), |_| IoAnswer::Prompt(Ok("{\"category\":\"a\"}".to_string())));
+        assert_eq!(seen, vec![IoRequest::Prompt { text: "hello".into(), schema: SCHEMA.into(), key: None }]);
+        assert_eq!(payload_of(&response, "OK"), json!({ "reply": "{\"category\":\"a\"}", "key": null }));
+    }
+
+    #[test]
+    fn a_keyed_prompt_carries_its_key_to_the_host_and_echoes_it() {
+        let (response, seen) = run(prompt(Some("batch-1")), |_| IoAnswer::Prompt(Ok("{}".to_string())));
+        assert_eq!(seen, vec![IoRequest::Prompt { text: "hello".into(), schema: SCHEMA.into(), key: Some("batch-1".into()) }]);
+        assert_eq!(payload_of(&response, "OK"), json!({ "reply": "{}", "key": "batch-1" }));
+    }
+
+    #[test]
+    fn a_host_with_no_model_fails_prompt_unconfigured_and_a_model_that_cannot_answer_fails_unavailable() {
+        let (response, _) = run(prompt(Some("k")), |_| {
+            IoAnswer::Prompt(Err(failure(ModelFailureKind::Unconfigured, "browser/prompt: no on-device model is wired into this host")))
+        });
+        assert_eq!(
+            payload_of(&response, "BAD"),
+            json!({ "error": "browser/prompt: no on-device model is wired into this host", "kind": "unconfigured", "key": "k" })
+        );
+        let (response, _) = run(prompt(None), |_| IoAnswer::Prompt(Err(failure(ModelFailureKind::Unavailable, "The on-device model is downloading"))));
+        assert_eq!(
+            payload_of(&response, "BAD"),
+            json!({ "error": "The on-device model is downloading", "kind": "unavailable", "key": null })
+        );
+        let (response, _) = run(prompt(None), |_| IoAnswer::Prompt(Err(failure(ModelFailureKind::Failed, "quota exceeded"))));
+        assert_eq!(payload_of(&response, "BAD"), json!({ "error": "quota exceeded", "kind": "failed", "key": null }));
+        assert!(!emitted(&response).iter().any(|(e, _)| *e == "OK"));
+    }
+
+    #[test]
+    fn a_blocking_host_with_no_model_or_embedder_answers_unconfigured() {
+        let asked = IoRequest::Prompt { text: "t".into(), schema: SCHEMA.into(), key: None };
+        assert_eq!(
+            answer_http(None, &asked),
+            IoAnswer::Prompt(Err(failure(ModelFailureKind::Unconfigured, "browser/prompt: no on-device model is wired into this host")))
+        );
+        let asked = IoRequest::Embed { texts: vec!["t".into()], key: None };
+        assert_eq!(
+            answer_http(None, &asked),
+            IoAnswer::Embed(Err(failure(ModelFailureKind::Unconfigured, "browser/embed: no on-device embedder is wired into this host")))
+        );
+    }
+
+    #[test]
+    fn a_prompt_text_or_schema_that_is_not_text_fails_without_asking_the_host() {
+        for (text, schema) in [(json!(5), json!(SCHEMA)), (json!("hello"), json!({ "type": "object" }))] {
+            let (response, seen) = run(
+                json!(["browser/prompt", text, schema, routes()]),
+                |request| panic!("a refusal asked {request:?}"),
+            );
+            assert!(seen.is_empty());
+            assert_eq!(
+                payload_of(&response, "BAD"),
+                json!({ "error": "browser/prompt: the text and the response schema must be text", "kind": "failed", "key": null })
+            );
+        }
+    }
+
+    #[test]
+    fn a_prompt_failure_with_no_route_is_a_rejection_and_a_bad_key_never_asks_the_host() {
+        let (response, _) = run(
+            json!(["browser/prompt", "t", SCHEMA, { "emit": { "success": "OK" } }]),
+            |_| IoAnswer::Prompt(Err(failure(ModelFailureKind::Failed, "quota exceeded"))),
+        );
+        assert!(response
+            .rejections
+            .iter()
+            .flatten()
+            .any(|r| r.code == orbital_core_runtime::effects::response::TransitionRejectionCode::EffectFailed));
+        for key in [json!(17), json!(null), json!(""), json!(["+", 1, 2])] {
+            let (_, seen) = run(
+                json!(["browser/prompt", "t", SCHEMA, { "key": key, "emit": routes()["emit"].clone() }]),
+                |request| panic!("invalid key asked {request:?}"),
+            );
+            assert!(seen.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_cancelled_prompt_or_embed_fires_the_cancelled_route_with_the_key_and_not_success() {
+        let (response, _) = run(prompt(Some("job")), |_| IoAnswer::ServiceCancelled);
+        assert_eq!(payload_of(&response, "STOPPED"), json!({ "key": "job" }));
+        assert!(!emitted(&response).iter().any(|(e, _)| matches!(*e, "OK" | "BAD")));
+        let (response, _) = run(embed(json!(["a"]), Some("job")), |_| IoAnswer::ServiceCancelled);
+        assert_eq!(payload_of(&response, "STOPPED"), json!({ "key": "job" }));
+        assert!(!emitted(&response).iter().any(|(e, _)| matches!(*e, "OK" | "BAD")));
+    }
+
+    #[test]
+    fn control_an_unkeyed_cancelled_answer_fires_nothing() {
+        let (response, _) = run(prompt(None), |_| IoAnswer::ServiceCancelled);
+        assert!(emitted(&response).iter().all(|(e, _)| !matches!(*e, "OK" | "BAD" | "STOPPED")));
+    }
+
+    #[test]
+    fn cancel_call_reaches_the_host_with_the_key_of_the_prompt_and_an_unknown_key_is_the_hosts_no_op() {
+        let cancel = EventRequest { event: "CANCEL".to_string(), target_trait: Some("Probe".to_string()), ..Default::default() };
+        let (_, seen) = run_with(prompt(Some("job")), cancel, |request| match request {
+            IoRequest::CancelCall { key } if key == "job" => IoAnswer::Cancelled(Ok(())),
+            other => panic!("the fixture asks for {other:?}"),
+        });
+        assert_eq!(seen, vec![IoRequest::CancelCall { key: "job".into() }]);
+    }
+
+    #[test]
+    fn embed_asks_the_host_once_with_the_texts_and_emits_one_vector_per_text_with_the_key() {
+        let (response, seen) = run(embed(json!(["a", "b"]), Some("k")), |_| IoAnswer::Embed(Ok(vec![vec![0.0, 0.5], vec![1.0, 1.5]])));
+        assert_eq!(seen, vec![IoRequest::Embed { texts: vec!["a".into(), "b".into()], key: Some("k".into()) }]);
+        assert_eq!(payload_of(&response, "OK"), json!({ "embeddings": [[0.0, 0.5], [1.0, 1.5]], "key": "k" }));
+    }
+
+    #[test]
+    fn embed_of_no_texts_succeeds_with_no_vectors_and_never_asks_the_host() {
+        let (response, seen) = run(embed(json!([]), None), |request| panic!("an empty embed asked {request:?}"));
+        assert!(seen.is_empty());
+        assert_eq!(payload_of(&response, "OK"), json!({ "embeddings": [], "key": null }));
+    }
+
+    #[test]
+    fn embed_hands_back_whatever_vectors_the_host_answers_and_leaves_the_count_check_to_the_program() {
+        let (response, _) = run(embed(json!(["a", "b"]), None), |_| IoAnswer::Embed(Ok(vec![vec![1.0]])));
+        assert_eq!(payload_of(&response, "OK"), json!({ "embeddings": [[1.0]], "key": null }));
+    }
+
+    #[test]
+    fn embed_texts_that_are_not_a_list_of_text_fail_without_asking_the_host() {
+        for texts in [json!("a"), json!(["a", 2])] {
+            let (response, seen) = run(embed(texts, None), |request| panic!("a refusal asked {request:?}"));
+            assert!(seen.is_empty());
+            assert_eq!(
+                payload_of(&response, "BAD"),
+                json!({ "error": "browser/embed: the texts must be a list of text", "kind": "failed", "key": null })
+            );
+        }
+    }
+
+    #[test]
+    fn a_host_with_no_embedder_fails_embed_unconfigured() {
+        let (response, _) = run(embed(json!(["a"]), None), |_| {
+            IoAnswer::Embed(Err(failure(ModelFailureKind::Unconfigured, "browser/embed: no on-device embedder is wired into this host")))
+        });
+        assert_eq!(
+            payload_of(&response, "BAD"),
+            json!({ "error": "browser/embed: no on-device embedder is wired into this host", "kind": "unconfigured", "key": null })
+        );
     }
 }

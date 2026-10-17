@@ -32,17 +32,19 @@
 pub mod context;
 pub mod operators;
 
-pub use context::{BindingContext, BindingContextBuilder};
 pub use crate::evaluator::operators::arg_types::{actual_of, operator_signature};
-pub use crate::evaluator::operators::xml::bake_list_shapes;
-pub use operators::{callback_index_position, eval_expr, get_operator, raw_callback_params, EvalResult, Operator};
 pub use crate::evaluator::operators::system::{TimeUnit, TIME_UNIT_VOCABULARY};
+pub use crate::evaluator::operators::xml::bake_list_shapes;
+pub use context::{BindingContext, BindingContextBuilder};
+pub use operators::{
+    callback_index_position, eval_expr, get_operator, raw_callback_params, EvalResult, Operator,
+};
 
 pub use orbital_core_base::value::{Value, ValueMap};
 
+use lru::LruCache;
 use orbital_core_base::error::OrbitalError;
 use orbital_core_base::schema::sexpr::SExpression;
-use lru::LruCache;
 use parking_lot::Mutex;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -174,9 +176,8 @@ impl std::fmt::Debug for Evaluator {
 
 #[cfg(test)]
 mod tests {
-    use orbital_core_base::value::ValueMap;
     use super::*;
-    
+    use orbital_core_base::value::ValueMap;
 
     fn eval(json: &str) -> Value {
         let expr: SExpression = serde_json::from_str(json).unwrap();
@@ -191,6 +192,38 @@ mod tests {
             .evaluate(&expr, &BindingContext::new())
             .unwrap_err()
             .to_string()
+    }
+
+    /// A payload key that is not a `\w` word (a header such as `x-goog-resource-state`) is addressed by the same
+    /// `@payload.<path>` binding as in the JS runtime, in a guard and as an operator argument.
+    #[test]
+    fn a_hyphenated_payload_key_is_addressable_by_a_binding() {
+        let payload: Value =
+            serde_json::from_str(r#"{ "headers": { "x-goog-resource-state": "sync" } }"#).unwrap();
+        let ctx = crate::evaluator::context::BindingContextBuilder::new()
+            .payload(payload)
+            .build();
+        assert_eq!(
+            eval_with_ctx(
+                r#"["=", "@payload.headers.x-goog-resource-state", "sync"]"#,
+                &ctx
+            ),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval_with_ctx(
+                r#"["=", "@payload.headers.x-goog-resource-state", "exists"]"#,
+                &ctx
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            eval_with_ctx(
+                r#"["str/concat", "@payload.headers.x-goog-resource-state", "!"]"#,
+                &ctx
+            ),
+            Value::String("sync!".to_string())
+        );
     }
 
     fn eval_with_ctx(json: &str, ctx: &BindingContext) -> Value {
@@ -278,7 +311,10 @@ mod tests {
         assert_eq!(eval(r#"["=", "hello", "hello"]"#), Value::Bool(true));
         // Both operands share one type: no loose equality across kinds.
         let err = eval_err(r#"["=", 1, "1"]"#);
-        assert_eq!(err, "Evaluation error: Type mismatch: expected number, got string");
+        assert_eq!(
+            err,
+            "Evaluation error: Type mismatch: expected number, got string"
+        );
         assert_eq!(eval(r#"["=", 1, null]"#), Value::Bool(false));
     }
 
@@ -339,10 +375,7 @@ mod tests {
     #[test]
     fn test_and_or_return_operand_values() {
         assert_eq!(eval(r#"["or", 0, 42]"#), Value::Number(42.0));
-        assert_eq!(
-            eval(r#"["and", "y", "x"]"#),
-            Value::String("x".to_string())
-        );
+        assert_eq!(eval(r#"["and", "y", "x"]"#), Value::String("x".to_string()));
         assert_eq!(eval(r#"["or", 0, null, 7]"#), Value::Number(7.0));
         assert_eq!(eval(r#"["and", 1, 0, 5]"#), Value::Number(0.0));
         assert_eq!(eval(r#"["or", 0, null]"#), Value::Null);
@@ -370,7 +403,10 @@ mod tests {
         assert_eq!(eval(r#"["not", false]"#), Value::Bool(true));
         // `not` takes a boolean: a number is not coerced.
         let err = eval_err(r#"["not", 0]"#);
-        assert_eq!(err, "Evaluation error: Type mismatch: expected boolean, got number");
+        assert_eq!(
+            err,
+            "Evaluation error: Type mismatch: expected boolean, got number"
+        );
     }
 
     #[test]
@@ -2402,7 +2438,10 @@ mod tests {
             nums(&[10.0, 21.0])
         );
 
-        assert_eq!(raw_callback_params("array/filter"), Some(&["item", "index"][..]));
+        assert_eq!(
+            raw_callback_params("array/filter"),
+            Some(&["item", "index"][..])
+        );
         assert_eq!(
             eval(r#"["array/filter", [1, 2, 3], [">", "@item", 1]]"#),
             nums(&[2.0, 3.0])
@@ -2478,12 +2517,36 @@ mod tests {
     #[test]
     fn the_callback_index_is_the_parameter_the_evaluator_binds_as_index() {
         use super::operators::{callback_index_position, raw_callback_params};
-        for op in ["array/map", "map", "array/filter", "filter", "array/count", "count", "array/find", "find", "array/every", "array/some"] {
+        for op in [
+            "array/map",
+            "map",
+            "array/filter",
+            "filter",
+            "array/count",
+            "count",
+            "array/find",
+            "find",
+            "array/every",
+            "array/some",
+        ] {
             let at = callback_index_position(op).unwrap_or_else(|| panic!("{op} has an index"));
-            assert_eq!(raw_callback_params(op).map(|names| names[at]), Some("index"), "{op}");
+            assert_eq!(
+                raw_callback_params(op).map(|names| names[at]),
+                Some("index"),
+                "{op}"
+            );
         }
-        for op in ["array/reduce", "object/filter", "array/findIndex", "array/len"] {
-            assert_eq!(callback_index_position(op), None, "control: {op} hands its callback no numeric index");
+        for op in [
+            "array/reduce",
+            "object/filter",
+            "array/findIndex",
+            "array/len",
+        ] {
+            assert_eq!(
+                callback_index_position(op),
+                None,
+                "control: {op} hands its callback no numeric index"
+            );
         }
     }
 
@@ -2532,23 +2595,18 @@ mod tests {
         );
     }
 
-    /// The one `array/max` / `array/min` contract (G-CROSS-082): elements read through
-    /// `Value::to_number` (numbers, booleans, null, numeric strings; others skipped), an
-    /// optional field form reading `item[key]`, and `null` when nothing counts.
+    /// The one `array/max` / `array/min` contract (G-CROSS-082): same-typed elements read through
+    /// `Value::to_number`, an optional field form reading `item[key]`, and `null` when nothing counts.
+    /// A list of unlike element types is refused (G-ORBITAL-CORE-014).
     #[test]
     fn array_max_and_min_follow_the_one_contract() {
-        assert_eq!(
-            eval(r#"["array/max", [3, "7", true, "x"]]"#),
-            Value::Number(7.0)
-        );
-        assert_eq!(
-            eval(r#"["array/min", [3, "7", false, "x"]]"#),
-            Value::Number(0.0)
-        );
+        assert_eq!(eval(r#"["array/max", [3, 7, 1]]"#), Value::Number(7.0));
+        assert_eq!(eval(r#"["array/min", [3, 7, 1]]"#), Value::Number(1.0));
+        assert_eq!(eval(r#"["array/max", ["3", "7"]]"#), Value::Number(7.0));
+        assert_eq!(eval(r#"["array/min", [true, false]]"#), Value::Number(0.0));
         assert_eq!(eval(r#"["array/max", []]"#), Value::Null);
-        assert_eq!(eval(r#"["array/min", ["x"]]"#), Value::Null);
         assert_eq!(
-            eval(r#"["array/max", [{"price": 3}, {"price": "9"}, {"name": "n"}], "price"]"#),
+            eval(r#"["array/max", [{"price": 3}, {"price": 9}], "price"]"#),
             Value::Number(9.0)
         );
         assert_eq!(
@@ -2560,5 +2618,9 @@ mod tests {
             Value::Null,
             "an absent field doesn't count"
         );
+        for op in ["array/max", "array/min"] {
+            let err = eval_err(&format!(r#"["{op}", [3, "7", true, "x"]]"#));
+            assert!(err.contains("number") && err.contains("string"), "{op}: {err}");
+        }
     }
 }

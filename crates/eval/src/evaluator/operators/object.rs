@@ -1,9 +1,9 @@
 //! Object operators (and the `path` builder).
 
-use orbital_core_base::value::ValueMap;
 use super::macros::*;
 use super::util::deep_equals;
 use super::*;
+use orbital_core_base::value::ValueMap;
 
 /// path - Build a dot-separated path string from segments
 /// Used with set effect for dynamic field paths
@@ -172,10 +172,7 @@ impl Operator for ObjectFromEntriesOp {
 pub struct ObjectDeepMergeOp;
 impl Operator for ObjectDeepMergeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        fn deep_merge(
-            base: ValueMap,
-            overlay: ValueMap,
-        ) -> ValueMap {
+        fn deep_merge(base: ValueMap, overlay: ValueMap) -> ValueMap {
             let mut result = base;
             for (key, value) in overlay {
                 match (result.get(&key), &value) {

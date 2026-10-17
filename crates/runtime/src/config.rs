@@ -36,6 +36,10 @@ pub struct KernelConfig {
     /// The dispatch stamp source (ms-epoch): every dispatch's one `@now` reads it.
     /// `None` (the default) is the wall clock; a fixture pins it to replay a dispatch.
     pub clock: Option<DispatchClock>,
+
+    /// The deployment unit this kernel runs (a key of the program's `deployment`). `None` is no placement:
+    /// every `emit` stays on the local worklist.
+    pub unit: Option<String>,
 }
 
 /// A host-supplied millisecond clock for dispatch stamps.
@@ -58,6 +62,7 @@ impl std::fmt::Debug for KernelConfig {
             .field("service_handler", &self.service_handler.is_some())
             .field("substrate_handler", &self.substrate_handler.is_some())
             .field("clock", &self.clock.is_some())
+            .field("unit", &self.unit)
             .finish()
     }
 }
@@ -73,6 +78,7 @@ impl Default for KernelConfig {
             service_handler: None,
             substrate_handler: None,
             clock: None,
+            unit: None,
         }
     }
 }

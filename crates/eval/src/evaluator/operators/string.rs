@@ -29,7 +29,9 @@ impl Operator for StrToNumberOp {
             )));
         }
         match eval_expr(&args[0], ctx)? {
-            Value::String(text) => Ok(Value::Number(orbital_core_base::str_utils::js_number_from_text(&text))),
+            Value::String(text) => Ok(Value::Number(
+                orbital_core_base::str_utils::js_number_from_text(&text),
+            )),
             other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "string".into(),
                 actual: other.type_name().into(),
@@ -92,10 +94,13 @@ impl Operator for SplitOp {
         let s = eval_expr(&args[0], ctx)?.to_string_value();
         let delimiter = eval_expr(&args[1], ctx)?.to_string_value();
 
-        let parts: Vec<Value> = s
-            .split(&delimiter)
-            .map(|p| Value::String(p.to_string()))
-            .collect();
+        let parts: Vec<Value> = if delimiter.is_empty() {
+            s.chars().map(|c| Value::String(c.to_string())).collect()
+        } else {
+            s.split(&delimiter)
+                .map(|p| Value::String(p.to_string()))
+                .collect()
+        };
         Ok(Value::Array(parts))
     }
 }
@@ -171,6 +176,36 @@ impl Operator for StrReplaceOp {
         let old = eval_expr(&args[1], ctx)?.to_string_value();
         let new = eval_expr(&args[2], ctx)?.to_string_value();
         Ok(Value::String(s.replacen(&old, &new, 1)))
+    }
+}
+
+/// str/replace-pattern - Replace every match of a shared-dialect regex (see `translate_shared_regex`).
+/// The replacement is literal (`$` has no meaning); an invalid or unsupported pattern is an error.
+pub struct StrReplacePatternOp;
+impl Operator for StrReplacePatternOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "str/replace-pattern", >= 3);
+        let mut texts = Vec::with_capacity(3);
+        for arg in &args[..3] {
+            match eval_expr(arg, ctx)? {
+                Value::String(text) => texts.push(text),
+                other => {
+                    return Err(OrbitalError::Eval(EvalError::TypeMismatch {
+                        expected: "string".into(),
+                        actual: other.type_name().into(),
+                    }))
+                }
+            }
+        }
+        let Some(regex) = compile_shared_regex(&texts[1]) else {
+            return Err(OrbitalError::Eval(EvalError::InvalidArgument(
+                "str/replace-pattern: pattern is invalid or outside the shared regex dialect"
+                    .into(),
+            )));
+        };
+        Ok(Value::String(replace_each_match(
+            &regex, &texts[0], &texts[2],
+        )))
     }
 }
 
@@ -552,4 +587,320 @@ impl Operator for StrDefaultOp {
             _ => Ok(val),
         }
     }
+}
+
+// ============================================================================
+// Shared regular-expression dialect
+// ============================================================================
+
+const REGEX_SYNTAX_ESCAPES: &str = "\\^$.*+?()[]{}|/";
+const REGEX_GENERAL_CATEGORIES: &[&str] = &[
+    "L", "Lu", "Ll", "Lt", "Lm", "Lo", "M", "Mn", "Mc", "Me", "N", "Nd", "Nl", "No", "P", "Pc",
+    "Pd", "Ps", "Pe", "Pi", "Pf", "Po", "S", "Sm", "Sc", "Sk", "So", "Z", "Zs", "Zl", "Zp", "Cc",
+    "Cf", "Co",
+];
+const REGEX_MAX_REPEAT: usize = 1000;
+const REGEX_JS_SPACE: &str = r"\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}";
+
+fn regex_control_escape(e: char) -> Option<char> {
+    match e {
+        'n' => Some('\n'),
+        'r' => Some('\r'),
+        't' => Some('\t'),
+        'f' => Some('\u{0C}'),
+        'v' => Some('\u{0B}'),
+        _ => None,
+    }
+}
+
+fn regex_hex_at(chars: &[char], at: usize, len: usize) -> Option<u32> {
+    let digits = chars.get(at..at + len)?;
+    if !digits.iter().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(&digits.iter().collect::<String>(), 16).ok()
+}
+
+/// Parses `\p{Name}` / `\P{Name}` where `at` is the letter after the backslash; returns the next index.
+fn regex_property_end(chars: &[char], at: usize) -> Option<usize> {
+    if chars.get(at + 1) != Some(&'{') {
+        return None;
+    }
+    let close = at + 2 + chars.get(at + 2..)?.iter().position(|c| *c == '}')?;
+    let name: String = chars[at + 2..close].iter().collect();
+    REGEX_GENERAL_CATEGORIES
+        .contains(&name.as_str())
+        .then_some(close + 1)
+}
+
+enum ClassAtom {
+    Char(u32),
+    Set(String),
+}
+
+/// One class member at `at`: its atom and the next index.
+fn regex_class_atom(chars: &[char], at: usize) -> Option<(ClassAtom, usize)> {
+    let c = *chars.get(at)?;
+    if c == '[' || c == ']' {
+        return None;
+    }
+    if c != '\\' {
+        if matches!(c, '&' | '~' | '-') && chars.get(at + 1) == Some(&c) {
+            return None;
+        }
+        return Some((ClassAtom::Char(c as u32), at + 1));
+    }
+    let e = *chars.get(at + 1)?;
+    match e {
+        'd' => Some((ClassAtom::Set("0-9".into()), at + 2)),
+        'w' => Some((ClassAtom::Set("0-9A-Za-z_".into()), at + 2)),
+        's' => Some((ClassAtom::Set(REGEX_JS_SPACE.into()), at + 2)),
+        'p' | 'P' => {
+            let end = regex_property_end(chars, at + 1)?;
+            let text: String = chars[at + 1..end].iter().collect();
+            Some((ClassAtom::Set(format!("\\{text}")), end))
+        }
+        '-' => Some((ClassAtom::Char('-' as u32), at + 2)),
+        _ if REGEX_SYNTAX_ESCAPES.contains(e) => Some((ClassAtom::Char(e as u32), at + 2)),
+        _ if regex_control_escape(e).is_some() => {
+            Some((ClassAtom::Char(regex_control_escape(e)? as u32), at + 2))
+        }
+        'x' => Some((ClassAtom::Char(regex_hex_at(chars, at + 2, 2)?), at + 4)),
+        'u' => {
+            let code = regex_hex_at(chars, at + 2, 4)?;
+            (!(0xD800..=0xDFFF).contains(&code)).then_some((ClassAtom::Char(code), at + 6))
+        }
+        _ => None,
+    }
+}
+
+/// A class body after `[`: its translation and the index after `]`.
+fn regex_class(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let mut i = start;
+    let mut out = String::from("[");
+    if chars.get(i) == Some(&'^') {
+        out.push('^');
+        i += 1;
+    }
+    if chars.get(i) == Some(&']') {
+        return None;
+    }
+    while i < chars.len() {
+        if chars[i] == ']' {
+            out.push(']');
+            return Some((out, i + 1));
+        }
+        let (first, next) = regex_class_atom(chars, i)?;
+        i = next;
+        let range_follows = chars.get(i) == Some(&'-') && chars.get(i + 1) != Some(&']');
+        match first {
+            ClassAtom::Set(set) => {
+                if range_follows {
+                    return None;
+                }
+                out.push_str(&set);
+            }
+            ClassAtom::Char(low) => {
+                out.push_str(&format!("\\x{{{low:X}}}"));
+                if range_follows {
+                    let (second, next) = regex_class_atom(chars, i + 1)?;
+                    let ClassAtom::Char(high) = second else {
+                        return None;
+                    };
+                    if low > high {
+                        return None;
+                    }
+                    out.push_str(&format!("-\\x{{{high:X}}}"));
+                    i = next;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `{n}`, `{n,}` or `{n,m}` at `at`: its text and the next index.
+fn regex_braces(chars: &[char], at: usize) -> Option<(String, usize)> {
+    let mut i = at + 1;
+    let number = |i: &mut usize| -> Option<usize> {
+        let from = *i;
+        while chars.get(*i).is_some_and(|c| c.is_ascii_digit()) {
+            *i += 1;
+        }
+        if *i == from {
+            return None;
+        }
+        chars[from..*i].iter().collect::<String>().parse().ok()
+    };
+    let low = number(&mut i)?;
+    if low > REGEX_MAX_REPEAT {
+        return None;
+    }
+    if chars.get(i) == Some(&',') {
+        i += 1;
+        if let Some(high) = number(&mut i) {
+            if high > REGEX_MAX_REPEAT || high < low {
+                return None;
+            }
+        }
+    }
+    if chars.get(i) != Some(&'}') {
+        return None;
+    }
+    let text: String = chars[at..=i].iter().collect();
+    Some((text, i + 1))
+}
+
+/// Translates a pattern of the shared dialect (see `validate/pattern`) into the `regex` crate's syntax with
+/// identical meaning; `None` when the pattern is invalid or outside the dialect. The ECMAScript twin is
+/// `isSharedRegex` in `@almadar/evaluator` `std/regex.ts`; `regex-vectors.json` pins both.
+pub fn translate_shared_regex(pattern: &str) -> Option<String> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let mut depth = 0usize;
+    let mut quantifiable = false;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '(' => {
+                if chars.get(i + 1) == Some(&'?') {
+                    if chars.get(i + 2) != Some(&':') {
+                        return None;
+                    }
+                    out.push_str("(?:");
+                    i += 3;
+                } else {
+                    out.push('(');
+                    i += 1;
+                }
+                depth += 1;
+                quantifiable = false;
+            }
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                out.push(')');
+                i += 1;
+                quantifiable = true;
+            }
+            '|' | '^' | '$' => {
+                out.push(c);
+                i += 1;
+                quantifiable = false;
+            }
+            '*' | '+' | '?' | '{' => {
+                if !quantifiable {
+                    return None;
+                }
+                if c == '{' {
+                    let (text, next) = regex_braces(&chars, i)?;
+                    out.push_str(&text);
+                    i = next;
+                } else {
+                    out.push(c);
+                    i += 1;
+                }
+                if chars.get(i) == Some(&'?') {
+                    out.push('?');
+                    i += 1;
+                }
+                quantifiable = false;
+            }
+            '}' | ']' => return None,
+            '.' => {
+                out.push_str(r"[^\n\r\x{2028}\x{2029}]");
+                i += 1;
+                quantifiable = true;
+            }
+            '[' => {
+                let (text, next) = regex_class(&chars, i + 1)?;
+                out.push_str(&text);
+                i = next;
+                quantifiable = true;
+            }
+            '\\' => {
+                let e = *chars.get(i + 1)?;
+                match e {
+                    'b' => out.push_str(r"(?-u:\b)"),
+                    'B' => out.push_str(r"(?-u:\B)"),
+                    'd' => out.push_str("[0-9]"),
+                    'D' => out.push_str("[^0-9]"),
+                    'w' => out.push_str("[0-9A-Za-z_]"),
+                    'W' => out.push_str("[^0-9A-Za-z_]"),
+                    's' => out.push_str(&format!("[{REGEX_JS_SPACE}]")),
+                    'S' => out.push_str(&format!("[^{REGEX_JS_SPACE}]")),
+                    'p' | 'P' => {
+                        let end = regex_property_end(&chars, i + 1)?;
+                        let text: String = chars[i + 1..end].iter().collect();
+                        out.push('\\');
+                        out.push_str(&text);
+                        i = end;
+                        quantifiable = true;
+                        continue;
+                    }
+                    'x' => {
+                        out.push_str(&format!("\\x{{{:X}}}", regex_hex_at(&chars, i + 2, 2)?));
+                        i += 4;
+                        quantifiable = true;
+                        continue;
+                    }
+                    'u' => {
+                        let code = regex_hex_at(&chars, i + 2, 4)?;
+                        if (0xD800..=0xDFFF).contains(&code) {
+                            return None;
+                        }
+                        out.push_str(&format!("\\x{{{code:X}}}"));
+                        i += 6;
+                        quantifiable = true;
+                        continue;
+                    }
+                    _ if REGEX_SYNTAX_ESCAPES.contains(e) => {
+                        out.push_str(&regex::escape(&e.to_string()))
+                    }
+                    _ if regex_control_escape(e).is_some() => {
+                        out.push('\\');
+                        out.push(e);
+                    }
+                    _ => return None,
+                }
+                i += 2;
+                quantifiable = !matches!(e, 'b' | 'B');
+            }
+            _ => {
+                out.push_str(&regex::escape(&c.to_string()));
+                i += 1;
+                quantifiable = true;
+            }
+        }
+    }
+    (depth == 0).then_some(out)
+}
+
+/// Replaces every match the way ECMAScript's global `replace` does: after a non-empty match an empty match at
+/// its end still counts (the `regex` crate's own iteration skips it), and after an empty match the search
+/// resumes one code point later. The replacement is literal.
+fn replace_each_match(regex: &regex::Regex, text: &str, replacement: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut at = 0;
+    while at <= text.len() {
+        let Some(found) = regex.find_at(text, at) else {
+            break;
+        };
+        out.push_str(&text[copied..found.start()]);
+        out.push_str(replacement);
+        copied = found.end();
+        at = if found.is_empty() {
+            found.end() + text[found.end()..].chars().next().map_or(1, char::len_utf8)
+        } else {
+            found.end()
+        };
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
+/// Compiles a pattern of the shared dialect; `None` when it is outside the dialect.
+pub fn compile_shared_regex(pattern: &str) -> Option<regex::Regex> {
+    regex::Regex::new(&translate_shared_regex(pattern)?).ok()
 }

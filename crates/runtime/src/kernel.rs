@@ -57,7 +57,10 @@ pub enum KernelError {
     Internal(String),
 }
 
+pub mod agent_ports;
 pub mod dispatch_run;
+mod envelope;
+pub mod inbound;
 pub mod resolve_run;
 pub(crate) use dispatch_run::Fault;
 
@@ -248,6 +251,8 @@ pub struct RuntimeKernel {
     egress: Arc<RwLock<Vec<String>>>,
     /// The `os/` grants the registered programs declare, unioned.
     os_grants: Arc<RwLock<OsGrants>>,
+    /// The program's placement, the envelope ids accepted per sender and the dispatch origin in flight (EXEC-QUEUE-9).
+    deliveries: Arc<RwLock<envelope::Deliveries>>,
     /// The trait whose effects are running and whether its step is a follow-on of the dispatch:
     /// what a `call-service` is stamped with.
     step_site: Arc<RwLock<Option<(String, bool)>>>,
@@ -968,6 +973,7 @@ impl RuntimeKernel {
             entity_defaults: Arc::new(RwLock::new(HashMap::new())),
             egress: Arc::new(RwLock::new(Vec::new())),
             os_grants: Arc::new(RwLock::new(OsGrants::default())),
+            deliveries: Arc::default(),
             step_site: Arc::new(RwLock::new(None)),
             capture_children: Arc::new(RwLock::new(HashMap::new())),
             composed_callsite: Arc::new(RwLock::new(ValueMap::new())),
@@ -1047,9 +1053,8 @@ impl RuntimeKernel {
                 }
             }
         }
-        if let Some(declared) = &schema.os_grants {
-            self.os_grants.write().union(declared);
-        }
+        self.os_grants.write().union(&schema.program_os_grants());
+        self.register_placement(&schema);
         let schema_name = schema.name.clone();
         info!(schema = %schema_name, "Registering schema");
         self.theme_presets
@@ -1469,6 +1474,11 @@ impl RuntimeKernel {
                 }
             }
             self.inject_relation_options(trait_name, &mut effect_results);
+            if let Some(refused) = self.deliver_remote_emits(trait_name, follow_on, &mut effect_results) {
+                if failure.is_none() {
+                    failure = Some(refused);
+                }
+            }
             if self.io.suspended() {
                 if let Some(state) = state_manager.get_state_mut(trait_name, Some(entity_id)) {
                     *state = current_state;
@@ -1758,6 +1768,7 @@ impl RuntimeKernel {
             .map(|er| resolve_effect_result(er, &ctx))
             .collect::<Vec<_>>();
         self.inject_relation_options(trait_name, &mut effect_results);
+        let failure = self.deliver_remote_emits(trait_name, false, &mut effect_results);
         if self.io.suspended() {
             return Err(Fault::Suspended);
         }
@@ -1788,7 +1799,7 @@ impl RuntimeKernel {
             effect_runs: Vec::new(),
             cascade_dropped: Vec::new(),
             consumed_emits: Vec::new(),
-            failure: None,
+            failure,
             callsite_payload: None,
         })
     }
@@ -2730,6 +2741,9 @@ impl RuntimeKernel {
                 }
             }
         }
+        if let Some(result) = result {
+            self.refusal_followups(trait_name, &source, result, &mut fanned);
+        }
         if let Some(result) = result.filter(|r| r.executed) {
             let mut repaints = self.first_repaints(trait_name, result);
             repaints.append(&mut own);
@@ -2842,7 +2856,7 @@ impl RuntimeKernel {
         direct_scopes: &[String],
         out: &mut Vec<CascadeItem>,
     ) {
-        let listeners = self.listener_manager.matching(event, source);
+        let listeners = self.local_only(self.listener_manager.matching(event, source));
         if listeners.is_empty() {
             return;
         }
@@ -2857,18 +2871,7 @@ impl RuntimeKernel {
             if l.triggers == event && direct_scopes.contains(&l.trait_name) {
                 continue;
             }
-            let mapped = match &l.payload_mapping {
-                Some(mapping) => {
-                    let mut m = ValueMap::new();
-                    for (k, expr) in mapping {
-                        if let Ok(v) = evaluator.evaluate(expr, &ctx) {
-                            m.insert(k.clone(), v);
-                        }
-                    }
-                    Value::Object(m)
-                }
-                None => source_payload.clone(),
-            };
+            let mapped = envelope::mapped_listen_payload(&evaluator, &ctx, &l.payload_mapping, source_payload);
             debug!(
                 source_trait = %source_trait, event = %event,
                 listener_trait = %l.trait_name, triggers = %l.triggers,
@@ -3375,6 +3378,27 @@ impl RuntimeKernel {
                     effect_results.push(result);
                     effect_results.extend(completion);
                 }
+                Effect::BrowserPrompt { emit, .. } | Effect::BrowserEmbed { emit, .. } => {
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    let key = match &resolved {
+                        Effect::BrowserPrompt { key, .. } | Effect::BrowserEmbed { key, .. } => {
+                            key.as_ref().and_then(Value::as_str).map(str::to_string)
+                        }
+                        _ => None,
+                    };
+                    let mut result = self.run_on_device_model(&resolved, key.as_deref());
+                    let verdict = self.io.take_call_verdict();
+                    if verdict == Some(CallVerdict::Cancelled) {
+                        result = EffectResult::executed(resolved);
+                    }
+                    let completion = emit
+                        .as_ref()
+                        .and_then(|e| keyed_call_completion_emit(e, &result, verdict, key.as_deref()));
+                    effect_results.push(result);
+                    effect_results.extend(completion);
+                }
                 Effect::BrowserPageFacts { emit, .. } => {
                     let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
                         return;
@@ -3386,17 +3410,43 @@ impl RuntimeKernel {
                     effect_results.push(result);
                     effect_results.extend(completion);
                 }
+                Effect::Custom { name, emit, .. }
+                    if orbital_core_base::agent_ports::is_agent_port_operator(name) =>
+                {
+                    let mut result = if self.effect_executor.environment().is_client() {
+                        self.effect_executor.execute(&effect, ctx)
+                    } else {
+                        self.run_agent_port(&effect, ctx)
+                    };
+                    if let Effect::Custom { emit: routes, .. } = &mut result.effect {
+                        routes.clone_from(emit);
+                    }
+                    let completion = emit
+                        .as_ref()
+                        .and_then(|e| agent_ports::agent_port_completion_emit(e, &result));
+                    effect_results.push(result);
+                    effect_results.extend(completion);
+                }
                 Effect::Custom {
                     emit: Some(op_emit),
                     ..
                 } if !op_emit.is_empty() => {
-                    let mut result = self.effect_executor.execute(&effect, ctx);
+                    let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    let mut result = self.effect_executor.execute(&resolved, ctx);
                     if let Effect::Custom { emit: routes, .. } = &mut result.effect {
                         *routes = Some(op_emit.clone());
                     }
                     let completion = substrate_completion_emit(op_emit, &result);
                     effect_results.push(result);
                     effect_results.extend(completion);
+                }
+                Effect::Custom { .. } => {
+                    let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    effect_results.push(self.effect_executor.execute(&resolved, ctx));
                 }
                 Effect::CancelCall { .. } => {
                     let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
@@ -3901,6 +3951,76 @@ impl RuntimeKernel {
                     return EffectResult::failed(effect.clone(), "a beacon call asked for something other than a beacon")
                 }
             }
+        }
+    }
+
+    /// Run a `browser/prompt` or `browser/embed`: one journaled ask to the host's on-device model or embedder. The
+    /// payload echoes the key (`null` unkeyed); a failure names its kind (`unconfigured`, `unavailable`, `failed`).
+    fn run_on_device_model(&self, effect: &Effect, key: Option<&str>) -> EffectResult {
+        use super::resumable::{ModelFailure, ModelFailureKind};
+        let key_value = key.map_or(Value::Null, |k| Value::String(k.to_string()));
+        let failed = |failure: ModelFailure| {
+            let mut result = EffectResult::failed(effect.clone(), &failure.message);
+            result.return_value = Some(Value::Object(ValueMap::from([
+                ("error".to_string(), Value::String(failure.message)),
+                ("kind".to_string(), Value::String(failure.kind.as_str().to_string())),
+                ("key".to_string(), key_value.clone()),
+            ])));
+            result
+        };
+        let refuse = |message: String| failed(ModelFailure::new(ModelFailureKind::Failed, message));
+        match effect {
+            Effect::BrowserPrompt { text, schema, .. } => {
+                let (Value::String(text), Value::String(schema)) = (text, schema) else {
+                    return refuse("browser/prompt: the text and the response schema must be text".to_string());
+                };
+                match self.io.prompt(text, schema, key) {
+                    Ok(reply) => EffectResult::executed_with_value(
+                        effect.clone(),
+                        Value::Object(ValueMap::from([
+                            ("reply".to_string(), Value::String(reply)),
+                            ("key".to_string(), key_value),
+                        ])),
+                    ),
+                    Err(failure) => failed(failure),
+                }
+            }
+            Effect::BrowserEmbed { texts, .. } => {
+                let Value::Array(items) = texts else {
+                    return refuse("browser/embed: the texts must be a list of text".to_string());
+                };
+                let Some(texts) = items.iter().map(|t| t.as_str().map(str::to_string)).collect::<Option<Vec<String>>>() else {
+                    return refuse("browser/embed: the texts must be a list of text".to_string());
+                };
+                if texts.is_empty() {
+                    return EffectResult::executed_with_value(
+                        effect.clone(),
+                        Value::Object(ValueMap::from([
+                            ("embeddings".to_string(), Value::Array(Vec::new())),
+                            ("key".to_string(), key_value),
+                        ])),
+                    );
+                }
+                match self.io.embed(&texts, key) {
+                    Ok(vectors) => EffectResult::executed_with_value(
+                        effect.clone(),
+                        Value::Object(ValueMap::from([
+                            (
+                                "embeddings".to_string(),
+                                Value::Array(
+                                    vectors
+                                        .into_iter()
+                                        .map(|v| Value::Array(v.into_iter().map(Value::Number).collect()))
+                                        .collect(),
+                                ),
+                            ),
+                            ("key".to_string(), key_value),
+                        ])),
+                    ),
+                    Err(failure) => failed(failure),
+                }
+            }
+            _ => EffectResult::noop(effect.clone(), "not an on-device model effect"),
         }
     }
 
@@ -4900,6 +5020,17 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
+        Effect::BrowserPrompt { text, schema, key, emit } => Effect::BrowserPrompt {
+            text: ctx.resolve_value_checked(&text)?.into_owned(),
+            schema: ctx.resolve_value_checked(&schema)?.into_owned(),
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
+            emit,
+        },
+        Effect::BrowserEmbed { texts, key, emit } => Effect::BrowserEmbed {
+            texts: ctx.resolve_value_checked(&texts)?.into_owned(),
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
+            emit,
+        },
         Effect::BrowserBeacon { url, request, key, emit } => Effect::BrowserBeacon {
             url: ctx.resolve_value_checked(&url)?.into_owned(),
             request: ctx.resolve_value_checked(&request)?.into_owned(),
@@ -4947,6 +5078,33 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
         },
         other => other,
     })
+}
+
+/// A substrate operator (`Effect::Custom`) with its arguments resolved against the step, as the JS executor resolves
+/// every argument before the host sees it; a typed argument mismatch is the effect's failure. Not part of
+/// `resolve_effect_bindings`, which also re-reads already-run effects for reporting and must not resolve data twice.
+fn resolved_custom_or_failed(
+    effect: &Effect,
+    ctx: &BindingContext,
+    effect_results: &mut Vec<EffectResult>,
+) -> Option<Effect> {
+    let Effect::Custom { name, args, emit } = effect else {
+        return Some(effect.clone());
+    };
+    let mut resolved = Vec::with_capacity(args.len());
+    for arg in args {
+        match ctx.resolve_value_checked(arg) {
+            Ok(value) => resolved.push(value.into_owned()),
+            Err(fault) => {
+                effect_results.push(EffectResult::failed(
+                    effect.clone(),
+                    &OrbitalError::Eval(fault).to_string(),
+                ));
+                return None;
+            }
+        }
+    }
+    Some(Effect::Custom { name: name.clone(), args: resolved, emit: emit.clone() })
 }
 
 /// `effect` with its bindings resolved, or `None` after recording the typed argument mismatch as the effect's failure.
@@ -5252,6 +5410,8 @@ fn is_thrown_failure(result: &EffectResult) -> bool {
         | Effect::Custom { emit, .. }
         | Effect::BrowserPageFacts { emit, .. }
         | Effect::BrowserBeacon { emit, .. }
+        | Effect::BrowserPrompt { emit, .. }
+        | Effect::BrowserEmbed { emit, .. }
         | Effect::RandomBytes { emit, .. }
         | Effect::Os { emit, .. }
         | Effect::CredentialStatus { emit, .. }
@@ -8193,6 +8353,28 @@ mod os_grants_tests {
         assert!(!grants.fs_allows(Path::new("/tmp/a"), FsMode::Read));
         assert!(grants.stdio_allows(StdioKind::Out));
         assert!(grants.desktop_allows(DesktopKind::Notify));
+    }
+
+    #[test]
+    fn an_orbitals_own_grants_reach_the_kernel_and_an_undeclared_one_does_not() {
+        let with_own: OrbitalSchema = serde_json::from_value(json!({
+            "name": "p", "version": "1.0.0",
+            "orbitals": [{"name": "A", "entity": {"name": "E", "fields": []}, "traits": [], "pages": [],
+                          "osGrants": {"exec": ["git"]}}]
+        }))
+        .unwrap();
+        let k = kernel();
+        k.register_schema(with_own).unwrap();
+        assert!(k.os_grants().exec_allows("git"));
+
+        let without: OrbitalSchema = serde_json::from_value(json!({
+            "name": "q", "version": "1.0.0",
+            "orbitals": [{"name": "A", "entity": {"name": "E", "fields": []}, "traits": [], "pages": []}]
+        }))
+        .unwrap();
+        let control = kernel();
+        control.register_schema(without).unwrap();
+        assert!(!control.os_grants().exec_allows("git"));
     }
 
     #[test]

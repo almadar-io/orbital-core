@@ -122,6 +122,18 @@ pub const PAGE_FACTS_SHAPE: &[ShapeField] = &[
     field("screenWidth", "number"),
 ];
 
+/// `browser/prompt` hands back the on-device model's reply text (JSON satisfying the schema the call gave) and the
+/// call's key (`null` unkeyed).
+pub const PROMPT_SHAPE: &[ShapeField] = &[field("reply", "string"), field("key", "string")];
+
+/// `browser/embed` hands back one vector per text, in input order, and the call's key (`null` unkeyed).
+pub const EMBED_SHAPE: &[ShapeField] = &[field("embeddings", "array"), field("key", "string")];
+
+/// A `browser/prompt` or `browser/embed` failure: the message, its kind (`unconfigured`: the host wires no model or
+/// embedder; `unavailable`: it has one that cannot answer now; `failed`: it answered with an error) and the call's key.
+pub const MODEL_FAILURE_SHAPE: &[ShapeField] =
+    &[field("error", "string"), field("kind", "string"), field("key", "string")];
+
 pub const HTTP_PRESIGN_SHAPE: &[ShapeField] = &[field("url", "string"), field("key", "string")];
 
 /// `http` with `paginate` hands back the pages it walked, the collected items and the last reply.
@@ -396,6 +408,8 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
         },
         "browser/beacon" => ProducedPayload::Shape(HTTP_BEACON_SHAPE),
         "browser/page-facts" => ProducedPayload::Shape(PAGE_FACTS_SHAPE),
+        "browser/prompt" => ProducedPayload::Shape(PROMPT_SHAPE),
+        "browser/embed" => ProducedPayload::Shape(EMBED_SHAPE),
         "random-bytes" => ProducedPayload::Shape(RANDOM_BYTES_SHAPE),
         "credential-status" | "credential-forget" => ProducedPayload::Shape(CREDENTIAL_SHAPE),
         "oauth-authorize" => ProducedPayload::Shape(OAUTH_AUTHORIZE_SHAPE),
@@ -414,6 +428,7 @@ pub fn failure_payload(operator: &str, keyed: bool) -> ProducedPayload {
     }
     match operator {
         "http" | "browser/beacon" => ProducedPayload::Shape(HTTP_FAILURE_SHAPE),
+        "browser/prompt" | "browser/embed" => ProducedPayload::Shape(MODEL_FAILURE_SHAPE),
         "browser/page-facts" | "random-bytes" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
         "random-bytes" | "credential-status" | "credential-forget" | "browser/page-facts" => ProducedPayload::Shape(HOST_FAILURE_SHAPE),
         "oauth-authorize" => ProducedPayload::Shape(OAUTH_AUTHORIZE_FAILURE_SHAPE),
@@ -507,6 +522,20 @@ mod tests {
             undeclared_reads(&["connected"], &success_payload("credential-status", CallVariant::Plain), &[]),
             Vec::<&str>::new()
         );
+    }
+
+    #[test]
+    fn on_device_model_effects_emit_their_closed_payloads() {
+        assert_eq!(success_payload("browser/prompt", CallVariant::Plain), ProducedPayload::Shape(PROMPT_SHAPE));
+        assert_eq!(success_payload("browser/embed", CallVariant::Plain), ProducedPayload::Shape(EMBED_SHAPE));
+        for keyed in [false, true] {
+            for op in ["browser/prompt", "browser/embed"] {
+                assert_eq!(failure_payload(op, keyed), ProducedPayload::Shape(MODEL_FAILURE_SHAPE));
+            }
+        }
+        assert!(undeclared_reads(&["reply", "key"], &success_payload("browser/prompt", CallVariant::Plain), &[]).is_empty());
+        assert_eq!(undeclared_reads(&["embeddings", "reply"], &success_payload("browser/embed", CallVariant::Plain), &[]), vec!["reply"]);
+        assert_eq!(undeclared_reads(&["kind", "status"], &failure_payload("browser/prompt", false), &[]), vec!["status"]);
     }
 
     #[test]

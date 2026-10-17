@@ -14,11 +14,11 @@
 
 use super::args::{arg_bytes, arg_i64, arg_opt, arg_str, bytes_value, denied};
 use super::{HandleSlab, IdCounter, OsHost};
-use orbital_core_base::os_grants::NetKind;
-use orbital_core_base::value::{Value, ValueMap};
+use crate::resumable::CallSite;
 use orbital_core_base::http_wire::is_public_address;
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
-use crate::resumable::CallSite;
+use orbital_core_base::os_grants::NetKind;
+use orbital_core_base::value::{Value, ValueMap};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
@@ -375,10 +375,13 @@ pub(super) fn answer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use {orbital_core_base::os_grants::{NetGrant, OsGrants}, crate::os_host::OsHandles};
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::time::Instant;
+    use {
+        crate::os_host::OsHandles,
+        orbital_core_base::os_grants::{NetGrant, OsGrants},
+    };
 
     fn s(text: &str) -> Value {
         Value::String(text.to_string())
@@ -468,7 +471,7 @@ mod tests {
             let opened =
                 ask(host, OsOp::TcpConnect, &[s("127.0.0.1"), n(port as i64)]).expect("connect");
             let sock = field(&opened, "sock");
-            let closed = answer(OsOp::Close, &[sock.clone()], None, None, host)
+            let closed = answer(OsOp::Close, std::slice::from_ref(&sock), None, None, host)
                 .expect("a socket")
                 .expect("closed");
             assert_eq!(closed, Value::Object(ValueMap::new()));
@@ -511,6 +514,22 @@ mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    fn a_granted_port_on_another_host_is_denied() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        with_host(tcp_grant(port), |host| {
+            assert_eq!(
+                kind_of(ask(
+                    host,
+                    OsOp::TcpConnect,
+                    &[s("127.0.0.2"), n(port as i64)]
+                )),
+                OsErrorKind::Denied
+            );
+        });
     }
 
     #[test]
@@ -676,7 +695,7 @@ mod tests {
                 ask(host, OsOp::TcpConnect, &[s("127.0.0.1"), n(port as i64)]).expect("connect");
             let sock = field(&opened, "sock");
             assert_eq!(
-                ask(host, OsOp::Shutdown, &[sock.clone()]).expect("shutdown"),
+                ask(host, OsOp::Shutdown, std::slice::from_ref(&sock)).expect("shutdown"),
                 Value::Object(ValueMap::new())
             );
             let after = kind_of(ask(host, OsOp::Send, &[sock, s("aGk=")]));

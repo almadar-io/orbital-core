@@ -3,9 +3,9 @@
 //! The core state machine engine that processes events through transitions.
 
 use super::types::{ArmGuard, EventPayload, GuardResult, TransitionEffects, TransitionResult};
-use orbital_core_base::error::OrbitalError;
 use crate::evaluator::context::BindingContext;
 use crate::evaluator::Evaluator;
+use orbital_core_base::error::OrbitalError;
 use orbital_core_base::schema::types::{StateMachine, TraitDefinition, TransitionDefinition};
 use std::sync::Arc;
 
@@ -292,9 +292,9 @@ impl StateMachineCore {
 mod tests {
     use super::super::types::TransitionFailureReason;
     use super::*;
+    use orbital_core_base::schema::types::{StateDefinition, StringOrArray};
     use orbital_core_base::value::Value;
     use orbital_core_base::value::ValueMap;
-    use orbital_core_base::schema::types::{StateDefinition, StringOrArray};
 
     fn create_test_state_machine() -> StateMachine {
         StateMachine {
@@ -707,6 +707,7 @@ mod tests {
             payload_entity: None,
             external: None,
             listened: None,
+            inbound: None,
             key: "REGISTER".to_string(),
             id: Some("evt-register".to_string()),
             name: None,

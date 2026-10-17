@@ -957,6 +957,7 @@ mod tests {
             reference: None,
             config: None,
             domain_context: None,
+            os_grants: None,
             design: None,
             types: None,
         }
@@ -994,7 +995,9 @@ mod tests {
             schema_version: None,
             ledger: None,
             egress: None,
+            inbound: None,
             os_grants: None,
+            deployment: None,
         }
     }
 

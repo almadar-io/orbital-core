@@ -4,9 +4,9 @@
 //! array (NOT a heap) with a deterministic tie-break (lower f, lower h, earliest
 //! insertion) so Rust and JS produce identical paths.
 
-use orbital_core_base::value::ValueMap;
 use super::macros::*;
 use super::*;
+use orbital_core_base::value::ValueMap;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

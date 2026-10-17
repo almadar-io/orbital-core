@@ -677,7 +677,10 @@ impl EffectExecutor {
             | Effect::OAuthConnectionForget { .. } => {
                 EffectResult::noop(effect.clone(), "host effects are run by the kernel, which owns its host I/O")
             }
-            Effect::BrowserPageFacts { .. } | Effect::BrowserBeacon { .. } => {
+            Effect::BrowserPageFacts { .. }
+            | Effect::BrowserBeacon { .. }
+            | Effect::BrowserPrompt { .. }
+            | Effect::BrowserEmbed { .. } => {
                 EffectResult::noop(effect.clone(), "browser host effects are run by the kernel, which owns its host I/O")
             }
             Effect::RenderUi { slot, content } => self.do_render_ui(slot, content),

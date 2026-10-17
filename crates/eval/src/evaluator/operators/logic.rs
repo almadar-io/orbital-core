@@ -180,7 +180,8 @@ impl Operator for LetOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "let", >= 2);
 
-        let Some(scope) = orbital_core_base::schema::sexpr::SequentialBindings::from_args(args) else {
+        let Some(scope) = orbital_core_base::schema::sexpr::SequentialBindings::from_args(args)
+        else {
             return Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "array of bindings".to_string(),
                 actual: "non-array".to_string(),

@@ -417,6 +417,15 @@ pub fn parse_timeout_ms(value: Option<&Value>) -> Result<Option<u64>, HttpRefusa
     }
 }
 
+/// `delayMs`: how long the host waits before it sends the request.
+pub fn parse_delay_ms(value: Option<&Value>) -> Result<Option<u64>, HttpRefusal> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Ok(Some(*n as u64)),
+        Some(_) => invalid("delayMs must be a whole number of milliseconds, zero or more"),
+    }
+}
+
 pub fn parse_grant_request(value: &Value) -> Result<GrantRequest, HttpRefusal> {
     let Value::Object(map) = value else {
         return invalid("auth.grantRequest must be an object");

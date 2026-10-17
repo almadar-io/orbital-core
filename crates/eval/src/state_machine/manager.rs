@@ -4,11 +4,11 @@
 
 use super::core::StateMachineCore;
 use super::types::{EventPayload, TraitInstanceId, TraitState, TransitionResult};
-use orbital_core_base::error::OrbitalError;
 use crate::evaluator::context::{BindingContext, BindingContextBuilder};
 use crate::evaluator::Evaluator;
-use orbital_core_base::value::Value;
+use orbital_core_base::error::OrbitalError;
 use orbital_core_base::schema::types::TraitDefinition;
+use orbital_core_base::value::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -407,8 +407,10 @@ pub struct ManagerStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::schema::types::{
+        StateDefinition, StateMachine, StringOrArray, TransitionDefinition,
+    };
     use orbital_core_base::value::ValueMap;
-    use orbital_core_base::schema::types::{StateDefinition, StateMachine, StringOrArray, TransitionDefinition};
 
     fn create_user_management_trait() -> TraitDefinition {
         TraitDefinition {

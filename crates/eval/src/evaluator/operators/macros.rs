@@ -68,10 +68,12 @@ macro_rules! require_array {
 macro_rules! require_number {
     ($val:expr) => {
         $val.to_number().ok_or_else(|| {
-            ::orbital_core_base::error::OrbitalError::Eval(::orbital_core_base::error::EvalError::TypeMismatch {
-                expected: "number".to_string(),
-                actual: "non-number".to_string(),
-            })
+            ::orbital_core_base::error::OrbitalError::Eval(
+                ::orbital_core_base::error::EvalError::TypeMismatch {
+                    expected: "number".to_string(),
+                    actual: "non-number".to_string(),
+                },
+            )
         })?
     };
 }

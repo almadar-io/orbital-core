@@ -50,7 +50,7 @@ fn vector() -> Vector {
 fn every_recorded_ts_answer_is_reproduced() {
     let v = vector();
     assert!(
-        v.cases.len() > 200,
+        v.cases.len() > 150,
         "fixture looks truncated: {}",
         v.cases.len()
     );

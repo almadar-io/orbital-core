@@ -50,7 +50,9 @@ impl Operator for StrDecodeUriComponentOp {
             }
         };
         let decoded = codec::decode_uri_component(&s).map_err(|e| {
-            OrbitalError::Eval(EvalError::InvalidArgument(format!("str/decode-uri-component: {e}")))
+            OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                "str/decode-uri-component: {e}"
+            )))
         })?;
         Ok(Value::String(decoded))
     }

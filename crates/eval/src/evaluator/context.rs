@@ -13,9 +13,9 @@
 //!
 //! Nested paths are supported: `@entity.address.city`
 
-use orbital_core_base::value::ValueMap;
-use orbital_core_base::value::Value;
 use orbital_core_base::error::{EvalError, OrbitalError};
+use orbital_core_base::value::Value;
+use orbital_core_base::value::ValueMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -92,7 +92,8 @@ impl BindingContext {
     }
 
     pub fn now_millis(&self) -> f64 {
-        self.now.unwrap_or_else(orbital_core_base::time_util::now_millis_f64)
+        self.now
+            .unwrap_or_else(orbital_core_base::time_util::now_millis_f64)
     }
 
     /// Create a context with entity data
@@ -471,7 +472,9 @@ impl BindingContext {
                 let mut resolved_map: Option<ValueMap> = None;
                 for (key, val) in map {
                     if self.is_unset_config_binding(val) {
-                        resolved_map.get_or_insert_with(|| map.clone()).shift_remove(key);
+                        resolved_map
+                            .get_or_insert_with(|| map.clone())
+                            .shift_remove(key);
                         continue;
                     }
                     if let Cow::Owned(new_val) = self.resolve_value_guarded(val, walk) {
@@ -513,7 +516,8 @@ impl BindingContext {
                         };
                     }
                     if super::operators::get_operator(op).is_some() {
-                        let sexpr: orbital_core_base::schema::sexpr::SExpression = value.clone().into();
+                        let sexpr: orbital_core_base::schema::sexpr::SExpression =
+                            value.clone().into();
                         match super::operators::eval_expr(&sexpr, self) {
                             Ok(result) => return Cow::Owned(result),
                             Err(OrbitalError::Eval(fault @ EvalError::TypeMismatch { .. })) => {
@@ -841,7 +845,10 @@ mod tests {
             )])),
         ]);
         let resolved = ctx
-            .resolve_value(&Value::Object(ValueMap::from([("label".to_string(), call)])))
+            .resolve_value(&Value::Object(ValueMap::from([(
+                "label".to_string(),
+                call,
+            )])))
             .into_owned();
         assert_eq!(
             resolved.as_object().unwrap()["label"],

@@ -382,6 +382,8 @@ pub enum TransitionRejectionCode {
     GuardRejected,
     NoDispatchableTraits,
     NotAnExternalInput,
+    /// The event is an inbound hook's (`listens { E -> inbound … }`): only `/api/hooks/<name>` delivers it.
+    InboundOnlyEvent,
     /// An effect of the trait's transition failed; its later effects did not run.
     EffectFailed,
 }
