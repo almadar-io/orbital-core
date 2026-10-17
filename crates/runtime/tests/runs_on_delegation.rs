@@ -63,7 +63,7 @@ fn server_ops() -> Vec<Effect> {
             key: None,
             emit: None,
         },
-        Effect::CancelCall { key: "k".into() },
+        Effect::CancelCall { key: Value::String("k".into()) },
     ];
     out.extend(
         EFFECT_SITES

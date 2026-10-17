@@ -89,6 +89,21 @@ pub enum ServerEffectCode {
     NotFound,
     NoRowKey,
     DuplicateId,
+    /// A declared access policy refused a persist (`AccessDenied`, or the host's `RowWriteOutcome::Refused`); the
+    /// result also reports `denied: true`. Set from that typed fact only, never from message text.
+    Denied,
+}
+
+impl ServerEffectCode {
+    /// The kebab-case spelling a failure payload and the wire carry.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotFound => "not-found",
+            Self::NoRowKey => "no-row-key",
+            Self::DuplicateId => "duplicate-id",
+            Self::Denied => "denied",
+        }
+    }
 }
 
 /// The event a tick firing carries on the wire (a `runTick` leg's `event`). Twin of

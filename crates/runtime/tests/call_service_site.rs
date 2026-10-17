@@ -128,6 +128,7 @@ fn a_requests_own_call_names_its_trait_orbital_and_routes() {
             orbital: Some("Main".into()),
             trait_name: "Helper".into(),
             follow_on: false,
+            entity_id: "singleton".to_string(),
             emit: routes()
         })]
     );

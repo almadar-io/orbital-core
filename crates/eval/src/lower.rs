@@ -232,10 +232,15 @@ impl ExprLowerer {
             "log" => self.resolve_log_effect(args),
             "call-service" | "call_service" => self.resolve_call_service_effect(args),
             "http" => self.resolve_http_effect(args),
+            "redis" => self.resolve_redis_effect(args),
+            "postgres" => self.resolve_postgres_effect(args),
             "cancel-call" => self.resolve_cancel_call_effect(args),
             "random-bytes" => self.resolve_random_bytes_effect(args),
             "credential-status" => self.resolve_credential_effect(args, true),
             "credential-forget" => self.resolve_credential_effect(args, false),
+            admin if orbital_core_base::credential_admin::CredentialAdminOp::from_name(admin).is_some() => {
+                self.resolve_credential_admin_effect(admin, args)
+            }
             "oauth-authorize" => self.resolve_oauth_authorize_effect(args),
             "oauth-connection-status" => self.resolve_oauth_connection_effect(args, true),
             "oauth-connection-forget" => self.resolve_oauth_connection_effect(args, false),
@@ -450,6 +455,24 @@ impl ExprLowerer {
                 let (key, emit) = self.resolve_keyed_options(args.get(1))?;
                 Ok(OirExpr::effect(OirEffect::BrowserEmbed {
                     texts,
+                    key,
+                    emit,
+                }))
+            }
+            op_name if orbital_core_base::tab::TabOp::from_name(op_name).is_some() => {
+                let Some(op) = orbital_core_base::tab::TabOp::from_name(op_name) else {
+                    return Err(LowerError::InvalidSExpr(format!("{op_name} is not a tab operation")));
+                };
+                if !(1..=2).contains(&args.len()) {
+                    return Err(LowerError::InvalidSExpr(format!(
+                        "{op_name} takes a request object and optional options"
+                    )));
+                }
+                let request = self.resolve_sexpr(&args[0])?;
+                let (key, emit) = self.resolve_keyed_options(args.get(1))?;
+                Ok(OirExpr::effect(OirEffect::BrowserTab {
+                    op,
+                    request,
                     key,
                     emit,
                 }))
@@ -1313,6 +1336,103 @@ impl ExprLowerer {
         Ok(OirExpr::effect(effect))
     }
 
+    fn resolve_postgres_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+        // Format: ["postgres", origin, sql, params, { auth?, user?, database?, tls?, timeoutMs?, key?, emit? }?, { key?, emit? }?]
+        if !(3..=5).contains(&args.len()) {
+            return Err(LowerError::InvalidSExpr(
+                "postgres takes an origin, a statement, its params, then optional options".to_string(),
+            ));
+        }
+        let mut options = orbital_core_base::schema::sexpr::SObject::new();
+        let mut routes = orbital_core_base::schema::sexpr::SObject::new();
+        let mut key = None;
+        for trailing in &args[3..] {
+            match trailing {
+                SExpression::Null => {}
+                SExpression::Object(fields) => {
+                    for (name, value) in fields {
+                        match name.as_str() {
+                            "key" if matches!(value, SExpression::Null) => {}
+                            "key" => key = Some(self.resolve_sexpr(value)?),
+                            "emit" => {
+                                routes.insert(name.clone(), value.clone());
+                            }
+                            _ => {
+                                options.insert(name.clone(), value.clone());
+                            }
+                        }
+                    }
+                }
+                other => {
+                    return Err(LowerError::InvalidSExpr(format!(
+                        "(postgres …) options must be an object, got {other:?}"
+                    )))
+                }
+            }
+        }
+        let options = if options.is_empty() {
+            None
+        } else {
+            Some(self.resolve_sexpr(&SExpression::Object(options))?)
+        };
+        Ok(OirExpr::effect(OirEffect::Postgres {
+            origin: self.resolve_sexpr(&args[0])?,
+            sql: self.resolve_sexpr(&args[1])?,
+            params: self.resolve_sexpr(&args[2])?,
+            options,
+            key,
+            emit: self.extract_emit_config(&routes)?,
+        }))
+    }
+
+    fn resolve_redis_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+        // Format: ["redis", origin, command, { auth?, user?, db?, key?, emit? }?, { key?, emit? }?]
+        if !(2..=4).contains(&args.len()) {
+            return Err(LowerError::InvalidSExpr(
+                "redis takes an origin, a command, then optional options".to_string(),
+            ));
+        }
+        let mut options = orbital_core_base::schema::sexpr::SObject::new();
+        let mut routes = orbital_core_base::schema::sexpr::SObject::new();
+        let mut key = None;
+        for trailing in &args[2..] {
+            match trailing {
+                SExpression::Null => {}
+                SExpression::Object(fields) => {
+                    for (name, value) in fields {
+                        match name.as_str() {
+                            "key" if matches!(value, SExpression::Null) => {}
+                            "key" => key = Some(self.resolve_sexpr(value)?),
+                            "emit" => {
+                                routes.insert(name.clone(), value.clone());
+                            }
+                            _ => {
+                                options.insert(name.clone(), value.clone());
+                            }
+                        }
+                    }
+                }
+                other => {
+                    return Err(LowerError::InvalidSExpr(format!(
+                        "(redis …) options must be an object, got {other:?}"
+                    )))
+                }
+            }
+        }
+        let options = if options.is_empty() {
+            None
+        } else {
+            Some(self.resolve_sexpr(&SExpression::Object(options))?)
+        };
+        Ok(OirExpr::effect(OirEffect::Redis {
+            origin: self.resolve_sexpr(&args[0])?,
+            command: self.resolve_sexpr(&args[1])?,
+            options,
+            key,
+            emit: self.extract_emit_config(&routes)?,
+        }))
+    }
+
     /// The request object, with `paginate.next` and `paginate.collect` held as `(quote …)` data: they are
     /// evaluated per page against `@response`, so lowering must not read them.
     fn resolve_http_request(&self, request: &SExpression) -> Result<OirExpr, LowerError> {
@@ -1434,6 +1554,19 @@ impl ExprLowerer {
         } else {
             OirEffect::credential_forget(credential, emit)
         }))
+    }
+
+    fn resolve_credential_admin_effect(&self, head: &str, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+        // Format: ["credential-<verb>", request, { emit? }?]
+        let Some(op) = orbital_core_base::credential_admin::CredentialAdminOp::from_name(head) else {
+            return Err(LowerError::InvalidSExpr(format!("{head} is not a credential effect")));
+        };
+        if !(1..=2).contains(&args.len()) {
+            return Err(LowerError::InvalidSExpr(format!("{head} takes a request object and optional options")));
+        }
+        let emit = self.resolve_emit_only_options(head, args.get(1))?;
+        let request = self.resolve_sexpr(&args[0])?;
+        Ok(OirExpr::effect(OirEffect::credential_admin(op, request, emit)))
     }
 
     fn resolve_oauth_authorize_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
@@ -1895,6 +2028,97 @@ mod tests {
         assert_eq!(strip_literal_list_marker(&marked), &marked[1..]);
         let bare = [SExpression::String("+".into()), SExpression::Number(1.0)];
         assert_eq!(strip_literal_list_marker(&bare), &bare[..]);
+    }
+
+    fn redis_call(trailing: Vec<serde_json::Value>) -> SExpression {
+        let mut items = vec![serde_json::json!("redis"), serde_json::json!("redis://cache.internal"), serde_json::json!(["GET", "@payload.k"])];
+        items.extend(trailing);
+        serde_json::from_value(serde_json::Value::Array(items)).expect("s-expression")
+    }
+
+    #[test]
+    fn a_redis_call_lowers_to_the_redis_effect_with_options_key_and_routes() {
+        let lowered = lower_sexpr(&redis_call(vec![
+            serde_json::json!({ "auth": "@config.pw", "db": 1 }),
+            serde_json::json!({ "key": "@payload.k", "emit": { "success": "GOT", "failure": "FAILED" } }),
+        ]))
+        .expect("lowers");
+        let OirExpr::Effect { effect } = lowered else { panic!("not an effect: {lowered:?}") };
+        let OirEffect::Redis { options, key, emit, command, .. } = *effect else { panic!("not redis") };
+        assert!(matches!(options, Some(OirExpr::Object { ref fields }) if fields.contains_key("auth") && fields.contains_key("db") && !fields.contains_key("key")));
+        assert!(key.is_some());
+        let emit = emit.expect("routes");
+        assert_eq!((emit.success.as_deref(), emit.failure.as_deref()), (Some("GOT"), Some("FAILED")));
+        assert!(command.collect_bindings().iter().any(|b| b.root == OirBindingRoot::Payload));
+    }
+
+    #[test]
+    fn control_a_redis_call_with_no_trailing_object_has_no_options_key_or_routes() {
+        let lowered = lower_sexpr(&redis_call(Vec::new())).expect("lowers");
+        let OirExpr::Effect { effect } = lowered else { panic!("not an effect") };
+        let OirEffect::Redis { options, key, emit, .. } = *effect else { panic!("not redis") };
+        assert!(options.is_none() && key.is_none() && emit.is_none());
+    }
+
+    #[test]
+    fn a_postgres_call_lowers_with_params_options_key_and_routes_and_a_bare_one_has_none() {
+        let call = |trailing: Vec<serde_json::Value>| {
+            let mut items = vec![serde_json::json!("postgres"), serde_json::json!("postgres://db.internal"), serde_json::json!("SELECT $1::int"), serde_json::json!([1])];
+            items.extend(trailing);
+            serde_json::from_value::<SExpression>(serde_json::Value::Array(items)).expect("s-expression")
+        };
+        let lowered = lower_sexpr(&call(vec![
+            serde_json::json!({ "auth": "@config.pw", "database": "main" }),
+            serde_json::json!({ "key": "@payload.k", "emit": { "success": "ROWS", "failure": "FAILED" } }),
+        ]))
+        .expect("lowers");
+        let OirExpr::Effect { effect } = lowered else { panic!("not an effect") };
+        let OirEffect::Postgres { options, key, emit, params, .. } = *effect else { panic!("not postgres") };
+        assert!(matches!(options, Some(OirExpr::Object { ref fields }) if fields.contains_key("auth") && !fields.contains_key("key")));
+        assert!(key.is_some() && matches!(params, OirExpr::Array { .. }));
+        assert_eq!(emit.expect("routes").success.as_deref(), Some("ROWS"));
+        let OirExpr::Effect { effect } = lower_sexpr(&call(Vec::new())).expect("lowers") else { panic!("not an effect") };
+        let OirEffect::Postgres { options, key, emit, .. } = *effect else { panic!("not postgres") };
+        assert!(options.is_none() && key.is_none() && emit.is_none());
+        let short: SExpression = serde_json::from_value(serde_json::json!(["postgres", "postgres://h", "SELECT 1"])).expect("s-expression");
+        assert!(lower_sexpr(&short).is_err());
+    }
+
+    #[test]
+    fn a_redis_call_with_the_wrong_arity_or_a_non_object_trailer_is_invalid() {
+        let bare: SExpression = serde_json::from_value(serde_json::json!(["redis", "redis://h"])).expect("s-expression");
+        assert!(lower_sexpr(&bare).is_err());
+        assert!(lower_sexpr(&redis_call(vec![serde_json::json!("x")])).is_err());
+    }
+
+    #[test]
+    fn a_browser_tab_effect_lowers_with_its_request_key_and_routes() {
+        use orbital_core_base::tab::TabOp;
+        let open: SExpression = serde_json::from_value(serde_json::json!([
+            "browser/tab-open",
+            { "url": "@config.searchUrl", "active": false },
+            { "key": "@entity.id", "emit": { "success": "OPENED", "failure": "OPEN_FAILED" } }
+        ]))
+        .expect("s-expression");
+        let OirExpr::Effect { effect } = lower_sexpr(&open).expect("lowers") else { panic!("not an effect") };
+        let OirEffect::BrowserTab { op, request, key, emit } = *effect else { panic!("not a tab effect") };
+        assert_eq!(op, TabOp::Open);
+        assert!(matches!(request, OirExpr::Object { ref fields } if fields.contains_key("url") && fields.contains_key("active")));
+        assert!(key.is_some());
+        assert_eq!(emit.expect("routes").failure.as_deref(), Some("OPEN_FAILED"));
+        for tab_op in TabOp::ALL {
+            let bare: SExpression = serde_json::from_value(serde_json::json!([tab_op.name(), {}])).expect("s-expression");
+            let OirExpr::Effect { effect } = lower_sexpr(&bare).expect("lowers") else { panic!("not an effect") };
+            assert_eq!(effect.kind(), tab_op.name());
+        }
+    }
+
+    #[test]
+    fn control_a_browser_tab_effect_without_a_request_is_invalid() {
+        let none: SExpression = serde_json::from_value(serde_json::json!(["browser/tab-list"])).expect("s-expression");
+        assert!(lower_sexpr(&none).is_err());
+        let many: SExpression = serde_json::from_value(serde_json::json!(["browser/tab-list", {}, {}, {}])).expect("s-expression");
+        assert!(lower_sexpr(&many).is_err());
     }
 
     #[test]

@@ -1208,3 +1208,363 @@ mod browser_effects {
         );
     }
 }
+
+mod tab_effects {
+    // `browser/tab-*` through the kernel: the request is validated and every result shaped by the kernel, the host is
+    // asked only for raw tab and page operations (docs/Almadar_Embedded_Kernel.md D-A92).
+
+    use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
+    use orbital_core_base::tab::{TabAsk, TabCommand, TabFailure, TabFailureKind};
+    use orbital_core_runtime::resumable::{answer_http, IoAnswer, IoReply, IoRequest};
+    use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
+    use serde_json::{json, Value as Json};
+
+    fn schema(effect: Json) -> OrbitalSchema {
+        serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Probe", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }, { "name": "failed" }, { "name": "stopped" }],
+                        "events": [{ "key": "ITEM_SEEN", "name": "Item seen", "external": true }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "GO", "effects": [effect] },
+                            { "from": "idle", "to": "idle", "event": "CANCEL", "effects": [["cancel-call", "job"]] },
+                            { "from": "idle", "to": "idle", "event": "ITEM_SEEN" },
+                            { "from": "idle", "to": "done", "event": "OK" },
+                            { "from": "idle", "to": "failed", "event": "BAD" },
+                            { "from": "idle", "to": "stopped", "event": "STOPPED" }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn go() -> EventRequest {
+        EventRequest { event: "GO".to_string(), target_trait: Some("Probe".to_string()), ..Default::default() }
+    }
+
+    fn run(effect: Json, host: impl FnMut(&IoRequest) -> IoAnswer) -> (EventResponse, Vec<IoRequest>) {
+        run_with(effect, go(), host)
+    }
+
+    fn run_with(effect: Json, request: EventRequest, mut host: impl FnMut(&IoRequest) -> IoAnswer) -> (EventResponse, Vec<IoRequest>) {
+        let server = EmbeddedServer::new(schema(effect)).unwrap();
+        let mut seen = Vec::new();
+        let mut progress = server.start("Main", request).unwrap();
+        loop {
+            match progress {
+                ServerProgress::Done(response) => return (response, seen),
+                ServerProgress::Await { flight, requests } => {
+                    let replies = requests
+                        .into_iter()
+                        .map(|pending| IoReply {
+                            id: pending.id,
+                            answer: match &pending.request {
+                                IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
+                                other => {
+                                    seen.push(other.clone());
+                                    host(other)
+                                }
+                            },
+                        })
+                        .collect();
+                    progress = server.resume(flight, replies).unwrap();
+                }
+            }
+        }
+    }
+
+    fn emitted(response: &EventResponse) -> Vec<(&str, Option<&Value>)> {
+        response.emitted_events.iter().map(|e| (e.event.as_str(), e.payload.as_ref())).collect()
+    }
+
+    fn payload_of(response: &EventResponse, event: &str) -> Json {
+        let found = emitted(response)
+            .into_iter()
+            .find(|(e, _)| *e == event)
+            .unwrap_or_else(|| panic!("{event} was not emitted: {:?}", emitted(response)));
+        serde_json::to_value(found.1).unwrap()
+    }
+
+    fn routes() -> Json {
+        json!({ "emit": { "success": "OK", "failure": "BAD", "cancelled": "STOPPED" } })
+    }
+
+    fn keyed() -> Json {
+        json!({ "key": "job", "emit": { "success": "OK", "failure": "BAD", "cancelled": "STOPPED" } })
+    }
+
+    fn tab(ask: &IoRequest) -> &TabAsk {
+        match ask {
+            IoRequest::Tab { ask, .. } => ask,
+            other => panic!("the fixture asks for {other:?}"),
+        }
+    }
+
+    fn reply(value: Json) -> IoAnswer {
+        IoAnswer::Tab(Ok(serde_json::from_value(value).unwrap()))
+    }
+
+    #[test]
+    fn tab_list_asks_the_host_once_and_emits_the_tabs_the_pattern_keeps_with_the_key() {
+        let tabs = json!([
+            { "tab": 1, "url": "https://example.com/a", "title": "A", "active": true },
+            { "tab": 2, "url": "https://other.test/", "title": "B", "active": false }
+        ]);
+        let (response, seen) = run(json!(["browser/tab-list", { "match": "https://example.com/*" }, keyed()]), |_| reply(tabs.clone()));
+        assert_eq!(seen, vec![IoRequest::Tab { ask: TabAsk::List, key: Some("job".into()) }]);
+        assert_eq!(
+            payload_of(&response, "OK"),
+            json!({ "tabs": [{ "tab": 1.0, "url": "https://example.com/a", "title": "A", "active": true }], "key": "job" })
+        );
+    }
+
+    #[test]
+    fn tab_open_builds_the_url_from_the_params_and_emits_the_tab() {
+        let (response, seen) = run(
+            json!(["browser/tab-open", { "url": "https://example.com/results", "params": { "q": "a b" }, "active": false }, routes()]),
+            |_| reply(json!(99)),
+        );
+        assert_eq!(tab(&seen[0]), &TabAsk::Open { url: "https://example.com/results?q=a+b".into(), active: false });
+        assert_eq!(payload_of(&response, "OK"), json!({ "tab": 99.0, "key": null }));
+    }
+
+    #[test]
+    fn a_request_the_kernel_refuses_fails_invalid_without_asking_the_host() {
+        for request in [json!({ "url": "https://a.test/", "match": "https://b.test/*" }), json!({ "url": "/relative" }), json!({ "nope": 1 }), json!("text")] {
+            let (response, seen) = run(json!(["browser/tab-open", request, keyed()]), |ask| panic!("a refusal asked {ask:?}"));
+            assert!(seen.is_empty());
+            let failure = payload_of(&response, "BAD");
+            assert_eq!(failure["kind"], "invalid", "{failure}");
+            assert_eq!(failure["key"], "job");
+        }
+    }
+
+    #[test]
+    fn control_a_bad_key_never_asks_the_host() {
+        for key in [json!(17), json!(""), json!(["+", 1, 2])] {
+            let (_, seen) = run(
+                json!(["browser/tab-close", { "tab": 1 }, { "key": key, "emit": routes()["emit"].clone() }]),
+                |ask| panic!("an invalid key asked {ask:?}"),
+            );
+            assert!(seen.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_host_failure_emits_its_kind_and_the_key() {
+        let (response, _) = run(json!(["browser/tab-close", { "tab": 4 }, keyed()]), |_| {
+            IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::Failed, "No tab with id: 4")))
+        });
+        assert_eq!(payload_of(&response, "BAD"), json!({ "error": "No tab with id: 4", "kind": "failed", "key": "job" }));
+        assert!(!emitted(&response).iter().any(|(e, _)| *e == "OK"));
+    }
+
+    #[test]
+    fn a_blocking_host_with_no_browser_tabs_answers_unavailable() {
+        let asked = IoRequest::Tab { ask: TabAsk::List, key: None };
+        assert_eq!(
+            answer_http(None, &asked),
+            IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::Unavailable, "browser/tab: no host answers browser tabs")))
+        );
+    }
+
+    #[test]
+    fn query_waits_for_a_page_that_has_not_loaded_then_reads_for_the_rest_of_the_wait() {
+        let mut step = 0;
+        let (response, seen) = run(
+            json!(["browser/tab-query", { "tab": 4, "selector": ".item", "fields": {}, "waitMs": 1000 }, routes()]),
+            |ask| {
+                step += 1;
+                match (step, tab(ask)) {
+                    (1, TabAsk::Command { tab: 4, command: TabCommand::Query { .. } }) => {
+                        IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::NotReady, "Tab 4 has no page script")))
+                    }
+                    (2, TabAsk::AwaitReady { tab: 4, timeout_ms: 1000 }) => reply(json!({ "ready": true, "waitedMs": 400 })),
+                    (3, TabAsk::Command { tab: 4, command: TabCommand::Query { wait_ms: Some(600), .. } }) => {
+                        reply(json!([{ "elementId": "el-1", "fields": { "title": "x" } }]))
+                    }
+                    (n, other) => panic!("step {n} asked {other:?}"),
+                }
+            },
+        );
+        assert_eq!(seen.len(), 3);
+        assert_eq!(
+            payload_of(&response, "OK"),
+            json!({ "tab": 4.0, "elements": [{ "elementId": "el-1", "fields": { "title": "x" } }], "key": null })
+        );
+    }
+
+    #[test]
+    fn watch_resolves_its_event_address_against_the_declared_inputs_and_asks_the_host_to_deliver_there() {
+        let watch = json!(["browser/tab-watch", { "match": "https://example.com/*", "selector": ".item", "fields": { "title": { "selector": "h2" } }, "event": "ITEM_SEEN" }, routes()]);
+        let (response, seen) = run(watch, |_| IoAnswer::Tab(Ok(Value::Null)));
+        let TabAsk::Watch { watch_id, deliver, match_pattern, .. } = tab(&seen[0]) else { panic!("expected a watch ask") };
+        assert_eq!((deliver.orbital.as_str(), deliver.trait_name.as_str(), deliver.event.as_str()), ("Main", "Probe", "ITEM_SEEN"));
+        assert_eq!(match_pattern, "https://example.com/*");
+        assert_eq!(payload_of(&response, "OK"), json!({ "watchId": watch_id, "key": null }));
+    }
+
+    #[test]
+    fn control_a_watch_naming_no_declared_input_fails_invalid_before_asking() {
+        let watch = json!(["browser/tab-watch", { "match": "https://example.com/*", "selector": ".item", "fields": {}, "event": "GO" }, routes()]);
+        let (response, seen) = run(watch, |ask| panic!("a refusal asked {ask:?}"));
+        assert!(seen.is_empty());
+        assert_eq!(payload_of(&response, "BAD")["kind"], "invalid");
+    }
+
+    #[test]
+    fn a_cancelled_tab_ask_fires_the_cancelled_route_with_the_key_and_an_unkeyed_one_fires_nothing() {
+        let (response, _) = run(json!(["browser/tab-close", { "tab": 1 }, keyed()]), |_| IoAnswer::ServiceCancelled);
+        assert_eq!(payload_of(&response, "STOPPED"), json!({ "key": "job" }));
+        assert!(!emitted(&response).iter().any(|(e, _)| matches!(*e, "OK" | "BAD")));
+        let (response, _) = run(json!(["browser/tab-close", { "tab": 1 }, routes()]), |_| IoAnswer::ServiceCancelled);
+        assert!(emitted(&response).iter().all(|(e, _)| !matches!(*e, "OK" | "BAD" | "STOPPED")));
+    }
+
+    #[test]
+    fn cancel_call_reaches_the_host_with_the_key_of_the_tab_ask() {
+        let cancel = EventRequest { event: "CANCEL".to_string(), target_trait: Some("Probe".to_string()), ..Default::default() };
+        let (_, seen) = run_with(json!(["browser/tab-close", { "tab": 1 }, keyed()]), cancel, |ask| match ask {
+            IoRequest::CancelCall { key } if key == "job" => IoAnswer::Cancelled(Ok(())),
+            other => panic!("the fixture asks for {other:?}"),
+        });
+        assert_eq!(seen, vec![IoRequest::CancelCall { key: "job".into() }]);
+    }
+
+    #[test]
+    fn apply_hands_the_host_the_styles_of_the_treatment_not_its_name() {
+        let (response, seen) = run(
+            json!(["browser/tab-apply", { "tab": 3, "elementId": "el-2", "treatment": "blur", "label": "later" }, routes()]),
+            |_| reply(json!(true)),
+        );
+        let TabAsk::Command { tab: 3, command: TabCommand::Apply(apply) } = tab(&seen[0]) else { panic!("expected an apply command") };
+        assert_eq!(apply.styles.len(), 1);
+        assert_eq!((apply.styles[0].property.as_str(), apply.styles[0].value.as_str()), ("filter", "blur(8px)"));
+        assert_eq!(apply.label.as_deref(), Some("later"));
+        assert_eq!(payload_of(&response, "OK"), json!({ "applied": true, "tab": 3.0, "elementId": "el-2", "treatment": "blur", "key": null }));
+    }
+}
+
+mod result_target {
+    use super::*;
+
+    fn http_results(response: &EventResponse) -> Vec<Json> {
+        response
+            .effect_results
+            .iter()
+            .flatten()
+            .map(|r| serde_json::to_value(r).unwrap())
+            .filter(|r| r["effect"] == "http")
+            .collect()
+    }
+
+    fn fails(request: &IoRequest) -> IoAnswer {
+        match request {
+            IoRequest::Http { .. } => IoAnswer::Http(Err(TransportError::Failed("verify has no network".into()))),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_routed_failure_carries_its_target_and_the_event_it_was_routed_to() {
+        let (response, _) = run(schema(call(ORIGIN, json!({}))), ask(), fails);
+        assert_eq!(
+            http_results(&response),
+            vec![json!({
+                "effect": "http", "success": false, "target": "GET https://api.example.com/search",
+                "error": "verify has no network", "routed": "SEARCH_FAILED"
+            })]
+        );
+    }
+
+    #[test]
+    fn an_unrouted_failure_has_a_target_and_no_routed() {
+        let effect = json!(["http", "GET", ORIGIN, "/search", {}]);
+        let (response, _) = run(schema(effect), ask(), fails);
+        let results = http_results(&response);
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0]["target"], "GET https://api.example.com/search");
+        assert!(results[0].get("routed").is_none(), "{results:?}");
+        assert_eq!(results[0]["success"], false);
+    }
+
+    #[test]
+    fn a_success_has_a_target_and_no_routed() {
+        let (response, _) = run(schema(call(ORIGIN, json!({}))), ask(), |request| match request {
+            IoRequest::Http { .. } => IoAnswer::Http(Ok(HttpResponse { status: 200, headers: vec![], body: b"ok".to_vec() })),
+            other => panic!("unexpected {other:?}"),
+        });
+        let results = http_results(&response);
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0]["target"], "GET https://api.example.com/search");
+        assert_eq!(results[0]["success"], true);
+        assert!(results[0].get("routed").is_none(), "{results:?}");
+    }
+}
+
+mod repeated_deliveries {
+    use super::*;
+
+    fn looping(ask_effects: Json, arm_event: &str) -> OrbitalSchema {
+        serde_json::from_value(json!({
+            "name": "App",
+            "egress": [ORIGIN],
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Fetcher", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "asking" }],
+                        "transitions": [
+                            { "from": "idle", "to": "asking", "event": "ASK", "effects": ask_effects },
+                            { "from": "asking", "to": "asking", "event": arm_event, "effects": [["emit", "SAW", {}]] }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn saw(response: &EventResponse) -> usize {
+        response.emitted_events.iter().filter(|e| e.event == "SAW").count()
+    }
+
+    fn two_requests() -> Json {
+        let emit = json!({ "emit": { "success": "GOT", "failure": "BAD" } });
+        json!([
+            ["http", "GET", ORIGIN, "/a", {}, emit],
+            ["http", "GET", ORIGIN, "/b", {}, emit]
+        ])
+    }
+
+    #[test]
+    fn two_identical_http_replies_to_two_requests_are_both_delivered() {
+        let (response, seen) = run(looping(two_requests(), "GOT"), ask(), |request| match request {
+            IoRequest::Http { .. } => reply(200, &[], "same"),
+            other => panic!("unexpected {other:?}"),
+        });
+        assert_eq!(seen.iter().filter(|r| matches!(r, IoRequest::Http { .. })).count(), 2);
+        assert_eq!(saw(&response), 2, "{:?}", emitted(&response));
+    }
+
+    #[test]
+    fn two_identical_http_failures_are_both_delivered() {
+        let (response, _) = run(looping(two_requests(), "BAD"), ask(), |request| match request {
+            IoRequest::Http { .. } => IoAnswer::Http(Err(TransportError::Failed("down".into()))),
+            other => panic!("unexpected {other:?}"),
+        });
+        assert_eq!(saw(&response), 2, "{:?}", emitted(&response));
+    }
+
+    #[test]
+    fn control_two_identical_plain_emits_still_collapse_in_one_dispatch() {
+        let effects = json!([["emit", "PING", {}], ["emit", "PING", {}]]);
+        let (response, _) = run(looping(effects, "PING"), ask(), |request| panic!("unexpected {request:?}"));
+        assert_eq!(saw(&response), 1, "{:?}", emitted(&response));
+    }
+}

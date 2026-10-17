@@ -130,7 +130,26 @@ impl OrbitalSchema {
         if let Some(own) = &orbital.os_grants {
             grants.union(own);
         }
+        grants.union(&self.egress_net_grants());
         grants
+    }
+
+    /// The raw TCP targets the app's `egress` declares (`redis://`, `rediss://`, `postgres://`, `postgresql://`
+    /// origins) as `net` grants: the one declaration a protocol driver's `os/tcp-connect` is authorized by, so the
+    /// host's net check, the validator and the io-gate manifest all see the target without a second `net` entry.
+    pub fn egress_net_grants(&self) -> crate::os_grants::OsGrants {
+        let net = self
+            .egress
+            .iter()
+            .flatten()
+            .filter_map(|entry| crate::http_wire::parse_egress_entry(entry))
+            .filter(|origin| crate::http_wire::tcp_default_port(origin.scheme()).is_some())
+            .map(|origin| crate::os_grants::NetGrant {
+                target: format!("{}:{}", origin.host(), origin.port()),
+                kinds: vec![crate::os_grants::NetKind::Tcp],
+            })
+            .collect();
+        crate::os_grants::OsGrants { net, ..Default::default() }
     }
 
     /// The `os/` grants of a set of orbitals: the explicit union of each one's effective grants.
@@ -149,6 +168,7 @@ impl OrbitalSchema {
     pub fn program_os_grants(&self) -> crate::os_grants::OsGrants {
         let mut grants = self.os_grants.clone().unwrap_or_default();
         grants.union(&self.os_grants_of(&self.orbitals));
+        grants.union(&self.egress_net_grants());
         grants
     }
 
@@ -1486,7 +1506,7 @@ pub struct LazyPage {
 /// provides this, and here is the minimal typed slice of it I rely on."
 ///
 /// The dual of a provider: the entity `[identity]` tag declares "I am the
-/// roster"; `expects identity` declares "I read the roster". Standalone
+/// roster"; `expects entity [identity]` declares "I read the roster". Standalone
 /// validation trusts the declaration and uses its shape as the local type
 /// environment; composed-program validation link-checks it against the real
 /// provider. The shape reuses the canonical `FieldDefinition` so all type
@@ -1495,14 +1515,17 @@ pub struct LazyPage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ExpectDeclaration {
-    /// `expects identity Customer { role : "admin" | "member" }` — the `@user`
-    /// fields this orbital reads, typed. Bare `expects identity` (no name, no
+    /// `expects entity Customer [identity] { role : "admin" | "member" }` — the `@user`
+    /// fields this orbital reads, typed. Bare `expects entity [identity]` (no name, no
     /// shape) is the hand-authoring escape hatch: existence-only, open shape.
     Identity {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shape: Option<Vec<FieldDefinition>>,
+        /// Set when the obligation was written in an expects-only orbital (a spec): unprovided is an error, not deferred.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        strict: bool,
     },
     /// `expects entity OrderRecord { totalAmount : number }` — a sibling
     /// entity this orbital touches (relation field target, persist/fetch
@@ -1511,13 +1534,44 @@ pub enum ExpectDeclaration {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shape: Option<Vec<FieldDefinition>>,
+        /// `expects entity X [persistent]`: the storage mode the provider must declare (the collection name is the provider's).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        persistence: Option<Persistence>,
+        /// `[shared]`: the provider must be a shared entity.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        shared: bool,
+        /// `[local]`: the provider's rows must live in the browser.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        local: bool,
+        /// `@read|@create|@update|@delete <expr>`: the provider's policy must be this expression, structurally.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        read_policy: Option<SExpression>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        create_policy: Option<SExpression>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update_policy: Option<SExpression>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delete_policy: Option<SExpression>,
+        /// `@<op> none "<reason>"`: the provider must carry a declared access waiver for each op named (reason text is not compared).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        access_waivers: Option<AccessWaivers>,
+        /// Set when the obligation was written in an expects-only orbital (a spec): unprovided is an error, not deferred.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        strict: bool,
     },
-    /// `expects event Checkout.ORDER_PLACED` — a sibling trait produces this
+    /// `expects trait Checkout { emits { ORDER_PLACED } }` — a sibling trait produces this
     /// event. Phase 2: feeds escape analysis / listens-audit.
     Event {
         #[serde(rename = "traitName")]
         trait_name: String,
         event: String,
+        /// The payload fields the event must carry (names, types and requiredness checked against the
+        /// provider's `emits`); absent = the event's name only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<Vec<PayloadField>>,
+        /// Set when the obligation was written in an expects-only orbital (a spec): unprovided is an error, not deferred.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        strict: bool,
     },
     /// `expects page "/articles/:slug"` — a route this orbital navigates to
     /// but does not declare. The one cross-boundary edge family a `navigate`
@@ -1532,7 +1586,55 @@ pub enum ExpectDeclaration {
     /// resolves each navigate target against the whole organism's pages and
     /// emits the matched pattern when it belongs to a sibling. A target that
     /// matches no page derives nothing, so a genuine typo stays an error.
-    Page { path: String },
+    Page {
+        path: String,
+        /// `expects page "/p" -> A, B`: the traits the provider page must mount.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        traits: Option<Vec<String>>,
+        /// Set when the obligation was written in an expects-only orbital (a spec): unprovided is an error, not deferred.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        strict: bool,
+    },
+    /// `expects trait T { state paid }` (the real `state` keyword, no body): the provider trait declares this state.
+    State {
+        #[serde(rename = "traitName")]
+        trait_name: String,
+        state: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        strict: bool,
+    },
+    /// `expects trait T { state idle { PAY -> paid } }` (the real transition form, no guard or effects): the
+    /// provider trait has a transition `from --event--> to`.
+    Transition {
+        #[serde(rename = "traitName")]
+        trait_name: String,
+        from: String,
+        event: String,
+        to: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        strict: bool,
+    },
+}
+
+impl ExpectDeclaration {
+    /// True for an obligation that came from a spec orbital.
+    pub fn is_strict(&self) -> bool {
+        match self {
+            ExpectDeclaration::Identity { strict, .. }
+            | ExpectDeclaration::Entity { strict, .. }
+            | ExpectDeclaration::Event { strict, .. }
+            | ExpectDeclaration::Page { strict, .. }
+            | ExpectDeclaration::State { strict, .. }
+            | ExpectDeclaration::Transition { strict, .. } => *strict,
+        }
+    }
+}
+
+impl Orbital {
+    /// True for a spec orbital (see the `spec` field).
+    pub fn is_spec(&self) -> bool {
+        self.spec
+    }
 }
 
 // =============================================================================
@@ -1981,6 +2083,11 @@ pub struct Orbital {
     /// runtime semantics are unchanged. See docs/Almadar_LOLO_Expects_Proposal.md.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expects: Option<Vec<ExpectDeclaration>>,
+
+    /// An orbital of only `expects` lines: a spec. It provides nothing, so its own obligations bind
+    /// the orbital that imports it and the validators skip its shell entity, trait and page rules.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub spec: bool,
 
     /// Theme definition (inline OR reference via "Alias.theme")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2436,6 +2543,11 @@ pub enum FieldType {
     /// The `@almadar/core` `EventAddress` contract (what `llm call-tools` reads).
     #[serde(rename = "EventAddress")]
     EventAddress,
+    /// A call key — a string at rest, nominal in the type relation: a bare string is
+    /// not assignable to it, only the explicit `(as v CallKey)` cast converts. Names
+    /// the keyed call a `cancel-call` aborts.
+    #[serde(rename = "CallKey")]
+    CallKey,
     /// A fixed-length tuple (`.lolo` `[T1, T2, …]`). Its slots ride `properties`, keyed
     /// by slot index (`"0"`, `"1"`, …).
     Tuple,

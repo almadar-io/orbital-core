@@ -92,12 +92,13 @@ fn state_transition(frames: &[Frame]) -> Verdict {
     Verdict::new("state_transition", offenders)
 }
 
-/// No declared effect failed during execution.
+/// No declared effect failed during execution. An `http` failure the program routed to its declared
+/// `emit.failure` event is handled, not a failure.
 fn effects_fired(frames: &[Frame]) -> Verdict {
     let mut offenders = Vec::new();
     for f in frames {
         for e in &f.effects {
-            if e.outcome == "failed" {
+            if e.outcome == "failed" && e.routed.is_none() {
                 offenders.push(format!(
                     "{}:{} {}({}) failed: {}",
                     f.cause.trait_name,

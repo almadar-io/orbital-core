@@ -14,6 +14,12 @@ pub const CREDENTIAL_NOT_SECRET_CODE: &str = "ORB_HTTP_AUTH_CREDENTIAL_NOT_SECRE
 pub const SECRET_OUTSIDE_AUTH_CODE: &str = "ORB_SECRET_OUTSIDE_AUTH";
 pub const CREDENTIAL_STATUS_SLOT_INVALID_CODE: &str = "ORB_CREDENTIAL_STATUS_SLOT_INVALID";
 
+/// The slot name of a `redis` call's `auth` option in a [`SecretFlowViolation::CredentialNotSecret`].
+pub const REDIS_AUTH_SLOT: &str = "redis.auth";
+
+/// The slot name of a `postgres` call's `auth` option.
+pub const POSTGRES_AUTH_SLOT: &str = "postgres.auth";
+
 /// One breach of the secret-flow rules, located by program path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretFlowViolation {
@@ -49,11 +55,17 @@ impl SecretFlowViolation {
             Self::CredentialNotSecret { slot, .. } if slot.starts_with("credential-") => {
                 format!("`{slot}` takes a `secret`-typed config knob (@config.<knob>)")
             }
+            Self::CredentialNotSecret { slot, .. } if slot == REDIS_AUTH_SLOT => {
+                "`redis` options.auth must be a `secret`-typed config knob (@config.<knob>)".to_string()
+            }
+            Self::CredentialNotSecret { slot, .. } if slot == POSTGRES_AUTH_SLOT => {
+                "`postgres` options.auth must be a `secret`-typed config knob (@config.<knob>)".to_string()
+            }
             Self::CredentialNotSecret { slot, .. } => format!(
                 "`http` auth.{slot} must be a `secret`-typed config knob (@config.<knob>)"
             ),
             Self::OutsideAuth { .. } => {
-                "a `secret`-typed knob is read outside an `http` auth credential slot".to_string()
+                "a `secret`-typed knob is read outside an `http` auth, `redis` or `postgres` options.auth credential slot".to_string()
             }
         }
     }
@@ -172,6 +184,25 @@ fn is_http(items: &[Value]) -> bool {
     items.first().and_then(Value::as_str) == Some("http")
 }
 
+fn is_redis(items: &[Value]) -> bool {
+    items.first().and_then(Value::as_str) == Some("redis")
+}
+
+fn is_postgres(items: &[Value]) -> bool {
+    items.first().and_then(Value::as_str) == Some("postgres")
+}
+
+/// The index of a driver call's first options object: after `origin` and `command` for redis, after `origin`, `sql`
+/// and `params` for postgres.
+fn driver_options_from(items: &[Value]) -> usize {
+    if is_postgres(items) { 4 } else { 3 }
+}
+
+/// The `auth` credential slot of a `redis` or `postgres` call: the option may sit in either trailing object.
+fn redis_auth_slots(items: &[Value]) -> impl Iterator<Item = &Value> {
+    items.iter().skip(driver_options_from(items)).filter_map(Value::as_object).filter_map(|options| options.get("auth"))
+}
+
 /// `credential-status` / `credential-forget`: their first argument is a credential slot.
 fn credential_effect(items: &[Value]) -> Option<&str> {
     items
@@ -199,6 +230,18 @@ fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
     each_oauth_authorize(expr, &mut |items| {
         if let Some(client) = items.get(1) {
             check_oauth_client(client, secrets, path, out);
+        }
+    });
+    each_scrypt_salt(expr, &mut |salt| {
+        let is_secret_knob = salt
+            .as_str()
+            .and_then(config_knob)
+            .is_some_and(|knob| secrets.contains(&knob));
+        if !is_secret_knob {
+            out.push(SecretFlowViolation::CredentialNotSecret {
+                path: path.to_string(),
+                slot: SCRYPT_SALT_SLOT.to_string(),
+            });
         }
     });
     each_credential_effect(expr, &mut |head, items| {
@@ -276,7 +319,7 @@ fn scan_oauth_client_reads(client: &Value, secrets: &[&str], path: &str, out: &m
 fn each_http_call<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a [Value])) {
     match expr {
         Value::Array(items) => {
-            if is_http(items) {
+            if is_http(items) || is_redis(items) || is_postgres(items) {
                 visit(items);
             }
             for item in items {
@@ -333,6 +376,11 @@ fn each_credential_effect<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a str, &'
 /// Every credential slot of an `http` call, named by slot, in the order the secret-flow rules check them.
 fn credential_slot_values(items: &[Value]) -> Vec<(String, &Value)> {
     let mut out = Vec::new();
+    if is_redis(items) || is_postgres(items) {
+        let name = if is_postgres(items) { POSTGRES_AUTH_SLOT } else { REDIS_AUTH_SLOT };
+        out.extend(redis_auth_slots(items).map(|slot| (name.to_string(), slot)));
+        return out;
+    }
     let Some(Value::Object(auth)) = http_request(items).and_then(|r| r.get("auth")) else {
         return out;
     };
@@ -379,6 +427,40 @@ pub fn http_credential_slots(expr: &Value) -> Vec<(String, &Value)> {
     out
 }
 
+/// The credential slot of every `credential-status` and `credential-forget`, and the salt of every `hash/scrypt`, in
+/// `expr`, as written.
+fn effect_credential_slots(expr: &Value) -> Vec<&Value> {
+    let mut out = Vec::new();
+    each_credential_effect(expr, &mut |_, items| out.extend(items.get(1)));
+    each_scrypt_salt(expr, &mut |salt| out.push(salt));
+    out
+}
+
+/// The slot name of a `hash/scrypt` salt in a [`SecretFlowViolation::CredentialNotSecret`].
+pub const SCRYPT_SALT_SLOT: &str = "hash/scrypt.salt";
+
+/// Every `["hash/scrypt", input, salt]` salt argument in `expr`: a credential slot the kernel resolves itself.
+fn each_scrypt_salt<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a Value)) {
+    match expr {
+        Value::Array(items) => {
+            if items.first().and_then(Value::as_str) == Some("hash/scrypt") {
+                if let Some(salt) = items.get(2) {
+                    visit(salt);
+                }
+            }
+            for item in items {
+                each_scrypt_salt(item, visit);
+            }
+        }
+        Value::Object(map) => {
+            for value in map.values() {
+                each_scrypt_salt(value, visit);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn check_credential_slots(items: &[Value], secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
     for (slot, value) in credential_slot_values(items) {
         let is_secret_knob = slot_credential(value)
@@ -409,14 +491,19 @@ fn scan_reads(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
         }
         Value::Array(items) => {
             let http = is_http(items);
+            let redis = is_redis(items) || is_postgres(items);
+            let options_from = driver_options_from(items);
             let credential = credential_effect(items).is_some();
             let authorize = is_oauth_authorize(items);
+            let scrypt = items.first().and_then(Value::as_str) == Some("hash/scrypt");
             for (index, item) in items.iter().enumerate() {
                 match (http, item) {
+                    _ if scrypt && index == 2 && item.as_str().and_then(config_knob).is_some_and(|knob| secrets.contains(&knob)) => {}
                     _ if authorize && index == 1 => scan_oauth_client_reads(item, secrets, path, out),
                     (true, Value::Object(request)) => scan_request_reads(request, secrets, path, out),
+                    (_, Value::Object(options)) if redis && index >= options_from => scan_redis_option_reads(options, secrets, path, out),
                     _ if credential && index == 1 => {
-                        if items.first().and_then(Value::as_str) == Some("credential-status") {
+                        if matches!(items.first().and_then(Value::as_str), Some("credential-status")) {
                             if let Value::Object(selection) = item {
                                 for (key, value) in selection {
                                     let allowed_leaf = key == "credential"
@@ -441,6 +528,23 @@ fn scan_reads(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
             }
         }
         _ => {}
+    }
+}
+
+/// A `redis` call's option object: its `auth` credential slot is the one place a secret knob may be read.
+fn scan_redis_option_reads(options: &Map<String, Value>, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
+    for (key, value) in options {
+        match (key.as_str(), value) {
+            ("auth", Value::String(_)) => {}
+            ("auth", Value::Object(slot)) => {
+                for (name, entry) in slot {
+                    if name != "credential" {
+                        scan_reads(entry, secrets, path, out);
+                    }
+                }
+            }
+            _ => scan_reads(value, secrets, path, out),
+        }
     }
 }
 
@@ -486,6 +590,55 @@ fn scan_request_reads(request: &Map<String, Value>, secrets: &[&str], path: &str
     }
 }
 
+/// A credential name a program declares: a `secret`-typed config knob read by an `http` auth credential slot or named by
+/// a `credential-status` or `credential-forget` effect or the salt of a `hash/scrypt`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramCredential {
+    /// The orbital that declares the knob.
+    pub group: String,
+    /// The knob's default: the env var / credential name.
+    pub env_var: String,
+    /// The knob's `@description`.
+    pub description: String,
+}
+
+/// The credentials `program` declares, in walk order (orbital, trait, slot), each `(group, env_var)` once. A slot
+/// counts when it reads `@config.<knob>` of a `secret` knob with a string default, or, once inline has replaced the
+/// read with the knob's value, is a literal equal to the default of a `secret` knob of the same trait.
+pub fn program_credentials(program: &Value) -> Vec<ProgramCredential> {
+    let mut out: Vec<ProgramCredential> = Vec::new();
+    let orbitals = program.get("orbitals").and_then(Value::as_array).into_iter().flatten();
+    for orbital in orbitals {
+        let group = orbital.get("name").and_then(Value::as_str).unwrap_or_default();
+        for trait_def in orbital.get("traits").and_then(Value::as_array).into_iter().flatten() {
+            let Some(config) = trait_def.get("config").and_then(Value::as_object) else { continue };
+            let is_secret = |field: &Value| field.get("type").and_then(Value::as_str) == Some("secret");
+            let read_slots = effect_credential_slots(trait_def);
+            for slot in http_credential_slots(trait_def).into_iter().map(|(_, slot)| slot).chain(read_slots) {
+                let Some(credential) = slot_credential(slot) else { continue };
+                let field = match config_knob(credential) {
+                    Some(knob) => config.get(knob).filter(|f| is_secret(f)),
+                    None => config
+                        .values()
+                        .find(|f| is_secret(f) && f.get("default").and_then(Value::as_str) == Some(credential)),
+                };
+                let Some(field) = field else { continue };
+                let Some(env_var) = field.get("default").and_then(Value::as_str).filter(|d| !d.is_empty()) else { continue };
+                if out.iter().any(|c| c.group == group && c.env_var == env_var) {
+                    continue;
+                }
+                out.push(ProgramCredential {
+                    group: group.to_string(),
+                    env_var: env_var.to_string(),
+                    description: field.get("description").and_then(Value::as_str).unwrap_or_default().to_string(),
+                });
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +679,38 @@ mod tests {
             let found = codes(&program(config(), call(json!({ "auth": auth.clone() }))));
             assert_eq!(found, vec![CREDENTIAL_NOT_SECRET_CODE], "{auth}");
         }
+    }
+
+    fn redis_call(options: Value) -> Value {
+        json!([["redis", "redis://h", ["PING"], options, { "emit": { "success": "OK" } }]])
+    }
+
+    #[test]
+    fn a_redis_auth_slot_must_be_a_secret_knob_and_may_not_leak_it_elsewhere() {
+        for auth in [json!("@config.plain"), json!("LITERAL"), json!({ "credential": "@config.plain", "scope": "user" })] {
+            let found = codes(&program(config(), redis_call(json!({ "auth": auth.clone() }))));
+            assert_eq!(found, vec![CREDENTIAL_NOT_SECRET_CODE], "{auth}");
+        }
+        let leaked = codes(&program(config(), redis_call(json!({ "auth": "@config.apiKey", "user": "@config.apiKey" }))));
+        assert!(leaked.contains(&SECRET_OUTSIDE_AUTH_CODE), "{leaked:?}");
+    }
+
+    #[test]
+    fn postgres_auth_is_a_secret_slot_after_the_params_and_other_reads_of_it_are_outside_auth() {
+        let call = |options: Value| json!([["postgres", "postgres://h", "SELECT 1", [], options, { "emit": { "success": "OK" } }]]);
+        let bad = codes(&program(config(), call(json!({ "auth": "@config.plain" }))));
+        assert_eq!(bad, vec![CREDENTIAL_NOT_SECRET_CODE]);
+        let leaked = codes(&program(config(), call(json!({ "auth": "@config.apiKey", "user": "@config.apiKey" }))));
+        assert!(leaked.contains(&SECRET_OUTSIDE_AUTH_CODE), "{leaked:?}");
+        assert!(codes(&program(config(), call(json!({ "auth": "@config.apiKey", "database": "main" })))).is_empty());
+    }
+
+    #[test]
+    fn control_a_secret_knob_in_a_redis_auth_slot_is_clean() {
+        for auth in [json!("@config.apiKey"), json!({ "credential": "@config.apiKey", "scope": "app" })] {
+            assert!(codes(&program(config(), redis_call(json!({ "auth": auth.clone(), "db": 1 })))).is_empty(), "{auth}");
+        }
+        assert!(codes(&program(config(), redis_call(json!({ "db": 1 })))).is_empty());
     }
 
     #[test]
@@ -701,6 +886,36 @@ mod tests {
     }
 
     #[test]
+    fn a_scrypt_salt_is_a_legal_secret_sink_and_declares_the_credential_it_names() {
+        let hashed = |salt: &str| json!([["let", [["h", ["hash/scrypt", "@payload.x", salt]]], ["emit", "OK", { "h": "@h" }]]]);
+        assert!(codes(&program(config(), hashed("@config.apiKey"))).is_empty());
+        let declared = program_credentials(&json!({ "orbitals": [{ "name": "KeysOrbital", "traits": [{
+            "config": { "apiKey": { "type": "secret", "default": "ALMADAR_API_KEY_SALT", "description": "salt" } },
+            "stateMachine": { "transitions": [{ "effects": hashed("@config.apiKey") }] }
+        }] }] }));
+        assert_eq!(declared.len(), 1);
+        assert_eq!((declared[0].group.as_str(), declared[0].env_var.as_str()), ("KeysOrbital", "ALMADAR_API_KEY_SALT"));
+        for head in ["credential-status", "credential-forget"] {
+            let probed = program_credentials(&json!({ "orbitals": [{ "name": "ProbeOrbital", "traits": [{
+                "config": { "token": { "type": "secret", "default": "PROBED_TOKEN", "description": "probed" } },
+                "stateMachine": { "transitions": [{ "effects": [[head, { "credential": "@config.token", "scope": "app" }]] }] }
+            }] }] }));
+            assert_eq!(probed.len(), 1, "{head}: a secret knob a credential effect names is a declared credential");
+            assert_eq!(probed[0].env_var, "PROBED_TOKEN");
+        }
+        let unread = program_credentials(&json!({ "orbitals": [{ "name": "KeysOrbital", "traits": [{
+            "config": { "apiKey": { "type": "secret", "default": "ALMADAR_API_KEY_SALT" } },
+            "stateMachine": { "transitions": [{ "effects": [["set", "@entity.x", 1]] }] }
+        }] }] }));
+        assert!(unread.is_empty(), "a secret knob nothing reads is not declared");
+        assert_eq!(codes(&program(config(), hashed("@config.plain"))), vec![CREDENTIAL_NOT_SECRET_CODE]);
+        assert_eq!(codes(&program(config(), hashed("LITERAL_SALT"))), vec![CREDENTIAL_NOT_SECRET_CODE]);
+        let leaked = codes(&program(config(), json!([["hash/scrypt", "@config.apiKey", "@config.apiKey"]])));
+        assert_eq!(leaked, vec![SECRET_OUTSIDE_AUTH_CODE], "the secret as the hashed input leaks it");
+        assert_eq!(codes(&program(config(), json!([["set", "@entity.x", "@config.apiKey"]]))), vec![SECRET_OUTSIDE_AUTH_CODE]);
+    }
+
+    #[test]
     fn a_program_without_orbitals_has_no_violations() {
         assert!(secret_flow_violations(&json!({})).is_empty());
     }
@@ -740,5 +955,48 @@ mod tests {
         let named: Vec<(&str, Option<&str>)> = slots.iter().map(|(slot, value)| (slot.as_str(), slot_credential(value))).collect();
         assert_eq!(named, vec![("credential", Some("STRIPE")), ("user", Some("u")), ("credential", Some("DB"))]);
         assert!(http_credential_slots(&json!([["set", "@entity.x", 1]])).is_empty());
+    }
+
+    #[test]
+    fn program_credentials_lists_the_secret_knobs_the_http_auth_slots_read() {
+        let gh = json!({ "name": "GithubOrbital", "traits": [{
+            "config": {
+                "token": { "type": "secret", "default": "GITHUB_TOKEN", "description": "The token." },
+                "unused": { "type": "secret", "default": "UNUSED" },
+                "plain": { "type": "string", "default": "PLAIN" }
+            },
+            "stateMachine": { "transitions": [{ "effects": [
+                ["http", "GET", "https://a.example", "/a", { "auth": { "scheme": "bearer", "credential": "@config.token" } }, { "emit": { "success": "OK" } }],
+                ["http", "GET", "https://a.example", "/b", { "auth": { "scheme": "bearer", "credential": "@config.token" } }, { "emit": { "success": "OK" } }],
+                ["http", "GET", "https://a.example", "/c", { "auth": { "scheme": "bearer", "credential": "@config.plain" } }, { "emit": { "success": "OK" } }]
+            ] }] }
+        }] });
+        let other = json!({ "name": "Other", "traits": [{
+            "config": { "key": { "type": "secret", "default": "GITHUB_TOKEN" } },
+            "stateMachine": { "transitions": [{ "effects": [
+                ["http", "GET", "https://a.example", "/a", { "auth": { "scheme": "api-key", "credential": "@config.key" } }, { "emit": { "success": "OK" } }]
+            ] }] }
+        }] });
+        let found = program_credentials(&json!({ "orbitals": [gh, other] }));
+        let named: Vec<(&str, &str, &str)> = found.iter().map(|c| (c.group.as_str(), c.env_var.as_str(), c.description.as_str())).collect();
+        assert_eq!(named, vec![("GithubOrbital", "GITHUB_TOKEN", "The token."), ("Other", "GITHUB_TOKEN", "")]);
+        assert!(program_credentials(&json!({ "orbitals": [] })).is_empty());
+    }
+
+    #[test]
+    fn program_credentials_reads_the_inlined_form_through_the_knob_that_declared_the_literal() {
+        let inlined = json!({ "orbitals": [{ "name": "TinyOrbital", "traits": [{
+            "config": {
+                "token": { "type": "secret", "default": "MY_GH_TOKEN", "description": "The token." },
+                "other": { "type": "string", "default": "LITERAL_ONLY" }
+            },
+            "stateMachine": { "transitions": [{ "effects": [
+                ["http", "GET", "https://a.example", "/a", { "auth": { "scheme": "bearer", "credential": "MY_GH_TOKEN" } }, { "emit": { "success": "OK" } }],
+                ["http", "GET", "https://a.example", "/b", { "auth": { "scheme": "bearer", "credential": "LITERAL_ONLY" } }, { "emit": { "success": "OK" } }]
+            ] }] }
+        }] }] });
+        let found = program_credentials(&inlined);
+        let named: Vec<(&str, &str, &str)> = found.iter().map(|c| (c.group.as_str(), c.env_var.as_str(), c.description.as_str())).collect();
+        assert_eq!(named, vec![("TinyOrbital", "MY_GH_TOKEN", "The token.")]);
     }
 }

@@ -205,6 +205,7 @@ impl PrettyPrinter {
             OirType::Uuid => "Uuid".to_string(),
             OirType::Image => "Image".to_string(),
             OirType::Bytes => "Bytes".to_string(),
+            OirType::CallKey => "CallKey".to_string(),
             OirType::Money => "Money".to_string(),
             OirType::File => "File".to_string(),
             OirType::Json => "Json".to_string(),
@@ -689,6 +690,41 @@ impl PrettyPrinter {
                 }
                 self.write(")");
             }
+            OirEffect::Redis {
+                origin,
+                command,
+                options,
+                ..
+            } => {
+                self.write("redis(");
+                self.write_expr(origin);
+                self.write(", ");
+                self.write_expr(command);
+                if let Some(options) = options {
+                    self.write(", ");
+                    self.write_expr(options);
+                }
+                self.write(")");
+            }
+            OirEffect::Postgres {
+                origin,
+                sql,
+                params,
+                options,
+                ..
+            } => {
+                self.write("postgres(");
+                self.write_expr(origin);
+                self.write(", ");
+                self.write_expr(sql);
+                self.write(", ");
+                self.write_expr(params);
+                if let Some(options) = options {
+                    self.write(", ");
+                    self.write_expr(options);
+                }
+                self.write(")");
+            }
             OirEffect::CancelCall { key } => {
                 self.write("cancel-call(");
                 self.write_expr(key);
@@ -722,6 +758,12 @@ impl PrettyPrinter {
             } => {
                 self.write("credential-forget(");
                 self.write_expr(expr);
+                self.write(")");
+            }
+            OirEffect::CredentialAdmin { op, request, .. } => {
+                self.write(op.name());
+                self.write("(");
+                self.write_expr(request);
                 self.write(")");
             }
             OirEffect::OAuthAuthorize {
@@ -894,6 +936,16 @@ impl PrettyPrinter {
             OirEffect::BrowserEmbed { texts, key, .. } => {
                 self.write("browser/embed(");
                 self.write_expr(texts);
+                if let Some(k) = key {
+                    self.write(", ");
+                    self.write_expr(k);
+                }
+                self.write(")");
+            }
+            OirEffect::BrowserTab { op, request, key, .. } => {
+                self.write(op.name());
+                self.write("(");
+                self.write_expr(request);
                 if let Some(k) = key {
                     self.write(", ");
                     self.write_expr(k);

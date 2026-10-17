@@ -127,7 +127,7 @@ fn search_dispatch_allocation_count_is_pinned() {
     );
 }
 
-const PINNED_SEARCH: usize = 1791;
+const PINNED_SEARCH: usize = 1762;
 
 fn fetch_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
@@ -183,7 +183,7 @@ fn fetch_dispatch_allocation_count_is_pinned() {
     assert!(n <= PINNED_FETCH, "allocations rose: {n} > {PINNED_FETCH}");
 }
 
-const PINNED_FETCH: usize = 4264;
+const PINNED_FETCH: usize = 1256;
 
 #[test]
 fn read_access_allocation_count_is_pinned() {
@@ -229,7 +229,7 @@ fn read_access_allocation_count_is_pinned() {
     );
 }
 
-const PINNED_READ_ACCESS: usize = 2769;
+const PINNED_READ_ACCESS: usize = 2669;
 
 const REPLAY_ROWS: usize = 1000;
 const REPLAY_WRITES: usize = 6;
@@ -305,7 +305,7 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
     );
 }
 
-const PINNED_REPLAY: usize = 469255;
+const PINNED_REPLAY: usize = 330786;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)

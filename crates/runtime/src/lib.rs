@@ -9,11 +9,16 @@ pub mod agent_ports;
 pub mod callsite_capture;
 pub mod canvas_theme;
 pub mod config;
+pub mod credential_admin;
 pub mod dispatch_memory;
+pub mod byte_stream;
+pub mod driver;
 pub mod embed_index;
 pub mod entity_access;
 pub mod entity_source;
 pub mod http_request;
+pub mod postgres;
+pub mod redis;
 pub mod http_service;
 pub mod oauth_flow;
 #[cfg(not(target_arch = "wasm32"))]
@@ -35,13 +40,15 @@ pub mod resumable;
 pub mod row_query;
 pub mod seed;
 pub mod server_leg;
+pub mod tab;
 pub mod tick_clock;
+pub mod tls;
 pub mod trait_owners;
 
 pub use config::{DispatchClock, KernelConfig};
 pub use orbital_core_base::dispatch_mode::{compute as compute_dispatch_mode, DispatchMode};
 pub use embed_index::EmbedIndex;
-pub use entity_access::{apply_read_access, check_mutation_access, collect_user_field_literals, is_access_denied_error, role_satisfying_policy, scope_fetched_rows, EntityAccessPolicies, EntityAccessTable};
+pub use entity_access::{apply_read_access, check_mutation_access, collect_user_field_literals, role_satisfying_policy, AccessDenied, scope_fetched_rows, EntityAccessPolicies, EntityAccessTable};
 pub use orbital_core_base::entity_vocabulary::{identity_field, user_field_of, vocabulary, EQUALITY_OPS};
 pub use entity_source::{EntitySource, InMemoryEntityCache};
 pub use kernel::{

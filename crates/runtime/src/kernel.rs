@@ -55,6 +55,10 @@ pub enum KernelError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    /// The event's payload does not satisfy the payload its trait declares; the message is the API response's text.
+    #[error("{0}")]
+    PayloadInvalid(String),
 }
 
 pub mod agent_ports;
@@ -82,6 +86,8 @@ struct CascadeItem {
     fans_out: bool,
     /// Set for a re-render of an embedded child under its composer's payload, not a delivery.
     repaint: Option<RepaintJob>,
+    /// The reply or failure an effect's completion fired: a distinct delivery, never skipped as a repeat.
+    completion: bool,
 }
 
 /// An embedded child to re-render under the payload of the transition that composed it
@@ -256,6 +262,8 @@ pub struct RuntimeKernel {
     /// The trait whose effects are running and whether its step is a follow-on of the dispatch:
     /// what a `call-service` is stamped with.
     step_site: Arc<RwLock<Option<(String, bool)>>>,
+    /// The frame the step in `step_site` runs on, for the call sites it creates.
+    step_frame: Arc<RwLock<Option<String>>>,
     /// Referrer trait -> the embedded children to re-render under its payload (`callsite_capture`).
     capture_children: Arc<RwLock<HashMap<String, Vec<String>>>>,
     /// Trait -> the payload its composer last composed it with: what its own `@callsitePayload` reads.
@@ -898,11 +906,14 @@ impl RuntimeKernel {
         let event_bus = shared_bus();
         let state_manager = Arc::new(RwLock::new(StateMachineManager::new()));
         let entity_policies: Arc<RwLock<EntityAccessTable>> = Arc::new(RwLock::new(HashMap::new()));
-        let io = Arc::new(IoPort::new(
-            entity_source,
-            config.service_handler.clone(),
-            config.substrate_handler.clone(),
-        ));
+        let io = Arc::new(
+            IoPort::new(
+                entity_source,
+                config.service_handler.clone(),
+                config.substrate_handler.clone(),
+            )
+            .with_clock(config.clock.clone()),
+        );
         let entity_source: Arc<dyn EntitySource> = io.clone();
         let entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>> =
             Arc::new(RwLock::new(HashMap::new()));
@@ -975,6 +986,7 @@ impl RuntimeKernel {
             os_grants: Arc::new(RwLock::new(OsGrants::default())),
             deliveries: Arc::default(),
             step_site: Arc::new(RwLock::new(None)),
+            step_frame: Arc::new(RwLock::new(None)),
             capture_children: Arc::new(RwLock::new(HashMap::new())),
             composed_callsite: Arc::new(RwLock::new(ValueMap::new())),
             frames: Arc::new(RwLock::new(HashMap::new())),
@@ -1035,6 +1047,24 @@ impl RuntimeKernel {
         self.listener_manager =
             ListenerManager::new(self.event_bus.clone()).with_trigger_callback(callback);
         self
+    }
+
+    /// The credentials every registered program declares (`secret` knobs its `http` auth, `credential-status` and `hash/scrypt` salt slots
+    /// read), by registered schema name: the program half of the catalog the credential effects check names against.
+    fn program_credentials(&self) -> Result<Vec<orbital_core_base::secrets::ProgramCredential>, String> {
+        let schemas = self.schemas.read();
+        let mut names: Vec<&String> = schemas.keys().collect();
+        names.sort();
+        let mut found: Vec<orbital_core_base::secrets::ProgramCredential> = Vec::new();
+        for name in names {
+            let program = serde_json::to_value(&schemas[name]).map_err(|e| format!("schema `{name}`: {e}"))?;
+            for credential in orbital_core_base::secrets::program_credentials(&program) {
+                if !found.iter().any(|c| c.group == credential.group && c.env_var == credential.env_var) {
+                    found.push(credential);
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// The `os/` grants every registered program declares, unioned: what a host builds its `OsHost` from.
@@ -1435,6 +1465,7 @@ impl RuntimeKernel {
             ctx.from_state = Some(current_state.current_state.clone());
             ctx.to_state = Some(new_state.clone());
             *self.step_site.write() = Some((trait_name.to_string(), follow_on));
+            *self.step_frame.write() = Some(entity_id.to_string());
             let (effect_results, captured_entity_data, effect_runs, failure) =
                 match self.server_leg_collector() {
                     Some(collector) => collector.attribute(trait_name, || {
@@ -1443,6 +1474,7 @@ impl RuntimeKernel {
                     None => self.execute_effects_traced(result.effects(), &ctx),
                 };
             *self.step_site.write() = None;
+            *self.step_frame.write() = None;
 
             // Effective entity = read entity with Set-effect fields merged in. Persist
             // the MERGED entity (read-modify-write), never the partial
@@ -1575,6 +1607,45 @@ impl RuntimeKernel {
                 failure: None,
                 callsite_payload: None,
             })
+        }
+    }
+
+    /// The refusal text when `payload` does not satisfy the `payloadSchema` any of `targets` (trait, the event it
+    /// receives) declares: required fields, and the container a present field's type declares. `None` when it does.
+    pub fn payload_rejection<'a>(
+        &self,
+        targets: impl IntoIterator<Item = (&'a str, &'a str)>,
+        payload: &Value,
+    ) -> Option<String> {
+        let mut failures = Vec::new();
+        let definitions = self.trait_definitions.read();
+        for (trait_name, event) in targets {
+            let declared = definitions
+                .get(trait_name)
+                .and_then(|definition| definition.state_machine.events.as_ref())
+                .and_then(|events| events.iter().find(|declared| declared.key == event))
+                .and_then(|declared| declared.payload_schema.as_deref());
+            if let Some(schema) = declared {
+                failures.extend(crate::payload_validation::validate_event_payload(event, payload, schema));
+            }
+        }
+        drop(definitions);
+        (!failures.is_empty()).then(|| crate::payload_validation::format_payload_failures(&failures))
+    }
+
+    /// The API-boundary check of an external event: a server kernel refuses a payload that does not satisfy its
+    /// declared event before any transition runs. A client kernel's events come from its own UI and are not checked.
+    pub(crate) fn require_payload<'a>(
+        &self,
+        targets: impl IntoIterator<Item = (&'a str, &'a str)>,
+        payload: &Value,
+    ) -> Result<(), KernelError> {
+        if self.effect_executor.environment().is_client() {
+            return Ok(());
+        }
+        match self.payload_rejection(targets, payload) {
+            Some(message) => Err(KernelError::PayloadInvalid(message)),
+            None => Ok(()),
         }
     }
 
@@ -2285,6 +2356,7 @@ impl RuntimeKernel {
                 trait_name,
                 source,
                 handled,
+                false,
                 emitted,
                 ep,
                 &mut own,
@@ -2644,6 +2716,7 @@ impl RuntimeKernel {
                     listen_guard: None,
                     fans_out: true,
                     repaint: None,
+                    completion: false,
                 });
                 continue;
             }
@@ -2731,6 +2804,7 @@ impl RuntimeKernel {
                     trait_name,
                     &source,
                     handled,
+                    er.completion,
                     emitted,
                     ep,
                     &mut own,
@@ -2803,6 +2877,7 @@ impl RuntimeKernel {
             listen_guard: None,
             fans_out: false,
             repaint: Some(job),
+            completion: false,
         }
     }
 
@@ -2814,6 +2889,7 @@ impl RuntimeKernel {
         trait_name: &str,
         source: &BusEventSource,
         handled: bool,
+        completion: bool,
         emitted: &str,
         payload: &Value,
         own: &mut Vec<CascadeItem>,
@@ -2829,9 +2905,14 @@ impl RuntimeKernel {
                 listen_guard: None,
                 fans_out: false,
                 repaint: None,
+                completion,
             });
         }
+        let fanned_before = fanned.len();
         self.collect_listener_targets(source, trait_name, emitted, payload, &[], fanned);
+        for item in &mut fanned[fanned_before..] {
+            item.completion = completion;
+        }
     }
 
     /// Whether `trait_name` has an arm for `event` from `state`.
@@ -2886,6 +2967,7 @@ impl RuntimeKernel {
                 listen_guard: l.guard,
                 fans_out: false,
                 repaint: None,
+                completion: false,
             });
         }
     }
@@ -3041,7 +3123,7 @@ impl RuntimeKernel {
                     _ => None,
                 };
                 effect_results.push(result);
-                effect_results.extend(completion);
+                effect_results.extend(completion.map(EffectResult::as_completion));
             } else {
                 self.exec_effect_expr(
                     effect_expr,
@@ -3098,6 +3180,8 @@ impl RuntimeKernel {
         effect_results: &mut Vec<EffectResult>,
         entity_data: &mut PendingSets,
     ) {
+        let secreted = self.with_scrypt_salts(effect_expr, ctx, evaluator);
+        let ctx = secreted.as_ref().unwrap_or(ctx);
         // Only control flow reads the mirrored `@entity` here; a leaf mirrors it itself so it can
         // release the view before its `set` writes into it in place.
         if let SExpression::Array(items) = effect_expr {
@@ -3204,6 +3288,38 @@ impl RuntimeKernel {
         self.exec_leaf_effect(effect_expr, ctx, evaluator, effect_results, entity_data);
     }
 
+    /// `ctx` with the value of every credential a `hash/scrypt` in `expr` names as its salt, resolved through the host's
+    /// `Secret` ask. The value lives only in the evaluation context: it is not a binding and never reaches program data.
+    /// `None` when `expr` hashes nothing or every salt is already held.
+    fn with_scrypt_salts(&self, expr: &SExpression, ctx: &BindingContext, evaluator: &Evaluator) -> Option<BindingContext> {
+        fn collect<'a>(expr: &'a SExpression, out: &mut Vec<&'a SExpression>) {
+            if let SExpression::Array(items) = expr {
+                if matches!(items.first(), Some(SExpression::String(head)) if head == "hash/scrypt") {
+                    out.extend(items.get(2));
+                }
+                for item in items {
+                    collect(item, out);
+                }
+            }
+        }
+        let mut salts = Vec::new();
+        collect(expr, &mut salts);
+        let mut held: Option<BindingContext> = None;
+        for salt in salts {
+            let current = held.as_ref().unwrap_or(ctx);
+            let Ok(Value::String(name)) = evaluator.evaluate(salt, current) else { continue };
+            if current.secret(&name).is_some() {
+                continue;
+            }
+            if let Ok(Some(value)) = self.io.secret(&name, None) {
+                if !value.is_empty() {
+                    held = Some(current.clone().with_secret(&name, value));
+                }
+            }
+        }
+        held
+    }
+
     /// Execute a single leaf effect (`set`/`render-ui`/`emit`/`fetch`/…) via the
     /// canonical effect handler, capturing Set-effect data.
     fn exec_leaf_effect(
@@ -3261,7 +3377,7 @@ impl RuntimeKernel {
                     let result = self.effect_executor.execute(&effect, ctx);
                     let completion = fetch_completion_emit(fetch_emit, &result);
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::Persist {
                     emit: Some(persist_emit),
@@ -3270,7 +3386,7 @@ impl RuntimeKernel {
                     let result = self.effect_executor.execute(&effect, ctx);
                     let completion = persist_completion_emit(persist_emit, &effect, &result);
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::PersistBatch {
                     emit: Some(batch_emit),
@@ -3279,19 +3395,33 @@ impl RuntimeKernel {
                     let result = self.effect_executor.execute(&effect, ctx);
                     let completion = persist_completion_emit(batch_emit, &effect, &result);
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::CallService { emit, .. } => {
                     let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
                         return;
                     };
-                    self.io.set_call_site(self.call_site_of(emit.as_ref()));
-                    let mut result = self.effect_executor.execute(&resolved, ctx);
-                    let verdict = self.io.take_call_verdict();
-                    self.io.set_call_site(None);
                     let key = match &resolved {
                         Effect::CallService { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
                         _ => None,
+                    };
+                    let reused = key.as_deref().is_some_and(|k| {
+                        effect_results.iter().any(|r| {
+                            matches!(&r.effect, Effect::CallService { key: Some(prev), .. } if prev.as_str() == Some(k))
+                        })
+                    });
+                    let (mut result, verdict) = if reused {
+                        let message = format!(
+                            "call-service key '{}' is already used by another call in this step",
+                            key.as_deref().unwrap_or_default()
+                        );
+                        (EffectResult::failed(resolved.clone(), &message), None)
+                    } else {
+                        self.io.set_call_site(self.call_site_of(emit.as_ref()));
+                        let result = self.effect_executor.execute(&resolved, ctx);
+                        let verdict = self.io.take_call_verdict();
+                        self.io.set_call_site(None);
+                        (result, verdict)
                     };
                     if verdict == Some(CallVerdict::Cancelled) {
                         result = EffectResult::executed(resolved);
@@ -3302,7 +3432,7 @@ impl RuntimeKernel {
                         keyed_call_completion_emit(e, &result, verdict, key.as_deref())
                     });
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::Http { emit, .. } => {
                     let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
@@ -3329,7 +3459,49 @@ impl RuntimeKernel {
                         keyed_call_completion_emit(e, &result, verdict, key.as_deref())
                     });
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
+                }
+                Effect::Redis { emit, .. } => {
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    let key = match &resolved {
+                        Effect::Redis { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        _ => None,
+                    };
+                    let result = if self.effect_executor.environment().is_client() {
+                        self.effect_executor.execute(&resolved, ctx)
+                    } else {
+                        self.io.set_call_site(self.call_site_of(emit.as_ref()));
+                        let principal = ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
+                        let result = self.run_redis(&resolved, principal.as_deref());
+                        self.io.set_call_site(None);
+                        result
+                    };
+                    let completion = emit.as_ref().and_then(|e| keyed_call_completion_emit(e, &result, None, key.as_deref()));
+                    effect_results.push(result);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
+                }
+                Effect::Postgres { emit, .. } => {
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    let key = match &resolved {
+                        Effect::Postgres { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        _ => None,
+                    };
+                    let result = if self.effect_executor.environment().is_client() {
+                        self.effect_executor.execute(&resolved, ctx)
+                    } else {
+                        self.io.set_call_site(self.call_site_of(emit.as_ref()));
+                        let principal = ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
+                        let result = self.run_postgres(&resolved, principal.as_deref());
+                        self.io.set_call_site(None);
+                        result
+                    };
+                    let completion = emit.as_ref().and_then(|e| keyed_call_completion_emit(e, &result, None, key.as_deref()));
+                    effect_results.push(result);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::Os { emit, .. } => {
                     let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
@@ -3355,7 +3527,7 @@ impl RuntimeKernel {
                         keyed_call_completion_emit(e, &result, verdict, key.as_deref())
                     });
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::BrowserBeacon { emit, .. } => {
                     let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
@@ -3376,7 +3548,7 @@ impl RuntimeKernel {
                         .as_ref()
                         .and_then(|e| keyed_call_completion_emit(e, &result, verdict, key.as_deref()));
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::BrowserPrompt { emit, .. } | Effect::BrowserEmbed { emit, .. } => {
                     let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
@@ -3397,7 +3569,26 @@ impl RuntimeKernel {
                         .as_ref()
                         .and_then(|e| keyed_call_completion_emit(e, &result, verdict, key.as_deref()));
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
+                }
+                Effect::BrowserTab { emit, .. } => {
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    let key = match &resolved {
+                        Effect::BrowserTab { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        _ => None,
+                    };
+                    let mut result = self.run_browser_tab(&resolved);
+                    let verdict = self.io.take_call_verdict();
+                    if verdict == Some(CallVerdict::Cancelled) {
+                        result = EffectResult::executed(resolved);
+                    }
+                    let completion = emit
+                        .as_ref()
+                        .and_then(|e| keyed_call_completion_emit(e, &result, verdict, key.as_deref()));
+                    effect_results.push(result);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::BrowserPageFacts { emit, .. } => {
                     let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
@@ -3408,7 +3599,7 @@ impl RuntimeKernel {
                         .as_ref()
                         .and_then(|e| keyed_call_completion_emit(e, &result, None, None));
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::Custom { name, emit, .. }
                     if orbital_core_base::agent_ports::is_agent_port_operator(name) =>
@@ -3425,7 +3616,7 @@ impl RuntimeKernel {
                         .as_ref()
                         .and_then(|e| agent_ports::agent_port_completion_emit(e, &result));
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::Custom {
                     emit: Some(op_emit),
@@ -3440,7 +3631,7 @@ impl RuntimeKernel {
                     }
                     let completion = substrate_completion_emit(op_emit, &result);
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::Custom { .. } => {
                     let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results) else {
@@ -3457,6 +3648,7 @@ impl RuntimeKernel {
                 Effect::RandomBytes { emit, .. }
                 | Effect::CredentialStatus { emit, .. }
                 | Effect::CredentialForget { emit, .. }
+                | Effect::CredentialAdmin { emit, .. }
                 | Effect::OAuthAuthorize { emit, .. }
                 | Effect::OAuthConnectionStatus { emit, .. }
                 | Effect::OAuthConnectionForget { emit, .. } => {
@@ -3472,7 +3664,7 @@ impl RuntimeKernel {
                         .as_ref()
                         .and_then(|e| keyed_call_completion_emit(e, &result, None, None));
                     effect_results.push(result);
-                    effect_results.extend(completion);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::Emit { .. } => {
                     // Resolve now, against this leaf's scope (`let` locals, earlier sets), as JS does at emit time.
@@ -3515,6 +3707,7 @@ impl RuntimeKernel {
     /// The call site of a `call-service` made by the step in flight.
     fn call_site_of(&self, emit: Option<&FetchEmit>) -> Option<CallSite> {
         let (trait_name, follow_on) = self.step_site.read().clone()?;
+        let entity_id = self.step_frame.read().clone().unwrap_or_else(|| "singleton".to_string());
         let orbital = self.emit_source(&trait_name).orbital;
         let routes = emit.map_or_else(CallRoutes::default, |e| CallRoutes {
             success: e.success.clone(),
@@ -3526,6 +3719,7 @@ impl RuntimeKernel {
             orbital,
             trait_name,
             follow_on,
+            entity_id,
             emit: routes,
         })
     }
@@ -3618,6 +3812,26 @@ impl RuntimeKernel {
                         )])),
                     ),
                     Err(message) => EffectResult::failed(effect.clone(), &message),
+                }
+            }
+            Effect::CredentialAdmin { op, request, .. } => {
+                let caller = ServiceCaller::of_user(&ctx.user);
+                let catalog = || {
+                    let program = self.program_credentials().map_err(orbital_core_base::credential_admin::Refusal::plain)?;
+                    crate::credential_admin::catalog(&program)
+                };
+                match crate::credential_admin::run(&*self.io, *op, request, caller.as_ref(), &catalog) {
+                    Ok(reply) => EffectResult::executed_with_value(effect.clone(), reply),
+                    Err(refusal) => http_failure(
+                        effect,
+                        Value::Object(ValueMap::from([
+                            ("error".to_string(), Value::String(refusal.message)),
+                            (
+                                "code".to_string(),
+                                refusal.code.map_or(Value::Null, |code| Value::String(code.to_string())),
+                            ),
+                        ])),
+                    ),
                 }
             }
             Effect::OAuthAuthorize { client, options, .. } => {
@@ -3797,14 +4011,10 @@ impl RuntimeKernel {
         }
     }
 
-    /// Run an `http` effect by answering the asks of its `HttpCallDriver`, each journaled; the driver owns
-    /// credentials, OAuth, pagination and streaming.
+    /// Run an `http` effect on the shared driver loop; the `HttpCallDriver` owns credentials, OAuth, pagination and
+    /// streaming, and every ask it makes is journaled.
     fn run_http(&self, effect: &Effect, principal: Option<&str>, now_ms: Option<f64>) -> EffectResult {
-        use {crate::http_request::{HttpAnswer, HttpAsk, HttpCallDriver, HttpStep}, orbital_core_base::http_wire::SecretScope};
-        let owner = |scope: SecretScope| match scope {
-            SecretScope::App => Ok(None),
-            SecretScope::User => principal.map(Some).ok_or_else(|| "nobody is signed in".to_string()),
-        };
+        use crate::{driver::{drive, DriveContext, DriveEnd}, http_request::HttpCallDriver};
         let Effect::Http {
             method,
             origin,
@@ -3832,48 +4042,63 @@ impl RuntimeKernel {
             )),
         };
         let egress = self.egress.read().clone();
-        let (mut driver, mut step) =
+        let (mut driver, step) =
             HttpCallDriver::start_as(spec, egress, key.map(str::to_string), now_ms, principal.map(str::to_string));
-        loop {
-            match step {
-                HttpStep::Done(Ok(payload)) => {
-                    return EffectResult::executed_with_value(effect.clone(), payload)
-                }
-                HttpStep::Done(Err(payload)) => return http_failure(effect, payload),
-                HttpStep::Ask(ask) => {
-                    let answer = match ask {
-                        HttpAsk::Secret { name, scope } => {
-                            HttpAnswer::Secret(owner(scope).and_then(|who| self.io.secret(&name, who)))
-                        }
-                        HttpAsk::SecretSet {
-                            name,
-                            value,
-                            ttl_ms,
-                            scope,
-                        } => HttpAnswer::SecretSet(
-                            owner(scope).and_then(|who| self.io.store_secret(&name, &value, ttl_ms, who)),
-                        ),
-                        HttpAsk::SecretRotate { name, value, scope } => HttpAnswer::SecretRotate(
-                            owner(scope).and_then(|who| self.io.rotate_secret(&name, &value, who)),
-                        ),
-                        HttpAsk::Random { bytes } => HttpAnswer::Random(self.io.random(bytes)),
-                        HttpAsk::Http { request, delay_ms } => {
-                            HttpAnswer::Http(self.io.http_send(&request, key, delay_ms))
-                        }
-                        HttpAsk::HttpStream { request, framing } => {
-                            HttpAnswer::Http(self.io.http_stream(&request, key, framing))
-                        }
-                        HttpAsk::Beacon { .. } => {
-                            return EffectResult::failed(effect.clone(), "an http call asked for a beacon")
-                        }
-                        HttpAsk::OAuth { ask } => HttpAnswer::OAuth(self.io.oauth(&ask, principal)),
-                    };
-                    if self.io.suspended() {
-                        return EffectResult::failed(effect.clone(), AWAITING_HOST);
-                    }
-                    step = driver.resume(answer);
-                }
-            }
+        match drive(&self.io, &mut driver, step, DriveContext { principal, key }) {
+            DriveEnd::Done(Ok(payload)) => EffectResult::executed_with_value(effect.clone(), payload),
+            DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
+            DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
+            DriveEnd::NoBeaconHost => EffectResult::failed(effect.clone(), "an http call asked for a beacon"),
+        }
+    }
+
+    /// Run a `redis` effect on the shared driver loop; the `RedisDriver` owns the RESP protocol, the handshake and the
+    /// credential, and every ask it makes is a journaled `os/*` or secret ask.
+    fn run_redis(&self, effect: &Effect, principal: Option<&str>) -> EffectResult {
+        use crate::{driver::{drive, DriveContext, DriveEnd}, redis::{self, RedisDriver}};
+        let Effect::Redis { origin, command, options, key, .. } = effect else {
+            return EffectResult::noop(effect.clone(), "not a redis effect");
+        };
+        let key = match key.as_ref().map(orbital_core_base::effect_types::call_key_text).transpose() {
+            Ok(key) => key.map(str::to_string),
+            Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
+        };
+        let spec = match redis::parse_redis_call(origin, command, options) {
+            Ok(spec) => spec,
+            Err(refusal) => return http_failure(effect, redis::refusal_payload(&refusal, &key)),
+        };
+        let egress = self.egress.read().clone();
+        let (mut driver, step) = RedisDriver::start(spec, egress, key.clone());
+        match drive(&self.io, &mut driver, step, DriveContext { principal, key: None }) {
+            DriveEnd::Done(Ok(payload)) => EffectResult::executed_with_value(effect.clone(), payload),
+            DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
+            DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
+            DriveEnd::NoBeaconHost => EffectResult::failed(effect.clone(), "a redis call asked for a beacon"),
+        }
+    }
+
+    /// Run a `postgres` effect on the shared driver loop; the `PostgresDriver` owns the Postgres protocol, the login
+    /// and the result decoding, and every ask it makes is a journaled `os/*`, secret, random or clock ask.
+    fn run_postgres(&self, effect: &Effect, principal: Option<&str>) -> EffectResult {
+        use crate::{driver::{drive, DriveContext, DriveEnd}, postgres::{self, PostgresDriver}};
+        let Effect::Postgres { origin, sql, params, options, key, .. } = effect else {
+            return EffectResult::noop(effect.clone(), "not a postgres effect");
+        };
+        let key = match key.as_ref().map(orbital_core_base::effect_types::call_key_text).transpose() {
+            Ok(key) => key.map(str::to_string),
+            Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
+        };
+        let spec = match postgres::parse_postgres_call(origin, sql, params, options) {
+            Ok(spec) => spec,
+            Err(refusal) => return http_failure(effect, crate::redis::refusal_payload(&refusal, &key)),
+        };
+        let egress = self.egress.read().clone();
+        let (mut driver, step) = PostgresDriver::start(spec, egress, key.clone());
+        match drive(&self.io, &mut driver, step, DriveContext { principal, key: None }) {
+            DriveEnd::Done(Ok(payload)) => EffectResult::executed_with_value(effect.clone(), payload),
+            DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
+            DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
+            DriveEnd::NoBeaconHost => EffectResult::failed(effect.clone(), "a postgres call asked for a beacon"),
         }
     }
 
@@ -3901,7 +4126,7 @@ impl RuntimeKernel {
     /// Run a `browser/beacon`: the one http driver parses, builds and egress-checks the request, and only the
     /// built request reaches the host's beacon port. A kernel with no host to answer fails `unavailable`.
     fn run_beacon(&self, effect: &Effect) -> EffectResult {
-        use crate::http_request::{HttpAnswer, HttpAsk, HttpCallDriver, HttpStep};
+        use crate::{driver::{drive, DriveContext, DriveEnd}, http_request::HttpCallDriver};
         let Effect::BrowserBeacon { url, request, key, .. } = effect else {
             return EffectResult::noop(effect.clone(), "not a beacon effect");
         };
@@ -3927,30 +4152,15 @@ impl RuntimeKernel {
             }
         };
         let egress = self.egress.read().clone();
-        let (mut driver, mut step) = HttpCallDriver::start(spec, egress, key.clone());
-        loop {
-            match step {
-                HttpStep::Done(Ok(payload)) => return EffectResult::executed_with_value(effect.clone(), payload),
-                HttpStep::Done(Err(payload)) => return http_failure(effect, payload),
-                HttpStep::Ask(HttpAsk::Beacon { request }) => {
-                    let Some(outcome) = self.io.http_beacon(&request, key.as_deref()) else {
-                        return http_failure(
-                            effect,
-                            http_request::with_key(
-                                http_request::unavailable_payload("browser/beacon: no host answers beacons"),
-                                &key,
-                            ),
-                        );
-                    };
-                    if self.io.suspended() {
-                        return EffectResult::failed(effect.clone(), AWAITING_HOST);
-                    }
-                    step = driver.resume(HttpAnswer::Beacon(outcome));
-                }
-                HttpStep::Ask(_) => {
-                    return EffectResult::failed(effect.clone(), "a beacon call asked for something other than a beacon")
-                }
-            }
+        let (mut driver, step) = HttpCallDriver::start(spec, egress, key.clone());
+        match drive(&self.io, &mut driver, step, DriveContext { principal: None, key: key.as_deref() }) {
+            DriveEnd::Done(Ok(payload)) => EffectResult::executed_with_value(effect.clone(), payload),
+            DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
+            DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
+            DriveEnd::NoBeaconHost => http_failure(
+                effect,
+                http_request::with_key(http_request::unavailable_payload("browser/beacon: no host answers beacons"), &key),
+            ),
         }
     }
 
@@ -4021,6 +4231,40 @@ impl RuntimeKernel {
                 }
             }
             _ => EffectResult::noop(effect.clone(), "not an on-device model effect"),
+        }
+    }
+
+    /// Run a `browser/tab-<op>` effect: the request is validated and the result shaped here, the host is asked
+    /// only for raw tab and page operations, each one a journaled ask on the shared driver loop.
+    fn run_browser_tab(&self, effect: &Effect) -> EffectResult {
+        use crate::{driver::{drive, DriveContext, DriveEnd}, tab::{refusal_payload, TabDriver}};
+        use orbital_core_base::tab_call::{parse_tab_call, WatchScope};
+        let Effect::BrowserTab { op, request, key, .. } = effect else {
+            return EffectResult::noop(effect.clone(), "not a browser tab effect");
+        };
+        let key = match key.as_ref().map(orbital_core_base::effect_types::call_key_text).transpose() {
+            Ok(key) => key.map(str::to_string),
+            Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
+        };
+        let failed = |payload: Value| {
+            let message = payload.get_path("error").map(Value::to_string_value).unwrap_or_default();
+            let mut result = EffectResult::failed(effect.clone(), &message);
+            result.return_value = Some(payload);
+            result
+        };
+        let (caller_orbital, caller_trait) = self.caller_position();
+        let inputs = self.external_inputs();
+        let scope = WatchScope { caller_orbital: caller_orbital.as_deref(), caller_trait: &caller_trait, inputs: &inputs };
+        let call = match parse_tab_call(*op, request, Some(&scope), key.as_deref()) {
+            Ok(call) => call,
+            Err(message) => return failed(refusal_payload(&message, key.as_deref())),
+        };
+        let (mut driver, step) = TabDriver::start(call);
+        match drive(&self.io, &mut driver, step, DriveContext { principal: None, key: key.as_deref() }) {
+            DriveEnd::Done(Ok(payload)) => EffectResult::executed_with_value(effect.clone(), payload),
+            DriveEnd::Done(Err(payload)) => failed(payload),
+            DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
+            DriveEnd::NoBeaconHost => EffectResult::failed(effect.clone(), "a browser tab call asked for a beacon"),
         }
     }
 
@@ -5015,8 +5259,29 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
+        Effect::Postgres { origin, sql, params, options, key, emit } => Effect::Postgres {
+            origin: ctx.resolve_value_checked(&origin)?.into_owned(),
+            sql: ctx.resolve_value_checked(&sql)?.into_owned(),
+            params: ctx.resolve_value_checked(&params)?.into_owned(),
+            options: ctx.resolve_value_checked(&options)?.into_owned(),
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
+            emit,
+        },
+        Effect::Redis { origin, command, options, key, emit } => Effect::Redis {
+            origin: ctx.resolve_value_checked(&origin)?.into_owned(),
+            command: ctx.resolve_value_checked(&command)?.into_owned(),
+            options: ctx.resolve_value_checked(&options)?.into_owned(),
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
+            emit,
+        },
         Effect::BrowserPageFacts { fields, key, emit } => Effect::BrowserPageFacts {
             fields: ctx.resolve_value_checked(&fields)?.into_owned(),
+            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
+            emit,
+        },
+        Effect::BrowserTab { op, request, key, emit } => Effect::BrowserTab {
+            op,
+            request: ctx.resolve_value_checked(&request)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
@@ -5038,7 +5303,10 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             emit,
         },
         Effect::CancelCall { key } => Effect::CancelCall {
-            key: resolve_key(&key, ctx),
+            key: match ctx.resolve_value_checked(&key)?.into_owned() {
+                list @ Value::Array(_) => list,
+                other => Value::String(other.to_string_value()),
+            },
         },
         Effect::Os { op, args, key, emit } => Effect::Os {
             op,
@@ -5060,6 +5328,11 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
         },
         Effect::CredentialForget { credential, emit } => Effect::CredentialForget {
             credential: ctx.resolve_value_checked(&credential)?.into_owned(),
+            emit,
+        },
+        Effect::CredentialAdmin { op, request, emit } => Effect::CredentialAdmin {
+            op,
+            request: ctx.resolve_value_checked(&request)?.into_owned(),
             emit,
         },
         Effect::OAuthAuthorize { client, options, key, emit } => Effect::OAuthAuthorize {
@@ -5198,12 +5471,6 @@ fn resolve_http_request(request: &Value, ctx: &BindingContext) -> Result<Value, 
     Ok(resolved)
 }
 
-fn resolve_key(key: &str, ctx: &BindingContext) -> String {
-    ctx.resolve_value(&Value::String(key.to_string()))
-        .into_owned()
-        .to_string_value()
-}
-
 /// The fields a `browser/page-facts` asks for: a non-empty, duplicate-free list of the closed words.
 fn page_fact_fields(value: &Value) -> Result<Vec<orbital_core_base::ir::effects::PageFactField>, String> {
     use orbital_core_base::ir::effects::PageFactField;
@@ -5298,25 +5565,45 @@ mod call_key_tests {
     #[test]
     fn cancel_call_key_resolves_from_the_entity_binding() {
         let effect = Effect::CancelCall {
-            key: "@entity.batchId".into(),
+            key: Value::String("@entity.batchId".into()),
         };
         let Ok(Effect::CancelCall { key }) = resolve_effect_bindings(effect, &ctx_with_batch())
         else {
             panic!("expected CancelCall");
         };
-        assert_eq!(key, "b-7");
+        assert_eq!(key, Value::String("b-7".into()));
+    }
+
+    #[test]
+    fn a_cancel_call_on_a_bound_list_resolves_to_the_list_and_a_list_literal_evaluates() {
+        let mut entity = ValueMap::new();
+        entity.insert("batchId".to_string(), Value::String("b-7".to_string()));
+        entity.insert("keys".to_string(), Value::Array(vec!["x".into(), "y".into()]));
+        let ctx = BindingContextBuilder::new().entity(Value::Object(entity)).build();
+        let bound = Effect::CancelCall { key: Value::String("@entity.keys".into()) };
+        let Ok(Effect::CancelCall { key }) = resolve_effect_bindings(bound, &ctx) else {
+            panic!("expected CancelCall");
+        };
+        assert_eq!(key, Value::Array(vec!["x".into(), "y".into()]));
+        let literal = Effect::CancelCall {
+            key: Value::Array(vec!["list".into(), "p".into(), "@entity.batchId".into()]),
+        };
+        let Ok(Effect::CancelCall { key }) = resolve_effect_bindings(literal, &ctx) else {
+            panic!("expected CancelCall");
+        };
+        assert_eq!(key, Value::Array(vec!["p".into(), "b-7".into()]));
     }
 
     #[test]
     fn a_literal_key_passes_through_unchanged() {
         let effect = Effect::CancelCall {
-            key: "fixed".into(),
+            key: Value::String("fixed".into()),
         };
         let Ok(Effect::CancelCall { key }) = resolve_effect_bindings(effect, &ctx_with_batch())
         else {
             panic!("expected CancelCall");
         };
-        assert_eq!(key, "fixed");
+        assert_eq!(key, Value::String("fixed".into()));
     }
 }
 
@@ -5407,15 +5694,19 @@ fn is_thrown_failure(result: &EffectResult) -> bool {
         | Effect::Emit { .. } => true,
         Effect::CallService { emit, .. }
         | Effect::Http { emit, .. }
+        | Effect::Redis { emit, .. }
+        | Effect::Postgres { emit, .. }
         | Effect::Custom { emit, .. }
         | Effect::BrowserPageFacts { emit, .. }
         | Effect::BrowserBeacon { emit, .. }
         | Effect::BrowserPrompt { emit, .. }
         | Effect::BrowserEmbed { emit, .. }
+        | Effect::BrowserTab { emit, .. }
         | Effect::RandomBytes { emit, .. }
         | Effect::Os { emit, .. }
         | Effect::CredentialStatus { emit, .. }
         | Effect::CredentialForget { emit, .. }
+        | Effect::CredentialAdmin { emit, .. }
         | Effect::OAuthAuthorize { emit, .. }
         | Effect::OAuthConnectionStatus { emit, .. }
         | Effect::OAuthConnectionForget { emit, .. } => !routed(emit),
@@ -5529,14 +5820,21 @@ fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<Effe
             }
             (event, Value::Object(payload))
         }
-        EffectOutcome::Failed => (emit.failure.clone()?, Value::Object(ValueMap::new())),
+        EffectOutcome::Failed => {
+            let mut payload = error_payload(result, None);
+            if let Value::Object(fields) = &mut payload {
+                fields.insert("code".to_string(), result.code.map_or(Value::Null, |c| Value::String(c.as_str().to_string())));
+            }
+            (emit.failure.clone()?, payload)
+        }
         EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
     };
     Some(EffectResult::executed(Effect::Emit { event, payload }))
 }
 
-/// A `persist`'s declared completion: `emit.failure` with `{ error }` when it failed
-/// (access denial, missing required column), `emit.success` when it ran, carrying the
+/// A `persist`'s declared completion: `emit.failure` with `{ error, code }` when it failed (access denial,
+/// missing required column; `code` is the store's `duplicate-id` / `not-found` / `no-row-key`, `null` for any
+/// other cause), `emit.success` when it ran, carrying the
 /// stored row for create/update and `{ id, deleted: true }` for delete (the JS runtime's
 /// payloads, `emit_contract::success_payload`). A delegated or no-op persist fires
 /// nothing here; the leg that runs it does.
@@ -5550,6 +5848,12 @@ fn persist_completion_emit(
             let mut payload = ValueMap::new();
             if let Some(err) = &result.error {
                 payload.insert("error".to_string(), Value::String(err.clone()));
+            }
+            payload.insert("code".to_string(), result.code.map_or(Value::Null, |c| Value::String(c.as_str().to_string())));
+            if matches!(effect, Effect::PersistBatch { .. }) {
+                let at = result.batch_failure;
+                payload.insert("index".to_string(), at.map_or(Value::Null, |f| Value::Number(f.index as f64)));
+                payload.insert("completedCount".to_string(), Value::Number(at.map_or(0, |f| f.completed_count) as f64));
             }
             (emit.failure.clone()?, Value::Object(payload))
         }
@@ -8329,6 +8633,20 @@ mod os_grants_tests {
         )
         .unwrap();
         assert!(k.os_grants().is_empty());
+    }
+
+    #[test]
+    fn a_redis_egress_entry_authorizes_the_driver_connect_and_a_program_with_neither_is_refused() {
+        use orbital_core_base::os_grants::NetKind;
+        let k = kernel();
+        k.register_schema(
+            serde_json::from_value(json!({ "name": "r", "egress": ["redis://cache.internal:6379"], "orbitals": [] })).unwrap(),
+        )
+        .unwrap();
+        assert!(k.os_grants().net_allows("cache.internal", 6379, NetKind::Tcp));
+        let bare = kernel();
+        bare.register_schema(serde_json::from_value(json!({ "name": "r", "orbitals": [] })).unwrap()).unwrap();
+        assert!(!bare.os_grants().net_allows("cache.internal", 6379, NetKind::Tcp));
     }
 
     #[test]

@@ -406,7 +406,8 @@ pub fn get_entity_rows(props: &Value, ctx: &RenderContext<'_>) -> Vec<Value> {
 /// row binding renders as the field's empty state rather than the raw token.
 fn get_path(v: &Value, path: &str) -> Option<Value> {
     let mut cur = v;
-    for seg in path.split('.') {
+    for seg in orbital_core_base::value::split_path(path) {
+        let seg = seg.as_ref();
         let (name, idx) = match seg.find('[') {
             Some(i) if seg.ends_with(']') => {
                 (&seg[..i], seg[i + 1..seg.len() - 1].parse::<usize>().ok())

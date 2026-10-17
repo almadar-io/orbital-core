@@ -667,11 +667,18 @@ impl EffectExecutor {
             Effect::Http { .. } => {
                 EffectResult::noop(effect.clone(), "http is run by the kernel, which owns its host I/O")
             }
+            Effect::Redis { .. } => {
+                EffectResult::noop(effect.clone(), "redis is run by the kernel, which owns its host I/O")
+            }
+            Effect::Postgres { .. } => {
+                EffectResult::noop(effect.clone(), "postgres is run by the kernel, which owns its host I/O")
+            }
             Effect::CancelCall { key } => self.do_cancel_call(key),
             Effect::RandomBytes { .. }
             | Effect::Os { .. }
             | Effect::CredentialStatus { .. }
             | Effect::CredentialForget { .. }
+            | Effect::CredentialAdmin { .. }
             | Effect::OAuthAuthorize { .. }
             | Effect::OAuthConnectionStatus { .. }
             | Effect::OAuthConnectionForget { .. } => {
@@ -680,7 +687,8 @@ impl EffectExecutor {
             Effect::BrowserPageFacts { .. }
             | Effect::BrowserBeacon { .. }
             | Effect::BrowserPrompt { .. }
-            | Effect::BrowserEmbed { .. } => {
+            | Effect::BrowserEmbed { .. }
+            | Effect::BrowserTab { .. } => {
                 EffectResult::noop(effect.clone(), "browser host effects are run by the kernel, which owns its host I/O")
             }
             Effect::RenderUi { slot, content } => self.do_render_ui(slot, content),
@@ -1034,12 +1042,10 @@ impl EffectExecutor {
         data: &Value,
         scope: &PersistScope,
         ctx: &BindingContext,
+        code: &mut Option<ServerEffectCode>,
     ) -> Result<(), String> {
         let missing = missing_required_fields(&scope.required_fields, data);
         if !missing.is_empty() {
-            // Distinct wording from `check_mutation_access`'s denial message
-            // (`is_access_denied_error` matches on " denied: the declared
-            // access policy for ") so this is never mis-bucketed as one.
             return Err(format!(
                 "persist create {entity_type}: required field(s) {} missing",
                 missing.join(", ")
@@ -1052,6 +1058,13 @@ impl EffectExecutor {
             ctx,
             entity_type,
         )
+        .map_err(|denied| Self::refused(denied, code))
+    }
+
+    /// An access policy refused a mutation: the failure is coded `denied` from the typed refusal.
+    fn refused(denied: crate::entity_access::AccessDenied, code: &mut Option<ServerEffectCode>) -> String {
+        *code = Some(ServerEffectCode::Denied);
+        denied.into_message()
     }
 
     /// What one write outcome means as a persist result. A guarded write must carry the pre-image it was
@@ -1092,9 +1105,12 @@ impl EffectExecutor {
                 *code = Some(ServerEffectCode::NotFound);
                 Err(format!("{entity_type} {entity_id} not found"))
             }
-            (RowWriteOutcome::Refused, _) => Err(format!(
-                "@{operation:?} denied: the declared access policy for `{entity_type}` rejected this row"
-            )),
+            (RowWriteOutcome::Refused, _) => {
+                *code = Some(ServerEffectCode::Denied);
+                Err(format!(
+                    "@{operation:?} denied: the declared access policy for `{entity_type}` rejected this row"
+                ))
+            }
             (RowWriteOutcome::Failed { message }, _) => Err(message),
             (RowWriteOutcome::RolledBack, _) => Err(format!(
                 "{entity_type}: the write was rolled back with its batch"
@@ -1239,7 +1255,8 @@ impl EffectExecutor {
                 update_policy.as_ref(),
                 ctx,
                 entity_type,
-            )?;
+            )
+            .map_err(|denied| Self::refused(denied, code))?;
         }
         let op = RowWriteOp::Upsert {
             entity_type: entity_type.to_string(),
@@ -1286,7 +1303,7 @@ impl EffectExecutor {
             let mut code: Option<ServerEffectCode> = None;
             let result = match operation {
                 PersistOperation::Create => {
-                    match Self::check_create(entity_type, resolved_data, &scope, ctx) {
+                    match Self::check_create(entity_type, resolved_data, &scope, ctx, &mut code) {
                         Err(denial) => Err(denial),
                         Ok(()) => self.create_row(
                             persistence.as_ref(),
@@ -1297,7 +1314,7 @@ impl EffectExecutor {
                     }
                 }
                 PersistOperation::Upsert => {
-                    match Self::check_create(entity_type, resolved_data, &scope, ctx) {
+                    match Self::check_create(entity_type, resolved_data, &scope, ctx, &mut code) {
                         Err(denial) => Err(denial),
                         Ok(()) => self.upsert_row(
                             persistence.as_ref(),
@@ -1343,7 +1360,8 @@ impl EffectExecutor {
                                     policy,
                                     ctx,
                                     entity_type,
-                                )?;
+                                )
+                                .map_err(|denied| Self::refused(denied, &mut code))?;
                             }
                             persistence.update(entity_type, &entity_id, resolved_data)
                         }),
@@ -1384,7 +1402,8 @@ impl EffectExecutor {
                                     policy,
                                     ctx,
                                     entity_type,
-                                )?;
+                                )
+                                .map_err(|denied| Self::refused(denied, &mut code))?;
                             }
                             persistence
                                 .delete(entity_type, &entity_id)
@@ -1450,8 +1469,9 @@ impl EffectExecutor {
                 {
                     return PersistPrep::Legacy;
                 }
-                if let Err(denial) = Self::check_create(entity_type, &data, &scope, ctx) {
-                    return refuse(effect, denial, None);
+                let mut refused_code = None;
+                if let Err(denial) = Self::check_create(entity_type, &data, &scope, ctx, &mut refused_code) {
+                    return refuse(effect, denial, refused_code);
                 }
                 let op = if operation == PersistOperation::Create {
                     RowWriteOp::Create {
@@ -1752,19 +1772,24 @@ impl EffectExecutor {
             id: b.row_id.clone(),
             emit: None,
         };
-        let batch_failure = |b: &BatchOp, detail: &str| {
-            EffectResult::failed(
+        let batch_failure = |k: usize, b: &BatchOp, detail: &str, code: Option<ServerEffectCode>| {
+            let failed = EffectResult::failed(
                 effect.clone(),
                 &format!(
                     "Batch operation [{}, {}] failed: {detail}",
                     b.action, b.entity
                 ),
             )
+            .with_batch_failure(k, k);
+            match code {
+                Some(code) => failed.with_code(code),
+                None => failed,
+            }
         };
 
         let mut prepared: Vec<PreparedWrite> = Vec::with_capacity(total);
         let mut pushable = true;
-        for b in parsed.iter().filter(|_| pushable) {
+        for (k, b) in parsed.iter().enumerate().filter(|_| pushable) {
             match self.prepare_push(
                 b.operation,
                 &b.entity,
@@ -1775,8 +1800,8 @@ impl EffectExecutor {
             ) {
                 PersistPrep::Push(p) => prepared.push(*p),
                 PersistPrep::Refused(refused) => {
-                    let detail = refused.error.unwrap_or_else(|| "not executed".to_string());
-                    return batch_failure(b, &detail);
+                    let detail = refused.error.clone().unwrap_or_else(|| "not executed".to_string());
+                    return batch_failure(k, b, &detail, refused.code);
                 }
                 PersistPrep::Legacy => {
                     pushable = false;
@@ -1797,15 +1822,15 @@ impl EffectExecutor {
                 }
                 Some(Ok(outcomes)) => {
                     let mut seen = 0;
-                    for ((b, p), outcome) in parsed.iter().zip(&prepared).zip(outcomes) {
+                    for (k, ((b, p), outcome)) in parsed.iter().zip(&prepared).zip(outcomes).enumerate() {
                         seen += 1;
                         if outcome == RowWriteOutcome::RolledBack {
                             continue;
                         }
                         let result = Self::finish_push(p, outcome);
                         if !result.is_executed() {
-                            let detail = result.error.unwrap_or_else(|| "not executed".to_string());
-                            return batch_failure(b, &detail);
+                            let detail = result.error.clone().unwrap_or_else(|| "not executed".to_string());
+                            return batch_failure(k, b, &detail, result.code);
                         }
                         completed.push(batch_entry(b, &result));
                     }
@@ -1840,7 +1865,7 @@ impl EffectExecutor {
                 op_effect(b),
             );
             if !result.is_executed() {
-                let detail = result.error.unwrap_or_else(|| "not executed".to_string());
+                let detail = result.error.clone().unwrap_or_else(|| "not executed".to_string());
                 if !applied.is_empty() {
                     warn!(
                         applied = applied.len(),
@@ -1877,7 +1902,7 @@ impl EffectExecutor {
                         }
                     }
                 }
-                return batch_failure(b, &detail);
+                return batch_failure(k, b, &detail, result.code);
             }
             let created = match (&result.return_value, b.operation) {
                 (Some(Value::Object(row)), PersistOperation::Create) => {
@@ -1892,6 +1917,12 @@ impl EffectExecutor {
     }
 
     #[allow(clippy::too_many_arguments)] // mirrors FetchHandler::fetch query params
+    /// A failed fetch. The fetch handler reports a refusal only as a message, so the failure carries no code but
+    /// the by-id miss's `not-found` (a typed fetch refusal is a contract gap, `G-FETCH-REFUSAL`).
+    fn fetch_failed(effect: Effect, error: &str) -> EffectResult {
+        EffectResult::failed(effect, error)
+    }
+
     fn do_fetch(
         &self,
         entity_type: &str,
@@ -1931,14 +1962,14 @@ impl EffectExecutor {
                 Ok(order) => order,
                 Err(e) => {
                     error!(entity_type = entity_type, error = %e, "Fetch effect failed");
-                    return EffectResult::failed(effect, &e);
+                    return Self::fetch_failed(effect, &e);
                 }
             };
             let (resolved_id, limit, offset) = match resolved {
                 Ok(v) => v,
                 Err(e) => {
                     error!(entity_type = entity_type, error = %e, "Fetch effect failed");
-                    return EffectResult::failed(effect, &e);
+                    return Self::fetch_failed(effect, &e);
                 }
             };
             let interpolated_filter = filter.map(|f| interpolate_filter_trait_refs(f, ctx));
@@ -1948,7 +1979,7 @@ impl EffectExecutor {
                         "{entity_type}: `deliver: ids` applies to a collection fetch with no `id` or `include`"
                     );
                     error!(entity_type = entity_type, error = %e, "Fetch effect failed");
-                    return EffectResult::failed(effect, &e);
+                    return Self::fetch_failed(effect, &e);
                 }
                 return match fetch_handler.fetch_row_set(
                     entity_type,
@@ -1970,7 +2001,7 @@ impl EffectExecutor {
                     }
                     Err(e) => {
                         error!(entity_type = entity_type, error = %e, "Fetch effect failed");
-                        EffectResult::failed(effect, &e)
+                        Self::fetch_failed(effect, &e)
                     }
                 };
             }
@@ -1992,7 +2023,7 @@ impl EffectExecutor {
                         "{entity_type} {} not found",
                         resolved_id.as_deref().unwrap_or_default()
                     );
-                    EffectResult::failed(effect, &e)
+                    EffectResult::failed(effect, &e).with_code(ServerEffectCode::NotFound)
                 }
                 Ok(FetchPage { rows, total }) => {
                     info!(
@@ -2005,7 +2036,7 @@ impl EffectExecutor {
                 }
                 Err(e) => {
                     error!(entity_type = entity_type, error = %e, "Fetch effect failed");
-                    EffectResult::failed(effect, &e)
+                    Self::fetch_failed(effect, &e)
                 }
             }
         } else {
@@ -2045,16 +2076,41 @@ impl EffectExecutor {
         }
     }
 
-    fn do_cancel_call(&self, key: &str) -> EffectResult {
-        let effect = Effect::CancelCall {
-            key: key.to_string(),
+    fn do_cancel_call(&self, key: &Value) -> EffectResult {
+        let effect = Effect::CancelCall { key: key.clone() };
+
+        let keys: Vec<&str> = match key {
+            Value::String(only) => vec![only.as_str()],
+            Value::Array(named) => {
+                let mut keys = Vec::with_capacity(named.len());
+                for each in named {
+                    match each {
+                        Value::String(text) => keys.push(text.as_str()),
+                        other => {
+                            return EffectResult::failed(
+                                effect,
+                                &format!("cancel-call: key resolved to {}", other.to_string_value()),
+                            )
+                        }
+                    }
+                }
+                keys
+            }
+            other => {
+                return EffectResult::failed(
+                    effect,
+                    &format!("cancel-call: key resolved to {}", other.to_string_value()),
+                )
+            }
         };
 
         if let Some(handler) = &self.service_handler {
-            match handler.cancel(key) {
-                Ok(()) => EffectResult::executed(effect),
-                Err(e) => EffectResult::failed(effect, &e),
+            for each in keys {
+                if let Err(e) = handler.cancel(each) {
+                    return EffectResult::failed(effect, &e);
+                }
             }
+            EffectResult::executed(effect)
         } else {
             EffectResult::noop(effect, "no service handler configured")
         }
@@ -2395,6 +2451,29 @@ mod tests {
             .execute(&effect, &BindingContext::new())
             .is_executed());
         assert_eq!(*svc.cancelled.lock(), vec!["batch-1".to_string()]);
+    }
+
+    #[test]
+    fn cancel_call_on_a_list_asks_the_service_handler_to_abort_each_key_in_order() {
+        let svc = Arc::new(RecordingService::default());
+        let executor = EffectExecutor::server().with_service_handler(svc.clone());
+        let effect = Effect::CancelCall {
+            key: Value::Array(vec!["a".into(), "b".into()]),
+        };
+        assert!(executor.execute(&effect, &BindingContext::new()).is_executed());
+        assert_eq!(*svc.cancelled.lock(), vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn cancel_call_on_a_list_with_a_non_string_member_fails_before_cancelling_any() {
+        let svc = Arc::new(RecordingService::default());
+        let executor = EffectExecutor::server().with_service_handler(svc.clone());
+        let effect = Effect::CancelCall {
+            key: Value::Array(vec!["a".into(), Value::Number(3.0)]),
+        };
+        let result = executor.execute(&effect, &BindingContext::new());
+        assert!(!result.is_executed(), "{result:?}");
+        assert!(svc.cancelled.lock().is_empty());
     }
 
     #[test]
@@ -2744,10 +2823,7 @@ mod tests {
             "a denied delete must be Failed, never Executed: {result:?}"
         );
         assert!(result.return_value.is_none());
-        assert!(result
-            .error
-            .as_deref()
-            .is_some_and(crate::entity_access::is_access_denied_error));
+        assert_eq!(result.code, Some(ServerEffectCode::Denied));
 
         // The row must genuinely survive — the denial is real, not cosmetic.
         assert!(persistence.read("Note", "note-1").is_ok());

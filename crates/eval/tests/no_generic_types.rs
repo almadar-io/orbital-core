@@ -138,7 +138,7 @@ fn the_service_contracts_declare_no_generic_type() {
             Some(Value::Object(o)) => !o.is_empty(),
             Some(_) => true,
         };
-        let shaped = has("properties") || has("items") || has("mapValue") || has("cyclic") || has("shapedBy");
+        let shaped = has("properties") || has("items") || has("mapValue") || has("cyclic");
         if let Some(Value::String(ty)) = map.get("type") {
             for arm in ty.split('|') {
                 let base = arm.trim().trim_end_matches("[]");

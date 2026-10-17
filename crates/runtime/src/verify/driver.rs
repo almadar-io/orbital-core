@@ -3,8 +3,9 @@
 //!
 //! The kernel is the executor under test; the planner's declared `to` is the oracle.
 
+use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::value::ValueMap;
-use crate::verify::frame::{Cause, EffectSummary, Frame, FrameStatus};
+use crate::verify::frame::{Cause, EffectSummary, FiredHop, Frame, FrameStatus, GapReason};
 use crate::planner::Variant;
 use crate::planner::{self, Step};
 use orbital_core_base::client_effect::ClientEffect;
@@ -17,9 +18,23 @@ use orbital_core_base::schema::types::{OrbitalSchema, TraitDefinition};
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::value::Value;
 use std::collections::BTreeMap;
+use crate::http_service::TransportError;
+use crate::process_result::ProcessEventResult;
+use crate::resumable::{drive_blocking, BlockingHost, IoAnswer, IoRequest};
 use std::sync::Arc;
 
 const ENTITY_ID: &str = "verify";
+
+/// What one fired event left behind: executed, new state, effects, deferred bindings and the arm the kernel
+/// selected among the `from --event-->` arms.
+type Fired = (bool, String, Vec<EffectSummary>, Vec<String>, Option<usize>, Vec<FiredHop>);
+
+/// What every credential read is answered with during a walk, so a request that needs one is built and recorded.
+const PLACEHOLDER_SECRET: &str = "verify-placeholder-secret";
+
+/// What every `http` request is answered with during a walk: verify has no network, so no reply exists and
+/// the program's declared `emit.failure` route runs.
+const NO_NETWORK: &str = "verify has no network";
 
 /// A registered schema + its in-memory entity store, ready to drive.
 pub struct Harness {
@@ -108,7 +123,13 @@ impl Harness {
         // payload (which references the identical id) has a real target instead of a
         // placeholder nothing was ever created for
         // (V-L1-SYNTHETIC-ID-INCOMPATIBLE-WITH-MUTATION-POLICY).
-        if let Some(entity) = &step.linked_entity {
+        // A self-identity entity's create makes the very row the seed would be (keyed by the viewer), so
+        // seeding it first would make the create a guaranteed duplicate.
+        let creates_own_row = |entity: &str| {
+            planner::is_self_identity(entity, &self.owner_fields)
+                && planner::created_only_entities(td, &step.event).iter().any(|e| e == entity)
+        };
+        if let Some(entity) = step.linked_entity.as_ref().filter(|e| !creates_own_row(e)) {
             let seed_id = self.effective_seed_id(entity);
             let mut row = ValueMap::new();
             row.insert("id".to_string(), Value::String(seed_id));
@@ -158,12 +179,12 @@ impl Harness {
         let state_before = self.current_state(&step.trait_name, &instance_id);
 
         // The step under test.
-        let (executed, state_after, effects, deferred_bindings) =
-            match self.fire(&step.trait_name, &instance_id, &step.event, &step.payload) {
+        let (executed, state_after, effects, deferred_bindings, fired_arm, fired) =
+            match self.fire_walked(&step.trait_name, &instance_id, &step.event, &step.payload) {
                 Ok(tuple) => tuple,
                 Err(e) => {
                     errors.push(format!("process_event: {e}"));
-                    (false, state_before.clone(), Vec::new(), Vec::new())
+                    (false, state_before.clone(), Vec::new(), Vec::new(), None, Vec::new())
                 }
             };
 
@@ -171,6 +192,9 @@ impl Harness {
 
         // A step is only conclusive if the preamble actually placed us in `from`.
         let status = if state_before != step.from {
+            FrameStatus::Inconclusive
+        } else if step.arm.is_some_and(|arm| !step.solved || fired_arm != Some(arm)) {
+            // The arm's guard could not be met by a payload, or an earlier arm took the payload first.
             FrameStatus::Inconclusive
         } else if step_passes(step, &state_before, &state_after, executed, &effects) {
             FrameStatus::Pass
@@ -195,7 +219,34 @@ impl Harness {
             entity_counts,
             deferred_bindings,
             status,
+            gap: None,
+            fired,
             errors,
+        }
+    }
+
+    /// A step that is never driven: the typed `gap` says why.
+    pub fn not_driven(&self, step: &Step, index: usize, ctx_payload: serde_json::Value, status: FrameStatus, gap: Option<GapReason>, state: &str) -> Frame {
+        Frame {
+            index,
+            cause: Cause {
+                trait_name: step.trait_name.clone(),
+                from: step.from.clone(),
+                event: step.event.clone(),
+                to: step.to.clone(),
+                variant: step.variant,
+            },
+            state_before: step.from.clone(),
+            state_after: state.to_string(),
+            executed: false,
+            payload: ctx_payload,
+            effects: Vec::new(),
+            entity_counts: BTreeMap::new(),
+            deferred_bindings: Vec::new(),
+            status,
+            gap,
+            fired: Vec::new(),
+            errors: Vec::new(),
         }
     }
 
@@ -205,23 +256,75 @@ impl Harness {
         instance_id: &str,
         event: &str,
         payload: &serde_json::Value,
-    ) -> Result<(bool, String, Vec<EffectSummary>, Vec<String>), String> {
+    ) -> Result<Fired, String> {
         let value: Value = serde_json::from_value(payload.clone()).unwrap_or(Value::Null);
         let result = self
             .kernel
             .process_event(trait_name, Some(instance_id), event, value)
             .map_err(|e| e.to_string())?;
+        Ok(Self::observe(trait_name, &result))
+    }
+
+    /// The step under test: a resumable dispatch whose host has no network. Storage reads and writes are
+    /// answered by the walk's entity store, every credential with [`PLACEHOLDER_SECRET`], and every `http`
+    /// request with a transport failure, so the request is built and issued, never answered with a reply.
+    fn fire_walked(
+        &self,
+        trait_name: &str,
+        instance_id: &str,
+        event: &str,
+        payload: &serde_json::Value,
+    ) -> Result<Fired, String> {
+        let value: Value = serde_json::from_value(payload.clone()).unwrap_or(Value::Null);
+        let progress = self
+            .kernel
+            .start_dispatch(trait_name, Some(instance_id), event, value, None, None)
+            .map_err(|e| e.to_string())?;
+        let store = BlockingHost { source: &*self.entities, service: None, substrate: None };
+        let outcomes = drive_blocking(&self.kernel, progress, &|request| match request {
+            IoRequest::Http { .. } | IoRequest::HttpStream { .. } => {
+                IoAnswer::Http(Err(TransportError::Failed(NO_NETWORK.to_string())))
+            }
+            IoRequest::Os { op: OsOp::TcpConnect, .. } => {
+                IoAnswer::Os(Err(OsError::new(OsErrorKind::Io, NO_NETWORK)))
+            }
+            IoRequest::Secret { .. } => IoAnswer::Secret(Ok(Some(PLACEHOLDER_SECRET.to_string()))),
+            other => store.answer(other),
+        })
+        .map_err(|e| e.to_string())?;
+        let mut outcomes = outcomes.into_iter();
+        let (_, result) = outcomes
+            .next()
+            .ok_or_else(|| "the dispatch produced no outcome".to_string())?;
+        let mut fired = Self::observe(trait_name, &result);
+        fired.5 = outcomes
+            .filter(|(_, hop)| hop.executed)
+            .map(|(trait_name, hop)| FiredHop {
+                trait_name,
+                from: hop.previous_state,
+                event: hop.event.unwrap_or_default(),
+                to: hop.new_state,
+                arm: hop.fired_arm,
+            })
+            .collect();
+        Ok(fired)
+    }
+
+    fn observe(
+        trait_name: &str,
+        result: &ProcessEventResult,
+    ) -> Fired {
         // Server-effect outcomes (persist/fetch failures) come from the kernel results.
         let effects = result.effect_results.iter().map(summarize_effect).collect();
         // Render-ui binding deferral is measured on the CANONICAL client response, whose
         // render-ui content has `@entity.*` resolved — so only genuinely client-owned
         // bindings (`@trait.*`) remain literal here, matching what the client actually sees.
-        let response = EventResponse::from_process_result(trait_name, &result);
+        let response = EventResponse::from_process_result(trait_name, result);
         let mut deferred = Vec::new();
         for effect in response.client_effects.iter().flatten() {
             collect_deferred(effect, &mut deferred);
         }
-        Ok((result.executed, result.new_state, effects, deferred))
+        (result.executed, result.new_state.clone(), effects, deferred, result.fired_arm, Vec::new())
     }
 
     fn current_state(&self, trait_name: &str, instance_id: &str) -> String {
@@ -266,13 +369,14 @@ fn step_passes(
     _executed: bool,
     effects: &[EffectSummary],
 ) -> bool {
-    let no_failed = !effects.iter().any(|e| e.outcome == "failed");
+    let no_failed = !effects.iter().any(|e| e.outcome == "failed" && e.routed.is_none());
     let reached_target = step.to_states.iter().any(|s| s == after);
-    no_failed && (reached_target || (step.guarded && after == before))
+    no_failed && (reached_target || (step.guarded && step.arm.is_none() && after == before))
 }
 
 fn summarize_effect(result: &EffectResult) -> EffectSummary {
     let (kind, target) = describe_effect(&result.effect);
+    let routed = result.routed_failure();
     let outcome = match &result.outcome {
         EffectOutcome::Executed => "executed",
         EffectOutcome::NoOp(_) => "noop",
@@ -285,6 +389,8 @@ fn summarize_effect(result: &EffectResult) -> EffectSummary {
         target,
         outcome,
         error: result.error.clone(),
+        denied: result.code == Some(orbital_core_base::bus_event::ServerEffectCode::Denied),
+        routed,
     }
 }
 
@@ -297,6 +403,9 @@ fn describe_effect(effect: &Effect) -> (String, String) {
         Effect::Set { path, .. } => ("set".into(), path.clone()),
         Effect::Navigate { path, .. } => ("navigate".into(), path.clone()),
         Effect::Log { message, .. } => ("log".into(), message.clone()),
+        Effect::Http { .. } => ("http".into(), effect.http_target().unwrap_or_default()),
+        Effect::Redis { origin, .. } => ("redis".into(), origin.to_string_value()),
+        Effect::Postgres { origin, .. } => ("postgres".into(), origin.to_string_value()),
         _ => ("other".into(), String::new()),
     }
 }

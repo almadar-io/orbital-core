@@ -122,6 +122,72 @@ pub const PAGE_FACTS_SHAPE: &[ShapeField] = &[
     field("screenWidth", "number"),
 ];
 
+/// `browser/tab-list` hands back the open tabs (`{ tab, url, title, active }` each) and the call's key.
+pub const TAB_LIST_SHAPE: &[ShapeField] = &[field("tabs", "array"), field("key", "string")];
+
+/// `browser/tab-open` hands back the new tab's number and the call's key.
+pub const TAB_OPEN_SHAPE: &[ShapeField] = &[field("tab", "number"), field("key", "string")];
+
+/// `browser/tab-close` hands back `closed` and the call's key.
+pub const TAB_CLOSE_SHAPE: &[ShapeField] = &[field("closed", "boolean"), field("key", "string")];
+
+/// `browser/tab-navigate` hands back the URL the tab was pointed at and the call's key.
+pub const TAB_NAVIGATE_SHAPE: &[ShapeField] = &[field("url", "string"), field("key", "string")];
+
+/// `browser/tab-query` hands back the tab and its elements (`{ elementId, fields }` each) and the call's key.
+pub const TAB_QUERY_SHAPE: &[ShapeField] =
+    &[field("tab", "number"), field("elements", "array"), field("key", "string")];
+
+/// `browser/tab-watch` hands back the watch's id and the call's key.
+pub const TAB_WATCH_SHAPE: &[ShapeField] = &[field("watchId", "string"), field("key", "string")];
+
+/// `browser/tab-unwatch` hands back whether the watch was kept and the call's key.
+pub const TAB_UNWATCH_SHAPE: &[ShapeField] = &[field("stopped", "boolean"), field("key", "string")];
+
+/// `browser/tab-apply` hands back whether the element took the treatment, where, and the call's key.
+pub const TAB_APPLY_SHAPE: &[ShapeField] = &[
+    field("applied", "boolean"),
+    field("tab", "number"),
+    field("elementId", "string"),
+    field("treatment", "string"),
+    field("key", "string"),
+];
+
+/// `browser/tab-apply-many` hands back the treated and the missing elements (`{ tab, elementId }` each) and the key.
+pub const TAB_APPLY_MANY_SHAPE: &[ShapeField] =
+    &[field("applied", "array"), field("missing", "array"), field("key", "string")];
+
+/// `browser/tab-act` hands back whether the interaction was done, where, and the call's key.
+pub const TAB_ACT_SHAPE: &[ShapeField] = &[
+    field("done", "boolean"),
+    field("tab", "number"),
+    field("elementId", "string"),
+    field("key", "string"),
+];
+
+/// A `browser/tab-*` failure: the message, its kind (`invalid`: the request was refused before any ask; `unavailable`:
+/// the host has no browser tabs; `not-ready`: the tab has no page script running; `not-found`: the element left the
+/// page; `failed`) and the call's key (`null` unkeyed).
+pub const TAB_FAILURE_SHAPE: &[ShapeField] =
+    &[field("error", "string"), field("kind", "string"), field("key", "string")];
+
+/// The success shape of a `browser/tab-<op>` effect.
+pub fn tab_success_shape(op: crate::tab::TabOp) -> &'static [ShapeField] {
+    use crate::tab::TabOp;
+    match op {
+        TabOp::List => TAB_LIST_SHAPE,
+        TabOp::Open => TAB_OPEN_SHAPE,
+        TabOp::Close => TAB_CLOSE_SHAPE,
+        TabOp::Navigate => TAB_NAVIGATE_SHAPE,
+        TabOp::Query => TAB_QUERY_SHAPE,
+        TabOp::Watch => TAB_WATCH_SHAPE,
+        TabOp::Unwatch => TAB_UNWATCH_SHAPE,
+        TabOp::Apply => TAB_APPLY_SHAPE,
+        TabOp::ApplyMany => TAB_APPLY_MANY_SHAPE,
+        TabOp::Act => TAB_ACT_SHAPE,
+    }
+}
+
 /// `browser/prompt` hands back the on-device model's reply text (JSON satisfying the schema the call gave) and the
 /// call's key (`null` unkeyed).
 pub const PROMPT_SHAPE: &[ShapeField] = &[field("reply", "string"), field("key", "string")];
@@ -168,11 +234,125 @@ pub const HTTP_STREAM_EVENT_SHAPE: &[ShapeField] = &[
     field("key", "string"),
 ];
 
+/// The field type of a redis reply: text, a number, `null`, or a list of those nested to [`REDIS_REPLY_DEPTH`]
+/// levels. A declared type fits when every union member is one of these.
+pub const REDIS_REPLY_TYPE: &str = "RespValue";
+
+/// The deepest list nesting a `redis` reply carries; a deeper reply fails the call.
+pub const REDIS_REPLY_DEPTH: usize = 3;
+
+/// `redis` hands back the server's reply and the call's key (`null` unkeyed).
+pub const REDIS_REPLY_SHAPE: &[ShapeField] = &[field("reply", REDIS_REPLY_TYPE), field("key", "string")];
+
+/// A `redis` failure: the message, its kind (`refused`, `unconfigured`, `timeout`, `failed`, `protocol`,
+/// `unsupported`, `redis`), the server's error code word for `redis` (`ERR`, `WRONGTYPE`, `NOAUTH`, ...; `null`
+/// for every other kind), the credential a missing one names and the call's key.
+pub const REDIS_FAILURE_SHAPE: &[ShapeField] = &[
+    field("error", "string"),
+    field("kind", "string"),
+    field("code", "string"),
+    field("credential", "string"),
+    field("key", "string"),
+];
+
+/// The deepest list nesting a `postgres` array column carries; a deeper array fails the call.
+pub const POSTGRES_ARRAY_DEPTH: usize = 3;
+
+/// `postgres` hands back the rows (one map of column name to value per row), the rows the command counted, the result
+/// columns in order and the call's key (`null` unkeyed).
+pub const POSTGRES_RESULT_SHAPE: &[ShapeField] = &[
+    field("rows", "array"),
+    field("rowCount", "number"),
+    field("columns", "array"),
+    field("key", "string"),
+];
+
+/// A `postgres` failure: the message, its kind (`refused`, `unconfigured`, `timeout`, `failed`, `protocol`,
+/// `unsupported`, `postgres`), the server's SQLSTATE for `postgres` (`null` for every other kind), the credential a
+/// missing one names and the call's key.
+pub const POSTGRES_FAILURE_SHAPE: &[ShapeField] = &[
+    field("error", "string"),
+    field("kind", "string"),
+    field("code", "string"),
+    field("credential", "string"),
+    field("key", "string"),
+];
+
+/// Whether a declared payload type fits [`REDIS_REPLY_TYPE`]: `RespValue`, `string`, `number`, `null`, a list of
+/// such, or a union of them (a trailing `?` adds `null`).
+pub fn redis_reply_accepts(declared: &str) -> bool {
+    fn member(text: &str, depth: usize) -> bool {
+        let text = text.trim();
+        if let Some(inner) = text.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+            return depth < REDIS_REPLY_DEPTH && union(inner, depth + 1);
+        }
+        let text = text.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')).unwrap_or(text);
+        if text.contains('|') {
+            return union(text, depth);
+        }
+        matches!(text.trim_end_matches('?').trim_end_matches('!'), "RespValue" | "string" | "number" | "int" | "float" | "null")
+    }
+    fn union(text: &str, depth: usize) -> bool {
+        let mut members = 0usize;
+        let mut level = 0usize;
+        let mut start = 0usize;
+        for (at, ch) in text.char_indices() {
+            match ch {
+                '[' | '(' => level += 1,
+                ']' | ')' => level = level.saturating_sub(1),
+                '|' if level == 0 => {
+                    if !member(&text[start..at], depth) {
+                        return false;
+                    }
+                    members += 1;
+                    start = at + 1;
+                }
+                _ => {}
+            }
+        }
+        members += 1;
+        member(&text[start..], depth) && members > 0
+    }
+    union(declared, 0)
+}
+
 /// `random-bytes` hands back the bytes as base64url without padding; a keyed call adds its `key`.
 pub const RANDOM_BYTES_SHAPE: &[ShapeField] = &[field("value", "string")];
 
 /// `credential-status` and `credential-forget` hand back whether the credential is connected.
 pub const CREDENTIAL_SHAPE: &[ShapeField] = &[field("connected", "boolean")];
+
+/// `credential-list`: the store's state, the integrations mode, each service's status and the masked inventory.
+pub const CREDENTIAL_LIST_SHAPE: &[ShapeField] =
+    &[field("enabled", "boolean"), field("mode", "string"), field("services", "array"), field("entries", "array")];
+
+/// `credential-set`: the masked tail of what was stored.
+pub const CREDENTIAL_SET_SHAPE: &[ShapeField] =
+    &[field("saved", "boolean"), field("service", "string"), field("envVar", "string"), field("last4", "string")];
+
+/// `credential-remove`: whether a stored row was deleted.
+pub const CREDENTIAL_REMOVE_SHAPE: &[ShapeField] = &[field("removed", "boolean")];
+
+/// `credential-test`: the presence check, never a live probe.
+pub const CREDENTIAL_TEST_SHAPE: &[ShapeField] = &[
+    field("service", "string"),
+    field("configured", "boolean"),
+    field("missing", "array"),
+    field("probed", "boolean"),
+    field("ok", "boolean"),
+    field("message", "string"),
+];
+
+/// `credential-mode`: the mode in force after the switch.
+pub const CREDENTIAL_MODE_SHAPE: &[ShapeField] = &[field("mode", "string")];
+
+/// `credential-rotate`: how many rows were re-encrypted, were already current, or could not be read.
+pub const CREDENTIAL_ROTATE_SHAPE: &[ShapeField] =
+    &[field("rotated", "number"), field("alreadyCurrent", "number"), field("unreadable", "number")];
+
+/// A credential administration failure: the message and its code (`AUTH_ERROR` for a refused role, `VALIDATION_ERROR`
+/// for a request outside its contract; `null` for any other cause).
+pub const CREDENTIAL_ADMIN_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
 
 /// `oauth-authorize` hands back the URL to send the user to and the state the callback returns.
 pub const OAUTH_AUTHORIZE_SHAPE: &[ShapeField] = &[field("authUrl", "string"), field("state", "string"), field("key", "string")];
@@ -235,6 +415,28 @@ pub const HOST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
 
 /// A keyed `call-service` failure: the message and the call's key.
 pub const KEYED_CALL_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("key", "string")];
+
+/// A `persist` failure: the message and the store's code (`duplicate-id`, `not-found`, `no-row-key`; `null` for
+/// any other cause, such as an access denial).
+pub const PERSIST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
+
+/// A `fetch` failure: the message and the code (`not-found` for a by-id miss; `null` for any other cause, until
+/// the read contract gains a typed refusal, `G-ORB-334`).
+pub const FETCH_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
+
+/// An agent-port or program-host failure: the message, and a program's validator issues when it has any.
+pub const SUBSTRATE_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("errors", "array")];
+
+/// A `persist batch` failure: the persist failure (message and the failing operation's store code, `null` for a cause
+/// that has none), the failing operation's position in the batch (`null` when no single operation is at fault, such
+/// as operations that do not evaluate) and the number of operations that completed before it (rolled back by a store
+/// that runs the batch atomically).
+pub const PERSIST_BATCH_FAILURE_SHAPE: &[ShapeField] = &[
+    field("error", "string"),
+    field("code", "string"),
+    field("index", "number"),
+    field("completedCount", "number"),
+];
 
 /// `persist batch` hands back a summary of the attempted operations.
 pub const PERSIST_BATCH_FIELDS: &[&str] = &["operations", "completedCount", "totalCount"];
@@ -380,6 +582,9 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
     if let Some(op) = OsOp::from_name(operator) {
         return os_contract(op).success;
     }
+    if let Some(op) = crate::tab::TabOp::from_name(operator) {
+        return ProducedPayload::Shape(tab_success_shape(op));
+    }
     match operator {
         "persist" => match variant {
             CallVariant::PersistAction("create" | "upsert" | "update") => ProducedPayload::EntityRow,
@@ -411,7 +616,15 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
         "browser/prompt" => ProducedPayload::Shape(PROMPT_SHAPE),
         "browser/embed" => ProducedPayload::Shape(EMBED_SHAPE),
         "random-bytes" => ProducedPayload::Shape(RANDOM_BYTES_SHAPE),
+        "redis" => ProducedPayload::Shape(REDIS_REPLY_SHAPE),
+        "postgres" => ProducedPayload::Shape(POSTGRES_RESULT_SHAPE),
         "credential-status" | "credential-forget" => ProducedPayload::Shape(CREDENTIAL_SHAPE),
+        "credential-list" => ProducedPayload::Shape(CREDENTIAL_LIST_SHAPE),
+        "credential-set" => ProducedPayload::Shape(CREDENTIAL_SET_SHAPE),
+        "credential-remove" => ProducedPayload::Shape(CREDENTIAL_REMOVE_SHAPE),
+        "credential-test" => ProducedPayload::Shape(CREDENTIAL_TEST_SHAPE),
+        "credential-mode" => ProducedPayload::Shape(CREDENTIAL_MODE_SHAPE),
+        "credential-rotate" => ProducedPayload::Shape(CREDENTIAL_ROTATE_SHAPE),
         "oauth-authorize" => ProducedPayload::Shape(OAUTH_AUTHORIZE_SHAPE),
         "oauth-connection-status" | "oauth-connection-forget" => ProducedPayload::Shape(OAUTH_CONNECTION_SHAPE),
         // `call-service` and `set` declare `any`; nothing to compare against.
@@ -422,17 +635,34 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
 /// What `operator` emits on `emit.failure`. `keyed` = the call site carries a
 /// `key`: only a keyed `call-service` failure has a known shape (`{ error, key }`);
 /// an unkeyed one stays opaque. `http` always echoes its key.
-pub fn failure_payload(operator: &str, keyed: bool) -> ProducedPayload {
+pub fn failure_payload(operator: &str, variant: CallVariant, keyed: bool) -> ProducedPayload {
     if OsOp::from_name(operator).is_some() {
         return ProducedPayload::Shape(OS_FAILURE_SHAPE);
     }
+    if crate::tab::TabOp::is_tab_effect(operator) {
+        return ProducedPayload::Shape(TAB_FAILURE_SHAPE);
+    }
     match operator {
         "http" | "browser/beacon" => ProducedPayload::Shape(HTTP_FAILURE_SHAPE),
+        "redis" => ProducedPayload::Shape(REDIS_FAILURE_SHAPE),
+        "postgres" => ProducedPayload::Shape(POSTGRES_FAILURE_SHAPE),
         "browser/prompt" | "browser/embed" => ProducedPayload::Shape(MODEL_FAILURE_SHAPE),
         "browser/page-facts" | "random-bytes" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
         "random-bytes" | "credential-status" | "credential-forget" | "browser/page-facts" => ProducedPayload::Shape(HOST_FAILURE_SHAPE),
+        "credential-list" | "credential-set" | "credential-remove" | "credential-test" | "credential-mode"
+        | "credential-rotate" => ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE),
         "oauth-authorize" => ProducedPayload::Shape(OAUTH_AUTHORIZE_FAILURE_SHAPE),
         "oauth-connection-status" | "oauth-connection-forget" => ProducedPayload::Shape(OAUTH_FAILURE_SHAPE),
+        "persist" => match variant {
+            CallVariant::PersistAction("batch") => ProducedPayload::Shape(PERSIST_BATCH_FAILURE_SHAPE),
+            _ => ProducedPayload::Shape(PERSIST_FAILURE_SHAPE),
+        },
+        "fetch" => ProducedPayload::Shape(FETCH_FAILURE_SHAPE),
+        _ if crate::agent_ports::is_agent_port_operator(operator)
+            || crate::language::registry::is_program_host_effect(operator) =>
+        {
+            ProducedPayload::Shape(SUBSTRATE_FAILURE_SHAPE)
+        }
         "call-service" | "call_service" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
         _ => ProducedPayload::Opaque,
     }
@@ -503,6 +733,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn redis_emits_its_reply_and_a_typed_failure() {
+        assert_eq!(success_payload("redis", CallVariant::Plain), ProducedPayload::Shape(REDIS_REPLY_SHAPE));
+        assert_eq!(failure_payload("redis", CallVariant::Plain, false), ProducedPayload::Shape(REDIS_FAILURE_SHAPE));
+        assert_eq!(failure_payload("redis", CallVariant::Plain, true), ProducedPayload::Shape(REDIS_FAILURE_SHAPE));
+        assert_eq!(undeclared_reads(&["reply", "key"], &success_payload("redis", CallVariant::Plain), &[]), Vec::<&str>::new());
+        assert_eq!(undeclared_reads(&["value"], &success_payload("redis", CallVariant::Plain), &[]), vec!["value"]);
+    }
+
+    #[test]
+    fn every_tab_effect_emits_its_shape_and_the_one_typed_failure() {
+        for op in crate::tab::TabOp::ALL {
+            let shape = tab_success_shape(op);
+            assert_eq!(success_payload(op.name(), CallVariant::Plain), ProducedPayload::Shape(shape), "{}", op.name());
+            assert!(shape.iter().any(|f| f.name == "key"), "{} echoes the key", op.name());
+            for keyed in [false, true] {
+                assert_eq!(failure_payload(op.name(), CallVariant::Plain, keyed), ProducedPayload::Shape(TAB_FAILURE_SHAPE));
+            }
+        }
+        assert_eq!(undeclared_reads(&["tab", "elements", "key"], &success_payload("browser/tab-query", CallVariant::Plain), &[]), Vec::<&str>::new());
+        assert_eq!(undeclared_reads(&["tabs"], &success_payload("browser/tab-query", CallVariant::Plain), &[]), vec!["tabs"]);
+        assert_eq!(success_payload("browser/tab-nope", CallVariant::Plain), ProducedPayload::Opaque);
+    }
+
+    #[test]
+    fn postgres_emits_its_result_and_a_typed_failure() {
+        assert_eq!(success_payload("postgres", CallVariant::Plain), ProducedPayload::Shape(POSTGRES_RESULT_SHAPE));
+        assert_eq!(failure_payload("postgres", CallVariant::Plain, true), ProducedPayload::Shape(POSTGRES_FAILURE_SHAPE));
+        assert_eq!(
+            undeclared_reads(&["rows", "rowCount", "columns"], &success_payload("postgres", CallVariant::Plain), &[]),
+            Vec::<&str>::new()
+        );
+        assert_eq!(undeclared_reads(&["reply"], &success_payload("postgres", CallVariant::Plain), &[]), vec!["reply"]);
+    }
+
+    #[test]
+    fn a_declared_type_fits_the_redis_reply_when_every_member_is_a_reply_member() {
+        for fits in [
+            "RespValue",
+            "string",
+            "number",
+            "string?",
+            "string | null",
+            "string | number | null",
+            "[string]",
+            "[string | null]",
+            "[[string]]",
+            "(string | number)",
+            "[string | [number | null]]",
+        ] {
+            assert!(redis_reply_accepts(fits), "{fits}");
+        }
+        for rejects in ["boolean", "object", "string | boolean", "[boolean]", "Row", "[[[[string]]]]", "Map string string", ""] {
+            assert!(!redis_reply_accepts(rejects), "{rejects}");
+        }
+    }
+
+    #[test]
     fn host_effects_emit_their_closed_payloads() {
         assert_eq!(
             success_payload("random-bytes", CallVariant::Plain),
@@ -510,10 +797,23 @@ mod tests {
         );
         for op in ["credential-status", "credential-forget"] {
             assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(CREDENTIAL_SHAPE));
-            assert_eq!(failure_payload(op, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
+            assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
         }
-        assert_eq!(failure_payload("random-bytes", false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
-        assert_eq!(failure_payload("random-bytes", true), ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE));
+        for (op, shape) in [
+            ("credential-list", CREDENTIAL_LIST_SHAPE),
+            ("credential-set", CREDENTIAL_SET_SHAPE),
+            ("credential-remove", CREDENTIAL_REMOVE_SHAPE),
+            ("credential-test", CREDENTIAL_TEST_SHAPE),
+            ("credential-mode", CREDENTIAL_MODE_SHAPE),
+            ("credential-rotate", CREDENTIAL_ROTATE_SHAPE),
+        ] {
+            assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(shape), "{op}");
+            assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE), "{op}");
+        }
+        assert_eq!(undeclared_reads(&["last4", "saved"], &success_payload("credential-set", CallVariant::Plain), &[]), Vec::<&str>::new());
+        assert_eq!(undeclared_reads(&["value"], &success_payload("credential-set", CallVariant::Plain), &[]), vec!["value"]);
+        assert_eq!(failure_payload("random-bytes", CallVariant::Plain, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
+        assert_eq!(failure_payload("random-bytes", CallVariant::Plain, true), ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE));
         assert_eq!(
             undeclared_reads(&["value", "bytes"], &success_payload("random-bytes", CallVariant::Plain), &[]),
             vec!["bytes"]
@@ -530,12 +830,12 @@ mod tests {
         assert_eq!(success_payload("browser/embed", CallVariant::Plain), ProducedPayload::Shape(EMBED_SHAPE));
         for keyed in [false, true] {
             for op in ["browser/prompt", "browser/embed"] {
-                assert_eq!(failure_payload(op, keyed), ProducedPayload::Shape(MODEL_FAILURE_SHAPE));
+                assert_eq!(failure_payload(op, CallVariant::Plain, keyed), ProducedPayload::Shape(MODEL_FAILURE_SHAPE));
             }
         }
         assert!(undeclared_reads(&["reply", "key"], &success_payload("browser/prompt", CallVariant::Plain), &[]).is_empty());
         assert_eq!(undeclared_reads(&["embeddings", "reply"], &success_payload("browser/embed", CallVariant::Plain), &[]), vec!["reply"]);
-        assert_eq!(undeclared_reads(&["kind", "status"], &failure_payload("browser/prompt", false), &[]), vec!["status"]);
+        assert_eq!(undeclared_reads(&["kind", "status"], &failure_payload("browser/prompt", CallVariant::Plain, false), &[]), vec!["status"]);
     }
 
     #[test]
@@ -638,8 +938,44 @@ mod tests {
     }
 
     #[test]
+    fn a_persist_failure_carries_the_message_and_the_store_code_and_nothing_else() {
+        let failure = failure_payload("persist", CallVariant::Plain, false);
+        assert_eq!(failure, ProducedPayload::Shape(PERSIST_FAILURE_SHAPE));
+        assert!(undeclared_reads(&["error", "code"], &failure, &[]).is_empty());
+        assert_eq!(undeclared_reads(&["entityType", "id"], &failure, &[]), vec!["entityType", "id"]);
+    }
+
+    #[test]
+    fn a_persist_batch_failure_names_the_failing_operation() {
+        let failure = failure_payload("persist", CallVariant::PersistAction("batch"), false);
+        assert_eq!(failure, ProducedPayload::Shape(PERSIST_BATCH_FAILURE_SHAPE));
+        assert!(undeclared_reads(&["error", "code", "index", "completedCount"], &failure, &[]).is_empty());
+        assert_eq!(undeclared_reads(&["totalCount"], &failure, &[]), vec!["totalCount"]);
+        assert_eq!(
+            failure_payload("persist", CallVariant::PersistAction("update"), false),
+            ProducedPayload::Shape(PERSIST_FAILURE_SHAPE),
+            "control: a single persist keeps the two-field failure"
+        );
+        assert_eq!(undeclared_reads(&["index"], &failure_payload("persist", CallVariant::Plain, false), &[]), vec!["index"]);
+    }
+
+    #[test]
+    fn a_fetch_failure_carries_no_payload_and_an_agent_port_failure_carries_error_and_errors() {
+        let fetch = failure_payload("fetch", CallVariant::Plain, false);
+        assert_eq!(fetch, ProducedPayload::Shape(FETCH_FAILURE_SHAPE));
+        assert_eq!(undeclared_reads(&["message", "requestId"], &fetch, &[]), vec!["message", "requestId"]);
+        assert!(undeclared_reads(&["error", "code"], &fetch, &[]).is_empty());
+        for op in crate::agent_ports::AGENT_PORT_OPERATORS.iter().copied().chain(["program/eval", "program/validate"]) {
+            let failure = failure_payload(op, CallVariant::Plain, false);
+            assert_eq!(failure, ProducedPayload::Shape(SUBSTRATE_FAILURE_SHAPE), "{op}");
+            assert!(undeclared_reads(&["error", "errors"], &failure, &[]).is_empty());
+            assert_eq!(undeclared_reads(&["message"], &failure, &[]), vec!["message"]);
+        }
+    }
+
+    #[test]
     fn http_failure_and_stream_events_echo_the_key() {
-        let failure = failure_payload("http", false);
+        let failure = failure_payload("http", CallVariant::Plain, false);
         assert_eq!(failure, ProducedPayload::Shape(HTTP_FAILURE_SHAPE));
         assert!(undeclared_reads(&["error", "kind", "credential", "key"], &failure, &[]).is_empty());
         assert_eq!(undeclared_reads(&["status"], &failure, &[]), vec!["status"]);
@@ -651,12 +987,12 @@ mod tests {
     #[test]
     fn a_keyed_call_service_failure_is_error_and_key_and_an_unkeyed_one_is_opaque() {
         assert_eq!(
-            failure_payload("call-service", true),
+            failure_payload("call-service", CallVariant::Plain, true),
             ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE)
         );
-        assert_eq!(failure_payload("call-service", false), ProducedPayload::Opaque);
+        assert_eq!(failure_payload("call-service", CallVariant::Plain, false), ProducedPayload::Opaque);
         assert_eq!(message_payload("call-service"), ProducedPayload::Opaque);
-        assert_eq!(failure_payload("fetch", true), ProducedPayload::Opaque);
+        assert_eq!(failure_payload("fetch", CallVariant::Plain, true), ProducedPayload::Shape(FETCH_FAILURE_SHAPE));
     }
 
     #[test]
@@ -678,9 +1014,9 @@ mod tests {
         let status = success_payload("oauth-connection-status", CallVariant::Plain);
         assert!(undeclared_reads(&["connected", "scope"], &status, &[]).is_empty());
         assert_eq!(
-            undeclared_reads(&["reason"], &failure_payload("oauth-authorize", false), &[]),
+            undeclared_reads(&["reason"], &failure_payload("oauth-authorize", CallVariant::Plain, false), &[]),
             Vec::<&str>::new()
         );
-        assert_eq!(undeclared_reads(&["token"], &failure_payload("oauth-authorize", false), &[]), vec!["token"]);
+        assert_eq!(undeclared_reads(&["token"], &failure_payload("oauth-authorize", CallVariant::Plain, false), &[]), vec!["token"]);
     }
 }

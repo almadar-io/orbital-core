@@ -22,6 +22,15 @@ pub enum Variant {
     Success,
 }
 
+/// Which route of an `http` effect an event is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyRoute {
+    /// `emit.success`, `emit.cancelled` or `emit.onMessage`.
+    Other,
+    /// `emit.failure`.
+    Failure,
+}
+
 /// A `--trait` name no trait in the program carries.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("unknown --trait {name:?} — available traits: {available}")]
@@ -48,6 +57,14 @@ pub struct Step {
     /// Any transition in the `(from, event)` group carries a guard. A guarded group that
     /// holds at `from` under a generic synthesized payload is *inconclusive*, not a failure.
     pub guarded: bool,
+    /// For a guarded group, the position of this step's arm among the `from --event-->` arms in
+    /// declaration order (the index the kernel reports as `fired_arm`); `None` for an unguarded group.
+    pub arm: Option<usize>,
+    /// The arm's guard was turned into a payload that satisfies it (always `true` when `arm` is `None`).
+    pub solved: bool,
+    /// The event is a declared reply route of an `http` effect: the step is never driven (the reply arrives
+    /// inside the request's own dispatch).
+    pub reply: Option<ReplyRoute>,
 }
 
 /// All inlined trait definitions in a resolved schema (post-`uses` resolution they are
@@ -168,6 +185,55 @@ pub fn effective_seed_id(
     match (owns_own_id, viewer_id) {
         (true, Some(id)) => id.to_string(),
         _ => seed_row_id(linked_entity),
+    }
+}
+
+/// The id a `persist create` of `entity` carries: never the seeded row's, or the store refuses the
+/// duplicate. A self-identity entity (its own `id` is a declared owner column) is created under the
+/// viewer's id, exactly as [`effective_seed_id`] derives it.
+pub fn new_row_id(entity: &str, owner_fields: &[(String, String)], viewer_id: Option<&str>) -> String {
+    let entity_key = entity.to_lowercase();
+    let owns_own_id = owner_fields.iter().any(|(e, field)| *e == entity_key && field == "id");
+    match (owns_own_id, viewer_id) {
+        (true, Some(id)) => id.to_string(),
+        _ => format!("{entity}-verify-new-1"),
+    }
+}
+
+/// Whether `entity`'s own `id` is a declared owner column: its rows are keyed by the viewer's id.
+pub fn is_self_identity(entity: &str, owner_fields: &[(String, String)]) -> bool {
+    let entity_key = entity.to_lowercase();
+    owner_fields.iter().any(|(e, field)| *e == entity_key && field == "id")
+}
+
+/// Entities `event` creates and never updates, deletes or upserts: the ones whose seeded row a create
+/// payload must not address.
+pub fn created_only_entities(td: &TraitDefinition, event: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    for t in td.state_machine.transitions.iter().filter(|t| t.event == event) {
+        for eff in t.effects.iter().flatten() {
+            collect_persist_targets(eff, &mut targets);
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    for (entity, _) in &targets {
+        let only_creates = targets
+            .iter()
+            .filter(|(e, _)| e == entity)
+            .all(|(_, o)| *o == PersistOperation::Create);
+        if only_creates && !out.contains(entity) {
+            out.push(entity.clone());
+        }
+    }
+    out
+}
+
+fn replace_id(value: &mut serde_json::Value, from: &str, to: &str) {
+    match value {
+        serde_json::Value::String(s) if s == from => *s = to.to_string(),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(|v| replace_id(v, from, to)),
+        serde_json::Value::Object(map) => map.values_mut().for_each(|v| replace_id(v, from, to)),
+        _ => {}
     }
 }
 
@@ -376,7 +442,13 @@ pub fn synth_payload(
         };
         obj.insert(f.name.clone(), value);
     }
-    serde_json::Value::Object(obj)
+    let mut payload = serde_json::Value::Object(obj);
+    for entity in created_only_entities(td, event) {
+        let seeded = effective_seed_id(&entity, ctx.owner_fields, ctx.viewer_id.as_deref());
+        let fresh = new_row_id(&entity, ctx.owner_fields, ctx.viewer_id.as_deref());
+        replace_id(&mut payload, &seeded, &fresh);
+    }
+    payload
 }
 
 /// A nested object contract built from every declared property (TS `buildMinimalPayload`),
@@ -485,39 +557,66 @@ pub fn plan_trait(
     use std::collections::BTreeMap;
     let initial = initial_state(td);
 
-    // (from, event) -> (ordered unique targets, any-guarded)
-    let mut groups: BTreeMap<(String, String), (Vec<String>, bool)> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String), Vec<&orbital_core_base::schema::types::TransitionDefinition>> =
+        BTreeMap::new();
     for t in &td.state_machine.transitions {
         for from in t.from.states() {
-            let entry = groups
-                .entry((from.to_string(), t.event.clone()))
-                .or_insert_with(|| (Vec::new(), false));
-            if !entry.0.contains(&t.to) {
-                entry.0.push(t.to.clone());
-            }
-            entry.1 = entry.1 || t.guard.is_some();
+            groups.entry((from.to_string(), t.event.clone())).or_default().push(t);
         }
     }
 
+    let reply_routes = http_reply_routes(ctx.schema);
     let mut steps = Vec::new();
-    for ((from, event), (to_states, guarded)) in groups {
+    for ((from, event), arms) in groups {
         let variant = if initial.as_deref() == Some(from.as_str()) {
             Variant::AutoInit
         } else {
             Variant::Success
         };
-        let payload = synth_payload(td, &event, ctx, seed_id);
-        steps.push(Step {
-            trait_name: td.name.clone(),
-            linked_entity: td.linked_entity.clone(),
-            from,
-            event,
-            to: to_states.first().cloned().unwrap_or_default(),
-            to_states,
-            variant,
-            payload,
-            guarded,
-        });
+        let mut to_states: Vec<String> = Vec::new();
+        for t in &arms {
+            if !to_states.contains(&t.to) {
+                to_states.push(t.to.clone());
+            }
+        }
+        let guarded = arms.iter().any(|t| t.guard.is_some());
+        let base = synth_payload(td, &event, ctx, seed_id);
+        // A guarded group is walked arm by arm, each with a payload its own guard accepts; an
+        // unguarded group stays one step.
+        let planned: Vec<(Option<usize>, bool, String, Vec<String>, serde_json::Value)> = if guarded {
+            arms.iter()
+                .enumerate()
+                .map(|(position, t)| {
+                    let conformed = t.guard.as_ref().map_or(Some(base.clone()), |guard| conform_payload(guard, &base));
+                    let solved = conformed.is_some();
+                    (
+                        Some(position),
+                        solved,
+                        t.to.clone(),
+                        vec![t.to.clone()],
+                        conformed.unwrap_or_else(|| base.clone()),
+                    )
+                })
+                .collect()
+        } else {
+            vec![(None, true, to_states.first().cloned().unwrap_or_default(), to_states.clone(), base)]
+        };
+        for (arm, solved, to, to_states, payload) in planned {
+            steps.push(Step {
+                trait_name: td.name.clone(),
+                linked_entity: td.linked_entity.clone(),
+                from: from.clone(),
+                event: event.clone(),
+                to,
+                to_states,
+                variant,
+                payload,
+                guarded,
+                arm,
+                solved,
+                reply: reply_routes.get(&(td.name.clone(), event.clone())).copied(),
+            });
+        }
     }
     // NOTE: the malformed-payload variant (empty `{}` must be rejected) is a SERVER/CLIENT-layer
     // concern — the bare kernel does not run the API payload validator — verified in Layer 2.
@@ -616,4 +715,213 @@ pub fn replay_path(
         }
     }
     None
+}
+
+/// `base` adjusted so `guard` holds over `@payload.*`, or `None` when the guard is not a combination
+/// of `and` / `or` / `not`, comparisons of a payload path with a literal and bare payload paths.
+fn conform_payload(guard: &SExpression, base: &serde_json::Value) -> Option<serde_json::Value> {
+    let mut payload = base.clone();
+    solve_guard(guard, true, &mut payload).then_some(payload)
+}
+
+fn solve_guard(expr: &SExpression, want: bool, payload: &mut serde_json::Value) -> bool {
+    match expr {
+        SExpression::String(path) => match payload_path(path) {
+            Some(path) => {
+                set_payload_path(payload, &path, serde_json::Value::Bool(want));
+                true
+            }
+            None => false,
+        },
+        SExpression::Array(items) => {
+            let Some((SExpression::String(op), args)) = items.split_first() else {
+                return false;
+            };
+            match op.as_str() {
+                "not" => matches!(args, [arg] if solve_guard(arg, !want, payload)),
+                "and" | "or" => {
+                    let all = (op == "and") == want;
+                    if all {
+                        !args.is_empty() && args.iter().all(|arg| solve_guard(arg, want, payload))
+                    } else {
+                        args.iter().any(|arg| {
+                            let mut attempt = payload.clone();
+                            let solved = solve_guard(arg, want, &mut attempt);
+                            if solved {
+                                *payload = attempt;
+                            }
+                            solved
+                        })
+                    }
+                }
+                "=" | "!=" | "<" | "<=" | ">" | ">=" => match args {
+                    [lhs, rhs] => solve_comparison(op, lhs, rhs, want, payload),
+                    _ => false,
+                },
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn payload_path(text: &str) -> Option<Vec<String>> {
+    let rest = text.strip_prefix("@payload.")?;
+    (!rest.is_empty()).then(|| rest.split('.').map(str::to_string).collect())
+}
+
+fn set_payload_path(payload: &mut serde_json::Value, path: &[String], value: serde_json::Value) {
+    let Some((head, tail)) = path.split_first() else {
+        return;
+    };
+    if !payload.is_object() {
+        *payload = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let Some(map) = payload.as_object_mut() else {
+        return;
+    };
+    if tail.is_empty() {
+        map.insert(head.clone(), value);
+    } else {
+        set_payload_path(map.entry(head.clone()).or_insert(serde_json::Value::Null), tail, value);
+    }
+}
+
+fn literal_json(expr: &SExpression) -> Option<serde_json::Value> {
+    match expr {
+        SExpression::Null => Some(serde_json::Value::Null),
+        SExpression::Bool(b) => Some(serde_json::Value::Bool(*b)),
+        SExpression::Number(n) => Some(number_json(*n)),
+        SExpression::String(s) if !s.starts_with('@') => Some(serde_json::Value::String(s.clone())),
+        _ => None,
+    }
+}
+
+fn number_json(n: f64) -> serde_json::Value {
+    if n.fract() == 0.0 && n.abs() < 9.0e15 {
+        serde_json::Value::from(n as i64)
+    } else {
+        serde_json::Number::from_f64(n).map_or(serde_json::Value::Null, serde_json::Value::Number)
+    }
+}
+
+/// Make `lhs op rhs` equal `want` by setting the one payload path among the operands to a value derived
+/// from the other operand's literal.
+fn solve_comparison(
+    op: &str,
+    lhs: &SExpression,
+    rhs: &SExpression,
+    want: bool,
+    payload: &mut serde_json::Value,
+) -> bool {
+    let (path, literal, flipped) = match (lhs, rhs) {
+        (SExpression::String(p), other) => match (payload_path(p), literal_json(other)) {
+            (Some(path), Some(literal)) => (path, literal, false),
+            _ => return false,
+        },
+        (other, SExpression::String(p)) => match (payload_path(p), literal_json(other)) {
+            (Some(path), Some(literal)) => (path, literal, true),
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let op = match (op, want) {
+        ("=", true) | ("!=", false) => "=",
+        ("=", false) | ("!=", true) => "!=",
+        ("<", true) | (">=", false) => "<",
+        ("<=", true) | (">", false) => "<=",
+        (">", true) | ("<=", false) => ">",
+        (">=", true) | ("<", false) => ">=",
+        _ => return false,
+    };
+    // `literal op path` reads as `path op' literal` with the direction reversed.
+    let op = if flipped {
+        match op {
+            "<" => ">",
+            "<=" => ">=",
+            ">" => "<",
+            ">=" => "<=",
+            same => same,
+        }
+    } else {
+        op
+    };
+    let value = match (&literal, op) {
+        (_, "=") => literal.clone(),
+        (_, "<=" | ">=") => literal.clone(),
+        (serde_json::Value::Number(n), "<") => number_json(n.as_f64().unwrap_or(0.0) - 1.0),
+        (serde_json::Value::Number(n), ">") => number_json(n.as_f64().unwrap_or(0.0) + 1.0),
+        (serde_json::Value::Number(n), "!=") => number_json(n.as_f64().unwrap_or(0.0) + 1.0),
+        (serde_json::Value::Bool(b), "!=") => serde_json::Value::Bool(!b),
+        (serde_json::Value::String(s), "!=") => serde_json::Value::String(format!("{s}-other")),
+        (serde_json::Value::Null, "!=") => serde_json::Value::Bool(true),
+        _ => return false,
+    };
+    set_payload_path(payload, &path, value);
+    true
+}
+
+/// The `(trait, event)` pairs that are a declared reply route of an `http` effect, with which kind.
+///
+/// An `emit` is delivered by the kernel (`step_followups` / `emit_followup`) to the emitting trait itself
+/// (its own arm for the event) and to every trait whose `listens` entry names the event and accepts the
+/// emitter as its source, under that entry's `triggers` event. A same-named event on any other trait is an
+/// ordinary event. An event that is the failure route of one effect and a success-side route of another
+/// is a success-side route.
+pub fn http_reply_routes(
+    schema: &OrbitalSchema,
+) -> std::collections::BTreeMap<(String, String), ReplyRoute> {
+    use orbital_core_base::schema::types::{split_event_address, ListenSource};
+    let traits = inline_traits(schema);
+    let mut routes = std::collections::BTreeMap::new();
+    for emitter in &traits {
+        let mut declared = std::collections::BTreeMap::new();
+        for t in &emitter.state_machine.transitions {
+            for eff in t.effects.iter().flatten() {
+                collect_http_routes(eff, &mut declared);
+            }
+        }
+        for (event, route) in declared {
+            let mut deliver = |trait_name: &str, delivered: &str| {
+                let slot = routes.entry((trait_name.to_string(), delivered.to_string())).or_insert(route);
+                if route == ReplyRoute::Other {
+                    *slot = ReplyRoute::Other;
+                }
+            };
+            deliver(&emitter.name, &event);
+            for listener in &traits {
+                for l in listener.listens.iter().flatten() {
+                    let (bare, addressed) = match &l.source {
+                        Some(source) => (l.event.clone(), Some(source.clone())),
+                        None => split_event_address(&l.event),
+                    };
+                    let accepts = match &addressed {
+                        None | Some(ListenSource::Any) => true,
+                        Some(ListenSource::Trait { trait_name, .. })
+                        | Some(ListenSource::Orbital { trait_name, .. }) => *trait_name == emitter.name,
+                    };
+                    if bare == event && accepts {
+                        deliver(&listener.name, l.triggers.as_deref().unwrap_or(&bare));
+                    }
+                }
+            }
+        }
+    }
+    routes
+}
+
+fn collect_http_routes(expr: &SExpression, out: &mut std::collections::BTreeMap<String, ReplyRoute>) {
+    if let Some(Effect::Http { emit: Some(emit), .. } | Effect::Redis { emit: Some(emit), .. } | Effect::Postgres { emit: Some(emit), .. }) = parse_effect(expr) {
+        for event in [&emit.success, &emit.cancelled, &emit.on_message].into_iter().flatten() {
+            out.insert(event.clone(), ReplyRoute::Other);
+        }
+        if let Some(event) = &emit.failure {
+            out.entry(event.clone()).or_insert(ReplyRoute::Failure);
+        }
+    }
+    if let SExpression::Array(items) = expr {
+        for item in items {
+            collect_http_routes(item, out);
+        }
+    }
 }

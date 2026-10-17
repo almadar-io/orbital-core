@@ -103,3 +103,80 @@ fn an_id_less_create_mints_a_distinct_id_each_time() {
     );
     assert_ne!(ids[0], ids[1]);
 }
+
+#[test]
+fn a_create_on_a_taken_id_fires_failure_with_the_duplicate_id_code() {
+    let k = kernel();
+    send(&k, "CREATE");
+    let out = send(&k, "CREATE");
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0].0, "SAVE_FAILED");
+    assert_eq!(out[0].1["code"], json!("duplicate-id"), "{out:?}");
+    assert!(out[0].1["error"].as_str().is_some_and(|e| e.contains("already exists")), "{out:?}");
+}
+
+#[test]
+fn an_update_of_an_absent_row_fires_failure_with_the_not_found_code() {
+    let out = send(&kernel(), "UPDATE");
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0].0, "SAVE_FAILED");
+    assert_eq!(out[0].1["code"], json!("not-found"), "{out:?}");
+}
+
+#[test]
+fn control_a_success_payload_carries_no_code_field() {
+    let out = send(&kernel(), "CREATE");
+    assert!(out[0].1.get("code").is_none(), "{out:?}");
+}
+
+fn guarded_kernel() -> RuntimeKernel {
+    let emit = json!({ "emit": { "success": "SAVED", "failure": "SAVE_FAILED" } });
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "persist-guarded",
+        "orbitals": [{
+            "name": "Main",
+            "entity": {
+                "name": "Note", "persistence": "persistent", "collection": "notes",
+                "create_policy": ["=", "@entity.title", "allowed"],
+                "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }]
+            },
+            "traits": [{
+                "name": "Notes", "linkedEntity": "Note",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        arm("CREATE_OK", json!([["persist", "create", "Note", { "id": "n1", "title": "allowed" }, emit]])),
+                        arm("CREATE_REFUSED", json!([["persist", "create", "Note", { "id": "n2", "title": "nope" }, emit]]))
+                    ]
+                }
+            }]
+        }]
+    }))
+    .unwrap();
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(schema).unwrap();
+    k
+}
+
+#[test]
+fn a_persist_refused_by_its_policy_fires_failure_with_the_denied_code_from_the_typed_refusal() {
+    let k = guarded_kernel();
+    let out = send(&k, "CREATE_REFUSED");
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0].0, "SAVE_FAILED");
+    assert_eq!(out[0].1["code"], json!("denied"), "{out:?}");
+    let outcomes = k.dispatch("Notes", None, "CREATE_REFUSED", Value::Null).unwrap();
+    let persist = outcomes[0].1.effect_results.iter().find(|r| matches!(r.effect, Effect::Persist { .. })).unwrap();
+    assert_eq!(persist.code, Some(orbital_core_base::bus_event::ServerEffectCode::Denied));
+}
+
+#[test]
+fn control_a_policy_that_admits_the_row_carries_no_code() {
+    let out = send(&guarded_kernel(), "CREATE_OK");
+    assert_eq!(out[0].0, "SAVED");
+    assert!(out[0].1.get("code").is_none(), "{out:?}");
+}

@@ -28,6 +28,30 @@ pub enum FrameStatus {
     Pass,
     Fail,
     Inconclusive,
+    /// The step is not driven: the transition cannot be reached in this walk, for the typed [`GapReason`] on
+    /// the frame. Counted apart from passes and failures.
+    Gap,
+}
+
+/// Why a [`FrameStatus::Gap`] step was not driven.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GapReason {
+    /// The step's event is the reply route (`emit.success`, `cancelled`, `onMessage`, or a failure no
+    /// dispatch delivered) of an `http` effect. In real semantics the reply arrives inside the request's own
+    /// dispatch, and the walk has no network to produce one.
+    NotReachableWithoutNetwork,
+}
+
+/// A transition a dispatch fired after its seed (a cascaded emit or listener).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FiredHop {
+    pub trait_name: String,
+    pub from: String,
+    pub event: String,
+    pub to: String,
+    /// Position of the arm among the state's `from --event-->` arms.
+    pub arm: Option<usize>,
 }
 
 /// One effect observed in the kernel's response, flattened to serializable facts.
@@ -40,6 +64,12 @@ pub struct EffectSummary {
     /// `executed` | `noop` | `delegated` | `failed`.
     pub outcome: String,
     pub error: Option<String>,
+    /// The effect failed because an access policy refused it (`ServerEffectCode::Denied`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub denied: bool,
+    /// An `http` effect that failed: the declared `emit.failure` event the program routed that failure to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed: Option<String>,
 }
 
 /// One driven step.
@@ -60,5 +90,11 @@ pub struct Frame {
     /// resolve and enforce**; recorded here so they are visible and counted, never ignored.
     pub deferred_bindings: Vec<String>,
     pub status: FrameStatus,
+    /// Set exactly when `status` is [`FrameStatus::Gap`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap: Option<GapReason>,
+    /// Transitions the step's dispatch fired after the seed, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fired: Vec<FiredHop>,
     pub errors: Vec<String>,
 }

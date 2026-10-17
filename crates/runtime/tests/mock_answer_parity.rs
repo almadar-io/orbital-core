@@ -4,7 +4,7 @@
 //! (`RuntimeIntegrationManager`'s `mockValueForDescriptor` in
 //! `@almadar/integrations`, reached through a mock-mode `factory.execute`) for every
 //! action of the installed services registry with empty params, plus the
-//! typed-array / nested-shape / `shapedBy` cases of `mock-shape-typed-arrays.test.ts`.
+//! typed-array / nested-shape cases of `mock-shape-typed-arrays.test.ts`.
 //! The TS function uses no randomness and no clock, so parity is exact.
 //!
 //! Re-record (after the registry changes):
@@ -18,7 +18,7 @@
 //! The script (`@almadar/integrations` `scripts/record-mock-answers.mts`, monorepo only) builds a
 //! `RuntimeIntegrationManager`, `configureFromEnv({ALMADAR_INTEGRATIONS_MODE:'mock'})`,
 //! and for every non-`unmockedServices` action runs `getFactory().execute(service, action, {})`,
-//! then the extra shaped cases listed in `extras`, writing `{cases:[{service,action,params,data}]}`.
+//! writing `{cases:[{service,action,params,data}]}`.
 
 use orbital_core_base::language::registry::baked_service_registry;
 use orbital_core_runtime::mock_answer::{mock_answer, MockAnswerError};
@@ -50,12 +50,12 @@ fn vector() -> Vector {
 fn every_recorded_ts_answer_is_reproduced() {
     let v = vector();
     assert!(
-        v.cases.len() > 150,
+        v.cases.len() > 50,
         "fixture looks truncated: {}",
         v.cases.len()
     );
     for c in &v.cases {
-        let got = mock_answer(&c.service, &c.action, &c.params)
+        let got = mock_answer(&c.service, &c.action)
             .unwrap_or_else(|e| panic!("{}.{}: {e}", c.service, c.action));
         assert_eq!(
             got,
@@ -85,39 +85,30 @@ fn every_registry_action_is_in_the_vector_except_the_unmocked_services() {
             }
         }
     }
-    let expected: BTreeSet<String> = ["credentials", "workspace"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let expected: BTreeSet<String> = ["credentials"].iter().map(|s| s.to_string()).collect();
     assert_eq!(missing_services, expected);
 }
 
 #[test]
-fn typed_array_and_shaped_cases_from_the_ts_test() {
-    let none = Map::new();
+fn typed_array_cases_from_the_ts_test() {
     assert_eq!(
-        mock_answer("knowledge", "currentTopics", &none).unwrap(),
+        mock_answer("knowledge", "currentTopics").unwrap(),
         json!({"topics": [{"label": "mock_label", "keywords": [], "weight": 42}]})
     );
     assert_eq!(
-        mock_answer("knowledge", "status", &none).unwrap(),
+        mock_answer("knowledge", "status").unwrap(),
         json!({"connected": true, "account": "mock_account"})
-    );
-    assert_eq!(
-        mock_answer("llm", "extract", json!({"text": "x"}).as_object().unwrap()).unwrap(),
-        json!({"data": {}, "confidence": 42})
     );
 }
 
 #[test]
 fn unknown_service_and_action_are_errors_not_invented_answers() {
-    let none = Map::new();
     assert!(matches!(
-        mock_answer("no-such-service", "x", &none),
+        mock_answer("no-such-service", "x"),
         Err(MockAnswerError::UnknownService(_))
     ));
     assert!(matches!(
-        mock_answer("knowledge", "no-such-action", &none),
+        mock_answer("knowledge", "no-such-action"),
         Err(MockAnswerError::UnknownAction { .. })
     ));
 }

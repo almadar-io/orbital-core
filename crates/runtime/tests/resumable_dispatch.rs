@@ -381,7 +381,7 @@ fn completion(effect: Json) -> Setup {
 }
 
 fn service_call(fail: bool) -> Setup {
-    let mut setup = completion(json!(["call-service", "webhook", "send", { "texts": ["a"] }]));
+    let mut setup = completion(json!(["call-service", "test-svc", "run", { "texts": ["a"] }]));
     setup.service = Some(Arc::new(Llm { fail }));
     setup
 }
@@ -1414,6 +1414,7 @@ fn the_wire_round_trips_every_request_and_answer() {
                 orbital: Some("O".into()),
                 trait_name: "T".into(),
                 follow_on: true,
+                entity_id: "singleton".to_string(),
                 emit: CallRoutes {
                     success: Some("S".into()),
                     failure: None,
@@ -1434,6 +1435,7 @@ fn the_wire_round_trips_every_request_and_answer() {
                 orbital: Some("Src".into()),
                 trait_name: "Sender".into(),
                 follow_on: false,
+                entity_id: "singleton".to_string(),
                 emit: CallRoutes::default(),
             },
         },
@@ -1801,6 +1803,25 @@ fn a_key_used_twice_in_one_step_is_a_visible_failure_of_the_second_call() {
 }
 
 #[test]
+fn a_key_used_twice_in_one_step_fails_the_second_call_on_the_blocking_path_too() {
+    let setup = fan_out(
+        vec![call_effect("same", 1, "P1"), call_effect("same", 2, "P2")],
+        &["P1", "P2"],
+    );
+    let text = blocking_run(&setup).0[0].to_string();
+    assert!(
+        text.contains("already used by another call in this step"),
+        "{text}"
+    );
+    assert!(text.contains("P1_OK") && text.contains("P2_BAD"), "{text}");
+    let control = blocking_run(&three_overlapped()).0[0].to_string();
+    assert!(
+        !control.contains("already used by another call"),
+        "control: distinct keys"
+    );
+}
+
+#[test]
 fn cancelling_a_pending_call_of_the_step_removes_only_that_request_and_asks_nothing() {
     let setup = fan_out(
         vec![
@@ -1853,6 +1874,51 @@ fn control_cancelling_a_call_the_step_did_not_issue_is_an_ask_of_its_own_after_t
     assert_eq!(later, vec![Some("cancel:elsewhere".to_string())]);
     let text = flown.trace.to_string();
     assert!(text.contains("KA_OK") && text.contains("KB_OK"), "{text}");
+}
+
+#[test]
+fn cancelling_a_list_withdraws_the_pending_calls_it_names_and_asks_for_the_rest() {
+    let setup = fan_out(
+        vec![
+            call_effect("ka", 1, "KA"),
+            call_effect("kb", 2, "KB"),
+            json!(["cancel-call", ["list", "ka", "elsewhere"]]),
+        ],
+        &["KA", "KB"],
+    );
+    let flown = fly_ordered(&setup, &[]);
+    let keys: Vec<Option<String>> = flown.call_batch().iter().map(key_of).collect();
+    assert_eq!(keys, vec![Some("kb".to_string())], "ka was withdrawn before it was asked");
+    let later: Vec<Option<String>> = flown
+        .batches
+        .iter()
+        .skip_while(|batch| !batch.iter().any(is_call))
+        .skip(1)
+        .flatten()
+        .filter_map(|r| matches!(r, IoRequest::CancelCall { .. }).then(|| key_of(r)))
+        .collect();
+    assert_eq!(later, vec![Some("cancel:elsewhere".to_string())]);
+    let text = flown.trace.to_string();
+    assert!(text.contains("\"event\":\"KB_OK\"") && !text.contains("\"event\":\"KA_OK\""), "{text}");
+}
+
+#[test]
+fn control_a_list_naming_no_pending_call_asks_each_key_in_order() {
+    let setup = fan_out(
+        vec![
+            call_effect("ka", 1, "KA"),
+            json!(["cancel-call", ["list", "x", "y"]]),
+        ],
+        &["KA"],
+    );
+    let flown = fly_ordered(&setup, &[]);
+    let asked: Vec<Option<String>> = flown
+        .batches
+        .iter()
+        .flatten()
+        .filter_map(|r| matches!(r, IoRequest::CancelCall { .. }).then(|| key_of(r)))
+        .collect();
+    assert_eq!(asked, vec![Some("cancel:x".to_string()), Some("cancel:y".to_string())]);
 }
 
 #[test]

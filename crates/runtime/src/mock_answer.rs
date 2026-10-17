@@ -5,7 +5,7 @@
 //! registry declares for it, so every host (playground mock mode, `orb verify`
 //! fixtures, native previews, `orbital-integrations` mock mode) answers a service
 //! call with the same value. No randomness and no clock: the value is a function of
-//! the registry shape and, for a `shapedBy` field, of the request param it names.
+//! the registry shape.
 //! Parity with the TS function is pinned by `tests/mock_answer_parity.rs`.
 
 use orbital_core_base::language_data::language_data;
@@ -104,11 +104,7 @@ fn shapes() -> Result<&'static Shapes, MockAnswerError> {
 
 /// The mock answer for one `service.action` call: the registry-shaped value, or
 /// `{success: true, _mock: true, _action}` for an action that declares no shape.
-pub fn mock_answer(
-    service: &str,
-    action: &str,
-    params: &Map<String, Value>,
-) -> Result<Value, MockAnswerError> {
+pub fn mock_answer(service: &str, action: &str) -> Result<Value, MockAnswerError> {
     let actions = shapes()?
         .get(service)
         .ok_or_else(|| MockAnswerError::UnknownService(service.to_string()))?;
@@ -128,47 +124,10 @@ pub fn mock_answer(
     };
     let mut data = Map::new();
     for (key, descriptor) in shape {
-        let value =
-            mock_value_for_descriptor(key, descriptor, params).ok_or_else(|| malformed(key))?;
+        let value = mock_value_for_descriptor(key, descriptor).ok_or_else(|| malformed(key))?;
         data.insert(key.clone(), value);
     }
     Ok(Value::Object(data))
-}
-
-/// A mock value for a JSON-schema node (what a `shapedBy` param declares). `None` is an absent param.
-pub fn mock_from_json_schema(key: &str, schema: Option<&Value>) -> Value {
-    let Some(schema) = schema.and_then(Value::as_object) else {
-        return json!({});
-    };
-    if let Some(Value::String(first)) = schema
-        .get("enum")
-        .and_then(Value::as_array)
-        .and_then(|a| a.first())
-    {
-        return Value::String(first.clone());
-    }
-    match schema.get("type").and_then(Value::as_str) {
-        Some("object") => {
-            let mut obj = Map::new();
-            if let Some(Value::Object(props)) = schema.get("properties") {
-                for (k, s) in props {
-                    obj.insert(k.clone(), mock_from_json_schema(k, Some(s)));
-                }
-            }
-            Value::Object(obj)
-        }
-        Some("array") => match schema.get("items") {
-            None => json!([]),
-            Some(items) => Value::Array(vec![mock_from_json_schema(
-                &format!("{key}Item"),
-                Some(items),
-            )]),
-        },
-        Some("string") => Value::String(format!("mock_{key}")),
-        Some("number") | Some("integer") => json!(42),
-        Some("boolean") => json!(true),
-        _ => json!({}),
-    }
 }
 
 fn truthy(v: &Value) -> bool {
@@ -181,27 +140,12 @@ fn truthy(v: &Value) -> bool {
     }
 }
 
-/// A mock value for one `responseShape` field. `params` shapes only a top-level `shapedBy`
-/// field, as in TS (a nested descriptor is mocked without the request). `None` means the
-/// descriptor is not a shape (no string `type`, `properties` not an object).
-pub fn mock_value_for_descriptor(
-    key: &str,
-    descriptor: &Value,
-    params: &Map<String, Value>,
-) -> Option<Value> {
-    mock_value(key, descriptor, Some(params))
-}
-
-fn mock_value(key: &str, descriptor: &Value, params: Option<&Map<String, Value>>) -> Option<Value> {
+/// A mock value for one `responseShape` field. `None` means the descriptor is not a shape
+/// (no string `type`, `properties` not an object).
+pub fn mock_value_for_descriptor(key: &str, descriptor: &Value) -> Option<Value> {
     match descriptor {
         Value::String(s) => Some(flat(key, s)),
         Value::Object(d) => {
-            if let Some(shaped_by) = d.get("shapedBy").and_then(Value::as_str) {
-                return Some(mock_from_json_schema(
-                    key,
-                    params.and_then(|p| p.get(shaped_by)),
-                ));
-            }
             let ty = d.get("type").and_then(Value::as_str)?;
             let (items, properties, map_value) =
                 (d.get("items"), d.get("properties"), d.get("mapValue"));
@@ -210,10 +154,9 @@ fn mock_value(key: &str, descriptor: &Value, params: Option<&Map<String, Value>>
             }
             if ty == "array" || ty.ends_with("[]") {
                 return match items.filter(|i| truthy(i)) {
-                    Some(i) => Some(Value::Array(vec![mock_value(
+                    Some(i) => Some(Value::Array(vec![mock_value_for_descriptor(
                         &format!("{key}Item"),
                         i,
-                        None,
                     )?])),
                     None => Some(json!([])),
                 };
@@ -221,13 +164,13 @@ fn mock_value(key: &str, descriptor: &Value, params: Option<&Map<String, Value>>
             if let Some(p) = properties.filter(|p| truthy(p)) {
                 let mut obj = Map::new();
                 for (k, d) in p.as_object()? {
-                    obj.insert(k.clone(), mock_value(k, d, None)?);
+                    obj.insert(k.clone(), mock_value_for_descriptor(k, d)?);
                 }
                 return Some(Value::Object(obj));
             }
             if let Some(m) = map_value.filter(|m| truthy(m)) {
                 let mut obj = Map::new();
-                obj.insert("sample".to_string(), mock_value("sample", m, None)?);
+                obj.insert("sample".to_string(), mock_value_for_descriptor("sample", m)?);
                 return Some(Value::Object(obj));
             }
             Some(json!({}))
@@ -252,13 +195,9 @@ fn flat(key: &str, ty: &str) -> Value {
 mod tests {
     use super::*;
 
-    fn p() -> Map<String, Value> {
-        Map::new()
-    }
-
     #[test]
     fn flat_spellings() {
-        let d = |v: Value| mock_value_for_descriptor("f", &v, &p()).unwrap();
+        let d = |v: Value| mock_value_for_descriptor("f", &v).unwrap();
         assert_eq!(d(json!("string")), json!("mock_f"));
         assert_eq!(d(json!("number | null")), json!("mock_f"));
         assert_eq!(d(json!("Row[]")), json!([]));
@@ -270,12 +209,12 @@ mod tests {
     fn nested_array_of_objects_and_map() {
         let d = json!({"type": "array", "items": {"type": "X", "properties": {"a": "string", "n": "number"}}});
         assert_eq!(
-            mock_value_for_descriptor("rows", &d, &p()).unwrap(),
+            mock_value_for_descriptor("rows", &d).unwrap(),
             json!([{"a": "mock_a", "n": 42}])
         );
         let m = json!({"type": "object", "mapValue": "number"});
         assert_eq!(
-            mock_value_for_descriptor("m", &m, &p()).unwrap(),
+            mock_value_for_descriptor("m", &m).unwrap(),
             json!({"sample": 42})
         );
     }
@@ -283,30 +222,13 @@ mod tests {
     #[test]
     fn control_array_without_items_is_empty_and_malformed_is_none() {
         assert_eq!(
-            mock_value_for_descriptor("f", &json!({"type": "array", "properties": {}}), &p()),
+            mock_value_for_descriptor("f", &json!({"type": "array", "properties": {}})),
             Some(json!([]))
         );
         assert_eq!(
-            mock_value_for_descriptor("f", &json!({"items": "x"}), &p()),
+            mock_value_for_descriptor("f", &json!({"items": "x"})),
             None
         );
-        assert_eq!(mock_value_for_descriptor("f", &json!(5), &p()), None);
-    }
-
-    #[test]
-    fn shaped_by_reads_the_named_param_only_at_top_level() {
-        let d = json!({"type": "T", "shapedBy": "schema"});
-        let mut params = Map::new();
-        params.insert("schema".into(), json!({"type": "string"}));
-        assert_eq!(
-            mock_value_for_descriptor("k", &d, &params).unwrap(),
-            json!("mock_k")
-        );
-        assert_eq!(mock_value_for_descriptor("k", &d, &p()).unwrap(), json!({}));
-        let nested = json!({"type": "A", "properties": {"inner": d}});
-        assert_eq!(
-            mock_value_for_descriptor("k", &nested, &params).unwrap(),
-            json!({"inner": {}})
-        );
+        assert_eq!(mock_value_for_descriptor("f", &json!(5)), None);
     }
 }

@@ -257,15 +257,55 @@ impl PartialEq for OriginParts {
     }
 }
 
-/// Splits `scheme://authority` off `url`; the rest (path, query) is returned as is.
+impl OriginParts {
+    pub fn scheme(&self) -> &str {
+        &self.scheme
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+fn http_default_port(scheme: &str) -> Option<u16> {
+    match scheme {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    }
+}
+
+/// The schemes a raw TCP protocol driver connects under, each with its default port.
+pub fn tcp_default_port(scheme: &str) -> Option<u16> {
+    match scheme {
+        "redis" | "rediss" => Some(6379),
+        "postgres" | "postgresql" => Some(5432),
+        _ => None,
+    }
+}
+
+fn egress_default_port(scheme: &str) -> Option<u16> {
+    http_default_port(scheme).or_else(|| tcp_default_port(scheme))
+}
+
+/// Splits `scheme://authority` off `url`; the rest (path, query) is returned as is. Only `http` and `https`.
 pub fn split_url(url: &str) -> Option<(OriginParts, &str)> {
+    split_with(url, http_default_port)
+}
+
+/// [`split_url`] for a TCP protocol target: only the schemes of [`tcp_default_port`].
+pub fn split_tcp_url(url: &str) -> Option<(OriginParts, &str)> {
+    split_with(url, tcp_default_port)
+}
+
+fn split_with(url: &str, default_port_of: fn(&str) -> Option<u16>) -> Option<(OriginParts, &str)> {
     let (scheme, rest) = url.split_once("://")?;
     let scheme = scheme.to_ascii_lowercase();
-    let default_port = match scheme.as_str() {
-        "http" => 80,
-        "https" => 443,
-        _ => return None,
-    };
+    let default_port = default_port_of(scheme.as_str())?;
     let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
     let (authority, remainder) = rest.split_at(end);
     if authority.is_empty() || authority.contains(['@', ' ']) {
@@ -295,6 +335,14 @@ pub fn split_url(url: &str) -> Option<(OriginParts, &str)> {
         },
         remainder,
     ))
+}
+
+/// One `egress` entry: `scheme://host[:port]` for an http(s) origin or a TCP protocol origin.
+pub fn parse_egress_entry(entry: &str) -> Option<OriginParts> {
+    match split_with(entry, egress_default_port)? {
+        (parts, "") => Some(parts),
+        _ => None,
+    }
 }
 
 pub fn parse_origin(origin: &str) -> Option<OriginParts> {

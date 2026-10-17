@@ -130,3 +130,31 @@ fn the_message_shape_is_the_twin_of_the_js_error() {
         "Evaluation error: Type mismatch: expected string, got number"
     );
 }
+
+fn on_mixed_map(expr: serde_json::Value) -> Result<serde_json::Value, OrbitalError> {
+    let case = Case {
+        name: String::new(),
+        expr,
+        entity: Some(serde_json::json!({ "a": 1, "b": "x", "c": 2 })),
+        expect: Expect::Value(serde_json::Value::Null),
+    };
+    let _ = &case.name;
+    run(&case)
+}
+
+#[test]
+fn a_list_of_unlike_entry_tuples_is_a_list_for_structural_array_operators() {
+    let entries = serde_json::json!(["object/entries", "@entity"]);
+    assert_eq!(on_mixed_map(serde_json::json!(["array/count", entries])).unwrap(), serde_json::json!(3.0));
+    assert_eq!(on_mixed_map(serde_json::json!(["array/nth", entries, 1])).unwrap(), serde_json::json!(["b", "x"]));
+    assert_eq!(
+        on_mixed_map(serde_json::json!(["array/count", ["array/concat", entries, entries]])).unwrap(),
+        serde_json::json!(6.0)
+    );
+}
+
+#[test]
+fn control_a_list_of_unlike_scalars_is_still_refused_by_an_ordering_operator() {
+    let mixed = on_mixed_map(serde_json::json!(["array/max", ["array/nth", ["object/entries", "@entity"], 0]]));
+    assert!(matches!(mixed, Err(OrbitalError::Eval(EvalError::TypeMismatch { .. }))), "{mixed:?}");
+}

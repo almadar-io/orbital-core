@@ -156,7 +156,7 @@ impl OsOp {
     /// Whether a keyed call of the operation that declares a completion route may end after the dispatch that
     /// asked it, its outcome arriving later as an event of the route (EXEC-QUEUE-10).
     pub fn defers_completion(self) -> bool {
-        self == OsOp::Wait
+        matches!(self, OsOp::Wait | OsOp::Read | OsOp::Recv | OsOp::Recvfrom)
     }
 }
 
@@ -189,6 +189,22 @@ impl OsErrorKind {
             OsErrorKind::Unsupported => "unsupported",
             OsErrorKind::Closed => "closed",
         }
+    }
+
+    /// The inverse of [`Self::as_str`]; `None` for a spelling no host sends.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            OsErrorKind::Denied,
+            OsErrorKind::NotFound,
+            OsErrorKind::Exists,
+            OsErrorKind::Invalid,
+            OsErrorKind::Io,
+            OsErrorKind::Timeout,
+            OsErrorKind::Unsupported,
+            OsErrorKind::Closed,
+        ]
+        .into_iter()
+        .find(|kind| kind.as_str() == name)
     }
 }
 
@@ -262,15 +278,23 @@ mod tests {
     }
 
     #[test]
-    fn only_wait_defers_its_completion() {
+    fn only_the_blocking_waits_reads_and_receives_defer_their_completion() {
         let deferring: Vec<&str> = OsOp::ALL
             .iter()
             .filter(|op| op.defers_completion())
             .map(|op| op.name())
             .collect();
-        assert_eq!(deferring, vec!["os/wait"]);
-        assert!(!OsOp::Wait.is_stream());
-        assert!(!OsOp::Spawn.defers_completion());
+        assert_eq!(deferring, vec!["os/read", "os/wait", "os/recv", "os/recvfrom"]);
+        assert!(!OsOp::Wait.is_stream() && !OsOp::Recv.is_stream());
+        assert!(!OsOp::Spawn.defers_completion() && !OsOp::Send.defers_completion());
+    }
+
+    #[test]
+    fn an_error_kind_name_round_trips() {
+        for kind in [OsErrorKind::Denied, OsErrorKind::NotFound, OsErrorKind::Exists, OsErrorKind::Invalid, OsErrorKind::Io, OsErrorKind::Timeout, OsErrorKind::Unsupported, OsErrorKind::Closed] {
+            assert_eq!(OsErrorKind::from_name(kind.as_str()), Some(kind));
+        }
+        assert_eq!(OsErrorKind::from_name("unheard-of"), None);
     }
 
     #[test]

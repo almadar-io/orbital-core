@@ -142,12 +142,7 @@ fn persist_create_missing_required_field_fails_and_routes_emit_failure() {
         persist.error.as_deref(),
         Some("persist create Note: required field(s) content missing"),
     );
-    assert!(
-        !orbital_core_runtime::entity_access::is_access_denied_error(
-            persist.error.as_deref().unwrap()
-        ),
-        "must never be mistaken for a check_mutation_access denial"
-    );
+    assert_eq!(persist.code, None, "a missing required column is not an access denial");
 
     let failure_emit = result.effect_results.iter().find(|r| {
         matches!(&r.effect, Effect::Emit { event, .. } if event == "NOTE_CREATE_FAILED")

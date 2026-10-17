@@ -23,11 +23,14 @@ mod tests {
     }
 
     fn eval_op(op: &str, args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
+        eval_in(op, args, crate::evaluator::context::BindingContextBuilder::new().build())
+    }
+
+    fn eval_in(op: &str, args: &[serde_json::Value], ctx: crate::evaluator::context::BindingContext) -> Result<serde_json::Value, String> {
         let mut expr = vec![serde_json::json!(op)];
         expr.extend(args.iter().cloned());
         let sexpr =
             serde_json::from_value(serde_json::Value::Array(expr)).map_err(|e| e.to_string())?;
-        let ctx = crate::evaluator::context::BindingContextBuilder::new().build();
         crate::evaluator::Evaluator::new()
             .evaluate(&sexpr, &ctx)
             .map(|v| serde_json::to_value(v).unwrap())
@@ -270,5 +273,72 @@ mod tests {
     #[test]
     fn control_a_different_key_gives_a_different_mac() {
         assert_ne!(hmac_sha256(b"a", b"m"), hmac_sha256(b"b", b"m"));
+    }
+
+    #[test]
+    fn pbkdf2_hmac_sha256_matches_the_known_vectors() {
+        for (iterations, want) in [
+            (1, "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"),
+            (2, "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43"),
+            (4096, "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a"),
+        ] {
+            assert_eq!(hex(&pbkdf2_hmac_sha256(b"password", b"salt", iterations, 32)), want, "{iterations}");
+        }
+    }
+
+    #[test]
+    fn pbkdf2_longer_output_continues_the_block_sequence_and_control_differs_by_salt() {
+        let long = pbkdf2_hmac_sha256(b"password", b"salt", 1, 40);
+        assert_eq!(long.len(), 40);
+        assert_eq!(&long[..32], &pbkdf2_hmac_sha256(b"password", b"salt", 1, 32)[..]);
+        assert_ne!(pbkdf2_hmac_sha256(b"password", b"pepper", 1, 32), pbkdf2_hmac_sha256(b"password", b"salt", 1, 32));
+    }
+
+    const API_KEY_VECTORS: [(&str, &str, &str); 4] = [
+        ("00112233445566778899", "sk_live_abababababababababababababababababababababababababababababababab", "a492cbeb35eff51937467da2c2ebd3357833764db320d250ab133403456b1537"),
+        ("00112233445566778899", "sk_live_", "010bbcf1a211930bca10afa35c740b1c70dcb058711e165c9918f1137c97b940"),
+        ("00112233445566778899", "héllo wörld", "5a781e12503077b2d0d1bf683ca2ba77737fdeaca90df36fc5ef9c5fd72dfde7"),
+        ("AbCdEf0123456789", "sk_live_0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f", "1dcc68a241b44c82ab715bbab75dc0ab28643e69111a574a65f1f072a0ff47b5"),
+    ];
+
+    fn scrypt_of(plaintext: &str, credential: &str, held: Option<(&str, &str)>) -> Result<serde_json::Value, String> {
+        let mut ctx = crate::evaluator::context::BindingContextBuilder::new().build();
+        if let Some((name, value)) = held {
+            ctx = ctx.with_secret(name, value.to_string());
+        }
+        eval_in("hash/scrypt", &[serde_json::json!(plaintext), serde_json::json!(credential)], ctx)
+    }
+
+    #[test]
+    fn scrypt_reproduces_every_hash_node_scrypt_sync_made_for_auth_api_key() {
+        for (salt, plaintext, want) in API_KEY_VECTORS {
+            let key = scrypt_api_key(plaintext.as_bytes(), &hex_decode(salt).unwrap()).unwrap();
+            assert_eq!(hex(&key), want, "{plaintext}");
+            assert_eq!(scrypt_of(plaintext, "SALT", Some(("SALT", salt))), Ok(serde_json::json!(want)));
+        }
+        assert_eq!((SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P, SCRYPT_KEYLEN), (14, 8, 1, 32));
+    }
+
+    #[test]
+    fn scrypt_changes_with_the_salt_and_the_input_and_is_null_for_a_credential_the_context_does_not_hold_as_hex() {
+        let (salt, plaintext, want) = API_KEY_VECTORS[0];
+        assert_ne!(scrypt_of(plaintext, "SALT", Some(("SALT", "ff00"))).unwrap(), serde_json::json!(want));
+        assert_ne!(scrypt_of("sk_live_x", "SALT", Some(("SALT", salt))).unwrap(), serde_json::json!(want));
+        for bad in ["", "abc", "not-hex", "zz", "0g"] {
+            assert_eq!(scrypt_of(plaintext, "SALT", Some(("SALT", bad))), Ok(serde_json::Value::Null), "{bad:?}");
+        }
+        assert_eq!(scrypt_of(plaintext, "SALT", None), Ok(serde_json::Value::Null), "no value held");
+        assert_eq!(scrypt_of(plaintext, "OTHER", Some(("SALT", salt))), Ok(serde_json::Value::Null), "another credential's value is not used");
+        assert!(eval_op("hash/scrypt", &[serde_json::json!(plaintext)]).is_err());
+        assert!(scrypt_of("x", "SALT", Some(("SALT", salt))).is_ok());
+        assert!(eval_op("hash/scrypt", &[serde_json::json!(5), serde_json::json!("SALT")]).is_err());
+    }
+
+    #[test]
+    fn hex_decode_takes_either_case_and_only_whole_bytes() {
+        assert_eq!(hex_decode("00FfaB"), Some(vec![0x00, 0xff, 0xab]));
+        for bad in ["", "a", "abc", "gg", "é1"] {
+            assert_eq!(hex_decode(bad), None, "{bad:?}");
+        }
     }
 }

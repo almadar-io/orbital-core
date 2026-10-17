@@ -75,6 +75,7 @@ fn type_tag(ty: &OirType) -> String {
         OirType::Uuid => "uuid".to_string(),
         OirType::Image => "image".to_string(),
         OirType::Bytes => "bytes".to_string(),
+        OirType::CallKey => "callkey".to_string(),
         OirType::Money => "money".to_string(),
         OirType::File => "file".to_string(),
         OirType::Json => "json".to_string(),
@@ -131,6 +132,7 @@ pub fn render_default<R: TargetLiteralRenderer>(
         | (OirType::DateTime, OirValue::String(s))
         | (OirType::Image, OirValue::String(s))
         | (OirType::Bytes, OirValue::String(s))
+        | (OirType::CallKey, OirValue::String(s))
         | (OirType::File, OirValue::String(s)) => Ok(Some(r.string(s))),
 
         (OirType::Number, OirValue::Number(n)) | (OirType::Money, OirValue::Number(n)) => {

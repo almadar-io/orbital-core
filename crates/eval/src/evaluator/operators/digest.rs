@@ -144,6 +144,25 @@ impl Operator for HashMd5Op {
     }
 }
 
+/// hash/scrypt (s, salt credential) - the `@almadar/auth` api-key hash: scrypt N=2^14 r=8 p=1 over the hex-decoded salt,
+/// as lower-case hex. The salt argument names a credential (a `secret` knob); the kernel resolves its value into the
+/// context, so the value never enters program data. The result is null when the context holds no value for that
+/// credential or the value is not non-empty hex, so a program can route the failure.
+pub struct HashScryptOp;
+impl Operator for HashScryptOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "hash/scrypt", == 2);
+        let s = string_arg(&args[0], ctx, "hash/scrypt")?;
+        let credential = string_arg(&args[1], ctx, "hash/scrypt")?;
+        let Some(salt) = ctx.secret(&credential).and_then(codec::hex_decode) else {
+            return Ok(Value::Null);
+        };
+        let key = codec::scrypt_api_key(s.as_bytes(), &salt)
+            .map_err(|e| OrbitalError::Eval(EvalError::InvalidArgument(format!("hash/scrypt: {e}"))))?;
+        Ok(Value::String(codec::hex(&key)))
+    }
+}
+
 /// hmac/sha256 (key, message, encoding)
 pub struct HmacSha256Op;
 impl Operator for HmacSha256Op {

@@ -77,9 +77,35 @@ pub struct BindingContext {
     /// Resolve a whole-string binding that holds no value to an absent prop (see
     /// [`Self::resolve_dropping_unset`]) instead of leaving its token for a later resolver.
     drop_unset: bool,
+    /// Credential values the kernel resolved for this evaluation, by credential name. Only an operator that takes a
+    /// credential slot (`hash/scrypt`'s salt) reads them; they are never reachable as a binding.
+    secrets: Arc<SecretValues>,
+}
+
+/// The credential values of one evaluation. `Debug` shows only the names.
+#[derive(Clone, Default)]
+pub struct SecretValues(HashMap<String, String>);
+
+impl std::fmt::Debug for SecretValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.0.keys()).finish()
+    }
 }
 
 impl BindingContext {
+    /// This context with the credential `name` holding `value` for the operators that take a credential slot.
+    pub fn with_secret(mut self, name: &str, value: String) -> Self {
+        let mut held = (*self.secrets).clone();
+        held.0.insert(name.to_string(), value);
+        self.secrets = Arc::new(held);
+        self
+    }
+
+    /// The value of the credential `name` the kernel resolved for this evaluation.
+    pub fn secret(&self, name: &str) -> Option<&str> {
+        self.secrets.0.get(name).map(String::as_str)
+    }
+
     /// Create a new empty binding context
     pub fn new() -> Self {
         Self::default()
@@ -610,6 +636,7 @@ impl BindingContext {
             locals: self.locals.clone(),
             entity_stores: Arc::clone(&self.entity_stores),
             drop_unset: self.drop_unset,
+            secrets: Arc::clone(&self.secrets),
         }
     }
 

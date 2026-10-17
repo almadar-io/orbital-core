@@ -340,6 +340,22 @@ pub fn scope_fetched_rows(
     total
 }
 
+/// A declared access policy refused a mutation: the typed fact a persist failure's `denied` code is set from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessDenied(pub String);
+
+impl AccessDenied {
+    pub fn into_message(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Display for AccessDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Check a declared `@create`/`@update`/`@delete` directive against the row
 /// the operation targets. `row` is the incoming data for `Create` (no row
 /// exists yet) or the EXISTING row fetched fresh for `Update`/`Delete`.
@@ -354,7 +370,7 @@ pub fn check_mutation_access(
     policy: Option<&Value>,
     ctx: &BindingContext,
     entity_type: &str,
-) -> Result<(), String> {
+) -> Result<(), AccessDenied> {
     let Some(policy) = policy else {
         return Ok(());
     };
@@ -364,9 +380,9 @@ pub fn check_mutation_access(
     let evaluator = Evaluator::new();
     match evaluator.evaluate(&predicate, &row_ctx) {
         Ok(v) if v.is_truthy() => Ok(()),
-        Ok(_) => Err(format!(
+        Ok(_) => Err(AccessDenied(format!(
             "@{operation:?} denied: the declared access policy for `{entity_type}` rejected this row"
-        )),
+        ))),
         Err(err) => {
             tracing::warn!(
                 entity_type,
@@ -374,9 +390,9 @@ pub fn check_mutation_access(
                 error = %err,
                 "mutation access predicate failed to evaluate; mutation denied"
             );
-            Err(format!(
+            Err(AccessDenied(format!(
                 "@{operation:?} denied: the declared access policy for `{entity_type}` could not be evaluated ({err})"
-            ))
+            )))
         }
     }
 }
@@ -443,15 +459,6 @@ pub fn missing_required_fields(required: &[String], data: &Value) -> Vec<String>
         })
         .cloned()
         .collect()
-}
-
-/// Does `msg` carry the distinctive shape of a [`check_mutation_access`]
-/// denial? Lets a caller (e.g. `orbital-verify`'s persona-parameterised run,
-/// task #129) bucket an access-policy denial separately from a genuine effect
-/// failure without hand-rolling a fragile match against this module's private
-/// wording.
-pub fn is_access_denied_error(msg: &str) -> bool {
-    msg.contains(" denied: the declared access policy for ")
 }
 
 #[cfg(test)]
@@ -643,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn denial_errors_carry_the_shared_detectable_shape() {
+    fn a_refused_mutation_is_the_typed_access_denied_error() {
         let ctx = BindingContextBuilder::new()
             .user(viewer("member-2"))
             .build();
@@ -655,8 +662,8 @@ mod tests {
             "Ticket",
         )
         .unwrap_err();
-        assert!(is_access_denied_error(&err));
-        assert!(!is_access_denied_error("some other failure entirely"));
+        assert!(err.to_string().contains("rejected this row"));
+        assert_eq!(err, AccessDenied(err.to_string()));
     }
 }
 

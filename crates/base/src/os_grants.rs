@@ -225,6 +225,25 @@ impl OsGrants {
             .any(|g| g.modes.contains(&mode) && glob_matches(&g.glob, &segments))
     }
 
+    /// Whether every path under the directory `root` may be used in `mode`: a grant that lists the mode, ends in
+    /// `/**` and matches `root` itself covers `root` and all it contains. Matched lexically like [`fs_allows`].
+    pub fn fs_tree_allows(&self, root: &Path, mode: FsMode) -> bool {
+        let Some(segments) = normalized_segments(root) else {
+            return false;
+        };
+        self.fs.iter().any(|g| {
+            g.modes.contains(&mode) && g.glob.ends_with("/**") && glob_matches(&g.glob, &segments)
+        })
+    }
+
+    /// The one-grant set that matches exactly what `glob` matches, for reading.
+    pub fn read_matcher(glob: &str) -> OsGrants {
+        OsGrants {
+            fs: vec![FsGrant { glob: glob.to_string(), modes: vec![FsMode::Read] }],
+            ..OsGrants::default()
+        }
+    }
+
     pub fn exec_allows(&self, command: &str) -> bool {
         self.exec.iter().any(|c| c == command)
     }
@@ -384,15 +403,27 @@ impl OsGrants {
 }
 
 /// One thing an `os/` call needs from the grants, read from its literal arguments.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "need", rename_all = "kebab-case")]
 pub enum OsRequirement {
     Fs { path: String, mode: FsMode },
-    Exec(String),
+    /// Every path under `root` (which ends in `/`): the target is a `str/concat` whose static prefix is
+    /// `root` and whose rest is computed. Covered only by a grant glob ending in `/**` that contains `root`.
+    FsTree { root: String, mode: FsMode },
+    Exec { command: String },
     Net { host: String, port: u16, kinds: Vec<NetKind> },
-    Env(String),
-    Stdio(StdioKind),
-    Sys(SysKind),
-    Desktop(DesktopKind),
+    Env { name: String },
+    Stdio { kind: StdioKind },
+    Sys { kind: SysKind },
+    Desktop { kind: DesktopKind },
+}
+
+impl OsRequirement {
+    /// The requirement of a `spawn` `env` entry whose value is `null`: the child inherits that variable from the
+    /// host, so the `env` grant must name it. The one derivation the validator and the host's check share.
+    pub fn inherited_env(name: &str) -> Self {
+        OsRequirement::Env { name: name.to_string() }
+    }
 }
 
 impl OsGrants {
@@ -400,14 +431,15 @@ impl OsGrants {
     pub fn allows(&self, need: &OsRequirement) -> bool {
         match need {
             OsRequirement::Fs { path, mode } => self.fs_allows(Path::new(path), *mode),
-            OsRequirement::Exec(command) => self.exec_allows(command),
+            OsRequirement::FsTree { root, mode } => self.fs_tree_allows(Path::new(root), *mode),
+            OsRequirement::Exec { command } => self.exec_allows(command),
             OsRequirement::Net { host, port, kinds } => {
                 kinds.iter().any(|kind| self.net_allows(host, *port, *kind))
             }
-            OsRequirement::Env(name) => self.env_allows(name),
-            OsRequirement::Stdio(kind) => self.stdio_allows(*kind),
-            OsRequirement::Sys(kind) => self.sys_allows(*kind),
-            OsRequirement::Desktop(kind) => self.desktop_allows(*kind),
+            OsRequirement::Env { name } => self.env_allows(name),
+            OsRequirement::Stdio { kind } => self.stdio_allows(*kind),
+            OsRequirement::Sys { kind } => self.sys_allows(*kind),
+            OsRequirement::Desktop { kind } => self.desktop_allows(*kind),
         }
     }
 }
@@ -435,9 +467,65 @@ fn literal_port(args: &[SExpression], index: usize, deferred: Deferred) -> Resul
     }
 }
 
+/// The leading pieces of a `str/concat` target that are known before the call runs, cut after the last
+/// literal piece that ends in `/`: a literal string, or (for a caller that defers config reads) a piece for
+/// which `deferred` is true. `None` when the target is not a `str/concat` or has no such prefix, so the part
+/// a computed tail can reach is always bounded by a directory.
+pub fn concat_static_prefix<'a>(
+    expr: &'a SExpression,
+    deferred: &dyn Fn(&SExpression) -> bool,
+) -> Option<&'a [SExpression]> {
+    let SExpression::Array(arr) = expr else {
+        return None;
+    };
+    if arr.first().and_then(SExpression::as_str) != Some("str/concat") {
+        return None;
+    }
+    let pieces = &arr[1..];
+    let mut last_dir = None;
+    for (i, piece) in pieces.iter().enumerate() {
+        match piece {
+            SExpression::String(s) if !s.starts_with('@') => {
+                if s.ends_with('/') {
+                    last_dir = Some(i + 1);
+                }
+            }
+            _ if deferred(piece) => {}
+            _ => break,
+        }
+    }
+    last_dir.map(|end| &pieces[..end])
+}
+
+enum FsTarget {
+    Exact(String),
+    Tree(String),
+}
+
+fn fs_target(args: &[SExpression], index: usize, deferred: Deferred) -> Result<Option<FsTarget>, usize> {
+    if let Some(arg) = args.get(index) {
+        if matches!(arg, SExpression::Array(a) if a.first().and_then(SExpression::as_str) == Some("str/concat")) {
+            let prefix = concat_static_prefix(arg, deferred).ok_or(index)?;
+            if prefix.iter().any(deferred) {
+                return Ok(None);
+            }
+            let root: String = prefix.iter().filter_map(SExpression::as_str).collect();
+            return Ok(Some(FsTarget::Tree(root)));
+        }
+    }
+    Ok(literal(args, index, deferred)?.map(|path| FsTarget::Exact(path.to_string())))
+}
+
+fn fs_requirement(target: FsTarget, mode: FsMode) -> OsRequirement {
+    match target {
+        FsTarget::Exact(path) => OsRequirement::Fs { path, mode },
+        FsTarget::Tree(root) => OsRequirement::FsTree { root, mode },
+    }
+}
+
 fn fs_need(args: &[SExpression], index: usize, mode: FsMode, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
-    Ok(literal(args, index, deferred)?
-        .map(|path| OsRequirement::Fs { path: path.to_string(), mode })
+    Ok(fs_target(args, index, deferred)?
+        .map(|target| fs_requirement(target, mode))
         .into_iter()
         .collect())
 }
@@ -481,7 +569,7 @@ fn open_modes(flags: &str) -> Vec<FsMode> {
 fn spawn_needs(args: &[SExpression], deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
     let mut needs = Vec::new();
     if let Some(command) = literal(args, 0, deferred)? {
-        needs.push(OsRequirement::Exec(command.to_string()));
+        needs.push(OsRequirement::Exec { command: command.to_string() });
     }
     if let Some(SExpression::Object(options)) = args.get(2) {
         for (key, value) in options {
@@ -492,12 +580,21 @@ fn spawn_needs(args: &[SExpression], deferred: Deferred) -> Result<Vec<OsRequire
                 ("cwd", SExpression::Null) => {}
                 ("cwd", value) if deferred(value) => {}
                 ("cwd", _) => return Err(2),
+                ("env", SExpression::Object(vars)) => {
+                    for (name, value) in vars {
+                        if matches!(value, SExpression::Null) {
+                            needs.push(OsRequirement::inherited_env(name));
+                        }
+                    }
+                }
                 ("stdin" | "stdout" | "stderr", SExpression::String(mode)) if mode == "inherit" => {
-                    needs.push(OsRequirement::Stdio(match key.as_str() {
-                        "stdin" => StdioKind::In,
-                        "stdout" => StdioKind::Out,
-                        _ => StdioKind::Err,
-                    }));
+                    needs.push(OsRequirement::Stdio {
+                        kind: match key.as_str() {
+                            "stdin" => StdioKind::In,
+                            "stdout" => StdioKind::Out,
+                            _ => StdioKind::Err,
+                        },
+                    });
                 }
                 _ => {}
             }
@@ -522,8 +619,8 @@ pub fn os_requirements_deferring(
     deferred: &dyn Fn(&SExpression) -> bool,
 ) -> Result<Vec<OsRequirement>, usize> {
     use OsOp::*;
-    let sys = |kind| Ok(vec![OsRequirement::Sys(kind)]);
-    let desktop = |kind| Ok(vec![OsRequirement::Desktop(kind)]);
+    let sys = |kind| Ok(vec![OsRequirement::Sys { kind }]);
+    let desktop = |kind| Ok(vec![OsRequirement::Desktop { kind }]);
     match op {
         ReadFile | Readlink | WatchFiles | ListDir | Realpath | Chdir | Stat | Lstat | Access | Exists => {
             fs_need(args, 0, FsMode::Read, deferred)
@@ -531,10 +628,16 @@ pub fn os_requirements_deferring(
         WriteFile | AppendFile | Truncate => fs_need(args, 0, FsMode::Write, deferred),
         Open => {
             let mut needs = Vec::new();
-            if let (Some(path), Some(flags)) = (literal(args, 0, deferred)?, literal(args, 1, deferred)?) {
-                needs.extend(open_modes(flags).into_iter().map(|mode| OsRequirement::Fs {
-                    path: path.to_string(),
-                    mode,
+            if let (Some(target), Some(flags)) = (fs_target(args, 0, deferred)?, literal(args, 1, deferred)?) {
+                let tree = matches!(target, FsTarget::Tree(_));
+                let path = match target {
+                    FsTarget::Exact(p) | FsTarget::Tree(p) => p,
+                };
+                needs.extend(open_modes(flags).into_iter().map(|mode| {
+                    fs_requirement(
+                        if tree { FsTarget::Tree(path.clone()) } else { FsTarget::Exact(path.clone()) },
+                        mode,
+                    )
                 }));
             }
             Ok(needs)
@@ -561,12 +664,12 @@ pub fn os_requirements_deferring(
             .collect()),
         Spawn => spawn_needs(args, deferred),
         Getenv | Setenv | Unsetenv | WatchEnv => Ok(literal(args, 0, deferred)?
-            .map(|name| OsRequirement::Env(name.to_string()))
+            .map(|name| OsRequirement::Env { name: name.to_string() })
             .into_iter()
             .collect()),
-        StdinRead => Ok(vec![OsRequirement::Stdio(StdioKind::In)]),
-        StdoutWrite => Ok(vec![OsRequirement::Stdio(StdioKind::Out)]),
-        StderrWrite => Ok(vec![OsRequirement::Stdio(StdioKind::Err)]),
+        StdinRead => Ok(vec![OsRequirement::Stdio { kind: StdioKind::In }]),
+        StdoutWrite => Ok(vec![OsRequirement::Stdio { kind: StdioKind::Out }]),
+        StderrWrite => Ok(vec![OsRequirement::Stdio { kind: StdioKind::Err }]),
         TcpConnect => net_need(args, 0, 1, &[NetKind::Tcp], deferred),
         TcpListen => net_need(args, 0, 1, &[NetKind::Listen], deferred),
         UdpBind => net_need(args, 0, 1, &[NetKind::Udp], deferred),
@@ -941,16 +1044,33 @@ mod tests {
         assert_eq!(
             needs,
             vec![
-                OsRequirement::Exec("git".into()),
+                OsRequirement::Exec { command: "git".into() },
                 fs_req("/repo", FsMode::Read),
-                OsRequirement::Stdio(StdioKind::Out)
+                OsRequirement::Stdio { kind: StdioKind::Out }
             ]
         );
         assert_eq!(call(OsOp::Spawn, json!(["@payload.cmd", []])), Err(0));
         assert_eq!(call(OsOp::Spawn, json!(["git", [], {"cwd": "@payload.dir"}])), Err(2));
         assert_eq!(
             call(OsOp::Spawn, json!(["git", [], {"cwd": null, "stdin": "null"}])),
-            Ok(vec![OsRequirement::Exec("git".into())])
+            Ok(vec![OsRequirement::Exec { command: "git".into() }])
+        );
+    }
+
+    #[test]
+    fn a_spawn_env_entry_that_inherits_the_host_value_needs_that_env_grant() {
+        assert_eq!(
+            call(OsOp::Spawn, json!(["git", [], {"env": {"PATH": null, "FOO": "bar", "HOME": null}}])),
+            Ok(vec![
+                OsRequirement::Exec { command: "git".into() },
+                OsRequirement::Env { name: "PATH".into() },
+                OsRequirement::Env { name: "HOME".into() },
+            ])
+        );
+        assert_eq!(
+            call(OsOp::Spawn, json!(["git", [], {"env": {"FOO": "bar"}}])),
+            Ok(vec![OsRequirement::Exec { command: "git".into() }]),
+            "control: a literal value inherits nothing"
         );
     }
 
@@ -962,14 +1082,36 @@ mod tests {
 
     #[test]
     fn sys_desktop_and_net_calls_map_to_their_kind_and_handle_calls_need_nothing() {
-        assert_eq!(call(OsOp::MemoryInfo, json!([])), Ok(vec![OsRequirement::Sys(SysKind::Memory)]));
-        assert_eq!(call(OsOp::Notify, json!(["t", "b"])), Ok(vec![OsRequirement::Desktop(DesktopKind::Notify)]));
+        assert_eq!(call(OsOp::MemoryInfo, json!([])), Ok(vec![OsRequirement::Sys { kind: SysKind::Memory }]));
+        assert_eq!(call(OsOp::Notify, json!(["t", "b"])), Ok(vec![OsRequirement::Desktop { kind: DesktopKind::Notify }]));
         assert_eq!(
             call(OsOp::TcpConnect, json!(["db.internal", 5432])),
             Ok(vec![OsRequirement::Net { host: "db.internal".into(), port: 5432, kinds: vec![NetKind::Tcp] }])
         );
         assert_eq!(call(OsOp::Close, json!(["@payload.fd"])), Ok(vec![]));
         assert_eq!(call(OsOp::Pid, json!([])), Ok(vec![]));
+    }
+
+    #[test]
+    fn a_requirement_is_the_tagged_wire_shape_and_round_trips() {
+        let cases = [
+            (OsRequirement::Fs { path: "/a".into(), mode: FsMode::Read }, json!({"need":"fs","path":"/a","mode":"read"})),
+            (OsRequirement::Exec { command: "git".into() }, json!({"need":"exec","command":"git"})),
+            (
+                OsRequirement::Net { host: "h".into(), port: 80, kinds: vec![NetKind::Tcp] },
+                json!({"need":"net","host":"h","port":80,"kinds":["tcp"]}),
+            ),
+            (OsRequirement::Env { name: "FOO".into() }, json!({"need":"env","name":"FOO"})),
+            (OsRequirement::Stdio { kind: StdioKind::Out }, json!({"need":"stdio","kind":"out"})),
+            (OsRequirement::Sys { kind: SysKind::PowerState }, json!({"need":"sys","kind":"power-state"})),
+            (OsRequirement::Desktop { kind: DesktopKind::Notify }, json!({"need":"desktop","kind":"notify"})),
+        ];
+        for (need, wire) in cases {
+            assert_eq!(serde_json::to_value(&need).unwrap(), wire);
+            assert_eq!(serde_json::from_value::<OsRequirement>(wire).unwrap(), need);
+        }
+        assert!(serde_json::from_value::<OsRequirement>(json!({"need":"fs","path":"/a"})).is_err());
+        assert!(serde_json::from_value::<OsRequirement>(json!({"need":"nope"})).is_err());
     }
 
     #[test]
@@ -983,12 +1125,12 @@ mod tests {
         };
         assert!(g.allows(&fs_req("/data/a", FsMode::Read)));
         assert!(!g.allows(&fs_req("/data/a", FsMode::Write)));
-        assert!(g.allows(&OsRequirement::Exec("git".into())));
-        assert!(!g.allows(&OsRequirement::Exec("rm".into())));
+        assert!(g.allows(&OsRequirement::Exec { command: "git".into() }));
+        assert!(!g.allows(&OsRequirement::Exec { command: "rm".into() }));
         assert!(g.allows(&OsRequirement::Net { host: "db.internal".into(), port: 5432, kinds: vec![NetKind::Udp, NetKind::Tcp] }));
         assert!(!g.allows(&OsRequirement::Net { host: "db.internal".into(), port: 5432, kinds: vec![NetKind::Udp] }));
-        assert!(g.allows(&OsRequirement::Sys(SysKind::Memory)));
-        assert!(!g.allows(&OsRequirement::Desktop(DesktopKind::Notify)));
+        assert!(g.allows(&OsRequirement::Sys { kind: SysKind::Memory }));
+        assert!(!g.allows(&OsRequirement::Desktop { kind: DesktopKind::Notify }));
     }
 
     #[test]
@@ -1010,6 +1152,30 @@ mod tests {
         let program = schema.program_os_grants();
         assert!(program.exec_allows("git") && program.stdio_allows(StdioKind::Out));
         assert!(schema.os_grants_of([&schema.orbitals[1]]).exec.is_empty());
+    }
+
+    #[test]
+    fn a_protocol_driver_target_in_egress_is_a_tcp_net_grant_and_nothing_else_is() {
+        let schema: crate::schema::OrbitalSchema = serde_json::from_value(json!({
+            "name": "p", "version": "1.0.0",
+            "egress": ["redis://cache.internal:6379", "rediss://tls.internal", "postgres://db.internal", "https://api.example.com"],
+            "orbitals": [{"name": "A", "entity": {"name": "E", "fields": []}, "traits": [], "pages": []}]
+        }))
+        .expect("schema");
+        for grants in [schema.orbital_os_grants(&schema.orbitals[0]), schema.program_os_grants()] {
+            assert!(grants.net_allows("cache.internal", 6379, NetKind::Tcp));
+            assert!(grants.net_allows("tls.internal", 6379, NetKind::Tcp), "the default port of the scheme");
+            assert!(grants.net_allows("db.internal", 5432, NetKind::Tcp));
+            assert!(!grants.net_allows("cache.internal", 6380, NetKind::Tcp), "another port");
+            assert!(!grants.net_allows("cache.internal", 6379, NetKind::Udp), "another kind");
+            assert!(!grants.net_allows("api.example.com", 443, NetKind::Tcp), "an http origin grants no raw socket");
+        }
+        let plain: crate::schema::OrbitalSchema = serde_json::from_value(json!({
+            "name": "p", "version": "1.0.0", "egress": ["https://api.example.com"],
+            "orbitals": [{"name": "A", "entity": {"name": "E", "fields": []}, "traits": [], "pages": []}]
+        }))
+        .expect("schema");
+        assert!(plain.program_os_grants().is_empty());
     }
 
     #[test]
@@ -1073,5 +1239,55 @@ mod tests {
             ..OsGrants::default()
         };
         assert!(good.entry_problems().is_empty());
+    }
+
+    fn concat(pieces: &[&str]) -> SExpression {
+        let mut items = vec![SExpression::String("str/concat".into())];
+        items.extend(pieces.iter().map(|p| SExpression::String((*p).into())));
+        SExpression::Array(items)
+    }
+
+    #[test]
+    fn a_concat_with_a_literal_directory_prefix_needs_the_tree_and_anything_else_is_computed() {
+        let tree = os_requirements(OsOp::ReadFile, &[concat(&["/data/", "sub/", "@payload.p"])]);
+        assert_eq!(
+            tree,
+            Ok(vec![OsRequirement::FsTree { root: "/data/sub/".into(), mode: FsMode::Read }])
+        );
+        let open = os_requirements(OsOp::Open, &[concat(&["/data/", "@payload.p"]), SExpression::String("w".into())]);
+        assert_eq!(
+            open,
+            Ok(vec![OsRequirement::FsTree { root: "/data/".into(), mode: FsMode::Write }])
+        );
+        for computed in [
+            concat(&["/data", "@payload.p"]),
+            concat(&["@payload.p", "/x"]),
+            concat(&["@config.root", "/", "@payload.p"]),
+        ] {
+            assert_eq!(os_requirements(OsOp::ReadFile, &[computed]), Err(0));
+        }
+        let deferring = os_requirements_deferring(
+            OsOp::ReadFile,
+            &[concat(&["@config.root", "/", "@payload.p"])],
+            &|p| p.as_str().is_some_and(|s| s.starts_with("@config.")),
+        );
+        assert_eq!(deferring, Ok(vec![]));
+    }
+
+    #[test]
+    fn a_tree_is_covered_only_by_a_double_star_grant_that_contains_its_root() {
+        let need = |root: &str| OsRequirement::FsTree { root: root.into(), mode: FsMode::Read };
+        let g = fs_grants("/data/**", &[FsMode::Read]);
+        assert!(g.allows(&need("/data/")));
+        assert!(g.allows(&need("/data/sub/")));
+        assert!(!g.allows(&need("/")));
+        assert!(!g.allows(&need("/database/")));
+        assert!(!g.allows(&need("/data/../etc/")));
+        assert!(g.allows(&need("/data/../data/x/")));
+        assert!(!g.allows(&need("data/")));
+        assert!(!fs_grants("/data/*", &[FsMode::Read]).allows(&need("/data/")));
+        assert!(!fs_grants("/data/**/x", &[FsMode::Read]).allows(&need("/data/x/")));
+        assert!(!fs_grants("/data/**", &[FsMode::Write]).allows(&need("/data/")));
+        assert!(fs_grants("/**", &[FsMode::Read]).allows(&need("/")));
     }
 }

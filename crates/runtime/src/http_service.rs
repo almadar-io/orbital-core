@@ -189,6 +189,35 @@ pub trait SecretSource: Send + Sync {
     fn durable_credentials(&self) -> bool {
         false
     }
+    /// The credential store's state (can it encrypt, which rows it holds), never a value; `None` when the host holds
+    /// no store.
+    fn credential_store_list(&self) -> Result<Option<crate::credential_admin::StoreListing>, String> {
+        Ok(None)
+    }
+    /// The stored value of credential `name`, from the store only.
+    fn credential_store_read(&self, _name: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    /// Encrypt `value` into the store as credential `name` of `service`.
+    fn credential_store_write(&self, _service: &str, _name: &str, _value: &str) -> Result<(), String> {
+        Err(orbital_core_base::credential_admin::NO_STORE.to_string())
+    }
+    /// Delete the stored row of credential `name`; whether one existed.
+    fn credential_store_remove(&self, _name: &str) -> Result<bool, String> {
+        Err(orbital_core_base::credential_admin::NO_STORE.to_string())
+    }
+    /// Re-encrypt every stored row under the current master key.
+    fn credential_store_rotate(&self) -> Result<crate::credential_admin::RotateCounts, String> {
+        Err(orbital_core_base::credential_admin::NO_STORE.to_string())
+    }
+    /// The integrations mode flag (`mock` | `real`); `None` when the host keeps none.
+    fn credential_mode(&self) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    /// Switch the integrations mode flag; the host may refuse. The mode in force afterwards.
+    fn set_credential_mode(&self, _mode: &str) -> Result<String, String> {
+        Err(orbital_core_base::credential_admin::NO_MANAGER.to_string())
+    }
 }
 
 pub fn credential_status_connected(value: Option<&str>, principal: Option<&str>) -> bool {

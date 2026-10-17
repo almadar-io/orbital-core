@@ -228,6 +228,33 @@ pub enum OirEffect {
         emit: Option<OirEmitConfig>,
     },
 
+    /// One redis command (`runtime::redis`): `origin` is a literal or a `url` knob, `command` the list of text
+    /// items, `options` the connection options (`auth`, `user`, `db`). Server-only, keyed and routed like `http`.
+    Redis {
+        origin: OirExpr,
+        command: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        options: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
+    /// One read-only SQL statement (`runtime::postgres`): `origin` is a literal or a `url` knob, `sql` the statement,
+    /// `params` the bind values, `options` the connection options. Server-only, keyed and routed like `http`.
+    Postgres {
+        origin: OirExpr,
+        sql: OirExpr,
+        params: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        options: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
     /// Abort the in-flight keyed `call-service` or `http` started with this key. A
     /// no-op when none is in flight. Server-only, like `call-service`.
     CancelCall { key: OirExpr },
@@ -264,6 +291,15 @@ pub enum OirEffect {
     /// Drop the credential named by the `secret` knob `credential`. Server-only.
     CredentialForget {
         credential: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
+    /// One credential administration effect (`crate::credential_admin`); `request` is the closed parameter object (for
+    /// the request object). Server-only.
+    CredentialAdmin {
+        op: crate::credential_admin::CredentialAdminOp,
+        request: OirExpr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<OirEmitConfig>,
     },
@@ -471,6 +507,17 @@ pub enum OirEffect {
     /// `{ embeddings, key }`; failure is `MODEL_FAILURE_SHAPE`.
     BrowserEmbed {
         texts: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<OirExpr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
+    /// One `browser/tab-<op>` operation on the browser's tabs. `request` is the op's request object; the kernel
+    /// validates it when the effect runs and shapes the result, the host performs only the raw tab and page asks.
+    BrowserTab {
+        op: crate::tab::TabOp,
+        request: OirExpr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<OirExpr>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -833,6 +880,29 @@ impl OirEffect {
         }
     }
 
+    /// Create a redis effect
+    pub fn redis(origin: OirExpr, command: OirExpr) -> Self {
+        Self::Redis {
+            origin,
+            command,
+            options: None,
+            key: None,
+            emit: None,
+        }
+    }
+
+    /// Create a postgres effect
+    pub fn postgres(origin: OirExpr, sql: OirExpr, params: OirExpr) -> Self {
+        Self::Postgres {
+            origin,
+            sql,
+            params,
+            options: None,
+            key: None,
+            emit: None,
+        }
+    }
+
     /// Create a cancel-call effect
     pub fn cancel_call(key: OirExpr) -> Self {
         Self::CancelCall { key }
@@ -872,6 +942,15 @@ impl OirEffect {
         Self::CredentialForget { credential, emit }
     }
 
+    /// Create a credential administration effect
+    pub fn credential_admin(
+        op: crate::credential_admin::CredentialAdminOp,
+        request: OirExpr,
+        emit: Option<OirEmitConfig>,
+    ) -> Self {
+        Self::CredentialAdmin { op, request, emit }
+    }
+
     /// Get the effect kind as a string
     pub fn kind(&self) -> &'static str {
         match self {
@@ -890,11 +969,14 @@ impl OirEffect {
             Self::RenderUi { .. } => "render-ui",
             Self::CallService { .. } => "call-service",
             Self::Http { .. } => "http",
+            Self::Redis { .. } => "redis",
+            Self::Postgres { .. } => "postgres",
             Self::CancelCall { .. } => "cancel-call",
             Self::RandomBytes { .. } => "random-bytes",
             Self::Os { op, .. } => op.name(),
             Self::CredentialStatus { .. } => "credential-status",
             Self::CredentialForget { .. } => "credential-forget",
+            Self::CredentialAdmin { op, .. } => op.name(),
             Self::OAuthAuthorize { .. } => "oauth-authorize",
             Self::OAuthConnectionStatus { .. } => "oauth-connection-status",
             Self::OAuthConnectionForget { .. } => "oauth-connection-forget",
@@ -920,6 +1002,7 @@ impl OirEffect {
             Self::BrowserBeacon { .. } => "browser/beacon",
             Self::BrowserPrompt { .. } => "browser/prompt",
             Self::BrowserEmbed { .. } => "browser/embed",
+            Self::BrowserTab { op, .. } => op.name(),
         }
     }
 
@@ -1071,6 +1154,33 @@ impl OirEffect {
                         .for_each(|b| bindings.push(b));
                 }
             }
+            Self::Redis {
+                origin,
+                command,
+                options,
+                key,
+                ..
+            } => {
+                for expr in [origin, command].into_iter().chain(options).chain(key) {
+                    expr.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
+                }
+            }
+            Self::Postgres {
+                origin,
+                sql,
+                params,
+                options,
+                key,
+                ..
+            } => {
+                for expr in [origin, sql, params].into_iter().chain(options).chain(key) {
+                    expr.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
+                }
+            }
             Self::CancelCall { key } => {
                 key.collect_bindings()
                     .into_iter()
@@ -1111,6 +1221,7 @@ impl OirEffect {
             | Self::CredentialForget {
                 credential: expr, ..
             }
+            | Self::CredentialAdmin { request: expr, .. }
             | Self::OAuthConnectionStatus { provider: expr, .. }
             | Self::OAuthConnectionForget { provider: expr, .. } => {
                 expr.collect_bindings()
@@ -1272,6 +1383,13 @@ impl OirEffect {
                         .for_each(|b| bindings.push(b));
                 }
             }
+            Self::BrowserTab { request, key, .. } => {
+                for e in [Some(request), key.as_ref()].into_iter().flatten() {
+                    e.collect_bindings()
+                        .into_iter()
+                        .for_each(|b| bindings.push(b));
+                }
+            }
             Self::BrowserEmbed { texts, key, .. } => {
                 for e in [Some(texts), key.as_ref()].into_iter().flatten() {
                     e.collect_bindings()
@@ -1372,6 +1490,32 @@ impl OirEffect {
                 push_opt(&mut out, request);
                 push_opt(&mut out, key);
             }
+            Self::Redis {
+                origin,
+                command,
+                options,
+                key,
+                ..
+            } => {
+                out.push(origin);
+                out.push(command);
+                push_opt(&mut out, options);
+                push_opt(&mut out, key);
+            }
+            Self::Postgres {
+                origin,
+                sql,
+                params,
+                options,
+                key,
+                ..
+            } => {
+                out.push(origin);
+                out.push(sql);
+                out.push(params);
+                push_opt(&mut out, options);
+                push_opt(&mut out, key);
+            }
             Self::CancelCall { key } => out.push(key),
             Self::Os { args, key, .. } => {
                 out.extend(args.iter());
@@ -1387,6 +1531,7 @@ impl OirEffect {
             | Self::CredentialForget {
                 credential: expr, ..
             }
+            | Self::CredentialAdmin { request: expr, .. }
             | Self::OAuthConnectionStatus { provider: expr, .. }
             | Self::OAuthConnectionForget { provider: expr, .. } => out.push(expr),
             Self::OAuthAuthorize {
@@ -1458,6 +1603,10 @@ impl OirEffect {
             }
             Self::BrowserEmbed { texts, key, .. } => {
                 out.push(texts);
+                push_opt(&mut out, key);
+            }
+            Self::BrowserTab { request, key, .. } => {
+                out.push(request);
                 push_opt(&mut out, key);
             }
         }
@@ -1555,6 +1704,7 @@ mod tests {
     fn program_host_effects_are_substrate_operators_through_the_installed_table() {
         assert!(is_substrate_operator("behavior/resolve"));
         assert!(is_substrate_operator("program/eval"));
+        assert!(is_substrate_operator("program/validate"));
         assert!(
             is_substrate_operator("llm/generate"),
             "a prefixed substrate op"

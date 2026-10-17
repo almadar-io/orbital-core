@@ -982,3 +982,105 @@ fn edge_without_a_bound_identity_the_inherited_name_stays() {
         "{e}"
     );
 }
+
+#[test]
+fn a_strict_expectation_keeps_its_flag_through_json() {
+    use orbital_core_base::schema::ExpectDeclaration;
+    for kind in [
+        json!({ "kind": "entity", "name": "Order", "strict": true }),
+        json!({ "kind": "identity", "name": "Customer", "strict": true }),
+        json!({ "kind": "event", "traitName": "Checkout", "event": "PLACED", "strict": true }),
+        json!({ "kind": "page", "path": "/orders", "strict": true }),
+    ] {
+        let decl: ExpectDeclaration = serde_json::from_value(kind.clone()).unwrap();
+        assert!(decl.is_strict(), "{kind}");
+        assert_eq!(serde_json::to_value(&decl).unwrap(), kind);
+    }
+}
+
+#[test]
+fn control_a_hand_written_expectation_is_lenient_and_writes_no_strict_key() {
+    use orbital_core_base::schema::ExpectDeclaration;
+    let kind = json!({ "kind": "entity", "name": "Order" });
+    let decl: ExpectDeclaration = serde_json::from_value(kind.clone()).unwrap();
+    assert!(!decl.is_strict());
+    assert_eq!(serde_json::to_value(&decl).unwrap(), kind);
+}
+
+#[test]
+fn an_orbital_marked_spec_round_trips_and_an_unmarked_one_writes_no_key() {
+    use orbital_core_base::schema::Orbital;
+    let base = json!({
+        "name": "ShopSpec",
+        "entity": { "name": "ShopSpec", "fields": [] },
+        "traits": []
+    });
+    let plain: Orbital = serde_json::from_value(base.clone()).unwrap();
+    assert!(!plain.is_spec());
+    assert!(serde_json::to_value(&plain).unwrap().get("spec").is_none());
+    let mut marked = base;
+    marked["spec"] = json!(true);
+    let spec: Orbital = serde_json::from_value(marked.clone()).unwrap();
+    assert!(spec.is_spec());
+    assert_eq!(serde_json::to_value(&spec).unwrap()["spec"], json!(true));
+}
+
+#[test]
+fn an_event_expectation_keeps_its_payload_through_json() {
+    use orbital_core_base::schema::ExpectDeclaration;
+    let with = json!({ "kind": "event", "traitName": "Checkout", "event": "PLACED",
+        "payload": [{ "name": "orderId", "type": "string", "required": true }] });
+    let decl: ExpectDeclaration = serde_json::from_value(with.clone()).unwrap();
+    assert!(matches!(&decl, ExpectDeclaration::Event { payload: Some(p), .. } if p.len() == 1));
+    assert_eq!(serde_json::to_value(&decl).unwrap(), with);
+    let bare = json!({ "kind": "event", "traitName": "Checkout", "event": "PLACED" });
+    let decl: ExpectDeclaration = serde_json::from_value(bare.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&decl).unwrap(), bare);
+}
+
+#[test]
+fn an_entity_expectation_keeps_its_persistence_marks_and_access_through_json() {
+    use orbital_core_base::schema::{ExpectDeclaration, Persistence};
+    let with = json!({
+        "kind": "entity", "name": "Order", "persistence": "persistent", "shared": true,
+        "shape": [{ "name": "id", "type": "string", "required": true, "primaryKey": true }],
+        "read_policy": ["=", "@user.role", "admin"],
+        "access_waivers": { "update": "visibility depends on another entity" }
+    });
+    let decl: ExpectDeclaration = serde_json::from_value(with.clone()).unwrap();
+    match &decl {
+        ExpectDeclaration::Entity { persistence, shared, read_policy, access_waivers, .. } => {
+            assert_eq!(*persistence, Some(Persistence::Persistent));
+            assert!(*shared);
+            assert!(read_policy.is_some() && access_waivers.is_some());
+        }
+        other => panic!("expected an entity, got {other:?}"),
+    }
+    assert_eq!(serde_json::to_value(&decl).unwrap(), with);
+    let bare = json!({ "kind": "entity", "name": "Order" });
+    let decl: ExpectDeclaration = serde_json::from_value(bare.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&decl).unwrap(), bare, "control: nothing stated writes nothing");
+}
+
+#[test]
+fn a_page_expectation_keeps_the_traits_it_mounts() {
+    use orbital_core_base::schema::ExpectDeclaration;
+    let with = json!({ "kind": "page", "path": "/orders", "traits": ["Checkout", "Receipt"] });
+    let decl: ExpectDeclaration = serde_json::from_value(with.clone()).unwrap();
+    assert!(matches!(&decl, ExpectDeclaration::Page { traits: Some(t), .. } if t.len() == 2));
+    assert_eq!(serde_json::to_value(&decl).unwrap(), with);
+    let bare = json!({ "kind": "page", "path": "/orders" });
+    assert_eq!(serde_json::to_value(serde_json::from_value::<ExpectDeclaration>(bare.clone()).unwrap()).unwrap(), bare);
+}
+
+#[test]
+fn state_and_transition_expectations_round_trip() {
+    use orbital_core_base::schema::ExpectDeclaration;
+    for kind in [
+        json!({ "kind": "state", "traitName": "Checkout", "state": "paid" }),
+        json!({ "kind": "transition", "traitName": "Checkout", "from": "idle", "event": "PAY", "to": "paid", "strict": true }),
+    ] {
+        let decl: ExpectDeclaration = serde_json::from_value(kind.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&decl).unwrap(), kind);
+    }
+}

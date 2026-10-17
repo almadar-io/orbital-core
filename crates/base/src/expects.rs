@@ -1,10 +1,10 @@
 //! `expects` derivation (docs/Almadar_LOLO_Expects_Proposal.md §7): an orbital's consumer-side
 //! requirement declarations computed from the full program it sits in, never authored. It walks
 //! the program as its `.orb` JSON (policy keys, `ref` traits and `reference` imports as written):
-//! `@user.<field>` reads (→ `expects identity`), relation fields, `persist`/`fetch` targets,
+//! `@user.<field>` reads (→ `expects entity [identity]`), relation fields, `persist`/`fetch` targets,
 //! cross-orbital `linkedEntity` and import remap targets (→ `expects entity`), `navigate`
 //! targets a sibling serves (→ `expects page`), and `listens` on a sibling orbital's trait
-//! (→ `expects event`). Shapes copy the provider's declared fields verbatim.
+//! (→ `expects trait`). Shapes copy the provider's declared fields verbatim.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 

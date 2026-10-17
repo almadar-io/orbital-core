@@ -3,11 +3,10 @@
 //! on a promise, so it starts a dispatch, answers the requests it is handed (in any order, all at
 //! once) and resumes. The continuation never leaves this module; only requests and answers cross.
 
-use super::wire::{IoReplyWire, PendingRequestWire, ResolveProgressWire, ServerProgressWire};
+use super::wire::{CallSiteWire, Settled, IoReplyWire, PendingRequestWire, ResolveProgressWire, ServerProgressWire};
 use crate::effects::response::{RunTick, TraitFrom, TransitionHop};
 use crate::effects::executor::{ServiceHandler, SubstrateHandler};
-use crate::payload_validation::{format_payload_failures, validate_event_payload};
-use crate::resumable::{DispatchContinuation, DispatchError, DispatchOutcomes, HostAnswered, IoReply, PendingRequest, Progress, ResolveContinuation, ResolveProgress};
+use crate::resumable::{completion_event, CallSite, DispatchContinuation, DispatchError, DispatchOutcomes, HostAnswered, IoReply, PendingRequest, Progress, ResolveContinuation, ResolveProgress};
 use crate::row_query::RowPage;
 use orbital_core_base::row_set::RowSetRef;
 use crate::config::KernelConfig;
@@ -16,6 +15,8 @@ use crate::entity_source::EntitySource;
 use crate::effects::response::{EventRequest, EventResponse};
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::effect_types::RuntimeEnvironment;
+use orbital_core_base::os::{OsError, OsOp};
+use orbital_core_base::os_grants::{FsMode, OsGrants, OsRequirement};
 use orbital_core_base::value::Value;
 use parking_lot::Mutex;
 use std::collections::{BTreeSet, HashMap};
@@ -437,13 +438,9 @@ impl EmbeddedServer {
         targets: &[(String, String)],
         payload: &Value,
     ) -> Option<EventResponse> {
-        let mut failures = Vec::new();
-        for (trait_name, event) in targets {
-            if let Some(schema) = self.kernel.event_payload_schema(trait_name, event) {
-                failures.extend(validate_event_payload(event, payload, &schema));
-            }
-        }
-        (!failures.is_empty()).then(|| EventResponse::error(format_payload_failures(&failures)))
+        self.kernel
+            .payload_rejection(targets.iter().map(|(t, e)| (t.as_str(), e.as_str())), payload)
+            .map(EventResponse::error)
     }
 
     /// A request that names the traits it dispatches (`traits`) and no `targetTrait`: every declared
@@ -556,6 +553,18 @@ impl EmbeddedServer {
         self.resume(flight, replies.into_iter().map(IoReply::from).collect())
     }
 
+    /// The program's `os/` grants the kernel holds.
+    pub fn os_grants(&self) -> OsGrants {
+        self.kernel.os_grants()
+    }
+
+    /// Whether the program's grants cover `requirement_json` (an `OsRequirement`).
+    pub fn os_allows_json(&self, requirement_json: &str) -> Result<bool, String> {
+        let need: OsRequirement = serde_json::from_str(requirement_json)
+            .map_err(|e| format!("parse requirement_json: {e}"))?;
+        Ok(self.os_grants().allows(&need))
+    }
+
     /// [`Self::start`] over JSON: the request in, a `ServerProgressWire` out.
     pub fn start_json(&self, orbital: &str, request_json: &str) -> Result<String, String> {
         let request: EventRequest =
@@ -656,4 +665,40 @@ fn dispatch_error(error: DispatchError) -> String {
         DispatchError::Kernel(other) => other.to_string(),
         DispatchError::Resume(resume) => resume.to_string(),
     }
+}
+
+/// The `os/` operations that may defer their completion (`OsOp::defers_completion`), as a JSON array of names.
+pub fn os_deferring_ops_json() -> Result<String, String> {
+    let names: Vec<&str> = OsOp::ALL.iter().filter(|op| op.defers_completion()).map(|op| op.name()).collect();
+    serde_json::to_string(&names).map_err(|e| format!("serialize: {e}"))
+}
+
+/// The event a deferred keyed `os/` call's outcome fires on its call site (`completion_event`), as `{ event, payload }`
+/// JSON, or `null` when the site declares no route for the outcome. `outcome_json` is a `Settled<_, OsError>`.
+pub fn os_completion_event_json(site_json: &str, key: &str, outcome_json: &str) -> Result<String, String> {
+    let site: CallSite = serde_json::from_str::<CallSiteWire>(site_json)
+        .map_err(|e| format!("parse site_json: {e}"))?
+        .into();
+    let outcome: Result<Value, OsError> = serde_json::from_str::<Settled<Value, OsError>>(outcome_json)
+        .map_err(|e| format!("parse outcome_json: {e}"))?
+        .into();
+    let fired = completion_event(&site, key, outcome).map(|(event, payload)| EventFired { event, payload });
+    serde_json::to_string(&fired).map_err(|e| format!("serialize: {e}"))
+}
+
+#[derive(serde::Serialize)]
+struct EventFired {
+    event: String,
+    payload: Value,
+}
+
+/// Whether the one glob `glob` matches `path` lexically, as `os/glob` filters its results.
+pub fn os_glob_matches(glob: &str, path: &str) -> bool {
+    OsGrants::read_matcher(glob).fs_allows(std::path::Path::new(path), FsMode::Read)
+}
+
+/// Whether the Chrome match pattern `pattern` matches `url`: the one rule `browser/tab-list` filters by, and a browser
+/// host attaches a `browser/tab-watch` to the tabs it names with.
+pub fn tab_url_matches(pattern: &str, url: &str) -> bool {
+    orbital_core_base::tab_call::matches_pattern(pattern, url)
 }

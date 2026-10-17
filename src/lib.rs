@@ -16,6 +16,7 @@ pub mod codec {
     pub use orbital_core_runtime::webpush;
 }
 pub use orbital_core_base::cron;
+pub use orbital_core_base::sql_guard;
 pub use orbital_core_base::drawable;
 pub mod effects {
     pub use orbital_core_base::effect_row;
@@ -169,7 +170,7 @@ pub mod runtime {
     pub use orbital_core_runtime::entity_access::apply_read_access;
     pub use orbital_core_runtime::entity_access::check_mutation_access;
     pub use orbital_core_runtime::entity_access::collect_user_field_literals;
-    pub use orbital_core_runtime::entity_access::is_access_denied_error;
+    pub use orbital_core_runtime::entity_access::AccessDenied;
     pub use orbital_core_runtime::entity_access::role_satisfying_policy;
     pub use orbital_core_runtime::entity_access::scope_fetched_rows;
     pub use orbital_core_runtime::entity_access::EntityAccessPolicies;
@@ -224,6 +225,10 @@ pub mod runtime {
 }
 pub use orbital_core_base::schema;
 pub use orbital_core_base::secrets;
+pub mod credential_admin {
+    pub use orbital_core_base::credential_admin::*;
+    pub use orbital_core_runtime::credential_admin::{catalog, run, AdminAsks, RotateCounts, StoreListing, StoredName};
+}
 pub use orbital_core_base::shell;
 pub use orbital_core_base::shell_protocol;
 pub use orbital_core_base::signature;

@@ -82,6 +82,31 @@ pub enum Coercion {
     Erase {
         from: OirType,
     },
+    /// A conversion that is legal only when spelled with the `as` cast
+    /// (String → CallKey): plain assignment rejects it.
+    Explicit,
+}
+
+impl Coercion {
+    /// True when the conversion, or one nested in it, is legal only through `as`.
+    pub fn requires_cast(&self) -> bool {
+        match self {
+            Coercion::Explicit => true,
+            Coercion::Wrap(inner) | Coercion::Element(inner) => inner.requires_cast(),
+            Coercion::Unwrap { inner, .. } => inner.requires_cast(),
+            _ => false,
+        }
+    }
+}
+
+/// Plain assignment: `src` converts to `dst` without a cast.
+pub fn assignable(src: &OirType, dst: &OirType) -> bool {
+    sub(src, dst).is_some_and(|c| !c.requires_cast())
+}
+
+/// The `as` cast: `src` converts to `dst`, with or without a cast.
+pub fn castable(src: &OirType, dst: &OirType) -> bool {
+    sub(src, dst).is_some()
 }
 
 pub fn is_object_family(t: &OirType) -> bool {
@@ -116,7 +141,7 @@ pub fn is_json_family(t: &OirType) -> bool {
 /// Kinds the legacy predicate erased to `"string"`: String itself, and the
 /// string-valued Enum/Trait (via `oir_type_kind`).
 pub fn is_string_kind(t: &OirType) -> bool {
-    matches!(t, OirType::String | OirType::Enum { .. } | OirType::Trait)
+    matches!(t, OirType::String | OirType::Enum { .. } | OirType::Trait | OirType::CallKey)
 }
 
 /// Kinds erased to `"number"`: Number, Integer, and Money (numeric at rest).
@@ -144,7 +169,7 @@ pub fn primitive_union_member(dst: &OirType, src: &OirType) -> bool {
         !matches!(
             v.field_type,
             OirType::Struct { .. } | OirType::Union { .. } | OirType::Map { .. } | OirType::Json
-        ) && sub(src, &v.field_type).is_some()
+        ) && assignable(src, &v.field_type)
     })
 }
 
@@ -219,6 +244,11 @@ pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
         },
         // Bytes is an opaque base64 string at rest: only bytes (identity, caught above) fits.
         OirType::Bytes => None,
+        // A call key is a string at rest; a string-kind source converts only through `as`.
+        OirType::CallKey => match src {
+            _ if is_string_kind(src) => Some(Coercion::Explicit),
+            _ => None,
+        },
         // The object family (Struct/Union/Map/File/TypeRef) and the json family
         // (Json/SExpr) are mutually compatible.
         OirType::Struct { .. }
@@ -365,6 +395,7 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         "uuid" => CompatType::Ty(OirType::Uuid),
         "image" => CompatType::Ty(OirType::Image),
         "bytes" => CompatType::Ty(OirType::Bytes),
+        "callkey" | "CallKey" => CompatType::Ty(OirType::CallKey),
         "trait" => CompatType::Ty(OirType::Trait),
         "orbital" => CompatType::Ty(OirType::Orbital),
         "behavior" => CompatType::Ty(OirType::Behavior),
@@ -540,7 +571,7 @@ pub fn tuple_type_slots(type_str: &str) -> Option<Vec<&str>> {
 pub fn set_value_type_compatible(declared: &str, actual: &str) -> bool {
     let d = parse_compat_type(declared);
     let a = parse_compat_type(actual);
-    sub_compat(&a, &d).is_some()
+    sub_compat(&a, &d).is_some_and(|c| !c.requires_cast())
 }
 
 /// The semantic domain a declared type-name names, if it names one. The single
@@ -554,46 +585,6 @@ pub fn semantic_string_kind(declared: &str) -> Option<&'static str> {
         "uuid" => Some("uuid"),
         "image" => Some("image"),
         _ => None,
-    }
-}
-
-/// Does `value` satisfy the semantic domain `kind`? Mirrors
-/// `isSemanticStringValue` in `@almadar/core`; `image` is a URL.
-pub fn semantic_string_value_valid(kind: &str, value: &str) -> bool {
-    match kind {
-        "email" => {
-            let mut parts = value.split('@');
-            let local = parts.next().unwrap_or("");
-            let domain = parts.next().unwrap_or("");
-            parts.next().is_none()
-                && !local.is_empty()
-                && !local.contains(char::is_whitespace)
-                && domain.contains('.')
-                && !domain.contains(char::is_whitespace)
-                && !domain.starts_with('.')
-                && !domain.ends_with('.')
-        }
-        "url" | "image" => {
-            (value.starts_with("http://") || value.starts_with("https://"))
-                && value.len() > "https://".len()
-                && !value.contains(char::is_whitespace)
-        }
-        "phone" => {
-            let digits = value.chars().filter(|c| c.is_ascii_digit()).count();
-            digits >= 7
-                && value
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || matches!(c, '+' | ' ' | '(' | ')' | '.' | '-'))
-        }
-        "uuid" => {
-            let groups: Vec<&str> = value.split('-').collect();
-            groups.len() == 5
-                && [8usize, 4, 4, 4, 12]
-                    .iter()
-                    .zip(groups.iter())
-                    .all(|(len, g)| g.len() == *len && g.chars().all(|c| c.is_ascii_hexdigit()))
-        }
-        _ => true,
     }
 }
 
@@ -632,6 +623,7 @@ pub fn oir_type_kind(t: &crate::ir::types::OirType) -> String {
         OirType::Uuid => "uuid".to_string(),
         OirType::Image => "image".to_string(),
         OirType::Bytes => "bytes".to_string(),
+        OirType::CallKey => "callkey".to_string(),
         // Money is numeric at rest; File is the canonical struct value.
         OirType::Money => "number".to_string(),
         OirType::File => "object".to_string(),
@@ -677,7 +669,8 @@ pub fn oir_type_satisfies_field(inferred: &crate::ir::types::OirType, declared_f
     if is_unknowable(inferred) {
         return true;
     }
-    sub_compat(&CompatType::Ty(inferred.clone()), &parse_compat_type(declared_field)).is_some()
+    sub_compat(&CompatType::Ty(inferred.clone()), &parse_compat_type(declared_field))
+        .is_some_and(|c| !c.requires_cast())
 }
 
 /// Structured sibling of [`oir_type_satisfies_field`] for callers that
@@ -686,7 +679,7 @@ pub fn oir_type_satisfies_field(inferred: &crate::ir::types::OirType, declared_f
 /// unknowable-inferred leniency, compared through `sub` directly — no
 /// string round trip on either side.
 pub fn oir_type_satisfies(inferred: &OirType, declared: &OirType) -> bool {
-    is_unknowable(inferred) || sub(inferred, declared).is_some()
+    is_unknowable(inferred) || assignable(inferred, declared)
 }
 
 /// Structured sibling of [`set_value_type_compatible`]: `declared` is a real
@@ -701,7 +694,7 @@ pub fn oir_type_accepts_kind(declared: &OirType, actual_kind: &str) -> bool {
             return true;
         }
     }
-    sub_compat(&actual, &CompatType::Ty(declared.clone())).is_some()
+    sub_compat(&actual, &CompatType::Ty(declared.clone())).is_some_and(|c| !c.requires_cast())
 }
 
 /// The legacy kind-string vocabulary's representative `OirType`, for callers
@@ -1084,6 +1077,41 @@ mod compat_tests {
         assert_eq!(sub(&Email, &String), None);
         assert_eq!(sub(&Email, &Url), None);
         assert_eq!(sub(&Email, &Email), Some(C::Identity));
+    }
+
+    #[test]
+    fn call_key_is_nominal_a_bare_string_never_assigns_but_a_call_key_widens() {
+        use super::{assignable, castable, sub};
+        assert_eq!(sub(&String, &CallKey), Some(C::Explicit));
+        assert_eq!(sub(&CallKey, &String), Some(C::Identity));
+        assert_eq!(sub(&CallKey, &CallKey), Some(C::Identity));
+        assert_eq!(sub(&Number, &CallKey), None);
+        assert!(!assignable(&String, &CallKey), "a bare string is not assignable");
+        assert!(assignable(&CallKey, &String));
+        assert!(assignable(&CallKey, &CallKey));
+        assert!(!oir_type_satisfies(&String, &CallKey));
+        assert!(oir_type_satisfies(&CallKey, &String));
+        assert!(!set_value_type_compatible("CallKey", "string"));
+        assert!(!set_value_type_compatible("callkey", "string"));
+        assert!(set_value_type_compatible("string", "CallKey"));
+        assert!(set_value_type_compatible("callkey", "callkey"));
+        assert!(!set_value_type_compatible("bytes", "string"), "control: bytes unchanged");
+        assert!(set_value_type_compatible("email", "string"), "control: semantic domains still refine");
+        assert!(castable(&String, &CallKey));
+        assert!(castable(&CallKey, &String));
+        assert!(!castable(&Number, &CallKey));
+    }
+
+    #[test]
+    fn an_optional_or_listed_call_key_slot_still_needs_the_cast() {
+        use super::assignable;
+        use crate::ir::types::OirType as T;
+        let optional = Optional { inner: Box::new(CallKey) };
+        assert!(!assignable(&String, &optional));
+        assert!(assignable(&CallKey, &optional));
+        let keys = T::array(CallKey);
+        assert!(!assignable(&T::array(String), &keys));
+        assert!(assignable(&T::array(CallKey), &keys));
     }
 
     #[test]

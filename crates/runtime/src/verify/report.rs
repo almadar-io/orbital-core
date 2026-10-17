@@ -13,6 +13,8 @@ pub struct Summary {
     pub frames: usize,
     /// Steps whose hermetic preamble could not reach `from` — a coverage gap (not a failure).
     pub inconclusive_frames: usize,
+    /// Steps not driven for a typed reason (`GapReason`), counted apart from passes and failures.
+    pub gap_frames: usize,
     /// Render-ui `@…` bindings the kernel passed through for the client to resolve. NOT
     /// failures here — they are the obligation **Layer 2 must resolve and enforce**.
     pub deferred_client_bindings: usize,
@@ -55,6 +57,7 @@ impl Report {
             .iter()
             .filter(|f| f.status == FrameStatus::Inconclusive)
             .count();
+        let gap_frames = frames.iter().filter(|f| f.status == FrameStatus::Gap).count();
         let deferred_client_bindings = frames.iter().map(|f| f.deferred_bindings.len()).sum();
         let summary = Summary {
             total_checks: verdicts.len(),
@@ -62,6 +65,7 @@ impl Report {
             failed,
             frames: frames.len(),
             inconclusive_frames,
+            gap_frames,
             deferred_client_bindings,
         };
         Report {
@@ -96,12 +100,7 @@ impl Report {
                 continue;
             }
             let failed: Vec<_> = f.effects.iter().filter(|e| e.outcome == "failed").collect();
-            let all_denials = !failed.is_empty()
-                && failed.iter().all(|e| {
-                    e.error
-                        .as_deref()
-                        .is_some_and(crate::entity_access::is_access_denied_error)
-                });
+            let all_denials = !failed.is_empty() && failed.iter().all(|e| e.denied);
             let label = format!(
                 "{}:{}--{}-->{}",
                 f.cause.trait_name, f.cause.from, f.cause.event, f.cause.to

@@ -356,6 +356,7 @@ fn concrete(name: &str) -> Option<OirType> {
         "date" => OirType::Date,
         "datetime" => OirType::DateTime,
         "bytes" => OirType::Bytes,
+        "callkey" => OirType::CallKey,
         "sexpr" => OirType::SExpr,
         "trait" => OirType::Trait,
         "orbital" => OirType::Orbital,
@@ -448,7 +449,8 @@ enum Path {
 /// The type at a dot path through `ty`.
 fn walk_path(ty: &OirType, path: &str) -> Path {
     let mut current = ty.clone();
-    for segment in path.split('.') {
+    let segments = crate::value::split_path(path);
+    for segment in segments.iter().map(|s| s.as_ref()) {
         let here = language_value(unwrap_optional(&current)).clone();
         match &here {
             OirType::Struct { fields } => match fields.iter().find(|f| f.name == segment) {
@@ -590,6 +592,53 @@ fn binds_variable(formal: &OperatorTypeRef) -> bool {
     }
 }
 
+/// The positions a list of tuples of one length shares, an absent slot where they differ; `None` unless every
+/// entry is a tuple of the same non-zero length.
+fn shared_tuple(entries: &[OirType]) -> Option<Vec<OirType>> {
+    let mut merged: Option<Vec<OirType>> = None;
+    for entry in entries {
+        let OirType::Tuple { items } = unwrap_optional(entry) else {
+            return None;
+        };
+        match &mut merged {
+            None if items.is_empty() => return None,
+            None => merged = Some(items.clone()),
+            Some(kept) if kept.len() == items.len() => {
+                for (slot, other) in kept.iter_mut().zip(items) {
+                    if slot != other {
+                        *slot = absent_slot();
+                    }
+                }
+            }
+            Some(_) => return None,
+        }
+    }
+    merged
+}
+
+/// The one type two list-shaped bindings of a variable share: tuples of one length are a tuple of the positions
+/// they share (an absent slot where they differ); a tuple whose items all share a type is a list of it, beside a
+/// list or a tuple of another length. `None` when either is not list-shaped or the shapes do not meet.
+fn merge_list_shapes(a: &OirType, b: &OirType) -> Option<OirType> {
+    let (a, b) = (unwrap_optional(a), unwrap_optional(b));
+    if let Some(shared) = shared_tuple(&[a.clone(), b.clone()]) {
+        return Some(OirType::Tuple { items: shared });
+    }
+    let element_of = |ty: &OirType| -> Option<OirType> {
+        match ty {
+            OirType::Array { inner } => Some((**inner).clone()),
+            OirType::Tuple { items } => {
+                let mut present = items.iter().filter(|t| !is_absent_slot(t));
+                let first = present.next()?;
+                present.all(|t| t == first).then(|| first.clone())
+            }
+            _ => None,
+        }
+    };
+    let (x, y) = (element_of(a)?, element_of(b)?);
+    agrees(&x, &y).then(|| OirType::array(x))
+}
+
 /// Whether `ty` is the type of the empty list literal: a list with no slot.
 fn is_empty_list(ty: &OirType) -> bool {
     matches!(unwrap_optional(ty), OirType::Tuple { items } if items.is_empty())
@@ -708,6 +757,13 @@ fn bind_type(
                             bind_type(of, &element(first), b, mode)?;
                             bind_literal_keys(of, actual, b, mode)
                         }
+                        // Lists of one length, one of them a tuple, are one element type: a tuple is heterogeneous by
+                        // design, so a list of unlike tuples is a list.
+                        Some(_) if shared_tuple(items).is_some() => {
+                            let merged = shared_tuple(items).unwrap_or_default();
+                            bind_type(of, &element(&OirType::Tuple { items: merged }), b, mode)?;
+                            bind_literal_keys(of, actual, b, mode)
+                        }
                         // The empty list has no element to bind.
                         None => {
                             b.note_empty_element(of);
@@ -818,6 +874,16 @@ fn bind_type(
                         expected: "void".to_string(),
                         actual: oir_type_kind(ty),
                     });
+                }
+                // Two lists that differ in the type of an item are still lists of one shape: pairs of unlike types are
+                // pairs, and a tuple whose items share a type is a list of it.
+                if let Some(prior) = b.bound(name) {
+                    if !agrees(prior, ty) {
+                        if let Some(merged) = merge_list_shapes(prior, ty) {
+                            b.vars.insert(name.clone(), vec![merged]);
+                            return Ok(());
+                        }
+                    }
                 }
                 match b.bound(name) {
                     Some(prior) if !agrees(prior, ty) => Err(Mismatch::Conflict {
@@ -957,6 +1023,14 @@ fn bind_unknown(
             Ok(())
         }
         _ => Ok(()),
+    }
+}
+
+/// The built-in nominal types a type-name argument can name: a cast to one yields that type, not a by-name struct.
+pub fn nominal_type(name: &str) -> Option<OirType> {
+    match name {
+        "CallKey" => Some(OirType::CallKey),
+        _ => None,
     }
 }
 
@@ -1185,7 +1259,17 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
             K::Tuple { items } => Some(OirType::Tuple {
                 items: items.iter().map(|i| resolve(i, b)).collect::<Option<Vec<_>>>()?,
             }),
-            K::Map { key, value } => Some(OirType::map(resolve(key, b)?, resolve(value, b)?)),
+            // A map whose values differ in type is a record.
+            K::Map { key, value } => {
+                if let OperatorTypeRef::Tagged(K::Var { name, .. }) = &**value {
+                    if let Some(all) = b.vars.get(name) {
+                        if all.first().is_some_and(|first| !all.iter().all(|t| agrees(first, t))) {
+                            return Some(OirType::Struct { fields: Vec::new() });
+                        }
+                    }
+                }
+                Some(OirType::map(resolve(key, b)?, resolve(value, b)?))
+            }
             K::Object { fields, .. } => {
                 let mut names: Vec<&String> = fields.keys().collect();
                 names.sort();
@@ -1298,7 +1382,7 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 }
                 Some(OirType::Struct { fields: merged })
             }
-            K::Shape => b.shape.clone().map(|name| OirType::TypeRef { name }),
+            K::Shape => b.shape.clone().map(|name| nominal_type(&name).unwrap_or(OirType::TypeRef { name })),
             K::Sexpr { .. } => Some(OirType::SExpr),
             K::Literal { .. }
             | K::Record
@@ -1401,6 +1485,70 @@ mod tests {
                 actual: "string".into()
             })
         );
+    }
+
+    fn binary_var_operator() -> EmbeddedOperator {
+        op(json!([p("a", var("T")), p("b", var("T"))]), var("T"), Some(2))
+    }
+
+    #[test]
+    fn pairs_of_unlike_value_types_bind_one_variable() {
+        let pair = |a: OirType, b: OirType| OirType::Tuple { items: vec![a, b] };
+        let eq = binary_var_operator();
+        let merged = call(
+            &eq,
+            &[ty(pair(OirType::String, OirType::Number)), ty(pair(OirType::String, OirType::String))],
+            Mode::Runtime,
+        );
+        assert_eq!(merged, Ok(Some(pair(OirType::String, absent_slot()))));
+        assert!(
+            call(&eq, &[ty(pair(OirType::String, OirType::Number)), ty(OirType::Number)], Mode::Runtime).is_err(),
+            "control: a pair is not a number"
+        );
+        let triple = OirType::Tuple { items: vec![OirType::String, OirType::Number, OirType::String] };
+        assert!(
+            call(&eq, &[ty(pair(OirType::String, OirType::Number)), ty(triple)], Mode::Runtime).is_err(),
+            "control: unlike pairs and triples are not one shape"
+        );
+        let numbers = OirType::Tuple { items: vec![OirType::Number, OirType::Number] };
+        assert_eq!(
+            call(&eq, &[ty(s_arr(OirType::Number)), ty(numbers)], Mode::Runtime),
+            Ok(Some(s_arr(OirType::Number))),
+            "a tuple of one type is a list of it"
+        );
+    }
+
+    #[test]
+    fn a_map_whose_values_differ_in_type_is_a_record() {
+        let entries = op(
+            json!([p("entries", list(json!({ "kind": "tuple", "items": [var("K"), { "kind": "var", "name": "V", "each": true }] })))]),
+            json!({ "kind": "map", "key": var("K"), "value": var("V") }),
+            Some(1),
+        );
+        let pair = |a: OirType, b: OirType| OirType::Tuple { items: vec![a, b] };
+        let mixed = call(&entries, &[ty(s_arr(pair(OirType::String, OirType::Number)))], Mode::Runtime);
+        assert_eq!(mixed, Ok(Some(OirType::map(OirType::String, OirType::Number))), "control: one value type is a map");
+        let sig = Signature::of(&entries);
+        let mut b = CallBindings::new();
+        sig.bind(&mut b, 0, &ty(s_arr(pair(OirType::String, OirType::Number))), Mode::Runtime).unwrap();
+        sig.bind(&mut b, 0, &ty(s_arr(pair(OirType::String, OirType::String))), Mode::Runtime).unwrap();
+        assert_eq!(sig.result(&b), Some(OirType::Struct { fields: Vec::new() }));
+    }
+
+    #[test]
+    fn a_list_literal_of_unlike_tuples_is_a_list_of_one_element_type() {
+        let count = op(json!([p("arr", list(var("T")))]), json!("number"), Some(1));
+        let pair = |a: OirType, b: OirType| OirType::Tuple { items: vec![a, b] };
+        let unlike = OirType::Tuple {
+            items: vec![pair(OirType::String, OirType::Number), pair(OirType::String, OirType::String)],
+        };
+        assert_eq!(call(&count, &[ty(unlike)], Mode::Static), Ok(Some(OirType::Number)));
+        let lengths = OirType::Tuple {
+            items: vec![pair(OirType::String, OirType::Number), OirType::Tuple { items: vec![OirType::String] }],
+        };
+        assert!(call(&count, &[ty(lengths)], Mode::Static).is_err(), "control: tuples of different lengths");
+        let scalars = OirType::Tuple { items: vec![OirType::Number, OirType::String] };
+        assert!(call(&count, &[ty(scalars)], Mode::Static).is_err(), "control: unlike scalars");
     }
 
     #[test]

@@ -151,6 +151,12 @@ pub struct ServerEffectResult {
     /// Coded failure reason for a persist that resolved no target row, or created on a taken id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<ServerEffectCode>,
+    /// What an `http` effect reached, `"<METHOD> <origin><path>"`; only on `ServerEffectKind::Http`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// The declared `emit.failure` event a failed `http` effect was routed to; absent when it declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed: Option<String>,
 }
 
 /// `EventRequest.run_tick`: which trait's tick the data authority runs once.
@@ -855,33 +861,26 @@ fn server_effect_result(er: &EffectResult) -> Option<ServerEffectResult> {
             None,
             Some(format!("{service}.{method}")),
         ),
-        Effect::Http { method, origin, .. } => (
-            ServerEffectKind::Http,
-            None,
-            Some(format!("{} {}", format!("{method:?}").to_uppercase(), origin.to_string_value())),
-        ),
+        Effect::Http { .. } => (ServerEffectKind::Http, None, None),
         Effect::Fetch { entity_type, .. } => {
             (ServerEffectKind::Fetch, Some(entity_type.clone()), None)
         }
         _ => return None,
     };
     let success = matches!(er.outcome, EffectOutcome::Executed);
-    let denied = matches!(er.outcome, EffectOutcome::Failed)
-        && er
-            .error
-            .as_deref()
-            .map(crate::entity_access::is_access_denied_error)
-            .unwrap_or(false);
+    let denied = matches!(er.outcome, EffectOutcome::Failed) && er.code == Some(ServerEffectCode::Denied);
     Some(ServerEffectResult {
         effect: kind,
         action,
         entity_type,
         name: None,
-        data: er.return_value.clone(),
+        data: (kind != ServerEffectKind::Http).then(|| er.return_value.clone()).flatten(),
         success,
         denied: if denied { Some(true) } else { None },
         error: er.error.clone(),
         code: er.code,
+        target: er.effect.http_target(),
+        routed: er.routed_failure(),
     })
 }
 
@@ -1060,6 +1059,8 @@ mod tests {
             denied: Some(true),
             error: Some("access denied".into()),
             code: None,
+            target: None,
+            routed: None,
         }
     }
 
@@ -1243,12 +1244,12 @@ mod tests {
 
     #[test]
     fn a_server_effect_result_code_round_trips_every_core_value() {
-        for code in ["not-found", "no-row-key", "duplicate-id"] {
+        for code in ["not-found", "no-row-key", "duplicate-id", "denied"] {
             let wire = serde_json::json!({ "effect": "persist", "success": false, "code": code });
             let parsed: ServerEffectResult = serde_json::from_value(wire.clone()).expect("parses");
             assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
         }
-        let bad = serde_json::json!({ "effect": "persist", "success": false, "code": "denied" });
+        let bad = serde_json::json!({ "effect": "persist", "success": false, "code": "forbidden" });
         assert!(serde_json::from_value::<ServerEffectResult>(bad).is_err());
     }
 
@@ -1264,6 +1265,8 @@ mod tests {
             denied: None,
             error: None,
             code: None,
+            target: None,
+            routed: None,
         };
         let json = serde_json::to_value(&result).unwrap();
         assert!(json.get("code").is_none(), "code omitted when unset");

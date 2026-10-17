@@ -117,3 +117,43 @@ fn a_declared_container_is_enforced() {
         "an optional field may be absent"
     );
 }
+
+mod kernel_dispatch {
+    use super::*;
+    use orbital_core_base::effect_types::RuntimeEnvironment;
+    use orbital_core_base::value::Value;
+    use orbital_core_runtime::entity_source::InMemoryEntityCache;
+    use orbital_core_runtime::kernel::{KernelError, RuntimeKernel};
+    use std::sync::Arc;
+
+    fn kernel(environment: RuntimeEnvironment) -> RuntimeKernel {
+        let kernel = RuntimeKernel::new(environment, Arc::new(InMemoryEntityCache::new()), Default::default());
+        kernel.register_schema(schema()).unwrap();
+        kernel
+    }
+
+    fn payload(value: Json) -> Value {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_server_kernel_refuses_a_missing_required_field_before_any_transition() {
+        let kernel = kernel(RuntimeEnvironment::Server);
+        let refused = kernel.dispatch("InlineRender", None, "SEND", payload(json!({})));
+        assert!(
+            matches!(&refused, Err(KernelError::PayloadInvalid(m)) if m == "Payload validation failed for event 'SEND': value (missing, expected string)"),
+            "{refused:?}"
+        );
+        let null = kernel.dispatch("InlineRender", None, "SEND", payload(json!({ "value": null })));
+        assert!(matches!(&null, Err(KernelError::PayloadInvalid(m)) if m.contains("value (null, expected string)")), "{null:?}");
+    }
+
+    #[test]
+    fn control_a_present_field_an_optional_one_and_a_client_kernel_dispatch_as_before() {
+        let server = kernel(RuntimeEnvironment::Server);
+        assert!(server.dispatch("InlineRender", None, "SEND", payload(json!({ "value": "hi" }))).is_ok());
+        assert!(server.dispatch("ChatComposer", None, "SEND", payload(json!({}))).is_ok());
+        let client = kernel(RuntimeEnvironment::Client);
+        assert!(client.dispatch("InlineRender", None, "SEND", payload(json!({}))).is_ok());
+    }
+}

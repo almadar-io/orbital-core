@@ -41,6 +41,10 @@ impl SubstrateHandler for Host {
 }
 
 fn kernel(effect: serde_json::Value, config: KernelConfig) -> RuntimeKernel {
+    kernel_over(effect, config, Arc::new(InMemoryEntityCache::new()))
+}
+
+fn kernel_over(effect: serde_json::Value, config: KernelConfig, source: Arc<dyn EntitySource>) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
         "orbitals": [{
@@ -63,7 +67,7 @@ fn kernel(effect: serde_json::Value, config: KernelConfig) -> RuntimeKernel {
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,
-        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        source,
         config,
     );
     kernel.register_schema(schema).unwrap();
@@ -93,7 +97,7 @@ fn with_host(fail: bool) -> KernelConfig {
 
 #[test]
 fn a_call_service_success_fires_its_success_event_with_the_result() {
-    let k = kernel(json!(["call-service", "webhook", "send", { "texts": ["a"] }, options()]), with_service(false));
+    let k = kernel(json!(["call-service", "test-svc", "run", { "texts": ["a"] }, options()]), with_service(false));
     let (state, got) = after_go(&k);
     assert_eq!(state, "done");
     assert_eq!(got, json!({ "embeddings": [1.0] }));
@@ -101,7 +105,7 @@ fn a_call_service_success_fires_its_success_event_with_the_result() {
 
 #[test]
 fn a_call_service_failure_fires_its_failure_event_with_the_error() {
-    let k = kernel(json!(["call-service", "webhook", "send", {}, options()]), with_service(true));
+    let k = kernel(json!(["call-service", "test-svc", "run", {}, options()]), with_service(true));
     let (state, got) = after_go(&k);
     assert_eq!(state, "failed");
     assert_eq!(got, json!({ "error": "rate limited" }));
@@ -109,7 +113,7 @@ fn a_call_service_failure_fires_its_failure_event_with_the_error() {
 
 #[test]
 fn control_a_call_service_without_emit_fires_nothing() {
-    let k = kernel(json!(["call-service", "webhook", "send", {}]), with_service(false));
+    let k = kernel(json!(["call-service", "test-svc", "run", {}]), with_service(false));
     assert_eq!(after_go(&k).0, "idle");
 }
 
@@ -409,4 +413,55 @@ mod substrate_arguments {
     fn as_value_of(json: serde_json::Value) -> Value {
         serde_json::from_value::<Value>(json).unwrap()
     }
+}
+
+struct DownStore(&'static str);
+
+impl EntitySource for DownStore {
+    fn read(&self, _: &str, _: &str) -> Result<std::sync::Arc<Value>, String> {
+        Err(self.0.to_string())
+    }
+    fn write(&self, _: &str, _: &str, _: &Value) -> Result<Value, String> {
+        Err(self.0.to_string())
+    }
+    fn create(&self, _: &str, _: &Value) -> Result<Value, String> {
+        Err(self.0.to_string())
+    }
+    fn delete(&self, _: &str, _: &str) -> Result<(), String> {
+        Err(self.0.to_string())
+    }
+    fn clear(&self) {}
+    fn count(&self) -> usize {
+        0
+    }
+    fn list(&self, _: &str) -> Result<Vec<std::sync::Arc<Value>>, String> {
+        Err(self.0.to_string())
+    }
+}
+
+fn fetch_failure(effect: serde_json::Value, store: Arc<dyn EntitySource>) -> serde_json::Value {
+    let k = kernel_over(effect, KernelConfig::default(), store);
+    let (state, got) = after_go(&k);
+    assert_eq!(state, "failed", "{got}");
+    got
+}
+
+#[test]
+fn a_fetch_store_error_carries_the_message_and_a_null_code() {
+    let got = fetch_failure(json!(["fetch", "Run", options()]), Arc::new(DownStore("store is down")));
+    assert_eq!(got, json!({ "error": "store is down", "code": null }));
+}
+
+#[test]
+fn a_fetch_by_id_miss_carries_the_not_found_code() {
+    let effect = json!(["fetch", "Run", { "id": "missing", "emit": { "success": "DONE", "failure": "FAILED" } }]);
+    let got = fetch_failure(effect, Arc::new(InMemoryEntityCache::new()));
+    assert_eq!(got, json!({ "error": "Run missing not found", "code": "not-found" }));
+}
+
+#[test]
+fn control_a_fetch_error_that_merely_reads_like_a_denial_carries_a_null_code() {
+    let words = "@Read denied: the declared access policy for `Run` rejected this row";
+    let got = fetch_failure(json!(["fetch", "Run", options()]), Arc::new(DownStore(words)));
+    assert_eq!(got, json!({ "error": words, "code": null }));
 }

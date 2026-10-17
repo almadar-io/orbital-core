@@ -481,6 +481,24 @@ fn hmac_matches_rfc_4231_in_hex_and_base64() {
     assert_eq!(header(&r, "x-sig"), Some("W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM="));
 }
 
+#[test]
+fn hmac_prefix_is_prepended_to_the_header_value_and_absent_stays_bare() {
+    let auth = |extra: serde_json::Value| {
+        let mut auth = json!({"scheme": "hmac-sha256", "credential": "Jefe", "name": "X-Sig", "signs": "what do ya want for nothing?", "encoding": "hex"});
+        auth.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json!({"auth": auth})
+    };
+    let hex = "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843";
+    let r = build(&spec(auth(json!({"prefix": "sha256="})))).unwrap();
+    assert_eq!(header(&r, "x-sig"), Some(format!("sha256={hex}").as_str()));
+    let r = build(&spec(auth(json!({})))).unwrap();
+    assert_eq!(header(&r, "x-sig"), Some(hex));
+    assert!(matches!(
+        parse(HttpMethod::Post, "/x", auth(json!({"prefix": 7}))),
+        Err(HttpRefusal::Invalid(_))
+    ));
+}
+
 fn oauth_spec() -> HttpCallSpec {
     spec(json!({"auth": {"scheme": "oauth2-client", "tokenUrl": "https://auth.example.com/token", "clientId": "CID", "clientSecret": "CSEC", "scope": "read write", "onUnauthorized": "refresh"}}))
 }
@@ -3189,3 +3207,59 @@ mod oauth_client {
     }
 }
 
+
+mod tcp_egress {
+    use super::*;
+
+    fn declared() -> Vec<String> {
+        vec![
+            "redis://cache.internal:6379".to_string(),
+            "postgres://db.internal".to_string(),
+            "https://api.example.com".to_string(),
+        ]
+    }
+
+    #[test]
+    fn a_declared_redis_target_is_allowed_with_its_default_port() {
+        let target = tcp_target_allowed("redis://cache.internal", &declared()).expect("declared");
+        assert_eq!((target.scheme(), target.host(), target.port()), ("redis", "cache.internal", 6379));
+        assert!(tcp_target_allowed("redis://cache.internal:6379", &declared()).is_ok());
+    }
+
+    #[test]
+    fn a_postgres_target_matches_by_default_port() {
+        let target = tcp_target_allowed("postgres://db.internal:5432", &declared()).expect("declared");
+        assert_eq!(target.port(), 5432);
+    }
+
+    #[test]
+    fn an_undeclared_target_is_refused_as_http_refuses() {
+        for (target, why) in [
+            ("redis://other.internal:6379", "host"),
+            ("redis://cache.internal:6380", "port"),
+            ("postgres://db.internal:5433", "port"),
+        ] {
+            assert_eq!(
+                tcp_target_allowed(target, &declared()),
+                Err(HttpRefusal::EgressDenied(target.to_string())),
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_the_scheme_must_match_both_ways() {
+        let https_only = vec!["https://cache.internal:6379".to_string()];
+        assert!(tcp_target_allowed("redis://cache.internal:6379", &https_only).is_err());
+        let redis_only = vec!["redis://api.example.com:443".to_string()];
+        assert!(!origin_allowed("https://api.example.com", &redis_only));
+        assert!(tcp_target_allowed("rediss://cache.internal:6379", &declared()).is_err());
+        assert!(tcp_target_allowed("https://api.example.com", &declared()).is_err());
+    }
+
+    #[test]
+    fn http_calls_to_a_tcp_origin_stay_refused() {
+        assert!(parse_http_call(HttpMethod::Get, "redis://cache.internal:6379", "/x", &val(json!({}))).is_err());
+        assert!(!origin_allowed("redis://cache.internal:6379", &declared()));
+    }
+}

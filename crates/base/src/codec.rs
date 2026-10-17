@@ -117,6 +117,59 @@ pub fn md5(data: &[u8]) -> [u8; 16] {
     Md5::digest(data).into()
 }
 
+/// The scrypt cost of `@almadar/auth`'s `hashApiKey`: N = 2^14, r = 8, p = 1.
+pub const SCRYPT_LOG_N: u8 = 14;
+pub const SCRYPT_R: u32 = 8;
+pub const SCRYPT_P: u32 = 1;
+/// The length of the derived key, in bytes.
+pub const SCRYPT_KEYLEN: usize = 32;
+
+/// scrypt (RFC 7914) at the fixed `hashApiKey` cost: the 32-byte key of `password` over `salt`.
+pub fn scrypt_api_key(password: &[u8], salt: &[u8]) -> Result<[u8; SCRYPT_KEYLEN], String> {
+    let params = scrypt::Params::new(SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P, SCRYPT_KEYLEN).map_err(|e| e.to_string())?;
+    let mut out = [0u8; SCRYPT_KEYLEN];
+    scrypt::scrypt(password, salt, &params, &mut out).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// The bytes of a non-empty, even-length hex string (either case); `None` for anything else.
+pub fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    if text.is_empty() || !text.len().is_multiple_of(2) || !text.is_ascii() {
+        return None;
+    }
+    text.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let hi = (pair[0] as char).to_digit(16)?;
+            let lo = (pair[1] as char).to_digit(16)?;
+            u8::try_from(hi * 16 + lo).ok()
+        })
+        .collect()
+}
+
+/// PBKDF2 with HMAC-SHA256 (RFC 8018 section 5.2): `out_len` bytes derived from `password` and `salt` over
+/// `iterations` rounds (at least one).
+pub fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32, out_len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(out_len + 32);
+    let mut block = 1u32;
+    while out.len() < out_len {
+        let mut seed = salt.to_vec();
+        seed.extend_from_slice(&block.to_be_bytes());
+        let mut u = hmac_sha256(password, &seed);
+        let mut t = u;
+        for _ in 1..iterations.max(1) {
+            u = hmac_sha256(password, &u);
+            for (acc, byte) in t.iter_mut().zip(u) {
+                *acc ^= byte;
+            }
+        }
+        out.extend_from_slice(&t);
+        block += 1;
+    }
+    out.truncate(out_len);
+    out
+}
+
 pub const BLOCK: usize = 64;
 
 /// HMAC-SHA256 (RFC 2104).

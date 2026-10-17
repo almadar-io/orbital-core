@@ -401,7 +401,7 @@ fn sample_value(
     match field.field_type {
         FieldType::String => Some(sample_text(name, entity_name, index, entropy)),
         // Semantic domains synthesize a value that SATISFIES their own validator
-        // (`semantic_string_value_valid`) — the property that keeps the seeder and
+        // (`orbital_core_eval` `semantic_string_value_valid`, the `validate/*` patterns) — the property that keeps the seeder and
         // the validator from drifting.
         FieldType::Email => Some(Value::String(match entropy {
             Entropy::Seeded(rng) => rng.email(),
@@ -525,7 +525,8 @@ fn sample_value(
         | FieldType::Node
         | FieldType::SExpr
         | FieldType::Event
-        | FieldType::EventAddress => None,
+        | FieldType::EventAddress
+        | FieldType::CallKey => None,
     }
 }
 

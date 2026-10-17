@@ -43,7 +43,7 @@ fn kernel(handler: Arc<Recording>) -> RuntimeKernel {
                 "stateMachine": {
                     "states": [{ "name": "idle", "isInitial": true }],
                     "transitions": [
-                        { "from": "idle", "to": "idle", "event": "GO", "effects": [["call-service", "workspace", "tree", {}]] }
+                        { "from": "idle", "to": "idle", "event": "GO", "effects": [["call-service", "test-svc", "run", {}]] }
                     ]
                 }
             }]

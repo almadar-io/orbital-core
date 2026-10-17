@@ -78,7 +78,7 @@ impl RuntimeKernel {
     }
 
     /// The orbital and trait whose step is running: the position a relative address resolves from.
-    fn caller_position(&self) -> (Option<String>, String) {
+    pub(super) fn caller_position(&self) -> (Option<String>, String) {
         let (caller_trait, _) = self.step_site.read().clone().unwrap_or_default();
         let caller_orbital = self.emit_source(&caller_trait).orbital;
         (caller_orbital, caller_trait)

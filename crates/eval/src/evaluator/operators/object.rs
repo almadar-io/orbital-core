@@ -55,7 +55,7 @@ impl Operator for ObjectEntriesOp {
 pub struct ObjectSetOp;
 impl Operator for ObjectSetOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        // ["object/set", obj, "path.to.key", value]
+        // ["object/set", obj, "path.to.key", value]; `\.` in a segment is a literal dot
         require_arity!(args, "object/set", >= 3);
 
         let obj = eval_expr(&args[0], ctx)?;
@@ -63,8 +63,8 @@ impl Operator for ObjectSetOp {
         let value = eval_expr(&args[2], ctx)?;
 
         let mut result = match obj {
-            Value::Object(o) => o,
-            Value::Null => ValueMap::new(),
+            Value::Object(o) => Value::Object(o),
+            Value::Null => Value::Object(ValueMap::new()),
             _ => {
                 return Err(OrbitalError::Eval(EvalError::TypeMismatch {
                     expected: "object".to_string(),
@@ -73,11 +73,14 @@ impl Operator for ObjectSetOp {
             }
         };
 
-        // For simplicity, only handle single-level keys for now
-        // TODO: Handle nested paths like "a.b.c"
-        result.insert(path, value);
+        if !result.set_path(&path, value) {
+            return Err(OrbitalError::Eval(EvalError::TypeMismatch {
+                expected: "an object or list to set into".to_string(),
+                actual: format!("path `{path}`"),
+            }));
+        }
 
-        Ok(Value::Object(result))
+        Ok(result)
     }
 }
 

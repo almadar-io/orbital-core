@@ -85,7 +85,10 @@ fn verify_with_harness(
         .transpose()
         .map_err(|e| e.to_string())?;
     let selected = planner::inline_traits_scoped(schema, resolved_traits.as_deref());
-    let mut frames = Vec::new();
+    let mut frames: Vec<frame::Frame> = Vec::new();
+    // Failure-route steps are never driven: they are credited from the transitions a request step's
+    // own dispatch fired, resolved once every step has run.
+    let mut failure_steps: Vec<(usize, Option<usize>)> = Vec::new();
     let ctx = harness.entity_ctx(schema);
     // The roster's default persona (or none), read once so a per-step role
     // rewrite always restores exactly what the caller bound — never a
@@ -97,6 +100,20 @@ fn verify_with_harness(
             .as_deref()
             .map(|e| harness.effective_seed_id(e));
         for step in planner::plan_trait(td, &ctx, seed_id.as_deref()) {
+            if let Some(route) = step.reply {
+                if route == planner::ReplyRoute::Failure {
+                    failure_steps.push((frames.len(), step.arm));
+                }
+                frames.push(harness.not_driven(
+                    &step,
+                    frames.len(),
+                    step.payload.clone(),
+                    frame::FrameStatus::Gap,
+                    Some(frame::GapReason::NotReachableWithoutNetwork),
+                    "",
+                ));
+                continue;
+            }
             // A role-only persist policy (`@delete (= @user.role "approver")`)
             // denies the default persona unless it happens to carry that role.
             // Deriving the satisfying role per step and rebinding to it before
@@ -116,6 +133,23 @@ fn verify_with_harness(
                 harness.set_persona(default_persona.clone());
             }
             frames.push(frame);
+        }
+    }
+    for (at, arm) in failure_steps {
+        let cause = frames[at].cause.clone();
+        let credited = frames.iter().flat_map(|f| f.fired.iter()).find(|hop| {
+            hop.trait_name == cause.trait_name
+                && hop.from == cause.from
+                && hop.event == cause.event
+                && hop.arm == arm.or(hop.arm)
+        });
+        if let Some(hop) = credited.cloned() {
+            let frame = &mut frames[at];
+            frame.state_before = hop.from;
+            frame.state_after = hop.to;
+            frame.executed = true;
+            frame.status = frame::FrameStatus::Pass;
+            frame.gap = None;
         }
     }
     let mut verdicts = observers::run_all(&frames);
@@ -138,3 +172,298 @@ fn persona_with_field(base: &Value, field: &str, value: &str) -> Value {
     Value::Object(obj)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::verify::frame::FrameStatus;
+    use serde_json::json;
+
+    fn http_schema() -> OrbitalSchema {
+        serde_json::from_value(json!({
+            "name": "App",
+            "egress": ["https://api.example.com"],
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Caller", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [
+                            { "name": "idle", "isInitial": true }, { "name": "waiting" },
+                            { "name": "done" }, { "name": "failed" }
+                        ],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "waiting", "event": "CALL", "effects": [
+                                ["http", "GET", "https://api.example.com", "/items", {},
+                                 { "emit": { "success": "CALLED", "failure": "CALL_FAILED" } }]
+                            ] },
+                            { "from": "waiting", "to": "done", "event": "CALLED",
+                              "guard": ["<", "@payload.status", 300] },
+                            { "from": "waiting", "to": "failed", "event": "CALLED",
+                              "guard": [">=", "@payload.status", 300] },
+                            { "from": "waiting", "to": "failed", "event": "CALL_FAILED" }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_http_effect_is_counted_fired_with_its_request_and_its_reply_arms_are_gaps() {
+        let report = verify_schema("http", http_schema()).unwrap();
+        let call = report
+            .frames
+            .iter()
+            .find(|f| f.cause.event == "CALL")
+            .expect("the CALL step is walked");
+        let http = call.effects.iter().find(|e| e.kind == "http").expect("the http effect is summarised");
+        assert_eq!(http.target, "GET https://api.example.com/items");
+        assert_eq!(http.outcome, "failed", "no response is fabricated: verify has no network");
+        assert_eq!(http.routed.as_deref(), Some("CALL_FAILED"));
+        assert_eq!(call.state_after, "waiting");
+        assert_eq!(call.status, FrameStatus::Pass);
+        assert!(
+            call.effects.iter().all(|e| !(e.kind == "http" && e.outcome == "executed")),
+            "an executed http effect would be a fabricated reply"
+        );
+        let verdict = |name: &str| report.verdicts.iter().find(|v| v.name == name).unwrap();
+        assert!(verdict("effects_fired").passed, "{}", verdict("effects_fired").detail);
+        assert!(verdict("state_transition").passed, "{}", verdict("state_transition").detail);
+
+        let status_of = |event: &str| -> Vec<(FrameStatus, Option<frame::GapReason>, String)> {
+            report
+                .frames
+                .iter()
+                .filter(|f| f.cause.event == event)
+                .map(|f| (f.status, f.gap, f.state_after.clone()))
+                .collect()
+        };
+        let gap = Some(frame::GapReason::NotReachableWithoutNetwork);
+        assert_eq!(
+            status_of("CALLED"),
+            vec![(FrameStatus::Gap, gap, String::new()), (FrameStatus::Gap, gap, String::new())],
+            "both reply arms (2xx and non-2xx) are gaps, never walked from a synthetic state"
+        );
+        assert_eq!(
+            status_of("CALL_FAILED"),
+            vec![(FrameStatus::Pass, None, "failed".to_string())],
+            "the failure arm the request's own dispatch fired is credited"
+        );
+        assert_eq!(call.fired.len(), 1);
+        assert_eq!(call.fired[0].event, "CALL_FAILED");
+        assert_eq!(report.summary.gap_frames, 2);
+        assert!(report.ok());
+    }
+
+    #[test]
+    fn a_failure_arm_the_dispatch_did_not_fire_is_a_gap() {
+        let text = serde_json::to_string(&http_schema()).unwrap().replace(
+            r#""event":"CALL_FAILED"}"#,
+            r#""event":"CALL_FAILED","guard":["=","@payload.kind","never"]}"#,
+        );
+        let report = verify_schema("http", serde_json::from_str(&text).unwrap()).unwrap();
+        let failed: Vec<_> = report.frames.iter().filter(|f| f.cause.event == "CALL_FAILED").collect();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].status, FrameStatus::Gap);
+        assert_eq!(failed[0].gap, Some(frame::GapReason::NotReachableWithoutNetwork));
+    }
+
+    #[test]
+    fn an_http_effect_with_no_failure_route_stays_a_failure() {
+        let mut schema = http_schema();
+        let text = serde_json::to_string(&schema).unwrap().replace(
+            r#","failure":"CALL_FAILED""#,
+            "",
+        );
+        schema = serde_json::from_str(&text).unwrap();
+        let report = verify_schema("http", schema).unwrap();
+        let effects_fired = report.verdicts.iter().find(|v| v.name == "effects_fired").unwrap();
+        assert!(!effects_fired.passed);
+    }
+
+    fn reply_arms(arms: serde_json::Value) -> OrbitalSchema {
+        let mut transitions = vec![json!({ "from": "idle", "to": "idle", "event": "INIT" })];
+        transitions.extend(arms.as_array().unwrap().clone());
+        serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Caller", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [
+                            { "name": "idle", "isInitial": true }, { "name": "waiting" },
+                            { "name": "done" }, { "name": "failed" }, { "name": "other" }
+                        ],
+                        "transitions": transitions
+                    } }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn arm_statuses(arms: serde_json::Value) -> Vec<(String, FrameStatus)> {
+        let report = verify_schema("arms", reply_arms(arms)).unwrap();
+        report
+            .frames
+            .iter()
+            .filter(|f| f.cause.event == "REPLY")
+            .map(|f| (format!("{}->{}", f.cause.to, f.state_after), f.status))
+            .collect()
+    }
+
+    #[test]
+    fn disjoint_arms_each_land_on_their_exact_target() {
+        let statuses = arm_statuses(json!([
+            { "from": "idle", "to": "done", "event": "REPLY", "guard": ["<", "@payload.status", 300] },
+            { "from": "idle", "to": "failed", "event": "REPLY", "guard": [">=", "@payload.status", 300] },
+            { "from": "idle", "to": "other", "event": "REPLY", "guard": ["=", "@payload.status", 404] }
+        ]));
+        assert_eq!(
+            statuses,
+            vec![
+                ("done->done".to_string(), FrameStatus::Pass),
+                ("failed->failed".to_string(), FrameStatus::Pass),
+                ("other->failed".to_string(), FrameStatus::Inconclusive),
+            ],
+            "the third arm (404) is shadowed by the second (>= 300): a coverage gap, not a pass"
+        );
+    }
+
+    #[test]
+    fn an_arm_an_earlier_arm_takes_first_is_an_inconclusive_gap() {
+        let statuses = arm_statuses(json!([
+            { "from": "idle", "to": "done", "event": "REPLY", "guard": ["<", "@payload.status", 500] },
+            { "from": "idle", "to": "failed", "event": "REPLY", "guard": ["<", "@payload.status", 300] }
+        ]));
+        assert_eq!(
+            statuses,
+            vec![
+                ("done->done".to_string(), FrameStatus::Pass),
+                ("failed->done".to_string(), FrameStatus::Inconclusive),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_arm_whose_guard_no_payload_is_planned_for_is_an_inconclusive_gap() {
+        let statuses = arm_statuses(json!([
+            { "from": "idle", "to": "done", "event": "REPLY", "guard": ["str/includes", "@payload.text", "x"] }
+        ]));
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].1, FrameStatus::Inconclusive);
+    }
+
+    fn persistor(effect: serde_json::Value) -> OrbitalSchema {
+        serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Notes",
+                "entity": { "name": "Note", "persistence": "runtime", "fields": [
+                    { "name": "id", "type": "string" }, { "name": "content", "type": "string" }] },
+                "traits": [{ "name": "NotePersistor", "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [
+                            { "key": "DO_CREATE", "name": "DO_CREATE", "payloadSchema": [
+                                { "name": "data", "type": "object", "properties": [
+                                    { "name": "content", "type": "string" }] }] },
+                            { "key": "DO_UPDATE", "name": "DO_UPDATE", "payloadSchema": [
+                                { "name": "data", "type": "object", "properties": [
+                                    { "name": "content", "type": "string" }] }] }
+                        ],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "idle", "event": "DO_CREATE", "effects": [effect] },
+                            { "from": "idle", "to": "idle", "event": "DO_UPDATE",
+                              "effects": [["persist", "update", "Note", "@payload.data"]] }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_create_payload_never_carries_the_seed_rows_id_while_an_update_keeps_it() {
+        let report = verify_schema("notes", persistor(json!(["persist", "create", "Note", "@payload.data"]))).unwrap();
+        let frame = |event: &str| report.frames.iter().find(|f| f.cause.event == event).unwrap();
+        let create = frame("DO_CREATE");
+        assert_eq!(create.payload["data"]["id"], "Note-verify-new-1");
+        assert!(create.effects.iter().all(|e| e.outcome != "failed"), "{:?}", create.effects);
+        assert_eq!(create.status, FrameStatus::Pass);
+        let update = frame("DO_UPDATE");
+        assert_eq!(update.payload["data"]["id"], "Note-verify-seed-1");
+        assert_eq!(update.status, FrameStatus::Pass, "{:?}", update.effects);
+    }
+
+    #[test]
+    fn a_self_identity_create_is_not_seeded_but_its_update_is() {
+        let mut schema = persistor(json!(["persist", "create", "Account", "@payload.data"]));
+        let text = serde_json::to_string(&schema)
+            .unwrap()
+            .replace("\"name\":\"Note\"", "\"name\":\"Account\",\"identity\":true,\"read_policy\":[\"=\",\"@entity.id\",\"@user.id\"]")
+            .replace("\"linkedEntity\":\"Note\"", "\"linkedEntity\":\"Account\"")
+            .replace("[\"persist\",\"update\",\"Note\"", "[\"persist\",\"update\",\"Account\"");
+        schema = serde_json::from_str(&text).unwrap();
+        let viewer: Value = serde_json::from_value(json!({ "id": "viewer-1" })).unwrap();
+        let report = verify_schema_as("accounts", schema, viewer).unwrap();
+        let frame = |event: &str| report.frames.iter().find(|f| f.cause.event == event).unwrap();
+        let create = frame("DO_CREATE");
+        assert_eq!(create.payload["data"]["id"], "viewer-1");
+        assert!(create.effects.iter().all(|e| e.outcome != "failed"), "{:?}", create.effects);
+        assert_eq!(create.status, FrameStatus::Pass);
+        assert_eq!(create.entity_counts.get("Account"), Some(&1), "the create made the only row");
+        let update = frame("DO_UPDATE");
+        assert_eq!(update.payload["data"]["id"], "viewer-1");
+        assert!(update.effects.iter().all(|e| e.outcome != "failed"), "{:?}", update.effects);
+        assert_eq!(update.status, FrameStatus::Pass);
+    }
+
+    #[test]
+    fn a_reply_route_is_scoped_to_the_trait_it_is_delivered_to() {
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "egress": ["https://api.example.com"],
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [
+                    { "name": "Caller", "linkedEntity": "Job",
+                      "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "waiting" }, { "name": "done" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "waiting", "event": "CALL", "effects": [
+                                ["http", "GET", "https://api.example.com", "/items", {}, { "emit": { "success": "DONE" } }]] },
+                            { "from": "waiting", "to": "done", "event": "DONE" }
+                        ] } },
+                    { "name": "Plain", "linkedEntity": "Job",
+                      "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "done", "event": "DONE" }
+                        ] } }
+                ]
+            }]
+        }))
+        .unwrap();
+        let report = verify_schema("scoped", schema).unwrap();
+        let done = |trait_name: &str| {
+            let frame = report
+                .frames
+                .iter()
+                .find(|f| f.cause.event == "DONE" && f.cause.trait_name == trait_name)
+                .unwrap();
+            (frame.status, frame.gap, frame.state_after.clone())
+        };
+        assert_eq!(
+            done("Caller"),
+            (FrameStatus::Gap, Some(frame::GapReason::NotReachableWithoutNetwork), String::new())
+        );
+        assert_eq!(done("Plain"), (FrameStatus::Pass, None, "done".to_string()));
+    }
+}

@@ -570,39 +570,63 @@ impl Operator for ValidateObjectOp {
     }
 }
 
-/// validate/email - Validate email format
+/// Whether `value` matches the pattern the installed operator table declares for the semantic validator `operator`
+/// (`validate/email`, `validate/url`, `validate/phone`, `validate/uuid`). The pattern is `@almadar/core`
+/// `SEMANTIC_STRING_PATTERNS`, carried by the table; a table that lacks it is an error, never a fallback.
+pub fn matches_semantic_pattern(operator: &str, value: &str) -> Result<bool, OrbitalError> {
+    static COMPILED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, regex::Regex>>> = std::sync::OnceLock::new();
+    let cache = COMPILED.get_or_init(Default::default);
+    let mut cache = cache.lock().map_err(|_| {
+        OrbitalError::Eval(EvalError::InvalidArgument(format!("{operator}: pattern cache poisoned")))
+    })?;
+    if !cache.contains_key(operator) {
+        let pattern = orbital_core_base::language::registry::operators()
+            .get(operator)
+            .and_then(|meta| meta.pattern.as_deref())
+            .ok_or_else(|| {
+                OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                    "{operator}: the installed operator table declares no `pattern`"
+                )))
+            })?;
+        let regex = super::string::compile_shared_regex(pattern).ok_or_else(|| {
+            OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                "{operator}: the declared pattern is outside the shared regex dialect"
+            )))
+        })?;
+        cache.insert(operator.to_string(), regex);
+    }
+    Ok(cache.get(operator).is_some_and(|re| re.is_match(value)))
+}
+
+/// Does `value` satisfy the semantic domain `kind` (`email`, `url`, `image`, `phone`, `uuid`; `image` is a URL)?
+/// The same definition the `validate/*` operators evaluate; any other kind has no value rule.
+pub fn semantic_string_value_valid(kind: &str, value: &str) -> Result<bool, OrbitalError> {
+    match kind {
+        "email" => matches_semantic_pattern("validate/email", value),
+        "url" | "image" => matches_semantic_pattern("validate/url", value),
+        "phone" => matches_semantic_pattern("validate/phone", value),
+        "uuid" => matches_semantic_pattern("validate/uuid", value),
+        _ => Ok(true),
+    }
+}
+
+/// validate/email - the `pattern` the operator table declares for it
 pub struct ValidateEmailOp;
 impl Operator for ValidateEmailOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/email", 1);
         let val = eval_expr(&args[0], ctx)?.to_string_value();
-
-        // Basic email validation: contains @ and has characters before and after
-        let is_valid = val.contains('@') && {
-            let parts: Vec<&str> = val.split('@').collect();
-            parts.len() == 2
-                && !parts[0].is_empty()
-                && !parts[1].is_empty()
-                && parts[1].contains('.')
-        };
-
-        Ok(Value::Bool(is_valid))
+        Ok(Value::Bool(matches_semantic_pattern("validate/email", &val)?))
     }
 }
 
-/// validate/url - Validate URL format
+/// validate/url - the `pattern` the operator table declares for it
 pub struct ValidateUrlOp;
 impl Operator for ValidateUrlOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/url", 1);
         let val = eval_expr(&args[0], ctx)?.to_string_value();
-
-        // Basic URL validation
-        let is_valid = (val.starts_with("http://") || val.starts_with("https://"))
-            && val.len() > 10
-            && val.chars().skip(8).any(|c| c == '.');
-
-        Ok(Value::Bool(is_valid))
+        Ok(Value::Bool(matches_semantic_pattern("validate/url", &val)?))
     }
 }
 
@@ -848,21 +872,13 @@ fn days_since_epoch(year: i32) -> i64 {
 // Phase 3.6: Validation Advanced
 // ============================================================================
 
-/// validate/uuid - UUID v4 format check
+/// validate/uuid - the `pattern` the operator table declares for it
 pub struct ValidateUuidOp;
 impl Operator for ValidateUuidOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/uuid", 1);
         let val = eval_expr(&args[0], ctx)?.to_string_value();
-
-        // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-        let is_valid = val.len() == 36
-            && val.chars().enumerate().all(|(i, c)| match i {
-                8 | 13 | 18 | 23 => c == '-',
-                _ => c.is_ascii_hexdigit(),
-            });
-
-        Ok(Value::Bool(is_valid))
+        Ok(Value::Bool(matches_semantic_pattern("validate/uuid", &val)?))
     }
 }
 
@@ -1047,23 +1063,13 @@ impl Operator for TimeDurationOp {
 // Phase 4.6: Validation Extras
 // ============================================================================
 
-/// validate/phone - Phone number format
+/// validate/phone - the `pattern` the operator table declares for it
 pub struct ValidatePhoneOp;
 impl Operator for ValidatePhoneOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/phone", 1);
         let val = eval_expr(&args[0], ctx)?.to_string_value();
-
-        // Basic phone validation: digits, spaces, dashes, parentheses, plus sign
-        // Must have at least 7 digits
-        let digits: String = val.chars().filter(|c| c.is_ascii_digit()).collect();
-        let valid_chars = val.chars().all(|c| {
-            c.is_ascii_digit() || c == ' ' || c == '-' || c == '(' || c == ')' || c == '+'
-        });
-
-        Ok(Value::Bool(
-            valid_chars && digits.len() >= 7 && digits.len() <= 15,
-        ))
+        Ok(Value::Bool(matches_semantic_pattern("validate/phone", &val)?))
     }
 }
 

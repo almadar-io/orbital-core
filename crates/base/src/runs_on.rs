@@ -41,10 +41,26 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("browser/page-facts", RunsOn::Client),
     ("browser/prompt", RunsOn::Client),
     ("browser/push-subscribe", RunsOn::Client),
+    ("browser/tab-act", RunsOn::Client),
+    ("browser/tab-apply", RunsOn::Client),
+    ("browser/tab-apply-many", RunsOn::Client),
+    ("browser/tab-close", RunsOn::Client),
+    ("browser/tab-list", RunsOn::Client),
+    ("browser/tab-navigate", RunsOn::Client),
+    ("browser/tab-open", RunsOn::Client),
+    ("browser/tab-query", RunsOn::Client),
+    ("browser/tab-unwatch", RunsOn::Client),
+    ("browser/tab-watch", RunsOn::Client),
     ("call-service", RunsOn::Server),
     ("cancel-call", RunsOn::Server),
     ("credential-forget", RunsOn::Server),
+    ("credential-list", RunsOn::Server),
+    ("credential-mode", RunsOn::Server),
+    ("credential-remove", RunsOn::Server),
+    ("credential-rotate", RunsOn::Server),
+    ("credential-set", RunsOn::Server),
     ("credential-status", RunsOn::Server),
+    ("credential-test", RunsOn::Server),
     ("fetch", RunsOn::Server),
     ("fetch-stream", RunsOn::Server),
     ("http", RunsOn::Server),
@@ -61,7 +77,9 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("os/watch-process", RunsOn::Server),
     ("os/watch-signal", RunsOn::Server),
     ("persist", RunsOn::Server),
+    ("postgres", RunsOn::Server),
     ("random-bytes", RunsOn::Server),
+    ("redis", RunsOn::Server),
     ("render-ui", RunsOn::Client),
     ("send-server", RunsOn::Client),
     ("swap", RunsOn::Server),
@@ -383,6 +401,7 @@ mod tests {
         assert!(!EFFECT_SITES.iter().any(|(n, _)| *n == "behavior/resolve"));
         assert_eq!(runs_on("behavior/resolve"), RunsOn::Server);
         assert_eq!(runs_on("program/eval"), RunsOn::Server);
+        assert_eq!(runs_on("program/validate"), RunsOn::Server);
         assert_eq!(
             runs_on("math/abs"),
             RunsOn::Any,
@@ -419,10 +438,23 @@ mod tests {
     }
 
     #[test]
+    fn every_tab_effect_runs_on_the_client_and_a_neighbouring_name_does_not() {
+        for op in crate::tab::TabOp::ALL {
+            assert_eq!(
+                EFFECT_SITES.iter().find(|(name, _)| *name == op.name()).map(|(_, site)| *site),
+                Some(RunsOn::Client),
+                "{}",
+                op.name()
+            );
+        }
+        assert!(!EFFECT_SITES.iter().any(|(name, _)| name.starts_with("browser/tab-") && crate::tab::TabOp::from_name(name).is_none()));
+    }
+
+    #[test]
     fn a_call_to_a_browser_only_service_runs_on_the_client() {
-        let residence = Residence::none().with_browser_services(["page".to_string()]);
+        let residence = Residence::none().with_browser_services(["browser-svc".to_string()]);
         assert_eq!(
-            effect_site("call-service", &call("page"), &residence),
+            effect_site("call-service", &call("browser-svc"), &residence),
             RunsOn::Client
         );
         assert_eq!(
@@ -430,7 +462,7 @@ mod tests {
             RunsOn::Server
         );
         assert_eq!(
-            effect_site("call-service", &call("page"), &Residence::none()),
+            effect_site("call-service", &call("browser-svc"), &Residence::none()),
             RunsOn::Server,
             "control: no browser services declared"
         );
@@ -444,8 +476,8 @@ mod tests {
     #[test]
     fn the_ir_call_follows_the_same_rule() {
         use crate::ir::expr::OirExpr;
-        let residence = Residence::none().with_browser_services(["page".to_string()]);
-        let page_call = OirEffect::call_service("page", "openTab", OirExpr::null());
+        let residence = Residence::none().with_browser_services(["browser-svc".to_string()]);
+        let page_call = OirEffect::call_service("browser-svc", "openTab", OirExpr::null());
         let webhook_call = OirEffect::call_service("webhook", "send", OirExpr::null());
         assert_eq!(ir_effect_site(&page_call, &residence), RunsOn::Client);
         assert_eq!(ir_effect_site(&webhook_call, &residence), RunsOn::Server);
@@ -459,9 +491,9 @@ mod tests {
 
     #[test]
     fn a_browser_only_call_is_not_server_work_for_the_dispatch_rule() {
-        let residence = Residence::none().with_browser_services(["page".to_string()]);
+        let residence = Residence::none().with_browser_services(["browser-svc".to_string()]);
         let expr: crate::schema::sexpr::SExpression =
-            serde_json::from_value(serde_json::json!(["call-service", "page", "openTab", {}]))
+            serde_json::from_value(serde_json::json!(["call-service", "browser-svc", "openTab", {}]))
                 .expect("expr");
         assert!(!sexpr_runs_server_effect(&expr, &residence));
         assert!(
@@ -473,8 +505,8 @@ mod tests {
     #[test]
     fn the_module_residence_carries_its_stamped_browser_services() {
         let mut module = crate::ir::types::OirModule::new("App", "1.0.0");
-        module.browser_services = vec!["page".to_string()];
-        assert!(Residence::of_module(&module).is_browser_service("page"));
+        module.browser_services = vec!["browser-svc".to_string()];
+        assert!(Residence::of_module(&module).is_browser_service("browser-svc"));
         assert!(!Residence::of_module(&module).is_browser_service("webhook"));
     }
 

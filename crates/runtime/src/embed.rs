@@ -6,7 +6,7 @@
 pub mod server;
 pub mod wire;
 
-pub use server::{EmbeddedServer, ServerProgress, ServerResolve};
+pub use server::{os_completion_event_json, os_deferring_ops_json, os_glob_matches, tab_url_matches, EmbeddedServer, ServerProgress, ServerResolve};
 
 use orbital_core_base::value::ValueMap;
 use crate::effects::response::{MountSeed, TransitionHop};

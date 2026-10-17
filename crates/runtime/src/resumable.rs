@@ -9,7 +9,8 @@
 //! hand, so a request is asked for once however often the step is replayed.
 
 use crate::effects::executor::{ServiceCaller, ServiceHandler, SubstrateFailure, SubstrateHandler};
-use orbital_core_base::value::Value;
+use orbital_core_base::value::{Value, ValueMap};
+use crate::credential_admin::{RotateCounts, StoreListing};
 use crate::entity_source::EntitySource;
 use orbital_core_base::ir::effects::PageFactField;
 use orbital_core_base::envelope::{Accepted, DeliverRefusal, DeliverRefusalKind, Envelope};
@@ -20,6 +21,7 @@ use crate::http_service::{HttpRequest, HttpResponse, SecretSource, Transport, Tr
 use crate::kernel::dispatch_run::DispatchRun;
 use crate::kernel::KernelError;
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
+use orbital_core_base::tab::{TabAsk, TabFailure, TabFailureKind};
 use crate::process_result::ProcessEventResult;
 use crate::row_query::{guard_unsupported_reason, query_unsupported_reason, QueryCapabilities, QueryRun, RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome, ScanControl, WriteCapabilities};
 use orbital_core_base::row_set::{RowQuery, RowSetRef};
@@ -137,6 +139,12 @@ pub enum IoRequest {
         texts: Vec<String>,
         key: Option<String>,
     },
+    /// One raw ask of a `browser/tab-*` effect: the host performs a tab or page operation and answers its JSON
+    /// reply. `key` lets `cancel-call` abort the ask in flight.
+    Tab {
+        ask: TabAsk,
+        key: Option<String>,
+    },
     /// A credential by name. `principal` is the dispatch's `@user` id for a user-scoped credential
     /// (set by the kernel, never by the program); `None` is the app-wide credential.
     Secret {
@@ -160,6 +168,8 @@ pub enum IoRequest {
     Random {
         bytes: u32,
     },
+    /// The dispatch's wall clock in epoch milliseconds, journaled so a replay sees the same instant.
+    Clock,
     /// One `os/<op>` effect. A streaming op sets `site`: the host dispatches each event to its route, then
     /// answers [`IoAnswer::Os`] with the final reply. `key` lets `cancel-call` abort the ask in flight.
     Os {
@@ -177,6 +187,31 @@ pub enum IoRequest {
     CredentialForget {
         name: String,
         principal: Option<String>,
+    },
+    /// The credential store's state: whether it can encrypt (a master key is present) and the service and name of every
+    /// stored row, never a value. Answered `None` by a host that holds no store.
+    CredentialStoreList,
+    /// The stored value of credential `name`, from the store only (no environment fallthrough).
+    CredentialStoreRead {
+        name: String,
+    },
+    /// Encrypt `value` into the store as credential `name` of `service`, replacing any row of that name.
+    CredentialStoreWrite {
+        service: String,
+        name: String,
+        value: String,
+    },
+    /// Delete the stored row of credential `name`; whether one existed.
+    CredentialStoreRemove {
+        name: String,
+    },
+    /// Re-encrypt every stored row under the current master key.
+    CredentialStoreRotate,
+    /// The host's integrations mode flag; answered `None` by a host that keeps none.
+    CredentialModeRead,
+    /// Switch the host's integrations mode flag to `mock` or `real`; the host may refuse.
+    CredentialModeWrite {
+        mode: String,
     },
     /// What an OAuth flow asks the host to persist (`principal` is set by the kernel, never by the program).
     OAuth {
@@ -209,7 +244,40 @@ pub struct CallSite {
     pub orbital: Option<String>,
     pub trait_name: String,
     pub follow_on: bool,
+    /// The frame the call was made on (`singleton` for an id-less dispatch): a deferred outcome is dispatched to it.
+    /// Not carried by [`crate::embed::wire::CallSiteWire`]: a site rebuilt from the wire addresses `singleton`.
+    pub entity_id: String,
     pub emit: CallRoutes,
+}
+
+/// The event and payload `outcome` fires on `site`'s routes.
+pub fn completion_event(
+    site: &CallSite,
+    key: &str,
+    outcome: Result<Value, OsError>,
+) -> Option<(String, Value)> {
+    let key = Value::String(key.to_string());
+    match outcome {
+        Ok(result) => {
+            let mut fields = match result {
+                Value::Object(fields) => fields,
+                other => ValueMap::from([("value".to_string(), other)]),
+            };
+            fields.insert("key".to_string(), key);
+            Some((site.emit.success.clone()?, Value::Object(fields)))
+        }
+        Err(error) => Some((
+            site.emit.failure.clone()?,
+            Value::Object(ValueMap::from([
+                ("error".to_string(), Value::String(error.message)),
+                (
+                    "kind".to_string(),
+                    Value::String(error.kind.as_str().to_string()),
+                ),
+                ("key".to_string(), key),
+            ])),
+        )),
+    }
 }
 
 /// How a host settled a `call-service` other than by a result or an error.
@@ -247,13 +315,22 @@ pub enum IoAnswer {
     PageFacts(Result<PageFacts, String>),
     Prompt(Result<String, ModelFailure>),
     Embed(Result<Vec<Vec<f64>>, ModelFailure>),
+    Tab(Result<Value, TabFailure>),
     Secret(Result<Option<String>, String>),
     SecretSet(Result<(), String>),
     SecretRotate(Result<(), String>),
     Random(Result<Vec<u8>, String>),
+    Clock(Result<i64, String>),
     Os(Result<Value, OsError>),
     CredentialStatus(Result<bool, String>),
     CredentialForget(Result<(), String>),
+    CredentialStoreList(Result<Option<StoreListing>, String>),
+    CredentialStoreRead(Result<Option<String>, String>),
+    CredentialStoreWrite(Result<(), String>),
+    CredentialStoreRemove(Result<bool, String>),
+    CredentialStoreRotate(Result<RotateCounts, String>),
+    CredentialModeRead(Result<Option<String>, String>),
+    CredentialModeWrite(Result<String, String>),
     OAuth(Result<OAuthReply, String>),
     Deliver(Result<Accepted, DeliverRefusal>),
 }
@@ -402,6 +479,7 @@ impl std::fmt::Debug for IoRequest {
                 .field("key", key)
                 .finish(),
             Self::Embed { texts, key } => f.debug_struct("Embed").field("texts", texts).field("key", key).finish(),
+            Self::Tab { ask, key } => f.debug_struct("Tab").field("ask", ask).field("key", key).finish(),
             Self::Secret { name, principal } => f
                 .debug_struct("Secret")
                 .field("name", name)
@@ -426,6 +504,7 @@ impl std::fmt::Debug for IoRequest {
                 .field("principal", principal)
                 .finish(),
             Self::Random { bytes } => f.debug_struct("Random").field("bytes", bytes).finish(),
+            Self::Clock => f.write_str("Clock"),
             Self::Os { op, args, key, site } => f
                 .debug_struct("Os")
                 .field("op", op)
@@ -443,6 +522,18 @@ impl std::fmt::Debug for IoRequest {
                 .field("name", name)
                 .field("principal", principal)
                 .finish(),
+            Self::CredentialStoreList => f.write_str("CredentialStoreList"),
+            Self::CredentialStoreRead { name } => f.debug_struct("CredentialStoreRead").field("name", name).finish(),
+            Self::CredentialStoreWrite { service, name, .. } => f
+                .debug_struct("CredentialStoreWrite")
+                .field("service", service)
+                .field("name", name)
+                .field("value", &Redacted)
+                .finish(),
+            Self::CredentialStoreRemove { name } => f.debug_struct("CredentialStoreRemove").field("name", name).finish(),
+            Self::CredentialStoreRotate => f.write_str("CredentialStoreRotate"),
+            Self::CredentialModeRead => f.write_str("CredentialModeRead"),
+            Self::CredentialModeWrite { mode } => f.debug_struct("CredentialModeWrite").field("mode", mode).finish(),
             Self::OAuth { ask, principal } => f
                 .debug_struct("OAuth")
                 .field("ask", ask)
@@ -479,6 +570,7 @@ impl std::fmt::Debug for IoAnswer {
             Self::PageFacts(r) => f.debug_tuple("PageFacts").field(r).finish(),
             Self::Prompt(r) => f.debug_tuple("Prompt").field(r).finish(),
             Self::Embed(r) => f.debug_tuple("Embed").field(r).finish(),
+            Self::Tab(r) => f.debug_tuple("Tab").field(r).finish(),
             Self::Secret(r) => {
                 let shown: Result<Option<Redacted>, &String> = match r {
                     Ok(value) => Ok(value.as_ref().map(|_| Redacted)),
@@ -495,6 +587,7 @@ impl std::fmt::Debug for IoAnswer {
                 };
                 f.debug_tuple("Random").field(&shown).finish()
             }
+            Self::Clock(r) => f.debug_tuple("Clock").field(r).finish(),
             Self::Os(r) => {
                 let shown: Result<Redacted, &OsError> = match r {
                     Ok(_) => Ok(Redacted),
@@ -504,6 +597,19 @@ impl std::fmt::Debug for IoAnswer {
             }
             Self::CredentialStatus(r) => f.debug_tuple("CredentialStatus").field(r).finish(),
             Self::CredentialForget(r) => f.debug_tuple("CredentialForget").field(r).finish(),
+            Self::CredentialStoreList(r) => f.debug_tuple("CredentialStoreList").field(r).finish(),
+            Self::CredentialStoreRead(r) => {
+                let shown: Result<Option<Redacted>, &String> = match r {
+                    Ok(value) => Ok(value.as_ref().map(|_| Redacted)),
+                    Err(message) => Err(message),
+                };
+                f.debug_tuple("CredentialStoreRead").field(&shown).finish()
+            }
+            Self::CredentialStoreWrite(r) => f.debug_tuple("CredentialStoreWrite").field(r).finish(),
+            Self::CredentialStoreRemove(r) => f.debug_tuple("CredentialStoreRemove").field(r).finish(),
+            Self::CredentialStoreRotate(r) => f.debug_tuple("CredentialStoreRotate").field(r).finish(),
+            Self::CredentialModeRead(r) => f.debug_tuple("CredentialModeRead").field(r).finish(),
+            Self::CredentialModeWrite(r) => f.debug_tuple("CredentialModeWrite").field(r).finish(),
             Self::OAuth(r) => f.debug_tuple("OAuth").field(r).finish(),
             Self::Deliver(r) => f.debug_tuple("Deliver").field(r).finish(),
         }
@@ -559,13 +665,22 @@ impl IoAnswer {
                 | (IoRequest::PageFacts { .. }, IoAnswer::PageFacts(_))
                 | (IoRequest::Prompt { .. }, IoAnswer::Prompt(_) | IoAnswer::ServiceCancelled)
                 | (IoRequest::Embed { .. }, IoAnswer::Embed(_) | IoAnswer::ServiceCancelled)
+                | (IoRequest::Tab { .. }, IoAnswer::Tab(_) | IoAnswer::ServiceCancelled)
                 | (IoRequest::Secret { .. }, IoAnswer::Secret(_))
                 | (IoRequest::SecretSet { .. }, IoAnswer::SecretSet(_))
                 | (IoRequest::SecretRotate { .. }, IoAnswer::SecretRotate(_))
                 | (IoRequest::Random { .. }, IoAnswer::Random(_))
+                | (IoRequest::Clock, IoAnswer::Clock(_))
                 | (IoRequest::Os { .. }, IoAnswer::Os(_) | IoAnswer::ServiceCancelled)
                 | (IoRequest::CredentialStatus { .. }, IoAnswer::CredentialStatus(_))
                 | (IoRequest::CredentialForget { .. }, IoAnswer::CredentialForget(_))
+                | (IoRequest::CredentialStoreList, IoAnswer::CredentialStoreList(_))
+                | (IoRequest::CredentialStoreRead { .. }, IoAnswer::CredentialStoreRead(_))
+                | (IoRequest::CredentialStoreWrite { .. }, IoAnswer::CredentialStoreWrite(_))
+                | (IoRequest::CredentialStoreRemove { .. }, IoAnswer::CredentialStoreRemove(_))
+                | (IoRequest::CredentialStoreRotate, IoAnswer::CredentialStoreRotate(_))
+                | (IoRequest::CredentialModeRead, IoAnswer::CredentialModeRead(_))
+                | (IoRequest::CredentialModeWrite { .. }, IoAnswer::CredentialModeWrite(_))
                 | (IoRequest::OAuth { .. }, IoAnswer::OAuth(_))
                 | (IoRequest::Deliver { .. }, IoAnswer::Deliver(_))
         )
@@ -767,6 +882,7 @@ pub(crate) fn number_requests(next_id: &mut u64, requests: Asks) -> Vec<PendingR
 pub(crate) const AWAITING_HOST: &str = "awaiting host I/O";
 
 pub(crate) const NO_PAGE_FACTS_HOST: &str = "browser/page-facts: no host answers page facts";
+pub(crate) const NO_TAB_HOST: &str = "browser/tab: no host answers browser tabs";
 
 pub(crate) const NO_PROMPT_HOST: &str = "browser/prompt: no on-device model is wired into this host";
 
@@ -798,6 +914,8 @@ pub(crate) struct IoPort {
     write_capabilities: RwLock<HashMap<String, WriteCapabilities>>,
     /// Fallback notices already logged, one per (kind, entity, reason).
     noticed: Mutex<HashSet<String>>,
+    /// The kernel's configured clock: when set, the time a driver reads (TLS) is this clock's, not a host ask.
+    clock: Option<crate::config::DispatchClock>,
 }
 
 struct Installed<'a> {
@@ -828,7 +946,14 @@ impl IoPort {
             query_capabilities: RwLock::new(HashMap::new()),
             write_capabilities: RwLock::new(HashMap::new()),
             noticed: Mutex::new(HashSet::new()),
+            clock: None,
         }
+    }
+
+    /// This port reads time from `clock`, the kernel's configured dispatch clock (`KernelConfig.clock`).
+    pub(crate) fn with_clock(mut self, clock: Option<crate::config::DispatchClock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     pub(crate) fn set_query_capabilities(
@@ -1461,6 +1586,19 @@ impl IoPort {
         }
     }
 
+    /// One raw `browser/tab-*` ask. A host that answers it cancelled records the verdict for the kernel's route.
+    pub(crate) fn tab(&self, ask: &TabAsk, key: Option<&str>) -> Result<Value, TabFailure> {
+        match self.ask(|| IoRequest::Tab { ask: ask.clone(), key: key.map(str::to_string) }) {
+            Asked::Direct => Err(TabFailure::new(TabFailureKind::Unavailable, NO_TAB_HOST)),
+            Asked::Answer(IoAnswer::Tab(out)) => out,
+            Asked::Answer(IoAnswer::ServiceCancelled) => {
+                *self.verdict.lock() = Some(CallVerdict::Cancelled);
+                Err(TabFailure::new(TabFailureKind::Failed, CALL_CANCELLED))
+            }
+            Asked::Answer(_) | Asked::Withheld => Err(TabFailure::new(TabFailureKind::Failed, AWAITING_HOST)),
+        }
+    }
+
     fn http_answer(&self, answer: IoAnswer) -> Result<HttpResponse, TransportError> {
         match answer {
             IoAnswer::Http(out) => out,
@@ -1554,6 +1692,17 @@ impl IoPort {
         (op.is_stream() || (op.defers_completion() && key.is_some() && routed)).then_some(site)
     }
 
+    pub(crate) fn clock(&self) -> Result<i64, String> {
+        if let Some(clock) = &self.clock {
+            return Ok(clock() as i64);
+        }
+        match self.ask(|| IoRequest::Clock) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::Clock(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
     pub(crate) fn random(&self, bytes: u32) -> Result<Vec<u8>, String> {
         match self.ask(|| IoRequest::Random { bytes }) {
             Asked::Direct => Err(NO_HTTP_HOST.to_string()),
@@ -1580,6 +1729,66 @@ impl IoPort {
         }) {
             Asked::Direct => Err(NO_HTTP_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialForget(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn credential_store_list(&self) -> Result<Option<StoreListing>, String> {
+        match self.ask(|| IoRequest::CredentialStoreList) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::CredentialStoreList(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn credential_store_read(&self, name: &str) -> Result<Option<String>, String> {
+        match self.ask(|| IoRequest::CredentialStoreRead { name: name.to_string() }) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::CredentialStoreRead(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn credential_store_write(&self, service: &str, name: &str, value: &str) -> Result<(), String> {
+        match self.ask(|| IoRequest::CredentialStoreWrite {
+            service: service.to_string(),
+            name: name.to_string(),
+            value: value.to_string(),
+        }) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::CredentialStoreWrite(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn credential_store_remove(&self, name: &str) -> Result<bool, String> {
+        match self.ask(|| IoRequest::CredentialStoreRemove { name: name.to_string() }) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::CredentialStoreRemove(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn credential_store_rotate(&self) -> Result<RotateCounts, String> {
+        match self.ask(|| IoRequest::CredentialStoreRotate) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::CredentialStoreRotate(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn credential_mode_read(&self) -> Result<Option<String>, String> {
+        match self.ask(|| IoRequest::CredentialModeRead) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::CredentialModeRead(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn credential_mode_write(&self, mode: &str) -> Result<String, String> {
+        match self.ask(|| IoRequest::CredentialModeWrite { mode: mode.to_string() }) {
+            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Answer(IoAnswer::CredentialModeWrite(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
     }
@@ -1766,13 +1975,22 @@ impl BlockingHost<'_> {
             | IoRequest::PageFacts { .. }
             | IoRequest::Prompt { .. }
             | IoRequest::Embed { .. }
+            | IoRequest::Tab { .. }
             | IoRequest::Secret { .. }
             | IoRequest::SecretSet { .. }
             | IoRequest::SecretRotate { .. }
             | IoRequest::Random { .. }
+            | IoRequest::Clock
             | IoRequest::Os { .. }
             | IoRequest::CredentialStatus { .. }
             | IoRequest::CredentialForget { .. }
+            | IoRequest::CredentialStoreList
+            | IoRequest::CredentialStoreRead { .. }
+            | IoRequest::CredentialStoreWrite { .. }
+            | IoRequest::CredentialStoreRemove { .. }
+            | IoRequest::CredentialStoreRotate
+            | IoRequest::CredentialModeRead
+            | IoRequest::CredentialModeWrite { .. }
             | IoRequest::OAuth { .. }
             | IoRequest::Deliver { .. } => answer_http(None, request),
         }
@@ -1787,15 +2005,25 @@ impl BlockingHost<'_> {
             | IoRequest::PageFacts { .. }
             | IoRequest::Prompt { .. }
             | IoRequest::Embed { .. }
+            | IoRequest::Tab { .. }
             | IoRequest::Secret { .. }
             | IoRequest::SecretSet { .. }
             | IoRequest::SecretRotate { .. }
             | IoRequest::Random { .. }
+            | IoRequest::Clock
             | IoRequest::Os { .. }
             | IoRequest::CredentialStatus { .. }
             | IoRequest::CredentialForget { .. }
+            | IoRequest::CredentialStoreList
+            | IoRequest::CredentialStoreRead { .. }
+            | IoRequest::CredentialStoreWrite { .. }
+            | IoRequest::CredentialStoreRemove { .. }
+            | IoRequest::CredentialStoreRotate
+            | IoRequest::CredentialModeRead
+            | IoRequest::CredentialModeWrite { .. }
             | IoRequest::OAuth { .. }
             | IoRequest::Deliver { .. } => answer_http(Some(http), request),
+            IoRequest::CancelCall { key } if os_completion_cancelled(http, key) => IoAnswer::Cancelled(Ok(())),
             other => self.answer(other),
         }
     }
@@ -1863,6 +2091,17 @@ fn os_random(_bytes: u32) -> Result<Vec<u8>, String> {
     Err("random: the host must answer Random".to_string())
 }
 
+/// `cancel-call` of a deferred keyed `os/` call: its pending completion is dropped, so its outcome never fires a route.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn os_completion_cancelled(host: &HttpHost<'_>, key: &str) -> bool {
+    host.os.is_some_and(|os| os.handles.cancel_completion(key))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn os_completion_cancelled(_host: &HttpHost<'_>, _key: &str) -> bool {
+    false
+}
+
 /// An [`IoRequest::Os`] answered by the native answerer; wasm hosts answer `Os` themselves.
 #[cfg(not(target_arch = "wasm32"))]
 fn answer_os_host(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer {
@@ -1920,6 +2159,7 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
         })),
         (IoRequest::Prompt { .. }, _) => IoAnswer::Prompt(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_PROMPT_HOST))),
         (IoRequest::Embed { .. }, _) => IoAnswer::Embed(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_EMBED_HOST))),
+        (IoRequest::Tab { .. }, _) => IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::Unavailable, NO_TAB_HOST))),
         (IoRequest::Http { .. } | IoRequest::HttpStream { .. }, None) => {
             IoAnswer::Http(Err(TransportError::Failed(NO_HTTP_HOST.to_string())))
         }
@@ -1942,6 +2182,7 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
         }
         (IoRequest::SecretRotate { .. }, None) => IoAnswer::SecretRotate(Err(NO_HTTP_HOST.to_string())),
         (IoRequest::Random { bytes }, _) => IoAnswer::Random(os_random(*bytes)),
+        (IoRequest::Clock, _) => IoAnswer::Clock(Ok(orbital_core_base::time_util::now_millis())),
         (IoRequest::Os { .. }, _) => answer_os_host(host, request),
         (IoRequest::CredentialStatus { name, principal }, Some(host)) => {
             IoAnswer::CredentialStatus(host.secrets.secret_of(name, principal.as_deref()).map(|value| {
@@ -1964,6 +2205,28 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
         })),
         (IoRequest::CredentialStatus { .. }, None) => IoAnswer::CredentialStatus(Err(NO_HTTP_HOST.to_string())),
         (IoRequest::CredentialForget { .. }, None) => IoAnswer::CredentialForget(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStoreList, Some(host)) => IoAnswer::CredentialStoreList(host.secrets.credential_store_list()),
+        (IoRequest::CredentialStoreRead { name }, Some(host)) => {
+            IoAnswer::CredentialStoreRead(host.secrets.credential_store_read(name))
+        }
+        (IoRequest::CredentialStoreWrite { service, name, value }, Some(host)) => {
+            IoAnswer::CredentialStoreWrite(host.secrets.credential_store_write(service, name, value))
+        }
+        (IoRequest::CredentialStoreRemove { name }, Some(host)) => {
+            IoAnswer::CredentialStoreRemove(host.secrets.credential_store_remove(name))
+        }
+        (IoRequest::CredentialStoreRotate, Some(host)) => IoAnswer::CredentialStoreRotate(host.secrets.credential_store_rotate()),
+        (IoRequest::CredentialModeRead, Some(host)) => IoAnswer::CredentialModeRead(host.secrets.credential_mode()),
+        (IoRequest::CredentialModeWrite { mode }, Some(host)) => {
+            IoAnswer::CredentialModeWrite(host.secrets.set_credential_mode(mode))
+        }
+        (IoRequest::CredentialStoreList, None) => IoAnswer::CredentialStoreList(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStoreRead { .. }, None) => IoAnswer::CredentialStoreRead(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStoreWrite { .. }, None) => IoAnswer::CredentialStoreWrite(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStoreRemove { .. }, None) => IoAnswer::CredentialStoreRemove(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStoreRotate, None) => IoAnswer::CredentialStoreRotate(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialModeRead, None) => IoAnswer::CredentialModeRead(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialModeWrite { .. }, None) => IoAnswer::CredentialModeWrite(Err(NO_HTTP_HOST.to_string())),
         _ => IoAnswer::Service(Err("not an HTTP request".to_string())),
     }
 }
@@ -2349,6 +2612,22 @@ mod http_replay_tests {
     }
 
     #[test]
+    fn a_pinned_dispatch_clock_answers_the_clock_ask_without_asking_the_host() {
+        let pinned: crate::config::DispatchClock = Arc::new(|| 1_700_000_000_123.0);
+        let port = port().with_clock(Some(pinned));
+        let (out, end) = port.run_step(Vec::new(), || port.clock());
+        assert_eq!(out, Ok(1_700_000_000_123));
+        assert!(end.pending.is_empty() && end.diverged.is_none(), "{:?}", end.pending);
+    }
+
+    #[test]
+    fn control_with_no_pinned_clock_the_clock_ask_goes_to_the_host() {
+        let port = port();
+        let (_, end) = port.run_step(Vec::new(), || port.clock());
+        assert!(matches!(end.pending.as_slice(), [IoRequest::Clock]));
+    }
+
+    #[test]
     fn a_random_ask_is_journaled_and_replayed_without_asking_again() {
         let port = port();
         let ask = IoRequest::Random { bytes: 4 };
@@ -2423,6 +2702,7 @@ mod http_replay_tests {
             orbital: None,
             trait_name: "T".into(),
             follow_on: false,
+            entity_id: "singleton".to_string(),
             emit: CallRoutes::default(),
         }));
         let (_, end) = port.run_step(Vec::new(), || port.os(OsOp::ReadFile, &[Value::Null], None));
@@ -2439,6 +2719,7 @@ mod http_replay_tests {
             orbital: None,
             trait_name: "T".into(),
             follow_on: false,
+            entity_id: "singleton".to_string(),
             emit: CallRoutes { success: Some("DONE".into()), failure: Some("FAILED".into()), ..CallRoutes::default() },
         }
     }

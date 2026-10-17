@@ -8,14 +8,13 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use orbital_core_base::codec;
-use crate::embed::wire::{HttpFailureWire, HttpRequestWire, HttpResponseWire, Settled};
 use orbital_core_base::json_value::value_to_json;
 use orbital_core_eval::evaluator::context::BindingContext;
 use orbital_core_eval::evaluator::Evaluator;
 use orbital_core_base::value::{Value, ValueMap};
 
 use orbital_core_base::oauth_client::{OAuthClientDecl, OAuthEndpointKind, OAuthInputs, OAuthMode, OAuthOp, OAuthServerDecl};
-use orbital_core_base::oauth_ask::{OAuthAsk, OAuthFailureReason, OAuthProvider, OAuthReply};
+use orbital_core_base::oauth_ask::{OAuthFailureReason, OAuthProvider};
 use crate::oauth_flow::{FlowAnswer, FlowAsk, FlowFailure, FlowStep, OAuthEnv, OAuthFlow, OAuthHeld};
 use crate::http_service::{HttpRequest, HttpResponse, TransportError};
 use orbital_core_base::schema::sexpr::SExpression;
@@ -285,6 +284,9 @@ pub enum HttpAuth {
         name: String,
         signs: String,
         encoding: DigestEncoding,
+        /// Text prepended to the digest in the header value (`sha256=`); `None` sends the bare digest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
     },
     /// One OAuth operation the driver runs end to end (`oauth_flow`); the host only persists.
     #[serde(rename = "oauth-client")]
@@ -386,8 +388,24 @@ pub fn origin_allowed(url_or_origin: &str, egress: &[String]) -> bool {
     };
     egress
         .iter()
-        .filter_map(|entry| parse_origin(entry))
+        .filter_map(|entry| parse_egress_entry(entry))
         .any(|allowed| allowed == target)
+}
+
+/// A TCP protocol driver's connect target (`redis://host[:port]`, `rediss://`, `postgres://`, `postgresql://`)
+/// against `egress`: exact scheme, host and port, the default port of the scheme when none is written. Refuses
+/// as `http` does, with [`HttpRefusal::EgressDenied`]; an `http(s)` entry never authorizes a TCP target.
+pub fn tcp_target_allowed(origin: &str, egress: &[String]) -> Result<OriginParts, HttpRefusal> {
+    let denied = || HttpRefusal::EgressDenied(origin.to_string());
+    let (target, rest) = split_tcp_url(origin).ok_or_else(denied)?;
+    if !rest.is_empty() {
+        return Err(denied());
+    }
+    if egress.iter().filter_map(|entry| parse_egress_entry(entry)).any(|allowed| allowed == target) {
+        Ok(target)
+    } else {
+        Err(denied())
+    }
 }
 
 fn scalar_text(value: &Value, what: &str) -> Result<Option<String>, HttpRefusal> {
@@ -787,7 +805,7 @@ fn parse_auth(value: &Value) -> Result<HttpAuth, HttpRefusal> {
         "hmac-sha256" => {
             closed_keys(
                 map,
-                &["scheme", "credential", "name", "signs", "encoding"],
+                &["scheme", "credential", "name", "signs", "encoding", "prefix"],
                 "auth",
             )?;
             let encoding = match text_field(map, "encoding", "auth")?.as_str() {
@@ -804,6 +822,7 @@ fn parse_auth(value: &Value) -> Result<HttpAuth, HttpRefusal> {
                 name,
                 signs: text_field(map, "signs", "auth")?,
                 encoding,
+                prefix: map.get("prefix").filter(|v| !v.is_null()).map(|_| text_field(map, "prefix", "auth")).transpose()?,
             })
         }
         "oauth-client" => parse_oauth_client_auth(map),
@@ -1414,13 +1433,14 @@ fn build_request_with_metadata(
             name: header,
             signs,
             encoding,
+            prefix,
         }) => {
             let mac = codec::hmac_sha256(credential(secrets, name)?.as_bytes(), signs.as_bytes());
             let value = match encoding {
                 DigestEncoding::Hex => codec::hex(&mac),
                 DigestEncoding::Base64 => codec::base64_encode(&mac),
             };
-            headers.push((header.clone(), value));
+            headers.push((header.clone(), format!("{}{value}", prefix.as_deref().unwrap_or_default())));
         }
     }
 
@@ -1910,330 +1930,7 @@ pub fn stream_finish(framing: StreamFraming, carry: &mut String) -> Vec<Value> {
 
 // --- the step machine -------------------------------------------------------------------------------------
 
-#[derive(Clone, PartialEq)]
-pub enum HttpAsk {
-    Secret {
-        name: String,
-        scope: SecretScope,
-    },
-    SecretSet {
-        name: String,
-        value: String,
-        ttl_ms: u64,
-        scope: SecretScope,
-    },
-    /// `delay_ms` is how long the host waits before sending (a retry's backoff); `None` sends now.
-    Http {
-        request: HttpRequest,
-        delay_ms: Option<u64>,
-    },
-    HttpStream {
-        request: HttpRequest,
-        framing: StreamFraming,
-    },
-    /// The built request of a beacon call, for the host's fire-and-forget port.
-    Beacon { request: HttpRequest },
-    /// Replace the host-held credential `name` with `value`, durably (a rotated refresh token).
-    SecretRotate {
-        name: String,
-        value: String,
-        scope: SecretScope,
-    },
-    /// `bytes` of host CSPRNG output (journaled by the kernel, so a replay is deterministic).
-    Random { bytes: u32 },
-    /// What an `oauth-client` call needs its host to persist (pending grants, connections, metadata, clock).
-    OAuth { ask: OAuthAsk },
-}
-
-#[derive(Clone, PartialEq)]
-pub enum HttpAnswer {
-    Secret(Result<Option<String>, String>),
-    SecretSet(Result<(), String>),
-    SecretRotate(Result<(), String>),
-    Http(Result<HttpResponse, TransportError>),
-    Beacon(Result<BeaconOutcome, TransportError>),
-    Random(Result<Vec<u8>, String>),
-    OAuth(Result<OAuthReply, String>),
-}
-
-impl std::fmt::Debug for HttpAsk {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Secret { name, scope } => f.debug_struct("Secret").field("name", name).field("scope", scope).finish(),
-            Self::SecretSet { name, ttl_ms, scope, .. } => f
-                .debug_struct("SecretSet")
-                .field("name", name)
-                .field("value", &"<redacted>")
-                .field("ttl_ms", ttl_ms)
-                .field("scope", scope)
-                .finish(),
-            Self::SecretRotate { name, scope, .. } => f
-                .debug_struct("SecretRotate")
-                .field("name", name)
-                .field("value", &"<redacted>")
-                .field("scope", scope)
-                .finish(),
-            Self::Http { request, delay_ms } => f
-                .debug_struct("Http")
-                .field("request", request)
-                .field("delay_ms", delay_ms)
-                .finish(),
-            Self::HttpStream { request, framing } => f
-                .debug_struct("HttpStream")
-                .field("request", request)
-                .field("framing", framing)
-                .finish(),
-            Self::Beacon { request } => f.debug_struct("Beacon").field("request", request).finish(),
-            Self::Random { bytes } => f.debug_struct("Random").field("bytes", bytes).finish(),
-            Self::OAuth { ask } => f.debug_struct("OAuth").field("ask", ask).finish(),
-        }
-    }
-}
-
-impl std::fmt::Debug for HttpAnswer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Secret(Ok(Some(_))) => f.write_str("Secret(Ok(Some(<redacted>)))"),
-            Self::Secret(other) => f.debug_tuple("Secret").field(other).finish(),
-            Self::SecretSet(r) => f.debug_tuple("SecretSet").field(r).finish(),
-            Self::SecretRotate(r) => f.debug_tuple("SecretRotate").field(r).finish(),
-            Self::Http(r) => f.debug_tuple("Http").field(r).finish(),
-            Self::Beacon(r) => f.debug_tuple("Beacon").field(r).finish(),
-            Self::Random(Ok(_)) => f.write_str("Random(Ok(<redacted>))"),
-            Self::Random(Err(message)) => f.debug_tuple("Random").field(&Err::<(), _>(message)).finish(),
-            Self::OAuth(r) => f.debug_tuple("OAuth").field(r).finish(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum HttpStep {
-    Ask(HttpAsk),
-    /// `Ok` = success payload, `Err` = failure payload (both carry `key`).
-    Done(Result<Value, Value>),
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum HttpAskWire {
-    Secret {
-        name: String,
-        #[serde(default, skip_serializing_if = "SecretScope::is_app")]
-        scope: SecretScope,
-    },
-    #[serde(rename_all = "camelCase")]
-    SecretSet {
-        name: String,
-        value: String,
-        ttl_ms: u64,
-        #[serde(default, skip_serializing_if = "SecretScope::is_app")]
-        scope: SecretScope,
-    },
-    SecretRotate {
-        name: String,
-        value: String,
-        #[serde(default, skip_serializing_if = "SecretScope::is_app")]
-        scope: SecretScope,
-    },
-    #[serde(rename_all = "camelCase")]
-    Http {
-        request: HttpRequestWire,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        delay_ms: Option<u64>,
-    },
-    HttpStream { request: HttpRequestWire, framing: StreamFraming },
-    Beacon { request: HttpRequestWire },
-    Random { bytes: u32 },
-    #[serde(rename = "oauth")]
-    OAuth { ask: OAuthAsk },
-}
-
-impl From<&HttpAsk> for HttpAskWire {
-    fn from(ask: &HttpAsk) -> Self {
-        match ask {
-            HttpAsk::Secret { name, scope } => Self::Secret {
-                name: name.clone(),
-                scope: *scope,
-            },
-            HttpAsk::SecretSet {
-                name,
-                value,
-                ttl_ms,
-                scope,
-            } => Self::SecretSet {
-                name: name.clone(),
-                value: value.clone(),
-                ttl_ms: *ttl_ms,
-                scope: *scope,
-            },
-            HttpAsk::SecretRotate { name, value, scope } => Self::SecretRotate {
-                name: name.clone(),
-                value: value.clone(),
-                scope: *scope,
-            },
-            HttpAsk::Http { request, delay_ms } => Self::Http {
-                request: request.into(),
-                delay_ms: *delay_ms,
-            },
-            HttpAsk::HttpStream { request, framing } => Self::HttpStream {
-                request: request.into(),
-                framing: *framing,
-            },
-            HttpAsk::Beacon { request } => Self::Beacon { request: request.into() },
-            HttpAsk::Random { bytes } => Self::Random { bytes: *bytes },
-            HttpAsk::OAuth { ask } => Self::OAuth { ask: ask.clone() },
-        }
-    }
-}
-
-impl From<HttpAskWire> for HttpAsk {
-    fn from(wire: HttpAskWire) -> Self {
-        match wire {
-            HttpAskWire::Secret { name, scope } => Self::Secret { name, scope },
-            HttpAskWire::SecretSet {
-                name,
-                value,
-                ttl_ms,
-                scope,
-            } => Self::SecretSet {
-                name,
-                value,
-                ttl_ms,
-                scope,
-            },
-            HttpAskWire::SecretRotate { name, value, scope } => Self::SecretRotate { name, value, scope },
-            HttpAskWire::Http { request, delay_ms } => Self::Http {
-                request: request.into(),
-                delay_ms,
-            },
-            HttpAskWire::HttpStream { request, framing } => Self::HttpStream {
-                request: request.into(),
-                framing,
-            },
-            HttpAskWire::Beacon { request } => Self::Beacon { request: request.into() },
-            HttpAskWire::Random { bytes } => Self::Random { bytes },
-            HttpAskWire::OAuth { ask } => Self::OAuth { ask },
-        }
-    }
-}
-
-impl Serialize for HttpAsk {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        HttpAskWire::from(self).serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for HttpAsk {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        HttpAskWire::deserialize(deserializer).map(Self::from)
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum HttpAnswerWire {
-    Secret { result: Settled<Option<String>, String> },
-    SecretSet { result: Settled<(), String> },
-    SecretRotate { result: Settled<(), String> },
-    Http { result: Settled<HttpResponseWire, HttpFailureWire> },
-    Beacon { result: Settled<BeaconOutcome, HttpFailureWire> },
-    Random { result: Settled<String, String> },
-    #[serde(rename = "oauth")]
-    OAuth { result: Settled<OAuthReply, String> },
-}
-
-impl From<&HttpAnswer> for HttpAnswerWire {
-    fn from(answer: &HttpAnswer) -> Self {
-        match answer {
-            HttpAnswer::Secret(r) => Self::Secret { result: r.clone().into() },
-            HttpAnswer::SecretSet(r) => Self::SecretSet { result: r.clone().into() },
-            HttpAnswer::SecretRotate(r) => Self::SecretRotate { result: r.clone().into() },
-            HttpAnswer::Http(r) => Self::Http {
-                result: r
-                    .as_ref()
-                    .map(HttpResponseWire::from)
-                    .map_err(HttpFailureWire::from)
-                    .into(),
-            },
-            HttpAnswer::Beacon(r) => Self::Beacon {
-                result: r.as_ref().map_err(HttpFailureWire::from).cloned().into(),
-            },
-            HttpAnswer::Random(r) => Self::Random {
-                result: r.as_ref().map(|bytes| codec::base64_encode(bytes)).map_err(Clone::clone).into(),
-            },
-            HttpAnswer::OAuth(r) => Self::OAuth { result: r.clone().into() },
-        }
-    }
-}
-
-impl TryFrom<HttpAnswerWire> for HttpAnswer {
-    type Error = String;
-
-    fn try_from(wire: HttpAnswerWire) -> Result<Self, String> {
-        Ok(match wire {
-            HttpAnswerWire::Secret { result } => Self::Secret(result.into()),
-            HttpAnswerWire::SecretSet { result } => Self::SecretSet(result.into()),
-            HttpAnswerWire::SecretRotate { result } => Self::SecretRotate(result.into()),
-            HttpAnswerWire::Http { result } => {
-                let result: Result<HttpResponseWire, HttpFailureWire> = result.into();
-                Self::Http(result.map(HttpResponse::from).map_err(TransportError::from))
-            }
-            HttpAnswerWire::Beacon { result } => {
-                let result: Result<BeaconOutcome, HttpFailureWire> = result.into();
-                Self::Beacon(result.map_err(TransportError::from))
-            }
-            HttpAnswerWire::OAuth { result } => Self::OAuth(result.into()),
-            HttpAnswerWire::Random { result } => {
-                let result: Result<String, String> = result.into();
-                Self::Random(match result {
-                    Ok(text) => Ok(codec::base64_decode(&text).map_err(|e| format!("random bytes are not base64: {e}"))?),
-                    Err(message) => Err(message),
-                })
-            }
-        })
-    }
-}
-
-impl Serialize for HttpAnswer {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        HttpAnswerWire::from(self).serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for HttpAnswer {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        HttpAnswerWire::deserialize(deserializer)
-            .and_then(|wire| Self::try_from(wire).map_err(serde::de::Error::custom))
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum HttpStepWire {
-    Ask { ask: HttpAsk },
-    Done { result: Settled<Value, Value> },
-}
-
-impl Serialize for HttpStep {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Ask(ask) => HttpStepWire::Ask { ask: ask.clone() },
-            Self::Done(result) => HttpStepWire::Done {
-                result: result.clone().into(),
-            },
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for HttpStep {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(match HttpStepWire::deserialize(deserializer)? {
-            HttpStepWire::Ask { ask } => Self::Ask(ask),
-            HttpStepWire::Done { result } => Self::Done(result.into()),
-        })
-    }
-}
+pub use crate::driver::{DriverAnswer as HttpAnswer, DriverAsk as HttpAsk, DriverStep as HttpStep};
 
 /// Private credentials and built requests, never serialized or printed with the driver.
 #[derive(Clone, PartialEq, Default)]
@@ -2347,6 +2044,12 @@ pub(crate) fn with_key(mut payload: Value, key: &Option<String>) -> Value {
 }
 
 const BOUNDARY_BYTES: u32 = 16;
+
+impl crate::driver::Driver for HttpCallDriver {
+    fn resume(&mut self, answer: HttpAnswer) -> HttpStep {
+        HttpCallDriver::resume(self, answer)
+    }
+}
 
 impl HttpCallDriver {
     pub fn start(spec: HttpCallSpec, egress: Vec<String>, key: Option<String>) -> (HttpCallDriver, HttpStep) {
@@ -3003,4 +2706,4 @@ impl HttpCallDriver {
 #[allow(unused_imports)]
 use orbital_core_base::http_wire::{RetryOutcome, invalid, closed_keys, text_field, parse_slot_object, whole_number, check_header, credential, v4_public, v6_public};
 #[allow(unused_imports)]
-pub use orbital_core_base::http_wire::{HttpMethod, SecretScope, CredentialSlot, RetryOn, RetryDelay, HttpRetry, RetryOperand, GrantRequest, HttpRefusal, OriginParts, split_url, parse_origin, parse_origin_prefix, parse_credential_status_slot, is_header_name, is_header_value, parse_http_headers, parse_timeout_ms, parse_delay_ms, parse_grant_request, parse_retry, is_public_address};
+pub use orbital_core_base::http_wire::{tcp_default_port, parse_egress_entry, split_tcp_url, HttpMethod, SecretScope, CredentialSlot, RetryOn, RetryDelay, HttpRetry, RetryOperand, GrantRequest, HttpRefusal, OriginParts, split_url, parse_origin, parse_origin_prefix, parse_credential_status_slot, is_header_name, is_header_value, parse_http_headers, parse_timeout_ms, parse_delay_ms, parse_grant_request, parse_retry, is_public_address};

@@ -537,7 +537,7 @@ fn entity_ref_variants_are_unboxed_and_keep_their_untagged_wire_bytes() {
 fn public_layouts_do_not_grow_past_their_measured_native_size() {
     assert_eq!(size_of::<ServerProgress>(), 440, "ServerProgress");
     assert_eq!(size_of::<ServerProgressWire>(), 440, "ServerProgressWire");
-    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 640, "Progress");
+    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 688, "Progress");
     assert_eq!(size_of::<ResolveProgress>(), 488, "ResolveProgress");
     assert_eq!(size_of::<EntityRef>(), 544, "EntityRef");
     assert_eq!(size_of::<SidecarError>(), 144, "SidecarError");

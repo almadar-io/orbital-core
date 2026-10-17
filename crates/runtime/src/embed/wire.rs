@@ -1,6 +1,7 @@
 //! The embedded kernel's wire: what every host (C ABI, JNI, WASM) hands across its boundary as
 //! JSON. Field names are the hosts' contract; `tests/fixtures/embed/golden` pins them.
 
+use crate::credential_admin::{RotateCounts, StoreListing};
 use crate::effects::executor::{ServiceCaller, SubstrateFailure};
 use crate::resumable::{CallRoutes, CallSite, IoAnswer, IoReply, IoRequest, ModelFailure, ModelFailureKind, PageFacts, PendingRequest, RequestId};
 use orbital_core_base::ir::effects::PageFactField;
@@ -9,6 +10,7 @@ use orbital_core_base::oauth_ask::{OAuthAsk, OAuthReply};
 use crate::http_request::{BeaconOutcome, StreamFraming};
 use crate::http_service::{HttpRequest, HttpResponse, TransportError};
 use orbital_core_base::os::{OsError, OsOp};
+use orbital_core_base::tab::{TabAsk, TabFailure};
 use base64::Engine;
 use crate::row_query::{RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteOutcome};
 use orbital_core_base::row_set::RowQuery;
@@ -207,6 +209,9 @@ pub struct CallSiteWire {
     #[serde(rename = "trait")]
     pub trait_name: String,
     pub follow_on: bool,
+    /// The frame the call was made on; absent for the singleton (an id-less dispatch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
     pub emit: CallRoutesWire,
 }
 
@@ -352,6 +357,12 @@ pub enum IoRequestWire {
         key: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
+    Tab {
+        ask: TabAsk,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
     Secret {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -389,6 +400,7 @@ pub enum IoRequestWire {
     },
     #[serde(rename_all = "camelCase")]
     Random { bytes: u32 },
+    Clock,
     #[serde(rename_all = "camelCase")]
     Os {
         op: OsOp,
@@ -410,6 +422,22 @@ pub enum IoRequestWire {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         principal: Option<String>,
     },
+    CredentialStoreList,
+    #[serde(rename_all = "camelCase")]
+    CredentialStoreRead { name: String },
+    #[serde(rename_all = "camelCase")]
+    CredentialStoreWrite {
+        service: String,
+        name: String,
+        #[cfg_attr(test, ts(type = "string"))]
+        value: SecretText,
+    },
+    #[serde(rename_all = "camelCase")]
+    CredentialStoreRemove { name: String },
+    CredentialStoreRotate,
+    CredentialModeRead,
+    #[serde(rename_all = "camelCase")]
+    CredentialModeWrite { mode: String },
 }
 
 /// Why the on-device model or embedder gave no answer.
@@ -614,6 +642,9 @@ pub enum IoAnswerWire {
     Embed {
         result: Settled<Vec<Vec<f64>>, ModelFailureWire>,
     },
+    Tab {
+        result: Settled<Value, TabFailure>,
+    },
     Secret {
         #[cfg_attr(test, ts(type = "Settled<string | null, string>"))]
         result: Settled<Option<SecretText>, String>,
@@ -628,6 +659,10 @@ pub enum IoAnswerWire {
     Random {
         result: Settled<String, String>,
     },
+    /// The host clock, epoch milliseconds.
+    Clock {
+        result: Settled<i64, String>,
+    },
     Os {
         result: Settled<Value, OsError>,
     },
@@ -636,6 +671,28 @@ pub enum IoAnswerWire {
     },
     CredentialForget {
         result: Settled<(), String>,
+    },
+    CredentialStoreList {
+        result: Settled<Option<StoreListing>, String>,
+    },
+    CredentialStoreRead {
+        #[cfg_attr(test, ts(type = "Settled<string | null, string>"))]
+        result: Settled<Option<SecretText>, String>,
+    },
+    CredentialStoreWrite {
+        result: Settled<(), String>,
+    },
+    CredentialStoreRemove {
+        result: Settled<bool, String>,
+    },
+    CredentialStoreRotate {
+        result: Settled<RotateCounts, String>,
+    },
+    CredentialModeRead {
+        result: Settled<Option<String>, String>,
+    },
+    CredentialModeWrite {
+        result: Settled<String, String>,
     },
     #[serde(rename = "oauth")]
     OAuth {
@@ -719,6 +776,7 @@ impl From<&CallSite> for CallSiteWire {
             orbital: site.orbital.clone(),
             trait_name: site.trait_name.clone(),
             follow_on: site.follow_on,
+            entity_id: (site.entity_id != "singleton").then(|| site.entity_id.clone()),
             emit: CallRoutesWire {
                 success: site.emit.success.clone(),
                 failure: site.emit.failure.clone(),
@@ -735,6 +793,7 @@ impl From<CallSiteWire> for CallSite {
             orbital: site.orbital,
             trait_name: site.trait_name,
             follow_on: site.follow_on,
+            entity_id: site.entity_id.unwrap_or_else(|| "singleton".to_string()),
             emit: CallRoutes {
                 success: site.emit.success,
                 failure: site.emit.failure,
@@ -820,6 +879,7 @@ impl From<IoRequestWire> for IoRequest {
             },
             IoRequestWire::Prompt { text, schema, key } => Self::Prompt { text, schema, key },
             IoRequestWire::Embed { texts, key } => Self::Embed { texts, key },
+            IoRequestWire::Tab { ask, key } => Self::Tab { ask, key },
             IoRequestWire::Secret { name, principal } => Self::Secret { name, principal },
             IoRequestWire::SecretSet {
                 name,
@@ -838,6 +898,7 @@ impl From<IoRequestWire> for IoRequest {
                 principal,
             },
             IoRequestWire::Random { bytes } => Self::Random { bytes },
+            IoRequestWire::Clock => Self::Clock,
             IoRequestWire::Os { op, args, key, site } => Self::Os {
                 op,
                 args,
@@ -850,6 +911,15 @@ impl From<IoRequestWire> for IoRequest {
             IoRequestWire::CredentialForget { name, principal } => {
                 Self::CredentialForget { name, principal }
             }
+            IoRequestWire::CredentialStoreList => Self::CredentialStoreList,
+            IoRequestWire::CredentialStoreRead { name } => Self::CredentialStoreRead { name },
+            IoRequestWire::CredentialStoreWrite { service, name, value } => {
+                Self::CredentialStoreWrite { service, name, value: value.into_inner() }
+            }
+            IoRequestWire::CredentialStoreRemove { name } => Self::CredentialStoreRemove { name },
+            IoRequestWire::CredentialStoreRotate => Self::CredentialStoreRotate,
+            IoRequestWire::CredentialModeRead => Self::CredentialModeRead,
+            IoRequestWire::CredentialModeWrite { mode } => Self::CredentialModeWrite { mode },
             IoRequestWire::OAuth { ask, principal } => Self::OAuth { ask, principal },
             IoRequestWire::Deliver { envelope, key, site } => Self::Deliver {
                 envelope,
@@ -958,6 +1028,10 @@ impl From<&IoRequest> for IoRequestWire {
                 texts: texts.clone(),
                 key: key.clone(),
             },
+            IoRequest::Tab { ask, key } => Self::Tab {
+                ask: ask.clone(),
+                key: key.clone(),
+            },
             IoRequest::Secret { name, principal } => Self::Secret {
                 name: name.clone(),
                 principal: principal.clone(),
@@ -979,6 +1053,7 @@ impl From<&IoRequest> for IoRequestWire {
                 principal: principal.clone(),
             },
             IoRequest::Random { bytes } => Self::Random { bytes: *bytes },
+            IoRequest::Clock => Self::Clock,
             IoRequest::Os { op, args, key, site } => Self::Os {
                 op: *op,
                 args: args.clone(),
@@ -993,6 +1068,17 @@ impl From<&IoRequest> for IoRequestWire {
                 name: name.clone(),
                 principal: principal.clone(),
             },
+            IoRequest::CredentialStoreList => Self::CredentialStoreList,
+            IoRequest::CredentialStoreRead { name } => Self::CredentialStoreRead { name: name.clone() },
+            IoRequest::CredentialStoreWrite { service, name, value } => Self::CredentialStoreWrite {
+                service: service.clone(),
+                name: name.clone(),
+                value: SecretText::new(value.clone()),
+            },
+            IoRequest::CredentialStoreRemove { name } => Self::CredentialStoreRemove { name: name.clone() },
+            IoRequest::CredentialStoreRotate => Self::CredentialStoreRotate,
+            IoRequest::CredentialModeRead => Self::CredentialModeRead,
+            IoRequest::CredentialModeWrite { mode } => Self::CredentialModeWrite { mode: mode.clone() },
             IoRequest::OAuth { ask, principal } => Self::OAuth { ask: ask.clone(), principal: principal.clone() },
             IoRequest::Deliver { envelope, key, site } => Self::Deliver {
                 envelope: envelope.clone(),
@@ -1092,6 +1178,9 @@ impl From<&IoAnswer> for IoAnswerWire {
             IoAnswer::Embed(r) => Self::Embed {
                 result: r.as_ref().map(Clone::clone).map_err(ModelFailureWire::from).into(),
             },
+            IoAnswer::Tab(r) => Self::Tab {
+                result: r.clone().into(),
+            },
             IoAnswer::Secret(r) => Self::Secret {
                 result: r.clone().map(|value| value.map(SecretText::new)).into(),
             },
@@ -1108,6 +1197,7 @@ impl From<&IoAnswer> for IoAnswerWire {
                     .map_err(Clone::clone)
                     .into(),
             },
+            IoAnswer::Clock(r) => Self::Clock { result: r.clone().into() },
             IoAnswer::Os(r) => Self::Os { result: r.clone().into() },
             IoAnswer::CredentialStatus(r) => Self::CredentialStatus {
                 result: r.clone().into(),
@@ -1115,6 +1205,15 @@ impl From<&IoAnswer> for IoAnswerWire {
             IoAnswer::CredentialForget(r) => Self::CredentialForget {
                 result: r.clone().into(),
             },
+            IoAnswer::CredentialStoreList(r) => Self::CredentialStoreList { result: r.clone().into() },
+            IoAnswer::CredentialStoreRead(r) => Self::CredentialStoreRead {
+                result: r.clone().map(|value| value.map(SecretText::new)).into(),
+            },
+            IoAnswer::CredentialStoreWrite(r) => Self::CredentialStoreWrite { result: r.clone().into() },
+            IoAnswer::CredentialStoreRemove(r) => Self::CredentialStoreRemove { result: r.clone().into() },
+            IoAnswer::CredentialStoreRotate(r) => Self::CredentialStoreRotate { result: r.clone().into() },
+            IoAnswer::CredentialModeRead(r) => Self::CredentialModeRead { result: r.clone().into() },
+            IoAnswer::CredentialModeWrite(r) => Self::CredentialModeWrite { result: r.clone().into() },
             IoAnswer::OAuth(r) => Self::OAuth { result: r.clone().into() },
             IoAnswer::Deliver(r) => Self::Deliver { result: r.clone().into() },
         }
@@ -1171,6 +1270,7 @@ impl From<IoAnswerWire> for IoAnswer {
                 let result: Result<Vec<Vec<f64>>, ModelFailureWire> = result.into();
                 Self::Embed(result.map_err(ModelFailure::from))
             }
+            IoAnswerWire::Tab { result } => Self::Tab(result.into()),
             IoAnswerWire::Secret { result } => {
                 let result: Result<Option<SecretText>, String> = result.into();
                 Self::Secret(result.map(|value| value.map(SecretText::into_inner)))
@@ -1183,9 +1283,20 @@ impl From<IoAnswerWire> for IoAnswer {
                     orbital_core_base::codec::base64_decode(&text).map_err(|e| format!("random: not base64: {e}"))
                 }))
             }
+            IoAnswerWire::Clock { result } => Self::Clock(result.into()),
             IoAnswerWire::Os { result } => Self::Os(result.into()),
             IoAnswerWire::CredentialStatus { result } => Self::CredentialStatus(result.into()),
             IoAnswerWire::CredentialForget { result } => Self::CredentialForget(result.into()),
+            IoAnswerWire::CredentialStoreList { result } => Self::CredentialStoreList(result.into()),
+            IoAnswerWire::CredentialStoreRead { result } => {
+                let result: Result<Option<SecretText>, String> = result.into();
+                Self::CredentialStoreRead(result.map(|value| value.map(SecretText::into_inner)))
+            }
+            IoAnswerWire::CredentialStoreWrite { result } => Self::CredentialStoreWrite(result.into()),
+            IoAnswerWire::CredentialStoreRemove { result } => Self::CredentialStoreRemove(result.into()),
+            IoAnswerWire::CredentialStoreRotate { result } => Self::CredentialStoreRotate(result.into()),
+            IoAnswerWire::CredentialModeRead { result } => Self::CredentialModeRead(result.into()),
+            IoAnswerWire::CredentialModeWrite { result } => Self::CredentialModeWrite(result.into()),
             IoAnswerWire::OAuth { result } => Self::OAuth(result.into()),
             IoAnswerWire::Deliver { result } => Self::Deliver(result.into()),
         }
@@ -1366,5 +1477,79 @@ impl From<HttpFailureWire> for TransportError {
             HttpFailureWire::Failed { message } => Self::Failed(message),
             HttpFailureWire::Refused { message } => Self::Refused(message),
         }
+    }
+}
+
+#[cfg(test)]
+mod call_site_tests {
+    use super::*;
+
+    fn site(entity_id: &str) -> CallSite {
+        CallSite {
+            orbital: None,
+            trait_name: "Sup".to_string(),
+            follow_on: false,
+            entity_id: entity_id.to_string(),
+            emit: CallRoutes::default(),
+        }
+    }
+
+    #[test]
+    fn a_call_site_keeps_its_frame_across_the_wire_and_the_singleton_stays_off_it() {
+        let row = CallSiteWire::from(&site("row-7"));
+        assert_eq!(row.entity_id.as_deref(), Some("row-7"));
+        assert_eq!(CallSite::from(row).entity_id, "row-7");
+        let single = CallSiteWire::from(&site("singleton"));
+        assert_eq!(single.entity_id, None, "the singleton is the absence of a frame on the wire");
+        assert_eq!(CallSite::from(single).entity_id, "singleton");
+        let old: CallSiteWire = serde_json::from_str(r#"{"trait":"Sup","followOn":false,"emit":{}}"#).expect("an older site parses");
+        assert_eq!(CallSite::from(old).entity_id, "singleton", "control: a site with no frame addresses the singleton");
+    }
+}
+
+#[cfg(test)]
+mod tab_wire_tests {
+    use super::*;
+    use orbital_core_base::tab::{TabAsk, TabCommand, TabFailure, TabFailureKind};
+
+    #[test]
+    fn a_tab_ask_and_its_answer_cross_the_wire_in_the_shape_a_browser_host_reads() {
+        let request = IoRequest::Tab {
+            ask: TabAsk::Command {
+                tab: 4,
+                command: TabCommand::Act {
+                    element_id: "el-1".to_string(),
+                    action: orbital_core_base::tab::TabAction::Click,
+                    text: None,
+                },
+            },
+            key: Some("job".to_string()),
+        };
+        let wire = IoRequestWire::from(&request);
+        let json = serde_json::to_value(&wire).expect("serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "tab",
+                "ask": { "kind": "command", "tab": 4, "command": { "kind": "act", "elementId": "el-1", "action": "click" } },
+                "key": "job"
+            })
+        );
+        let back: IoRequestWire = serde_json::from_value(json).expect("parses");
+        assert_eq!(IoRequest::from(back), request);
+    }
+
+    #[test]
+    fn a_tab_answer_round_trips_whether_it_settles_or_fails() {
+        for answer in [
+            IoAnswer::Tab(Ok(Value::Bool(true))),
+            IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::NotReady, "Tab 3 has no page script"))),
+        ] {
+            let json = serde_json::to_value(IoAnswerWire::from(&answer)).expect("serializes");
+            let back: IoAnswerWire = serde_json::from_value(json).expect("parses");
+            assert_eq!(IoAnswer::from(back), answer);
+        }
+        let failed = serde_json::to_value(IoAnswerWire::from(&IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::NotFound, "gone"))))).unwrap();
+        assert_eq!(failed, serde_json::json!({ "kind": "tab", "result": { "error": { "kind": "not-found", "message": "gone" } } }));
     }
 }

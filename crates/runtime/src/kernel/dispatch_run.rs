@@ -134,6 +134,7 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        self.require_payload([(trait_name, event_name)], &payload)?;
         let run = self.run_of_dispatch(trait_name, entity_id, event_name, payload, delivery, log);
         self.run_straight_through(run)
     }
@@ -176,6 +177,7 @@ impl RuntimeKernel {
         event_name: &str,
         payload: Value,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        self.require_payload(traits.iter().map(|t| (t.as_str(), event_name)), &payload)?;
         let run = self.run_of_each(traits, entity_id, event_name, payload, None, None);
         self.run_straight_through(run)
     }
@@ -190,6 +192,7 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        self.require_payload(traits.iter().map(|t| (t.as_str(), event_name)), &payload)?;
         let run = self.run_of_each(traits, entity_id, event_name, payload, delivery, log);
         self.drive_resumable(Self::continuation_of(run))
     }
@@ -205,6 +208,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        self.require_payload(seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())), &payload)?;
         let run = self.run_of_mount(seeds, entity_id, payload);
         self.run_straight_through(run)
     }
@@ -220,6 +224,7 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        self.require_payload([(trait_name, event_name)], &payload)?;
         let run = self.run_of_dispatch(trait_name, entity_id, event_name, payload, delivery, log);
         self.drive_resumable(Self::continuation_of(run))
     }
@@ -231,6 +236,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        self.require_payload(seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())), &payload)?;
         let run = self.run_of_mount(seeds, entity_id, payload);
         self.drive_resumable(Self::continuation_of(run))
     }
@@ -529,6 +535,11 @@ impl RuntimeKernel {
             .get(&front.trait_name)
             .and_then(|def| def.linked_entity.clone())
             .unwrap_or_else(|| front.trait_name.clone());
+        let singleton_entity = self
+            .entity_definitions
+            .read()
+            .get(&entity_type)
+            .is_some_and(|def| matches!(def.persistence, Some(orbital_core_base::schema::Persistence::Runtime)));
         let listed = self.entity_source.list(&entity_type);
         if self.io.suspended() {
             return Err(Fault::Suspended);
@@ -544,6 +555,17 @@ impl RuntimeKernel {
                     .and_then(|id| id.as_str().map(str::to_string))
             })
             .collect();
+        // A `[runtime]` entity with no rows ticks once on the `singleton` frame (EXEC-TICK-5).
+        if ids.is_empty() && singleton_entity {
+            plans.push_front(SeedPlan {
+                tick: plan.tick.clone().map(|tick| TickSeed {
+                    all_rows: false,
+                    ..tick
+                }),
+                ..plan
+            });
+            return Ok(());
+        }
         for id in ids.into_iter().rev() {
             plans.push_front(SeedPlan {
                 entity_id: Some(id),
@@ -913,7 +935,7 @@ impl RuntimeKernel {
             cascade.queue.push_front(item);
             return Err(Fault::Suspended);
         }
-        if visited.contains(&item.trait_name, &item.event, &from, &item.payload, &frame) {
+        if !item.completion && visited.contains(&item.trait_name, &item.event, &from, &item.payload, &frame) {
             return Ok(true);
         }
         let view = memory.view(&item.trait_name, &item.delivery);
@@ -971,13 +993,15 @@ impl RuntimeKernel {
             Err(fault) => return Err(fault),
         };
         cascade.steps += 1;
-        visited.insert(
-            &item.trait_name,
-            &item.event,
-            &from,
-            item.payload.clone(),
-            frame,
-        );
+        if !item.completion {
+            visited.insert(
+                &item.trait_name,
+                &item.event,
+                &from,
+                item.payload.clone(),
+                frame,
+            );
+        }
         let CascadeItem {
             trait_name: t,
             event: ev,

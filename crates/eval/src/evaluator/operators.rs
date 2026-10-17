@@ -32,6 +32,7 @@ pub use kind::OperatorKind;
 pub mod anim;
 pub mod array;
 pub mod bytes;
+pub mod cast;
 pub mod csv;
 pub mod digest;
 pub mod ease;
@@ -54,6 +55,7 @@ pub mod xml;
 pub use anim::*;
 pub use array::*;
 pub use bytes::*;
+pub use cast::*;
 pub use csv::*;
 pub use digest::*;
 pub use ease::*;
@@ -145,6 +147,9 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "substring" | "str/substring" | "substr" => K::SubstringOp,
         "split" | "str/split" => K::SplitOp,
         "join" | "str/join" => K::JoinOp,
+
+        // Explicit cast
+        "as" => K::AsOp,
 
         // JSON
         "json/parse" => K::JsonParseOp,
@@ -320,6 +325,7 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "base64/valid" => K::Base64ValidOp,
         "hash/sha256" => K::HashSha256Op,
         "hash/md5" => K::HashMd5Op,
+        "hash/scrypt" => K::HashScryptOp,
         "hmac/sha256" => K::HmacSha256Op,
         "titleCase" | "str/titleCase" => K::StrTitleCaseOp,
         "camelCase" | "str/camelCase" => K::StrCamelCaseOp,

@@ -210,6 +210,7 @@ impl RuntimeKernel {
                         orbital: Some(from_orbital.clone()),
                         trait_name: trait_name.to_string(),
                         follow_on,
+                        entity_id: "singleton".to_string(),
                         emit: CallRoutes::default(),
                     };
                     match self.io.deliver(&envelope, site) {

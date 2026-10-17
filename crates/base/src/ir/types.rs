@@ -55,6 +55,10 @@ pub struct OirModule {
     /// The program's `egress` origins: the only hosts its `http` effects may reach.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub egress: Vec<String>,
+    /// The credentials the program declares: `secret` config knobs its `http` auth slots read
+    /// (`secrets::program_credentials`), stamped by the compiler where the knob is still visible.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub program_credentials: Vec<crate::secrets::ProgramCredential>,
     /// The program's declared inbound handlers: the `/api/hooks/<name>` deliveries it serves.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub inbound: Vec<crate::inbound::InboundRoute>,
@@ -62,7 +66,7 @@ pub struct OirModule {
     #[serde(skip_serializing_if = "crate::os_grants::OsGrants::is_empty", default)]
     pub os_grants: crate::os_grants::OsGrants,
     /// Entity names this module `expects` rather than declares — the consumer
-    /// side of `expects entity X` / `expects identity X`. NAMES ONLY: no
+    /// side of `expects entity X` / `expects entity X [identity]`. NAMES ONLY: no
     /// `OirEntity` is synthesized, so codegen and persistence never mistake an
     /// expectation for a declaration. They exist so existence checks (relation
     /// targets, `linkedEntity`, fetch/persist entity args) can tell "promised
@@ -139,6 +143,7 @@ impl OirModule {
             services: vec![],
             browser_services: vec![],
             egress: vec![],
+            program_credentials: vec![],
             inbound: vec![],
             os_grants: Default::default(),
             expected_entities: vec![],
@@ -610,6 +615,10 @@ pub enum OirType {
     /// Binary value; standard padded base64 string at run time, never
     /// implicitly a `string`.
     Bytes,
+    /// A call key: a string at rest, but a bare `string` converts to it only through
+    /// the explicit cast (`Coercion::Explicit`). Distinct from the semantic string
+    /// domains, whose `String` source is refined implicitly.
+    CallKey,
     Json,
     /// Renderable UI content (a `node`-typed field/knob): a pattern node or
     /// array of them. Distinct from `Json` so codegen can emit the canonical
@@ -785,6 +794,7 @@ pub fn field_shape(field: &FieldDefinition) -> OirType {
         FieldType::Money => OirType::Money,
         FieldType::File => OirType::File,
         FieldType::Bytes => OirType::Bytes,
+        FieldType::CallKey => OirType::CallKey,
         FieldType::Array => {
             let inner = field
                 .items
@@ -818,6 +828,7 @@ pub fn field_shape(field: &FieldDefinition) -> OirType {
                 OirType::array(OirType::row(&rel.entity))
             }
             Some(rel) if rel.is_to_many() => OirType::array(OirType::reference(&rel.entity)),
+            Some(rel) if field.intrinsic == Some(true) => OirType::row(&rel.entity),
             Some(rel) => OirType::reference(&rel.entity),
             None => OirType::Json,
         },
@@ -2383,11 +2394,12 @@ mod tests {
         );
     }
 
+    /// `loadedRow : RecordItem @intrinsic` holds the fetched row (LOLO reference), not its id.
     #[test]
-    fn field_shape_intrinsic_to_one_relation_stays_reference() {
+    fn field_shape_intrinsic_to_one_relation_is_a_row() {
         let mut f = relation_field(Some(crate::schema::types::Cardinality::ManyToOne));
         f.intrinsic = Some(true);
-        assert_eq!(field_shape(&f), OirType::reference("Revision"));
+        assert_eq!(field_shape(&f), OirType::row("Revision"));
     }
 
     #[test]

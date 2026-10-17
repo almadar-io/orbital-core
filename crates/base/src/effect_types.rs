@@ -142,8 +142,34 @@ pub enum Effect {
         emit: Option<FetchEmit>,
     },
 
-    /// Abort the in-flight keyed call-service or http started with `key`
-    CancelCall { key: String },
+    /// One redis command. `command` is the list of text items; `options` holds `auth`, `user` and `db`, checked when
+    /// the call runs.
+    Redis {
+        origin: Value,
+        command: Value,
+        options: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// One read-only SQL statement on Postgres. `params` is the list of bind values; `options` holds `auth`, `user`,
+    /// `database`, `tls` and `timeoutMs`, checked when the call runs.
+    Postgres {
+        origin: Value,
+        sql: Value,
+        params: Value,
+        options: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// Abort the in-flight keyed call-service or http started with `key`: one key, or a list of keys
+    /// cancelled in turn (a binding or operator call until the kernel resolves it).
+    CancelCall { key: Value },
 
     /// `n` bytes of host CSPRNG output, journaled; success carries `{ value: base64url, no padding }`.
     RandomBytes {
@@ -177,6 +203,15 @@ pub enum Effect {
     /// Drop the credential named by `credential` the host holds.
     CredentialForget {
         credential: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
+    /// One credential administration effect (`crate::credential_admin`): the kernel decides, the host answers only
+    /// the raw store and mode-flag asks. Server-only.
+    CredentialAdmin {
+        op: crate::credential_admin::CredentialAdminOp,
+        request: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<FetchEmit>,
     },
@@ -318,6 +353,18 @@ pub enum Effect {
         emit: Option<FetchEmit>,
     },
 
+    /// One `browser/tab-<op>` operation on the browser's tabs (client-site, keyed and cancellable). `request` is the
+    /// op's request object, checked when the effect runs; the kernel shapes every result and the host performs only
+    /// the raw tab and page asks.
+    BrowserTab {
+        op: crate::tab::TabOp,
+        request: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
     /// Generic/unknown effect (for extensibility). A substrate op's trailing `{ emit }`
     /// object is split into `emit`: `success` carries `{ result }`, `failure` `{ error }`.
     Custom {
@@ -334,6 +381,16 @@ pub enum Effect {
 pub const CLIENT_EFFECT_KINDS: &[&str] = &["render-ui", "navigate", "navigate-back", "emit"];
 
 impl Effect {
+    /// What an `http` effect reaches, `"<METHOD> <origin><path>"`: the one spelling every verifier and host reads.
+    pub fn http_target(&self) -> Option<String> {
+        match self {
+            Effect::Http { method, origin, path, .. } => {
+                Some(format!("{} {}{}", method.as_str(), origin.to_string_value(), path.to_string_value()))
+            }
+            _ => None,
+        }
+    }
+
     /// Registry name of the operator this effect came from.
     pub fn operator(&self) -> &str {
         match self {
@@ -342,11 +399,14 @@ impl Effect {
             Effect::Persist { .. } | Effect::PersistBatch { .. } => "persist",
             Effect::CallService { .. } => "call-service",
             Effect::Http { .. } => "http",
+            Effect::Redis { .. } => "redis",
+            Effect::Postgres { .. } => "postgres",
             Effect::CancelCall { .. } => "cancel-call",
             Effect::RandomBytes { .. } => "random-bytes",
             Effect::Os { op, .. } => op.name(),
             Effect::CredentialStatus { .. } => "credential-status",
             Effect::CredentialForget { .. } => "credential-forget",
+            Effect::CredentialAdmin { op, .. } => op.name(),
             Effect::OAuthAuthorize { .. } => "oauth-authorize",
             Effect::OAuthConnectionStatus { .. } => "oauth-connection-status",
             Effect::OAuthConnectionForget { .. } => "oauth-connection-forget",
@@ -361,6 +421,7 @@ impl Effect {
             Effect::BrowserBeacon { .. } => "browser/beacon",
             Effect::BrowserPrompt { .. } => "browser/prompt",
             Effect::BrowserEmbed { .. } => "browser/embed",
+            Effect::BrowserTab { op, .. } => op.name(),
             Effect::Custom { name, .. } => name,
         }
     }
@@ -446,11 +507,28 @@ pub struct EffectResult {
     /// fans out to every other connected client.
     pub persist_success: bool,
 
+    /// This `emit` is the reply or failure an effect's declared `emit` route fires on completion (`http`, `os`,
+    /// `persist`, `fetch`, `random-bytes`, `credential-*`, `oauth-*`, a keyed `call-service`, ...): it carries that
+    /// completion's identity, so the dispatch loop never collapses it into an earlier identical delivery
+    /// (EXEC-QUEUE-4).
+    pub completion: bool,
+
     /// Why a failed persist resolved no target row (`ServerEffectResult.code`).
     pub code: Option<crate::bus_event::ServerEffectCode>,
 
     /// For an `emit`: its cross-unit deliveries that were refused (EXEC-QUEUE-9); each one is a `DELIVERY_REJECTED`.
     pub refused: Vec<crate::envelope::DeliveryRefused>,
+
+    /// For a failed `persist batch`: the operation at fault and how many ran before it.
+    pub batch_failure: Option<BatchFailure>,
+}
+
+/// Where a `persist batch` stopped: the position of the failing operation in the batch and the number of
+/// operations that completed before it (a store that runs the batch atomically has rolled those back).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatchFailure {
+    pub index: usize,
+    pub completed_count: usize,
 }
 
 impl EffectResult {
@@ -464,8 +542,10 @@ impl EffectResult {
             entity_type: None,
             total_count: None,
             persist_success: false,
+            completion: false,
             code: None,
             refused: Vec::new(),
+            batch_failure: None,
         }
     }
 
@@ -479,8 +559,10 @@ impl EffectResult {
             entity_type: None,
             total_count: None,
             persist_success: false,
+            completion: false,
             code: None,
             refused: Vec::new(),
+            batch_failure: None,
         }
     }
 
@@ -501,8 +583,10 @@ impl EffectResult {
             entity_type: Some(entity_type.to_string()),
             total_count: total,
             persist_success: false,
+            completion: false,
             code: None,
             refused: Vec::new(),
+            batch_failure: None,
         }
     }
 
@@ -521,8 +605,10 @@ impl EffectResult {
             entity_type: Some(reference.entity_type.clone()),
             total_count: total,
             persist_success: false,
+            completion: false,
             code: None,
             refused: Vec::new(),
+            batch_failure: None,
         }
     }
 
@@ -536,8 +622,10 @@ impl EffectResult {
             entity_type: None,
             total_count: None,
             persist_success: false,
+            completion: false,
             code: None,
             refused: Vec::new(),
+            batch_failure: None,
         }
     }
 
@@ -551,14 +639,44 @@ impl EffectResult {
             entity_type: None,
             total_count: None,
             persist_success: false,
+            completion: false,
             code: None,
             refused: Vec::new(),
+            batch_failure: None,
         }
     }
 
     /// This result, marked as a `persist` effect's success envelope.
+    /// Mark this `emit` as an effect's completion delivery.
+    pub fn as_completion(mut self) -> Self {
+        self.completion = true;
+        self
+    }
+
     pub fn as_persist_success(mut self) -> Self {
         self.persist_success = true;
+        self
+    }
+
+    /// The declared `emit.failure` event an `http` effect's failure was routed to; `None` for a success, an
+    /// effect that is not `http`, or a call that declares none.
+    pub fn routed_failure(&self) -> Option<String> {
+        match (&self.effect, &self.outcome) {
+            (
+                Effect::Http { emit: Some(emit), .. }
+                | Effect::Redis { emit: Some(emit), .. }
+                | Effect::Postgres { emit: Some(emit), .. },
+                EffectOutcome::Failed,
+            ) => {
+                emit.failure.clone()
+            }
+            _ => None,
+        }
+    }
+
+    /// This failed `persist batch`, with the operation that failed.
+    pub fn with_batch_failure(mut self, index: usize, completed_count: usize) -> Self {
+        self.batch_failure = Some(BatchFailure { index, completed_count });
         self
     }
 
@@ -578,8 +696,10 @@ impl EffectResult {
             entity_type: None,
             total_count: None,
             persist_success: false,
+            completion: false,
             code: None,
             refused: Vec::new(),
+            batch_failure: None,
         }
     }
 
@@ -641,6 +761,10 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
         return parse_os(os_op, args);
     }
 
+    if let Some(tab_op) = crate::tab::TabOp::from_name(op) {
+        return parse_tab(tab_op, args);
+    }
+
     match op {
         "emit" => parse_emit(args),
         "set" => parse_set(args),
@@ -648,10 +772,15 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
         "fetch" => parse_fetch(args),
         "call-service" => parse_call_service(args),
         "http" => parse_http(args),
+        "redis" => parse_redis(args),
+        "postgres" => parse_postgres(args),
         "cancel-call" => parse_cancel_call(args),
         "random-bytes" => parse_random_bytes(args),
         "credential-status" => parse_credential(args, true),
         "credential-forget" => parse_credential(args, false),
+        admin if crate::credential_admin::CredentialAdminOp::from_name(admin).is_some() => {
+            parse_credential_admin(admin, args)
+        }
         "oauth-authorize" => parse_oauth_authorize(args),
         "oauth-connection-status" => parse_oauth_connection(args, true),
         "oauth-connection-forget" => parse_oauth_connection(args, false),
@@ -714,6 +843,7 @@ pub fn is_known_effect_name(op: &str) -> bool {
         || op.starts_with("session/")
         || op.starts_with("workspace/")
         || crate::ir::effects::is_substrate_operator(op)
+        || crate::credential_admin::CredentialAdminOp::from_name(op).is_some()
     {
         return true;
     }
@@ -725,6 +855,8 @@ pub fn is_known_effect_name(op: &str) -> bool {
             | "fetch"
             | "call-service"
             | "http"
+            | "redis"
+            | "postgres"
             | "cancel-call"
             | "random-bytes"
             | "credential-status"
@@ -979,6 +1111,78 @@ fn parse_http(args: &[SExpression]) -> Option<Effect> {
     })
 }
 
+/// `["redis", origin, command, { auth?, user?, db?, key?, emit? }?, { key?, emit? }?]`: the trailing objects
+/// share one namespace, `key` and `emit` going to the call and every other key to the connection `options`.
+fn parse_redis(args: &[SExpression]) -> Option<Effect> {
+    if !(2..=4).contains(&args.len()) {
+        return None;
+    }
+    let mut options = ValueMap::new();
+    let mut key = None;
+    let mut routes = ValueMap::new();
+    for trailing in &args[2..] {
+        let SExpression::Object(fields) = trailing else {
+            return None;
+        };
+        for (name, value) in fields {
+            let value = Value::from(value.clone());
+            match name.as_str() {
+                "key" => key = Some(value),
+                "emit" => {
+                    routes.insert("emit".to_string(), value);
+                }
+                _ => {
+                    options.insert(name.clone(), value);
+                }
+            }
+        }
+    }
+    Some(Effect::Redis {
+        origin: Value::from(args[0].clone()),
+        command: Value::from(args[1].clone()),
+        options: Value::Object(options),
+        key,
+        emit: parse_emit_config(&Value::Object(routes)),
+    })
+}
+
+/// `["postgres", origin, sql, params, { auth?, user?, database?, tls?, timeoutMs?, key?, emit? }?, { key?, emit? }?]`:
+/// the trailing objects share one namespace, `key` and `emit` going to the call and every other key to the connection
+/// `options`.
+fn parse_postgres(args: &[SExpression]) -> Option<Effect> {
+    if !(3..=5).contains(&args.len()) {
+        return None;
+    }
+    let mut options = ValueMap::new();
+    let mut key = None;
+    let mut routes = ValueMap::new();
+    for trailing in &args[3..] {
+        let SExpression::Object(fields) = trailing else {
+            return None;
+        };
+        for (name, value) in fields {
+            let value = Value::from(value.clone());
+            match name.as_str() {
+                "key" => key = Some(value),
+                "emit" => {
+                    routes.insert("emit".to_string(), value);
+                }
+                _ => {
+                    options.insert(name.clone(), value);
+                }
+            }
+        }
+    }
+    Some(Effect::Postgres {
+        origin: Value::from(args[0].clone()),
+        sql: Value::from(args[1].clone()),
+        params: Value::from(args[2].clone()),
+        options: Value::Object(options),
+        key,
+        emit: parse_emit_config(&Value::Object(routes)),
+    })
+}
+
 /// `["browser/page-facts", [field, …], { emit? }?]`.
 fn parse_page_facts(args: &[SExpression]) -> Option<Effect> {
     if !(1..=2).contains(&args.len()) {
@@ -1060,6 +1264,20 @@ fn parse_beacon(args: &[SExpression]) -> Option<Effect> {
     })
 }
 
+/// `["browser/tab-<op>", request, { key?, emit? }?]`.
+fn parse_tab(op: crate::tab::TabOp, args: &[SExpression]) -> Option<Effect> {
+    if !(1..=2).contains(&args.len()) {
+        return None;
+    }
+    let (key, emit) = keyed_options(args.get(1));
+    Some(Effect::BrowserTab {
+        op,
+        request: Value::from(args[0].clone()),
+        key,
+        emit,
+    })
+}
+
 /// `["os/<op>", args…, { key?, emit? }?]`; the envelope is told from the op's own options object by
 /// [`split_envelope`], and the positional count must be one the op takes.
 fn parse_os(op: OsOp, args: &[SExpression]) -> Option<Effect> {
@@ -1113,6 +1331,18 @@ fn parse_credential(args: &[SExpression], status: bool) -> Option<Effect> {
     })
 }
 
+/// `["credential-<verb>", request, { emit? }?]`.
+fn parse_credential_admin(head: &str, args: &[SExpression]) -> Option<Effect> {
+    let op = crate::credential_admin::CredentialAdminOp::from_name(head)?;
+    if !(1..=2).contains(&args.len()) {
+        return None;
+    }
+    let emit = args
+        .get(1)
+        .and_then(|options| parse_emit_config(&Value::from(options.clone())));
+    Some(Effect::CredentialAdmin { op, request: Value::from(args[0].clone()), emit })
+}
+
 /// `["oauth-authorize", client, options, { key?, emit? }?]`.
 fn parse_oauth_authorize(args: &[SExpression]) -> Option<Effect> {
     if !(2..=3).contains(&args.len()) {
@@ -1146,8 +1376,8 @@ fn parse_oauth_connection(args: &[SExpression], status: bool) -> Option<Effect> 
 }
 
 fn parse_cancel_call(args: &[SExpression]) -> Option<Effect> {
-    let key = args.first()?.as_str()?.to_string();
-    Some(Effect::CancelCall { key })
+    let key = Value::from(args.first()?.clone());
+    matches!(key, Value::String(_) | Value::Array(_)).then_some(Effect::CancelCall { key })
 }
 
 fn parse_render_ui(args: &[SExpression]) -> Option<Effect> {
@@ -1347,7 +1577,7 @@ mod tests {
     #[test]
     fn parse_call_service_reads_the_key_option() {
         let expr: SExpression = serde_json::from_str(
-            r#"["call-service", "webhook", "send", {"items": []}, {"key": "batch-1", "emit": {"cancelled": "C"}}]"#,
+            r#"["call-service", "test-svc", "run", {"items": []}, {"key": "batch-1", "emit": {"cancelled": "C"}}]"#,
         )
         .unwrap();
         match parse_effect(&expr).unwrap() {
@@ -1359,7 +1589,7 @@ mod tests {
     #[test]
     fn parse_call_service_without_options_has_no_key() {
         let expr: SExpression =
-            serde_json::from_str(r#"["call-service", "webhook", "send", {}]"#).unwrap();
+            serde_json::from_str(r#"["call-service", "test-svc", "run", {}]"#).unwrap();
         match parse_effect(&expr).unwrap() {
             Effect::CallService { key, .. } => assert_eq!(key, None),
             other => panic!("expected CallService, got {other:?}"),
@@ -1385,6 +1615,99 @@ mod tests {
             assert!(is_known_effect_name(head));
         }
         assert!(is_known_effect_name("random-bytes"));
+        for op in crate::credential_admin::CredentialAdminOp::ALL {
+            let expr: SExpression =
+                serde_json::from_str(&format!(r#"["{}", {{"service": "s"}}, {{"emit": {{"success": "S", "failure": "F"}}}}]"#, op.name())).unwrap();
+            match parse_effect(&expr).unwrap() {
+                Effect::CredentialAdmin { op: parsed, request, emit } => {
+                    assert_eq!(parsed, op);
+                    assert!(request.as_object().is_some_and(|fields| fields.contains_key("service")));
+                    assert_eq!(emit.and_then(|e| e.failure).as_deref(), Some("F"));
+                }
+                other => panic!("expected CredentialAdmin, got {other:?}"),
+            }
+            assert!(is_known_effect_name(op.name()));
+            let bare: SExpression = serde_json::from_str(&format!(r#"["{}"]"#, op.name())).unwrap();
+            assert!(parse_effect(&bare).is_none(), "{} needs its request", op.name());
+        }
+        assert!(!is_known_effect_name("credential-purge"));
+    }
+
+    #[test]
+    fn parse_redis_reads_the_command_the_connection_options_the_key_and_the_routes() {
+        let expr: SExpression = serde_json::from_str(
+            r#"["redis", "redis://cache.internal", ["GET", "k"], {"auth": "PW", "db": 2}, {"key": "c1", "emit": {"success": "S", "failure": "F"}}]"#,
+        )
+        .unwrap();
+        match parse_effect(&expr).unwrap() {
+            Effect::Redis { origin, command, options, key, emit } => {
+                assert_eq!(origin, Value::String("redis://cache.internal".to_string()));
+                assert_eq!(command, Value::Array(vec![Value::String("GET".to_string()), Value::String("k".to_string())]));
+                let options = options.as_object().cloned().unwrap();
+                assert_eq!(options.get("auth"), Some(&Value::String("PW".to_string())));
+                assert_eq!(options.get("db"), Some(&Value::Number(2.0)));
+                assert!(options.get("key").is_none() && options.get("emit").is_none());
+                assert_eq!(key, Some(Value::String("c1".to_string())));
+                let emit = emit.unwrap();
+                assert_eq!((emit.success.as_deref(), emit.failure.as_deref()), (Some("S"), Some("F")));
+            }
+            other => panic!("expected Redis, got {other:?}"),
+        }
+        assert!(is_known_effect_name("redis"));
+    }
+
+    #[test]
+    fn parse_redis_accepts_one_trailing_object_that_mixes_options_and_routes_and_none_at_all() {
+        let mixed: SExpression =
+            serde_json::from_str(r#"["redis", "redis://h", ["PING"], {"db": 1, "emit": {"success": "S"}}]"#).unwrap();
+        match parse_effect(&mixed).unwrap() {
+            Effect::Redis { options, emit, .. } => {
+                assert_eq!(options.as_object().and_then(|o| o.get("db")), Some(&Value::Number(1.0)));
+                assert_eq!(emit.and_then(|e| e.success).as_deref(), Some("S"));
+            }
+            other => panic!("expected Redis, got {other:?}"),
+        }
+        let bare: SExpression = serde_json::from_str(r#"["redis", "redis://h", ["PING"]]"#).unwrap();
+        assert!(matches!(parse_effect(&bare), Some(Effect::Redis { key: None, emit: None, .. })));
+        assert_eq!(parse_effect(&bare).unwrap().operator(), "redis");
+    }
+
+    #[test]
+    fn parse_postgres_reads_sql_params_connection_options_key_and_routes() {
+        let expr: SExpression = serde_json::from_str(
+            r#"["postgres", "postgres://db.internal:5432", "SELECT $1::int", [1], {"auth": "PW", "user": "app", "database": "main"}, {"key": "q1", "emit": {"success": "S", "failure": "F"}}]"#,
+        )
+        .unwrap();
+        match parse_effect(&expr).unwrap() {
+            Effect::Postgres { origin, sql, params, options, key, emit } => {
+                assert_eq!(origin, Value::String("postgres://db.internal:5432".to_string()));
+                assert_eq!(sql, Value::String("SELECT $1::int".to_string()));
+                assert_eq!(params, Value::Array(vec![Value::Number(1.0)]));
+                let options = options.as_object().cloned().unwrap();
+                assert_eq!(options.get("database"), Some(&Value::String("main".to_string())));
+                assert!(options.get("key").is_none() && options.get("emit").is_none());
+                assert_eq!(key, Some(Value::String("q1".to_string())));
+                assert_eq!(emit.and_then(|e| e.failure).as_deref(), Some("F"));
+            }
+            other => panic!("expected Postgres, got {other:?}"),
+        }
+        assert!(is_known_effect_name("postgres"));
+    }
+
+    #[test]
+    fn control_parse_postgres_refuses_the_wrong_arity_and_a_non_object_trailer() {
+        for src in [r#"["postgres", "postgres://h", "SELECT 1"]"#, r#"["postgres", "postgres://h", "SELECT 1", [], {}, {}, {}]"#, r#"["postgres", "postgres://h", "SELECT 1", [], "x"]"#] {
+            let expr: SExpression = serde_json::from_str(src).unwrap();
+            assert!(parse_effect(&expr).is_none(), "{src}");
+        }
+    }
+
+    #[test]
+    fn control_parse_redis_refuses_the_wrong_arity_and_a_non_object_trailer() {
+        for src in [r#"["redis", "redis://h"]"#, r#"["redis", "redis://h", ["PING"], {}, {}, {}]"#, r#"["redis", "redis://h", ["PING"], "x"]"#] {
+            let expr: SExpression = serde_json::from_str(src).unwrap();
+            assert!(parse_effect(&expr).is_none(), "{src}");
+        }
     }
 
     #[test]
@@ -1433,7 +1756,7 @@ mod tests {
     fn parse_cancel_call() {
         let expr: SExpression = serde_json::from_str(r#"["cancel-call", "batch-1"]"#).unwrap();
         match parse_effect(&expr).unwrap() {
-            Effect::CancelCall { key } => assert_eq!(key, "batch-1"),
+            Effect::CancelCall { key } => assert_eq!(key, Value::String("batch-1".into())),
             other => panic!("expected CancelCall, got {other:?}"),
         }
         assert!(is_known_effect_name("cancel-call"));
@@ -1441,6 +1764,21 @@ mod tests {
             Effect::CancelCall { key: "k".into() }.operator(),
             "cancel-call"
         );
+    }
+
+    #[test]
+    fn parse_cancel_call_takes_a_list_of_keys_and_refuses_other_shapes() {
+        let list: SExpression = serde_json::from_str(r#"["cancel-call", "@entity.keys"]"#).unwrap();
+        assert!(parse_effect(&list).is_some(), "a binding stays one expression until resolved");
+        let literal: SExpression = serde_json::from_str(r#"["cancel-call", ["list", "a", "b"]]"#).unwrap();
+        assert!(matches!(
+            parse_effect(&literal),
+            Some(Effect::CancelCall { key: Value::Array(items) }) if items.len() == 3
+        ));
+        for refused in [r#"["cancel-call", 3]"#, r#"["cancel-call", {"a": 1}]"#, r#"["cancel-call", null]"#] {
+            let expr: SExpression = serde_json::from_str(refused).unwrap();
+            assert!(parse_effect(&expr).is_none(), "{refused}");
+        }
     }
 
     #[test]
@@ -1470,6 +1808,36 @@ mod tests {
             other => panic!("expected BrowserEmbed, got {other:?}"),
         }
         assert_eq!(parse_effect(&embed).unwrap().operator(), "browser/embed");
+    }
+
+    #[test]
+    fn parse_browser_tab_effects_carry_their_request_key_and_routes() {
+        let query: SExpression = serde_json::from_str(
+            r#"["browser/tab-query", {"tab": "?tab", "selector": ".r"}, {"key": "q-1", "emit": {"success": "OK", "failure": "BAD", "cancelled": "STOP"}}]"#,
+        )
+        .unwrap();
+        match parse_effect(&query).unwrap() {
+            Effect::BrowserTab { op, request, key, emit } => {
+                assert_eq!(op, crate::tab::TabOp::Query);
+                assert_eq!(request.as_object().and_then(|o| o.get("selector")), Some(&Value::String(".r".into())));
+                assert_eq!(key, Some(Value::String("q-1".into())));
+                assert_eq!(emit.unwrap().cancelled.as_deref(), Some("STOP"));
+            }
+            other => panic!("expected BrowserTab, got {other:?}"),
+        }
+        for op in crate::tab::TabOp::ALL {
+            let src = format!(r#"["{}", {{}}]"#, op.name());
+            let expr: SExpression = serde_json::from_str(&src).unwrap();
+            assert_eq!(parse_effect(&expr).unwrap().operator(), op.name());
+        }
+    }
+
+    #[test]
+    fn control_browser_tab_effects_refuse_the_wrong_arity() {
+        for src in [r#"["browser/tab-list"]"#, r#"["browser/tab-open", {}, {}, {}]"#, r#"["browser/tab-nope", {}]"#] {
+            let expr: SExpression = serde_json::from_str(src).unwrap();
+            assert!(!matches!(parse_effect(&expr), Some(Effect::BrowserTab { .. })), "{src}");
+        }
     }
 
     #[test]
@@ -1749,7 +2117,7 @@ mod tests {
     #[test]
     fn a_call_service_options_object_carries_its_completion_events() {
         let expr: SExpression = serde_json::from_str(
-            r#"["call-service", "webhook", "send", {"texts": ["a"]}, {"key": "k1", "emit": {"success": "EMBEDDED", "failure": "EMBED_FAILED"}}]"#,
+            r#"["call-service", "test-svc", "run", {"texts": ["a"]}, {"key": "k1", "emit": {"success": "EMBEDDED", "failure": "EMBED_FAILED"}}]"#,
         )
         .unwrap();
         match parse_effect(&expr).unwrap() {
@@ -1766,7 +2134,7 @@ mod tests {
     #[test]
     fn control_a_call_service_without_options_declares_no_completion() {
         let expr: SExpression =
-            serde_json::from_str(r#"["call-service", "webhook", "send", {}]"#).unwrap();
+            serde_json::from_str(r#"["call-service", "test-svc", "run", {}]"#).unwrap();
         match parse_effect(&expr).unwrap() {
             Effect::CallService { emit, .. } => assert!(emit.is_none()),
             other => panic!("expected CallService, got {other:?}"),

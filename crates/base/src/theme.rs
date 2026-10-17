@@ -939,6 +939,7 @@ mod tests {
 
     fn minimal_orbital(name: &str, theme: Option<ThemeRef>) -> Orbital {
         Orbital {
+            spec: false,
             name: name.to_string(),
             id: None,
             uses: None,

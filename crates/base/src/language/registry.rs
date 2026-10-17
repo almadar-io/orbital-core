@@ -261,6 +261,10 @@ pub struct EmbeddedOperator {
     /// (e.g. `(array/reduce arr (fn …) init)`).
     #[serde(rename = "lambdaArgPosition", default)]
     pub lambda_arg_position: Option<u32>,
+    /// The regex (shared dialect) a `validate/<semantic type>` operator matches its value against: the one definition,
+    /// owned by `@almadar/core` `SEMANTIC_STRING_PATTERNS` and carried by the operator table.
+    #[serde(default)]
+    pub pattern: Option<String>,
     /// Execution site of an effect operator (`client`/`server`/`any`); absent on pure ones. Pinned to `crate::effects::runs_on` by `tests/runs_on_drift.rs`.
     #[serde(rename = "runsOn", default)]
     pub runs_on: Option<String>,
@@ -1133,6 +1137,7 @@ mod tests {
             .map(|(n, _)| n.as_str())
             .collect();
         assert!(from_table.contains("behavior/resolve"), "{from_table:?}");
+        assert!(from_table.contains("program/validate"), "{from_table:?}");
         assert_eq!(
             program_host_effects().collect::<std::collections::BTreeSet<_>>(),
             from_table

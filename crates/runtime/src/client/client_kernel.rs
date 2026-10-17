@@ -942,6 +942,8 @@ mod tests {
             denied: Some(true),
             error: Some("access denied".into()),
             code: None,
+            target: None,
+            routed: None,
         };
         let results = settled_effect_results(EventResponse {
             success: true,

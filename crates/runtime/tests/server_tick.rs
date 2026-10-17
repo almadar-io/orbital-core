@@ -144,6 +144,26 @@ fn control_mounting_another_trait_does_not_start_this_tick() {
 }
 
 #[test]
+fn a_tick_over_a_runtime_entity_with_no_rows_runs_once_on_the_singleton_frame() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    let response = drive(&server, tick("Background", None), &[]);
+    assert_eq!(emitted(&response), ["BG_PULSE"]);
+}
+
+#[test]
+fn control_a_runtime_entity_with_rows_ticks_once_per_row_and_not_also_on_the_singleton() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    let response = drive(&server, tick("Background", None), &["a", "b"]);
+    assert_eq!(emitted(&response), ["BG_PULSE", "BG_PULSE"]);
+}
+
+#[test]
+fn control_an_unmounted_trait_s_tick_stays_paused_when_the_entity_has_no_rows() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    assert!(emitted(&drive(&server, tick("Scoped", None), &[])).is_empty());
+}
+
+#[test]
 fn a_tick_runs_over_every_row_of_its_entity() {
     let server = EmbeddedServer::new(schema()).unwrap();
     let response = drive(&server, tick("Background", None), &["a", "b", "c"]);
@@ -158,8 +178,17 @@ fn an_entity_id_runs_the_tick_for_that_row_alone() {
 }
 
 #[test]
-fn edge_a_tick_over_no_rows_fires_nothing() {
-    let server = EmbeddedServer::new(schema()).unwrap();
+fn edge_a_tick_over_a_persistent_entity_with_no_rows_fires_nothing() {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Board",
+            "entity": { "name": "Cell", "persistence": "persistent", "collection": "cells", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [trait_with_tick("Background", "BG_PULSE", true, None)]
+        }]
+    }))
+    .unwrap();
+    let server = EmbeddedServer::new(schema).unwrap();
     assert!(emitted(&drive(&server, tick("Background", None), &[])).is_empty());
 }
 

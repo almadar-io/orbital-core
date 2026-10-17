@@ -184,7 +184,7 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
                         vars.insert(name.clone(), v.clone());
                     }
                     Value::Null => {
-                        if !host.grants.env_allows(name) {
+                        if !host.grants.allows(&orbital_core_base::os_grants::OsRequirement::inherited_env(name)) {
                             return Err(denied(op, &format!("environment {name} is not granted")));
                         }
                         match lookup_env(host, name).map_err(|e| io_error(op, &e))? {
@@ -343,11 +343,11 @@ pub(super) fn wait_later(
             .name(format!("os-wait-{pid}"))
             .spawn(move || {
                 let awaited = await_exit(pid).map_err(|e| io_error(op, &e));
-                if !completions.is_live(&key) {
+                if !completions.claim(&key) {
                     return;
                 }
                 let outcome = awaited.and_then(|()| reap(pid, &table));
-                completions.finish(&key, &site, outcome);
+                completions.deliver(&key, &site, outcome);
             })
     };
     watcher.map(drop).map_err(|e| {
@@ -1087,6 +1087,7 @@ mod tests {
             orbital: None,
             trait_name: "Sup".to_string(),
             follow_on: false,
+            entity_id: "singleton".to_string(),
             emit: CallRoutes {
                 success: Some("CHILD_EXITED".to_string()),
                 failure: Some("CHILD_WAIT_FAILED".to_string()),

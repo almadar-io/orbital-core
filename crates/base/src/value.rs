@@ -69,6 +69,55 @@ impl<'de> Deserialize<'de> for Value {
     }
 }
 
+/// The segments of a value path: `.` separates them, `\.` is a literal dot and `\\` a literal backslash inside a
+/// segment (so `http\.method` is the one key `http.method`); any other backslash stays as written. A path with no
+/// backslash is walked in place, with no allocation.
+pub enum PathSegments<'a> {
+    Plain(std::str::Split<'a, char>),
+    Escaped(std::vec::IntoIter<std::borrow::Cow<'a, str>>),
+}
+
+impl<'a> Iterator for PathSegments<'a> {
+    type Item = std::borrow::Cow<'a, str>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Plain(parts) => parts.next().map(std::borrow::Cow::Borrowed),
+            Self::Escaped(parts) => parts.next(),
+        }
+    }
+}
+
+pub fn path_segments(path: &str) -> PathSegments<'_> {
+    use std::borrow::Cow;
+    if !path.contains('\\') {
+        return PathSegments::Plain(path.split('.'));
+    }
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut chars = path.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '.' => segments.push(Cow::Owned(std::mem::take(&mut current))),
+            '\\' => match chars.peek() {
+                Some(&next @ ('.' | '\\')) => {
+                    current.push(next);
+                    chars.next();
+                }
+                _ => current.push('\\'),
+            },
+            other => current.push(other),
+        }
+    }
+    segments.push(Cow::Owned(current));
+    PathSegments::Escaped(segments.into_iter())
+}
+
+/// [`path_segments`] collected, for a caller that indexes the segments.
+pub fn split_path(path: &str) -> Vec<std::borrow::Cow<'_, str>> {
+    path_segments(path).collect()
+}
+
 impl Value {
     /// Check if value is null
     pub fn is_null(&self) -> bool {
@@ -175,13 +224,12 @@ impl Value {
 
     /// Get a nested value by path (e.g., "address.city")
     pub fn get_path(&self, path: &str) -> Option<&Value> {
-        let parts: Vec<&str> = path.split('.').collect();
         let mut current = self;
 
-        for part in parts {
+        for part in path_segments(path) {
             match current {
                 Value::Object(obj) => {
-                    current = obj.get(part)?;
+                    current = obj.get(part.as_ref())?;
                 }
                 Value::Array(arr) => {
                     let index: usize = part.parse().ok()?;
@@ -202,12 +250,12 @@ impl Value {
     /// (length is terminal). Numeric segments still index; object segments still
     /// look up keys.
     pub fn get_path_owned(&self, path: &str) -> Option<Value> {
-        let parts: Vec<&str> = path.split('.').collect();
         let mut current: &Value = self;
+        let mut parts = path_segments(path).peekable();
 
-        for (i, part) in parts.iter().enumerate() {
-            let last = i + 1 == parts.len();
-            let seg: &str = part;
+        while let Some(part) = parts.next() {
+            let last = parts.peek().is_none();
+            let seg: &str = part.as_ref();
             match current {
                 Value::Object(obj) => {
                     current = obj.get(seg)?;
@@ -232,7 +280,7 @@ impl Value {
 
     /// Set a nested value by path
     pub fn set_path(&mut self, path: &str, value: Value) -> bool {
-        let parts: Vec<&str> = path.split('.').collect();
+        let parts = split_path(path);
         if parts.is_empty() {
             return false;
         }
@@ -262,10 +310,10 @@ impl Value {
                 // Intermediate part - navigate
                 match current {
                     Value::Object(obj) => {
-                        if !obj.contains_key(*part) {
+                        if !obj.contains_key(part.as_ref()) {
                             obj.insert(part.to_string(), Value::Object(ValueMap::new()));
                         }
-                        match obj.get_mut(*part) {
+                        match obj.get_mut(part.as_ref()) {
                             Some(v) => current = v,
                             None => return false,
                         }
@@ -318,8 +366,6 @@ impl Value {
     pub fn loose_eq(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Null, Value::Null) => true,
-            // Null equals empty string (for form validation semantics)
-            (Value::Null, Value::String(s)) | (Value::String(s), Value::Null) => s.is_empty(),
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Number(a), Value::Number(b)) => {
                 // Handle NaN comparison
@@ -508,6 +554,27 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn split_path_reads_an_escaped_dot_and_backslash_as_literals() {
+        let segs = |p: &str| split_path(p).iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(segs("a.b"), ["a", "b"]);
+        assert_eq!(segs(r"http\.method"), ["http.method"]);
+        assert_eq!(segs(r"a.b\.c"), ["a", "b.c"]);
+        assert_eq!(segs(r"a\\.b"), [r"a\", "b"]);
+        assert_eq!(segs(r"a\\\.b"), [r"a\.b"]);
+        assert_eq!(segs(r"a\x.b"), [r"a\x", "b"], "any other backslash stays as written");
+        assert_eq!(segs(""), [""]);
+    }
+
+    #[test]
+    fn get_and_set_path_agree_on_an_escaped_dot() {
+        let mut v = Value::Object(ValueMap::new());
+        assert!(v.set_path(r"a.b\.c", Value::Number(1.0)));
+        assert_eq!(v.get_path(r"a.b\.c"), Some(&Value::Number(1.0)));
+        assert_eq!(v.get_path_owned(r"a.b\.c"), Some(Value::Number(1.0)));
+        assert_eq!(v.get_path("a.b.c"), None, "control: a plain path is not the literal key");
+    }
     use super::*;
 
     #[test]
@@ -613,6 +680,16 @@ mod tests {
         assert!(Value::Bool(true).loose_eq(&Value::Number(1.0)));
         assert!(Value::Bool(false).loose_eq(&Value::Number(0.0)));
         assert!(!Value::Number(1.0).loose_eq(&Value::String("2".to_string())));
+    }
+
+    #[test]
+    fn an_empty_string_is_a_present_value_not_null() {
+        let empty = Value::String(String::new());
+        assert!(!Value::Null.loose_eq(&empty));
+        assert!(!empty.loose_eq(&Value::Null));
+        assert!(Value::Null.loose_eq(&Value::Null), "control: null is null");
+        assert!(empty.loose_eq(&Value::String(String::new())), "control: \"\" is \"\"");
+        assert!(!Value::Null.loose_eq(&Value::String("x".to_string())), "control: null is not a non-empty string");
     }
 
     #[test]

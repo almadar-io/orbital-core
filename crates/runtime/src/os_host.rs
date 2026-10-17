@@ -184,6 +184,9 @@ fn defer(
     }
     Some(match op {
         OsOp::Wait => process::wait_later(args, key, site, host),
+        OsOp::Read => fs::read_later(args, key, site, host),
+        OsOp::Recv => net::recv_later(args, key, site, host),
+        OsOp::Recvfrom => net::recvfrom_later(args, key, site, host),
         _ => return None,
     })
 }

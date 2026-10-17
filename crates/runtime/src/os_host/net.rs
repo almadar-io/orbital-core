@@ -12,6 +12,7 @@
 //! Bounded I/O. Every socket carries a read and write timeout of [`IO_TIMEOUT`] (5 s); a read that waits longer
 //! answers `timeout`. `recv` returns at most `count` bytes (at most [`MAX_RECV`]) from one read.
 
+use super::completion::{Completions, RunLaterError};
 use super::args::{arg_bytes, arg_i64, arg_opt, arg_str, bytes_value, denied};
 use super::{HandleSlab, IdCounter, OsHost};
 use crate::resumable::CallSite;
@@ -223,17 +224,37 @@ fn send(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     Ok(object([("bytes", count(data.len()))]))
 }
 
-fn recv(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
-    let op = OsOp::Recv;
-    let id = arg_i64(args, 0, op)?;
-    let want = count_arg(args, 1, op)?.min(MAX_RECV);
-    let mut stream = stream_of(&host.handles.net.socks, id, op)?;
+fn recv_on(mut stream: TcpStream, want: usize) -> Result<Value, OsError> {
     let mut buf = vec![0u8; want];
-    let read = stream.read(&mut buf).map_err(|e| io_error(op, &e))?;
+    let read = stream.read(&mut buf).map_err(|e| io_error(OsOp::Recv, &e))?;
     Ok(object([
         ("data", bytes_value(&buf[..read])),
         ("eof", Value::Bool(read == 0 && want > 0)),
     ]))
+}
+
+fn recv(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
+    let op = OsOp::Recv;
+    let id = arg_i64(args, 0, op)?;
+    let want = count_arg(args, 1, op)?.min(MAX_RECV);
+    recv_on(stream_of(&host.handles.net.socks, id, op)?, want)
+}
+
+pub(super) fn later_error(op: OsOp, error: RunLaterError, key: &str) -> OsError {
+    match error {
+        RunLaterError::KeyPending => err(op, OsErrorKind::Invalid, format!("key {key} already has a completion pending")),
+        RunLaterError::Spawn(e) => io_error(op, &e),
+    }
+}
+
+/// `os/recv` under a completion route: the read runs on a thread of its own and the call returns at once.
+pub(super) fn recv_later(args: &[Value], key: &str, site: &CallSite, host: &OsHost<'_>) -> Result<(), OsError> {
+    let op = OsOp::Recv;
+    let id = arg_i64(args, 0, op)?;
+    let want = count_arg(args, 1, op)?.min(MAX_RECV);
+    let stream = stream_of(&host.handles.net.socks, id, op)?;
+    Completions::run_later(&host.handles.completions, key, site, move || recv_on(stream, want))
+        .map_err(|e| later_error(op, e, key))
 }
 
 fn udp_bind(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
@@ -273,17 +294,30 @@ fn sendto(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     ))
 }
 
-fn recvfrom(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
-    let op = OsOp::Recvfrom;
-    let id = arg_i64(args, 0, op)?;
-    let want = count_arg(args, 1, op)?.min(MAX_RECV).min(MAX_DATAGRAM);
-    let socket = datagram_of(&host.handles.net.socks, id, op)?;
+fn recvfrom_on(socket: UdpSocket, want: usize) -> Result<Value, OsError> {
     let mut buf = vec![0u8; want];
-    let (read, peer) = socket.recv_from(&mut buf).map_err(|e| io_error(op, &e))?;
+    let (read, peer) = socket.recv_from(&mut buf).map_err(|e| io_error(OsOp::Recvfrom, &e))?;
     Ok(object([
         ("data", bytes_value(&buf[..read])),
         ("peer", Value::String(peer.to_string())),
     ]))
+}
+
+fn recvfrom(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
+    let op = OsOp::Recvfrom;
+    let id = arg_i64(args, 0, op)?;
+    let want = count_arg(args, 1, op)?.min(MAX_RECV).min(MAX_DATAGRAM);
+    recvfrom_on(datagram_of(&host.handles.net.socks, id, op)?, want)
+}
+
+/// `os/recvfrom` under a completion route, as [`recv_later`].
+pub(super) fn recvfrom_later(args: &[Value], key: &str, site: &CallSite, host: &OsHost<'_>) -> Result<(), OsError> {
+    let op = OsOp::Recvfrom;
+    let id = arg_i64(args, 0, op)?;
+    let want = count_arg(args, 1, op)?.min(MAX_RECV).min(MAX_DATAGRAM);
+    let socket = datagram_of(&host.handles.net.socks, id, op)?;
+    Completions::run_later(&host.handles.completions, key, site, move || recvfrom_on(socket, want))
+        .map_err(|e| later_error(op, e, key))
 }
 
 fn dns_resolve(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
@@ -432,6 +466,52 @@ mod tests {
 
     fn tcp_grant(port: u16) -> OsGrants {
         grants(&[(format!("127.0.0.1:{port}"), &[NetKind::Tcp])])
+    }
+
+    #[test]
+    fn a_keyed_recv_under_a_route_defers_and_delivers_the_bytes_when_they_arrive() {
+        use crate::os_host::completion::OsCompletionSink;
+        use crate::resumable::CallRoutes;
+        use std::sync::{Arc, Mutex};
+        struct Collect(Mutex<mpsc::Sender<(String, Result<Value, OsError>)>>);
+        impl OsCompletionSink for Collect {
+            fn complete(&self, _: &CallSite, key: &str, outcome: Result<Value, OsError>) {
+                let _ = self.0.lock().expect("lock").send((key.to_string(), outcome));
+            }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            std::thread::sleep(Duration::from_millis(150));
+            stream.write_all(b"hi").expect("write");
+            stream
+        });
+        with_host(tcp_grant(port), |host| {
+            let (tx, rx) = mpsc::channel();
+            host.handles.completions.set_sink(Arc::new(Collect(Mutex::new(tx))));
+            let sock = field(&ask(host, OsOp::TcpConnect, &[s("127.0.0.1"), n(i64::from(port))]).expect("connected"), "sock");
+            let site = CallSite {
+                orbital: None,
+                trait_name: "T".to_string(),
+                follow_on: false,
+                entity_id: "singleton".to_string(),
+                emit: CallRoutes { success: Some("GOT".to_string()), ..CallRoutes::default() },
+            };
+            let started = Instant::now();
+            assert!(recv_later(&[sock.clone(), n(16)], "r1", &site, host).is_ok());
+            assert!(started.elapsed() < Duration::from_millis(100), "the call returned before the bytes arrived");
+            let (key, outcome) = rx.recv_timeout(Duration::from_secs(5)).expect("the completion arrives");
+            assert_eq!(key, "r1");
+            assert_eq!(field(&outcome.expect("bytes"), "data"), bytes_value(b"hi"));
+            assert!(
+                recv_later(&[sock.clone(), n(16)], "r3", &site, host).is_ok()
+                    && recv_later(&[sock, n(16)], "r3", &site, host).is_err(),
+                "control: a key with a completion pending is refused"
+            );
+            host.handles.completions.cancel("r3");
+        });
+        drop(server.join());
     }
 
     #[test]

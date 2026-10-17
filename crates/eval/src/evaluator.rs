@@ -517,6 +517,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn as_call_key_is_the_identity_on_a_non_empty_string() {
+        assert_eq!(eval(r#"["as", "search", "CallKey"]"#), Value::String("search".to_string()));
+    }
+
+    #[test]
+    fn as_call_key_rejects_an_empty_string_a_non_string_and_an_unknown_target() {
+        assert!(eval_err(r#"["as", "", "CallKey"]"#).contains("empty"));
+        assert!(eval_err(r#"["as", 7, "CallKey"]"#).contains("string"));
+        assert!(eval_err(r#"["as", "k", "Nope"]"#).contains("unknown target"));
+        assert!(eval_err(r#"["as", "k"]"#).contains("as"), "control: arity is two");
+    }
+
+    #[test]
+    fn an_empty_string_is_a_present_value_and_not_null() {
+        assert_eq!(eval(r#"["=", "", null]"#), Value::Bool(false));
+        assert_eq!(eval(r#"["=", null, ""]"#), Value::Bool(false));
+        assert_eq!(eval(r#"["!=", "", null]"#), Value::Bool(true));
+        assert_eq!(eval(r#"["=", null, null]"#), Value::Bool(true), "control: null is null");
+        assert_eq!(eval(r#"["=", "", ""]"#), Value::Bool(true), "control: an empty string is itself");
+        assert_eq!(eval(r#"["array/includes", ["a"], null]"#), Value::Bool(false));
+        assert_eq!(eval(r#"["validate/required", ""]"#), Value::Bool(false), "the one empty-or-absent test");
+        assert_eq!(eval(r#"["validate/required", null]"#), Value::Bool(false));
+    }
+
+    #[test]
+    fn the_semantic_validators_read_the_one_pattern_table() {
+        let yes = |op: &str, v: &str| eval(&format!(r#"["{op}", "{v}"]"#)) == Value::Bool(true);
+        assert!(yes("validate/url", "http://x.y"), "a short host is a URL");
+        assert!(yes("validate/url", "https://example.com/a?b=1"));
+        assert!(!yes("validate/url", "ftp://example.com"), "control: only http and https");
+        assert!(!yes("validate/url", "http://a b.com"), "control: no whitespace");
+        assert!(yes("validate/email", "ann@example.com"));
+        assert!(!yes("validate/email", "ann@localhost"), "control: the domain needs a dot");
+        assert!(!yes("validate/email", "a@b@c.com"), "control: one at sign");
+        assert!(yes("validate/phone", "+1 (555) 123-4567"));
+        assert!(!yes("validate/phone", "12345"), "control: seven characters at least");
+        assert!(yes("validate/uuid", "550E8400-e29b-41d4-a716-446655440000"));
+        assert!(!yes("validate/uuid", "550e8400e29b41d4a716446655440000"), "control: dashes are part of it");
+        assert_eq!(
+            crate::evaluator::operators::system::semantic_string_value_valid("image", "https://picsum.photos/seed/a/400/400").unwrap(),
+            true
+        );
+        assert_eq!(
+            crate::evaluator::operators::system::semantic_string_value_valid("image", "Cover Image").unwrap(),
+            false,
+            "control: the entity-default check reads the same table"
+        );
+    }
+
     // json/parse conformance pins (mirrors
     // packages/almadar-evaluator/__tests__/json.test.ts): invalid JSON or
     // non-string input is Null, never an error — guards branch on null.

@@ -71,13 +71,37 @@ pub(super) fn answer(
     }
 }
 
+/// `os/read` under a completion route: a pipe read runs on a thread of its own and the call returns at once, so
+/// two reads on two pipes can be outstanding together (EXEC-QUEUE-10). A file read does not block and is taken now.
+pub(super) fn read_later(
+    args: &[Value],
+    key: &str,
+    site: &CallSite,
+    host: &OsHost<'_>,
+) -> Result<(), OsError> {
+    #[cfg(unix)]
+    {
+        ops::read_later(args, key, site, host)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (args, key, site, host);
+        Err(OsError::new(
+            orbital_core_base::os::OsErrorKind::Unsupported,
+            "os/read: files are not supported on this platform",
+        ))
+    }
+}
+
 #[cfg(unix)]
 mod ops {
     use super::super::args::{arg_bool, arg_bytes, arg_i64, arg_opt, arg_str, bytes_value};
+    use super::super::completion::Completions;
+    use crate::resumable::CallSite;
     use super::super::{OsHost, FIRST_HANDLE_ID};
     use super::{FdEntry, PipeEnd};
     use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
-    use orbital_core_base::os_grants::{FsGrant, FsMode, OsGrants};
+    use orbital_core_base::os_grants::{FsMode, OsGrants};
     use orbital_core_base::value::{Value, ValueMap};
     use std::collections::VecDeque;
     use std::ffi::{CString, OsString};
@@ -235,6 +259,57 @@ mod ops {
         exclusive: bool,
     }
 
+    fn io_os_error(op: OsOp, path: &Path, e: &io::Error) -> OsError {
+        let kind = match e.kind() {
+            io::ErrorKind::NotFound => OsErrorKind::NotFound,
+            io::ErrorKind::AlreadyExists => OsErrorKind::Exists,
+            io::ErrorKind::PermissionDenied => OsErrorKind::Denied,
+            io::ErrorKind::TimedOut => OsErrorKind::Timeout,
+            io::ErrorKind::InvalidInput
+            | io::ErrorKind::InvalidData
+            | io::ErrorKind::IsADirectory
+            | io::ErrorKind::NotADirectory
+            | io::ErrorKind::InvalidFilename => OsErrorKind::Invalid,
+            _ => match e.raw_os_error() {
+                Some(code)
+                    if code == libc::ELOOP
+                        || code == libc::EBADF
+                        || code == libc::ENAMETOOLONG =>
+                {
+                    OsErrorKind::Invalid
+                }
+                _ => OsErrorKind::Io,
+            },
+        };
+        OsError::new(kind, format!("{}: {}: {e}", op.name(), path.display()))
+    }
+
+    /// The blocking half of `os/read`: the pipe read (a file's bytes are already in `buf`), shaped as the reply.
+    fn finish_read(op: OsOp, count: u64, pipe: Option<PipeEnd>, mut buf: Vec<u8>) -> Result<Value, OsError> {
+        match pipe {
+            Some(PipeEnd::Stdout(pipe)) => pipe_read(&mut *pipe.lock(), count, &mut buf),
+            Some(PipeEnd::Stderr(pipe)) => pipe_read(&mut *pipe.lock(), count, &mut buf),
+            _ => Ok(()),
+        }
+        .map_err(|e| io_os_error(op, Path::new("fd"), &e))?;
+        let eof = count > 0 && buf.is_empty();
+        Ok(obj([("data", bytes_value(&buf)), ("eof", Value::Bool(eof))]))
+    }
+
+    pub(super) fn read_later(
+        args: &[Value],
+        key: &str,
+        site: &CallSite,
+        host: &OsHost<'_>,
+    ) -> Result<(), OsError> {
+        let cx = Cx { op: OsOp::Read, host };
+        let (count, pipe, buf) = cx.read_source(args)?;
+        Completions::run_later(&host.handles.completions, key, site, move || {
+            finish_read(OsOp::Read, count, pipe, buf)
+        })
+        .map_err(|e| super::super::net::later_error(OsOp::Read, e, key))
+    }
+
     struct Cx<'a, 'h> {
         op: OsOp,
         host: &'a OsHost<'h>,
@@ -246,28 +321,7 @@ mod ops {
         }
 
         fn io(&self, path: &Path, e: &io::Error) -> OsError {
-            let kind = match e.kind() {
-                io::ErrorKind::NotFound => OsErrorKind::NotFound,
-                io::ErrorKind::AlreadyExists => OsErrorKind::Exists,
-                io::ErrorKind::PermissionDenied => OsErrorKind::Denied,
-                io::ErrorKind::TimedOut => OsErrorKind::Timeout,
-                io::ErrorKind::InvalidInput
-                | io::ErrorKind::InvalidData
-                | io::ErrorKind::IsADirectory
-                | io::ErrorKind::NotADirectory
-                | io::ErrorKind::InvalidFilename => OsErrorKind::Invalid,
-                _ => match e.raw_os_error() {
-                    Some(code)
-                        if code == libc::ELOOP
-                            || code == libc::EBADF
-                            || code == libc::ENAMETOOLONG =>
-                    {
-                        OsErrorKind::Invalid
-                    }
-                    _ => OsErrorKind::Io,
-                },
-            };
-            self.err(kind, format!("{}: {e}", path.display()))
+            io_os_error(self.op, path, e)
         }
 
         fn fd_io(&self, e: &io::Error) -> OsError {
@@ -592,6 +646,13 @@ mod ops {
         }
 
         fn read(&self, args: &[Value]) -> Result<Value, OsError> {
+            let (count, pipe, buf) = self.read_source(args)?;
+            finish_read(self.op, count, pipe, buf)
+        }
+
+        /// The count, and what is left to read: a file is read now (it does not block), a pipe end is handed back
+        /// for the blocking read.
+        fn read_source(&self, args: &[Value]) -> Result<(u64, Option<PipeEnd>, Vec<u8>), OsError> {
             let fd = self.fd_arg(args, 0)?;
             let count = arg_i64(args, 1, self.op)?;
             let count = u64::try_from(count)
@@ -616,17 +677,7 @@ mod ops {
                     Err(self.err(OsErrorKind::Invalid, format!("fd {fd} is write-only")))
                 }
             })?;
-            match pipe {
-                Some(PipeEnd::Stdout(pipe)) => pipe_read(&mut *pipe.lock(), count, &mut buf),
-                Some(PipeEnd::Stderr(pipe)) => pipe_read(&mut *pipe.lock(), count, &mut buf),
-                _ => Ok(()),
-            }
-            .map_err(|e| self.fd_io(&e))?;
-            let eof = count > 0 && buf.is_empty();
-            Ok(obj([
-                ("data", bytes_value(&buf)),
-                ("eof", Value::Bool(eof)),
-            ]))
+            Ok((count, pipe, buf))
         }
 
         fn write(&self, args: &[Value]) -> Result<Value, OsError> {
@@ -858,13 +909,7 @@ mod ops {
                 }
             }
             self.allow(&prefix, FsMode::Read)?;
-            let matcher = OsGrants {
-                fs: vec![FsGrant {
-                    glob: pattern.to_string_lossy().into_owned(),
-                    modes: vec![FsMode::Read],
-                }],
-                ..OsGrants::default()
-            };
+            let matcher = OsGrants::read_matcher(&pattern.to_string_lossy());
             let mut found: Vec<String> = Vec::new();
             self.consider(&prefix, &matcher, &mut found);
             if wild {
@@ -2053,6 +2098,25 @@ mod tests {
             fx.kind(OsOp::ReadFile, vec![st("/../../etc/passwd")]),
             OsErrorKind::Denied
         );
+    }
+
+    #[test]
+    fn a_path_built_under_a_covered_root_cannot_climb_out_of_it() {
+        let fx = Fx::new();
+        fs::create_dir(fx.p("in")).expect("dir");
+        write(&fx.p("in/a"), b"a");
+        write(&fx.p("secret"), b"s");
+        let fx = fx.with_grants(|root| vec![grant(format!("{}/in/**", root.display()), &ALL)]);
+        let root = format!("{}/in/", fx.root.display());
+        let built = |tail: &str| Value::String(format!("{root}{tail}"));
+        assert_eq!(data_of(&fx.ok(OsOp::ReadFile, vec![built("a")])), b"a");
+        assert_eq!(fx.kind(OsOp::ReadFile, vec![built("../secret")]), OsErrorKind::Denied);
+        assert_eq!(fx.kind(OsOp::ReadFile, vec![built("../../../../etc/passwd")]), OsErrorKind::Denied);
+        assert_eq!(
+            fx.kind(OsOp::WriteFile, vec![built("../new"), bytes_value(b"x")]),
+            OsErrorKind::Denied
+        );
+        assert!(!fx.p("new").exists());
     }
 
     #[test]

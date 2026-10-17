@@ -1,6 +1,6 @@
 //! `persist batch` on the kernel: every op runs in order through the same
 //! checks as the single forms; success emits `{ operations, completedCount,
-//! totalCount }`, the first failure emits `{ error }` and stops. Twin of the
+//! totalCount }`, the first failure emits `{ error, code, index, completedCount }` and stops. Twin of the
 //! JS runtime's `EffectExecutor` / `ServerEffectHandlers` batch branch.
 
 use orbital_core_base::effect_types::Effect;
@@ -40,6 +40,10 @@ fn kernel() -> RuntimeKernel {
                             ["create", "Note", { "id": "ok", "title": "fine" }],
                             ["create", "Note", { "id": "nope" }],
                             ["create", "Note", { "id": "never", "title": "x" }]
+                        ], emit]])),
+                        arm("DUP", json!([["persist", "batch", [
+                            ["create", "Note", { "id": "d", "title": "first" }],
+                            ["create", "Note", { "id": "d", "title": "again" }]
                         ], emit]])),
                         arm("BAD_ACTION", json!([["persist", "batch", [["upsert", "Note", { "id": "z", "title": "z" }]], emit]])),
                         arm("NOT_ARRAY", json!([["persist", "batch", "@payload.nothing", emit]])),
@@ -170,4 +174,35 @@ fn control_a_batch_that_declares_no_emit_fires_nothing_but_still_writes() {
     let k = kernel();
     assert!(send(&k, "SILENT", Json::Null).is_empty());
     assert_eq!(ids(&k), vec!["q".to_string()]);
+}
+
+#[test]
+fn a_failure_names_the_failing_operation_and_how_many_ran_before_it() {
+    let k = kernel();
+    let out = send(&k, "BAD_SECOND", Json::Null);
+    assert_eq!(out[0].0, "FAILED");
+    assert_eq!(out[0].1["index"].as_f64(), Some(1.0), "{out:?}");
+    assert_eq!(out[0].1["completedCount"].as_f64(), Some(1.0));
+    assert_eq!(out[0].1["code"], Json::Null, "a missing required column has no store code");
+}
+
+#[test]
+fn a_failure_carries_the_store_code_of_the_failing_operation() {
+    let k = kernel();
+    let out = send(&k, "DUP", Json::Null);
+    assert_eq!(out[0].0, "FAILED", "{out:?}");
+    assert_eq!(out[0].1["code"], json!("duplicate-id"));
+    assert_eq!(out[0].1["index"].as_f64(), Some(1.0));
+    assert_eq!(out[0].1["completedCount"].as_f64(), Some(1.0));
+    assert!(ids(&k).is_empty(), "control: the first create was rolled back");
+}
+
+#[test]
+fn control_a_failure_no_single_operation_caused_has_a_null_index_and_nothing_completed() {
+    let out = send(&kernel(), "NOT_ARRAY", Json::Null);
+    assert_eq!(out[0].0, "FAILED");
+    assert_eq!(out[0].1["index"], Json::Null);
+    assert_eq!(out[0].1["completedCount"].as_f64(), Some(0.0));
+    let ok = send(&kernel(), "SEED", Json::Null);
+    assert!(ok[0].1.get("index").is_none(), "control: a success carries no failure fields");
 }

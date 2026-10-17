@@ -389,6 +389,289 @@ fn a_random_answer_and_a_secret_set_value_are_redacted_in_debug() {
     assert!(!set.contains("hunter2"), "{set}");
 }
 
+mod credential_admin_effects {
+    use super::*;
+    use orbital_core_base::language_data::{install_language_data, LanguageData};
+
+    const REGISTRY: &str = r#"{ "services": {
+        "apikeys": { "backend": "production", "credentials": [{ "envVar": "SALT", "required": true, "description": "salt" }] },
+        "hosting": { "backend": "production", "credentials": [] }
+    } }"#;
+
+    fn install_registry() {
+        let _ = install_language_data(LanguageData {
+            core_version: "0.0.0".into(),
+            root: std::path::PathBuf::new(),
+            patterns: "{}".into(),
+            component_mapping: "{}".into(),
+            event_contracts: "{}".into(),
+            services: REGISTRY.into(),
+            binding_rules: "{}".into(),
+            program_types: "{}".into(),
+            themes: Vec::new(),
+        });
+    }
+
+    fn admin() -> Option<Json> {
+        Some(json!({ "id": "u1", "role": "admin" }))
+    }
+
+    fn secret_none(request: &IoRequest) -> Option<IoAnswer> {
+        matches!(request, IoRequest::Secret { .. }).then(|| IoAnswer::Secret(Ok(None)))
+    }
+
+    #[test]
+    fn credential_set_checks_the_role_the_store_and_the_declared_name_then_writes_through_one_store_ask() {
+        install_registry();
+        let effect = json!(["credential-set", {"service": "apikeys", "envVar": "SALT", "value": "salt-value-1111"}, routes()]);
+        let (response, seen) = run(effect.clone(), go(admin()), |request| {
+            secret_none(request).unwrap_or_else(|| match request {
+                IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(Some(
+                    orbital_core_runtime::credential_admin::StoreListing { enabled: true, entries: Vec::new() },
+                ))),
+                IoRequest::CredentialStoreWrite { .. } => IoAnswer::CredentialStoreWrite(Ok(())),
+                other => panic!("the fixture asks for {other:?}"),
+            })
+        });
+        assert_eq!(
+            payload_of(&response, "OK"),
+            json!({ "saved": true, "service": "apikeys", "envVar": "SALT", "last4": "1111" })
+        );
+        assert!(matches!(seen.last(), Some(IoRequest::CredentialStoreWrite { service, name, value }) if service == "apikeys" && name == "SALT" && value == "salt-value-1111"));
+        assert!(!format!("{seen:?}").contains("salt-value"), "the stored value never shows in a Debug of the asks");
+
+        let (denied, seen) = run(effect.clone(), go(signed_in()), |request| {
+            secret_none(request).unwrap_or_else(|| panic!("a refused role asks nothing more, asked {request:?}"))
+        });
+        assert_eq!(
+            payload_of(&denied, "BAD"),
+            json!({ "error": "forbidden: \"set\" requires one of roles: admin, owner", "code": "AUTH_ERROR" })
+        );
+        assert_eq!(seen.len(), 1);
+        let (anonymous, _) = run(effect, go(None), |request| {
+            secret_none(request).unwrap_or_else(|| panic!("anonymous asks nothing more, asked {request:?}"))
+        });
+        assert_eq!(payload_of(&anonymous, "BAD")["code"], "AUTH_ERROR");
+    }
+
+    #[test]
+    fn an_undeclared_name_is_refused_before_any_write_is_asked() {
+        install_registry();
+        let (response, seen) = run(
+            json!(["credential-set", {"service": "apikeys", "envVar": "OTHER", "value": "v"}, routes()]),
+            go(admin()),
+            |request| {
+                secret_none(request).unwrap_or_else(|| match request {
+                    IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(Some(
+                        orbital_core_runtime::credential_admin::StoreListing { enabled: true, entries: Vec::new() },
+                    ))),
+                    other => panic!("the fixture asks for {other:?}"),
+                })
+            },
+        );
+        assert!(!seen.iter().any(|r| matches!(r, IoRequest::CredentialStoreWrite { .. })));
+        assert_eq!(
+            payload_of(&response, "BAD"),
+            json!({ "error": "\"OTHER\" is not a declared credential of \"apikeys\" (declared: SALT)", "code": null })
+        );
+    }
+
+    #[test]
+    fn credential_mode_is_validated_in_the_kernel_and_applied_through_one_flag_ask() {
+        let (response, seen) = run(json!(["credential-mode", {"mode": "mock"}, routes()]), go(admin()), |request| {
+            secret_none(request).unwrap_or_else(|| match request {
+                IoRequest::CredentialModeWrite { mode } => IoAnswer::CredentialModeWrite(Ok(mode.clone())),
+                other => panic!("the fixture asks for {other:?}"),
+            })
+        });
+        assert_eq!(payload_of(&response, "OK"), json!({ "mode": "mock" }));
+        assert!(matches!(seen.last(), Some(IoRequest::CredentialModeWrite { mode }) if mode == "mock"));
+        let (bad, seen) = run(json!(["credential-mode", {"mode": "hybrid"}, routes()]), go(admin()), |request| {
+            secret_none(request).unwrap_or_else(|| panic!("an invalid mode asks no flag, asked {request:?}"))
+        });
+        assert_eq!(payload_of(&bad, "BAD")["error"], "mode must be \"mock\" or \"real\"");
+        assert!(!seen.iter().any(|r| matches!(r, IoRequest::CredentialModeWrite { .. })));
+    }
+
+    #[test]
+    fn the_catalog_includes_the_secret_knobs_the_registered_program_reads() {
+        install_registry();
+        let program: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "KeysOrbital",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Host", "linkedEntity": "Job",
+                    "config": { "salt": { "type": "secret", "default": "PROGRAM_SALT", "description": "The program salt." } },
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }, { "name": "failed" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "GO", "effects": [["credential-list", {"service": "KeysOrbital"}, routes()]] },
+                            { "from": "idle", "to": "done", "event": "OK" },
+                            { "from": "idle", "to": "failed", "event": "BAD" },
+                            { "from": "idle", "to": "idle", "event": "PROBE", "effects": [["credential-status", {"credential": "@config.salt", "scope": "app"}, routes()]] }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap();
+        let server = EmbeddedServer::new(program).unwrap();
+        let mut progress = server.start("KeysOrbital", go(None)).unwrap();
+        let response = loop {
+            match progress {
+                ServerProgress::Done(response) => break response,
+                ServerProgress::Await { flight, requests } => {
+                    let replies = requests
+                        .into_iter()
+                        .map(|pending| IoReply {
+                            id: pending.id,
+                            answer: match &pending.request {
+                                IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
+                                IoRequest::Secret { .. } => IoAnswer::Secret(Ok(None)),
+                                IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(None)),
+                                IoRequest::CredentialModeRead => IoAnswer::CredentialModeRead(Ok(None)),
+                                other => panic!("the fixture asks for {other:?}"),
+                            },
+                        })
+                        .collect();
+                    progress = server.resume(flight, replies).unwrap();
+                }
+            }
+        };
+        let listed = payload_of(&response, "OK");
+        let entries = listed["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "{listed}");
+        assert_eq!(entries[0]["id"], "KeysOrbital/PROGRAM_SALT");
+        assert_eq!(entries[0]["description"], "The program salt.");
+        assert_eq!(entries[0]["source"], "none");
+    }
+
+    #[test]
+    fn credential_rotate_and_remove_need_a_store_and_an_admin() {
+        let (response, _) = run(json!(["credential-rotate", {}, routes()]), go(admin()), |request| {
+            secret_none(request).unwrap_or_else(|| match request {
+                IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(None)),
+                other => panic!("the fixture asks for {other:?}"),
+            })
+        });
+        assert_eq!(payload_of(&response, "BAD")["error"], "No credential store is installed on this host");
+        let (rotated, _) = run(json!(["credential-rotate", {}, routes()]), go(admin()), |request| {
+            secret_none(request).unwrap_or_else(|| match request {
+                IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(Some(
+                    orbital_core_runtime::credential_admin::StoreListing { enabled: true, entries: Vec::new() },
+                ))),
+                IoRequest::CredentialStoreRotate => IoAnswer::CredentialStoreRotate(Ok(orbital_core_runtime::credential_admin::RotateCounts {
+                    rotated: 2,
+                    already_current: 1,
+                    unreadable: 0,
+                })),
+                other => panic!("the fixture asks for {other:?}"),
+            })
+        });
+        assert_eq!(payload_of(&rotated, "OK"), json!({ "rotated": 2.0, "alreadyCurrent": 1.0, "unreadable": 0.0 }));
+    }
+
+    #[test]
+    fn a_scrypt_salt_credential_is_resolved_by_the_kernel_and_never_reaches_program_data() {
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Keys",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Host", "linkedEntity": "Job",
+                    "config": { "salt": { "type": "secret", "default": "SALT_NAME", "description": "salt" } },
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "GO", "effects": [
+                                ["let", [["h", ["hash/scrypt", "sk_live_", "@config.salt"]]],
+                                    ["emit", "OK", { "hash": "@h", "salt": "@config.salt" }]]
+                            ] },
+                            { "from": "idle", "to": "done", "event": "OK" }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap();
+        let go = |salt: Option<&'static str>| {
+            let server = EmbeddedServer::new(schema.clone()).unwrap();
+            let mut seen = Vec::new();
+            let mut progress = server.start("Keys", go(None)).unwrap();
+            let response = loop {
+                match progress {
+                    ServerProgress::Done(response) => break response,
+                    ServerProgress::Await { flight, requests } => {
+                        let replies = requests
+                            .into_iter()
+                            .map(|pending| IoReply {
+                                id: pending.id,
+                                answer: match &pending.request {
+                                    IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
+                                    IoRequest::Secret { name, principal } => {
+                                        seen.push((name.clone(), principal.clone()));
+                                        IoAnswer::Secret(Ok(salt.map(str::to_string)))
+                                    }
+                                    other => panic!("the fixture asks for {other:?}"),
+                                },
+                            })
+                            .collect();
+                        progress = server.resume(flight, replies).unwrap();
+                    }
+                }
+            };
+            (response, seen)
+        };
+        let (held, seen) = go(Some("00112233445566778899"));
+        assert_eq!(seen, vec![("SALT_NAME".to_string(), None)]);
+        let hashed = payload_of(&held, "OK");
+        assert_eq!(hashed["hash"], "010bbcf1a211930bca10afa35c740b1c70dcb058711e165c9918f1137c97b940");
+        assert_eq!(hashed["salt"], "SALT_NAME", "the program sees the credential's name, never its value");
+        assert!(!hashed.to_string().contains("00112233445566778899"));
+        let (absent, _) = go(None);
+        assert_eq!(payload_of(&absent, "OK")["hash"], Json::Null, "no value held: the hash is null");
+    }
+
+    #[test]
+    fn the_wire_round_trips_every_credential_store_ask_and_answer_and_hides_the_value() {
+        use orbital_core_runtime::credential_admin::{RotateCounts, StoreListing, StoredName};
+        use orbital_core_runtime::embed::wire::{IoAnswerWire, IoRequestWire};
+        let requests = [
+            IoRequest::CredentialStoreList,
+            IoRequest::CredentialStoreRead { name: "n".into() },
+            IoRequest::CredentialStoreWrite { service: "s".into(), name: "n".into(), value: "hunter2".into() },
+            IoRequest::CredentialStoreRemove { name: "n".into() },
+            IoRequest::CredentialStoreRotate,
+            IoRequest::CredentialModeRead,
+            IoRequest::CredentialModeWrite { mode: "mock".into() },
+        ];
+        for request in requests {
+            let wire = serde_json::to_string(&IoRequestWire::from(&request)).unwrap();
+            let back: IoRequest = serde_json::from_str::<IoRequestWire>(&wire).unwrap().into();
+            assert_eq!(back, request, "{wire}");
+        }
+        assert!(!format!("{:?}", IoRequest::CredentialStoreWrite { service: "s".into(), name: "n".into(), value: "hunter2".into() }).contains("hunter2"));
+        assert!(!format!("{:?}", IoAnswer::CredentialStoreRead(Ok(Some("hunter2".into())))).contains("hunter2"));
+        let answers = [
+            IoAnswer::CredentialStoreList(Ok(Some(StoreListing { enabled: true, entries: vec![StoredName { service: "s".into(), name: "n".into() }] }))),
+            IoAnswer::CredentialStoreList(Ok(None)),
+            IoAnswer::CredentialStoreRead(Ok(Some("v".into()))),
+            IoAnswer::CredentialStoreRead(Ok(None)),
+            IoAnswer::CredentialStoreWrite(Ok(())),
+            IoAnswer::CredentialStoreRemove(Ok(true)),
+            IoAnswer::CredentialStoreRotate(Ok(RotateCounts { rotated: 1, already_current: 2, unreadable: 3 })),
+            IoAnswer::CredentialModeRead(Ok(Some("real".into()))),
+            IoAnswer::CredentialModeWrite(Err("refused".into())),
+        ];
+        for answer in answers {
+            let wire = serde_json::to_value(IoAnswerWire::from(&answer)).unwrap();
+            let back: IoAnswer = serde_json::from_value::<IoAnswerWire>(wire.clone()).unwrap().into();
+            assert_eq!(back, answer, "{wire}");
+        }
+        let rotate = serde_json::to_value(IoAnswerWire::from(&IoAnswer::CredentialStoreRotate(Ok(RotateCounts { rotated: 1, already_current: 2, unreadable: 3 })))).unwrap();
+        assert_eq!(rotate, json!({ "kind": "credentialStoreRotate", "result": { "ok": { "rotated": 1, "alreadyCurrent": 2, "unreadable": 3 } } }));
+    }
+}
+
 mod os_effects {
     use super::*;
     use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
@@ -643,7 +926,7 @@ mod lowering {
         use orbital_core_base::os::OsOp;
         for op in OsOp::ALL {
             assert!(
-                matches!(failure_payload(op.name(), false), ProducedPayload::Shape(shape) if shape.len() == 2),
+                matches!(failure_payload(op.name(), CallVariant::Plain, false), ProducedPayload::Shape(shape) if shape.len() == 2),
                 "{}",
                 op.name()
             );
@@ -1323,6 +1606,7 @@ mod os_deferred {
 mod os_completion {
     use super::*;
     use orbital_core_base::effect_types::RuntimeEnvironment;
+    use orbital_core_base::os::OsOp;
     use orbital_core_base::os_grants::OsGrants;
     use orbital_core_runtime::config::KernelConfig;
     use orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache};
@@ -1378,9 +1662,13 @@ mod os_completion {
     }
 
     fn wired(child_script: &str) -> Wired {
+        wired_with(supervisor(child_script))
+    }
+
+    fn wired_with(schema: OrbitalSchema) -> Wired {
         let store: Arc<dyn EntitySource> = Arc::new(InMemoryEntityCache::new());
         let kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), KernelConfig::default()));
-        kernel.register_schema(supervisor(child_script)).unwrap();
+        kernel.register_schema(schema).unwrap();
         let handles = Arc::new(OsHandles::default());
         let grants = Arc::new(OsGrants { exec: vec!["/bin/sh".to_string()], ..OsGrants::default() });
         let answer: Arc<CompletionAnswerer> = {
@@ -1411,6 +1699,81 @@ mod os_completion {
         wired.sink.drive(progress).unwrap();
     }
 
+    fn reader() -> OrbitalSchema {
+        let routes = |ok: &str| json!({ "success": ok, "failure": "READ_BAD" });
+        serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "out", "type": "string" },
+                    { "name": "err", "type": "string" }
+                ] },
+                "traits": [{ "name": "Sup", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "spawning" }, { "name": "reading" }],
+                        "transitions": [
+                            { "from": "idle", "to": "spawning", "event": "GO", "effects": [
+                                ["os/spawn", "/bin/sh", ["-c", "printf ERR >&2; sleep 1; printf OUT"],
+                                    { "stdin": "null", "stdout": "pipe", "stderr": "pipe" },
+                                    { "emit": { "success": "SPAWNED", "failure": "SPAWN_BAD" } }]
+                            ] },
+                            { "from": "spawning", "to": "reading", "event": "SPAWNED", "effects": [
+                                ["os/read", "@payload.stdout", 4096, { "key": "out", "emit": routes("OUT_DONE") }],
+                                ["os/read", "@payload.stderr", 4096, { "key": "err", "emit": routes("ERR_DONE") }]
+                            ] },
+                            { "from": "reading", "to": "reading", "event": "OUT_DONE", "effects": [
+                                ["set", "@entity.out", "@payload.data"]
+                            ] },
+                            { "from": "reading", "to": "reading", "event": "ERR_DONE", "effects": [
+                                ["set", "@entity.err", "@payload.data"]
+                            ] }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn two_keyed_reads_on_two_pipes_are_outstanding_together_and_both_complete() {
+        let wired = wired_with(reader());
+        let started = std::time::Instant::now();
+        go_sup(&wired);
+        assert!(started.elapsed() < Duration::from_millis(700), "the dispatch blocked on a pipe read: {:?}", started.elapsed());
+        assert_eq!(wired.kernel.snapshot_trait("Sup", None).state, "reading");
+        let (first, _) = wired.done.recv_timeout(Duration::from_secs(10)).expect("the stderr read completes while stdout is still empty");
+        assert_eq!(first, "ERR_DONE");
+        let (second, _) = wired.done.recv_timeout(Duration::from_secs(10)).expect("the stdout read completes later");
+        assert_eq!(second, "OUT_DONE");
+        let held = wired.kernel.snapshot_trait("Sup", None);
+        assert!(held.entity.get_path("err").is_some_and(|v| !v.is_null()), "{:?}", held.entity);
+        assert!(held.entity.get_path("out").is_some_and(|v| !v.is_null()), "{:?}", held.entity);
+    }
+
+    #[test]
+    fn control_an_unkeyed_read_still_answers_in_place() {
+        let handles = OsHandles::default();
+        let grants = OsGrants { exec: vec!["/bin/sh".to_string()], ..OsGrants::default() };
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let host = OsHost { grants: &grants, handles: &handles, on_event: &on_event };
+        let spawn = IoRequest::Os {
+            op: OsOp::Spawn,
+            args: vec![
+                Value::String("/bin/sh".into()),
+                serde_json::from_value(json!(["-c", "printf hi"])).unwrap(),
+                serde_json::from_value(json!({ "stdin": "null", "stdout": "pipe", "stderr": "null" })).unwrap(),
+            ],
+            key: None,
+            site: None,
+        };
+        let IoAnswer::Os(Ok(spawned)) = answer_os(Some(&host), &spawn) else { panic!("spawn") };
+        let fd = spawned.get_path("stdout").cloned().expect("a stdout fd");
+        let read = IoRequest::Os { op: OsOp::Read, args: vec![fd, Value::Number(16.0)], key: None, site: None };
+        assert!(matches!(answer_os(Some(&host), &read), IoAnswer::Os(Ok(_))));
+    }
+
     #[test]
     fn a_deferred_wait_dispatches_the_child_exit_through_the_kernel_sink_into_a_second_transition() {
         let wired = wired("exit 3");
@@ -1434,5 +1797,219 @@ mod os_completion {
         wired.handles.close_all();
         assert!(wired.done.recv_timeout(Duration::from_millis(500)).is_err(), "a cancelled key completed");
         assert_eq!(wired.kernel.snapshot_trait("Sup", None).state, "waiting");
+    }
+}
+
+#[cfg(unix)]
+mod os_twin {
+    use super::*;
+    use orbital_core_base::os::OsOp;
+    use orbital_core_base::os_grants::OsGrants;
+    use orbital_core_runtime::os_host::{answer_os, OsHandles, OsHost};
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::path::PathBuf;
+    use orbital_core_base::os::OsError;
+    use orbital_core_runtime::os_host::completion::{completion_event, OsCompletionSink};
+    use orbital_core_runtime::resumable::{CallRoutes, CallSite};
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::sync::{Arc as Shared, Mutex as StdMutex};
+
+    struct Collect(StdMutex<Sender<(String, Json)>>);
+
+    impl OsCompletionSink for Collect {
+        fn complete(&self, site: &CallSite, key: &str, outcome: Result<Value, OsError>) {
+            if let Some((event, payload)) = completion_event(site, key, outcome) {
+                let fired = json!({ "event": event, "payload": serde_json::to_value(&payload).unwrap() });
+                let _ = self.0.lock().unwrap().send((key.to_string(), fired));
+            }
+        }
+    }
+
+    fn routed_site() -> CallSite {
+        CallSite {
+            orbital: None,
+            trait_name: "Sup".to_string(),
+            follow_on: false,
+            entity_id: "singleton".to_string(),
+            emit: CallRoutes {
+                success: Some("DONE".to_string()),
+                failure: Some("FAILED".to_string()),
+                ..CallRoutes::default()
+            },
+        }
+    }
+
+    fn completion_of(rx: &Receiver<(String, Json)>, got: &mut HashMap<String, Json>, key: &str) -> Json {
+        loop {
+            if let Some(fired) = got.remove(key) {
+                return fired;
+            }
+            let (arrived, fired) = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("no completion for key {key}"));
+            got.insert(arrived, fired);
+        }
+    }
+
+    fn fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../../packages/almadar-runtime/test/fixtures/os-asks.json")
+    }
+
+    fn text(vars: &HashMap<String, Json>, s: &str) -> String {
+        let mut out = s.to_string();
+        for (name, value) in vars {
+            let shown = match value {
+                Json::String(v) => v.clone(),
+                Json::Number(n) => n.as_f64().map_or(n.to_string(), |f| format!("{}", f as i64)),
+                other => other.to_string(),
+            };
+            out = out.replace(&format!("${{{name}}}"), &shown);
+        }
+        out
+    }
+
+    fn substitute(vars: &HashMap<String, Json>, value: &Json) -> Json {
+        match value {
+            Json::String(s) => Json::String(text(vars, s)),
+            Json::Array(items) => Json::Array(items.iter().map(|i| substitute(vars, i)).collect()),
+            Json::Object(map) => {
+                if map.len() == 1 {
+                    if let Some(Json::String(name)) = map.get("$var") {
+                        return vars.get(name).cloned().unwrap_or(Json::Null);
+                    }
+                }
+                Json::Object(map.iter().map(|(k, v)| (k.clone(), substitute(vars, v))).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
+    fn matches(actual: &Json, expected: &Json) -> bool {
+        match expected {
+            Json::Object(map) if map.get("$number") == Some(&Json::Bool(true)) => actual.is_number(),
+            Json::Object(map) => actual.as_object().is_some_and(|a| {
+                a.len() == map.len() && map.iter().all(|(k, v)| a.get(k).is_some_and(|x| matches(x, v)))
+            }),
+            Json::Array(items) => actual.as_array().is_some_and(|a| {
+                a.len() == items.len() && items.iter().zip(a).all(|(e, x)| matches(x, e))
+            }),
+            Json::Number(n) => actual.as_f64().is_some() && actual.as_f64() == n.as_f64(),
+            other => actual == other,
+        }
+    }
+
+    #[test]
+    fn the_embed_exports_name_the_deferring_ops_and_shape_a_completion_event() {
+        use orbital_core_runtime::embed::{os_completion_event_json, os_deferring_ops_json};
+        let names: Vec<String> = serde_json::from_str(&os_deferring_ops_json().unwrap()).unwrap();
+        assert_eq!(names, ["os/read", "os/wait", "os/recv", "os/recvfrom"]);
+        let site = json!({ "trait": "Sup", "followOn": false, "emit": { "success": "DONE", "failure": "FAILED" } }).to_string();
+        let ok = os_completion_event_json(&site, "k", &json!({ "ok": { "code": 3 } }).to_string()).unwrap();
+        assert_eq!(serde_json::from_str::<Json>(&ok).unwrap(), json!({ "event": "DONE", "payload": { "code": 3.0, "key": "k" } }));
+        let failed = os_completion_event_json(&site, "k", &json!({ "error": { "kind": "closed", "message": "gone" } }).to_string()).unwrap();
+        assert_eq!(serde_json::from_str::<Json>(&failed).unwrap(), json!({ "event": "FAILED", "payload": { "error": "gone", "kind": "closed", "key": "k" } }));
+        let unrouted = json!({ "trait": "Sup", "followOn": false, "emit": {} }).to_string();
+        assert_eq!(os_completion_event_json(&unrouted, "k", &json!({ "ok": {} }).to_string()).unwrap(), "null");
+    }
+
+    #[test]
+    fn os_twin_fixture_replay() {
+        let path = fixture_path();
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            eprintln!("os_twin_fixture_replay: {} is absent (standalone checkout); skipped", path.display());
+            return;
+        };
+        let fixture: Json = serde_json::from_str(&raw).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().canonicalize().unwrap();
+        let echo = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = echo.local_addr().unwrap().port();
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in echo.incoming().flatten() {
+                std::thread::spawn(move || {
+                    let mut stream = stream;
+                    let mut buf = [0u8; 256];
+                    while let Ok(n) = stream.read(&mut buf) {
+                        if n == 0 || stream.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+
+        let mut vars: HashMap<String, Json> = HashMap::new();
+        vars.insert("tmp".into(), json!(real.to_string_lossy()));
+        vars.insert("port".into(), json!(port));
+        vars.insert("closedPort".into(), json!(closed));
+
+        let grants: OsGrants = serde_json::from_value(substitute(&vars, &fixture["grants"])).unwrap();
+        let handles = OsHandles::default();
+        let (told, rx) = channel();
+        handles.completions.set_sink(Shared::new(Collect(StdMutex::new(told))));
+        let mut arrived: HashMap<String, Json> = HashMap::new();
+        let on_event = |_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {};
+        let host = OsHost { grants: &grants, handles: &handles, on_event: &on_event };
+
+        let steps = fixture["steps"].as_array().unwrap();
+        assert!(steps.len() > 70);
+        for step in steps {
+            let name = step["name"].as_str().unwrap();
+            if let Some(key) = step.get("cancel").and_then(Json::as_str) {
+                assert_eq!(handles.cancel_completion(key), step["cancelled"].as_bool().unwrap(), "{name}");
+                continue;
+            }
+            let op = OsOp::from_name(step["op"].as_str().unwrap()).unwrap_or_else(|| panic!("{name}: unknown op"));
+            let args: Vec<Value> = step["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| serde_json::from_value(substitute(&vars, a)).unwrap())
+                .collect();
+            let key = step.get("key").and_then(Json::as_str).map(str::to_string);
+            let site = key.as_ref().map(|_| routed_site());
+            let request = IoRequest::Os { op, args, key: key.clone(), site };
+            let answered = answer_os(Some(&host), &request);
+            if let Some(deferred) = step.get("deferred") {
+                assert!(matches!(answered, IoAnswer::ServiceDeferred), "{name}: {answered:?}");
+                if deferred != "pending" {
+                    let fired = completion_of(&rx, &mut arrived, key.as_deref().unwrap());
+                    let want = substitute(&vars, deferred);
+                    assert!(matches(&fired, &want), "{name}: {fired} vs {want}");
+                }
+                continue;
+            }
+            let IoAnswer::Os(answer) = answered else {
+                panic!("{name}: not an os answer")
+            };
+            let expect = substitute(&vars, &step["expect"]);
+            match answer {
+                Ok(value) => {
+                    let actual = serde_json::to_value(&value).unwrap();
+                    let want = expect.get("ok").unwrap_or_else(|| panic!("{name}: answered ok {actual}, expected {expect}"));
+                    assert!(matches(&actual, want), "{name}: {actual} vs {want}");
+                    if let Some(binds) = step.get("bind").and_then(Json::as_object) {
+                        for (var, field) in binds {
+                            vars.insert(var.clone(), actual[field.as_str().unwrap()].clone());
+                        }
+                    }
+                }
+                Err(error) => {
+                    let want = expect.get("error").unwrap_or_else(|| panic!("{name}: answered error {error:?}, expected {expect}"));
+                    assert_eq!(error.kind.as_str(), want["kind"].as_str().unwrap(), "{name}: {}", error.message);
+                    if let Some(message) = want.get("message").and_then(Json::as_str) {
+                        assert_eq!(error.message, message, "{name}");
+                    }
+                    if let Some(prefix) = want.get("messagePrefix").and_then(Json::as_str) {
+                        assert!(error.message.starts_with(prefix), "{name}: {}", error.message);
+                    }
+                }
+            }
+        }
+        handles.close_all();
     }
 }
