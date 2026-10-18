@@ -307,6 +307,7 @@ pub struct RuntimeKernel {
     /// The fetch/persist handler over the entity source: where a row-set reference is resolved and the
     /// kernel's own writes are noted for EXEC-RENDER-3.
     rows: Arc<EntitySourceHandler>,
+    prob_entropy: EntropySource,
 }
 
 impl std::fmt::Debug for RuntimeKernel {
@@ -906,10 +907,22 @@ struct DispatchStamp {
     now: f64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct KernelI18n {
     locales: Vec<String>,
     catalogs: HashMap<String, HashMap<String, String>>,
+}
+
+/// A `prob/*` seed source asking the kernel's host for four journaled random bytes.
+fn entropy_from(io: Arc<IoPort>) -> EntropySource {
+    EntropySource::new(move || {
+        let raw = io.random(4)?;
+        let bytes: [u8; 4] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| format!("prob/*: the host answered {} entropy bytes, not 4", raw.len()))?;
+        Ok(u32::from_le_bytes(bytes))
+    })
 }
 
 /// Holds a request thread's viewer; dropping it forgets the viewer.
@@ -975,6 +988,7 @@ impl RuntimeKernel {
             .with_runtime_rows(config.runtime_rows_in_kernel),
         );
         let entity_source: Arc<dyn EntitySource> = io.clone();
+        let prob_entropy = entropy_from(Arc::clone(&io));
         let entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let entity_handler = Arc::new(EntitySourceHandler {
@@ -1033,6 +1047,7 @@ impl RuntimeKernel {
             entity_source,
             io,
             rows: entity_handler,
+            prob_entropy,
             current_user: Arc::new(RwLock::new(current_user)),
             viewer_by_thread: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
@@ -1232,20 +1247,6 @@ impl RuntimeKernel {
             crate::entity_access::resolve_collection_inheritance(&mut table);
         }
 
-        // A `persistent:` collection is one table: every entity bound to it reads
-        // and writes the same rows (JS `MockPersistenceAdapter`, the TS shell).
-        for orbital in &schema.orbitals {
-            for entity_ref in
-                std::iter::once(&orbital.entity).chain(orbital.auxiliary_entities.iter().flatten())
-            {
-                if let EntityRef::Inline(def) = entity_ref {
-                    if let Some(collection) = &def.collection {
-                        self.entity_source.bind_collection(&def.name, collection);
-                    }
-                }
-            }
-        }
-
         // Additive across registrations, same inline-only contract as the access
         // table above. A SEPARATE lock/loop (never nested inside the
         // `entity_policies` write guard above) so `entity_policies` and
@@ -1258,9 +1259,6 @@ impl RuntimeKernel {
                     .chain(orbital.auxiliary_entities.iter().flatten())
                 {
                     if let EntityRef::Inline(def) = entity_ref {
-                        if def.persistence == Some(Persistence::Runtime) {
-                            self.io.claim_runtime(&def.name);
-                        }
                         defs.insert(def.name.clone(), def.clone());
                     }
                 }
@@ -1296,19 +1294,8 @@ impl RuntimeKernel {
                 .extend(super::callsite_capture::capture_children(
                     &registered.iter().collect::<Vec<_>>(),
                 ));
-
-            // Seed entity instances from inline entity definitions.
-            if let EntityRef::Inline(entity_def) = &orbital.entity {
-                if let Some(instances) = &entity_def.instances {
-                    let now = crate::mock_random::iso_from_ms(self.clock_now());
-                    for entity in
-                        crate::seed::instance_rows(&entity_def.name, instances, &now)
-                    {
-                        let _ = self.entity_source.create(&entity_def.name, &entity);
-                    }
-                }
-            }
         }
+        self.bind_program_rows(&schema);
 
         {
             let mut schemas = self.schemas.write();
@@ -1368,6 +1355,104 @@ impl RuntimeKernel {
     }
 
     /// Register a trait definition with the state manager.
+    /// What a program asks of the session's row store: one table per `persistent:` collection (every entity bound
+    /// to it reads and writes the same rows, as `MockPersistenceAdapter` and the TS shell do), the `[runtime]`
+    /// entities held in the kernel, and each inline entity's declared instances seeded.
+    fn bind_program_rows(&self, schema: &OrbitalSchema) {
+        for orbital in &schema.orbitals {
+            for entity_ref in
+                std::iter::once(&orbital.entity).chain(orbital.auxiliary_entities.iter().flatten())
+            {
+                if let EntityRef::Inline(def) = entity_ref {
+                    if let Some(collection) = &def.collection {
+                        self.entity_source.bind_collection(&def.name, collection);
+                    }
+                    if def.persistence == Some(Persistence::Runtime) {
+                        self.io.claim_runtime(&def.name);
+                    }
+                }
+            }
+        }
+        for orbital in &schema.orbitals {
+            if let EntityRef::Inline(entity_def) = &orbital.entity {
+                if let Some(instances) = &entity_def.instances {
+                    let now = crate::mock_random::iso_from_ms(self.clock_now());
+                    for entity in crate::seed::instance_rows(&entity_def.name, instances, &now) {
+                        let _ = self.entity_source.create(&entity_def.name, &entity);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A kernel holding this one's registered program and none of its session: every trait at its initial state,
+    /// no frames, rows, deliveries or renders, and the program's declared instances seeded again. A stateless host
+    /// registers a program once and serves each request a fork (EXEC-DIST-5).
+    pub fn fork_session(
+        &self,
+        entity_source: Arc<dyn EntitySource>,
+        config: KernelConfig,
+    ) -> Result<RuntimeKernel, KernelError> {
+        let fork = RuntimeKernel::new(config.environment, entity_source, config);
+        fork.host_fans_out.store(
+            self.host_fans_out.load(std::sync::atomic::Ordering::SeqCst),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        *fork.schemas.write() = self.schemas.read().clone();
+        *fork.trait_homes.write() = self.trait_homes.read().clone();
+        *fork.trait_definitions.write() = self.trait_definitions.read().clone();
+        *fork.entity_policies.write() = self.entity_policies.read().clone();
+        *fork.embed_index.write() = self.embed_index.read().clone();
+        *fork.entity_definitions.write() = self.entity_definitions.read().clone();
+        *fork.entity_defaults.write() = self.entity_defaults.read().clone();
+        *fork.egress.write() = self.egress.read().clone();
+        *fork.os_grants.write() = self.os_grants.read().clone();
+        *fork.theme_presets.write() = self.theme_presets.read().clone();
+        *fork.nav_pages.write() = self.nav_pages.read().clone();
+        *fork.capture_children.write() = self.capture_children.read().clone();
+        *fork.i18n.write() = self.i18n.read().clone();
+        *fork.current_user.write() = self.current_user.read().clone();
+        fork.deliveries.write().copy_placement(&self.deliveries.read());
+        let schemas = self.schemas.read();
+        let mut names: Vec<&String> = schemas.keys().collect();
+        names.sort();
+        let mut seen = std::collections::HashSet::new();
+        for orbital in names.iter().flat_map(|name| schemas[*name].orbitals.iter()) {
+            for trait_name in orbital.traits.iter().filter_map(|t| t.trait_name()) {
+                let Some(def) = self.trait_definitions.read().get(trait_name).cloned() else {
+                    continue;
+                };
+                if !seen.insert(trait_name.to_string()) {
+                    continue;
+                }
+                fork.state_manager.write().register_trait((*def).clone());
+                fork.register_trait_listeners(&def, &orbital.name)?;
+            }
+        }
+        let homes = self.trait_homes.read();
+        let mut rest: Vec<(String, Arc<TraitDefinition>)> = self
+            .trait_definitions
+            .read()
+            .iter()
+            .filter(|(name, _)| !seen.contains(name.as_str()))
+            .map(|(name, def)| (name.clone(), def.clone()))
+            .collect();
+        rest.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, def) in rest {
+            let orbital = homes
+                .get(&name)
+                .and_then(|(schema, index)| schemas.get(schema)?.orbitals.get(*index))
+                .map(|o| o.name.clone())
+                .unwrap_or_default();
+            fork.state_manager.write().register_trait((*def).clone());
+            fork.register_trait_listeners(&def, &orbital)?;
+        }
+        for name in names {
+            fork.bind_program_rows(&schemas[name]);
+        }
+        Ok(fork)
+    }
+
     fn register_trait(&self, trait_def: &TraitDefinition) -> Result<(), KernelError> {
         let trait_name = &trait_def.name;
         debug!(trait_name = %trait_name, "Registering trait");
@@ -3885,17 +3970,10 @@ impl RuntimeKernel {
     }
 
     /// The seed an unseeded `prob/*` stream of this dispatch takes: one journaled `Random` ask, made on first use, so a
-    /// replay from the journal draws the same values and two dispatches draw different ones.
+    /// replay from the journal draws the same values and two dispatches draw different ones. Built once per kernel
+    /// (the dispatch's own draw state lives in its context), so a dispatch only clones it.
     fn prob_entropy(&self) -> EntropySource {
-        let io = Arc::clone(&self.io);
-        EntropySource::new(move || {
-            let raw = io.random(4)?;
-            let bytes: [u8; 4] = raw
-                .as_slice()
-                .try_into()
-                .map_err(|_| format!("prob/*: the host answered {} entropy bytes, not 4", raw.len()))?;
-            Ok(u32::from_le_bytes(bytes))
-        })
+        self.prob_entropy.clone()
     }
 
     /// `random-bytes`: `count` bytes of host CSPRNG output as base64url, or the failure.

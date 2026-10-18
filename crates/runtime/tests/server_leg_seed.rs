@@ -60,7 +60,10 @@ fn row(json: Json) -> Value {
 
 /// Run `request`; the persistence host records every create it is asked for.
 fn run(request: EventRequest) -> (EventResponse, Vec<Value>) {
-    let server = EmbeddedServer::new(schema()).unwrap();
+    drive(&EmbeddedServer::new(schema()).unwrap(), request)
+}
+
+fn drive(server: &EmbeddedServer, request: EventRequest) -> (EventResponse, Vec<Value>) {
     let mut created = Vec::new();
     let mut progress = server.start("ChatOrbital", request).unwrap();
     loop {
@@ -226,11 +229,19 @@ fn carried_rows_schema() -> OrbitalSchema {
     .unwrap()
 }
 
-fn carried_rows_run(orbital: &str, request: EventRequest) -> EventResponse {
+fn seeded_rows_server() -> EmbeddedServer {
     let server = EmbeddedServer::new(carried_rows_schema()).unwrap();
     server
         .seed_rows("Card", &[row(json!({ "id": "singleton", "label": "seeded", "createdAt": "2026-01-01T00:00:00.000Z" }))])
         .unwrap();
+    server
+}
+
+fn carried_rows_run(orbital: &str, request: EventRequest) -> EventResponse {
+    drive_rows(&seeded_rows_server(), orbital, request)
+}
+
+fn drive_rows(server: &EmbeddedServer, orbital: &str, request: EventRequest) -> EventResponse {
     let mut progress = server.start(orbital, request).unwrap();
     loop {
         match progress {
@@ -343,4 +354,63 @@ fn control_a_runtime_shared_row_carried_with_an_id_folds_into_the_shared_frame()
         entity_of(&response, "ScratchReader")["channel"],
         json!("c1")
     );
+}
+
+fn next_other() -> EventRequest {
+    EventRequest { event: "NEXT".to_string(), target_trait: Some("Other".to_string()), ..Default::default() }
+}
+
+#[test]
+fn a_fork_starts_every_trait_at_its_initial_state_whatever_its_template_ran() {
+    let template = EmbeddedServer::new(schema()).unwrap();
+    let (first, _) = drive(&template, next_other());
+    assert_eq!(first.states.get("Other").map(String::as_str), Some("done"));
+    let (forked, _) = drive(&template.fork_session().unwrap(), next_other());
+    assert!(forked.transitioned, "{forked:?}");
+    assert_eq!(forked.states.get("Other").map(String::as_str), Some("done"));
+}
+
+#[test]
+fn control_a_fork_running_leaves_its_template_where_it_was() {
+    let template = EmbeddedServer::new(schema()).unwrap();
+    drive(&template, next_other());
+    drive(&template.fork_session().unwrap(), next_other());
+    let (again, _) = drive(&template, next_other());
+    assert!(!again.transitioned, "{again:?}");
+}
+
+#[test]
+fn a_fork_delivers_the_programs_listens() {
+    let fork = EmbeddedServer::new(schema()).unwrap().fork_session().unwrap();
+    let (_, created) = drive(&fork, send(Some(json!({ "content": "typed" }))));
+    assert_eq!(created.len(), 1);
+}
+
+#[test]
+fn edge_two_forks_of_one_template_hold_separate_sessions() {
+    let template = EmbeddedServer::new(schema()).unwrap();
+    let (a, b) = (template.fork_session().unwrap(), template.fork_session().unwrap());
+    drive(&a, next_other());
+    let (on_b, _) = drive(&b, next_other());
+    assert!(on_b.transitioned, "{on_b:?}");
+    let (on_a_again, _) = drive(&a, next_other());
+    assert!(!on_a_again.transitioned, "{on_a_again:?}");
+}
+
+#[test]
+fn a_fork_holds_none_of_its_templates_runtime_rows() {
+    let fork = seeded_rows_server().fork_session().unwrap();
+    let viewer = entity_of(&drive_rows(&fork, "CardOrbital", ping(json!({ "label": "hello" }))), "Viewer");
+    assert_eq!(viewer["label"], json!("hello"));
+    assert!(viewer.get("createdAt").is_none(), "the template's seeded row reached the fork: {viewer}");
+}
+
+#[test]
+fn a_fork_answers_exactly_as_a_freshly_registered_server() {
+    let request = || ping(json!({ "id": "row-1", "label": "hello" }));
+    let template = EmbeddedServer::new(carried_rows_schema()).unwrap();
+    drive_rows(&template, "CardOrbital", request());
+    let forked = drive_rows(&template.fork_session().unwrap(), "CardOrbital", request());
+    let fresh = drive_rows(&EmbeddedServer::new(carried_rows_schema()).unwrap(), "CardOrbital", request());
+    assert_eq!(serde_json::to_value(&forked).unwrap(), serde_json::to_value(&fresh).unwrap());
 }

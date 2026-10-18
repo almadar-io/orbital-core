@@ -223,3 +223,22 @@ fn format_number_honors_minimum_and_maximum_fraction_digits() {
     assert_eq!(ok(r#"["format/number", 5.123456, {"maximumFractionDigits": 1}]"#), Value::String("5.1".into()));
     assert_eq!(ok(r#"["format/number", 5.123456, {"decimals": 2, "maximumFractionDigits": 1}]"#), Value::String("5.12".into()));
 }
+
+fn value(json: &str) -> Value {
+    serde_json::from_str(json).unwrap()
+}
+
+/// A whole `@trait.X` string is a client-only frame reference: it evaluates to itself, as the value resolver and the
+/// embedded interpolation already keep it, so a branch an operator chooses still embeds the trait.
+#[test]
+fn a_trait_reference_evaluates_to_itself_inside_an_operator_branch() {
+    assert_eq!(
+        ok(r#"["if", true, {"type": "box", "children": ["@trait.HeroArt"]}, null]"#),
+        value(r#"{"type": "box", "children": ["@trait.HeroArt"]}"#)
+    );
+}
+
+#[test]
+fn control_an_unresolved_entity_binding_still_evaluates_to_null() {
+    assert_eq!(ok(r#"["if", true, "@entity.missing", 1]"#), Value::Null);
+}

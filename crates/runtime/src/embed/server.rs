@@ -105,6 +105,19 @@ pub struct EmbeddedServer {
     next_flight: Mutex<u64>,
 }
 
+/// The row source and config of a server-role kernel whose host answers every ask.
+fn host_answered() -> (Arc<dyn EntitySource>, KernelConfig) {
+    let host = Arc::new(HostAnswered);
+    let config = KernelConfig {
+        environment: RuntimeEnvironment::Server,
+        service_handler: Some(host.clone() as Arc<dyn ServiceHandler>),
+        substrate_handler: Some(host.clone() as Arc<dyn SubstrateHandler>),
+        runtime_rows_in_kernel: true,
+        ..KernelConfig::default()
+    };
+    (host as Arc<dyn EntitySource>, config)
+}
+
 impl EmbeddedServer {
     /// Register an already-resolved schema in a fresh server-role kernel.
     pub fn new(schema: OrbitalSchema) -> Result<Self, String> {
@@ -123,19 +136,8 @@ impl EmbeddedServer {
                 (orbital.name.clone(), traits)
             })
             .collect();
-        let host = Arc::new(HostAnswered);
-        let config = KernelConfig {
-            environment: RuntimeEnvironment::Server,
-            service_handler: Some(host.clone() as Arc<dyn ServiceHandler>),
-            substrate_handler: Some(host.clone() as Arc<dyn SubstrateHandler>),
-            runtime_rows_in_kernel: true,
-            ..KernelConfig::default()
-        };
-        let kernel = RuntimeKernel::new(
-            RuntimeEnvironment::Server,
-            host as Arc<dyn EntitySource>,
-            config,
-        );
+        let (host, config) = host_answered();
+        let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, host, config);
         kernel
             .register_schema(schema)
             .map_err(|e| format!("register_schema: {e}"))?;
@@ -145,6 +147,22 @@ impl EmbeddedServer {
             orbital_traits,
             default_user: Mutex::new(default_user),
             tick_mount: Mutex::new(BTreeSet::new()),
+            flights: Mutex::new(HashMap::new()),
+            resolves: Mutex::new(HashMap::new()),
+            next_flight: Mutex::new(0),
+        })
+    }
+
+    /// A server holding this one's registered program and none of its session ([`RuntimeKernel::fork_session`]):
+    /// its viewer, mounted ticks and locales carry over, nothing a dispatch left does.
+    pub fn fork_session(&self) -> Result<Self, String> {
+        let (host, config) = host_answered();
+        let kernel = self.kernel.fork_session(host, config).map_err(|e| format!("fork_session: {e}"))?;
+        Ok(Self {
+            kernel,
+            orbital_traits: self.orbital_traits.clone(),
+            default_user: Mutex::new(self.default_user.lock().clone()),
+            tick_mount: Mutex::new(self.tick_mount.lock().clone()),
             flights: Mutex::new(HashMap::new()),
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),

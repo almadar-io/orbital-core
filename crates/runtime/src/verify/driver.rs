@@ -397,13 +397,8 @@ fn describe_effect(effect: &Effect) -> (String, String) {
 /// Collect render-ui `@…` binding literals the kernel passed through — the Layer-2
 /// resolution obligation (recorded, not failed).
 fn collect_deferred(effect: &ClientEffect, out: &mut Vec<String>) {
-    if let ClientEffect::RenderUi { config, props, .. } = effect {
-        if let Some(config) = config {
-            collect_literals(config, out);
-        }
-        if let Some(props) = props {
-            collect_literals(props, out);
-        }
+    if let ClientEffect::RenderUi { config: Some(config), .. } = effect {
+        collect_literals(config, out);
     }
 }
 

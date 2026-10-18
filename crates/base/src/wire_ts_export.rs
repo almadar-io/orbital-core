@@ -66,7 +66,7 @@ impl TS for Value {
 declared_by_hand!(
     ClientEffect,
     "ClientEffect",
-    "[\"render-ui\", string, PatternConfig | null] | [\"render-ui\", string, PatternConfig | null, ResolvedPatternProps | null] | [\"render-ui\", string, PatternConfig | null, ResolvedPatternProps | null, number | null] | [\"navigate\", string] | [\"navigate\", string, { [key in string]: string } | null] | [\"navigate\", string, { [key in string]: string } | null, NavigateOptions] | [\"navigate-back\"]",
+    "[\"render-ui\", string, PatternConfig | null] | [\"navigate\", string] | [\"navigate\", string, { [key in string]: string } | null] | [\"navigate\", string, { [key in string]: string } | null, NavigateOptions] | [\"navigate-back\"]",
     [NavigateOptions]
 );
 declared_by_hand!(

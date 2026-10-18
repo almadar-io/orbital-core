@@ -235,6 +235,21 @@ pub fn evaluate_many_json(context_json: &str, expressions_json: &str) -> Result<
     to_json(&outcomes)
 }
 
+/// Every value of one render resolved against one context: each `@`-binding in it, whole or embedded in a string at
+/// any depth, and each operator call. `EvalOutcomeWire[]`, in order; a failing value never fails its siblings.
+pub fn resolve_values_json(context_json: &str, values_json: &str) -> Result<String, String> {
+    let ctx = context_of(context_json)?;
+    let values: Vec<Value> = parse(values_json, "values")?;
+    let outcomes: Vec<EvalOutcomeWire> = values
+        .iter()
+        .map(|value| match ctx.resolve_value_checked(value) {
+            Ok(resolved) => EvalOutcomeWire::Value { value: resolved.into_owned() },
+            Err(err) => EvalOutcomeWire::Error { message: err.to_string() },
+        })
+        .collect();
+    to_json(&outcomes)
+}
+
 /// Every guard of one render against one context, in one crossing: `GuardOutcomeWire[]`, in order.
 pub fn evaluate_guards_json(context_json: &str, guards_json: &str) -> Result<String, String> {
     let ctx = context_of(context_json)?;
@@ -813,5 +828,46 @@ mod trace_effects_tests {
         assert!(out["effects"][0]["error"].as_str().unwrap().contains("only supports @entity"));
         assert!(trace_effects_json("{}", "not json").unwrap_err().contains("parse effects"));
         same!(trace(Json::Null, json!([]))["entity"], json!({}));
+    }
+}
+
+#[cfg(test)]
+mod resolve_values_tests {
+    use super::resolve_values_json;
+    use serde_json::{json, Value as Json};
+
+    fn resolve(context: Json, values: Json) -> Json {
+        serde_json::from_str(&resolve_values_json(&context.to_string(), &values.to_string()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn interpolates_an_embedded_binding_and_resolves_a_whole_one_to_its_typed_value() {
+        let out = resolve(json!({ "entity": { "hp": 7, "maxHp": 10 } }), json!(["HP: @entity.hp / @entity.maxHp", "@entity.hp"]));
+        assert_eq!(out[0], json!({ "kind": "value", "value": "HP: 7 / 10" }));
+        assert_eq!(out[1]["value"].as_f64(), Some(7.0));
+    }
+
+    #[test]
+    fn resolves_bindings_at_any_depth_of_a_prop_tree_and_evaluates_an_operator_call() {
+        let out = resolve(
+            json!({ "entity": { "name": "Ada", "n": 2 } }),
+            json!([{ "type": "typography", "content": "Hi @entity.name", "items": [["+", "@entity.n", 1]] }]),
+        );
+        assert_eq!(out[0]["value"]["content"], json!("Hi Ada"));
+        assert_eq!(out[0]["value"]["items"][0].as_f64(), Some(3.0));
+    }
+
+    #[test]
+    fn control_a_binding_free_value_comes_back_unchanged() {
+        let out = resolve(json!({ "entity": {} }), json!([{ "type": "typography", "content": "plain" }, 3]));
+        assert_eq!(out[0]["value"], json!({ "type": "typography", "content": "plain" }));
+        assert_eq!(out[1]["value"].as_f64(), Some(3.0));
+    }
+
+    #[test]
+    fn edge_a_failing_operator_call_is_that_values_error_and_never_fails_its_siblings() {
+        let out = resolve(json!({ "entity": {} }), json!([["i18n/t", "greet:hello"], "ok"]));
+        assert_eq!(out[0]["kind"], json!("error"));
+        assert_eq!(out[1], json!({ "kind": "value", "value": "ok" }));
     }
 }

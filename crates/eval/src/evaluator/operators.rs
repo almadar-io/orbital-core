@@ -562,7 +562,12 @@ fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
             if s.starts_with('@') {
                 // Return Null for missing bindings (similar to JavaScript undefined)
                 // This allows guards to check for existence with != null
-                Ok(ctx.resolve_binding(s).unwrap_or(Value::Null))
+                match ctx.resolve_binding(s) {
+                    Some(value) => Ok(value),
+                    // A client-only frame reference stays for the client to embed, as the value resolver keeps it.
+                    None if s.starts_with("@trait.") => Ok(Value::String(s.clone())),
+                    None => Ok(Value::Null),
+                }
             } else {
                 Ok(Value::String(s.clone()))
             }

@@ -30,14 +30,11 @@ pub struct NavigateOptions {
 /// `groovy-inventing-cloud.md`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEffect {
+    /// `["render-ui", slot, pattern]`: `render-ui` takes a slot and a pattern (G-CROSS-257).
     RenderUi {
         slot: String,
         /// `PatternConfig | null` — always present on the wire, `null` when absent.
         config: Option<Value>,
-        /// `ResolvedPatternProps` — present only in the arity-4/5 forms.
-        props: Option<Value>,
-        /// Render priority — present only in the arity-5 form.
-        priority: Option<u32>,
     },
     Navigate {
         path: String,
@@ -52,34 +49,21 @@ impl ClientEffect {
     /// client-targeted in tuple form (`render-ui`/`navigate`/`navigate-back`; `emit`
     /// surfaces separately as an [`super::EmittedEvent`], never here).
     ///
-    /// `RenderUi`'s whole (already-bound) content becomes `config` — the Rust kernel
-    /// resolves `@entity`/`@payload` bindings once, server-side, into one merged
-    /// object, unlike the TS runtime's separate config/props layering, so `props`
-    /// stays `None` on this path.
-    /// For `RenderUi`, the pattern object a renderer parses: `config` (the `type` +
-    /// declared config) with `props`' keys layered on top (the resolved/interpolated
-    /// values win). Native (non-web) clients that predate the config/props split read
-    /// ONE merged pattern object, same as the legacy `Effect::RenderUi { content }`
-    /// shape did — this is that convenience, kept in one place instead of re-merged at
-    /// every call site.
+    /// For `RenderUi`, the pattern object a renderer parses (an empty object for a `null` pattern).
     pub fn render_ui_value(&self) -> Option<Value> {
-        let ClientEffect::RenderUi { config, props, .. } = self else {
+        let ClientEffect::RenderUi { config, .. } = self else {
             return None;
         };
-        let mut merged = config
-            .clone()
-            .unwrap_or_else(|| Value::Object(Default::default()));
-        if let (Some(extra), Some(base)) = (
-            props.as_ref().and_then(Value::as_object),
-            merged.as_object_mut(),
-        ) {
-            for (k, v) in extra {
-                base.insert(k.clone(), v.clone());
-            }
-        }
-        Some(merged)
+        Some(
+            config
+                .clone()
+                .unwrap_or_else(|| Value::Object(Default::default())),
+        )
     }
 
+    /// Convert a resolved internal [`Effect`] to its wire tuple, if the effect is client-targeted in tuple form
+    /// (`render-ui`/`navigate`/`navigate-back`; `emit` surfaces separately as an [`super::EmittedEvent`]). The
+    /// kernel resolves a `render-ui`'s bindings once, so its whole bound content is the pattern.
     pub fn from_effect(effect: &Effect) -> Option<ClientEffect> {
         match effect {
             Effect::RenderUi { slot, content } => Some(ClientEffect::RenderUi {
@@ -89,8 +73,6 @@ impl ClientEffect {
                 } else {
                     Some(content.clone())
                 },
-                props: None,
-                priority: None,
             }),
             Effect::Navigate {
                 path,
@@ -126,32 +108,11 @@ impl Serialize for ClientEffect {
         S: Serializer,
     {
         match self {
-            ClientEffect::RenderUi {
-                slot,
-                config,
-                props,
-                priority,
-            } => {
-                let len = if priority.is_some() {
-                    5
-                } else if props.is_some() {
-                    4
-                } else {
-                    3
-                };
-                let mut seq = serializer.serialize_seq(Some(len))?;
+            ClientEffect::RenderUi { slot, config } => {
+                let mut seq = serializer.serialize_seq(Some(3))?;
                 seq.serialize_element("render-ui")?;
                 seq.serialize_element(slot)?;
                 serialize_opt_value(&mut seq, config.as_ref())?;
-                if len >= 4 {
-                    serialize_opt_value(&mut seq, props.as_ref())?;
-                }
-                if len == 5 {
-                    match priority {
-                        Some(p) => seq.serialize_element(p)?,
-                        None => seq.serialize_element(&Value::Null)?,
-                    }
-                }
                 seq.end()
             }
             ClientEffect::Navigate {
@@ -213,26 +174,18 @@ impl<'de> Visitor<'de> for ClientEffectVisitor {
 
         match tag.as_str() {
             "render-ui" => {
-                if items.len() < 3 {
+                if items.len() != 3 {
                     return Err(DeError::custom(
-                        "render-ui tuple needs at least [\"render-ui\", slot, config]",
+                        "render-ui tuple takes a slot and a pattern: [\"render-ui\", slot, pattern]",
                     ));
                 }
                 let slot = items[1]
                     .as_str()
                     .ok_or_else(|| DeError::custom("render-ui tuple: slot must be a string"))?
                     .to_string();
-                let config = opt(items.get(2));
-                let props = opt(items.get(3));
-                let priority = items
-                    .get(4)
-                    .and_then(|v| if v.is_null() { None } else { v.as_number() })
-                    .map(|n| n as u32);
                 Ok(ClientEffect::RenderUi {
                     slot,
-                    config,
-                    props,
-                    priority,
+                    config: opt(items.get(2)),
                 })
             }
             "navigate" => {
@@ -301,8 +254,6 @@ mod tests {
                 "type".to_string(),
                 Value::String("card".to_string()),
             )]))),
-            props: None,
-            priority: None,
         };
         roundtrip(&effect, r#"["render-ui","main",{"type":"card"}]"#);
     }
@@ -312,58 +263,8 @@ mod tests {
         let effect = ClientEffect::RenderUi {
             slot: "main".to_string(),
             config: None,
-            props: None,
-            priority: None,
         };
         roundtrip(&effect, r#"["render-ui","main",null]"#);
-    }
-
-    #[test]
-    fn render_ui_arity_4() {
-        let effect = ClientEffect::RenderUi {
-            slot: "detail".to_string(),
-            config: Some(Value::Object(ValueMap::from([(
-                "type".to_string(),
-                Value::String("detail-panel".to_string()),
-            )]))),
-            props: Some(Value::Object(ValueMap::from([(
-                "title".to_string(),
-                Value::String("Note".to_string()),
-            )]))),
-            priority: None,
-        };
-        roundtrip(
-            &effect,
-            r#"["render-ui","detail",{"type":"detail-panel"},{"title":"Note"}]"#,
-        );
-    }
-
-    #[test]
-    fn render_ui_arity_5() {
-        let effect = ClientEffect::RenderUi {
-            slot: "toast".to_string(),
-            config: Some(Value::Object(ValueMap::from([(
-                "type".to_string(),
-                Value::String("toast".to_string()),
-            )]))),
-            props: None,
-            priority: Some(3),
-        };
-        roundtrip(&effect, r#"["render-ui","toast",{"type":"toast"},null,3]"#);
-    }
-
-    #[test]
-    fn render_ui_arity_5_with_props() {
-        let effect = ClientEffect::RenderUi {
-            slot: "toast".to_string(),
-            config: Some(Value::Object(ValueMap::new())),
-            props: Some(Value::Object(ValueMap::from([(
-                "message".to_string(),
-                Value::String("Saved".to_string()),
-            )]))),
-            priority: Some(1),
-        };
-        roundtrip(&effect, r#"["render-ui","toast",{},{"message":"Saved"},1]"#);
     }
 
     #[test]
@@ -454,8 +355,6 @@ mod tests {
                     "type".to_string(),
                     Value::String("card".to_string())
                 )]))),
-                props: None,
-                priority: None,
             }
         );
     }
@@ -509,27 +408,42 @@ mod tests {
     }
 
     #[test]
-    fn render_ui_value_merges_props_over_config() {
+    fn a_render_ui_tuple_longer_than_slot_and_pattern_is_refused() {
+        for wire in [
+            r#"["render-ui","detail",{"type":"detail-panel"},{"title":"Note"}]"#,
+            r#"["render-ui","toast",{"type":"toast"},null,3]"#,
+        ] {
+            let err = serde_json::from_str::<ClientEffect>(wire)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("takes a slot and a pattern"), "{wire}: {err}");
+        }
+    }
+
+    #[test]
+    fn render_ui_value_is_the_pattern_and_an_empty_object_for_none() {
         let effect = ClientEffect::RenderUi {
             slot: "modal".to_string(),
-            config: Some(Value::Object(ValueMap::from([
-                ("type".to_string(), Value::String("form".to_string())),
-                ("title".to_string(), Value::String("stale".to_string())),
-            ]))),
-            props: Some(Value::Object(ValueMap::from([(
-                "title".to_string(),
-                Value::String("fresh".to_string()),
+            config: Some(Value::Object(ValueMap::from([(
+                "type".to_string(),
+                Value::String("form".to_string()),
             )]))),
-            priority: None,
         };
-        let merged = effect.render_ui_value().unwrap();
         assert_eq!(
-            merged.get_path("type").and_then(Value::as_str),
+            effect
+                .render_ui_value()
+                .unwrap()
+                .get_path("type")
+                .and_then(Value::as_str),
             Some("form")
         );
+        let empty = ClientEffect::RenderUi {
+            slot: "main".to_string(),
+            config: None,
+        };
         assert_eq!(
-            merged.get_path("title").and_then(Value::as_str),
-            Some("fresh")
+            empty.render_ui_value(),
+            Some(Value::Object(Default::default()))
         );
     }
 

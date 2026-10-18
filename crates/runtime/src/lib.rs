@@ -53,7 +53,6 @@ pub mod persona;
 pub mod process_result;
 pub mod projected_payload;
 pub mod relations;
-pub mod relay;
 pub(crate) mod render_store;
 pub mod resumable;
 pub mod row_query;

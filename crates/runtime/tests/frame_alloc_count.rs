@@ -107,8 +107,9 @@ fn measure(ticking: usize, frames: u64) -> (usize, f64) {
     (allocs, ms)
 }
 
-const PINNED_100: usize = 17068;
-const PINNED_1000: usize = 170105;
+// Back to the pin: a ticking dispatch clones the kernel's one `prob/*` seed source (G-ORBITAL-CORE-029, 2026-10-18).
+const PINNED_100: usize = 16968;
+const PINNED_1000: usize = 169105;
 
 #[test]
 fn frame_allocation_count_is_pinned() {

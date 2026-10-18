@@ -127,7 +127,7 @@ fn search_dispatch_allocation_count_is_pinned() {
     );
 }
 
-const PINNED_SEARCH: usize = 1762;
+const PINNED_SEARCH: usize = 1717;
 
 fn fetch_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
@@ -183,7 +183,8 @@ fn fetch_dispatch_allocation_count_is_pinned() {
     assert!(n <= PINNED_FETCH, "allocations rose: {n} > {PINNED_FETCH}");
 }
 
-const PINNED_FETCH: usize = 1259;
+// 1258: a dispatch clones the kernel's one `prob/*` seed source instead of building one (G-ORBITAL-CORE-029, 2026-10-18).
+const PINNED_FETCH: usize = 1258;
 
 #[test]
 fn read_access_allocation_count_is_pinned() {
@@ -229,7 +230,7 @@ fn read_access_allocation_count_is_pinned() {
     );
 }
 
-const PINNED_READ_ACCESS: usize = 2669;
+const PINNED_READ_ACCESS: usize = 2069;
 
 const REPLAY_ROWS: usize = 1000;
 const REPLAY_WRITES: usize = 6;
@@ -305,8 +306,9 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
     );
 }
 
-// 331158: each suspension now records the transition its step committed (two names and a box, G-CROSS-259, 2026-10-18).
-const PINNED_REPLAY: usize = 331158;
+// 331144: each suspension records the transition its step committed (two names and a box, G-CROSS-259), and a dispatch
+// clones the kernel's one `prob/*` seed source (G-ORBITAL-CORE-029), 2026-10-18.
+const PINNED_REPLAY: usize = 331144;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)

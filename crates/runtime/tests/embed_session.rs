@@ -166,10 +166,16 @@ fn every_script_matches_the_c_abi_golden() {
         .collect();
     scripts.sort();
     assert_eq!(scripts.len(), 6);
+    let update = std::env::var("ORB_UPDATE_EMBED_GOLDEN").is_ok();
     for path in scripts {
         let script = read_json(&path);
-        let expected = read_json(&embed_dir().join("golden").join(path.file_name().unwrap()));
+        let golden = embed_dir().join("golden").join(path.file_name().unwrap());
         let outputs = run_script(&script);
+        if update {
+            std::fs::write(&golden, serde_json::to_string_pretty(&outputs).unwrap() + "\n").unwrap();
+            continue;
+        }
+        let expected = read_json(&golden);
         let expected = expected.as_array().unwrap();
         assert_eq!(outputs.len(), expected.len(), "{}", path.display());
         for (i, (got, want)) in outputs.iter().zip(expected).enumerate() {

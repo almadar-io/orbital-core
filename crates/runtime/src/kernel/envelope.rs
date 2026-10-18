@@ -35,6 +35,14 @@ pub(crate) struct Deliveries {
     held: Option<Origin>,
 }
 
+impl Deliveries {
+    /// The program's unit placement, which a fresh session of the same program keeps; what was seen and sent is the
+    /// session's own.
+    pub(crate) fn copy_placement(&mut self, from: &Deliveries) {
+        self.deployment = from.deployment.clone();
+    }
+}
+
 /// An inbound envelope that was admitted: the traits to deliver it to, and the origin its dispatch carries.
 pub(super) struct Admitted {
     pub(super) targets: Vec<String>,

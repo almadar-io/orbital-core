@@ -180,3 +180,26 @@ fn control_a_policy_that_admits_the_row_carries_no_code() {
     assert_eq!(out[0].0, "SAVED");
     assert!(out[0].1.get("code").is_none(), "{out:?}");
 }
+
+fn emit_results(k: &RuntimeKernel, event: &str) -> Vec<Json> {
+    let outcomes = k.dispatch("Notes", None, event, Value::Null).unwrap();
+    let response = orbital_core_runtime::effects::response::EventResponse::from_process_results(&outcomes, "Notes", event);
+    response
+        .effect_results
+        .unwrap_or_default()
+        .iter()
+        .map(|r| serde_json::to_value(r).unwrap())
+        .filter(|r| r["effect"] == json!("emit"))
+        .collect()
+}
+
+#[test]
+fn the_settled_response_lists_each_emit_among_the_effect_results() {
+    let out = emit_results(&kernel(), "CREATE");
+    assert_eq!(out, vec![json!({ "effect": "emit", "success": true, "target": "SAVED" })]);
+}
+
+#[test]
+fn control_an_effect_with_no_emit_lists_no_emit_result() {
+    assert_eq!(emit_results(&kernel(), "SILENT"), Vec::<Json>::new());
+}

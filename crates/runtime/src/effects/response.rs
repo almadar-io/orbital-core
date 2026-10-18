@@ -738,6 +738,19 @@ impl EventResponse {
                             ..BusEventSource::from_trait(trait_name)
                         }),
                     });
+                    effect_results.push(ServerEffectResult {
+                        effect: ServerEffectKind::Emit,
+                        action: None,
+                        entity_type: None,
+                        name: None,
+                        data: None,
+                        success: true,
+                        denied: None,
+                        error: None,
+                        code: None,
+                        target: Some(event.clone()),
+                        routed: None,
+                    });
                     continue;
                 }
                 if let Effect::Fetch { entity_type, .. } = &er.effect {
