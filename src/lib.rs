@@ -79,6 +79,13 @@ pub mod runtime {
     pub use orbital_core_base::external_inputs;
     pub use orbital_core_base::inbound;
     pub use orbital_core_runtime::entity_source;
+    pub use orbital_core_runtime::firestore;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use orbital_core_runtime::pg_rows;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use orbital_core_runtime::couchdb;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use orbital_core_runtime::store_config;
     pub mod http_request {
         pub use orbital_core_base::http_wire::is_header_name;
         pub use orbital_core_base::http_wire::is_header_value;
@@ -106,6 +113,7 @@ pub mod runtime {
     pub use orbital_core_base::os;
     pub use orbital_core_base::os_grants;
     pub use orbital_core_runtime::http_service;
+    pub use orbital_core_runtime::auth;
     pub use orbital_core_runtime::kernel;
     pub use orbital_core_runtime::key_chord;
     pub use orbital_core_runtime::oauth_flow;
@@ -201,16 +209,20 @@ pub mod runtime {
     pub use orbital_core_runtime::listener::TriggerCallback;
     pub use orbital_core_runtime::persona::default_probe_persona;
     pub use orbital_core_runtime::persona::find_persona_in_roster;
+    pub use orbital_core_runtime::persona::host_default_viewer;
+    pub use orbital_core_runtime::persona::resolve_default_viewer;
     pub use orbital_core_runtime::persona::identity_roster;
     pub use orbital_core_runtime::persona::persona_from_env_for_schema;
     pub use orbital_core_runtime::persona::persona_from_env_spec;
     pub use orbital_core_runtime::persona::resolve_persona_spec;
     pub use orbital_core_runtime::persona::EnvPersona;
     pub use orbital_core_runtime::persona::DEFAULT_IDENTITY_ROSTER_COUNT;
+    pub use orbital_core_runtime::persona::DEFAULT_VIEWER_JSON;
     pub use orbital_core_runtime::persona::PERSONA_ENV;
     pub use orbital_core_runtime::process_result::DeliveryEntry;
     pub use orbital_core_runtime::process_result::EffectRun;
     pub use orbital_core_runtime::process_result::EffectRunStatus;
+    pub use orbital_core_runtime::process_result::EntitySummary;
     pub use orbital_core_runtime::process_result::OrbitalDetail;
     pub use orbital_core_runtime::process_result::OrbitalInfo;
     pub use orbital_core_runtime::process_result::ProcessEventResult;
@@ -338,7 +350,7 @@ pub use orbital_core_runtime::effects::executor::NavigationHandler;
 pub use orbital_core_runtime::effects::executor::PersistenceHandler;
 pub use orbital_core_runtime::effects::executor::RenderHandler;
 pub use orbital_core_runtime::effects::executor::ServiceHandler;
-pub use orbital_core_runtime::effects::live_push::LiveBroadcastItem;
+pub use orbital_core_runtime::effects::live_push::{LiveBroadcastItem, LiveTarget};
 pub use orbital_core_runtime::effects::live_push::StreamItem;
 pub use orbital_core_runtime::effects::response::ClientEffectByTrait;
 pub use orbital_core_runtime::effects::response::EventRequest;

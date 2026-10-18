@@ -508,3 +508,19 @@ impl SecretSource for Credentials {
         store.rotate()
     }
 }
+
+/// The process environment's credentials; with `ALMADAR_CREDENTIAL_MASTER_KEY` set, the encrypted store in
+/// `ALMADAR_CREDENTIALS_FILE` (else `.almadar/dev-credentials.json`) answers first, the same file the JS host reads.
+pub fn credentials_from_env() -> Credentials {
+    use crate::credential_store::{EncryptedCredentialStore, FileCredentialRows, CREDENTIAL_MASTER_KEY_ENV};
+    let base = Credentials::from_process_env();
+    if std::env::var(CREDENTIAL_MASTER_KEY_ENV).is_err() {
+        return base;
+    }
+    let stored = EncryptedCredentialStore::from_env(std::sync::Arc::new(FileCredentialRows::from_env()))
+        .and_then(|store| base.clone().with_encrypted_store(std::sync::Arc::new(store)));
+    stored.unwrap_or_else(|error| {
+        tracing::error!(target: orbital_core_base::logging::ns::SERVER_DATA, %error, "credential store unavailable");
+        base
+    })
+}

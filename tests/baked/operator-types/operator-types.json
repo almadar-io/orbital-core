@@ -7617,6 +7617,70 @@
       }
     },
     {
+      "name": "let: a body that is a list of unlike items is one value",
+      "expr": [
+        "let",
+        [
+          [
+            "f",
+            2
+          ]
+        ],
+        [
+          "create",
+          "X",
+          {
+            "a": "@f"
+          }
+        ]
+      ],
+      "expect": {
+        "value": [
+          "create",
+          "X",
+          {
+            "a": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "let: a body that is a list of unlike items inside a lambda",
+      "expr": [
+        "array/map",
+        [
+          1
+        ],
+        [
+          "fn",
+          "u",
+          [
+            "let",
+            [
+              [
+                "f",
+                2
+              ]
+            ],
+            [
+              "create",
+              "X",
+              "@f"
+            ]
+          ]
+        ]
+      ],
+      "expect": {
+        "value": [
+          [
+            "create",
+            "X",
+            2
+          ]
+        ]
+      }
+    },
+    {
       "name": "math/atan2: [\"math/atan2\",2,2]",
       "expr": [
         "math/atan2",

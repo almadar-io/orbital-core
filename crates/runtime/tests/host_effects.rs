@@ -1944,6 +1944,36 @@ mod os_twin {
         }
     }
 
+    fn native_host() -> orbital_core_runtime::native_host::NativeHost {
+        orbital_core_runtime::native_host::NativeHost::new(
+            Shared::new(orbital_core_runtime::entity_source::InMemoryEntityCache::new()),
+            Shared::new(NoNetwork),
+            Shared::new(NoSecrets),
+            Vec::new(),
+            OsGrants::default(),
+            Shared::new(OsHandles::default()),
+            Shared::new(|_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {}),
+        )
+    }
+
+    #[test]
+    fn a_service_the_native_host_has_no_provider_for_is_refused_as_not_configured() {
+        for (service, method) in [("hosting", "deploy"), ("registry", "publish"), ("knowledge", "search")] {
+            let request = IoRequest::CallService {
+                service: service.to_string(),
+                method: method.to_string(),
+                args: Value::Null,
+                key: None,
+                caller: None,
+                site: None,
+            };
+            let IoAnswer::Service(Err(message)) = native_host().answer(&request) else {
+                panic!("{service}.{method}: not a refused service answer")
+            };
+            assert_eq!(message, format!("Integration not configured: {service}.{method}"));
+        }
+    }
+
     fn replay(through_native_host: bool) {
         let path = fixture_path();
         let Ok(raw) = std::fs::read_to_string(&path) else {

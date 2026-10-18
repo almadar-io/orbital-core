@@ -365,6 +365,17 @@ pub fn argument_slot(expr: &SExpression) -> Option<usize> {
     })
 }
 
+/// Whether `formal` is a bare type variable, or an unevaluated expression whose value is one.
+fn is_bare_variable(formal: Option<&OperatorTypeRef>) -> bool {
+    match formal {
+        Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Var { .. })) => true,
+        Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Sexpr { of })) => {
+            is_bare_variable(of.as_deref())
+        }
+        _ => false,
+    }
+}
+
 /// Binds the evaluated argument at `index` of the call being evaluated against its declared type.
 pub fn check_argument(index: usize, value: &Value) -> Result<(), OrbitalError> {
     if value.is_null() {
@@ -388,10 +399,7 @@ pub fn check_argument(index: usize, value: &Value) -> Result<(), OrbitalError> {
         }
         let formal = signature.formal(index);
         // A list handed to a bare variable is one value, typed by the type of each of its entries.
-        if matches!(
-            formal,
-            Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Var { .. }))
-        ) {
+        if is_bare_variable(formal) {
             // An empty list (or one of nulls) has no entry to type, so it binds nothing: `(!= xs [])` holds for any `xs`.
             if matches!(value, Value::Array(items) if items.iter().all(Value::is_null)) {
                 return Ok(());
@@ -617,6 +625,34 @@ mod tests {
             Value::Object(ValueMap::new()),
         ]);
         assert!(check_rt(op(), &[records]).is_ok());
+    }
+
+    fn sexpr_of_var() -> EmbeddedOperator {
+        operator(
+            json!([{ "name": "body", "type": { "kind": "sexpr", "of": { "kind": "var", "name": "T" } } }]),
+            Some(1),
+        )
+    }
+
+    #[test]
+    fn a_body_that_is_a_list_of_unlike_items_is_one_value_of_an_unevaluated_variable() {
+        let tuple = Value::Array(vec![s("create"), s("Row"), num(1.0)]);
+        assert_eq!(
+            check_rt(sexpr_of_var(), &[tuple]).map_err(|e| e.to_string()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn control_an_unevaluated_variable_still_refuses_a_second_argument_of_another_kind() {
+        let op = operator(
+            json!([
+                { "name": "a", "type": { "kind": "sexpr", "of": { "kind": "var", "name": "T" } } },
+                { "name": "b", "type": { "kind": "var", "name": "T" } }
+            ]),
+            Some(2),
+        );
+        assert!(check_rt(op, &[num(1.0), s("x")]).is_err());
     }
 
     fn op_tuple(action: &str, widths: usize) -> Value {

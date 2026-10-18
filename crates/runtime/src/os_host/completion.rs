@@ -9,8 +9,8 @@ use crate::resumable::{
 };
 use orbital_core_base::os::OsError;
 use orbital_core_base::value::Value;
-use parking_lot::Mutex;
-use std::collections::HashSet;
+use parking_lot::{Condvar, Mutex};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Receives the outcome of a deferred keyed `os/` call, on the host's watcher thread.
@@ -122,13 +122,65 @@ pub type CompletionDone =
 /// Dispatches a completion into a kernel as the event of the call's route: `emit.success` with the result
 /// merged with `key`, `emit.failure` with `{ error, kind, key }`. A call that declared no route for the
 /// outcome dispatches nothing. A completion can end before the dispatch that started the call has committed, so
-/// the sink runs one dispatch at a time: a host drives every dispatch that may defer a call through
-/// [`KernelCompletionSink::drive`], and a completion produced meanwhile is dispatched after it ends.
+/// the sink remembers which dispatch deferred which key: a host runs every dispatch that may defer a call
+/// inside a [`DispatchScope`] ([`Self::begin_dispatch`], or [`Self::drive`]), and a completion for key K waits
+/// for the dispatch that deferred K to end and for no other, so unrelated dispatches run side by side.
 pub struct KernelCompletionSink {
     kernel: Arc<RuntimeKernel>,
     answer: Arc<CompletionAnswerer>,
     done: Arc<CompletionDone>,
-    serial: Mutex<()>,
+    owners: Arc<Mutex<HashMap<String, Arc<Ended>>>>,
+}
+
+/// Whether a dispatch has ended, and the keys it deferred.
+#[derive(Default)]
+struct Ended {
+    over: Mutex<bool>,
+    ended: Condvar,
+    keys: Mutex<Vec<String>>,
+}
+
+/// One dispatch in flight: its asks go through [`Self::answer`]; dropping it ends the dispatch for every completion
+/// waiting on a key it deferred.
+pub struct DispatchScope {
+    ended: Arc<Ended>,
+    owners: Arc<Mutex<HashMap<String, Arc<Ended>>>>,
+}
+
+impl DispatchScope {
+    /// Answer `request` with `inner`. A keyed ask that may defer is registered to this dispatch before it is answered
+    /// (the watcher may finish before the answer returns) and released again if the host did not defer it.
+    pub fn answer(&self, inner: &dyn Fn(&IoRequest) -> IoAnswer, request: &IoRequest) -> IoAnswer {
+        let IoRequest::Os { op, key: Some(key), .. } = request else { return inner(request) };
+        if !op.defers_completion() {
+            return inner(request);
+        }
+        self.owners.lock().insert(key.clone(), self.ended.clone());
+        self.ended.keys.lock().push(key.clone());
+        let answered = inner(request);
+        if !matches!(answered, IoAnswer::ServiceDeferred) {
+            self.release(key);
+        }
+        answered
+    }
+
+    fn release(&self, key: &str) {
+        let mut owners = self.owners.lock();
+        if owners.get(key).is_some_and(|owner| Arc::ptr_eq(owner, &self.ended)) {
+            owners.remove(key);
+        }
+    }
+}
+
+impl Drop for DispatchScope {
+    fn drop(&mut self) {
+        let keys = std::mem::take(&mut *self.ended.keys.lock());
+        for key in &keys {
+            self.release(key);
+        }
+        *self.ended.over.lock() = true;
+        self.ended.ended.notify_all();
+    }
 }
 
 impl KernelCompletionSink {
@@ -141,23 +193,37 @@ impl KernelCompletionSink {
             kernel,
             answer,
             done,
-            serial: Mutex::new(()),
+            owners: Arc::default(),
         }
     }
 
-    /// Hold the sink's gate: a completion produced meanwhile is dispatched after the guard drops. A host that
-    /// dispatches a deferring call by some route other than [`Self::drive`] takes this around the whole dispatch.
-    pub fn hold(&self) -> parking_lot::MutexGuard<'_, ()> {
-        self.serial.lock()
+    /// Start tracking one dispatch. Hold the scope until the dispatch has committed.
+    pub fn begin_dispatch(&self) -> DispatchScope {
+        DispatchScope {
+            ended: Arc::default(),
+            owners: self.owners.clone(),
+        }
     }
 
-    /// Run `progress` to its end, answering its asks with the sink's answerer, while holding the sink's gate.
+    /// Run `progress` to its end, answering its asks with the sink's answerer, as one tracked dispatch.
     pub fn drive(
         &self,
         progress: Progress<DispatchOutcomes>,
     ) -> Result<DispatchOutcomes, DispatchError> {
-        let _one_at_a_time = self.serial.lock();
-        drive_blocking(&self.kernel, progress, &*self.answer)
+        let scope = self.begin_dispatch();
+        let answer = |request: &IoRequest| scope.answer(&*self.answer, request);
+        drive_blocking(&self.kernel, progress, &answer)
+    }
+
+    /// Wait for the dispatch that deferred `key` to end, when one is still running.
+    fn wait_for_owner(&self, key: &str) {
+        let owner = self.owners.lock().get(key).cloned();
+        if let Some(owner) = owner {
+            let mut over = owner.over.lock();
+            while !*over {
+                owner.ended.wait(&mut over);
+            }
+        }
     }
 }
 
@@ -166,7 +232,9 @@ impl OsCompletionSink for KernelCompletionSink {
         let Some((event, payload)) = completion_event(site, key, outcome) else {
             return;
         };
-        let _one_at_a_time = self.serial.lock();
+        self.wait_for_owner(key);
+        let scope = self.begin_dispatch();
+        let answer = |request: &IoRequest| scope.answer(&*self.answer, request);
         let result = self
             .kernel
             .start_dispatch(
@@ -177,7 +245,7 @@ impl OsCompletionSink for KernelCompletionSink {
                 None,
                 None,
             )
-            .and_then(|progress| drive_blocking(&self.kernel, progress, &*self.answer));
+            .and_then(|progress| drive_blocking(&self.kernel, progress, &answer));
         (self.done)(site, &event, result);
     }
 }
@@ -336,8 +404,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_completion_waits_while_a_host_holds_the_sink_and_runs_after() {
+    fn lone_sink() -> (Arc<KernelCompletionSink>, std::sync::mpsc::Receiver<String>) {
         use crate::config::KernelConfig;
         use orbital_core_base::effect_types::RuntimeEnvironment;
         let kernel = Arc::new(RuntimeKernel::new(
@@ -348,26 +415,68 @@ mod tests {
         let answer: Arc<CompletionAnswerer> = Arc::new(|_| IoAnswer::Service(Err("no host".to_string())));
         let (told, ran) = std::sync::mpsc::channel();
         let told = Mutex::new(told);
-        let done: Arc<CompletionDone> = Arc::new(move |_, _, _| {
-            let _ = told.lock().send(());
+        let done: Arc<CompletionDone> = Arc::new(move |_, event, _| {
+            let _ = told.lock().send(event.to_string());
         });
-        let sink = Arc::new(KernelCompletionSink::new(kernel, answer, done));
-        let guard = sink.hold();
-        let worker = {
-            let sink = sink.clone();
-            std::thread::spawn(move || {
-                let mut at = site(Some("OK"), None);
-                at.trait_name = "Nowhere".to_string();
-                sink.complete(&at, "k", Ok(exited(0.0)));
-            })
-        };
-        assert!(
-            ran.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
-            "the completion must wait for the holder"
-        );
-        drop(guard);
-        assert!(ran.recv_timeout(std::time::Duration::from_secs(5)).is_ok(), "then it runs");
-        worker.join().expect("worker");
+        (Arc::new(KernelCompletionSink::new(kernel, answer, done)), ran)
+    }
+
+    fn defers(key: &str) -> IoRequest {
+        IoRequest::Os {
+            op: orbital_core_base::os::OsOp::Wait,
+            args: Vec::new(),
+            key: Some(key.to_string()),
+            site: Some(site(Some("OK"), None)),
+        }
+    }
+
+    fn complete_on_a_thread(sink: &Arc<KernelCompletionSink>, key: &'static str, event: &str) -> std::thread::JoinHandle<()> {
+        let sink = sink.clone();
+        let mut at = site(Some(event), None);
+        at.trait_name = "Nowhere".to_string();
+        std::thread::spawn(move || sink.complete(&at, key, Ok(exited(0.0))))
+    }
+
+    fn deferred(_: &IoRequest) -> IoAnswer {
+        IoAnswer::ServiceDeferred
+    }
+
+    #[test]
+    fn a_completion_waits_for_the_dispatch_that_deferred_its_key_and_for_no_other() {
+        let (sink, ran) = lone_sink();
+        let (a, b) = (sink.begin_dispatch(), sink.begin_dispatch());
+        assert!(matches!(a.answer(&deferred, &defers("k1")), IoAnswer::ServiceDeferred));
+        assert!(matches!(b.answer(&deferred, &defers("k2")), IoAnswer::ServiceDeferred));
+        let (w1, w2) = (complete_on_a_thread(&sink, "k1", "DONE1"), complete_on_a_thread(&sink, "k2", "DONE2"));
+        assert!(ran.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "both wait while both dispatches run");
+        drop(b);
+        assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).as_deref(), Ok("DONE2"), "k2 runs once B commits, with A still open");
+        assert!(ran.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "k1 still waits for A");
+        drop(a);
+        assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).as_deref(), Ok("DONE1"), "then k1 applies");
+        w1.join().expect("k1");
+        w2.join().expect("k2");
+    }
+
+    #[test]
+    fn control_a_completion_of_a_key_no_dispatch_deferred_runs_at_once_beside_an_open_dispatch() {
+        let (sink, ran) = lone_sink();
+        let open = sink.begin_dispatch();
+        assert!(matches!(open.answer(&deferred, &defers("k1")), IoAnswer::ServiceDeferred));
+        complete_on_a_thread(&sink, "stranger", "STRANGER").join().expect("stranger");
+        assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).as_deref(), Ok("STRANGER"));
+        drop(open);
+    }
+
+    #[test]
+    fn control_a_key_the_host_did_not_defer_is_not_waited_for() {
+        let (sink, ran) = lone_sink();
+        let open = sink.begin_dispatch();
+        let answered = open.answer(&|_| IoAnswer::Service(Err("no".to_string())), &defers("k1"));
+        assert!(!matches!(answered, IoAnswer::ServiceDeferred));
+        complete_on_a_thread(&sink, "k1", "NOW").join().expect("k1");
+        assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).as_deref(), Ok("NOW"));
+        drop(open);
     }
 
     #[test]

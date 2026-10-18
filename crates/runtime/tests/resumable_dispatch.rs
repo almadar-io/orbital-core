@@ -783,13 +783,13 @@ fn drive_blocking_answers_every_await_at_once_and_matches_the_blocking_run() {
 }
 
 #[test]
-fn a_cascade_awaits_once_per_io_step_and_every_await_is_a_typed_request() {
+fn a_cascade_awaits_once_per_row_and_list_and_every_await_is_a_typed_request() {
     let setup = fetch_success();
     let mut flight = Flight::new(&setup);
     fly(std::slice::from_mut(&mut flight), 3, &no_wrong_answers);
     assert!(
-        flight.awaits >= 4,
-        "the seed step and the cascaded Loaded steps each await: {}",
+        flight.awaits >= 2,
+        "the frame row is asked once for the dispatch and the list once: {}",
         flight.awaits
     );
     assert!(flight

@@ -169,6 +169,26 @@ impl Transport for UreqTransport {
     }
 }
 
+/// The host a sign-in verifier fetches its keys through: a native host that does nothing else, over a transport that connects
+/// to public addresses and to the IP-literal origins in `allowed` only. It is the verifier's, not the program's: the
+/// program's `egress` neither widens nor narrows it.
+pub fn feed_host(allowed: &[String]) -> crate::auth::HostAnswer {
+    use crate::credentials::Credentials;
+    use crate::entity_source::InMemoryEntityCache;
+    use crate::native_host::NativeHost;
+    use crate::os_host::{OsGrants, OsHandles};
+    let host = NativeHost::new(
+        Arc::new(InMemoryEntityCache::new()),
+        Arc::new(UreqTransport::with_egress(allowed.to_vec())),
+        Arc::new(Credentials::default()),
+        allowed.to_vec(),
+        OsGrants::default(),
+        Arc::new(OsHandles::default()),
+        Arc::new(|_, _| {}),
+    );
+    Arc::new(move |request| host.answer(request))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,6 +3,7 @@
 //! from the secret source and the operating system. Each piece is the existing answerer (`BlockingHost`, `HttpHost`,
 //! `answer_os`); this owns them so a host can share one answerer across threads and rebuild it when a program registers.
 
+use crate::effects::executor::{ServiceCaller, ServiceHandler};
 use crate::entity_source::EntitySource;
 use crate::http_service::{SecretSource, Transport};
 use crate::os_host::{OsGrants, OsHandles, OsHost};
@@ -12,6 +13,21 @@ use std::sync::Arc;
 
 /// Receives each event of a stream, with the call site whose `onMessage` route it belongs to.
 pub type StreamEvents = dyn Fn(Option<&CallSite>, Value) + Send + Sync;
+
+/// The refusal every `call-service` gets from a native host: it has no provider for any service (the integrations are TS
+/// providers, retiring; hosting and the registry wait on G-CROSS-170). The wording is the JS host's `NOT_CONFIGURED`
+/// integration error, so a program sees one refusal on every host.
+struct NoProviders;
+
+impl ServiceHandler for NoProviders {
+    fn call(&self, service: &str, method: &str, _: &Value, _: Option<&str>, _: Option<&ServiceCaller>) -> Result<Value, String> {
+        Err(format!("Integration not configured: {service}.{method}"))
+    }
+
+    fn cancel(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
 
 pub struct NativeHost {
     source: Arc<dyn EntitySource>,
@@ -60,7 +76,7 @@ impl NativeHost {
         };
         BlockingHost {
             source: self.source.as_ref(),
-            service: None,
+            service: Some(&NoProviders),
             substrate: None,
         }
         .answer_with_http(&http, request)

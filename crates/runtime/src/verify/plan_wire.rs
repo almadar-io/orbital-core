@@ -35,10 +35,19 @@ pub struct RoleWire {
 
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PreambleEvent {
     pub event: String,
     #[cfg_attr(test, ts(type = "JsonValue"))]
     pub payload: Json,
+    /// The state the machine stands in when this hop is fired, and where the declared transition leads.
+    pub from: String,
+    pub to: String,
+    /// States the machine may settle in beyond `to`, because an effect-emitted event advances it on its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accept_states: Vec<String>,
+    /// Firing the hop can change the route.
+    pub navigates: bool,
 }
 
 /// One planned step: place the machine in `from`, fire `event` with `payload`, then judge against
@@ -257,6 +266,8 @@ pub enum PlanOutcome {
         emit_sweep: Vec<crate::verify::flows::EmitStep>,
         contract_events: crate::verify::flows::ContractEvents,
         crud_chains: Vec<crate::verify::flows::CrudChain>,
+        tick_steps: Vec<crate::verify::flows::TickStep>,
+        data_mutations: Vec<crate::verify::flows::DataMutation>,
     },
     Refused { failure: PlanFailure },
 }
@@ -555,6 +566,24 @@ pub fn plan_init_credits(schema: &OrbitalSchema, options: &PlanOptions) -> Vec<I
         .collect()
 }
 
+/// The hops that place a fresh machine in `from` (none at the boot), each with the payload its guard accepts.
+pub(crate) fn preamble_to(
+    td: &orbital_core_base::schema::types::TraitDefinition,
+    ctx: &planner::EntityCtx<'_>,
+    from: &str,
+    boots: bool,
+) -> Option<Vec<PreambleEvent>> {
+    if boots {
+        return Some(Vec::new());
+    }
+    let seed_id = td.linked_entity.as_deref().map(|e| planner::effective_seed_id(e, ctx.owner_fields, ctx.viewer_id.as_deref()));
+    planner::replay_steps(td, from, ctx, seed_id.as_deref()).map(|path| {
+        path.into_iter()
+            .map(|h| PreambleEvent { event: h.event, payload: h.payload, from: h.from, to: h.to, accept_states: h.accept_states, navigates: h.navigates })
+            .collect()
+    })
+}
+
 /// What a host does to place the machine at `from` and fire `event` there.
 pub(crate) struct DriveSetup {
     pub seed_row_id: Option<String>,
@@ -591,13 +620,7 @@ pub(crate) fn drive_setup(
             .into_iter()
             .find_map(|(entity, kind)| crate::entity_access::role_satisfying_policy(schema, &entity, kind))
             .map(|(field, value)| RoleWire { field, value }),
-        preamble: if boots {
-            Some(Vec::new())
-        } else {
-            planner::replay_path(td, from, ctx, seed_id.as_deref()).map(|path| {
-                path.into_iter().map(|(event, payload)| PreambleEvent { event, payload }).collect()
-            })
-        },
+        preamble: preamble_to(td, ctx, from, boots),
     }
 }
 
@@ -1340,5 +1363,262 @@ mod tests {
             credit_step("CALL_FAILED", Some(1), Some(ReplyRoute::Failure), Vec::new()),
         ];
         assert_eq!(credit_failure_routes(&arm_matches).len(), 1);
+    }
+
+    fn replay_schema() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{ "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Flow", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "loading" }, { "name": "ready" }, { "name": "done" }],
+                        "events": [{ "key": "FINISH", "name": "FINISH", "payloadSchema": [{ "name": "ok", "type": "boolean" }] }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "loading", "event": "GO", "effects": [["fetch", "Job", { "emit": { "success": "LOADED" } }]] },
+                            { "from": "loading", "to": "ready", "event": "LOADED" },
+                            { "from": "ready", "to": "done", "event": "FINISH", "guard": ["=", "@payload.ok", true] },
+                            { "from": "done", "to": "idle", "event": "RESET" }
+                        ] } }] }]
+        }))
+        .unwrap()
+    }
+
+    fn reset_preamble(schema: &OrbitalSchema) -> Vec<PreambleEvent> {
+        plan_program(schema, &PlanOptions::default())
+            .unwrap()
+            .into_iter()
+            .find(|s| s.event == "RESET" && s.payload_case == PayloadCase::Success)
+            .and_then(|s| s.preamble)
+            .expect("RESET is reachable")
+    }
+
+    #[test]
+    fn a_replay_preamble_skips_effect_emitted_events_and_settles_through_their_closure() {
+        let hops = reset_preamble(&replay_schema());
+        let events: Vec<&str> = hops.iter().map(|h| h.event.as_str()).collect();
+        assert_eq!(events, vec!["GO", "FINISH"], "LOADED is fired by the fetch, never dispatched");
+        assert_eq!((hops[0].from.as_str(), hops[0].to.as_str()), ("idle", "loading"));
+        assert_eq!(hops[0].accept_states, vec!["loading".to_string(), "ready".to_string()]);
+        assert_eq!((hops[1].from.as_str(), hops[1].to.as_str()), ("ready", "done"), "the next hop stands where the closure settled");
+        assert_eq!(hops[1].payload["ok"], true, "a guarded hop carries the payload its guard accepts");
+        assert!(hops.iter().all(|h| !h.navigates));
+    }
+
+    #[test]
+    fn control_a_replay_without_effect_emitted_events_takes_the_plain_shortest_path() {
+        let mut program = serde_json::to_value(replay_schema()).unwrap();
+        let transitions = program["orbitals"][0]["traits"][0]["stateMachine"]["transitions"].as_array_mut().unwrap();
+        transitions[1]["effects"] = serde_json::json!([]);
+        let plain: OrbitalSchema = serde_json::from_value(program).unwrap();
+        let events: Vec<String> = reset_preamble(&plain).into_iter().map(|h| h.event).collect();
+        assert_eq!(events, vec!["GO", "LOADED", "FINISH"]);
+    }
+
+    /// A trait from `(from, event, to, effect)` rows; an `emits` effect is a fetch whose outcome fires that event.
+    fn machine(rows: &[(&str, &str, &str, Option<&str>)]) -> OrbitalSchema {
+        let initial = rows[0].0;
+        let mut states: Vec<&str> = Vec::new();
+        for (from, _, to, _) in rows {
+            for state in [*from, *to] {
+                if !states.contains(&state) {
+                    states.push(state);
+                }
+            }
+        }
+        let transitions: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(from, event, to, emits)| {
+                let effects = match *emits {
+                    Some("navigate") => serde_json::json!([["navigate", "/away"]]),
+                    Some(event) => serde_json::json!([["fetch", "Job", { "emit": { "success": event } }]]),
+                    None => serde_json::json!([]),
+                };
+                serde_json::json!({ "from": from, "to": to, "event": event, "effects": effects })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{ "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "X", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": states.iter().map(|s| serde_json::json!({ "name": s, "isInitial": *s == initial })).collect::<Vec<_>>(),
+                        "transitions": transitions } }] }]
+        }))
+        .unwrap()
+    }
+
+    fn replay(rows: &[(&str, &str, &str, Option<&str>)], target: &str) -> Option<Vec<planner::ReplayStep>> {
+        let program = machine(rows);
+        let td = planner::inline_traits(&program).into_iter().next().unwrap();
+        let owner_fields = Vec::new();
+        let ctx = planner::EntityCtx { schema: &program, owner_fields: &owner_fields, viewer_id: None };
+        planner::replay_steps(td, target, &ctx, None)
+    }
+
+    fn events(path: &Option<Vec<planner::ReplayStep>>) -> Vec<String> {
+        path.as_ref().expect("reachable").iter().map(|h| h.event.clone()).collect()
+    }
+
+    #[test]
+    fn a_replay_is_the_shortest_dispatchable_path_and_none_when_unreachable() {
+        let rows = [("a", "GO", "b", None), ("b", "NEXT", "c", None), ("z", "LOST", "a", None)];
+        assert_eq!(events(&replay(&rows, "a")), Vec::<String>::new(), "the initial state needs no hop");
+        assert_eq!(events(&replay(&rows, "c")), vec!["GO", "NEXT"]);
+        assert!(replay(&rows, "z").is_none(), "genuinely unreachable");
+    }
+
+    #[test]
+    fn a_target_reachable_only_through_a_transient_closure_is_reached_by_the_hop_into_its_source() {
+        let rows = [("idle", "GO", "loading", Some("LOADED")), ("loading", "LOADED", "reviewing", None)];
+        let path = replay(&rows, "reviewing");
+        assert_eq!(events(&path), vec!["GO"]);
+        assert_eq!(path.unwrap()[0].accept_states, vec!["loading".to_string(), "reviewing".to_string()]);
+    }
+
+    #[test]
+    fn a_target_in_the_initial_states_own_closure_needs_zero_hops() {
+        let rows = [("idle", "INIT", "idle", Some("SCAN")), ("idle", "SCAN", "scanning", None)];
+        assert_eq!(events(&replay(&rows, "scanning")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_transient_settle_chains_into_further_real_hops() {
+        let one = [("idle", "GO", "loading", Some("LOADED")), ("loading", "LOADED", "browsing", None), ("browsing", "REPLY", "replying", None)];
+        let path = replay(&one, "replying").unwrap();
+        assert_eq!(path.iter().map(|h| (h.from.as_str(), h.event.as_str())).collect::<Vec<_>>(), vec![("idle", "GO"), ("browsing", "REPLY")]);
+        let two = [
+            ("idle", "GO", "loading", Some("LOADED")),
+            ("loading", "LOADED", "browsing", None),
+            ("browsing", "OPEN", "viewing", None),
+            ("viewing", "EDIT", "editing", None),
+        ];
+        assert_eq!(events(&replay(&two, "editing")), vec!["GO", "OPEN", "EDIT"]);
+    }
+
+    #[test]
+    fn a_replay_hop_over_a_navigating_edge_is_marked_navigating() {
+        let rows = [("idle", "GO", "away", Some("navigate")), ("away", "BACK", "idle", None)];
+        let path = replay(&rows, "away").unwrap();
+        assert!(path[0].navigates);
+        let plain = replay(&[("idle", "GO", "away", None)], "away").unwrap();
+        assert!(!plain[0].navigates, "control: a hop with no navigate effect stays unmarked");
+    }
+
+    /// One-arm trait whose only guard is `guard`; the event declares the payload fields the guard reads.
+    fn guard_schema(guard: serde_json::Value, fields: serde_json::Value) -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{ "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "G", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "open" }],
+                        "events": [{ "key": "GO", "name": "GO", "payloadSchema": fields }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "open", "event": "GO", "guard": guard }
+                        ] } }] }]
+        }))
+        .unwrap()
+    }
+
+    /// The pass and fail payloads the kernel plans for `guard`, each checked against the real evaluator.
+    fn steered(guard: serde_json::Value, fields: serde_json::Value) -> (Option<bool>, Option<bool>) {
+        let schema = guard_schema(guard.clone(), fields);
+        let steps = plan_program(&schema, &PlanOptions::default()).unwrap();
+        let sexpr: orbital_core_base::schema::sexpr::SExpression = serde_json::from_value(guard).unwrap();
+        let verdict = |case: PayloadCase| {
+            let step = steps.iter().find(|s| s.event == "GO" && s.payload_case == case)?;
+            if !step.solved {
+                return None;
+            }
+            planner::guard_passes(&sexpr, &step.payload, "idle").ok()
+        };
+        (verdict(PayloadCase::Success), verdict(PayloadCase::GuardFail))
+    }
+
+    fn text(name: &str) -> serde_json::Value {
+        serde_json::json!({ "name": name, "type": "string" })
+    }
+
+    #[test]
+    fn the_guard_solver_steers_every_canonical_payload_guard_shape_and_the_evaluator_agrees() {
+        let map = serde_json::json!({ "a": true, "b": false, "c": true });
+        let cases: Vec<(&str, serde_json::Value, serde_json::Value)> = vec![
+            ("str/default fallback", serde_json::json!(["!=", ["str/default", "@payload.entityId", ""], ""]), serde_json::json!([text("entityId")])),
+            ("== alias", serde_json::json!(["==", "@payload.s", "x"]), serde_json::json!([text("s")])),
+            ("object/has", serde_json::json!(["object/has", map, "@payload.k"]), serde_json::json!([text("k")])),
+            ("object/get truthy", serde_json::json!(["object/get", map, "@payload.k"]), serde_json::json!([text("k")])),
+            ("object/get =", serde_json::json!(["=", ["object/get", { "a": "x", "b": "y" }, "@payload.k"], "y"]), serde_json::json!([text("k")])),
+            ("array/includes", serde_json::json!(["array/includes", ["x", "y"], "@payload.v"]), serde_json::json!([text("v")])),
+            ("str/startsWith", serde_json::json!(["str/startsWith", "@payload.name", "pre"]), serde_json::json!([text("name")])),
+            ("validate/url", serde_json::json!(["validate/url", "@payload.u"]), serde_json::json!([text("u")])),
+            ("validate/required", serde_json::json!(["validate/required", "@payload.r"]), serde_json::json!([text("r")])),
+            ("and intersects in the other order", serde_json::json!(["and", ["=", ["object/get", { "a": "x", "change": "y" }, "@payload.k"], "y"], ["object/has", { "a": 1, "change": 2 }, "@payload.k"]]), serde_json::json!([text("k")])),
+            ("and intersects a shared field", serde_json::json!(["and", ["object/has", { "a": 1, "change": 2 }, "@payload.k"], ["=", ["object/get", { "a": "x", "change": "y" }, "@payload.k"], "y"]]), serde_json::json!([text("k")])),
+        ];
+        for (name, guard, fields) in cases {
+            let (pass, fail) = steered(guard, fields);
+            assert_eq!((pass, fail), (Some(true), Some(false)), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_guard_solver_steers_quantifiers_conditionals_bindings_and_grid_bounds() {
+        let items = serde_json::json!({ "name": "items", "type": "[object]" });
+        let cases: Vec<(&str, serde_json::Value, serde_json::Value)> = vec![
+            ("array/some", serde_json::json!(["array/some", "@payload.items", ["fn", "x", ["=", "@x.kind", "a"]]]), serde_json::json!([items.clone()])),
+            ("array/every", serde_json::json!(["array/every", "@payload.items", ["fn", "x", ["=", "@x.kind", "a"]]]), serde_json::json!([items])),
+            ("if", serde_json::json!(["if", ["=", "@payload.s", "x"], ["=", "@payload.t", 1], true]), serde_json::json!([text("s"), { "name": "t", "type": "number" }])),
+            ("let", serde_json::json!(["let", [["v", "@payload.s"]], ["=", "@v", "x"]]), serde_json::json!([text("s")])),
+            ("grid/in-bounds", serde_json::json!(["grid/in-bounds", "@payload.pos", 5, 5]), serde_json::json!([{ "name": "pos", "type": "object" }])),
+        ];
+        for (name, guard, fields) in cases {
+            let (pass, fail) = steered(guard, fields);
+            assert_eq!((pass, fail), (Some(true), Some(false)), "{name}");
+        }
+    }
+
+    #[test]
+    fn control_a_guard_over_no_payload_stays_unsolved_rather_than_claiming_a_payload() {
+        let (pass, fail) = steered(serde_json::json!(["=", "@entity.mode", "on"]), serde_json::json!([]));
+        assert_eq!((pass, fail), (None, None));
+    }
+
+    #[test]
+    fn steps_are_planned_in_the_order_the_transitions_are_declared() {
+        let schema = machine(&[("idle", "ZED", "b", None), ("idle", "ALPHA", "c", None), ("b", "MID", "idle", None)]);
+        let events: Vec<String> = plan_program(&schema, &PlanOptions::default())
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.payload_case == PayloadCase::Success)
+            .map(|s| s.event)
+            .collect();
+        assert_eq!(events, vec!["ZED", "ALPHA", "MID"], "not sorted by state and event name");
+    }
+
+    fn steerable(guard: serde_json::Value) -> Option<bool> {
+        let schema = guard_schema(guard, serde_json::json!([text("s"), text("t")]));
+        plan_program(&schema, &PlanOptions::default())
+            .unwrap()
+            .into_iter()
+            .find(|s| s.event == "GO" && s.payload_case == PayloadCase::Success)
+            .and_then(|s| s.guard_steerable)
+    }
+
+    #[test]
+    fn a_guard_is_steerable_only_when_every_binding_it_reads_is_a_payload_path() {
+        assert_eq!(steerable(serde_json::json!(["=", "@payload.s", "x"])), Some(true));
+        assert_eq!(steerable(serde_json::json!(["=", "@entity.mode", "x"])), Some(false), "@entity side unreachable");
+        assert_eq!(steerable(serde_json::json!(["=", "@config.mode", "x"])), Some(false));
+        assert_eq!(steerable(serde_json::json!("@config.enabled")), Some(false), "a bare config atom");
+        assert_eq!(steerable(serde_json::json!(["and", ["=", "@payload.s", "x"], ["=", "@entity.mode", "x"]])), Some(false));
+        assert_eq!(steerable(serde_json::json!(["or", true, ["=", "@payload.s", "x"]])), Some(true), "control: a payload binding keeps it steerable");
+        let unguarded = guard_schema(serde_json::json!(null), serde_json::json!([]));
+        let step = plan_program(&unguarded, &PlanOptions::default()).unwrap().into_iter().find(|s| s.event == "GO").unwrap();
+        assert_eq!(step.guard_steerable, None, "an unguarded step carries no steerability stamp");
     }
 }

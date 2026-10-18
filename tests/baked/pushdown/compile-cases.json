@@ -1346,6 +1346,343 @@
       "expect": {
         "interpreted": "not-expressible"
       }
+    },
+    {
+      "name": "dynamic-field-from-payload",
+      "why": "a field name that is a binding folds to its value: the evaluator reads the same flat field on every row",
+      "bindings": {
+        "payload": {
+          "field": "status",
+          "value": "open"
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "@payload.field"
+          ],
+          "@payload.value"
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "compare",
+            "field": "status",
+            "op": "==",
+            "value": "open"
+          }
+        }
+      }
+    },
+    {
+      "name": "dynamic-field-unresolved-filter",
+      "why": "a field name binding the context cannot resolve leaves a filter interpreted",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "@payload.field"
+          ],
+          "open"
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "dynamic-field-unresolved-policy",
+      "why": "a policy that cannot be specialised hides every row, a dynamic field name included",
+      "bindings": {},
+      "sexpr": {
+        "readPolicy": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "@payload.field"
+          ],
+          "open"
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "policy": {
+            "kind": "const",
+            "value": false
+          }
+        }
+      }
+    },
+    {
+      "name": "dynamic-field-path",
+      "why": "a bound field name that is a path is not a flat field",
+      "bindings": {
+        "payload": {
+          "field": "a.b"
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "@payload.field"
+          ],
+          1
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "dynamic-field-not-a-string",
+      "why": "a bound field name that is not a string names no field",
+      "bindings": {
+        "payload": {
+          "field": 3
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "=",
+          [
+            "object/get",
+            "@entity",
+            "@payload.field"
+          ],
+          1
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "const-compare-true-or",
+      "why": "a comparison of two same-kind constants is decided at compile time, and an or that holds is true whatever follows it (the evaluator stops at the first truthy operand)",
+      "bindings": {
+        "payload": {
+          "value": ""
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            "@payload.value",
+            ""
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "const",
+            "value": true
+          }
+        }
+      }
+    },
+    {
+      "name": "const-compare-false-or",
+      "why": "a constant comparison that is false is a false operand, the rest of the or still compiles",
+      "bindings": {
+        "payload": {
+          "value": "open"
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            "@payload.value",
+            ""
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "any",
+            "of": [
+              {
+                "kind": "const",
+                "value": false
+              },
+              {
+                "kind": "compare",
+                "field": "status",
+                "op": "==",
+                "value": "open"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "const-compare-skips-unresolved-sibling",
+      "why": "an operand the evaluator never reaches need not compile: the or already holds",
+      "bindings": {
+        "payload": {
+          "value": ""
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            "@payload.value",
+            ""
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "owner"
+            ],
+            "@user.id"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "const",
+            "value": true
+          }
+        }
+      }
+    },
+    {
+      "name": "const-compare-unresolved-sibling-reached",
+      "why": "control: when the constant does not decide the or, the unresolved sibling is reached and the filter stays interpreted",
+      "bindings": {
+        "payload": {
+          "value": "open"
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            "@payload.value",
+            ""
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "owner"
+            ],
+            "@user.id"
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "const-compare-false-and",
+      "why": "an and that fails is false whatever follows it",
+      "bindings": {
+        "payload": {
+          "value": "x"
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            "=",
+            "@payload.value",
+            ""
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "owner"
+            ],
+            "@user.id"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "const",
+            "value": false
+          }
+        }
+      }
+    },
+    {
+      "name": "const-compare-mixed-kinds",
+      "why": "control: two constants of different kinds are not folded (the row-side equality and the evaluator are not shown to agree)",
+      "bindings": {
+        "payload": {
+          "value": 3
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            "@payload.value",
+            "3"
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
     }
   ]
 }

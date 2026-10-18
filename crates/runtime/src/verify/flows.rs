@@ -47,6 +47,14 @@ pub struct ContractEvents {
 
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplayQuery {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub state: String,
+}
+
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AffordanceQuery {
     #[serde(rename = "trait")]
     pub trait_name: String,
@@ -88,17 +96,21 @@ fn entity_ctx<'a>(schema: &'a OrbitalSchema, owner_fields: &'a [(String, String)
     planner::EntityCtx { schema, owner_fields, viewer_id: options.viewer_id.clone() }
 }
 
-/// The success and failure events a transition's effects declare through an `emit` option object, in order.
-fn declared_emits(td: &TraitDefinition) -> Vec<String> {
-    let mut out = Vec::new();
-    for effect in td.state_machine.transitions.iter().flat_map(|t| t.effects.iter().flatten()) {
-        let SExpression::Array(items) = effect else { continue };
-        let Some(SExpression::Object(options)) = items.last() else { continue };
-        let Some(SExpression::Object(emit)) = options.get("emit") else { continue };
-        for key in ["success", "failure"] {
-            if let Some(SExpression::String(event)) = emit.get(key) {
-                out.push(event.clone());
-            }
+/// What a trait's sweep fires: every event its effects emit on an outcome, then its declared `emits` contracts,
+/// minus the reply routes of an `http` effect (the reply arrives inside the request's own dispatch) and
+/// external names (`@…`).
+fn declared_emits(schema: &OrbitalSchema, td: &TraitDefinition) -> Vec<String> {
+    let routes = planner::http_reply_routes(schema);
+    let is_route = |event: &str| routes.contains_key(&(td.name.clone(), event.to_string()));
+    let mut out: Vec<String> = Vec::new();
+    for event in planner::effect_emitted_events_in_order(td) {
+        if !is_route(&event) {
+            out.push(event);
+        }
+    }
+    for contract in td.emits.iter().flatten() {
+        if !contract.event.starts_with('@') && !is_route(&contract.event) && !out.contains(&contract.event) {
+            out.push(contract.event.clone());
         }
     }
     out
@@ -223,11 +235,51 @@ pub struct CrudChain {
     pub opens_overlay: bool,
     pub requires_row_context: bool,
     pub payload_row_shape: Vec<RowShapeField>,
+    /// The payload the submit event carries, built from its declared schema.
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub submit_payload: serde_json::Value,
+    /// A minimal row of the linked entity: the values a form's fields are filled with.
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub entity_row: serde_json::Value,
+    /// The same row with every non-id value changed, so an edit has something to change.
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub edit_entity_row: serde_json::Value,
+    /// Entity fields restricted to declared values: a changed value would leave the vocabulary, so a row-content
+    /// assertion skips them.
+    pub enum_fields: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub viewer: Option<ViewerRequirement>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub precondition: Option<Precondition>,
+    /// Delete only: self-relation fields (restrict rule) a deletable row must not be referenced through.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub avoid_referenced_via: Vec<String>,
+    /// Delete only: fields of OTHER entities (restrict rule) that reference this entity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub avoid_referenced_by_other_entities: Vec<InboundRelation>,
+    /// Delete only: when the entity can run out of unreferenced rows, the create to dispatch first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delete_establish_fallback: Option<EstablishFallback>,
     pub coverage_key: String,
+}
+
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboundRelation {
+    pub entity: String,
+    pub field: String,
+}
+
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EstablishFallback {
+    pub event: String,
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub payload: serde_json::Value,
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewer: Option<ViewerRequirement>,
 }
 
 fn persist_failing(node: &SExpression, event: &str) -> Option<(String, &'static str, Option<SExpression>)> {
@@ -328,6 +380,388 @@ fn denying_viewer(schema: &OrbitalSchema, entity: &str, kind: &str, data: Option
 
 /// Plan the forced failure of a transient failure arm: the arm the machine races past through an effect-emitted
 /// sibling, so it is reached by making the entering persist fail for real.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TickStep {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub from: String,
+    /// The tick's name, fired as the step's event.
+    pub event: String,
+    pub wait_ms: u64,
+    /// A tick's effects may move the trait anywhere in its declared topology: any declared state is a landing.
+    pub accept_states: Vec<String>,
+    pub coverage_key: String,
+}
+
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MutationKind {
+    Create,
+    Update,
+    Delete,
+}
+
+/// The top-level payload field a persist reads its target row (or id) from.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistBinding {
+    pub payload_field: String,
+    pub whole_row: bool,
+}
+
+/// How a step that writes an existing row gets that row to exist.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RowEstablish {
+    /// Dispatch `event` first (a create self-loop, or a transition that binds `@entity.id` from the payload).
+    Established {
+        event: String,
+        #[cfg_attr(test, ts(type = "JsonValue"))]
+        payload: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        viewer: Option<ViewerRequirement>,
+        #[serde(rename = "bindRowFrom", skip_serializing_if = "Option::is_none")]
+        bind_row_from: Option<crate::planner::BindRowFrom>,
+        /// Dispatched before the replay path rather than inline with the step.
+        #[serde(rename = "beforeReplay")]
+        before_replay: bool,
+    },
+    /// The trait never binds this entity's row identity at that state: the row can never exist before the step.
+    Unreachable {
+        #[serde(rename = "trait")]
+        trait_name: String,
+        entity: String,
+        #[serde(rename = "atState")]
+        at_state: String,
+    },
+}
+
+/// A persist-writing transition planned as a data-mutation step.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataMutation {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub from: String,
+    pub event: String,
+    pub to: String,
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub payload: serde_json::Value,
+    pub entity: String,
+    pub kind: MutationKind,
+    pub row_delta: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub success_event: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewer: Option<ViewerRequirement>,
+    /// Update or delete whose own persist argument names the target row: the host binds a real row there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bind_row: Option<PersistBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub avoid_referenced_via: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub avoid_referenced_by_other_entities: Vec<InboundRelation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_establish: Option<RowEstablish>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub precondition: Option<Precondition>,
+    pub coverage_key: String,
+}
+
+/// A numeric tick is waited out from the initial state; a frame tick is driven by the render loop and a
+/// non-positive interval is invalid, so neither is planned.
+pub fn plan_tick_steps(schema: &OrbitalSchema, options: &PlanOptions) -> Vec<TickStep> {
+    use orbital_core_base::schema::types::StringOrNumber;
+    let mut out = Vec::new();
+    for td in scoped(schema, options) {
+        let Some(initial) = planner::initial_state(td) else { continue };
+        let mut declared = vec![initial.clone()];
+        for t in &td.state_machine.transitions {
+            for state in t.from.states().into_iter().chain(std::iter::once(t.to.as_str())) {
+                if state != "*" && !declared.iter().any(|d| d == state) {
+                    declared.push(state.to_string());
+                }
+            }
+        }
+        for tick in td.ticks.iter().flatten() {
+            let StringOrNumber::Number(interval) = &tick.interval else { continue };
+            if !(*interval > 0.0) {
+                continue;
+            }
+            out.push(TickStep {
+                trait_name: td.name.clone(),
+                from: initial.clone(),
+                event: tick.name.clone(),
+                wait_ms: *interval as u64,
+                accept_states: declared.clone(),
+                coverage_key: format!("{}:tick({})", td.name, tick.name),
+            });
+        }
+    }
+    out
+}
+
+fn bare_payload_field(text: &str) -> Option<&str> {
+    let field = text.strip_prefix("@payload.")?;
+    (!field.is_empty() && field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some(field)
+}
+
+/// The first `persist create|update|delete` of a transition's top-level effects: entity, kind, success event.
+fn find_persist_kind(effects: &[SExpression]) -> Option<(String, MutationKind, Option<String>)> {
+    for effect in effects {
+        let SExpression::Array(items) = effect else { continue };
+        let (Some(SExpression::String(op)), Some(SExpression::String(kind)), Some(SExpression::String(entity))) =
+            (items.first(), items.get(1), items.get(2))
+        else {
+            continue;
+        };
+        let kind = match (op.as_str(), kind.as_str()) {
+            ("persist", "create") => MutationKind::Create,
+            ("persist", "update") => MutationKind::Update,
+            ("persist", "delete") => MutationKind::Delete,
+            _ => continue,
+        };
+        let success = items.iter().skip(3).find_map(|arg| match arg {
+            SExpression::Object(o) => match o.get("emit") {
+                Some(SExpression::Object(emit)) => match emit.get("success") {
+                    Some(SExpression::String(s)) if !s.is_empty() => Some(s.clone()),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        });
+        return Some((entity.clone(), kind, success));
+    }
+    None
+}
+
+fn persist_calls<'a>(effects: &'a [SExpression], wanted: &[&str]) -> Vec<(&'a str, &'a str, Option<&'a SExpression>)> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            SExpression::Array(items) => match (items.first(), items.get(1), items.get(2)) {
+                (Some(SExpression::String(op)), Some(SExpression::String(kind)), Some(SExpression::String(name)))
+                    if op == "persist" && wanted.contains(&kind.as_str()) =>
+                {
+                    Some((kind.as_str(), name.as_str(), items.get(3)))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// The top-level payload field a persist update or delete reads its target row (or id) from.
+fn persist_binding(
+    td: &TraitDefinition,
+    transition: &orbital_core_base::schema::types::TransitionDefinition,
+    entity: &str,
+) -> Option<PersistBinding> {
+    let effects = transition.effects.as_deref().unwrap_or(&[]);
+    let schema = event_schema(td, &transition.event);
+    let persists = |wanted: &[&str]| persist_calls(effects, wanted);
+    for (_, name, reference) in persists(&["update"]) {
+        if let Some(SExpression::String(text)) = reference {
+            if let Some(field) = bare_payload_field(text) {
+                if schema.iter().any(|f| f.name == field && f.entity.as_deref() == Some(name)) {
+                    return Some(PersistBinding { payload_field: field.to_string(), whole_row: true });
+                }
+            }
+        }
+    }
+    for (_, name, reference) in persists(&["update", "delete"]) {
+        if name != entity {
+            continue;
+        }
+        match reference {
+            Some(SExpression::String(text)) => {
+                if let Some(field) = bare_payload_field(text) {
+                    return Some(PersistBinding { payload_field: field.to_string(), whole_row: false });
+                }
+            }
+            Some(SExpression::Object(o)) => {
+                if let Some(SExpression::String(id)) = o.get("id") {
+                    if let Some(field) = bare_payload_field(id) {
+                        return Some(PersistBinding { payload_field: field.to_string(), whole_row: false });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let set_path = effects.iter().find_map(|e| precondition::find_set(e, "@entity.id")).and_then(|v| match v {
+        SExpression::String(text) => text.strip_prefix("@payload.").map(str::to_string),
+        _ => None,
+    });
+    let writes_entity_row = persists(&["update", "delete"]).into_iter().any(|(_, name, reference)| {
+        name == entity && matches!(reference, Some(SExpression::String(r)) if r == "@entity" || r == "@entity.id")
+    });
+    set_path.filter(|_| writes_entity_row).map(|payload_field| PersistBinding { payload_field, whole_row: false })
+}
+
+fn sets_entity_id(transition: &orbital_core_base::schema::types::TransitionDefinition) -> bool {
+    transition.effects.iter().flatten().any(|e| precondition::find_set(e, "@entity.id").is_some())
+}
+
+fn entity_id_payload_path(transition: &orbital_core_base::schema::types::TransitionDefinition) -> Option<String> {
+    transition.effects.iter().flatten().find_map(|e| match precondition::find_set(e, "@entity.id") {
+        Some(SExpression::String(text)) => text.strip_prefix("@payload.").map(str::to_string),
+        _ => None,
+    })
+}
+
+/// How a step that writes an existing row gets that row to exist, evaluated at `at_state`: a create self-loop
+/// that binds `@entity.id`, else a transition that binds it from a payload field, else nothing can.
+fn resolve_row_establish(
+    schema: &OrbitalSchema,
+    ctx: &planner::EntityCtx<'_>,
+    td: &TraitDefinition,
+    entity: &str,
+    at_state: &str,
+    before_replay: bool,
+) -> RowEstablish {
+    let seed = td.linked_entity.as_deref().map(|e| planner::effective_seed_id(e, ctx.owner_fields, ctx.viewer_id.as_deref()));
+    let from_here = |t: &orbital_core_base::schema::types::TransitionDefinition| t.from.matches(at_state) || t.from.matches("*");
+    let creator = td.state_machine.transitions.iter().find(|t| {
+        t.event != "INIT"
+            && from_here(t)
+            && t.to == at_state
+            && matches!(find_persist_kind(t.effects.as_deref().unwrap_or(&[])), Some((e, MutationKind::Create, _)) if e == entity)
+            && sets_entity_id(t)
+    });
+    if let Some(creator) = creator {
+        return RowEstablish::Established {
+            event: creator.event.clone(),
+            payload: planner::synth_payload(td, &creator.event, ctx, seed.as_deref()),
+            viewer: viewer_requirement(schema, entity, "create"),
+            bind_row_from: None,
+            before_replay,
+        };
+    }
+    let selector = td.state_machine.transitions.iter().find_map(|t| {
+        if t.event == "INIT" || !from_here(t) {
+            return None;
+        }
+        entity_id_payload_path(t).filter(|p| !p.contains('.')).map(|p| (t, p))
+    });
+    if let Some((selector, payload_field)) = selector {
+        return RowEstablish::Established {
+            event: selector.event.clone(),
+            payload: planner::synth_payload(td, &selector.event, ctx, seed.as_deref()),
+            viewer: None,
+            bind_row_from: Some(planner::BindRowFrom { entity: entity.to_string(), payload_field }),
+            before_replay,
+        };
+    }
+    RowEstablish::Unreachable { trait_name: td.name.clone(), entity: entity.to_string(), at_state: at_state.to_string() }
+}
+
+fn plan_row_establish(
+    schema: &OrbitalSchema,
+    ctx: &planner::EntityCtx<'_>,
+    td: &TraitDefinition,
+    entity: &str,
+    from: &str,
+    initial: &str,
+) -> Option<RowEstablish> {
+    if from == "*" {
+        return None;
+    }
+    if from == initial {
+        return Some(resolve_row_establish(schema, ctx, td, entity, initial, false));
+    }
+    let path = planner::replay_transitions(td, from)?;
+    let establishes = path.iter().any(|hop| {
+        entity_id_payload_path(hop).is_some()
+            || (matches!(find_persist_kind(hop.effects.as_deref().unwrap_or(&[])), Some((e, MutationKind::Create, _)) if e == entity)
+                && sets_entity_id(hop))
+    });
+    if establishes {
+        return None;
+    }
+    Some(resolve_row_establish(schema, ctx, td, entity, initial, true))
+}
+
+/// Every persist-writing transition a host can drive as a data-mutation step: not INIT, not fired by an effect's
+/// own outcome, not behind a constant-false guard.
+pub fn plan_data_mutations(schema: &OrbitalSchema, options: &PlanOptions) -> Vec<DataMutation> {
+    let owner_fields = orbital_core_base::policy::owner_fields_from_schema(schema);
+    let ctx = entity_ctx(schema, &owner_fields, options);
+    let mut out = Vec::new();
+    for td in scoped(schema, options) {
+        let Some(initial) = planner::initial_state(td) else { continue };
+        let emitted = planner::effect_emitted_events(td);
+        let seed = td.linked_entity.as_deref().map(|e| planner::effective_seed_id(e, &owner_fields, options.viewer_id.as_deref()));
+        for transition in &td.state_machine.transitions {
+            if transition.event == "INIT" || emitted.contains(&transition.event) {
+                continue;
+            }
+            if transition.guard.as_ref().and_then(planner::const_truth) == Some(false) {
+                continue;
+            }
+            let Some((entity, kind, success_event)) = find_persist_kind(transition.effects.as_deref().unwrap_or(&[])) else { continue };
+            let from = transition.from.states().first().copied().unwrap_or("").to_string();
+            let bind_row = if kind == MutationKind::Create { None } else { persist_binding(td, transition, &entity) };
+            let mut row_establish = if kind == MutationKind::Create || bind_row.is_some() {
+                None
+            } else {
+                plan_row_establish(schema, &ctx, td, &entity, &from, &initial)
+            };
+            let mut precondition = None;
+            if row_establish.is_none() && transition.guard.is_some() {
+                precondition = precondition::plan_precondition(&ctx, td, transition, &from, &serde_json::json!({}));
+            }
+            let established_viewer = matches!(&row_establish, Some(RowEstablish::Established { viewer: Some(_), .. }));
+            let operation = match kind {
+                MutationKind::Create => "create",
+                MutationKind::Update => "update",
+                MutationKind::Delete => "delete",
+            };
+            let viewer = if established_viewer { None } else { viewer_requirement(schema, &entity, operation) };
+            let (via, other) = if bind_row.is_some() && kind == MutationKind::Delete {
+                inbound_restrict(schema, &entity)
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            if matches!(row_establish, Some(RowEstablish::Unreachable { .. })) {
+                precondition = None;
+            }
+            let _ = &mut row_establish;
+            out.push(DataMutation {
+                trait_name: td.name.clone(),
+                coverage_key: format!("{}:{from}+{}->{}[data-mutation:{operation}]", td.name, transition.event, transition.to),
+                from,
+                event: transition.event.clone(),
+                to: transition.to.clone(),
+                payload: planner::synth_payload(td, &transition.event, &ctx, seed.as_deref()),
+                entity,
+                kind,
+                row_delta: match kind {
+                    MutationKind::Create => 1,
+                    MutationKind::Update => 0,
+                    MutationKind::Delete => -1,
+                },
+                success_event,
+                viewer,
+                bind_row,
+                avoid_referenced_via: via,
+                avoid_referenced_by_other_entities: other,
+                row_establish,
+                precondition,
+            });
+        }
+    }
+    out
+}
+
 pub fn plan_transient_probe(schema: &OrbitalSchema, query: &TransientQuery, options: &PlanOptions) -> Option<TransientOutcome> {
     let td = planner::inline_traits(schema).into_iter().find(|td| td.name == query.trait_name)?;
     let mut failures = Vec::new();
@@ -464,6 +898,51 @@ fn viewer_requirement(schema: &OrbitalSchema, entity: &str, kind: &str) -> Optio
     Some(ViewerRequirement { role, owner })
 }
 
+/// `row` with every non-id value changed (a vocabulary field keeps its value), so an edit has something to change.
+fn vary_row(row: &serde_json::Value, keep: &[String]) -> serde_json::Value {
+    use serde_json::Value as J;
+    match row {
+        J::Object(map) => J::Object(
+            map.iter()
+                .map(|(k, v)| {
+                    let fixed = k == "id" || keep.contains(k);
+                    (k.clone(), if fixed { v.clone() } else { vary_row(v, keep) })
+                })
+                .collect(),
+        ),
+        J::String(s) => J::String(format!("{s}-edited")),
+        J::Number(n) => n.as_f64().map_or_else(|| row.clone(), |n| serde_json::json!(n + 1.0)),
+        J::Bool(b) => J::Bool(!b),
+        other => other.clone(),
+    }
+}
+
+/// The relation fields that reference `entity` under a restrict rule (an undeclared `onDelete` is restrict): the
+/// entity's own (self relations), then those of other entities.
+fn inbound_restrict(schema: &OrbitalSchema, entity: &str) -> (Vec<String>, Vec<InboundRelation>) {
+    use orbital_core_base::schema::types::{FieldType, OnDelete};
+    let (mut own, mut other) = (Vec::new(), Vec::new());
+    for def in orbital_core_base::policy::inline_entity_defs(schema) {
+        for field in &def.fields {
+            let (Some(name), Some(relation)) = (&field.name, &field.relation) else { continue };
+            if field.field_type != FieldType::Relation
+                || relation.entity != entity
+                || relation.on_delete.unwrap_or(OnDelete::Restrict) != OnDelete::Restrict
+            {
+                continue;
+            }
+            if def.name == entity {
+                if !own.contains(name) {
+                    own.push(name.clone());
+                }
+            } else {
+                other.push(InboundRelation { entity: def.name.clone(), field: name.clone() });
+            }
+        }
+    }
+    (own, other)
+}
+
 /// Every create, edit and delete chain: a persistor trait's persist, paired through its `listens` with the
 /// overlay trait whose open and submit transitions drive it.
 pub fn plan_crud_chains(schema: &OrbitalSchema, options: &PlanOptions) -> Vec<CrudChain> {
@@ -495,7 +974,8 @@ pub fn plan_crud_chains(schema: &OrbitalSchema, options: &PlanOptions) -> Vec<Cr
         for (entity, persists) in buckets {
             for wanted in ["create", "update", "delete"] {
                 let Some((kind, success, transition)) = persists.iter().find(|(k, _, _)| *k == wanted) else { continue };
-                if let Some(chain) = build_chain(schema, &ctx, &all, persistor, &entity, kind, success, transition) {
+                let create = persists.iter().find(|(k, _, _)| *k == "create").map(|(_, _, t)| *t);
+                if let Some(chain) = build_chain(schema, &ctx, &all, persistor, &entity, kind, success, transition, create) {
                     out.push(chain);
                 }
             }
@@ -514,6 +994,7 @@ fn build_chain(
     kind: &str,
     success: &str,
     persist: &orbital_core_base::schema::types::TransitionDefinition,
+    create: Option<&orbital_core_base::schema::types::TransitionDefinition>,
 ) -> Option<CrudChain> {
     use orbital_core_base::schema::types::ListenSource;
     let listener = persistor.listens.iter().flatten().find(|l| l.triggers.as_deref() == Some(persist.event.as_str()))?;
@@ -544,6 +1025,26 @@ fn build_chain(
     let open_schema = event_schema(source, &open.event);
     let row_scoped = crud_kind != CrudKind::Create;
     let persist_from = persist.from.states().first().copied().unwrap_or("").to_string();
+    let row_entity = source.linked_entity.as_deref().unwrap_or(entity);
+    let seed = source.linked_entity.as_deref().map(|e| planner::effective_seed_id(e, ctx.owner_fields, ctx.viewer_id.as_deref()));
+    let submit_payload = planner::synth_payload(source, &listener.event, ctx, seed.as_deref());
+    let entity_row = planner::synth_entity_row(ctx, row_entity);
+    let enum_fields: Vec<String> = planner::entity_def(schema, row_entity)
+        .into_iter()
+        .flat_map(|e| e.fields.iter())
+        .filter(|f| f.values.as_ref().is_some_and(|v| !v.is_empty()))
+        .filter_map(|f| f.name.clone())
+        .collect();
+    let (avoid_via, avoid_other) = if crud_kind == CrudKind::Delete { inbound_restrict(schema, entity) } else { (Vec::new(), Vec::new()) };
+    let fallback = create.filter(|_| crud_kind == CrudKind::Delete && !(avoid_via.is_empty() && avoid_other.is_empty())).map(|create| {
+        let seed = persistor.linked_entity.as_deref().map(|e| planner::effective_seed_id(e, ctx.owner_fields, ctx.viewer_id.as_deref()));
+        EstablishFallback {
+            event: create.event.clone(),
+            payload: planner::synth_payload(persistor, &create.event, ctx, seed.as_deref()),
+            trait_name: persistor.name.clone(),
+            viewer: viewer_requirement(schema, entity, "create"),
+        }
+    });
     Some(CrudChain {
         kind: crud_kind,
         entity: entity.to_string(),
@@ -562,6 +1063,10 @@ fn build_chain(
         open_affordance_event: inbound.map_or_else(|| open.event.clone(), |l| l.event.clone()),
         opens_overlay: open.effects.iter().flatten().any(renders_overlay),
         requires_row_context: row_scoped && open_schema.iter().any(|f| f.required == Some(true)),
+        submit_payload,
+        edit_entity_row: vary_row(&entity_row, &enum_fields),
+        entity_row,
+        enum_fields,
         payload_row_shape: if crud_kind == CrudKind::Delete {
             open_schema
                 .iter()
@@ -575,8 +1080,19 @@ fn build_chain(
             .guard
             .as_ref()
             .and_then(|_| precondition::plan_precondition(ctx, persistor, persist, &persist_from, &serde_json::json!({}))),
+        avoid_referenced_via: avoid_via,
+        avoid_referenced_by_other_entities: avoid_other,
+        delete_establish_fallback: fallback,
         coverage_key: format!("{}:{}+{}->{}[{label}]", source.name, open.from.states().first().copied().unwrap_or(""), open.event, open.to),
     })
+}
+
+/// The hops that place a fresh machine of `trait_name` in `state`; `None` for an unknown trait or an unreachable state.
+pub fn plan_replay(schema: &OrbitalSchema, trait_name: &str, state: &str, options: &PlanOptions) -> Option<Vec<PreambleEvent>> {
+    let td = planner::inline_traits(schema).into_iter().find(|td| td.name == trait_name)?;
+    let owner_fields = orbital_core_base::policy::owner_fields_from_schema(schema);
+    let ctx = entity_ctx(schema, &owner_fields, options);
+    plan_wire::preamble_to(td, &ctx, state, false)
 }
 
 pub fn plan_emit_sweep(schema: &OrbitalSchema, options: &PlanOptions) -> Vec<EmitStep> {
@@ -588,7 +1104,7 @@ pub fn plan_emit_sweep(schema: &OrbitalSchema, options: &PlanOptions) -> Vec<Emi
         let Some(initial) = planner::initial_state(td) else { continue };
         let seed_id = td.linked_entity.as_deref().map(|e| planner::effective_seed_id(e, &owner_fields, options.viewer_id.as_deref()));
         let mut seen: Vec<String> = Vec::new();
-        for event in declared_emits(td) {
+        for event in declared_emits(schema, td) {
             if seen.contains(&event) {
                 continue;
             }
@@ -810,12 +1326,12 @@ mod tests {
         assert_eq!(go.coverage_key, "Runner:idle+GO->loading[affordance]");
         assert_eq!(
             go.preamble.as_ref().map(|p| p.iter().map(|e| e.event.as_str()).collect::<Vec<_>>()),
-            Some(vec!["INIT"]),
-            "standing in the initial state replays the boot INIT"
+            Some(Vec::<&str>::new()),
+            "a host mounts the trait, which fires the boot INIT itself: the initial state needs no hop"
         );
         let leave = affordance(&program, "Runner", "ready", "LEAVE").unwrap();
         assert!(leave.navigates);
-        assert_eq!(leave.preamble.as_ref().map(|p| p.iter().map(|e| e.event.as_str()).collect::<Vec<_>>()), Some(vec!["GO", "LOADED"]));
+        assert_eq!(leave.preamble.as_ref().map(|p| p.iter().map(|e| e.event.as_str()).collect::<Vec<_>>()), Some(vec!["GO"]), "LOADED is fired by the fetch, never dispatched");
     }
 
     #[test]
@@ -967,5 +1483,245 @@ mod tests {
         let inline = plan_crud_chains(&crud_schema(json!(["render-ui", "main", { "type": "table-view" }])), &PlanOptions::default());
         assert!(inline.iter().find(|c| c.kind == CrudKind::Create).is_some_and(|c| !c.opens_overlay));
         assert!(inline.iter().all(|c| c.kind != CrudKind::Edit), "no update persist, no edit chain");
+    }
+
+    fn crud_with_relations(on_delete: Option<&str>) -> OrbitalSchema {
+        let mut program = serde_json::to_value(crud_schema(json!(["render-ui", "modal", { "type": "form-section" }]))).unwrap();
+        let mut relation = json!({ "entity": "Note", "cardinality": "many-to-one" });
+        if let Some(rule) = on_delete {
+            relation["onDelete"] = json!(rule);
+        }
+        let orbital = &mut program["orbitals"][0];
+        orbital["entity"]["fields"].as_array_mut().unwrap().push(json!({ "name": "parentId", "type": "relation", "relation": relation.clone() }));
+        orbital["auxiliaryEntities"] = json!([{ "name": "Comment", "persistence": "runtime", "fields": [
+            { "name": "id", "type": "string" }, { "name": "noteId", "type": "relation", "relation": relation }] }]);
+        serde_json::from_value(program).unwrap()
+    }
+
+    #[test]
+    fn a_delete_chain_names_the_restrict_relations_that_can_block_it_and_the_create_that_refills() {
+        let chains = plan_crud_chains(&crud_with_relations(None), &PlanOptions::default());
+        let delete = chains.iter().find(|c| c.kind == CrudKind::Delete).unwrap();
+        assert_eq!(delete.avoid_referenced_via, vec!["parentId".to_string()], "an undeclared onDelete is restrict");
+        assert_eq!(delete.avoid_referenced_by_other_entities, vec![InboundRelation { entity: "Comment".into(), field: "noteId".into() }]);
+        let fallback = delete.delete_establish_fallback.as_ref().expect("the entity declares its own create");
+        assert_eq!((fallback.event.as_str(), fallback.trait_name.as_str()), ("DO_CREATE", "Notes"));
+        let create = chains.iter().find(|c| c.kind == CrudKind::Create).unwrap();
+        assert!(create.avoid_referenced_via.is_empty() && create.delete_establish_fallback.is_none(), "only a delete chain avoids");
+    }
+
+    #[test]
+    fn control_a_cascade_relation_blocks_nothing_and_an_entity_without_relations_needs_no_fallback() {
+        let cascade = plan_crud_chains(&crud_with_relations(Some("cascade")), &PlanOptions::default());
+        let delete = cascade.iter().find(|c| c.kind == CrudKind::Delete).unwrap();
+        assert!(delete.avoid_referenced_via.is_empty() && delete.avoid_referenced_by_other_entities.is_empty());
+        assert!(delete.delete_establish_fallback.is_none());
+        let restrict = plan_crud_chains(&crud_with_relations(Some("restrict")), &PlanOptions::default());
+        assert_eq!(restrict.iter().find(|c| c.kind == CrudKind::Delete).unwrap().avoid_referenced_via.len(), 1);
+        let plain = plan_crud_chains(&crud_schema(json!(["render-ui", "modal", { "type": "form-section" }])), &PlanOptions::default());
+        assert!(plain.iter().find(|c| c.kind == CrudKind::Delete).unwrap().delete_establish_fallback.is_none());
+    }
+
+    fn tick_schema() -> OrbitalSchema {
+        serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{ "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Clock", "linkedEntity": "Job",
+                    "ticks": [
+                        { "name": "beat", "interval": 1000, "effects": [] },
+                        { "name": "frame", "interval": "frame", "effects": [] },
+                        { "name": "never", "interval": 0, "effects": [] }
+                    ],
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "busy" }],
+                        "transitions": [{ "from": "idle", "to": "busy", "event": "GO" }] } }] }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_numeric_tick_is_waited_out_and_may_land_in_any_declared_state() {
+        let ticks = plan_tick_steps(&tick_schema(), &PlanOptions::default());
+        assert_eq!(
+            ticks,
+            vec![TickStep {
+                trait_name: "Clock".into(),
+                from: "idle".into(),
+                event: "beat".into(),
+                wait_ms: 1000,
+                accept_states: vec!["idle".to_string(), "busy".to_string()],
+                coverage_key: "Clock:tick(beat)".into(),
+            }],
+            "a frame tick and a non-positive interval are not waited out"
+        );
+    }
+
+    fn mutation_schema() -> OrbitalSchema {
+        serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{ "name": "Main",
+                "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
+                "traits": [{ "name": "Notes", "linkedEntity": "Note",
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "editing" }],
+                        "events": [
+                            { "key": "SAVE", "name": "SAVE", "payloadSchema": [{ "name": "data", "type": "object", "entity": "Note" }] },
+                            { "key": "REMOVE", "name": "REMOVE", "payloadSchema": [{ "name": "id", "type": "string" }] },
+                            { "key": "TOUCH", "name": "TOUCH" },
+                            { "key": "PICK", "name": "PICK", "payloadSchema": [{ "name": "id", "type": "string" }] }
+                        ],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "idle", "event": "ADD", "effects": [
+                                ["set", "@entity.id", "@payload.id"],
+                                ["persist", "create", "Note", { "title": "t" }, { "emit": { "success": "ADDED" } }]] },
+                            { "from": "idle", "to": "editing", "event": "PICK", "effects": [["set", "@entity.id", "@payload.id"]] },
+                            { "from": "editing", "to": "idle", "event": "SAVE", "effects": [["persist", "update", "Note", "@payload.data", { "emit": { "success": "SAVED" } }]] },
+                            { "from": "editing", "to": "idle", "event": "REMOVE", "effects": [["persist", "delete", "Note", "@payload.id"]] },
+                            { "from": "idle", "to": "idle", "event": "TOUCH", "effects": [["persist", "update", "Note", { "title": "x" }]] }
+                        ] } }] }]
+        }))
+        .unwrap()
+    }
+
+    fn mutation<'a>(all: &'a [DataMutation], event: &str) -> &'a DataMutation {
+        all.iter().find(|m| m.event == event).unwrap_or_else(|| panic!("{event} is planned: {all:?}"))
+    }
+
+    #[test]
+    fn each_persist_transition_is_a_data_mutation_with_its_row_delta_and_row_binding() {
+        let all = plan_data_mutations(&mutation_schema(), &PlanOptions::default());
+        let add = mutation(&all, "ADD");
+        assert_eq!((add.kind, add.row_delta, add.success_event.as_deref()), (MutationKind::Create, 1, Some("ADDED")));
+        assert_eq!(add.coverage_key, "Notes:idle+ADD->idle[data-mutation:create]");
+        assert!(add.bind_row.is_none() && add.row_establish.is_none(), "a create has no target row");
+        let save = mutation(&all, "SAVE");
+        assert_eq!((save.kind, save.row_delta), (MutationKind::Update, 0));
+        assert_eq!(save.bind_row, Some(PersistBinding { payload_field: "data".into(), whole_row: true }));
+        let remove = mutation(&all, "REMOVE");
+        assert_eq!((remove.kind, remove.row_delta), (MutationKind::Delete, -1));
+        assert_eq!(remove.bind_row, Some(PersistBinding { payload_field: "id".into(), whole_row: false }));
+        assert!(all.iter().all(|m| m.event != "INIT" && m.event != "PICK"), "only persist transitions are mutations");
+    }
+
+    #[test]
+    fn a_step_that_writes_a_row_nothing_binds_gets_the_establishing_transition_or_a_typed_unreachable() {
+        let all = plan_data_mutations(&mutation_schema(), &PlanOptions::default());
+        let touch = mutation(&all, "TOUCH");
+        assert!(touch.bind_row.is_none());
+        match &touch.row_establish {
+            Some(RowEstablish::Established { event, bind_row_from, before_replay, .. }) => {
+                assert_eq!(event, "ADD", "the create self-loop at the initial state that binds @entity.id");
+                assert!(bind_row_from.is_none() && !before_replay);
+            }
+            other => panic!("expected the create self-loop, got {other:?}"),
+        }
+        let mut program = serde_json::to_value(mutation_schema()).unwrap();
+        let transitions = program["orbitals"][0]["traits"][0]["stateMachine"]["transitions"].as_array_mut().unwrap();
+        transitions.retain(|t| t["event"] != "ADD" && t["event"] != "PICK");
+        let bare: OrbitalSchema = serde_json::from_value(program).unwrap();
+        let touch = plan_data_mutations(&bare, &PlanOptions::default()).into_iter().find(|m| m.event == "TOUCH").unwrap();
+        assert_eq!(
+            touch.row_establish,
+            Some(RowEstablish::Unreachable { trait_name: "Notes".into(), entity: "Note".into(), at_state: "idle".into() })
+        );
+    }
+
+    #[test]
+    fn a_dispatched_row_selector_is_bound_from_a_payload_field_and_a_constant_false_guard_is_not_planned() {
+        let mut program = serde_json::to_value(mutation_schema()).unwrap();
+        let transitions = program["orbitals"][0]["traits"][0]["stateMachine"]["transitions"].as_array_mut().unwrap();
+        transitions.retain(|t| t["event"] != "ADD");
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "NEVER", "guard": ["=", 1, 2],
+            "effects": [["persist", "create", "Note", { "title": "t" }]] }));
+        let schema: OrbitalSchema = serde_json::from_value(program).unwrap();
+        let all = plan_data_mutations(&schema, &PlanOptions::default());
+        match &mutation(&all, "TOUCH").row_establish {
+            Some(RowEstablish::Established { event, bind_row_from, .. }) => {
+                assert_eq!(event, "PICK");
+                assert_eq!(bind_row_from.as_ref().map(|b| b.payload_field.as_str()), Some("id"));
+            }
+            other => panic!("expected the selecting transition, got {other:?}"),
+        }
+        assert!(all.iter().all(|m| m.event != "NEVER"));
+    }
+
+    #[test]
+    fn the_emit_sweep_covers_effect_emitted_events_and_declared_emits_but_no_http_reply_route() {
+        let program: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "egress": ["https://api.example.com"],
+            "orbitals": [{ "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Hub", "linkedEntity": "Job",
+                    "emits": [{ "event": "PING" }, { "event": "@external" }],
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "waiting" }],
+                        "transitions": [
+                            { "from": "idle", "to": "waiting", "event": "GO", "effects": [
+                                ["fetch", "Job", { "emit": { "success": "LOADED", "failure": "LOAD_FAILED", "onMessage": "LIVE" } }],
+                                ["http", "GET", "https://api.example.com", "/x", {}, { "emit": { "success": "HTTP_DONE" } }]] },
+                            { "from": "waiting", "to": "idle", "event": "HTTP_DONE" },
+                            { "from": "waiting", "to": "idle", "event": "LOADED" }
+                        ] } }] }]
+        }))
+        .unwrap();
+        let events: Vec<String> = plan_emit_sweep(&program, &PlanOptions::default()).into_iter().map(|s| s.event).collect();
+        assert_eq!(events, vec!["LOADED", "LOAD_FAILED", "PING"], "discovery order, http routes and external names left out");
+    }
+
+    fn persisting_data(data: serde_json::Value) -> serde_json::Value {
+        json!(["persist", "create", "Note", data, { "emit": { "success": "DONE", "failure": "FAILED" } }])
+    }
+
+    #[test]
+    fn a_policy_no_role_can_fail_owes_a_finding_not_a_probe() {
+        let every_role = json!(["or", ["=", "@user.role", "admin"], ["=", "@user.role", "viewer"]]);
+        let program = transient_schema(every_role, persisting());
+        assert!(matches!(
+            transient(&program, "FAILED"),
+            Some(TransientOutcome::Finding { finding: TransientFinding::NoDenyingViewer { .. } })
+        ));
+        let escape = json!(["or", ["=", "@entity.isDirect", true], ["=", "@user.role", "admin"]]);
+        let literal_true = transient_schema(escape.clone(), persisting_data(json!({ "isDirect": true })));
+        assert!(
+            matches!(transient(&literal_true, "FAILED"), Some(TransientOutcome::Finding { .. })),
+            "a payload literal that makes the policy unconditionally true leaves no viewer to deny"
+        );
+        let literal_false = transient_schema(escape, persisting_data(json!({ "isDirect": false })));
+        assert!(
+            matches!(transient(&literal_false, "FAILED"), Some(TransientOutcome::Probe { .. })),
+            "control: the escape hatch is specific to the payload, not the entity"
+        );
+    }
+
+    #[test]
+    fn a_replay_is_the_hops_that_place_a_fresh_machine_in_a_state() {
+        let program = schema(json!([]));
+        let hops = plan_replay(&program, "Runner", "ready", &PlanOptions::default()).expect("ready is reachable");
+        assert_eq!(hops.iter().map(|h| h.event.as_str()).collect::<Vec<_>>(), vec!["GO"], "LOADED is fired by the fetch");
+        assert_eq!((hops[0].from.as_str(), hops[0].to.as_str()), ("idle", "loading"));
+        assert_eq!(plan_replay(&program, "Runner", "idle", &PlanOptions::default()), Some(Vec::new()));
+        assert!(plan_replay(&program, "Runner", "nowhere", &PlanOptions::default()).is_none(), "an unreachable state has no replay");
+        assert!(plan_replay(&program, "Nobody", "idle", &PlanOptions::default()).is_none());
+    }
+
+    #[test]
+    fn a_crud_chain_carries_the_values_a_form_is_filled_with_and_the_edit_that_changes_them() {
+        let mut program = serde_json::to_value(crud_schema(json!(["render-ui", "modal", { "type": "form-section" }]))).unwrap();
+        let orbital = &mut program["orbitals"][0];
+        orbital["entity"]["fields"] = json!([
+            { "name": "id", "type": "string" }, { "name": "title", "type": "string" },
+            { "name": "count", "type": "number" }, { "name": "status", "type": "string", "values": ["open", "closed"] }]);
+        orbital["traits"][1]["stateMachine"]["events"] = json!([
+            { "key": "NOTE_SAVE", "name": "NOTE_SAVE", "payloadSchema": [{ "name": "data", "type": "object", "entity": "Note" }] }]);
+        let schema: OrbitalSchema = serde_json::from_value(program).unwrap();
+        let chains = plan_crud_chains(&schema, &PlanOptions::default());
+        let create = chains.iter().find(|c| c.kind == CrudKind::Create).unwrap();
+        assert!(create.submit_payload["data"]["title"].is_string(), "{}", create.submit_payload);
+        let (row, edited) = (&create.entity_row, &create.edit_entity_row);
+        assert_eq!(row["id"], edited["id"], "the row keeps its identity");
+        assert_ne!(row["title"], edited["title"]);
+        assert_ne!(row["count"], edited["count"]);
+        assert_eq!(create.enum_fields, vec!["status".to_string()]);
+        assert_eq!(row["status"], edited["status"], "control: a declared vocabulary is not changed out of itself");
     }
 }

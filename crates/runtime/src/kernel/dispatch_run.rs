@@ -92,6 +92,8 @@ pub(crate) struct DispatchRun {
     seed: Option<SeedRun>,
     outcomes: DispatchOutcomes,
     locale: Option<String>,
+    /// The viewer the dispatch was started as (see `enter_viewer`); `None` leaves the kernel's `@user` as it is.
+    user: Option<Arc<Value>>,
     origin: Origin,
 }
 
@@ -412,6 +414,7 @@ impl RuntimeKernel {
             seed: None,
             outcomes: Vec::new(),
             locale: self.dispatch_locale.read().clone(),
+            user: self.thread_viewer(),
             origin: self.next_dispatch_origin(),
         }
     }
@@ -468,6 +471,7 @@ impl RuntimeKernel {
             seed,
             outcomes,
             locale,
+            user,
             origin,
         } = run;
         let Some(in_flight) = seed.as_mut() else {
@@ -488,6 +492,7 @@ impl RuntimeKernel {
         };
         let _stamp = self.hold_stamp(in_flight.now);
         let _locale = self.hold_locale(locale.as_deref());
+        let _user = self.hold_user(user.as_deref());
         let committed_from = origin.emits;
         self.hold_origin(origin);
         let stepped = self.step_seed(in_flight, outcomes);
@@ -517,6 +522,13 @@ impl RuntimeKernel {
                 }
             }
         }
+    }
+
+    /// The run's viewer as the kernel's `@user` for one unit.
+    fn hold_user(&self, user: Option<&Value>) -> Option<UserHold> {
+        let user = user?;
+        let previous = std::mem::replace(&mut *self.current_user.write(), user.clone());
+        Some(UserHold { slot: Arc::clone(&self.current_user), previous })
     }
 
     /// The run's viewer locale, held for one unit unless the caller already holds one.
@@ -951,7 +963,13 @@ impl RuntimeKernel {
         }
         let view = memory.view(&item.trait_name, &item.delivery);
         if let Some(guard) = &item.listen_guard {
-            if !listen_guard_passes(guard, &item.source_payload, &from, &view) {
+            if !listen_guard_passes(
+                guard,
+                &item.source_payload,
+                &from,
+                self.listener_config(&item.trait_name),
+                &view,
+            ) {
                 debug!(trait_name = %item.trait_name, event = %item.event, "fanout:listen-guard-blocked");
                 return Ok(true);
             }

@@ -21,7 +21,7 @@ const MAX_MESSAGE: usize = 1 << 30;
 const MAX_SCRAM_ITERATIONS: u32 = 1_000_000;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_992;
 const SCRAM: &str = "SCRAM-SHA-256";
-const SSL_REQUEST: [u8; 8] = [0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f];
+pub(crate) const SSL_REQUEST: [u8; 8] = [0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f];
 
 /// A parsed `postgres` call.
 #[derive(Debug, Clone, PartialEq)]
@@ -138,7 +138,7 @@ pub fn parse_postgres_call(origin: &Value, sql: &Value, params: &Value, options:
 
 // ---- messages ----
 
-fn message(kind: u8, body: &[u8]) -> Vec<u8> {
+pub(crate) fn message(kind: u8, body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(body.len() + 5);
     out.push(kind);
     out.extend_from_slice(&((body.len() + 4) as u32).to_be_bytes());
@@ -146,7 +146,7 @@ fn message(kind: u8, body: &[u8]) -> Vec<u8> {
     out
 }
 
-fn cstr(out: &mut Vec<u8>, text: &str) {
+pub(crate) fn cstr(out: &mut Vec<u8>, text: &str) {
     out.extend_from_slice(text.as_bytes());
     out.push(0);
 }
@@ -233,7 +233,7 @@ fn be_i16(body: &[u8], at: usize) -> Result<i16, String> {
     body.get(at..at + 2).map(|b| i16::from_be_bytes([b[0], b[1]])).ok_or_else(|| "a message ends inside an integer".to_string())
 }
 
-fn read_cstr(body: &[u8], at: usize) -> Result<(String, usize), String> {
+pub(crate) fn read_cstr(body: &[u8], at: usize) -> Result<(String, usize), String> {
     let rest = body.get(at..).ok_or_else(|| "a message ends inside a string".to_string())?;
     let end = rest.iter().position(|b| *b == 0).ok_or_else(|| "a string is not terminated".to_string())?;
     let text = String::from_utf8(rest[..end].to_vec()).map_err(|_| "a string is not UTF-8".to_string())?;
@@ -272,7 +272,7 @@ pub struct Column {
     pub type_oid: u32,
 }
 
-fn parse_row_description(body: &[u8]) -> Result<Vec<Column>, String> {
+pub(crate) fn parse_row_description(body: &[u8]) -> Result<Vec<Column>, String> {
     let count = usize::try_from(be_i16(body, 0)?).map_err(|_| "a row description has a negative column count".to_string())?;
     let mut at = 2;
     let mut columns = Vec::with_capacity(count);
@@ -285,7 +285,7 @@ fn parse_row_description(body: &[u8]) -> Result<Vec<Column>, String> {
     Ok(columns)
 }
 
-fn parse_data_row(body: &[u8]) -> Result<Vec<Option<Vec<u8>>>, String> {
+pub(crate) fn parse_data_row(body: &[u8]) -> Result<Vec<Option<Vec<u8>>>, String> {
     let count = usize::try_from(be_i16(body, 0)?).map_err(|_| "a data row has a negative column count".to_string())?;
     let mut at = 2;
     let mut cells = Vec::with_capacity(count);
@@ -540,7 +540,7 @@ fn scram_escape(user: &str) -> String {
     user.replace('=', "=3D").replace(',', "=2C")
 }
 
-struct Scram {
+pub(crate) struct Scram {
     client_first_bare: String,
     nonce: String,
     expected_server_signature: Vec<u8>,
@@ -551,14 +551,14 @@ fn xor(a: &[u8], b: &[u8]) -> Vec<u8> {
 }
 
 impl Scram {
-    fn start(user: &str, nonce: &str) -> (Scram, String) {
+    pub(crate) fn start(user: &str, nonce: &str) -> (Scram, String) {
         let bare = format!("n={},r={nonce}", scram_escape(user));
         let first = format!("n,,{bare}");
         (Scram { client_first_bare: bare, nonce: nonce.to_string(), expected_server_signature: Vec::new() }, first)
     }
 
     /// The client-final message for the server-first message, remembering the signature the server must answer.
-    fn proof(&mut self, password: &str, server_first: &str) -> Result<String, String> {
+    pub(crate) fn proof(&mut self, password: &str, server_first: &str) -> Result<String, String> {
         let (mut combined, mut salt, mut iterations) = (None, None, None);
         for part in server_first.split(',') {
             match part.split_once('=') {
@@ -590,7 +590,7 @@ impl Scram {
         Ok(format!("{without_proof},p={}", codec::base64_encode(&proof)))
     }
 
-    fn verify(&self, server_final: &str) -> Result<(), String> {
+    pub(crate) fn verify(&self, server_final: &str) -> Result<(), String> {
         let signature = server_final.strip_prefix("v=").ok_or_else(|| "the SCRAM server-final message carries no signature".to_string())?;
         let got = codec::base64_decode(signature).map_err(|e| format!("the SCRAM server signature is not base64: {e}"))?;
         if got == self.expected_server_signature {
@@ -601,7 +601,7 @@ impl Scram {
     }
 }
 
-fn md5_password(user: &str, password: &str, salt: &[u8]) -> String {
+pub(crate) fn md5_password(user: &str, password: &str, salt: &[u8]) -> String {
     let inner = codec::hex(&codec::md5(format!("{password}{user}").as_bytes()));
     let mut outer = inner.into_bytes();
     outer.extend_from_slice(salt);

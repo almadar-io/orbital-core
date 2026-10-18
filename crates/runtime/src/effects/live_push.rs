@@ -78,6 +78,22 @@ impl StreamItem {
     }
 }
 
+/// Who a live item goes to (`target` of the JS `LiveBroadcastItem`): `Peers`, every other connection whose viewer may read
+/// the item's row; `Origin`, only the connection of the request that made it (a running call's live message).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LiveTarget {
+    #[default]
+    Peers,
+    Origin,
+}
+
+impl LiveTarget {
+    fn is_peers(&self) -> bool {
+        *self == LiveTarget::Peers
+    }
+}
+
 /// One persist-envelope success emit, handed to the live-broadcast sink. Mirror of
 /// `LiveBroadcastItem` (`OrbitalServerRuntime.ts:344-356`) — fanned out to every OTHER
 /// connected client on `GET /api/events`, excluding `originClientId`'s own connection.
@@ -92,11 +108,86 @@ pub struct LiveBroadcastItem {
     /// transport (never re-delivered to its own origin).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "LiveTarget::is_peers")]
+    pub target: LiveTarget,
+}
+
+impl LiveBroadcastItem {
+    /// The `persist` effect's success emits of `response`: each goes to every connection but the request's own.
+    pub fn persisted(response: &EventResponse, client_id: Option<&str>) -> Vec<Self> {
+        response
+            .emitted_events
+            .iter()
+            .filter_map(|emitted| {
+                let source = emitted.source.as_ref().filter(|s| s.persist_success == Some(true))?;
+                Some(Self {
+                    event: emitted.event.clone(),
+                    payload: emitted.payload.clone(),
+                    source: BusEventSource { persist_success: None, ..source.clone() },
+                    origin_client_id: client_id.map(str::to_string),
+                    target: LiveTarget::Peers,
+                })
+            })
+            .collect()
+    }
+
+    /// A running call's live message (`emit.onMessage`): it goes to the connection of the request that made the call.
+    pub fn call_message(event: String, payload: Value, trait_name: String, client_id: Option<String>) -> Self {
+        Self {
+            event,
+            payload: Some(payload),
+            source: BusEventSource::from_trait(trait_name),
+            origin_client_id: client_id,
+            target: LiveTarget::Origin,
+        }
+    }
+
+    /// Whether the connection `client_id` receives this item: an `Origin` item only the connection that made the
+    /// request; a `Peers` item every other connection whose viewer `readable` admits (the JS twin: `liveRecipients`).
+    pub fn delivered_to(&self, client_id: Option<&str>, readable: impl FnOnce(&Self) -> bool) -> bool {
+        match self.target {
+            LiveTarget::Origin => client_id.is_some() && self.origin_client_id.as_deref() == client_id,
+            LiveTarget::Peers => {
+                if client_id.is_some() && self.origin_client_id.as_deref() == client_id {
+                    return false;
+                }
+                readable(self)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn item(target: LiveTarget, origin: Option<&str>) -> LiveBroadcastItem {
+        LiveBroadcastItem {
+            event: "E".to_string(),
+            payload: None,
+            source: BusEventSource::from_trait("T"),
+            origin_client_id: origin.map(str::to_string),
+            target,
+        }
+    }
+
+    #[test]
+    fn an_origin_item_reaches_only_the_requesting_connection() {
+        let live = item(LiveTarget::Origin, Some("a"));
+        assert!(live.delivered_to(Some("a"), |_| panic!("an origin item is not read-filtered")));
+        assert!(!live.delivered_to(Some("b"), |_| true));
+        assert!(!live.delivered_to(None, |_| true), "control: a connection with no client id is nobody's origin");
+        assert!(!item(LiveTarget::Origin, None).delivered_to(None, |_| true));
+    }
+
+    #[test]
+    fn a_peers_item_skips_its_own_connection_and_obeys_the_viewers_read_policy() {
+        let shared = item(LiveTarget::Peers, Some("a"));
+        assert!(!shared.delivered_to(Some("a"), |_| true));
+        assert!(shared.delivered_to(Some("b"), |_| true));
+        assert!(shared.delivered_to(None, |_| true));
+        assert!(!shared.delivered_to(Some("b"), |_| false), "control: a viewer who may not read the row is skipped");
+    }
 
     #[test]
     fn stream_item_event_shape() {
@@ -140,6 +231,7 @@ mod tests {
             payload: None,
             source: BusEventSource::from_trait("NotePersistor"),
             origin_client_id: Some("client-1".to_string()),
+            target: LiveTarget::Peers,
         };
         let json = serde_json::to_string(&item).unwrap();
         let back: LiveBroadcastItem = serde_json::from_str(&json).unwrap();

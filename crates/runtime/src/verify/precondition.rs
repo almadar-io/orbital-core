@@ -36,7 +36,7 @@ struct FieldSet<'a> {
     payload_path: Option<String>,
 }
 
-fn find_set<'a>(node: &'a SExpression, target: &str) -> Option<&'a SExpression> {
+pub(crate) fn find_set<'a>(node: &'a SExpression, target: &str) -> Option<&'a SExpression> {
     match node {
         SExpression::Array(items) => {
             if let [SExpression::String(op), SExpression::String(path), value] = &items[..] {
@@ -134,9 +134,9 @@ fn dispatchable(td: &TraitDefinition, event: &str, at_state: &str, visited: &mut
     }
     visited.push(event.to_string());
     let produces = |t: &TransitionDefinition| {
-        let mut emitted = std::collections::BTreeSet::new();
-        t.effects.iter().flatten().for_each(|e| collect_emitted(e, &mut emitted));
-        emitted.contains(event)
+        let mut emits = false;
+        t.effects.iter().flatten().for_each(|e| collect_emitted(e, &mut |name| emits |= name == event));
+        emits
     };
     let Some(producer) = td.state_machine.transitions.iter().find(|t| produces(t)) else {
         return (event.to_string(), at_state.to_string());

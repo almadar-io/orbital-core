@@ -2575,6 +2575,16 @@ pub enum FieldType {
     Union,
 }
 
+/// What deleting a row does to the rows that reference it (`@almadar/core` `RelationConfig.onDelete`).
+/// Undeclared means `restrict` on every path that enforces it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnDelete {
+    Cascade,
+    Nullify,
+    Restrict,
+}
+
 /// Relation definition for entity references
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelationDefinition {
@@ -2588,6 +2598,10 @@ pub struct RelationDefinition {
     /// Cardinality
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cardinality: Option<Cardinality>,
+
+    /// Delete behavior of the referencing rows
+    #[serde(rename = "onDelete", default, skip_serializing_if = "Option::is_none")]
+    pub on_delete: Option<OnDelete>,
 }
 
 impl RelationDefinition {

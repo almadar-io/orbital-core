@@ -160,7 +160,7 @@ mod runtime_rows {
     use super::*;
 
     fn fanout(persistence: &str) -> OrbitalSchema {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../packages/almadar-parity/fixtures/scenarios/emit-fanout.json");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../tools/kernel-bench/fixtures/scenarios/emit-fanout.json");
         let mut doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json");
         doc["schema"]["orbitals"][0]["entity"]["persistence"] = json!(persistence);
         serde_json::from_value(doc["schema"].clone()).expect("schema")
@@ -225,5 +225,31 @@ mod runtime_rows {
         let mut doc = serde_json::to_value(schema()).unwrap();
         doc["orbitals"][0]["entity"]["persistence"] = json!("runtime");
         serde_json::from_value(doc).unwrap()
+    }
+}
+
+mod whole_orbital_states {
+    use super::*;
+
+    #[test]
+    fn a_trait_that_has_not_mounted_reports_its_initial_state() {
+        let server = EmbeddedServer::new(schema()).unwrap();
+        for name in ["Bridge", "Saver", "Shell"] {
+            assert_eq!(server.get_state(name, None), "idle", "{name} holds its initial state before anything touched it");
+        }
+    }
+
+    #[test]
+    fn control_an_unknown_trait_has_no_state() {
+        let server = EmbeddedServer::new(schema()).unwrap();
+        assert_eq!(server.get_state("NoSuchTrait", None), "");
+    }
+
+    #[test]
+    fn control_a_dispatched_trait_reports_its_new_state_and_the_rest_stay_initial() {
+        let response = run("SAVE", "Saver");
+        assert_eq!(response.states.get("Saver").map(String::as_str), Some("saved"));
+        assert_eq!(response.states.get("Bridge").map(String::as_str), Some("idle"));
+        assert_eq!(response.states.get("Shell").map(String::as_str), Some("idle"));
     }
 }

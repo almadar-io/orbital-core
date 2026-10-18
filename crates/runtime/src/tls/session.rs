@@ -7,11 +7,14 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use rand_chacha::ChaCha20Rng;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::{Resumption, UnbufferedClientConnection};
+use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, WebPkiSupportedAlgorithms};
+use rustls::pki_types::CertificateDer;
 use rustls::pki_types::{ServerName, UnixTime};
 use rustls::time_provider::TimeProvider;
 use rustls::unbuffered::{ConnectionState, EncodeError, EncryptError, UnbufferedStatus};
-use rustls::{ClientConfig, RootCertStore};
+use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 use thiserror::Error;
 
 use super::provider::{provider, random};
@@ -64,6 +67,86 @@ pub fn client_config(
     Ok(Arc::new(config))
 }
 
+/// Trust roots from PEM text (`-----BEGIN CERTIFICATE-----` blocks), for a server whose certificate a private CA signed.
+pub fn roots_from_pem(pem: &str) -> Result<RootCertStore, TlsError> {
+    let mut roots = RootCertStore::empty();
+    let mut found = 0;
+    for block in pem.split("-----BEGIN CERTIFICATE-----").skip(1) {
+        let body = block
+            .split("-----END CERTIFICATE-----")
+            .next()
+            .unwrap_or_default();
+        let der =
+            orbital_core_base::codec::base64_decode(&body.split_whitespace().collect::<String>())
+                .map_err(|e| TlsError::Tls(format!("a root certificate is not base64: {e}")))?;
+        roots
+            .add(CertificateDer::from(der))
+            .map_err(|e| TlsError::Tls(format!("a root certificate is refused: {e}")))?;
+        found += 1;
+    }
+    if found == 0 {
+        return Err(TlsError::Tls(
+            "the root certificate text holds no certificate".to_string(),
+        ));
+    }
+    Ok(roots)
+}
+
+/// The peer's certificate is not judged (a server whose certificate nobody can vouch for, `sslmode=require`): the link
+/// is encrypted and the handshake signatures are still checked, but any server can answer. Use it only where the
+/// protocol's own mode asks for encryption without authentication.
+#[derive(Debug)]
+struct EncryptOnly(WebPkiSupportedAlgorithms);
+
+impl ServerCertVerifier for EncryptOnly {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(message, cert, dss, &self.0)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(message, cert, dss, &self.0)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.supported_schemes()
+    }
+}
+
+/// The configuration of a session that encrypts without authenticating the server.
+pub fn encrypt_only_config(now_unix_secs: u64) -> Result<Arc<ClientConfig>, TlsError> {
+    let crypto = provider();
+    let algorithms = crypto.signature_verification_algorithms;
+    let mut config =
+        ClientConfig::builder_with_details(Arc::new(crypto), Arc::new(FixedTime(now_unix_secs)))
+            .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(EncryptOnly(algorithms)))
+            .with_no_client_auth();
+    config.resumption = Resumption::disabled();
+    Ok(Arc::new(config))
+}
+
 /// What happened to the session, in order; replaying them into a fresh session reproduces its bytes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Recorded {
@@ -112,9 +195,17 @@ impl TlsClient {
         now_unix_secs: u64,
         roots: RootCertStore,
     ) -> Result<Self, TlsError> {
+        Self::with_config(host, seed, client_config(roots, now_unix_secs)?)
+    }
+
+    /// A session under `config` (see [`client_config`], [`encrypt_only_config`]).
+    pub fn with_config(
+        host: &str,
+        seed: [u8; 32],
+        config: Arc<ClientConfig>,
+    ) -> Result<Self, TlsError> {
         let name = ServerName::try_from(host.to_owned())
             .map_err(|e| TlsError::Tls(format!("invalid server name {host}: {e}")))?;
-        let config = client_config(roots, now_unix_secs)?;
         let mut rng = Some(random::drbg(seed));
         let conn = {
             let _scope = random::Scope::enter(&mut rng);

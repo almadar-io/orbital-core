@@ -13,7 +13,7 @@ use super::{
     SnapshotWire,
 };
 use crate::effects::response::{EventRequest, EventResponse};
-use crate::verify::flows::{AffordanceQuery, AffordanceStep, TransientOutcome, TransientQuery};
+use crate::verify::flows::{AffordanceQuery, AffordanceStep, ReplayQuery, TransientOutcome, TransientQuery};
 use crate::verify::plan_wire::{Credit, CreditStep, Expectation, Observation, PlanOptions, PlanOutcome, VerdictWire};
 
 
@@ -123,6 +123,8 @@ fn kernel_wire_ts() -> String {
     collect.visit::<AffordanceQuery>();
     collect.visit::<AffordanceStep>();
     collect.visit::<TransientQuery>();
+    collect.visit::<ReplayQuery>();
+    collect.visit::<crate::verify::plan_wire::PreambleEvent>();
     collect.visit::<TransientOutcome>();
     collect.visit::<EvalContextWire>();
     collect.visit::<EvalOutcomeWire>();
@@ -521,6 +523,11 @@ fn every_wire_type_is_declared() {
         "TransientProbe",
         "TransientFinding",
         "CrudChain",
+        "ReplayQuery",
+        "PreambleEvent",
+        "TickStep",
+        "DataMutation",
+        "RowEstablish",
         "Credit",
         "TraitConfigVariants",
         "InitCredit",

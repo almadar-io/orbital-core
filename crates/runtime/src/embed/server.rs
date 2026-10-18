@@ -219,11 +219,13 @@ impl EmbeddedServer {
         self.kernel.remount_traits(traits);
     }
 
-    /// The current state of a trait instance, `""` when unset.
+    /// The state a trait instance holds: its current one, or its initial one while nothing has touched it (a trait that has
+    /// not mounted yet is at its initial state, as the whole-orbital `states` of a response says); `""` for a trait the
+    /// program does not declare.
     pub fn get_state(&self, trait_name: &str, entity_id: Option<&str>) -> String {
         self.kernel
-            .get_state(trait_name, entity_id)
-            .map(|s| s.current_state)
+            .held_states(&[trait_name.to_string()], entity_id)
+            .remove(trait_name)
             .unwrap_or_default()
     }
 

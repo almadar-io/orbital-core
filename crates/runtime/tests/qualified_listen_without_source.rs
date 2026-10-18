@@ -58,3 +58,49 @@ fn control_a_listen_qualified_to_another_trait_hears_nothing() {
 fn control_a_bare_listen_still_hears_any_source() {
     assert!(steered("TURN"));
 }
+
+fn guarded(sent_key: &str, guard: serde_json::Value) -> bool {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "Keyed",
+        "orbitals": [{
+            "name": "KeyedOrbital",
+            "entity": { "name": "S", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "dir", "type": "string" }] },
+            "traits": [
+                { "name": "Play", "linkedEntity": "S",
+                  "stateMachine": { "states": [{ "name": "on", "isInitial": true }],
+                      "transitions": [{ "from": "on", "to": "on", "event": "UP", "effects": [["emit", "TURN", { "key": sent_key }]] }] } },
+                { "name": "Mechanic", "linkedEntity": "S",
+                  "config": { "scope": { "type": "string", "default": "left" }, "name": { "type": "string", "default": "pad" } },
+                  "listens": [{ "event": "TURN", "triggers": "STEER", "guard": guard, "source": { "kind": "any" } }],
+                  "stateMachine": { "states": [{ "name": "on", "isInitial": true }],
+                      "transitions": [{ "from": "on", "to": "on", "event": "STEER", "effects": [["set", "@entity.dir", "heard"]] }] } }
+            ]
+        }]
+    }))
+    .unwrap();
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(schema).unwrap();
+    let outcomes = k.dispatch("Play", None, "UP", Value::Null).unwrap();
+    outcomes.iter().any(|(t, r)| t == "Mechanic" && r.executed)
+}
+
+#[test]
+fn a_listen_guard_reads_the_listening_traits_own_config() {
+    let guard = json!(["=", "@payload.key", ["str/concat", "@config.scope", "|", "@config.name"]]);
+    assert!(guarded("left|pad", guard));
+}
+
+#[test]
+fn control_a_listen_guard_on_config_refuses_another_key() {
+    let guard = json!(["=", "@payload.key", ["str/concat", "@config.scope", "|", "@config.name"]]);
+    assert!(!guarded("right|pad", guard));
+}
+
+#[test]
+fn control_a_listen_guard_on_a_literal_key_still_delivers() {
+    assert!(guarded("left|pad", json!(["=", "@payload.key", "left|pad"])));
+}

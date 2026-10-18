@@ -1003,6 +1003,12 @@ fn row_path_free(field: &str) -> Result<String, Fail> {
 }
 
 fn as_field(value: &Value) -> Result<Option<String>, Fail> {
+    as_field_in(value, None)
+}
+
+/// The row field `value` names. With a context, `(object/get @entity <binding>)` names the flat field the binding
+/// holds: the evaluator reads that one field on every row, so it is the same predicate as the literal.
+fn as_field_in(value: &Value, ctx: Option<&BindingContext>) -> Result<Option<String>, Fail> {
     match value {
         Value::String(s) if s == "@entity" => Err(shape("the whole row is not a field")),
         Value::String(s) => match s.strip_prefix("@entity.") {
@@ -1014,12 +1020,27 @@ fn as_field(value: &Value) -> Result<Option<String>, Fail> {
                 && items.get(1).and_then(Value::as_str) == Some("@entity") =>
         {
             match (items.len(), items.get(2).and_then(Value::as_str)) {
-                (3, Some(field)) => row_path_free(field).map(Some),
+                (3, Some(field)) => match (field.starts_with('@'), ctx) {
+                    (true, Some(ctx)) => match ctx.resolve_binding(field) {
+                        Some(Value::String(name)) => row_path_free(&name).map(Some),
+                        Some(_) => Err(shape("the row field name is not a string")),
+                        None => Err(Fail::Unresolved(field.to_string())),
+                    },
+                    _ => row_path_free(field).map(Some),
+                },
                 _ => Err(shape("object/get on the row is not a single flat field")),
             }
         }
         _ => Ok(None),
     }
+}
+
+/// Two constants of one non-null scalar kind: where the row-side equality is plain equality.
+fn same_scalar_kind(a: &Value, b: &Value) -> bool {
+    matches!(
+        (a, b),
+        (Value::Number(_), Value::Number(_)) | (Value::String(_), Value::String(_)) | (Value::Bool(_), Value::Bool(_))
+    )
 }
 
 fn scalar_const(value: Value) -> Result<Value, Fail> {
@@ -1030,7 +1051,7 @@ fn scalar_const(value: Value) -> Result<Value, Fail> {
 }
 
 fn term(value: &Value, ctx: &BindingContext) -> Result<Term, Fail> {
-    if let Some(field) = as_field(value)? {
+    if let Some(field) = as_field_in(value, Some(ctx))? {
         return Ok(Term::Field(field));
     }
     match value {
@@ -1222,10 +1243,18 @@ fn compile_expr(
                     } else {
                         scope.clone()
                     };
-                    let of = args
-                        .iter()
-                        .map(|a| compile_expr(a, ctx, required, exact, &inner))
-                        .collect::<Result<Vec<_>, _>>()?;
+                    // The evaluator stops at the first truthy operand of an or (falsy of an and), so an operand
+                    // after a constant that decides the chain is never evaluated and need not compile.
+                    let decides = head == "or";
+                    let mut of = Vec::with_capacity(args.len());
+                    for a in args {
+                        let compiled = compile_expr(a, ctx, required, exact, &inner)?;
+                        let stops = matches!(compiled, RowPredicate::Const { value } if value == decides);
+                        of.push(compiled);
+                        if stops {
+                            return Ok(RowPredicate::Const { value: decides });
+                        }
+                    }
                     Ok(if head == "and" {
                         RowPredicate::All { of }
                     } else {
@@ -1238,7 +1267,7 @@ fn compile_expr(
                 "validate/required" if args.len() == 1 => {
                     // Equal to "not null" only where the field is ordered against a number in the same chain: a
                     // string or a list is also "required" only when non-empty.
-                    match as_field(&args[0])? {
+                    match as_field_in(&args[0], Some(ctx))? {
                         Some(field) if scope.numeric.contains(&field) => Ok(RowPredicate::IsNull {
                             field,
                             is_null: false,
@@ -1249,13 +1278,13 @@ fn compile_expr(
                     }
                 }
                 "array/includes" if args.len() == 2 => {
-                    if let Some(field) = as_field(&args[1])? {
+                    if let Some(field) = as_field_in(&args[1], Some(ctx))? {
                         erroring_leaf(&field, required, exact)?;
                         Ok(RowPredicate::Member {
                             field,
                             values: list_of(&args[0], ctx)?,
                         })
-                    } else if let Some(field) = as_field(&args[0])? {
+                    } else if let Some(field) = as_field_in(&args[0], Some(ctx))? {
                         erroring_leaf(&field, required, exact)?;
                         match term(&args[1], ctx)? {
                             Term::Const(value) => Ok(RowPredicate::HasElement { field, value }),
@@ -1269,7 +1298,7 @@ fn compile_expr(
                     let Term::Const(Value::String(text)) = term(&args[1], ctx)? else {
                         return Err(shape("str/includes needle is not a constant string"));
                     };
-                    if let Some(field) = as_field(&args[0])? {
+                    if let Some(field) = as_field_in(&args[0], Some(ctx))? {
                         erroring_leaf(&field, required, exact)?;
                         return Ok(RowPredicate::Contains {
                             field,
@@ -1279,7 +1308,7 @@ fn compile_expr(
                     }
                     if let Value::Array(lower) = &args[0] {
                         if lower.len() == 2 && lower[0].as_str() == Some("str/lower") {
-                            if let Some(field) = as_field(&lower[1])? {
+                            if let Some(field) = as_field_in(&lower[1], Some(ctx))? {
                                 erroring_leaf(&field, required, exact)?;
                                 if text.to_lowercase() != text {
                                     return Err(shape(
@@ -1304,6 +1333,15 @@ fn compile_expr(
                             }
                             (Term::Const(value), Term::Field(field)) => {
                                 compare_leaf_of(field, op.flipped(), value, required, scope)
+                            }
+                            (Term::Const(left), Term::Const(right))
+                                if matches!(op, RowCompareOp::Eq | RowCompareOp::Ne)
+                                    && same_scalar_kind(&left, &right) =>
+                            {
+                                let equal = same_value(&left, &right);
+                                Ok(RowPredicate::Const {
+                                    value: equal == (op == RowCompareOp::Eq),
+                                })
                             }
                             _ => Err(shape("a comparison needs one row field and one constant")),
                         }

@@ -7,7 +7,7 @@ use super::embed_index::EmbedIndex;
 use super::entity_access::{apply_read_access, scope_fetched_rows, EntityAccessPolicies, EntityAccessTable};
 use super::entity_source::EntitySource;
 use super::listener::{ListenerManager, TriggerCallback};
-use super::process_result::{DeliveryEntry, EffectRun, EffectRunStatus, OrbitalDetail, OrbitalInfo, ProcessEventResult, RuntimeStats};
+use super::process_result::{DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo, ProcessEventResult, RuntimeStats};
 use super::render_store::RenderStore;
 use super::resumable::{CallRoutes, CallSite, CallVerdict, IoPort, AWAITING_HOST};
 use super::row_query::{and_predicates, compile_predicate, default_row_order, query_unsupported_reason, resolve_row_set, NotExpressible, PredicateRole, QueryCapabilities, RowPage, RowWriteBatch, RowWriteOp, RowWriteOutcome, WriteCapabilities};
@@ -194,6 +194,7 @@ fn listen_guard_passes(
     guard: &SExpression,
     source_payload: &Value,
     from: &str,
+    config: Value,
     view: &DispatchView,
 ) -> bool {
     let mut ctx = BindingContextBuilder::new()
@@ -201,6 +202,7 @@ fn listen_guard_passes(
         .state(Value::String(from.to_string()))
         .build();
     ctx.from_state = Some(from.to_string());
+    ctx.set_config(config);
     view.apply(&mut ctx);
     matches!(Evaluator::new().evaluate_guard(guard, &ctx), Ok(true))
 }
@@ -224,6 +226,9 @@ pub struct RuntimeKernel {
     /// The door every read, write, service call and substrate operator goes through; `entity_source` is it.
     io: Arc<IoPort>,
     current_user: Arc<RwLock<Value>>,
+    /// The viewer a request's thread dispatches as (set by [`ViewerGuard`]); a dispatch captures it when it starts, so
+    /// requests served at the same time keep their own `@user`.
+    viewer_by_thread: Arc<RwLock<HashMap<std::thread::ThreadId, Arc<Value>>>>,
     /// The host runs an emit's listeners whenever it marks the emit `dispatched`, so a fold runs only the client-only ones.
     host_fans_out: std::sync::atomic::AtomicBool,
     /// The in-flight dispatch's one `now` stamp; set by the outermost entry, reused by nested steps.
@@ -890,6 +895,30 @@ struct KernelI18n {
     catalogs: HashMap<String, HashMap<String, String>>,
 }
 
+/// Holds a request thread's viewer; dropping it forgets the viewer.
+pub struct ViewerGuard {
+    slot: Arc<RwLock<HashMap<std::thread::ThreadId, Arc<Value>>>>,
+    thread: std::thread::ThreadId,
+}
+
+impl Drop for ViewerGuard {
+    fn drop(&mut self) {
+        self.slot.write().remove(&self.thread);
+    }
+}
+
+/// Puts a run's viewer in the kernel's `@user` slot for one unit and restores the previous one.
+struct UserHold {
+    slot: Arc<RwLock<Value>>,
+    previous: Value,
+}
+
+impl Drop for UserHold {
+    fn drop(&mut self) {
+        *self.slot.write() = std::mem::replace(&mut self.previous, Value::Null);
+    }
+}
+
 /// Holds a dispatch's viewer locale; dropping it clears the slot. JS twin: `OrbitalEventRequest.locale`.
 pub struct LocaleGuard {
     slot: Arc<RwLock<Option<String>>>,
@@ -988,6 +1017,7 @@ impl RuntimeKernel {
             io,
             rows: entity_handler,
             current_user: Arc::new(RwLock::new(current_user)),
+            viewer_by_thread: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
             dispatch_now: Arc::new(RwLock::new(None)),
             i18n: Arc::new(RwLock::new(KernelI18n::default())),
@@ -2961,6 +2991,18 @@ impl RuntimeKernel {
         }
     }
 
+    /// The `@config` root a listener's guard reads: the listening trait's own resolved config defaults.
+    fn listener_config(&self, trait_name: &str) -> Value {
+        let defs = self.trait_definitions.read();
+        match defs.get(trait_name) {
+            Some(def) => bind_user_forwards(
+                config_defaults_value(def, &defs),
+                &self.current_user.read(),
+            ),
+            None => Value::Null,
+        }
+    }
+
     /// Whether `trait_name` has an arm for `event` from `state`.
     fn trait_handles(&self, trait_name: &str, state: &str, event: &str) -> bool {
         self.trait_definitions
@@ -4500,13 +4542,10 @@ impl RuntimeKernel {
 
     /// A registered trait's derived dispatch mode (`dispatch_mode::compute`).
     pub fn dispatch_mode_of(&self, trait_def: &TraitDefinition) -> DispatchMode {
-        let entity_def = trait_def
-            .linked_entity
-            .as_deref()
-            .and_then(|name| self.entity_definitions.read().get(name).cloned());
-        let residence =
-            orbital_core_base::runs_on::Residence::of_entities(self.entity_definitions.read().values());
-        trait_def.dispatch_mode(entity_def.as_ref(), &residence)
+        let defs = self.entity_definitions.read();
+        let entity_def = trait_def.linked_entity.as_deref().and_then(|name| defs.get(name));
+        let residence = orbital_core_base::runs_on::Residence::of_entities(defs.values());
+        trait_def.dispatch_mode(entity_def, &residence)
     }
 
     /// Every registered trait's state (its initial one while untouched) and derived dispatch mode.
@@ -4589,6 +4628,19 @@ impl RuntimeKernel {
 
     pub fn set_current_user(&self, user: Value) {
         *self.current_user.write() = user;
+    }
+
+    /// Dispatch as `user` from this thread until the guard drops: the dispatches this thread starts keep this `@user`
+    /// however other requests set theirs meanwhile.
+    pub fn enter_viewer(&self, user: Value) -> ViewerGuard {
+        let thread = std::thread::current().id();
+        self.viewer_by_thread.write().insert(thread, Arc::new(user));
+        ViewerGuard { slot: Arc::clone(&self.viewer_by_thread), thread }
+    }
+
+    /// The viewer this thread entered, for a dispatch that starts now.
+    fn thread_viewer(&self) -> Option<Arc<Value>> {
+        self.viewer_by_thread.read().get(&std::thread::current().id()).cloned()
     }
 
     /// Get the current user.
@@ -4728,6 +4780,11 @@ impl RuntimeKernel {
     /// Reuses `apply_read_access`, the one owner of read filtering, rather than
     /// re-deriving the predicate.
     pub fn retain_readable(&self, entity_type: &str, rows: &mut Vec<Value>) {
+        self.retain_readable_by(entity_type, rows, &self.get_current_user());
+    }
+
+    /// [`Self::retain_readable`] for the viewer `user`, whatever the kernel's current user is.
+    pub fn retain_readable_by(&self, entity_type: &str, rows: &mut Vec<Value>, user: &Value) {
         let policy = self
             .entity_policies
             .read()
@@ -4737,8 +4794,29 @@ impl RuntimeKernel {
             return;
         }
         let mut ctx = BindingContext::new();
-        ctx.set_user(self.get_current_user());
+        ctx.set_user(user.clone());
         apply_read_access(rows, policy.as_ref(), None, &ctx, entity_type);
+    }
+
+    /// The entity a registered trait is bound to.
+    pub fn linked_entity_of(&self, trait_name: &str) -> Option<String> {
+        self.trait_definitions.read().get(trait_name).and_then(|d| d.linked_entity.clone())
+    }
+
+    /// Whether `viewer` may read the row a live item carries: the `@read` policy of the entity the emitting trait is
+    /// bound to (the JS twin: `isRowVisibleToViewer`). An item whose entity does not resolve, or whose entity declares no
+    /// policy, is visible to everyone.
+    pub fn live_item_visible_to(&self, item: &crate::effects::LiveBroadcastItem, viewer: &Value) -> bool {
+        let Some(entity) = item.source.r#trait.as_deref().and_then(|t| self.linked_entity_of(t)) else {
+            return true;
+        };
+        let row = match &item.payload {
+            Some(Value::Object(fields)) => Value::Object(fields.clone()),
+            _ => Value::Object(ValueMap::new()),
+        };
+        let mut rows = vec![row];
+        self.retain_readable_by(&entity, &mut rows, viewer);
+        !rows.is_empty()
     }
 
     /// List all registered orbitals across all schemas.
@@ -4774,7 +4852,11 @@ impl RuntimeKernel {
                 if orbital.name == orbital_name {
                     return Some(OrbitalDetail {
                         name: orbital.name.clone(),
-                        entity: orbital.entity.clone(),
+                        entity: match &orbital.entity {
+                            EntityRef::Inline(entity) => EntitySummary { name: entity.name.clone(), fields: entity.fields.clone() },
+                            EntityRef::Reference(reference) => EntitySummary { name: reference.clone(), fields: Vec::new() },
+                            EntityRef::Extends(extends) => EntitySummary { name: extends.reference.clone(), fields: Vec::new() },
+                        },
                         traits: orbital
                             .traits
                             .iter()

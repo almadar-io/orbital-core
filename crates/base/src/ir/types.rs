@@ -2344,6 +2344,7 @@ mod tests {
             entity: "Article".to_string(),
             entity_id: None,
             cardinality: None,
+            on_delete: None,
         });
         assert_eq!(
             field_shape(&f),
@@ -2359,6 +2360,7 @@ mod tests {
             entity: "Revision".to_string(),
             entity_id: None,
             cardinality,
+            on_delete: None,
         });
         f
     }

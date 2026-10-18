@@ -394,6 +394,63 @@ pub fn install_language_bundle(bundle: &str) -> Result<(), LanguageDataError> {
     Ok(())
 }
 
+/// The installed language as the bundle [`install_language_bundle`] takes: the Rust twin of `readLanguageBundle`, for a
+/// host with no `node_modules` (a generated Python app) that ships the language beside its program. Each `compiler`
+/// range is exactly this binary, since the data was just checked against it.
+pub fn language_bundle_json() -> Result<String, LanguageDataError> {
+    let language = language_data()?;
+    let operators = operator_data()?;
+    let packs = crate::i18n::packs::vocabulary_packs()?;
+    let invalid = |reason: String| LanguageDataError::Invalid {
+        path: PathBuf::from("<language bundle>"),
+        reason,
+    };
+    let part = |field: &str, text: &str| {
+        serde_json::from_str::<Value>(text).map_err(|e| invalid(format!("`{field}` is not JSON: {e}")))
+    };
+    let themes = language
+        .themes
+        .iter()
+        .map(|theme| part("themes", theme))
+        .collect::<Result<Vec<_>, _>>()?;
+    let compiler = format!("={}", running_version());
+    let vocabularies = packs
+        .iter()
+        .map(|pack| {
+            serde_json::to_value(&pack.definition)
+                .map(|vocabulary| {
+                    serde_json::json!({
+                        "package": pack.package,
+                        "version": pack.version,
+                        "compiler": pack.compiler,
+                        "vocabulary": vocabulary,
+                    })
+                })
+                .map_err(|e| invalid(format!("{}: {e}", pack.package)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let bundle = serde_json::json!({
+        "core": {
+            "version": language.core_version,
+            "compiler": compiler,
+            "patterns": part("patterns", &language.patterns)?,
+            "componentMapping": part("componentMapping", &language.component_mapping)?,
+            "eventContracts": part("eventContracts", &language.event_contracts)?,
+            "services": part("services", &language.services)?,
+            "bindingRules": part("bindingRules", &language.binding_rules)?,
+            "programTypes": part("programTypes", &language.program_types)?,
+            "themes": themes,
+        },
+        "std": {
+            "version": operators.std_version,
+            "compiler": compiler,
+            "operators": part("operators", &operators.operators)?,
+        },
+        "vocabularies": vocabularies,
+    });
+    serde_json::to_string(&bundle).map_err(|e| invalid(e.to_string()))
+}
+
 pub fn parse_language_bundle(
     bundle: &str,
     running: &str,

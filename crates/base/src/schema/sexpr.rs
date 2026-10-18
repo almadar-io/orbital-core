@@ -23,7 +23,7 @@ pub type SObject = indexmap::IndexMap<String, SExpression>;
 /// - A primitive value (null, bool, number, string)
 /// - An array (function call or list)
 /// - An object (key-value map)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(untagged)]
 #[derive(Default)]
 pub enum SExpression {
@@ -40,6 +40,76 @@ pub enum SExpression {
     Array(Vec<SExpression>),
     /// Object - key-value map
     Object(SObject),
+}
+
+/// Read by one visit per node: the derived `untagged` form buffers every node and retries each variant, which
+/// makes parsing a guard cost more than evaluating it.
+impl<'de> Deserialize<'de> for SExpression {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(SExpressionVisitor)
+    }
+}
+
+struct SExpressionVisitor;
+
+impl<'de> serde::de::Visitor<'de> for SExpressionVisitor {
+    type Value = SExpression;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an S-expression: null, a boolean, a number, a string, an array or an object")
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<SExpression, E> {
+        Ok(SExpression::Null)
+    }
+
+    fn visit_none<E: serde::de::Error>(self) -> Result<SExpression, E> {
+        Ok(SExpression::Null)
+    }
+
+    fn visit_some<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<SExpression, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<SExpression, E> {
+        Ok(SExpression::Bool(value))
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<SExpression, E> {
+        Ok(SExpression::Number(value as f64))
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<SExpression, E> {
+        Ok(SExpression::Number(value as f64))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<SExpression, E> {
+        Ok(SExpression::Number(value))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<SExpression, E> {
+        Ok(SExpression::String(value.to_owned()))
+    }
+
+    fn visit_string<E: serde::de::Error>(self, value: String) -> Result<SExpression, E> {
+        Ok(SExpression::String(value))
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<SExpression, A::Error> {
+        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
+        while let Some(item) = seq.next_element::<SExpression>()? {
+            items.push(item);
+        }
+        Ok(SExpression::Array(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<SExpression, A::Error> {
+        let mut object = SObject::with_capacity(map.size_hint().unwrap_or(0).min(4096));
+        while let Some((key, value)) = map.next_entry::<String, SExpression>()? {
+            object.insert(key, value);
+        }
+        Ok(SExpression::Object(object))
+    }
 }
 
 impl SExpression {
@@ -935,6 +1005,42 @@ fn collect_json_value_leaves_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_variant_reads_from_json_and_integers_are_numbers() {
+        let expr: SExpression = serde_json::from_str(
+            r#"[null, true, 3, -2, 1.5, 18446744073709551615, "@a.b", [], {"z": 1, "a": [2]}]"#,
+        )
+        .unwrap();
+        let SExpression::Array(items) = expr else {
+            panic!("an array");
+        };
+        assert_eq!(items[0], SExpression::Null);
+        assert_eq!(items[1], SExpression::Bool(true));
+        assert_eq!(items[2], SExpression::Number(3.0));
+        assert_eq!(items[3], SExpression::Number(-2.0));
+        assert_eq!(items[4], SExpression::Number(1.5));
+        assert_eq!(items[5], SExpression::Number(18446744073709551615u64 as f64));
+        assert_eq!(items[6], SExpression::String("@a.b".into()));
+        assert_eq!(items[7], SExpression::Array(vec![]));
+        let object = items[8].as_object().unwrap();
+        assert_eq!(object.keys().collect::<Vec<_>>(), ["z", "a"]);
+        assert_eq!(object["a"], SExpression::Array(vec![SExpression::Number(2.0)]));
+    }
+
+    #[test]
+    fn a_serialized_expression_reads_back_equal() {
+        let json = r#"["and",["=","@x",1],{"k":[true,null,"s"]}]"#;
+        let expr: SExpression = serde_json::from_str(json).unwrap();
+        let again: SExpression = serde_json::from_str(&serde_json::to_string(&expr).unwrap()).unwrap();
+        assert_eq!(expr, again);
+    }
+
+    #[test]
+    fn control_malformed_json_is_an_error_not_a_null() {
+        assert!(serde_json::from_str::<SExpression>("[1, ").is_err());
+        assert!(serde_json::from_str::<SExpression>("{1: 2}").is_err());
+    }
 
     #[test]
     fn test_parse_guard() {

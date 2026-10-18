@@ -6,6 +6,7 @@
 //! wrappers around a single source of truth.
 
 pub mod agent_ports;
+pub mod auth;
 pub mod callsite_capture;
 pub mod canvas_theme;
 pub mod config;
@@ -18,8 +19,15 @@ pub mod driver;
 pub mod embed_index;
 pub mod entity_access;
 pub mod entity_source;
+pub mod firestore;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod store_config;
 pub mod http_request;
 pub mod postgres;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod pg_rows;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod couchdb;
 pub mod redis;
 pub mod http_service;
 pub mod oauth_flow;
@@ -70,7 +78,7 @@ pub use persona::{
     PERSONA_ENV,
 };
 pub use process_result::{
-    DeliveryEntry, EffectRun, EffectRunStatus, OrbitalDetail, OrbitalInfo, ProcessEventResult,
+    DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo, ProcessEventResult,
     RuntimeStats,
 };
 pub use projected_payload::projected_payload;

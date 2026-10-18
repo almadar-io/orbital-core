@@ -696,14 +696,16 @@ pub fn plan_trait_variants(
     ctx: &EntityCtx<'_>,
     seed_id: Option<&str>,
 ) -> Vec<Step> {
-    use std::collections::BTreeMap;
     let initial = initial_state(td);
 
-    let mut groups: BTreeMap<(String, String), Vec<&orbital_core_base::schema::types::TransitionDefinition>> =
-        BTreeMap::new();
+    let mut groups: Vec<((String, String), Vec<&orbital_core_base::schema::types::TransitionDefinition>)> = Vec::new();
     for t in &td.state_machine.transitions {
         for from in t.from.states() {
-            groups.entry((from.to_string(), t.event.clone())).or_default().push(t);
+            let key = (from.to_string(), t.event.clone());
+            match groups.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, arms)) => arms.push(t),
+                None => groups.push((key, vec![t])),
+            }
         }
     }
 
@@ -1026,9 +1028,9 @@ pub fn const_truth(guard: &SExpression) -> Option<bool> {
     }
 }
 
-pub(crate) fn collect_emitted(node: &SExpression, out: &mut std::collections::BTreeSet<String>) {
+pub(crate) fn collect_emitted(node: &SExpression, found: &mut impl FnMut(String)) {
     match node {
-        SExpression::Array(items) => items.iter().for_each(|i| collect_emitted(i, out)),
+        SExpression::Array(items) => items.iter().for_each(|i| collect_emitted(i, found)),
         SExpression::Object(map) => {
             if let Some(SExpression::Object(emit)) = map.get("emit") {
                 for (key, value) in emit {
@@ -1037,7 +1039,7 @@ pub(crate) fn collect_emitted(node: &SExpression, out: &mut std::collections::BT
                     }
                     if let SExpression::String(event) = value {
                         if !event.is_empty() {
-                            out.insert(event.clone());
+                            found(event.clone());
                         }
                     }
                 }
@@ -1050,9 +1052,20 @@ pub(crate) fn collect_emitted(node: &SExpression, out: &mut std::collections::BT
 /// Every event an effect of this trait emits on its outcome (a fetch's success or failure callback, a
 /// persist's, a call's): events the program fires itself, never a user.
 pub fn effect_emitted_events(td: &TraitDefinition) -> std::collections::BTreeSet<String> {
-    let mut out = std::collections::BTreeSet::new();
+    effect_emitted_events_in_order(td).into_iter().collect()
+}
+
+/// [`effect_emitted_events`] in the order the effects first name them.
+pub fn effect_emitted_events_in_order(td: &TraitDefinition) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
     for t in &td.state_machine.transitions {
-        t.effects.iter().flatten().for_each(|e| collect_emitted(e, &mut out));
+        t.effects.iter().flatten().for_each(|e| {
+            collect_emitted(e, &mut |event| {
+                if !out.contains(&event) {
+                    out.push(event);
+                }
+            })
+        });
     }
     out
 }
@@ -1193,47 +1206,129 @@ pub fn replay_path(
             Vec::new()
         });
     }
-    replay_transitions(td, target).map(|path| {
-        path.into_iter()
-            .map(|t| (t.event.clone(), synth_payload(td, &t.event, ctx, seed_id)))
-            .collect()
-    })
+    replay_steps(td, target, ctx, seed_id).map(|steps| steps.into_iter().map(|s| (s.event, s.payload)).collect())
 }
 
-/// The transitions of the shortest path from the initial state to `target` over the success graph;
-/// `None` when `target` is unreachable, empty when it is the initial state.
-pub fn replay_transitions<'a>(
-    td: &'a TraitDefinition,
+/// One hop of a replay preamble: the event with a payload that fires its transition, and where the machine stands
+/// before and after.
+#[derive(Debug, Clone)]
+pub struct ReplayStep {
+    pub event: String,
+    pub payload: serde_json::Value,
+    pub from: String,
+    pub to: String,
+    pub accept_states: Vec<String>,
+    pub navigates: bool,
+}
+
+/// The hops that place a fresh machine in `target`, each with a payload its guard accepts.
+pub fn replay_steps(
+    td: &TraitDefinition,
     target: &str,
-) -> Option<Vec<&'a orbital_core_base::schema::types::TransitionDefinition>> {
+    ctx: &EntityCtx<'_>,
+    seed_id: Option<&str>,
+) -> Option<Vec<ReplayStep>> {
+    let hops = replay_hops(td, target)?;
+    Some(
+        hops.into_iter()
+            .map(|hop| {
+                let base = synth_payload(td, &hop.transition.event, ctx, seed_id);
+                let payload = match &hop.transition.guard {
+                    Some(guard) => {
+                        let declared = Declared::new(td, &hop.transition.event, &base, seed_id, ctx);
+                        conform_payload(guard, &base, &declared).unwrap_or(base)
+                    }
+                    None => base,
+                };
+                let closure = transient_closure(td, &hop.to);
+                ReplayStep {
+                    navigates: dispatch_navigates(ctx.schema, td, &hop.transition.event),
+                    accept_states: if closure.len() > 1 { closure } else { Vec::new() },
+                    event: hop.transition.event.clone(),
+                    payload,
+                    from: hop.from,
+                    to: hop.to,
+                }
+            })
+            .collect(),
+    )
+}
+
+/// A transition taken during replay, with the state the machine stood in and where it lands.
+pub struct ReplayHop<'a> {
+    pub transition: &'a orbital_core_base::schema::types::TransitionDefinition,
+    pub from: String,
+    pub to: String,
+}
+
+type ReplayPath<'a> = Vec<(String, &'a orbital_core_base::schema::types::TransitionDefinition)>;
+
+fn flood<'a>(
+    td: &TraitDefinition,
+    state: &str,
+    path: &ReplayPath<'a>,
+    visited: &mut std::collections::HashSet<String>,
+    queue: &mut std::collections::VecDeque<(String, ReplayPath<'a>)>,
+) {
+    for member in transient_closure(td, state) {
+        if visited.insert(member.clone()) {
+            queue.push_back((member, path.clone()));
+        }
+    }
+}
+
+/// The shortest path of dispatchable hops from the initial state to `target`; `None` when unreachable, empty
+/// when `target` is the initial state. An event an effect emits is fired by the runtime, never dispatched, so it
+/// is no hop: the machine settles through its closure, and a target reachable only that way is reached by the
+/// hop into the state that advances. INIT out of the initial state is the boot, not a hop.
+pub fn replay_hops<'a>(td: &'a TraitDefinition, target: &str) -> Option<Vec<ReplayHop<'a>>> {
     use std::collections::{HashMap, HashSet, VecDeque};
     let initial = initial_state(td)?;
     if initial == target {
         return Some(Vec::new());
     }
-    let mut prev: HashMap<String, (String, &orbital_core_base::schema::types::TransitionDefinition)> = HashMap::new();
-    let mut queue = VecDeque::from([initial.clone()]);
-    let mut visited = HashSet::from([initial]);
-    while let Some(state) = queue.pop_front() {
-        for t in &td.state_machine.transitions {
-            if !t.from.matches(&state) || !visited.insert(t.to.clone()) {
+    let emitted = effect_emitted_events(td);
+    let mut adjacency: HashMap<&str, Vec<&'a orbital_core_base::schema::types::TransitionDefinition>> = HashMap::new();
+    for t in &td.state_machine.transitions {
+        if emitted.contains(&t.event) {
+            continue;
+        }
+        for from in t.from.states() {
+            if from == "*" || (t.event == "INIT" && from == initial) {
                 continue;
             }
-            prev.insert(t.to.clone(), (state.clone(), t));
-            if t.to == target {
-                let mut path = Vec::new();
-                let mut cur = target.to_string();
-                while let Some((from, t)) = prev.get(&cur) {
-                    path.push(*t);
-                    cur = from.clone();
-                }
-                path.reverse();
-                return Some(path);
+            adjacency.entry(from).or_default().push(t);
+        }
+    }
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<(String, ReplayPath<'a>)> = VecDeque::new();
+    flood(td, &initial, &Vec::new(), &mut visited, &mut queue);
+    while let Some((state, path)) = queue.pop_front() {
+        if state == target {
+            let mut out = Vec::new();
+            for (from, t) in path {
+                out.push(ReplayHop { from, to: t.to.clone(), transition: t });
             }
-            queue.push_back(t.to.clone());
+            return Some(out);
+        }
+        for edge in adjacency.get(state.as_str()).into_iter().flatten() {
+            if visited.contains(&edge.to) {
+                continue;
+            }
+            let mut next = path.clone();
+            next.push((state.clone(), *edge));
+            flood(td, &edge.to, &next, &mut visited, &mut queue);
         }
     }
     None
+}
+
+/// The transitions of [`replay_hops`].
+pub fn replay_transitions<'a>(
+    td: &'a TraitDefinition,
+    target: &str,
+) -> Option<Vec<&'a orbital_core_base::schema::types::TransitionDefinition>> {
+    replay_hops(td, target).map(|hops| hops.into_iter().map(|h| h.transition).collect())
 }
 
 /// `base` adjusted so `guard` holds over `@payload.*`, or `None` when the guard is not a combination
@@ -1326,7 +1421,11 @@ fn solve_guard(expr: &SExpression, want: bool, payload: &mut serde_json::Value, 
                 "and" | "or" => {
                     let all = (op == "and") == want;
                     if all {
-                        !args.is_empty() && args.iter().all(|arg| solve_guard(arg, want, payload, declared))
+                        let solved = !args.is_empty() && args.iter().all(|arg| solve_guard(arg, want, payload, declared));
+                        if solved && op == "and" {
+                            apply_field_intersections(args, payload);
+                        }
+                        solved
                     } else {
                         args.iter().any(|arg| {
                             let mut attempt = payload.clone();
@@ -1338,15 +1437,355 @@ fn solve_guard(expr: &SExpression, want: bool, payload: &mut serde_json::Value, 
                         })
                     }
                 }
-                "=" | "!=" | "<" | "<=" | ">" | ">=" => match args {
-                    [lhs, rhs] => solve_comparison(op, lhs, rhs, want, payload, declared),
+                "=" | "==" | "!=" | "<" | "<=" | ">" | ">=" => match args {
+                    [lhs, rhs] => solve_comparison(if op == "==" { "=" } else { op }, lhs, rhs, want, payload, declared),
                     _ => false,
                 },
+                "object/has" | "object/get" | "array/includes" | "str/startsWith" | "validate/url" | "validate/required"
+                | "grid/in-bounds" => solve_membership_form(op, args, want, payload),
+                "array/some" | "array/every" => solve_quantifier(op, args, want, payload, declared),
+                "if" => solve_if(args, want, payload, declared),
+                "let" => solve_let(args, want, payload, declared),
                 _ => false,
             }
         }
         _ => false,
     }
+}
+
+/// The finite set of values one payload field may take for `guard` to pass, when the guard bounds it that way:
+/// the keys of a map (`object/has`, or an `object/get` comparison) or a single literal.
+fn candidate_set(guard: &SExpression) -> Option<(Vec<String>, Vec<String>)> {
+    let SExpression::Array(items) = guard else { return None };
+    let (SExpression::String(op), args) = items.split_first()? else { return None };
+    match (op.as_str(), args) {
+        ("object/has", [a, b]) => match split_payload_arg(a, b)? {
+            (path, SExpression::Object(map)) => Some((path, map.keys().cloned().collect())),
+            _ => None,
+        },
+        ("=" | "==" | "!=", [lhs, rhs]) => {
+            let negate = op == "!=";
+            let get = |e: &SExpression| match e {
+                SExpression::Array(g) if matches!(g.first(), Some(SExpression::String(f)) if f == "object/get") => Some(g.clone()),
+                _ => None,
+            };
+            if let Some((g, literal)) = get(lhs).map(|g| (g, rhs)).or_else(|| get(rhs).map(|g| (g, lhs))) {
+                let (path, collection) = split_payload_arg(g.get(1)?, g.get(2)?)?;
+                let SExpression::Object(map) = collection else { return None };
+                let values = map.iter().filter(|(_, v)| (*v == literal) != negate).map(|(k, _)| k.clone()).collect();
+                return Some((path, values));
+            }
+            if negate {
+                return None;
+            }
+            match (lhs, rhs) {
+                (SExpression::String(p), SExpression::String(lit)) | (SExpression::String(lit), SExpression::String(p)) if !lit.starts_with('@') => {
+                    payload_path(p).map(|path| (path, vec![lit.clone()]))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Two conjuncts bounding the SAME field to candidate sets must agree on a value in both; a field left with no shared
+/// candidate is unbound rather than guessed.
+fn apply_field_intersections(conjuncts: &[SExpression], payload: &mut serde_json::Value) {
+    let mut by_path: Vec<(Vec<String>, Vec<Vec<String>>)> = Vec::new();
+    for sub in conjuncts {
+        if let Some((path, values)) = candidate_set(sub) {
+            match by_path.iter_mut().find(|(p, _)| *p == path) {
+                Some((_, sets)) => sets.push(values),
+                None => by_path.push((path, vec![values])),
+            }
+        }
+    }
+    for (path, sets) in by_path {
+        if sets.len() < 2 {
+            continue;
+        }
+        let mut intersection = sets[0].clone();
+        for set in &sets[1..] {
+            intersection.retain(|v| set.contains(v));
+        }
+        match intersection.first() {
+            Some(value) => set_payload_path(payload, &path, serde_json::Value::String(value.clone())),
+            None => remove_payload_path(payload, &path),
+        }
+    }
+}
+
+fn remove_payload_path(payload: &mut serde_json::Value, path: &[String]) {
+    let Some((head, tail)) = path.split_first() else { return };
+    let Some(map) = payload.as_object_mut() else { return };
+    if tail.is_empty() {
+        map.remove(head);
+    } else if let Some(child) = map.get_mut(head) {
+        remove_payload_path(child, tail);
+    }
+}
+
+fn sexpr_truthy(value: &SExpression) -> bool {
+    match value {
+        SExpression::Null => false,
+        SExpression::Bool(b) => *b,
+        SExpression::Number(n) => *n != 0.0,
+        SExpression::String(s) => !s.is_empty(),
+        SExpression::Array(a) => !a.is_empty(),
+        SExpression::Object(o) => !o.is_empty(),
+    }
+}
+
+/// A key guaranteed absent from `keys`.
+fn absent_key(keys: &[String]) -> String {
+    let mut key = "not-a-key".to_string();
+    while keys.contains(&key) {
+        key.push('_');
+    }
+    key
+}
+
+/// `(f collection @payload.path)` or `(f @payload.path collection)`: the payload path and the literal collection.
+fn split_payload_arg<'a>(a: &'a SExpression, b: &'a SExpression) -> Option<(Vec<String>, &'a SExpression)> {
+    let literal = |e: &SExpression| matches!(e, SExpression::Object(_) | SExpression::Array(_));
+    match (a, b) {
+        (SExpression::String(p), other) if literal(other) => payload_path(p).map(|path| (path, other)),
+        (other, SExpression::String(p)) if literal(other) => payload_path(p).map(|path| (path, other)),
+        _ => None,
+    }
+}
+
+fn solve_membership_form(op: &str, args: &[SExpression], want: bool, payload: &mut serde_json::Value) -> bool {
+    use serde_json::Value as J;
+    let set = |payload: &mut J, path: &[String], value: J| set_payload_path(payload, path, value);
+    match (op, args) {
+        ("object/has", [a, b]) => {
+            let Some((path, SExpression::Object(map))) = split_payload_arg(a, b) else { return false };
+            let keys: Vec<String> = map.keys().cloned().collect();
+            match (want, keys.first()) {
+                (true, Some(first)) => set(payload, &path, J::String(first.clone())),
+                (true, None) => return false,
+                (false, _) => set(payload, &path, J::String(absent_key(&keys))),
+            }
+            true
+        }
+        ("object/get", [a, b]) => {
+            let Some((path, SExpression::Object(map))) = split_payload_arg(a, b) else { return false };
+            let keys: Vec<String> = map.keys().cloned().collect();
+            if want {
+                let Some(pass) = map.iter().find(|(_, v)| sexpr_truthy(v)).map(|(k, _)| k.clone()) else { return false };
+                set(payload, &path, J::String(pass));
+            } else {
+                set(payload, &path, J::String(absent_key(&keys)));
+            }
+            true
+        }
+        ("array/includes", [a, b]) => {
+            let Some((path, SExpression::Array(list))) = split_payload_arg(a, b) else { return false };
+            let Some(first) = list.first() else { return false };
+            let pass = literal_json(first);
+            let Some(pass) = pass else { return false };
+            if want {
+                set(payload, &path, pass);
+            } else {
+                let fail = match &pass {
+                    J::String(s) => J::String(format!("{s}-not-in-list")),
+                    _ => J::String("not-in-list".to_string()),
+                };
+                set(payload, &path, fail);
+            }
+            true
+        }
+        ("str/startsWith", [SExpression::String(p), SExpression::String(prefix)]) => {
+            let Some(path) = payload_path(p) else { return false };
+            let value = if want {
+                format!("{prefix}mock-suffix")
+            } else if prefix.is_empty() {
+                return false
+            } else {
+                format!("not-{prefix}")
+            };
+            set(payload, &path, J::String(value));
+            true
+        }
+        ("validate/url", [SExpression::String(p)]) => {
+            let Some(path) = payload_path(p) else { return false };
+            set(payload, &path, J::String(if want { "https://example.test/mock" } else { "not-a-url" }.to_string()));
+            true
+        }
+        ("validate/required", [SExpression::String(p)]) => {
+            let Some(path) = payload_path(p) else { return false };
+            set(payload, &path, J::String(if want { "mock-required-value" } else { "" }.to_string()));
+            true
+        }
+        ("grid/in-bounds", [position, w, h, ..]) => {
+            let empty_grid = matches!(w, SExpression::Number(n) if *n <= 0.0) || matches!(h, SExpression::Number(n) if *n <= 0.0);
+            if let SExpression::String(p) = position {
+                let Some(path) = payload_path(p) else { return false };
+                if want && empty_grid {
+                    return false;
+                }
+                set(payload, &path, serde_json::json!({ "x": if want { 0 } else { -1 }, "y": 0 }));
+                return true;
+            }
+            let SExpression::Object(pos) = position else { return false };
+            let axes: Vec<Vec<String>> = ["x", "y"]
+                .iter()
+                .filter_map(|k| match pos.get(*k) {
+                    Some(SExpression::String(p)) => payload_path(p),
+                    _ => None,
+                })
+                .collect();
+            if axes.is_empty() || (want && empty_grid) {
+                return false;
+            }
+            if want {
+                axes.iter().for_each(|path| set(payload, path, J::from(0)));
+            } else {
+                set(payload, &axes[0], J::from(-1));
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Rename the quantifier variable `name` to `payload`, so its predicate reads the scratch element as the payload.
+fn rename_var(expr: &SExpression, name: &str) -> SExpression {
+    match expr {
+        SExpression::String(s) => {
+            let own = format!("@{name}");
+            if *s == own {
+                SExpression::String("@payload".to_string())
+            } else if let Some(rest) = s.strip_prefix(&format!("{own}.")) {
+                SExpression::String(format!("@payload.{rest}"))
+            } else {
+                expr.clone()
+            }
+        }
+        SExpression::Array(items) => SExpression::Array(items.iter().map(|i| rename_var(i, name)).collect()),
+        SExpression::Object(map) => SExpression::Object(map.iter().map(|(k, v)| (k.clone(), rename_var(v, name))).collect()),
+        other => other.clone(),
+    }
+}
+
+/// `(array/some list (fn x pred))` / `(array/every …)` over a payload list: a one-element witness (or violator) built
+/// from the predicate, solved as a payload of its own.
+fn solve_quantifier(op: &str, args: &[SExpression], want: bool, payload: &mut serde_json::Value, declared: &Declared) -> bool {
+    let [SExpression::String(list), SExpression::Array(function)] = args else { return false };
+    let (Some(path), Some(SExpression::String(name)), Some(body)) = (payload_path(list), function.get(1), function.last()) else {
+        return false;
+    };
+    if function.first() != Some(&SExpression::String("fn".to_string())) || function.len() < 3 {
+        return false;
+    }
+    let predicate = rename_var(body, name);
+    let constant = const_truth(&predicate);
+    let element = |target: bool| -> Option<serde_json::Value> {
+        if constant == Some(target) {
+            return Some(serde_json::json!({ "id": "mock-test-id" }));
+        }
+        if constant.is_some() {
+            return None;
+        }
+        let mut scratch = serde_json::json!({});
+        (solve_guard(&predicate, target, &mut scratch, declared) && scratch.as_object().is_some_and(|o| !o.is_empty())).then_some(scratch)
+    };
+    let some = op == "array/some";
+    let list_value = match (some, want) {
+        (true, false) => serde_json::json!([]),
+        (_, true) => match element(true) {
+            Some(witness) => serde_json::json!([witness]),
+            None => return false,
+        },
+        (false, false) => match element(false) {
+            Some(violator) => serde_json::json!([violator]),
+            None => return false,
+        },
+    };
+    set_payload_path(payload, &path, list_value);
+    true
+}
+
+/// `(if cond then else)` is true iff (cond and then) or (not cond and else); each target takes the first arm that
+/// can reach it, skipping an arm whose own constant has the wrong truth.
+fn solve_if(args: &[SExpression], want: bool, payload: &mut serde_json::Value, declared: &Declared) -> bool {
+    let (Some(cond), Some(then)) = (args.first(), args.get(1)) else { return false };
+    let otherwise = args.get(2).cloned().unwrap_or(SExpression::Bool(false));
+    let (cc, ct, ce) = (const_truth(cond), const_truth(then), const_truth(&otherwise));
+    if cc != Some(false) && ct != Some(!want) {
+        let mut attempt = payload.clone();
+        if solve_guard(cond, true, &mut attempt, declared) && solve_guard(then, want, &mut attempt, declared) {
+            *payload = attempt;
+            return true;
+        }
+    }
+    if cc != Some(true) && ce != Some(!want) {
+        let mut attempt = payload.clone();
+        if solve_guard(cond, false, &mut attempt, declared) && solve_guard(&otherwise, want, &mut attempt, declared) {
+            *payload = attempt;
+            return true;
+        }
+    }
+    false
+}
+
+/// Replace the binding `name` in `expr` with `value`: the bare reference, a dotted path into it, or an `object/get`.
+fn substitute_var(expr: &SExpression, name: &str, value: &SExpression) -> SExpression {
+    let own = format!("@{name}");
+    match expr {
+        SExpression::String(s) if *s == own => value.clone(),
+        SExpression::String(s) => match (s.strip_prefix(&format!("{own}.")), value) {
+            (Some(rest), SExpression::String(v)) if v.starts_with('@') => SExpression::String(format!("{v}.{rest}")),
+            (Some(rest), SExpression::Object(map)) => {
+                let mut cur = SExpression::Object(map.clone());
+                for segment in rest.split('.') {
+                    cur = match &cur {
+                        SExpression::Object(o) => o.get(segment).cloned().unwrap_or(SExpression::Null),
+                        _ => SExpression::Null,
+                    };
+                }
+                cur
+            }
+            _ => expr.clone(),
+        },
+        SExpression::Array(items) => {
+            if let [SExpression::String(f), SExpression::String(bound), ..] = &items[..] {
+                if f == "fn" && bound == name {
+                    return expr.clone();
+                }
+            }
+            SExpression::Array(items.iter().map(|i| substitute_var(i, name, value)).collect())
+        }
+        SExpression::Object(map) => SExpression::Object(map.iter().map(|(k, v)| (k.clone(), substitute_var(v, name, value))).collect()),
+        other => other.clone(),
+    }
+}
+
+/// `(let ((a e1) …) body)`: bind each name into the later bindings and the body, then steer the body.
+fn solve_let(args: &[SExpression], want: bool, payload: &mut serde_json::Value, declared: &Declared) -> bool {
+    let (Some(SExpression::Array(bindings)), Some(body)) = (args.first(), args.last()) else { return false };
+    if args.len() < 2 {
+        return false;
+    }
+    let mut pairs: Vec<(String, SExpression)> = Vec::new();
+    for binding in bindings {
+        let SExpression::Array(pair) = binding else { return false };
+        let (Some(SExpression::String(name)), Some(value)) = (pair.first(), pair.get(1)) else { return false };
+        pairs.push((name.clone(), value.clone()));
+    }
+    for i in 0..pairs.len() {
+        for j in (i + 1)..pairs.len() {
+            let replaced = substitute_var(&pairs[j].1, &pairs[i].0, &pairs[i].1);
+            pairs[j].1 = replaced;
+        }
+    }
+    let mut body = body.clone();
+    for (name, value) in pairs.iter().rev() {
+        body = substitute_var(&body, name, value);
+    }
+    solve_guard(&body, want, payload, declared)
 }
 
 fn payload_path(text: &str) -> Option<Vec<String>> {
@@ -1451,6 +1890,41 @@ fn solve_array_length(
     Some(true)
 }
 
+/// `(= (object/get MAP @payload.k) literal)`: `k` becomes a key of `MAP` whose value does (or does not) equal the literal.
+fn solve_object_get_comparison(op: &str, lhs: &SExpression, rhs: &SExpression, want: bool, payload: &mut serde_json::Value) -> Option<bool> {
+    let (get, literal) = match (lhs, rhs) {
+        (SExpression::Array(g), l) | (l, SExpression::Array(g)) if matches!(g.first(), Some(SExpression::String(f)) if f == "object/get") => (g, l),
+        _ => return None,
+    };
+    if !matches!(op, "=" | "!=") {
+        return None;
+    }
+    let (Some(a), Some(b)) = (get.get(1), get.get(2)) else { return None };
+    let (path, SExpression::Object(map)) = split_payload_arg(a, b)? else { return Some(false) };
+    let equal = (op == "=") == want;
+    let keys: Vec<String> = map.keys().cloned().collect();
+    let matching: Vec<&String> = map.iter().filter(|(_, v)| (*v == literal) == equal).map(|(k, _)| k).collect();
+    let key = match matching.first() {
+        Some(k) => (*k).clone(),
+        None if !equal => absent_key(&keys),
+        None => return Some(false),
+    };
+    set_payload_path(payload, &path, serde_json::Value::String(key));
+    Some(true)
+}
+
+/// The payload field a comparison reads: `@payload.x`, or `(str/default @payload.x "…")` (a read with a fallback).
+fn compared_payload_path(expr: &SExpression) -> Option<Vec<String>> {
+    match expr {
+        SExpression::String(p) => payload_path(p),
+        SExpression::Array(items) => match &items[..] {
+            [SExpression::String(op), SExpression::String(p), SExpression::String(_)] if op == "str/default" => payload_path(p),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn solve_comparison(
     op: &str,
     lhs: &SExpression,
@@ -1462,14 +1936,17 @@ fn solve_comparison(
     if let Some(solved) = solve_array_length(op, lhs, rhs, want, payload, declared) {
         return solved;
     }
-    let (path, literal, flipped) = match (lhs, rhs) {
-        (SExpression::String(p), other) => match (payload_path(p), literal_json(other)) {
-            (Some(path), Some(literal)) => (path, literal, false),
-            _ => return false,
+    if let Some(solved) = solve_object_get_comparison(op, lhs, rhs, want, payload) {
+        return solved;
+    }
+    let (path, literal, flipped) = match (compared_payload_path(lhs), compared_payload_path(rhs)) {
+        (Some(path), None) => match literal_json(rhs) {
+            Some(literal) => (path, literal, false),
+            None => return false,
         },
-        (other, SExpression::String(p)) => match (payload_path(p), literal_json(other)) {
-            (Some(path), Some(literal)) => (path, literal, true),
-            _ => return false,
+        (None, Some(path)) => match literal_json(lhs) {
+            Some(literal) => (path, literal, true),
+            None => return false,
         },
         _ => return false,
     };

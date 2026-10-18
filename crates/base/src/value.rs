@@ -63,9 +63,71 @@ impl<'de> Deserialize<'de> for Value {
     where
         D: Deserializer<'de>,
     {
-        // Deserialize as SExpression first, then convert
-        let sexpr = SExpression::deserialize(deserializer)?;
-        Ok(Value::from(sexpr))
+        deserializer.deserialize_any(ValueVisitor)
+    }
+}
+
+/// One visit per node, building the `Value` directly: the same structure `Value::from(SExpression)` gives, without
+/// the intermediate tree.
+struct ValueVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ValueVisitor {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a value: null, a boolean, a number, a string, an array or an object")
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_none<E: serde::de::Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Value, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Value, E> {
+        Ok(Value::Bool(value))
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Value, E> {
+        Ok(Value::Number(value as f64))
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Value, E> {
+        Ok(Value::Number(value as f64))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Value, E> {
+        Ok(Value::Number(value))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Value, E> {
+        Ok(Value::String(value.to_owned()))
+    }
+
+    fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Value, E> {
+        Ok(Value::String(value))
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
+        while let Some(item) = seq.next_element::<Value>()? {
+            items.push(item);
+        }
+        Ok(Value::Array(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        let mut object = ValueMap::with_capacity(map.size_hint().unwrap_or(0).min(4096));
+        while let Some((key, value)) = map.next_entry::<String, Value>()? {
+            object.insert(key, value);
+        }
+        Ok(Value::Object(object))
     }
 }
 
@@ -585,6 +647,23 @@ mod tests {
         assert_eq!(v.get_path("a.b.c"), None, "control: a plain path is not the literal key");
     }
     use super::*;
+
+    #[test]
+    fn a_value_reads_from_json_as_the_expression_tree_converted() {
+        let json = r#"{"a":[null,true,3,-2,1.5,"@x",{"z":[],"b":{}}],"k":"v"}"#;
+        let direct: Value = serde_json::from_str(json).unwrap();
+        let via_tree = Value::from(serde_json::from_str::<SExpression>(json).unwrap());
+        assert_eq!(direct, via_tree);
+        let Value::Object(map) = &direct else {
+            panic!("an object");
+        };
+        assert_eq!(map.keys().collect::<Vec<_>>(), ["a", "k"]);
+    }
+
+    #[test]
+    fn control_a_value_from_malformed_json_is_an_error() {
+        assert!(serde_json::from_str::<Value>("{\"a\": ").is_err());
+    }
 
     #[test]
     fn test_truthy() {

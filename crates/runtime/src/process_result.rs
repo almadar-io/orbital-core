@@ -3,7 +3,7 @@
 use super::dispatch_memory::DispatchView;
 use orbital_core_base::effect_types::EffectResult;
 use orbital_core_base::value::Value;
-use orbital_core_base::schema::types::{EntityRef, PageRef};
+use orbital_core_base::schema::types::{FieldDefinition, PageRef};
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_eval::state_machine::types::ArmGuard;
 
@@ -106,14 +106,23 @@ pub struct OrbitalInfo {
     pub page_count: usize,
 }
 
+/// What a route needs to know of an orbital's entity: its name (the reference text for an imported one) and, for an inline
+/// entity, its fields. An imported entity has no fields here.
+#[derive(Debug, Clone)]
+pub struct EntitySummary {
+    pub name: String,
+    pub fields: Vec<FieldDefinition>,
+}
+
 /// Detailed orbital information.
 #[derive(Debug, Clone)]
 pub struct OrbitalDetail {
     /// Orbital name.
     pub name: String,
 
-    /// Primary entity reference.
-    pub entity: EntityRef,
+    /// The primary entity's name and declared fields. Never its authored `instances`: a detail is read on every
+    /// dispatch's route, and cloning a 100 000-row table to read a name cost 30 ms.
+    pub entity: EntitySummary,
 
     /// Trait names.
     pub traits: Vec<String>,
