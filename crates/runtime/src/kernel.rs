@@ -292,8 +292,8 @@ pub struct RuntimeKernel {
     /// Light (§157/C7 `theme-declaration`: a `-dark` key must not be
     /// overridden by an ambient default no one asked for).
     theme_mode: Arc<RwLock<Option<ThemeMode>>>,
-    /// `@pages`: the app's root nav entries over every registered program (`Value::Null` while none
-    /// declares a labeled root page, which leaves the token unresolved, as the JS stage does).
+    /// `@pages`: the app's root nav entries over every registered program; the empty list while none
+    /// declares a labeled root page (LOLO "Nav entries").
     nav_pages: Arc<RwLock<Value>>,
     /// The current mount's lifecycle (see [`MountLifecycle`]).
     mount: Arc<RwLock<MountLifecycle>>,
@@ -1039,7 +1039,7 @@ impl RuntimeKernel {
             frames: Arc::new(RwLock::new(HashMap::new())),
             theme_presets: Arc::new(RwLock::new(ThemePresets::new())),
             theme_mode: Arc::new(RwLock::new(None)),
-            nav_pages: Arc::new(RwLock::new(Value::Null)),
+            nav_pages: Arc::new(RwLock::new(Value::Array(Vec::new()))),
             mount: Arc::new(RwLock::new(MountLifecycle::default())),
             renders: Arc::new(RwLock::new(RenderStore::default())),
         }
@@ -5872,7 +5872,7 @@ fn app_nav_items(schema: &OrbitalSchema) -> Vec<Value> {
 }
 
 /// The app-wide `@pages` after registering another program: earlier entries first, a later entry whose
-/// path is already listed dropped. `Value::Null` while no program declares one.
+/// path is already listed dropped. The empty list while no program declares one.
 fn merge_nav_items(current: &Value, added: Vec<Value>) -> Value {
     let mut items = current.as_array().cloned().unwrap_or_default();
     let href = |item: &Value| {
@@ -5886,11 +5886,7 @@ fn merge_nav_items(current: &Value, added: Vec<Value>) -> Value {
             .into_iter()
             .filter(|item| href(item).is_some_and(|h| listed.insert(h))),
     );
-    if items.is_empty() {
-        Value::Null
-    } else {
-        Value::Array(items)
-    }
+    Value::Array(items)
 }
 
 /// The consecutive top-level plain `persist` effects of `effects` from `start`: a write run. Effects nested in
@@ -7374,7 +7370,7 @@ mod client_dispatch_tests {
     }
 
     #[test]
-    fn control_a_program_with_no_labeled_root_page_leaves_the_pages_token() {
+    fn control_a_program_with_no_labeled_root_page_has_no_entries() {
         let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
             "name": "NoNav",
             "orbitals": [{
@@ -7392,10 +7388,7 @@ mod client_dispatch_tests {
             }]
         }))
         .unwrap();
-        assert_eq!(
-            rendered_items(schema),
-            Some(Value::String("@pages".to_string()))
-        );
+        assert_eq!(rendered_items(schema), Some(Value::Array(Vec::new())));
     }
 
     fn i18n_schema(locales: bool) -> OrbitalSchema {

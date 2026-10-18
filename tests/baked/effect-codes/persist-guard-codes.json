@@ -41,11 +41,11 @@
   },
   "cases": [
     { "name": "owner updates their row", "event": "UPDATE_BY_ID", "payload": { "id": "d1" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": true } },
-    { "name": "another viewer is refused", "event": "UPDATE_BY_ID", "payload": { "id": "d2" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": false, "denied": true } },
-    { "name": "no viewer is refused", "event": "UPDATE_BY_ID", "payload": { "id": "d1" }, "expect": { "success": false, "denied": true } },
+    { "name": "another viewer is refused", "event": "UPDATE_BY_ID", "payload": { "id": "d2" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": false, "code": "denied", "denied": true } },
+    { "name": "no viewer is refused", "event": "UPDATE_BY_ID", "payload": { "id": "d1" }, "expect": { "success": false, "code": "denied", "denied": true } },
     { "name": "a missing row is not-found before the policy", "event": "UPDATE_BY_ID", "payload": { "id": "zz" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": false, "code": "not-found" } },
     { "name": "owner deletes their row", "event": "DELETE_BY_ID", "payload": { "id": "d1" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": true } },
-    { "name": "another viewer cannot delete", "event": "DELETE_BY_ID", "payload": { "id": "d2" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": false, "denied": true } },
+    { "name": "another viewer cannot delete", "event": "DELETE_BY_ID", "payload": { "id": "d2" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": false, "code": "denied", "denied": true } },
     { "name": "delete of a missing row is not-found", "event": "DELETE_BY_ID", "payload": { "id": "zz" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": false, "code": "not-found" } }
   ]
 }
