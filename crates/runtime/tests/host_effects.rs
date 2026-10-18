@@ -1958,7 +1958,7 @@ mod os_twin {
 
     fn fixture_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../../../packages/almadar-runtime/test/fixtures/os-asks.json")
+            .join("tests/fixtures/os-asks.json")
     }
 
     fn text(vars: &HashMap<String, Json>, s: &str) -> String {

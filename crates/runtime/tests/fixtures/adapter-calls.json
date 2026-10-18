@@ -1,0 +1,33 @@
+{
+  "about": "Twin oracle of the push-down adapter calls one dispatch makes on a capable adapter (the kernel path, native and wasm hosts). Only the calls a push-down replaces are listed; frame reads differ per host and are not part of it. A plain persist is one writeBatch (hosts pass the kernel's WriteRows batch through as it is, G-ORB-352), a persist batch is one writeBatch, a fetch is one queryPage. emitFanoutPersistent: the benchmark's emit-fanout `go` over a persistent entity reads its frame row from the host once per dispatch (the kernel keeps a dispatch's answered reads; it asked 6 times before).",
+  "verbs": {
+    "update": {
+      "writeWhere": 0,
+      "writeBatch": 1,
+      "create": 0,
+      "update": 0,
+      "list": 0
+    },
+    "create": {
+      "writeWhere": 0,
+      "writeBatch": 1,
+      "create": 0,
+      "update": 0,
+      "list": 0
+    },
+    "batch": {
+      "writeWhere": 0,
+      "writeBatch": 1,
+      "create": 0,
+      "update": 0,
+      "list": 0
+    },
+    "fetch": {
+      "queryPage": 1,
+      "list": 0
+    }
+  },
+  "emitFanoutPersistent": {
+    "frameReads": 1
+  }
+}

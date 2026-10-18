@@ -197,11 +197,8 @@ mod tests {
 
     #[test]
     fn the_default_viewer_is_the_one_core_pins_and_a_declared_roster_overrides_it() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../packages/almadar-core/__tests__/fixtures/default-viewer.json");
-        let Ok(raw) = std::fs::read_to_string(path) else {
-            eprintln!("{path} is absent (standalone checkout); skipped");
-            return;
-        };
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/default-viewer.json");
+        let raw = std::fs::read_to_string(path).expect("the twin of @almadar/core's default-viewer fixture");
         let fixture: serde_json::Value = serde_json::from_str(&raw).unwrap();
         let expected: Value = serde_json::from_value(fixture["viewer"].clone()).unwrap();
         assert_eq!(resolve_default_viewer(&[]), expected);

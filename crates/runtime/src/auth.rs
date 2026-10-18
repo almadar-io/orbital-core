@@ -773,7 +773,7 @@ mod tests {
     use std::sync::Mutex;
 
     fn fixture(name: &str) -> Json {
-        let path = format!("{}/../../../../../packages/almadar-auth/test/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+        let path = format!("{}/tests/fixtures/auth/{name}", env!("CARGO_MANIFEST_DIR"));
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("fixture json")
     }
 

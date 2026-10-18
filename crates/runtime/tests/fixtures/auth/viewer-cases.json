@@ -1,0 +1,289 @@
+{
+  "about": "Shared oracle of the viewer binder: identitySourceOf over entity lists, resolveViewer over verified tokens (`@almadar/auth` viewer.ts and orbital-core runtime auth.rs).",
+  "verified": {
+    "uid": "u-1",
+    "provider": "firebase",
+    "email": "ada@example.com",
+    "name": "Ada",
+    "claims": {
+      "sub": "u-1",
+      "role": "teacher",
+      "plan": "pro",
+      "iss": "https://issuer"
+    }
+  },
+  "directory": {
+    "Member": [
+      {
+        "id": "u-1",
+        "role": "admin",
+        "name": "Ada Lovelace"
+      },
+      {
+        "id": "u-2",
+        "role": "student"
+      }
+    ]
+  },
+  "sources": [
+    {
+      "name": "no identity entity reads the token",
+      "entities": [
+        {
+          "name": "Task",
+          "fields": [
+            {
+              "name": "title",
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "no orbitals reads the token",
+      "entities": [],
+      "expect": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "[runtime, identity] reads declared claims",
+      "entities": [
+        {
+          "name": "Task",
+          "identity": false,
+          "fields": [
+            {
+              "name": "title",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "name": "Viewer",
+          "persistence": "runtime",
+          "identity": true,
+          "fields": [
+            {
+              "name": "id",
+              "type": "string"
+            },
+            {
+              "name": "email",
+              "type": "string"
+            },
+            {
+              "name": "role",
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "kind": "claims",
+        "fields": [
+          "id",
+          "email",
+          "role"
+        ]
+      }
+    },
+    {
+      "name": "[persistent, identity] is a directory",
+      "entities": [
+        {
+          "name": "Member",
+          "persistence": "persistent",
+          "identity": true,
+          "fields": [
+            {
+              "name": "id",
+              "type": "string"
+            },
+            {
+              "name": "role",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "name": "Task",
+          "identity": false,
+          "fields": [
+            {
+              "name": "title",
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "kind": "directory",
+        "entity": "Member"
+      }
+    },
+    {
+      "name": "an entity without persistence is persistent",
+      "entities": [
+        {
+          "name": "Member",
+          "identity": true,
+          "fields": [
+            {
+              "name": "id",
+              "type": "string"
+            },
+            {
+              "name": "role",
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "kind": "directory",
+        "entity": "Member"
+      }
+    }
+  ],
+  "viewers": [
+    {
+      "name": "no token is anonymous (none)",
+      "verified": false,
+      "source": {
+        "kind": "none"
+      },
+      "expect": {
+        "id": "anonymous",
+        "role": "anonymous",
+        "permissions": []
+      }
+    },
+    {
+      "name": "no token is anonymous (directory)",
+      "verified": false,
+      "source": {
+        "kind": "directory",
+        "entity": "Member"
+      },
+      "expect": {
+        "id": "anonymous",
+        "role": "anonymous",
+        "permissions": []
+      }
+    },
+    {
+      "name": "none: id from uid, every claim readable",
+      "verified": true,
+      "source": {
+        "kind": "none"
+      },
+      "expect": {
+        "id": "u-1",
+        "uid": "u-1",
+        "email": "ada@example.com",
+        "name": "Ada",
+        "role": "teacher",
+        "plan": "pro",
+        "sub": "u-1",
+        "iss": "https://issuer"
+      }
+    },
+    {
+      "name": "claims: only the declared fields are read",
+      "verified": true,
+      "source": {
+        "kind": "claims",
+        "fields": [
+          "id",
+          "email",
+          "role"
+        ]
+      },
+      "expect": {
+        "id": "u-1",
+        "email": "ada@example.com",
+        "name": "Ada",
+        "role": "teacher"
+      }
+    },
+    {
+      "name": "claims: a declared field the token lacks stays absent",
+      "verified": true,
+      "source": {
+        "kind": "claims",
+        "fields": [
+          "department"
+        ]
+      },
+      "expect": {
+        "id": "u-1",
+        "email": "ada@example.com",
+        "name": "Ada"
+      }
+    },
+    {
+      "name": "claims: a token claim cannot overwrite the verified id",
+      "verified": {
+        "claims": {
+          "id": "someone-else"
+        }
+      },
+      "source": {
+        "kind": "claims",
+        "fields": [
+          "id"
+        ]
+      },
+      "expect": {
+        "id": "u-1",
+        "email": "ada@example.com",
+        "name": "Ada"
+      }
+    },
+    {
+      "name": "directory: the row keyed by the verified uid",
+      "verified": true,
+      "source": {
+        "kind": "directory",
+        "entity": "Member"
+      },
+      "expect": {
+        "id": "u-1",
+        "role": "admin",
+        "name": "Ada Lovelace"
+      }
+    },
+    {
+      "name": "directory: no row yet carries only the token fields",
+      "verified": {
+        "uid": "u-9"
+      },
+      "source": {
+        "kind": "directory",
+        "entity": "Member"
+      },
+      "expect": {
+        "id": "u-9",
+        "email": "ada@example.com",
+        "name": "Ada"
+      }
+    },
+    {
+      "name": "directory without a lookup is refused",
+      "verified": true,
+      "source": {
+        "kind": "directory",
+        "entity": "Member"
+      },
+      "noLookup": true,
+      "expect": {
+        "error": "no lookup"
+      }
+    }
+  ]
+}

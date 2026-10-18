@@ -207,7 +207,7 @@ mod runtime_rows {
     }
 
     fn adapter_calls() -> serde_json::Value {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../packages/almadar-runtime/test/fixtures/adapter-calls.json");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/adapter-calls.json");
         serde_json::from_str(&std::fs::read_to_string(path).expect("oracle")).expect("oracle json")
     }
 
