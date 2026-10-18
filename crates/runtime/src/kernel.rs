@@ -3446,12 +3446,12 @@ impl RuntimeKernel {
                             }
                         }
                     } else if let Some(s) = value.as_str() {
-                        if s.starts_with('@') {
-                            // `resolve` expects a prefix-less path; a `@`-token must go
-                            // through `resolve_binding` (strips `@`, then resolves). The
-                            // old `ctx.resolve(s)` always returned None and wrote the
-                            // literal token into the entity field.
-                            ctx.resolve_binding(s).unwrap_or_else(|| value.clone())
+                        if BindingContext::binding_token_end(s, 0) == Some(s.len()) {
+                            // A whole-string binding that resolves to nothing reads as null, as every
+                            // other read of it does; its text is never stored.
+                            ctx.resolve_binding(s).unwrap_or(Value::Null)
+                        } else if s.starts_with('@') {
+                            ctx.resolve_value(value).into_owned()
                         } else {
                             value.clone()
                         }
@@ -8807,6 +8807,30 @@ mod set_object_literal_tests {
         let stored = prof(&row(serde_json::json!(["set", "@entity.prof", { "id": "@payload.data.id" }])));
         let expected: Value = serde_json::from_value(serde_json::json!({ "id": "abc" })).unwrap();
         assert_eq!(stored, expected);
+    }
+
+    // G-ORBITAL-CORE-019: an unresolved bare binding reads as null, as every other read of it does.
+    #[test]
+    fn a_bare_binding_that_resolves_to_nothing_stores_null_not_its_text() {
+        assert_eq!(prof(&row(serde_json::json!(["set", "@entity.prof", "@payload.status"]))), Value::Null);
+    }
+
+    #[test]
+    fn control_a_bare_binding_that_resolves_stores_its_value() {
+        assert_eq!(prof(&row(serde_json::json!(["set", "@entity.prof", "@payload.data.n"]))), Value::from(3));
+    }
+
+    #[test]
+    fn edge_text_after_a_binding_interpolates_it() {
+        assert_eq!(
+            prof(&row(serde_json::json!(["set", "@entity.prof", "@payload.data.id done"]))),
+            Value::String("abc done".into())
+        );
+    }
+
+    #[test]
+    fn edge_a_plain_string_is_stored_as_written() {
+        assert_eq!(prof(&row(serde_json::json!(["set", "@entity.prof", "open"]))), Value::String("open".into()));
     }
 }
 
