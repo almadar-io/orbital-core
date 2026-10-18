@@ -707,3 +707,42 @@ pub fn is_public_address(ip: IpAddr) -> bool {
         IpAddr::V6(v6) => v6_public(v6),
     }
 }
+#[cfg(test)]
+mod retry_backoff_tests {
+    use super::*;
+
+    fn backoff(base: u64) -> HttpRetry {
+        HttpRetry {
+            max: 70,
+            on: vec![RetryOn::Server],
+            delay: RetryDelay::Backoff { backoff_ms: base },
+            no_response_max: None,
+        }
+    }
+
+    fn delay_at(retry: &HttpRetry, mut attempt: u32) -> Option<u64> {
+        retry.next_delay(&mut attempt, RetryOutcome::Status(503))
+    }
+
+    // G-ORBITAL-CORE-009: the doubling saturates at u64::MAX once the exponent passes 63, never stays at 2^63.
+    #[test]
+    fn a_base_of_one_saturates_once_the_exponent_reaches_64() {
+        assert_eq!(delay_at(&backoff(1), 63), Some(1u64 << 63));
+        assert_eq!(delay_at(&backoff(1), 64), Some(u64::MAX));
+        assert_eq!(delay_at(&backoff(1), 69), Some(u64::MAX));
+    }
+
+    #[test]
+    fn control_earlier_powers_are_exact() {
+        assert_eq!(delay_at(&backoff(3), 0), Some(3));
+        assert_eq!(delay_at(&backoff(3), 4), Some(48));
+        assert_eq!(delay_at(&backoff(2), 62), Some(1u64 << 63));
+        assert_eq!(delay_at(&backoff(2), 63), Some(u64::MAX));
+    }
+
+    #[test]
+    fn edge_a_zero_base_stays_zero_at_every_exponent() {
+        assert_eq!(delay_at(&backoff(0), 64), Some(0));
+        assert_eq!(delay_at(&backoff(0), 0), Some(0));
+    }
+}
