@@ -60,7 +60,7 @@ pub fn signature_for(kind: &OperatorKind) -> Option<Signature<'static>> {
     declared_signature(kind).filter(Signature::checks_anything)
 }
 
-fn declared_signature(kind: &OperatorKind) -> Option<Signature<'static>> {
+pub(super) fn declared_signature(kind: &OperatorKind) -> Option<Signature<'static>> {
     let signatures = match SIGNATURES.get() {
         Some(signatures) => signatures,
         None => {
@@ -77,6 +77,19 @@ fn declared_signature(kind: &OperatorKind) -> Option<Signature<'static>> {
         }
     };
     signatures.get(&discriminant(kind)).copied()
+}
+
+/// A call with more arguments than the installed operator table declares raises `ArityMismatch`: the declared bound is
+/// the contract on every path, and an operator never reads past it silently.
+pub fn check_arity(name: &str, signature: &Signature<'static>, supplied: usize) -> Result<(), OrbitalError> {
+    match signature.max_arity() {
+        Some(max) if supplied > max => Err(OrbitalError::Eval(EvalError::ArityMismatch {
+            operator: name.to_string(),
+            expected: max,
+            actual: supplied,
+        })),
+        _ => Ok(()),
+    }
 }
 
 /// The signature the installed operator table declares for the evaluated operator `name` (an alias resolves to
@@ -306,6 +319,10 @@ fn to_eval_error(mismatch: Mismatch) -> OrbitalError {
             actual: reason,
         }),
         // Raised by the static checker only: at run time a missing value is a value, and evaluation is unchanged.
+        Mismatch::NullOperand { operator, operand } => OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: format!("a present operand for `{operator}`"),
+            actual: operand,
+        }),
         Mismatch::MaybeAbsent { operator, operand } => {
             OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: format!("a present operand for `{operator}`"),

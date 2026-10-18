@@ -10,6 +10,7 @@ pub mod language_loader;
 pub mod language_registry_tests;
 pub mod literal_type;
 pub mod lower;
+pub mod proof;
 pub mod state_machine;
 #[cfg(test)]
 pub mod type_compat_tests;

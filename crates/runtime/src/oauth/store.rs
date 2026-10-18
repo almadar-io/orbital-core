@@ -225,6 +225,7 @@ impl CredentialOAuthStore {
                 OAuthReply::Done
             }
             OAuthAsk::Clock => OAuthReply::Millis { value: now },
+            OAuthAsk::Consent { .. } => OAuthReply::Code { code: None },
             OAuthAsk::MockTokenPut {
                 access_token,
                 refresh_token,

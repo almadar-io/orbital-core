@@ -477,7 +477,6 @@ pub struct DataMutation {
 /// A numeric tick is waited out from the initial state; a frame tick is driven by the render loop and a
 /// non-positive interval is invalid, so neither is planned.
 pub fn plan_tick_steps(schema: &OrbitalSchema, options: &PlanOptions) -> Vec<TickStep> {
-    use orbital_core_base::schema::types::StringOrNumber;
     let mut out = Vec::new();
     for td in scoped(schema, options) {
         let Some(initial) = planner::initial_state(td) else { continue };
@@ -490,15 +489,12 @@ pub fn plan_tick_steps(schema: &OrbitalSchema, options: &PlanOptions) -> Vec<Tic
             }
         }
         for tick in td.ticks.iter().flatten() {
-            let StringOrNumber::Number(interval) = &tick.interval else { continue };
-            if !(*interval > 0.0) {
-                continue;
-            }
+            let Some(wait_ms) = tick.duration_ms().filter(|ms| *ms > 0) else { continue };
             out.push(TickStep {
                 trait_name: td.name.clone(),
                 from: initial.clone(),
                 event: tick.name.clone(),
-                wait_ms: *interval as u64,
+                wait_ms,
                 accept_states: declared.clone(),
                 coverage_key: format!("{}:tick({})", td.name, tick.name),
             });
@@ -1553,6 +1549,35 @@ mod tests {
                 coverage_key: "Clock:tick(beat)".into(),
             }],
             "a frame tick and a non-positive interval are not waited out"
+        );
+    }
+
+    #[test]
+    fn a_duration_string_tick_is_waited_out_and_a_cron_frame_or_unknown_unit_is_not() {
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{ "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Clock", "linkedEntity": "Job",
+                    "ticks": [
+                        { "name": "five", "interval": "5s", "effects": [] },
+                        { "name": "minute", "interval": "1m", "effects": [] },
+                        { "name": "hour", "interval": "1h", "effects": [] },
+                        { "name": "milli", "interval": "250ms", "effects": [] },
+                        { "name": "bare", "interval": "300", "effects": [] },
+                        { "name": "cron", "interval": "0 9 * * *", "effects": [] },
+                        { "name": "frame", "interval": "frame", "effects": [] },
+                        { "name": "day", "interval": "1d", "effects": [] },
+                        { "name": "zero", "interval": "0s", "effects": [] }
+                    ],
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "GO" }] } }] }]
+        }))
+        .unwrap();
+        let waits: Vec<(String, u64)> = plan_tick_steps(&schema, &PlanOptions::default()).into_iter().map(|t| (t.event, t.wait_ms)).collect();
+        assert_eq!(
+            waits,
+            vec![("five".into(), 5000), ("minute".into(), 60_000), ("hour".into(), 3_600_000), ("milli".into(), 250), ("bare".into(), 300)]
         );
     }
 

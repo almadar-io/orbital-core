@@ -870,7 +870,11 @@ pub fn parse_oauth_client(value: &Value) -> Result<OAuthClientDecl, HttpRefusal>
         mode,
         server,
         client_id: slot_field(map, "clientId", "auth.client")?,
-        client_secret: map.get("clientSecret").map(|_| slot_field(map, "clientSecret", "auth.client")).transpose()?,
+        client_secret: match client_auth {
+            // A public client has no secret: a declared slot is never read, so a host that holds none is not "unconfigured".
+            orbital_core_base::oauth_wire::ClientAuth::None => None,
+            _ => map.get("clientSecret").map(|_| slot_field(map, "clientSecret", "auth.client")).transpose()?,
+        },
         client_auth,
     })
 }

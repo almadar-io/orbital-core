@@ -21,7 +21,7 @@ use orbital_core_base::row_set::{
 };
 use orbital_core_base::str_utils::js_number_string;
 use orbital_core_base::value::{Value, ValueMap};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use crate::entity_source::EntitySource;
 use crate::postgres::{
@@ -553,6 +553,18 @@ pub fn table_name_for(entity_type: &str) -> String {
     } else {
         format!("{snake}s")
     }
+}
+
+/// The declared `[persistent: tbl]` collections of the entities a store serves, by entity type.
+pub type Collections = RwLock<HashMap<String, String>>;
+
+/// The table (or database) holding an entity's rows: its declared collection as written, else `table_name_for`.
+pub fn storage_name_for(collections: &Collections, entity_type: &str) -> String {
+    collections
+        .read()
+        .get(entity_type)
+        .cloned()
+        .unwrap_or_else(|| table_name_for(entity_type))
 }
 
 pub fn quote_ident(name: &str) -> String {
@@ -1118,6 +1130,7 @@ pub struct PostgresRows {
     config: PgConfig,
     idle: Mutex<Vec<Session>>,
     kinds: Mutex<HashMap<String, Kinds>>,
+    collections: Collections,
 }
 
 fn err_string(error: PgError) -> String {
@@ -1163,7 +1176,12 @@ impl PostgresRows {
             config,
             idle: Mutex::new(Vec::new()),
             kinds: Mutex::new(HashMap::new()),
+            collections: RwLock::new(HashMap::new()),
         }
+    }
+
+    fn table_of(&self, entity_type: &str) -> String {
+        storage_name_for(&self.collections, entity_type)
     }
 
     /// `DATABASE_URL` over the plain TCP port.
@@ -1245,7 +1263,7 @@ impl PostgresRows {
         let result = lease.query(
             &format!(
                 "SELECT * FROM {} WHERE {} = $1",
-                quote_ident(&table_name_for(entity_type)),
+                quote_ident(&self.table_of(entity_type)),
                 quote_ident("id")
             ),
             &[Some(id.to_string())],
@@ -1266,7 +1284,7 @@ impl PostgresRows {
         if query.nearest.is_some() {
             return None;
         }
-        let table = table_name_for(entity_type);
+        let table = self.table_of(entity_type);
         let outcome = (|| -> PgResultOf<(Vec<Value>, Vec<String>, usize)> {
             let mut lease = self.lease()?;
             let kinds = self.kinds_for(&mut lease, &table, &query_fields(query))?;
@@ -1324,7 +1342,7 @@ impl PostgresRows {
         lease: &mut Lease<'_>,
         op: &RowWriteOp,
     ) -> Result<RowWriteOutcome, WriteFault> {
-        let table = table_name_for(op.entity_type());
+        let table = self.table_of(op.entity_type());
         match op {
             RowWriteOp::Create { data, .. } => {
                 let map = data_map(data);
@@ -1516,6 +1534,12 @@ impl From<PgError> for WriteFault {
 }
 
 impl EntitySource for PostgresRows {
+    fn bind_collection(&self, entity_type: &str, collection: &str) {
+        self.collections
+            .write()
+            .insert(entity_type.to_string(), collection.to_string());
+    }
+
     fn read(&self, entity_type: &str, id: &str) -> Result<Arc<Value>, String> {
         Ok(self
             .find(entity_type, id)?
@@ -1530,7 +1554,7 @@ impl EntitySource for PostgresRows {
 
     /// A merge write; a missing row is created with its id.
     fn write(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String> {
-        let table = table_name_for(entity_type);
+        let table = self.table_of(entity_type);
         let mut map = data_map(data);
         map.shift_remove("id");
         let mut lease = self.lease().map_err(err_string)?;
@@ -1577,7 +1601,7 @@ impl EntitySource for PostgresRows {
     }
 
     fn create(&self, entity_type: &str, data: &Value) -> Result<Value, String> {
-        let table = table_name_for(entity_type);
+        let table = self.table_of(entity_type);
         let mut map = data_map(data);
         let id = match map.get("id") {
             Some(Value::String(s)) if !s.is_empty() => s.clone(),
@@ -1630,7 +1654,7 @@ impl EntitySource for PostgresRows {
             .query(
                 &format!(
                     "DELETE FROM {} WHERE {} = $1",
-                    quote_ident(&table_name_for(entity_type)),
+                    quote_ident(&self.table_of(entity_type)),
                     quote_ident("id")
                 ),
                 &[Some(id.to_string())],
@@ -1650,10 +1674,7 @@ impl EntitySource for PostgresRows {
         let mut lease = self.lease().map_err(err_string)?;
         let result = lease
             .query(
-                &format!(
-                    "SELECT * FROM {}",
-                    quote_ident(&table_name_for(entity_type))
-                ),
+                &format!("SELECT * FROM {}", quote_ident(&self.table_of(entity_type))),
                 &[],
             )
             .map_err(err_string)?;
@@ -1735,6 +1756,21 @@ mod tests {
             assert_eq!(table_name_for(entity), table, "{entity}");
         }
         assert_eq!(quote_ident("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn a_declared_collection_is_the_table_as_written_and_an_undeclared_entity_keeps_the_pluralized_name(
+    ) {
+        let collections: Collections = RwLock::new(HashMap::new());
+        collections
+            .write()
+            .insert("TimeEntry".to_string(), "timesheet".to_string());
+        assert_eq!(storage_name_for(&collections, "TimeEntry"), "timesheet");
+        assert_eq!(
+            storage_name_for(&collections, "Category"),
+            "categories",
+            "control: no declared collection"
+        );
     }
 
     #[test]

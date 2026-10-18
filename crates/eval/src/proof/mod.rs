@@ -1,0 +1,486 @@
+//! The one symbolic reasoner over guard expressions: witness search for the verify planner, and the decision
+//! procedure that proves spec invariants (`@invariant`, `@holds`) for `orb validate`.
+
+pub mod confirm;
+pub mod decide;
+pub mod formula;
+pub mod obligations;
+pub mod rat;
+pub mod witness;
+
+use decide::{decide, Outcome};
+use formula::{Formula, Translator};
+use obligations::{obligations, Proposition};
+use orbital_core_base::schema::types::OrbitalSchema;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Verdict {
+    Proved,
+    /// A counterexample the evaluator confirms, on an obligation the model does not over-approximate.
+    Violated { counterexample: serde_json::Value },
+    Unproved { reason: String, counterexample: Option<serde_json::Value> },
+}
+
+#[derive(Debug, Clone)]
+pub struct Finding {
+    pub proposition: Proposition,
+    pub site: String,
+    pub verdict: Verdict,
+}
+
+/// Every obligation the program's spec propositions owe, with its verdict.
+pub fn prove(schema: &OrbitalSchema) -> Vec<Finding> {
+    obligations(schema)
+        .into_iter()
+        .map(|o| {
+            let verdict = match &o.unbuildable {
+                Some(reason) => Verdict::Unproved { reason: reason.clone(), counterexample: None },
+                None => judge(&o),
+            };
+            Finding { proposition: o.proposition, site: o.site, verdict }
+        })
+        .collect()
+}
+
+fn judge(o: &obligations::Obligation) -> Verdict {
+    let overflow = || Verdict::Unproved { reason: "arithmetic overflow while building the formula".to_string(), counterexample: None };
+    // Time is a positive epoch number the whole obligation shares (`@now` and `(time/now)`).
+    let mut vars = o.vars.clone();
+    vars.entry("@now".to_string()).or_insert(formula::VarInfo { sort: formula::Sort::Num, nullable: false });
+    let mut lens = Vec::new();
+    for e in o.assumptions.iter().chain(std::iter::once(&o.goal)) {
+        formula::array_lens(e, &mut lens);
+    }
+    for len in &lens {
+        vars.insert(formula::array_len_var(len), formula::VarInfo { sort: formula::Sort::Num, nullable: false });
+    }
+    let mut t = Translator::new(&vars);
+    let mut parts = Vec::new();
+    for len in &lens {
+        let nonneg = orbital_core_base::schema::sexpr::SExpression::Array(vec![
+            orbital_core_base::schema::sexpr::SExpression::String(">=".to_string()),
+            orbital_core_base::schema::sexpr::SExpression::String(formula::array_len_var(len)),
+            orbital_core_base::schema::sexpr::SExpression::Number(0.0),
+        ]);
+        match t.truthy(&nonneg) {
+            Some(f) => parts.push(f),
+            None => return overflow(),
+        }
+    }
+    match t.truthy(&orbital_core_base::schema::sexpr::SExpression::Array(vec![
+        orbital_core_base::schema::sexpr::SExpression::String(">".to_string()),
+        orbital_core_base::schema::sexpr::SExpression::String("@now".to_string()),
+        orbital_core_base::schema::sexpr::SExpression::Number(0.0),
+    ])) {
+        Some(f) => parts.push(f),
+        None => return overflow(),
+    }
+    for a in &o.assumptions {
+        match t.truthy(a) {
+            Some(f) => parts.push(f),
+            None => return overflow(),
+        }
+    }
+    let Some(goal) = t.truthy(&o.goal).and_then(Formula::negate) else { return overflow() };
+    parts.push(goal);
+    match decide(&Formula::and(parts), &vars) {
+        Outcome::Unsat => Verdict::Proved,
+        Outcome::Unknown(reason) => Verdict::Unproved { reason, counterexample: None },
+        Outcome::Sat(model) => {
+            let cex = confirm::counterexample(&model);
+            if !confirm::confirms(&model, &o.assumptions, &o.goal) {
+                let undecided: Vec<String> = t.opaque.values().map(orbital_core_base::schema::format_sexpr).collect();
+                let reason = if undecided.is_empty() {
+                    "the solver's model is not confirmed by the evaluator".to_string()
+                } else {
+                    format!("outside the decidable fragment: {}", undecided.join(", "))
+                };
+                Verdict::Unproved { reason, counterexample: None }
+            } else if let Some(reason) = &o.inexact {
+                Verdict::Unproved { reason: reason.clone(), counterexample: Some(cex) }
+            } else {
+                Verdict::Violated { counterexample: cex }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value as J};
+
+    /// One orbital: entity `Order`, trait `Checkout -> Order` with the given transitions/ticks, and the given strict
+    /// spec expectations already merged onto it.
+    fn program(transitions: J, ticks: J, expects: J) -> OrbitalSchema {
+        serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Shop",
+                "entity": { "name": "Order", "collection": "orders", "persistence": "persistent", "fields": [
+                    { "name": "id", "type": "string", "required": true },
+                    { "name": "total", "type": "number", "required": true },
+                    { "name": "paid", "type": "number" },
+                    { "name": "note", "type": "string", "intrinsic": true },
+                    { "name": "status", "type": "enum", "values": ["open", "paid", "refunded"], "default": "open" }
+                ] },
+                "expects": expects,
+                "traits": [{
+                    "name": "Checkout",
+                    "linkedEntity": "Order",
+                    "stateMachine": {
+                        "states": [{ "name": "open", "isInitial": true }, { "name": "paid" }],
+                        "events": [
+                            { "key": "INIT", "name": "Init" },
+                            { "key": "PAY", "name": "Pay", "payloadSchema": [
+                                { "name": "amount", "type": "number", "required": true },
+                                { "name": "status", "type": "string" }
+                            ] },
+                            { "key": "ADD", "name": "Add", "payloadSchema": [{ "name": "total", "type": "number", "required": true }] }
+                        ],
+                        "transitions": transitions
+                    },
+                    "ticks": ticks
+                }],
+                "pages": []
+            }]
+        }))
+        .expect("fixture deserializes")
+    }
+
+    fn row_invariant(expr: J) -> J {
+        json!([{ "kind": "entity", "name": "Order", "invariants": [expr], "strict": true }])
+    }
+
+    fn state_holds(state: &str, expr: J) -> J {
+        json!([{ "kind": "state", "traitName": "Checkout", "state": state, "holds": expr, "strict": true }])
+    }
+
+    fn verdicts(schema: &OrbitalSchema) -> Vec<(String, Verdict)> {
+        prove(schema).into_iter().map(|f| (f.site, f.verdict)).collect()
+    }
+
+    fn only(schema: &OrbitalSchema) -> Verdict {
+        let v = verdicts(schema);
+        assert_eq!(v.len(), 1, "{v:#?}");
+        v.into_iter().next().unwrap().1
+    }
+
+    #[test]
+    fn no_propositions_owe_nothing() {
+        let t = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "create", "Order", { "total": -1 }]] }]);
+        assert!(prove(&program(t, J::Null, J::Null)).is_empty());
+    }
+
+    #[test]
+    fn a_create_is_proved_by_its_guard_and_refuted_without_it() {
+        let inv = row_invariant(json!([">=", "@entity.total", 0]));
+        let guarded = json!([{ "from": "open", "to": "open", "event": "ADD", "guard": [">=", "@payload.total", 0],
+            "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
+        assert_eq!(only(&program(guarded, J::Null, inv.clone())), Verdict::Proved);
+        let bare = json!([{ "from": "open", "to": "open", "event": "ADD",
+            "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
+        let Verdict::Violated { counterexample } = only(&program(bare, J::Null, inv)) else { panic!() };
+        assert!(counterexample["payload"]["total"].as_f64().unwrap() < 0.0, "{counterexample}");
+    }
+
+    #[test]
+    fn an_own_row_update_is_proved_from_the_old_row_and_its_guard() {
+        let inv = row_invariant(json!(["<=", "@entity.paid", "@entity.total"]));
+        let pay = |guard: Option<J>| {
+            let mut t = json!({ "from": "open", "to": "paid", "event": "PAY",
+                "effects": [["persist", "update", "Order", "@entity.id", { "paid": ["+", "@entity.paid", "@payload.amount"] }]] });
+            if let Some(g) = guard {
+                t["guard"] = g;
+            }
+            json!([t])
+        };
+        let ok = pay(Some(json!(["<=", ["+", "@entity.paid", "@payload.amount"], "@entity.total"])));
+        assert_eq!(only(&program(ok, J::Null, inv.clone())), Verdict::Proved);
+        let Verdict::Violated { counterexample } = only(&program(pay(None), J::Null, inv)) else { panic!() };
+        let row = &counterexample["row"];
+        let paid = row["paid"].as_f64().unwrap_or(0.0) + counterexample["payload"]["amount"].as_f64().unwrap();
+        assert!(paid > row["total"].as_f64().unwrap(), "{counterexample}");
+    }
+
+    #[test]
+    fn an_upsert_owes_both_cases_and_delete_owes_nothing() {
+        let inv = row_invariant(json!([">=", "@entity.total", 0]));
+        let t = json!([
+            { "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "upsert", "Order", { "id": "x", "total": 5 }]] },
+            { "from": "paid", "to": "paid", "event": "ADD", "effects": [["persist", "delete", "Order", "@entity.id"]] }
+        ]);
+        let v = verdicts(&program(t, J::Null, inv));
+        assert_eq!(v.len(), 2, "{v:#?}");
+        assert!(v.iter().all(|(_, verdict)| *verdict == Verdict::Proved), "{v:#?}");
+    }
+
+    #[test]
+    fn a_batched_create_is_checked_like_a_single_one() {
+        let inv = row_invariant(json!([">=", "@entity.total", 0]));
+        let t = json!([{ "from": "open", "to": "open", "event": "ADD",
+            "effects": [["persist", "batch", [["create", "Order", { "total": -3 }]]]] }]);
+        assert!(matches!(only(&program(t, J::Null, inv)), Verdict::Violated { .. }));
+    }
+
+    #[test]
+    fn an_intrinsic_field_is_never_stored() {
+        let inv = row_invariant(json!(["=", "@entity.note", null]));
+        let t = json!([{ "from": "open", "to": "open", "event": "ADD",
+            "effects": [["persist", "create", "Order", { "total": 1, "note": "hi" }]] }]);
+        assert_eq!(only(&program(t, J::Null, inv)), Verdict::Proved);
+    }
+
+    #[test]
+    fn an_undecidable_atom_is_unproved_and_named() {
+        let inv = row_invariant(json!([">", ["str/len", "@entity.status"], 0]));
+        let t = json!([{ "from": "open", "to": "open", "event": "ADD",
+            "effects": [["persist", "create", "Order", { "total": 1, "status": "open" }]] }]);
+        let Verdict::Unproved { reason, .. } = only(&program(t, J::Null, inv)) else { panic!() };
+        assert!(reason.contains("str/len"), "{reason}");
+    }
+
+    #[test]
+    fn a_state_invariant_follows_the_sets_into_the_state() {
+        let holds = state_holds("paid", json!(["=", "@entity.status", "paid"]));
+        let to_paid = |status: &str| json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.status", status]] }]);
+        assert_eq!(only(&program(to_paid("paid"), J::Null, holds.clone())), Verdict::Proved);
+        let Verdict::Violated { .. } = only(&program(to_paid("open"), J::Null, holds)) else { panic!() };
+    }
+
+    #[test]
+    fn a_transition_out_of_a_state_assumes_that_states_own_proposition() {
+        let into = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.paid", ["+", "@entity.paid", 1]]] }]);
+        let both = |source: J| {
+            let mut all = state_holds("paid", json!([">=", "@entity.paid", 1])).as_array().unwrap().clone();
+            all.extend(source.as_array().unwrap().clone());
+            J::Array(all)
+        };
+        let v = verdicts(&program(into.clone(), J::Null, both(state_holds("open", json!([">=", "@entity.paid", 0])))));
+        let entry = v.iter().find(|(s, _)| s.contains("PAY")).unwrap();
+        assert_eq!(entry.1, Verdict::Proved, "{v:#?}");
+        let v = verdicts(&program(into, J::Null, state_holds("paid", json!([">=", "@entity.paid", 1]))));
+        assert!(matches!(v.iter().find(|(s, _)| s.contains("PAY")).unwrap().1, Verdict::Violated { .. }), "{v:#?}");
+    }
+
+    #[test]
+    fn a_guard_the_prover_cannot_model_never_makes_a_false_goal_proved() {
+        let holds = state_holds("paid", json!(["=", "@entity.status", "paid"]));
+        let t = json!([{ "from": "open", "to": "paid", "event": "PAY", "guard": ["and", "@config.enabled", [">", ["array/len", "@payload.data"], 0]],
+            "effects": [["set", "@entity.status", "open"]] }]);
+        assert!(!matches!(only(&program(t, J::Null, holds)), Verdict::Proved));
+    }
+
+    #[test]
+    fn max_min_and_nested_ifs_are_proved_only_when_exact() {
+        let holds = state_holds("paid", json!([">=", "@entity.paid", 0]));
+        let tick = |value: J| json!([{ "name": "drain", "interval": 1000, "appliesTo": ["paid"], "effects": [["set", "@entity.paid", value]] }]);
+        let into = json!([{ "from": "open", "to": "paid", "event": "PAY", "guard": [">=", "@payload.amount", 0], "effects": [["set", "@entity.paid", "@payload.amount"]] }]);
+        let floored = tick(json!(["math/max", 0, ["-", "@entity.paid", 1]]));
+        let v = verdicts(&program(into.clone(), floored, holds.clone()));
+        assert!(v.iter().all(|(_, x)| *x == Verdict::Proved), "{v:#?}");
+        let unfloored = tick(json!(["-", "@entity.paid", 1]));
+        let v = verdicts(&program(into.clone(), unfloored, holds.clone()));
+        assert!(v.iter().any(|(s, x)| s.contains("tick drain") && matches!(x, Verdict::Violated { .. })), "{v:#?}");
+        let nullable_operand = tick(json!(["math/max", 0, "@payload.missing"]));
+        let v = verdicts(&program(into, nullable_operand, holds));
+        assert!(v.iter().any(|(s, x)| s.contains("tick drain") && matches!(x, Verdict::Unproved { .. })), "{v:#?}");
+    }
+
+    #[test]
+    fn the_clock_is_a_positive_number() {
+        let inv = row_invariant(json!([">", "@entity.paid", 0]));
+        let stamp = |value: J| json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "create", "Order", { "total": 1, "paid": value }]] }]);
+        assert_eq!(only(&program(stamp(json!(["time/now"])), J::Null, inv.clone())), Verdict::Proved);
+        assert_eq!(only(&program(stamp(json!("@now")), J::Null, inv.clone())), Verdict::Proved);
+        assert!(!matches!(only(&program(stamp(json!(["-", ["time/now"], 5])), J::Null, inv)), Verdict::Proved));
+    }
+
+    #[test]
+    fn an_array_length_is_a_non_negative_number() {
+        let inv = row_invariant(json!([">=", "@entity.total", 0]));
+        let create = |total: J| json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "create", "Order", { "total": total }]] }]);
+        assert_eq!(only(&program(create(json!(["array/len", "@payload.rows"])), J::Null, inv.clone())), Verdict::Proved);
+        assert_eq!(only(&program(create(json!(["or", ["array/len", "@payload.rows"], 0])), J::Null, inv.clone())), Verdict::Proved);
+        assert!(!matches!(only(&program(create(json!(["-", ["array/len", "@payload.rows"], 1])), J::Null, inv)), Verdict::Proved));
+    }
+
+    #[test]
+    fn a_merged_payload_record_is_its_literal_keys_over_the_record() {
+        let inv = row_invariant(json!([">=", "@entity.total", 0]));
+        let create = |over: J| json!([{ "from": "open", "to": "open", "event": "ADD",
+            "effects": [["persist", "create", "Order", ["object/merge", "@payload", over]]] }]);
+        assert_eq!(only(&program(create(json!({ "total": 5 })), J::Null, inv.clone())), Verdict::Proved);
+        assert!(matches!(only(&program(create(json!({ "paid": 0 })), J::Null, inv)), Verdict::Violated { .. }), "control: the record's own total is unconstrained");
+    }
+
+    #[test]
+    fn a_branching_effect_is_split_per_branch() {
+        let holds = state_holds("paid", json!(["=", "@entity.status", "paid"]));
+        let t = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [
+            ["if", [">", "@payload.amount", 0], ["set", "@entity.status", "paid"], ["set", "@entity.status", "refunded"]]
+        ] }]);
+        let v = verdicts(&program(t.clone(), J::Null, holds.clone()));
+        assert_eq!(v.len(), 2, "{v:#?}");
+        assert_eq!(v.iter().filter(|(_, x)| matches!(x, Verdict::Violated { .. })).count(), 1, "{v:#?}");
+        let guarded = json!([{ "from": "open", "to": "paid", "event": "PAY", "guard": [">", "@payload.amount", 0], "effects": t[0]["effects"] }]);
+        let v = verdicts(&program(guarded, J::Null, holds));
+        assert!(v.iter().all(|(_, x)| *x == Verdict::Proved), "{v:#?}");
+    }
+
+    #[test]
+    fn a_tick_in_the_state_must_preserve_it() {
+        let holds = state_holds("paid", json!([">=", "@entity.paid", 0]));
+        let ticks = |delta: f64| json!([{ "name": "accrue", "interval": 1000, "appliesTo": ["paid"],
+            "effects": [["set", "@entity.paid", ["+", "@entity.paid", delta]]] }]);
+        let into = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.paid", "@payload.amount"]], "guard": [">=", "@payload.amount", 0] }]);
+        let v = verdicts(&program(into.clone(), ticks(1.0), holds.clone()));
+        assert!(v.iter().all(|(_, x)| *x == Verdict::Proved), "{v:#?}");
+        let v = verdicts(&program(into, ticks(-1.0), holds));
+        assert!(v.iter().any(|(s, x)| s.contains("tick accrue") && matches!(x, Verdict::Violated { .. })), "{v:#?}");
+    }
+
+    #[test]
+    fn an_initial_state_owes_its_defaults() {
+        let holds = |expr: J| state_holds("open", expr);
+        let v = verdicts(&program(json!([]), J::Null, holds(json!(["=", "@entity.status", "open"]))));
+        let defaults = v.iter().find(|(s, _)| s.contains("defaults")).unwrap();
+        assert_eq!(defaults.1, Verdict::Proved);
+        let v = verdicts(&program(json!([]), J::Null, holds(json!(["=", "@entity.status", "paid"]))));
+        assert!(matches!(v.iter().find(|(s, _)| s.contains("defaults")).unwrap().1, Verdict::Violated { .. }), "{v:#?}");
+    }
+
+    #[test]
+    fn a_set_from_an_optional_binding_is_never_proved() {
+        let holds = state_holds("paid", json!(["!=", "@entity.status", "refunded"]));
+        let optional = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.status", "@payload.status"]] }]);
+        assert!(matches!(only(&program(optional, J::Null, holds.clone())), Verdict::Unproved { .. }));
+        let required = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.paid", "@payload.amount"], ["set", "@entity.status", "paid"]] }]);
+        assert_eq!(only(&program(required, J::Null, holds)), Verdict::Proved);
+    }
+
+    #[test]
+    fn another_traits_write_is_unproved_not_violated() {
+        let mut schema = program(
+            json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.status", "paid"]] }]),
+            J::Null,
+            state_holds("paid", json!([">=", "@entity.total", 0])),
+        );
+        let refund: orbital_core_base::schema::types::TraitDefinition = serde_json::from_value(json!({
+            "name": "Refund", "linkedEntity": "Order",
+            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                "events": [{ "key": "REFUND", "name": "Refund" }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "REFUND",
+                    "effects": [["persist", "update", "Order", "@entity.id", { "total": -1 }]] }] }
+        }))
+        .unwrap();
+        schema.orbitals[0].traits.push(orbital_core_base::schema::types::TraitReference::Inline(refund));
+        let v = verdicts(&schema);
+        let foreign = v.iter().find(|(s, _)| s.contains("Refund")).expect("foreign obligation");
+        let Verdict::Unproved { counterexample: Some(_), .. } = &foreign.1 else { panic!("{v:#?}") };
+    }
+
+    #[test]
+    fn a_config_bound_target_is_resolved_and_an_unknown_one_is_unproved() {
+        use orbital_core_base::schema::types::{ConfigField, TraitReference};
+        let inv = row_invariant(json!([">=", "@entity.total", 0]));
+        let with_target = |default: J, effects: J| {
+            let mut schema = program(json!([{ "from": "open", "to": "open", "event": "ADD", "effects": effects }]), J::Null, inv.clone());
+            if let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] {
+                let field: ConfigField = serde_json::from_value(json!({ "type": "entity", "default": default })).unwrap();
+                td.config = Some(std::collections::HashMap::from([("target".to_string(), field)]));
+            }
+            schema
+        };
+        let create = json!([["persist", "create", "@config.target", { "total": -1 }]]);
+        assert!(matches!(only(&with_target(json!("Order"), create.clone())), Verdict::Violated { .. }));
+        let Verdict::Unproved { reason, .. } = only(&with_target(json!("@config.elsewhere"), create)) else { panic!() };
+        assert!(reason.contains("not statically known"), "{reason}");
+        let computed = json!([["persist", "batch", ["array/concat", "@payload.ops", []]]]);
+        assert!(matches!(only(&with_target(json!("Order"), computed)), Verdict::Unproved { .. }));
+        let other = json!([["persist", "create", "@config.target", { "total": -1 }]]);
+        assert!(prove(&with_target(json!("Invoice"), other)).is_empty(), "control: a resolved target that is another entity owes nothing");
+    }
+
+    /// Soundness against the evaluator: every implication the solver proves holds on seeded random ground values
+    /// (nulls included), evaluated by the real evaluator.
+    #[test]
+    fn every_proved_implication_holds_in_the_evaluator() {
+        use super::decide::{decide, Model, ModelValue, Outcome};
+        use super::formula::{Formula, Sort, Translator, VarInfo, Vars};
+        use super::rat::Rat;
+        use orbital_core_base::schema::sexpr::SExpression;
+        let var = |sort: Sort, nullable: bool| VarInfo { sort, nullable };
+        let status = Sort::Str(Some(vec!["open".into(), "paid".into()]));
+        let vars: Vars = [
+            ("@entity.a".to_string(), var(Sort::Num, true)),
+            ("@entity.b".to_string(), var(Sort::Num, false)),
+            ("@payload.c".to_string(), var(Sort::Num, true)),
+            ("@entity.s".to_string(), var(status, true)),
+            ("@entity.t".to_string(), var(Sort::Str(None), true)),
+            ("@entity.f".to_string(), var(Sort::Bool, true)),
+        ]
+        .into_iter()
+        .collect();
+        let cases: Vec<(J, J)> = vec![
+            (json!(["<=", "@entity.a", "@entity.b"]), json!(["<=", ["-", "@entity.a", 1], "@entity.b"])),
+            (json!(["and", ["<=", ["+", "@entity.a", "@payload.c"], "@entity.b"], [">=", "@payload.c", 0]]), json!(["<=", "@entity.a", "@entity.b"])),
+            (json!(["=", "@entity.a", null]), json!([">=", "@entity.a", 0])),
+            (json!(["=", "@entity.a", null]), json!(["!=", "@entity.a", 0])),
+            (json!(["!=", "@entity.s", "open"]), json!(["or", ["=", "@entity.s", "paid"], ["=", "@entity.s", null]])),
+            (json!(["=", "@entity.t", "@entity.s"]), json!(["or", ["=", "@entity.t", null], ["!=", "@entity.t", "x"]])),
+            (json!("@entity.f"), json!(["=", "@entity.f", true])),
+            (json!(["not", "@entity.f"]), json!(["or", ["=", "@entity.f", false], ["=", "@entity.f", null]])),
+            (json!(["and", [">", "@entity.a", 1], ["<", "@entity.a", 3]]), json!(["!=", ["*", 2, "@entity.a"], 7])),
+            (json!(["if", [">", "@payload.c", 0], ["=", "@entity.b", 1], ["=", "@entity.b", 2]]), json!(["and", [">=", "@entity.b", 1], ["<=", "@entity.b", 2]])),
+            (json!(["let", [["d", ["+", "@entity.b", 2]]], [">", "@d", 4]]), json!([">", "@entity.b", 2])),
+            (json!(true), json!([">=", ["if", [">", "@entity.a", 0], "@entity.a", 0], 0])),
+            (json!([">", "@entity.b", 0]), json!(["=", ["if", [">", "@entity.b", 0], "x", "y"], "x"])),
+            (json!([">=", "@entity.a", 0]), json!([">=", ["or", "@entity.a", 7], 0])),
+            (json!(true), json!([">=", ["math/max", 0, ["-", "@entity.b", 100]], 0])),
+            (json!(true), json!(["<=", ["math/min", 5, "@entity.b"], 5])),
+            (json!(true), json!([">=", ["math/abs", ["-", "@entity.b", 3]], 0])),
+            (json!([">", "@entity.b", 3]), json!(["=", ["math/abs", ["-", "@entity.b", 3]], ["-", "@entity.b", 3]])),
+            (json!([">", "@entity.b", 2]), json!([">=", ["math/max", "@entity.b", 3], 3])),
+            (json!(true), json!(["<=", ["+", ["if", [">", "@entity.b", 0], 1, 0], ["if", ["<", "@entity.b", 5], 1, 0]], 2])),
+            (json!(["and", [">", "@entity.b", 0], ["<", "@entity.b", 5]]), json!(["=", ["+", ["if", [">", "@entity.b", 0], 1, 0], ["if", ["<", "@entity.b", 5], 1, 0]], 2])),
+        ];
+        let mut seed: u64 = 0x5eed;
+        let mut next = |n: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) as usize) % n
+        };
+        let nums = [None, Some(-2.0), Some(-1.0), Some(0.0), Some(0.5), Some(1.0), Some(2.0), Some(3.0), Some(3.5), Some(4.0), Some(5.0)];
+        let strs = [None, Some("open"), Some("paid"), Some("x"), Some("")];
+        let bools = [None, Some(true), Some(false)];
+        for (assume, goal) in cases {
+            let (assume, goal): (SExpression, SExpression) = (serde_json::from_value(assume).unwrap(), serde_json::from_value(goal).unwrap());
+            let mut t = Translator::new(&vars);
+            let f = Formula::and(vec![t.truthy(&assume).unwrap(), t.truthy(&goal).unwrap().negate().unwrap()]);
+            assert_eq!(decide(&f, &vars), Outcome::Unsat, "{assume:?} => {goal:?} should be proved");
+            for _ in 0..2000 {
+                let mut model = Model::default();
+                for (name, info) in &vars {
+                    let value = match &info.sort {
+                        Sort::Num => match nums[next(nums.len())] {
+                            Some(n) => ModelValue::Num(Rat::from_f64(n).unwrap()),
+                            None if info.nullable => ModelValue::Null,
+                            None => ModelValue::Num(Rat::ZERO),
+                        },
+                        Sort::Str(domain) => match strs[next(strs.len())] {
+                            Some(v) if domain.as_ref().is_none_or(|d| d.iter().any(|x| x == v)) => ModelValue::Str(v.to_string()),
+                            _ if info.nullable => ModelValue::Null,
+                            _ => ModelValue::Str("open".to_string()),
+                        },
+                        Sort::Bool => match bools[next(bools.len())] {
+                            Some(b) => ModelValue::Bool(b),
+                            None => ModelValue::Null,
+                        },
+                    };
+                    model.values.insert(name.clone(), value);
+                }
+                assert!(!confirm::confirms(&model, std::slice::from_ref(&assume), &goal), "unsound: {assume:?} => {goal:?} fails on {model:?}");
+            }
+        }
+    }
+}

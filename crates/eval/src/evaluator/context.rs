@@ -17,6 +17,7 @@ use orbital_core_base::error::{EvalError, OrbitalError};
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 /// State of one `resolve_value` walk: the binding tokens being expanded (cycle bound) and the first typed
@@ -25,6 +26,83 @@ use std::sync::Arc;
 struct Walk {
     expanding: Vec<String>,
     fault: Option<EvalError>,
+}
+
+/// Where an unseeded `prob/*` stream gets its seed: the kernel's journaled `Random` ask, supplied per dispatch.
+#[derive(Clone)]
+pub struct EntropySource(Arc<dyn Fn() -> Result<u32, String> + Send + Sync>);
+
+impl EntropySource {
+    pub fn new(source: impl Fn() -> Result<u32, String> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(source))
+    }
+}
+
+impl std::fmt::Debug for EntropySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EntropySource")
+    }
+}
+
+/// The `prob/*` stream of one evaluation: Mulberry32, the generator `@almadar/evaluator` ran, and the rejection flag
+/// `prob/condition` raises inside a `prob/posterior` / `prob/infer` sample. Shared by every child context, so a
+/// `prob/sample` loop and a lambda body advance one stream.
+#[derive(Debug, Default)]
+pub struct ProbState {
+    state: AtomicU32,
+    started: AtomicBool,
+    rejected: AtomicBool,
+}
+
+/// JavaScript `n | 0`: truncate toward zero, then wrap to 32 bits; NaN and the infinities are 0.
+fn to_int32(n: f64) -> u32 {
+    if !n.is_finite() {
+        return 0;
+    }
+    n.trunc().rem_euclid(4_294_967_296.0) as u32
+}
+
+impl ProbState {
+    /// Restart the stream from `n` (`prob/seed`).
+    pub fn seed(&self, n: f64) {
+        self.state.store(to_int32(n), Ordering::Relaxed);
+        self.started.store(true, Ordering::Relaxed);
+    }
+
+    /// The next value in [0, 1). An unseeded stream asks `entropy` for its seed once; with no source it is an error
+    /// naming `prob/seed`.
+    pub fn next(&self, entropy: Option<&EntropySource>) -> Result<f64, String> {
+        if !self.started.load(Ordering::Relaxed) {
+            let Some(source) = entropy else {
+                return Err("prob/*: the stream has no seed and this evaluation has no entropy source; call (prob/seed n) first".to_string());
+            };
+            let seed = (source.0)()?;
+            self.state.store(seed, Ordering::Relaxed);
+            self.started.store(true, Ordering::Relaxed);
+        }
+        let mut t = self
+            .state
+            .fetch_add(0x6D2B_79F5, Ordering::Relaxed)
+            .wrapping_add(0x6D2B_79F5);
+        t = (t ^ (t >> 15)).wrapping_mul(t | 1);
+        t ^= t.wrapping_add((t ^ (t >> 7)).wrapping_mul(t | 61));
+        Ok(f64::from(t ^ (t >> 14)) / 4_294_967_296.0)
+    }
+
+    /// Mark the sample in flight rejected (`prob/condition`).
+    pub fn reject(&self) {
+        self.rejected.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the sample in flight was rejected; the flag is cleared.
+    pub fn take_rejected(&self) -> bool {
+        self.rejected.swap(false, Ordering::Relaxed)
+    }
+
+    /// Put back the flag an enclosing sample had raised.
+    pub fn restore_rejected(&self, rejected: bool) {
+        self.rejected.store(rejected, Ordering::Relaxed);
+    }
 }
 
 /// Binding context for S-expression evaluation
@@ -80,6 +158,10 @@ pub struct BindingContext {
     /// Credential values the kernel resolved for this evaluation, by credential name. Only an operator that takes a
     /// credential slot (`hash/scrypt`'s salt) reads them; they are never reachable as a binding.
     secrets: Arc<SecretValues>,
+    /// The `prob/*` stream and rejection flag, shared with every child of this context.
+    prob: Arc<ProbState>,
+    /// The dispatch's seed source for an unseeded `prob/*` stream; `None` in a pure evaluation.
+    prob_entropy: Option<EntropySource>,
 }
 
 /// The credential values of one evaluation. `Debug` shows only the names.
@@ -104,6 +186,29 @@ impl BindingContext {
     /// The value of the credential `name` the kernel resolved for this evaluation.
     pub fn secret(&self, name: &str) -> Option<&str> {
         self.secrets.0.get(name).map(String::as_str)
+    }
+
+    /// The `prob/*` stream and rejection flag of this evaluation.
+    pub fn prob(&self) -> &ProbState {
+        &self.prob
+    }
+
+    /// The next `prob/*` value in [0, 1), or the error an unseeded stream without an entropy source raises.
+    pub fn prob_next(&self) -> Result<f64, OrbitalError> {
+        self.prob
+            .next(self.prob_entropy.as_ref())
+            .map_err(|message| OrbitalError::Eval(EvalError::InvalidArgument(message)))
+    }
+
+    /// Give the unseeded `prob/*` stream of this dispatch its seed source (the kernel's journaled `Random` ask).
+    pub fn set_prob_entropy(&mut self, source: EntropySource) -> &mut Self {
+        self.prob_entropy = Some(source);
+        self
+    }
+
+    /// Restart the `prob/*` stream (`prob/seed`).
+    pub fn prob_seed(&self, n: f64) {
+        self.prob.seed(n);
     }
 
     /// Create a new empty binding context
@@ -637,6 +742,8 @@ impl BindingContext {
             entity_stores: Arc::clone(&self.entity_stores),
             drop_unset: self.drop_unset,
             secrets: Arc::clone(&self.secrets),
+            prob: Arc::clone(&self.prob),
+            prob_entropy: self.prob_entropy.clone(),
         }
     }
 

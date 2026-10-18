@@ -3,6 +3,7 @@
 // the declared route with `{ error }` and no ask.
 
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
+use orbital_core_runtime::credential_admin::CredentialStanding;
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
@@ -177,7 +178,7 @@ fn explicit_app_status_uses_the_app_slot_with_or_without_a_viewer() {
                         principal: None
                     }
                 );
-                IoAnswer::CredentialStatus(Ok(true))
+                IoAnswer::CredentialStatus(Ok(CredentialStanding::of(true)))
             },
         );
         assert_eq!(
@@ -187,8 +188,24 @@ fn explicit_app_status_uses_the_app_slot_with_or_without_a_viewer() {
                 principal: None
             }]
         );
-        assert_eq!(payload_of(&response, "OK"), json!({"connected": true}));
+        assert_eq!(payload_of(&response, "OK"), json!({"connected": true, "label": ""}));
     }
+}
+
+#[test]
+fn status_hands_the_program_the_account_label_and_nothing_else_about_the_credential() {
+    let (response, _) = run(
+        json!(["credential-status", {"credential": "KEY", "scope": "app"}, routes()]),
+        go(None),
+        |_| IoAnswer::CredentialStatus(Ok(CredentialStanding { connected: true, label: Some("ada@example.com".into()) })),
+    );
+    assert_eq!(payload_of(&response, "OK"), json!({"connected": true, "label": "ada@example.com"}));
+    let (unlabeled, _) = run(
+        json!(["credential-status", {"credential": "KEY", "scope": "app"}, routes()]),
+        go(None),
+        |_| IoAnswer::CredentialStatus(Ok(CredentialStanding::of(true))),
+    );
+    assert_eq!(payload_of(&unlabeled, "OK"), json!({"connected": true, "label": ""}), "no label reads as empty text");
 }
 
 #[test]
@@ -202,10 +219,10 @@ fn explicit_user_status_keeps_dispatch_authority_and_missing_viewer_refusal() {
                 principal: Some("u1".into())
             }
         );
-        IoAnswer::CredentialStatus(Ok(false))
+        IoAnswer::CredentialStatus(Ok(CredentialStanding::of(false)))
     });
     assert_eq!(seen.len(), 1);
-    assert_eq!(payload_of(&response, "OK"), json!({"connected": false}));
+    assert_eq!(payload_of(&response, "OK"), json!({"connected": false, "label": ""}));
 
     let (response, seen) = run(effect, go(None), |request| {
         panic!("anonymous user status asked {request:?}")
@@ -261,7 +278,7 @@ fn credential_status_takes_the_principal_from_the_dispatch_user_not_the_program(
         IoRequest::CredentialStatus { name, principal }
             if name == "tok_name" && principal.as_deref() == Some("u1") =>
         {
-            IoAnswer::CredentialStatus(Ok(true))
+            IoAnswer::CredentialStatus(Ok(CredentialStanding::of(true)))
         }
         other => panic!("the fixture asks for {other:?}"),
     });
@@ -272,12 +289,12 @@ fn credential_status_takes_the_principal_from_the_dispatch_user_not_the_program(
             principal: Some("u1".into())
         }]
     );
-    assert_eq!(payload_of(&response, "OK"), json!({ "connected": true }));
+    assert_eq!(payload_of(&response, "OK"), json!({ "connected": true, "label": "" }));
 
     let (response, _) = run(effect, go(signed_in()), |_| {
-        IoAnswer::CredentialStatus(Ok(false))
+        IoAnswer::CredentialStatus(Ok(CredentialStanding::of(false)))
     });
-    assert_eq!(payload_of(&response, "OK"), json!({ "connected": false }));
+    assert_eq!(payload_of(&response, "OK"), json!({ "connected": false, "label": "" }));
 }
 
 #[test]
@@ -311,7 +328,7 @@ fn credential_forget_drops_the_viewers_value_and_reports_not_connected() {
             principal: Some("u1".into())
         }]
     );
-    assert_eq!(payload_of(&response, "OK"), json!({ "connected": false }));
+    assert_eq!(payload_of(&response, "OK"), json!({ "connected": false, "label": "" }));
 }
 
 #[test]
@@ -978,6 +995,8 @@ mod oauth {
         counter: AtomicU8,
         http: Mutex<Vec<HttpRequest>>,
         token: Mutex<(u16, String)>,
+        /// What the person's consent answers: `None` is a host that asks no one, `Some(Err)` a host whose window failed.
+        consent: Mutex<Option<Result<Option<String>, String>>>,
     }
 
     use orbital_core_runtime::http_service::HttpRequest;
@@ -992,6 +1011,7 @@ mod oauth {
                 counter: AtomicU8::new(1),
                 http: Mutex::new(Vec::new()),
                 token: Mutex::new((200, TOKEN_OK.to_string())),
+                consent: Mutex::new(None),
             })
         }
 
@@ -1008,6 +1028,11 @@ mod oauth {
                     let fill = self.counter.fetch_add(1, Ordering::SeqCst);
                     IoAnswer::Random(Ok(vec![fill; *bytes as usize]))
                 }
+                IoRequest::OAuth { ask: ask @ orbital_core_base::oauth_ask::OAuthAsk::Consent { .. }, principal } => IoAnswer::OAuth(match self.consent.lock().unwrap().clone() {
+                    Some(Ok(code)) => Ok(orbital_core_base::oauth_ask::OAuthReply::Code { code }),
+                    Some(Err(message)) => Err(message),
+                    None => self.store.answer(ask, principal.as_deref()),
+                }),
                 IoRequest::OAuth { ask, principal } => IoAnswer::OAuth(self.store.answer(ask, principal.as_deref())),
                 IoRequest::Http { request, .. } => {
                     self.http.lock().unwrap().push(request.clone());
@@ -1130,6 +1155,61 @@ mod oauth {
     }
 
     #[test]
+    fn a_host_that_asks_the_person_hands_the_consent_code_back_beside_the_url_and_state() {
+        use orbital_core_base::oauth_ask::OAuthAsk;
+        let host = Host::new();
+        *host.consent.lock().unwrap() = Some(Ok(Some("CODE-FROM-BROWSER".to_string())));
+        host.run(discovery(), user("u1"));
+        let (response, seen) = host.run(authorize("u1"), user("u1"));
+        let payload = payload_of(&response, "OK");
+        assert_eq!(payload["code"], "CODE-FROM-BROWSER");
+        let asked: Vec<&OAuthAsk> = seen
+            .iter()
+            .filter_map(|request| match request {
+                IoRequest::OAuth { ask: ask @ OAuthAsk::Consent { .. }, .. } => Some(ask),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(asked.len(), 1, "the person is asked once: {seen:?}");
+        let OAuthAsk::Consent { auth_url, state, redirect_uri } = asked[0] else { unreachable!() };
+        assert_eq!((auth_url.as_str(), state.as_str(), redirect_uri.as_str()), (payload["authUrl"].as_str().unwrap(), payload["state"].as_str().unwrap(), "https://app.example.com/cb"));
+        let (connected, _) = host.run(token_call("connect", "google", &payload["state"].as_str().unwrap().to_string()), user("u1"));
+        assert_eq!(payload_of(&connected, "OK")["connected"], true, "the code the consent returned completes the flow the usual way");
+    }
+
+    #[test]
+    fn control_a_host_that_asks_no_one_declines_or_fails_the_window_and_a_mock_authorization_asks_nobody() {
+        use orbital_core_base::oauth_ask::OAuthAsk;
+        let consent_asks = |seen: &[IoRequest]| seen.iter().filter(|request| matches!(request, IoRequest::OAuth { ask: OAuthAsk::Consent { .. }, .. })).count();
+        let none = Host::new();
+        none.run(discovery(), user("u1"));
+        let (response, seen) = none.run(authorize("u1"), user("u1"));
+        assert_eq!(payload_of(&response, "OK")["code"], "", "a host that cannot ask answers no code");
+        assert_eq!(consent_asks(&seen), 1);
+
+        let declined = Host::new();
+        *declined.consent.lock().unwrap() = Some(Ok(None));
+        declined.run(discovery(), user("u1"));
+        let (response, _) = declined.run(authorize("u1"), user("u1"));
+        assert_eq!(payload_of(&response, "OK")["code"], "", "a declined consent is no code, never a stale one");
+
+        let broken = Host::new();
+        *broken.consent.lock().unwrap() = Some(Err("window closed".to_string()));
+        broken.run(discovery(), user("u1"));
+        let (response, _) = broken.run(authorize("u1"), user("u1"));
+        assert_eq!(failure(&response).0, "store-unavailable");
+
+        let mock = Host::new();
+        *mock.consent.lock().unwrap() = Some(Ok(Some("MUST-NOT-APPEAR".to_string())));
+        let (response, seen) = mock.run(
+            json!(["oauth-authorize", mock_client(), {"redirectUri":"https://app.example.com/cb","scope":["openid","email"],"subject":"u1"}, routes()]),
+            user("u1"),
+        );
+        assert_eq!(consent_asks(&seen), 0);
+        assert_eq!(payload_of(&response, "OK")["code"], "");
+    }
+
+    #[test]
     fn a_state_is_taken_once_two_hosts_one_state_make_one_token_request() {
         let host = Host::new();
         let (_, state) = started(&host, "u1");
@@ -1227,6 +1307,7 @@ mod oauth {
             counter: AtomicU8::new(1),
             http: Mutex::new(Vec::new()),
             token: Mutex::new((200, TOKEN_OK.to_string())),
+            consent: Mutex::new(None),
         });
         let (response, _) = bare.run(json!(["oauth-connection-status", "google", routes()]), None);
         assert_eq!(failure(&response).0, "store-unavailable");
@@ -1305,6 +1386,28 @@ mod oauth {
         assert_eq!(failure(&response).0, "unconfigured-client");
         let (control, _) = host.run(authorize("u1"), user("u1"));
         assert!(payload_of(&control, "OK")["authUrl"].as_str().unwrap().contains("state="));
+    }
+
+    #[test]
+    fn a_public_client_ignores_a_declared_secret_slot_and_sends_no_secret_while_a_secret_client_still_needs_it() {
+        let public = || json!({"tag":"google","mode":"real","issuer":ISSUER,"clientId":"CID","clientSecret":"UNHELD","clientAuth":"none"});
+        let host = Host::new();
+        host.run(json!(["http", "GET", ISSUER, "/.well-known/openid-configuration", {"auth": {"scheme":"oauth-client","op":"discovery","client":public()}}, routes()]), user("u1"));
+        let (response, seen) = host.run(json!(["oauth-authorize", public(), {"redirectUri":"https://app.example.com/cb","scope":["openid"],"subject":"u1"}, routes()]), user("u1"));
+        let authorized = payload_of(&response, "OK");
+        assert!(authorized["authUrl"].as_str().unwrap().contains("client_id=client-id"), "{authorized}");
+        assert!(!seen.iter().any(|r| matches!(r, IoRequest::Secret { name, .. } if name == "UNHELD")), "the unheld secret slot is never asked: {seen:?}");
+        let state = authorized["state"].as_str().unwrap().to_string();
+        let exchange = json!(["http", "POST", "oauth-endpoint", "token", {"auth": {"scheme":"oauth-client","op":"connect","client":public(),"provider":"google","code":"C1","state":state}}, routes()]);
+        let (connected, seen) = host.run(exchange, user("u1"));
+        assert_eq!(payload_of(&connected, "OK")["connected"], true);
+        assert!(!seen.iter().any(|r| matches!(r, IoRequest::Secret { name, .. } if name == "UNHELD")), "{seen:?}");
+        let body = host.http.lock().unwrap().last().cloned().unwrap().text().to_string();
+        assert!(body.contains("client_id=client-id") && !body.contains("client_secret"), "a public client sends only its id: {body}");
+        // control: the same declaration as a secret client still fails unconfigured when the slot is unheld.
+        let secret = json!({"tag":"google","mode":"real","issuer":ISSUER,"clientId":"CID","clientSecret":"UNHELD","clientAuth":"post"});
+        let (refused, _) = host.run(json!(["oauth-authorize", secret, {"redirectUri":"https://app.example.com/cb"}, routes()]), user("u1"));
+        assert_eq!(failure(&refused).0, "unconfigured-client");
     }
 
     fn mock_client() -> Json {
@@ -2079,4 +2182,44 @@ mod os_twin {
         }
         handles.close_all();
     }
+}
+
+fn draw_effect() -> Json {
+    json!(["emit", "OK", { "draw": ["prob/uniform", 0, 1] }])
+}
+
+fn draw_with(answer: Vec<u8>) -> (Json, Vec<IoRequest>) {
+    let (response, seen) = run(draw_effect(), go(None), |request| match request {
+        IoRequest::Random { bytes: 4 } => IoAnswer::Random(Ok(answer.clone())),
+        other => panic!("the fixture asks for {other:?}"),
+    });
+    (payload_of(&response, "OK"), seen)
+}
+
+#[test]
+fn an_unseeded_prob_draw_asks_one_journaled_random_and_two_dispatches_with_different_answers_differ() {
+    let (first, seen) = draw_with(vec![1, 2, 3, 4]);
+    assert_eq!(seen, vec![IoRequest::Random { bytes: 4 }]);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (second, _) = draw_with(vec![9, 8, 7, 6]);
+    assert_ne!(first, second, "different Random answers draw different values, whatever the clock says");
+}
+
+#[test]
+fn replaying_a_dispatch_from_its_journal_draws_the_same_value_whatever_the_clock_says() {
+    let (first, _) = draw_with(vec![1, 2, 3, 4]);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (replay, _) = draw_with(vec![1, 2, 3, 4]);
+    assert_eq!(first, replay);
+}
+
+#[test]
+fn a_seeded_prob_draw_makes_no_ask() {
+    let (response, seen) = run(
+        json!(["emit", "OK", { "draw": ["do", ["prob/seed", 42], ["prob/uniform", 0, 1]] }]),
+        go(None),
+        |request| panic!("a seeded stream must not ask the host, asked {request:?}"),
+    );
+    assert!(seen.is_empty());
+    assert!(payload_of(&response, "OK")["draw"].is_number());
 }

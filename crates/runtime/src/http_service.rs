@@ -144,6 +144,11 @@ pub trait SecretSource: Send + Sync {
             Some(_) => Err(NO_USER_CREDENTIALS.to_string()),
         }
     }
+    /// The non-secret account label stored beside the credential `name` of `principal` (or the app-wide one), `None`
+    /// when it has none or this host keeps none.
+    fn label_of(&self, _name: &str, _principal: Option<&str>) -> Result<Option<String>, String> {
+        Ok(None)
+    }
     /// [`Self::store_secret`] for `principal`'s credential.
     fn store_secret_of(
         &self,

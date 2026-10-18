@@ -33,6 +33,9 @@ pub mod context;
 pub mod operators;
 pub mod trace;
 
+#[cfg(test)]
+mod ruling_tests;
+
 pub use crate::evaluator::operators::arg_types::{actual_of, operator_signature};
 pub use crate::evaluator::operators::system::{TimeUnit, TIME_UNIT_VOCABULARY};
 pub use crate::evaluator::operators::xml::bake_list_shapes;
@@ -231,6 +234,23 @@ mod tests {
         let expr: SExpression = serde_json::from_str(json).unwrap();
         let evaluator = Evaluator::new();
         evaluator.evaluate(&expr, ctx).unwrap()
+    }
+
+    #[test]
+    fn random_int_with_max_below_min_is_an_invalid_argument_not_a_panic() {
+        for call in [r#"["randomInt", 5, 1]"#, r#"["math/randomInt", 1, 0]"#, r#"["randomInt", 3, null]"#] {
+            let message = eval_err(call);
+            assert!(message.contains("math/randomInt: max must not be below min"), "{call}: {message}");
+        }
+    }
+
+    #[test]
+    fn random_int_control_an_equal_or_wider_range_draws_inside_it() {
+        assert_eq!(eval(r#"["randomInt", 3, 3]"#), Value::Number(3.0));
+        for _ in 0..20 {
+            let Value::Number(n) = eval(r#"["randomInt", -2, 2]"#) else { panic!("not a number") };
+            assert!((-2.0..=2.0).contains(&n) && n.fract() == 0.0, "{n}");
+        }
     }
 
     // ========================================================================

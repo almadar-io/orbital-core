@@ -2,7 +2,8 @@
 //! ([`Transport`]). It is the Rust twin of `@almadar/db/firestore` and shares its layout:
 //!
 //! - with a `root` document path, rows live at `<root>/entities/<Entity>/rows/<id>`; with an empty root, at the
-//!   top-level collection `<Entity>/<id>`;
+//!   top-level collection `<Entity>/<id>`; an entity bound to a declared `[persistent: tbl]` collection is keyed by
+//!   that collection in place of its name;
 //! - a row's document carries its fields and its `id`; a read stamps the document name's id over it.
 //!
 //! The wire requests are the ones the Firebase Admin SDK sends in REST mode: `batchGet` for a read, `commit` for a
@@ -13,8 +14,9 @@
 //! ([`crate::jwt::service_account_assertion`]).
 
 use std::collections::hash_map::RandomState;
+use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 use orbital_core_base::codec::encode_uri_component;
@@ -1011,6 +1013,7 @@ pub struct FirestoreRows {
     client: FirestoreClient,
     root: String,
     orderable_fields: Vec<String>,
+    collections: RwLock<HashMap<String, String>>,
 }
 
 fn encode_row(row: &Map<String, Json>) -> Map<String, Json> {
@@ -1059,16 +1062,24 @@ impl FirestoreRows {
             client: FirestoreClient::new(config, transport),
             root: root.to_string(),
             orderable_fields,
+            collections: RwLock::new(HashMap::new()),
         })
     }
 
-    /// The collection holding an entity's rows, keyed by the entity's NAME exactly as `@almadar/db/firestore` does:
-    /// production data lives where the TS adapter writes it, so a declared `[persistent: tbl]` collection is not used.
+    /// The collection holding an entity's rows, as `@almadar/db/firestore` keys it: the entity's declared
+    /// `[persistent: tbl]` collection, else its NAME.
     fn rows_path(&self, entity_type: &str) -> String {
+        let key = self
+            .collections
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(entity_type)
+            .cloned()
+            .unwrap_or_else(|| entity_type.to_string());
         if self.root.is_empty() {
-            entity_type.to_string()
+            key
         } else {
-            format!("{}/entities/{entity_type}/rows", self.root)
+            format!("{}/entities/{key}/rows", self.root)
         }
     }
 
@@ -1285,6 +1296,13 @@ impl EntitySource for FirestoreRows {
         Ok(self
             .find(entity_type, id)?
             .unwrap_or_else(|| Arc::new(Value::Null)))
+    }
+
+    fn bind_collection(&self, entity_type: &str, collection: &str) {
+        self.collections
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(entity_type.to_string(), collection.to_string());
     }
 
     fn find(&self, entity_type: &str, id: &str) -> Result<Option<Arc<Value>>, String> {
@@ -1665,26 +1683,33 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_collection_is_ignored_and_rows_stay_keyed_by_the_entity_name() {
-        let (rows, script) = store(&[(200, json!([]))], "hosted/app", &[]);
+    fn a_declared_collection_keys_the_rows_and_an_undeclared_entity_keeps_its_name() {
+        let (rows, script) = store(&[(200, json!([])), (200, json!([]))], "hosted/app", &[]);
         rows.bind_collection("Task", "tasks");
         rows.list("Task").unwrap();
-        let (top, top_script) = store(&[(200, json!([]))], "", &[]);
+        rows.list("Note").unwrap();
+        let (top, top_script) = store(&[(200, json!([])), (200, json!([]))], "", &[]);
         top.bind_collection("Task", "tasks");
         top.list("Task").unwrap();
+        top.list("Note").unwrap();
         assert!(
-            script.urls()[0].contains("/documents/hosted/app/entities/Task:runQuery"),
+            script.urls()[0].contains("/documents/hosted/app/entities/tasks:runQuery"),
             "{:?}",
             script.urls()
         );
-        assert_eq!(
-            script.bodies()[0]["structuredQuery"]["from"],
-            json!([{ "collectionId": "rows" }])
+        assert!(
+            script.urls()[1].contains("/documents/hosted/app/entities/Note:runQuery"),
+            "control: an entity with no declared collection keeps its name {:?}",
+            script.urls()
         );
         assert_eq!(
             top_script.bodies()[0]["structuredQuery"]["from"],
-            json!([{ "collectionId": "Task" }]),
-            "control: the top-level layout keeps the name too"
+            json!([{ "collectionId": "tasks" }])
+        );
+        assert_eq!(
+            top_script.bodies()[1]["structuredQuery"]["from"],
+            json!([{ "collectionId": "Note" }]),
+            "control: the top-level layout keeps the name when none is declared"
         );
     }
 

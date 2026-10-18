@@ -907,7 +907,7 @@ fn parse_set(args: &[SExpression]) -> Option<Effect> {
 /// {emit:{...}})` — the dominant corpus idiom for "update with no separate
 /// id, emit routes elsewhere" — misreads the emit config as `data` and the
 /// literal data token as `id` (C-PERSIST-UPDATE-TRAILING-EMIT-MISPARSED).
-fn strip_trailing_emit_options(args: &[SExpression]) -> &[SExpression] {
+pub fn strip_trailing_emit_options(args: &[SExpression]) -> &[SExpression] {
     match args.last().and_then(|a| a.as_object()) {
         Some(obj) if obj.contains_key("emit") => &args[..args.len() - 1],
         _ => args,

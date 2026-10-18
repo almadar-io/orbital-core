@@ -196,6 +196,10 @@ pub struct EmbeddedOperatorParam {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: OperatorTypeRef,
+    /// The kernel raises when this operand is null (`rejectsNull` in the operator table); `orb validate` refuses a value
+    /// that can be missing here.
+    #[serde(rename = "rejectsNull", default)]
+    pub rejects_null: bool,
 }
 
 /// Metadata for a single operator parsed from `operators.json`.

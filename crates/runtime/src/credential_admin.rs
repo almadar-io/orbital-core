@@ -29,6 +29,23 @@ pub struct StoreListing {
     pub entries: Vec<StoredName>,
 }
 
+/// What `credential-status` reports of one credential: whether the host holds a value, and the non-secret account label
+/// stored beside it (the email it was signed in as), never the value.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialStanding {
+    pub connected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl CredentialStanding {
+    /// A standing with no label.
+    pub fn of(connected: bool) -> Self {
+        Self { connected, label: None }
+    }
+}
+
 /// What a rotation did to the stored rows.
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -233,6 +233,7 @@ struct Stored {
     id: String,
     entry: CredentialEntry,
     value: String,
+    label: Option<String>,
 }
 
 impl std::fmt::Debug for Stored {
@@ -445,6 +446,7 @@ impl EncryptedCredentialStore {
                         principal: principal.map(str::to_string),
                     },
                     value,
+                    label: text_of(&row, "label").map(str::to_string),
                 },
             );
         }
@@ -465,6 +467,15 @@ impl EncryptedCredentialStore {
             .by_identity
             .get(&storage_key(name, principal))
             .map(|stored| stored.value.clone())
+    }
+
+    /// The non-secret account label stored beside a warmed credential, `None` when its row carries none.
+    pub fn label(&self, name: &str, principal: Option<&str>) -> Option<String> {
+        self.state
+            .lock()
+            .by_identity
+            .get(&storage_key(name, principal))
+            .and_then(|stored| stored.label.clone())
     }
 
     /// Every warmed app-wide value as an environment-shaped map.
@@ -496,7 +507,7 @@ impl EncryptedCredentialStore {
         found
     }
 
-    /// Upsert one credential: encrypt, persist, keep the warmed entry.
+    /// Upsert one credential: encrypt, persist, keep the warmed entry. A row's label is left as it is.
     pub fn set(
         &self,
         service: &str,
@@ -504,8 +515,24 @@ impl EncryptedCredentialStore {
         value: &str,
         principal: Option<&str>,
     ) -> Result<CredentialEntry, String> {
+        self.set_labeled(service, env_var, value, principal, None)
+    }
+
+    /// [`Self::set`] that also stores `label`, a non-secret account name kept in the clear in the row beside the
+    /// ciphertext. `None` leaves the row's label as it is; an empty label is refused.
+    pub fn set_labeled(
+        &self,
+        service: &str,
+        env_var: &str,
+        value: &str,
+        principal: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<CredentialEntry, String> {
         if principal.is_some_and(str::is_empty) {
             return Err("credential principal must be a nonempty string".to_string());
+        }
+        if label.is_some_and(str::is_empty) {
+            return Err("credential label must be a nonempty string".to_string());
         }
         self.ensure_warm()?;
         let sealed = self.seal(value, env_var, principal)?;
@@ -522,14 +549,17 @@ impl EncryptedCredentialStore {
         if let Some(who) = principal {
             data.insert("principal".into(), json!(who));
         }
+        if let Some(label) = label {
+            data.insert("label".into(), json!(label));
+        }
         let data = Value::Object(data);
         let mut state = self.state.lock();
-        let id = match state.by_identity.get(&key) {
+        let (id, kept_label) = match state.by_identity.get(&key) {
             Some(existing) => {
                 self.rows.update(&existing.id, &data)?;
-                existing.id.clone()
+                (existing.id.clone(), existing.label.clone())
             }
-            None => self.rows.create(&data)?,
+            None => (self.rows.create(&data)?, None),
         };
         let entry = CredentialEntry {
             service: service.to_string(),
@@ -544,6 +574,7 @@ impl EncryptedCredentialStore {
                 id,
                 entry: entry.clone(),
                 value: value.to_string(),
+                label: label.map(str::to_string).or(kept_label),
             },
         );
         Ok(entry)
@@ -699,6 +730,15 @@ mod tests {
                 "{name}"
             );
         }
+        for case in expected {
+            let name = case["name"].as_str().expect("name");
+            assert_eq!(
+                store.label(name, principal_of(case)).as_deref(),
+                case["label"].as_str(),
+                "label of {name}"
+            );
+        }
+        assert_eq!(store.label("GITHUB_TOKEN", None), None);
         let app = store.entries(None);
         let stripe = app
             .iter()
@@ -711,6 +751,60 @@ mod tests {
         let user = store.entries(Some("user-7"));
         assert_eq!(user.len(), 1);
         assert_eq!(user[0].last4, "9876");
+    }
+
+    #[test]
+    fn a_label_is_kept_in_the_clear_beside_the_ciphertext_and_is_never_the_secret() {
+        let fx = fixture();
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let store = EncryptedCredentialStore::new(rows.clone(), fx["masterKey"].as_str(), None);
+        let secret = "1//refresh-token-SECRET-4242";
+        store
+            .set_labeled("kflow", "KNOWLEDGE_REFRESH_TOKEN", secret, None, Some("ada@example.com"))
+            .expect("set");
+        assert_eq!(store.label("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(), Some("ada@example.com"));
+        assert_eq!(store.resolve("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(), Some(secret));
+        let row = rows.list().expect("rows").pop().expect("row");
+        assert_eq!(row["label"], "ada@example.com");
+        assert!(!row.to_string().contains(secret), "the stored row never carries the secret in the clear");
+        assert!(!row["ciphertext"].as_str().expect("ciphertext").contains("ada@example.com"));
+        let reopened = EncryptedCredentialStore::new(rows.clone(), fx["masterKey"].as_str(), None);
+        reopened.warm().expect("warm");
+        assert_eq!(reopened.label("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(), Some("ada@example.com"));
+        assert_ne!(reopened.label("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(), Some(secret));
+    }
+
+    #[test]
+    fn control_a_plain_set_keeps_the_label_and_rotation_keeps_it_and_remove_drops_it() {
+        let fx = fixture();
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let store = EncryptedCredentialStore::new(rows.clone(), fx["masterKey"].as_str(), None);
+        store.set_labeled("kflow", "T", "first", Some("u1"), Some("ada@example.com")).expect("set");
+        store.set("kflow", "T", "second", Some("u1")).expect("rotate the value");
+        assert_eq!(store.resolve("T", Some("u1")).as_deref(), Some("second"));
+        assert_eq!(store.label("T", Some("u1")).as_deref(), Some("ada@example.com"));
+        store.rotate().expect("rotate keys");
+        let again = EncryptedCredentialStore::new(rows.clone(), fx["masterKey"].as_str(), None);
+        again.warm().expect("warm");
+        assert_eq!(again.label("T", Some("u1")).as_deref(), Some("ada@example.com"));
+        assert_eq!(again.label("T", None), None, "a user row has no app-wide label");
+        store.set_labeled("kflow", "T", "third", Some("u1"), Some("grace@example.com")).expect("relabel");
+        assert_eq!(store.label("T", Some("u1")).as_deref(), Some("grace@example.com"));
+        assert!(store.remove("T", Some("u1")).expect("remove"));
+        assert_eq!(store.label("T", Some("u1")), None);
+    }
+
+    #[test]
+    fn control_a_row_without_a_label_reads_as_none_and_an_empty_label_is_refused() {
+        let fx = fixture();
+        let store = EncryptedCredentialStore::new(
+            Arc::new(MemoryCredentialRows::default()),
+            fx["masterKey"].as_str(),
+            None,
+        );
+        store.set("kflow", "K", "v", None).expect("set");
+        assert_eq!(store.label("K", None), None);
+        assert!(store.set_labeled("kflow", "K", "v", None, Some("")).is_err());
     }
 
     #[test]

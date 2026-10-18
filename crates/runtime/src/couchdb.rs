@@ -15,13 +15,13 @@ use std::sync::Arc;
 use orbital_core_base::codec::{base64_encode, encode_uri_component};
 use orbital_core_base::row_set::{RowCompareOp, RowPredicate, RowQuery, RowTotalMode};
 use orbital_core_base::value::Value;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde_json::{json, Map, Value as Json};
 
 use crate::entity_source::EntitySource;
 use crate::firestore::{from_json, to_json, total_from_window};
 use crate::http_service::{HttpRequest, Transport};
-use crate::pg_rows::{mint_id, table_name_for};
+use crate::pg_rows::{mint_id, storage_name_for, Collections};
 use crate::row_query::{
     query_unsupported_reason, GuardCapabilities, OperatorValueKinds, QueryCapabilities,
     RowCombinator, RowIdPage, RowLeafKind, RowOperator, RowOrderableFields, RowPage, RowValueKind,
@@ -322,6 +322,7 @@ pub struct CouchRows {
     transport: Arc<dyn Transport>,
     ensured: Mutex<HashSet<String>>,
     page_size: usize,
+    collections: Collections,
 }
 
 struct Reply {
@@ -398,6 +399,7 @@ impl CouchRows {
             transport,
             ensured: Mutex::new(HashSet::new()),
             page_size: 1000,
+            collections: RwLock::new(std::collections::HashMap::new()),
         })
     }
 
@@ -445,24 +447,24 @@ impl CouchRows {
         ))
     }
 
-    fn db_path(entity_type: &str) -> String {
-        format!("/{}", encode_uri_component(&table_name_for(entity_type)))
+    fn db_name(&self, entity_type: &str) -> String {
+        storage_name_for(&self.collections, entity_type)
     }
 
-    fn doc_path(entity_type: &str, id: &str) -> String {
-        format!(
-            "{}/{}",
-            Self::db_path(entity_type),
-            encode_uri_component(id)
-        )
+    fn db_path(&self, entity_type: &str) -> String {
+        format!("/{}", encode_uri_component(&self.db_name(entity_type)))
+    }
+
+    fn doc_path(&self, entity_type: &str, id: &str) -> String {
+        format!("{}/{}", self.db_path(entity_type), encode_uri_component(id))
     }
 
     fn ensure_database(&self, entity_type: &str) -> Result<(), String> {
-        let name = table_name_for(entity_type);
+        let name = self.db_name(entity_type);
         if self.ensured.lock().contains(&name) {
             return Ok(());
         }
-        let reply = self.call("PUT", &Self::db_path(entity_type), None)?;
+        let reply = self.call("PUT", &self.db_path(entity_type), None)?;
         // 412 is CouchDB's answer for a database that exists; 409 is accepted as the TS adapter accepts it.
         if !matches!(reply.status, 201 | 202 | 409 | 412) {
             return Self::fail(&reply, "create database");
@@ -472,7 +474,7 @@ impl CouchRows {
     }
 
     fn get_doc(&self, entity_type: &str, id: &str) -> Result<Option<Json>, String> {
-        let reply = self.call("GET", &Self::doc_path(entity_type, id), None)?;
+        let reply = self.call("GET", &self.doc_path(entity_type, id), None)?;
         match reply.status {
             200 => Ok(Some(reply.body)),
             404 => Ok(None),
@@ -489,7 +491,7 @@ impl CouchRows {
     ) -> Result<Option<()>, String> {
         let reply = self.call(
             "PUT",
-            &Self::doc_path(entity_type, id),
+            &self.doc_path(entity_type, id),
             Some(&Json::Object(doc.clone())),
         )?;
         match reply.status {
@@ -502,7 +504,7 @@ impl CouchRows {
     fn mango_find(&self, entity_type: &str, query: &Json) -> Result<Json, String> {
         let reply = self.call(
             "POST",
-            &format!("{}/_find", Self::db_path(entity_type)),
+            &format!("{}/_find", self.db_path(entity_type)),
             Some(query),
         )?;
         match reply.status {
@@ -682,7 +684,7 @@ impl CouchRows {
                         "DELETE",
                         &format!(
                             "{}?rev={}",
-                            Self::doc_path(entity_type, id),
+                            self.doc_path(entity_type, id),
                             encode_uri_component(&rev)
                         ),
                         None,
@@ -738,6 +740,12 @@ impl CouchRows {
 }
 
 impl EntitySource for CouchRows {
+    fn bind_collection(&self, entity_type: &str, collection: &str) {
+        self.collections
+            .write()
+            .insert(entity_type.to_string(), collection.to_string());
+    }
+
     fn read(&self, entity_type: &str, id: &str) -> Result<Arc<Value>, String> {
         Ok(self
             .find(entity_type, id)?
@@ -794,7 +802,7 @@ impl EntitySource for CouchRows {
             "DELETE",
             &format!(
                 "{}?rev={}",
-                Self::doc_path(entity_type, id),
+                self.doc_path(entity_type, id),
                 encode_uri_component(&rev_of(&current))
             ),
             None,
@@ -815,7 +823,7 @@ impl EntitySource for CouchRows {
     fn list(&self, entity_type: &str) -> Result<Vec<Arc<Value>>, String> {
         let reply = self.call(
             "GET",
-            &format!("{}/_all_docs?include_docs=true", Self::db_path(entity_type)),
+            &format!("{}/_all_docs?include_docs=true", self.db_path(entity_type)),
             None,
         )?;
         match reply.status {
@@ -1016,6 +1024,24 @@ mod tests {
         assert!(
             CouchRows::new("ftp://x", Script::new(&[])).is_err(),
             "control: another scheme is refused"
+        );
+    }
+
+    #[test]
+    fn a_declared_collection_names_the_database_and_an_undeclared_entity_keeps_the_table_name() {
+        let script = Script::new(&[
+            (404, json!({ "error": "not_found" })),
+            (404, json!({ "error": "not_found" })),
+        ]);
+        let rows = CouchRows::new("http://c:5984", script.clone()).unwrap();
+        rows.bind_collection("TimeEntry", "timesheet");
+        assert!(rows.find("TimeEntry", "a").unwrap().is_none());
+        assert!(rows.find("Stock", "a").unwrap().is_none());
+        let sent = script.sent();
+        assert_eq!(sent[0].1, "http://c:5984/timesheet/a");
+        assert_eq!(
+            sent[1].1, "http://c:5984/stocks/a",
+            "control: no declared collection keeps the pluralized name"
         );
     }
 

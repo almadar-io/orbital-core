@@ -103,6 +103,9 @@ pub enum Mismatch {
     /// guarded by a presence check nor declared with a default. Both evaluators read a missing value as below
     /// any number while every push-down store fails the comparison, so the program must say which it means.
     MaybeAbsent { operator: String, operand: String },
+    /// An operand that can be missing or null handed to a position the kernel raises on when it is null (the
+    /// parameter's `rejectsNull`), with no presence check or default in front of it.
+    NullOperand { operator: String, operand: String },
 }
 
 impl fmt::Display for Mismatch {
@@ -115,6 +118,9 @@ impl fmt::Display for Mismatch {
                 write!(f, "`{path}` is not a field of {record}")
             }
             Mismatch::Undetermined { reason } => write!(f, "{reason}"),
+            Mismatch::NullOperand { operator, operand } => {
+                write!(f, "`{operand}` can be missing, and `{operator}` raises on a null operand")
+            }
             Mismatch::MaybeAbsent { operator, operand } => {
                 write!(f, "`{operand}` can be missing, so `{operator}` over it is undecided")
             }
@@ -182,6 +188,7 @@ pub struct FieldProjection {
 pub struct Signature<'a> {
     params: &'a [EmbeddedOperatorParam],
     unbounded: bool,
+    max_arity: Option<u32>,
     returns: &'a OperatorTypeRef,
 }
 
@@ -190,7 +197,24 @@ impl<'a> Signature<'a> {
         Self {
             params: &op.params,
             unbounded: op.max_arity.is_none(),
+            max_arity: op.max_arity,
             returns: &op.return_type,
+        }
+    }
+
+    /// The most arguments the operator declares, or `None` when it is variadic.
+    pub fn max_arity(&self) -> Option<usize> {
+        self.max_arity.map(|m| m as usize)
+    }
+
+    /// Whether the operand at `index` raises in the kernel when it is null.
+    pub fn rejects_null(&self, index: usize) -> bool {
+        match self.params.get(index) {
+            Some(param) => param.rejects_null,
+            None => self
+                .params
+                .last()
+                .is_some_and(|last| (last.name.starts_with("...") || self.unbounded) && last.rejects_null),
         }
     }
 

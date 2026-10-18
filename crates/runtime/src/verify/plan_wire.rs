@@ -1583,6 +1583,26 @@ mod tests {
     }
 
     #[test]
+    fn the_guard_solver_steers_a_quantifier_over_a_literal_array() {
+        let key = serde_json::json!([{ "name": "k", "type": "string" }]);
+        let by_kind = |op: &str| serde_json::json!([op, [{ "kind": "a" }, { "kind": "a" }], ["fn", "x", ["=", "@payload.k", "@x.kind"]]]);
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            ("some over scalars", serde_json::json!(["array/some", ["a", "b"], ["fn", "x", ["=", "@payload.k", "@x"]]])),
+            ("some over a list call", serde_json::json!(["array/some", ["list", "a", "b"], ["fn", "x", ["=", "@payload.k", "@x"]]])),
+            ("some over objects", by_kind("array/some")),
+            ("every over objects", by_kind("array/every")),
+        ];
+        for (name, guard) in cases {
+            let (pass, fail) = steered(guard, key.clone());
+            assert_eq!((pass, fail), (Some(true), Some(false)), "{name}");
+        }
+        let (empty_some, _) = steered(serde_json::json!(["array/some", [], ["fn", "x", ["=", "@payload.k", "@x"]]]), key.clone());
+        assert_eq!(empty_some, None, "control: no element can satisfy `some` over an empty list, so no passing payload is claimed");
+        let (_, empty_every_fail) = steered(serde_json::json!(["array/every", [], ["fn", "x", ["=", "@payload.k", "@x"]]]), key);
+        assert_eq!(empty_every_fail, None, "control: every element of an empty list satisfies `every`, so no failing payload is claimed");
+    }
+
+    #[test]
     fn control_a_guard_over_no_payload_stays_unsolved_rather_than_claiming_a_payload() {
         let (pass, fail) = steered(serde_json::json!(["=", "@entity.mode", "on"]), serde_json::json!([]));
         assert_eq!((pass, fail), (None, None));

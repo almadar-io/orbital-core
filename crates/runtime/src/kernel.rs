@@ -30,7 +30,7 @@ use orbital_core_eval::util::visit_key::DispatchVisits;
 use orbital_core_base::effect_types::{Effect, EffectOutcome, EffectResult, FetchEmit, RuntimeEnvironment};
 use crate::effects::executor::{EffectExecutor, FetchHandler, FetchPage, PersistenceHandler};
 use crate::effects::response::{EventRequest, EventResponse, TraitFrom};
-use orbital_core_eval::evaluator::context::{BindingContext, BindingContextBuilder};
+use orbital_core_eval::evaluator::context::{BindingContext, BindingContextBuilder, EntropySource};
 use orbital_core_eval::evaluator::Evaluator;
 use orbital_core_base::value::Value;
 use orbital_core_base::events::bus::{shared_bus, SharedEventBus};
@@ -1460,6 +1460,7 @@ impl RuntimeKernel {
             ))
             .pages(self.nav_pages.read().clone());
         let mut ctx = self.with_viewer_i18n(ctx).build();
+        ctx.set_prob_entropy(self.prob_entropy());
         ctx.set_config(bind_user_forwards(
             config_defaults_value(&trait_def, &self.trait_definitions.read()),
             &self.current_user.read(),
@@ -1856,6 +1857,7 @@ impl RuntimeKernel {
             ))
             .pages(self.nav_pages.read().clone());
         let mut ctx = self.with_viewer_i18n(ctx).build();
+        ctx.set_prob_entropy(self.prob_entropy());
         ctx.set_config(bind_user_forwards(
             config_defaults_value(&trait_def, &self.trait_definitions.read()),
             &self.current_user.read(),
@@ -3812,6 +3814,20 @@ impl RuntimeKernel {
         })
     }
 
+    /// The seed an unseeded `prob/*` stream of this dispatch takes: one journaled `Random` ask, made on first use, so a
+    /// replay from the journal draws the same values and two dispatches draw different ones.
+    fn prob_entropy(&self) -> EntropySource {
+        let io = Arc::clone(&self.io);
+        EntropySource::new(move || {
+            let raw = io.random(4)?;
+            let bytes: [u8; 4] = raw
+                .as_slice()
+                .try_into()
+                .map_err(|_| format!("prob/*: the host answered {} entropy bytes, not 4", raw.len()))?;
+            Ok(u32::from_le_bytes(bytes))
+        })
+    }
+
     /// `random-bytes`: `count` bytes of host CSPRNG output as base64url, or the failure.
     fn run_random_bytes(&self, effect: &Effect, bytes: &Value) -> EffectResult {
         let count = match bytes {
@@ -3889,15 +3905,15 @@ impl RuntimeKernel {
                 } else {
                     self.io
                         .credential_forget(&slot.name, principal)
-                        .map(|()| false)
+                        .map(|()| crate::credential_admin::CredentialStanding::of(false))
                 };
                 match answer {
-                    Ok(connected) => EffectResult::executed_with_value(
+                    Ok(standing) => EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::Object(ValueMap::from([(
-                            "connected".to_string(),
-                            Value::Bool(connected),
-                        )])),
+                        Value::Object(ValueMap::from([
+                            ("connected".to_string(), Value::Bool(standing.connected)),
+                            ("label".to_string(), Value::String(standing.label.unwrap_or_default())),
+                        ])),
                     ),
                     Err(message) => EffectResult::failed(effect.clone(), &message),
                 }
@@ -3994,7 +4010,7 @@ impl RuntimeKernel {
                 Err(message) => return EffectResult::failed(effect.clone(), &message),
             };
             let (auth_url, state, pending) = build_mock_authorization(&plan, &state_bytes);
-            return self.keep_pending_grant(effect, auth_url, state, pending, MOCK_PENDING_TTL_MS, principal);
+            return self.keep_pending_grant(effect, auth_url, state, pending, MOCK_PENDING_TTL_MS, principal, false);
         }
         let who = match decl.client_id.scope {
             orbital_core_base::http_wire::SecretScope::App => None,
@@ -4044,10 +4060,11 @@ impl RuntimeKernel {
             Err(FlowFailure::Refused(refusal)) => return EffectResult::failed(effect.clone(), &refusal.message()),
             Err(FlowFailure::Transport(_)) => return Self::oauth_failed(effect, OAuthFailureReason::ResponseInvalid),
         };
-        self.keep_pending_grant(effect, auth_url, state, pending, 10 * 60 * 1000, principal)
+        self.keep_pending_grant(effect, auth_url, state, pending, 10 * 60 * 1000, principal, true)
     }
 
-    /// Hand the pending grant to the host and report the authorization URL and state.
+    /// Hand the pending grant to the host and report the authorization URL and state. A real (not mock) authorization then
+    /// asks the host for the person's consent: a host that can open the URL answers the code, any other answers none.
     fn keep_pending_grant(
         &self,
         effect: &Effect,
@@ -4056,19 +4073,32 @@ impl RuntimeKernel {
         pending: orbital_core_base::oauth_wire::Pending,
         ttl_ms: u64,
         principal: Option<&str>,
+        consent: bool,
     ) -> EffectResult {
         use orbital_core_base::oauth_ask::OAuthAsk;
+        let redirect_uri = pending.redirect_uri.clone();
         let put = OAuthAsk::PendingPut { state: state.clone(), grant: pending, ttl_ms };
         match self.io.oauth(&put, principal) {
-            Ok(OAuthReply::Done) => EffectResult::executed_with_value(
-                effect.clone(),
-                Value::Object(ValueMap::from([
-                    ("authUrl".to_string(), Value::String(auth_url)),
-                    ("state".to_string(), Value::String(state)),
-                ])),
-            ),
-            Ok(_) | Err(_) => Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
+            Ok(OAuthReply::Done) => {}
+            Ok(_) | Err(_) => return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
         }
+        let code = if consent {
+            let ask = OAuthAsk::Consent { auth_url: auth_url.clone(), state: state.clone(), redirect_uri };
+            match self.io.oauth(&ask, principal) {
+                Ok(OAuthReply::Code { code }) => code.unwrap_or_default(),
+                Ok(_) | Err(_) => return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
+            }
+        } else {
+            String::new()
+        };
+        EffectResult::executed_with_value(
+            effect.clone(),
+            Value::Object(ValueMap::from([
+                ("authUrl".to_string(), Value::String(auth_url)),
+                ("state".to_string(), Value::String(state)),
+                ("code".to_string(), Value::String(code)),
+            ])),
+        )
     }
 
     /// `oauth-connection-status` / `oauth-connection-forget`: store first, then caller (the legacy order).

@@ -347,11 +347,17 @@ impl Operator for MathRandomIntOp {
         let min = require_number!(eval_expr(&args[0], ctx)?) as i64;
         let max = require_number!(eval_expr(&args[1], ctx)?) as i64;
 
+        if max < min {
+            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                "math/randomInt: max must not be below min, got min {min} and max {max}"
+            ))));
+        }
+
         let seed = orbital_core_base::time_util::now_millis() as u64;
 
         let rng = seed.wrapping_mul(1103515245).wrapping_add(12345);
-        let range = (max - min + 1) as u64;
-        let result = min + (rng % range) as i64;
+        let range = (i128::from(max) - i128::from(min) + 1) as u128;
+        let result = i128::from(min) + (u128::from(rng) % range) as i128;
 
         Ok(Value::Number(result as f64))
     }

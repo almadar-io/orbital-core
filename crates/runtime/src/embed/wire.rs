@@ -1,7 +1,7 @@
 //! The embedded kernel's wire: what every host (C ABI, JNI, WASM) hands across its boundary as
 //! JSON. Field names are the hosts' contract; `tests/fixtures/embed/golden` pins them.
 
-use crate::credential_admin::{RotateCounts, StoreListing};
+use crate::credential_admin::{CredentialStanding, RotateCounts, StoreListing};
 use crate::effects::executor::{ServiceCaller, SubstrateFailure};
 use crate::resumable::{CallRoutes, CallSite, IoAnswer, IoReply, IoRequest, ModelFailure, ModelFailureKind, PageFacts, PendingRequest, RequestId};
 use orbital_core_base::ir::effects::PageFactField;
@@ -667,7 +667,7 @@ pub enum IoAnswerWire {
         result: Settled<Value, OsError>,
     },
     CredentialStatus {
-        result: Settled<bool, String>,
+        result: Settled<CredentialStanding, String>,
     },
     CredentialForget {
         result: Settled<(), String>,

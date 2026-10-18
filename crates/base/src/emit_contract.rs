@@ -319,8 +319,9 @@ pub fn redis_reply_accepts(declared: &str) -> bool {
 /// `random-bytes` hands back the bytes as base64url without padding; a keyed call adds its `key`.
 pub const RANDOM_BYTES_SHAPE: &[ShapeField] = &[field("value", "string")];
 
-/// `credential-status` and `credential-forget` hand back whether the credential is connected.
-pub const CREDENTIAL_SHAPE: &[ShapeField] = &[field("connected", "boolean")];
+/// `credential-status` and `credential-forget` hand back whether the credential is connected and the non-secret account
+/// label stored beside it (empty text when it has none, always empty after a forget).
+pub const CREDENTIAL_SHAPE: &[ShapeField] = &[field("connected", "boolean"), field("label", "string")];
 
 /// `credential-list`: the store's state, the integrations mode, each service's status and the masked inventory.
 pub const CREDENTIAL_LIST_SHAPE: &[ShapeField] =
@@ -354,8 +355,10 @@ pub const CREDENTIAL_ROTATE_SHAPE: &[ShapeField] =
 /// for a request outside its contract; `null` for any other cause).
 pub const CREDENTIAL_ADMIN_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
 
-/// `oauth-authorize` hands back the URL to send the user to and the state the callback returns.
-pub const OAUTH_AUTHORIZE_SHAPE: &[ShapeField] = &[field("authUrl", "string"), field("state", "string"), field("key", "string")];
+/// `oauth-authorize` hands back the URL to send the user to, the state the callback returns and, on a host that asked the
+/// person itself, the authorization code their consent returned (empty text on every other host).
+pub const OAUTH_AUTHORIZE_SHAPE: &[ShapeField] =
+    &[field("authUrl", "string"), field("state", "string"), field("code", "string"), field("key", "string")];
 
 /// An `oauth-authorize` failure: the OAuth failure beside the call's key.
 pub const OAUTH_AUTHORIZE_FAILURE_SHAPE: &[ShapeField] =
@@ -819,8 +822,13 @@ mod tests {
             vec!["bytes"]
         );
         assert_eq!(
-            undeclared_reads(&["connected"], &success_payload("credential-status", CallVariant::Plain), &[]),
+            undeclared_reads(&["connected", "label"], &success_payload("credential-status", CallVariant::Plain), &[]),
             Vec::<&str>::new()
+        );
+        assert_eq!(
+            undeclared_reads(&["connected", "value"], &success_payload("credential-status", CallVariant::Plain), &[]),
+            vec!["value"],
+            "the credential value is never a field of the status"
         );
     }
 

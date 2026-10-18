@@ -149,6 +149,21 @@ mod tests {
     }
 
     #[test]
+    fn the_native_host_answers_the_label_stored_beside_a_credential_and_none_for_the_rest() {
+        use crate::credential_store::MemoryCredentialRows;
+        let store = encrypted(Arc::new(MemoryCredentialRows::default()));
+        store.set_labeled("kernel", "SESSION", "refresh-SECRET", None, Some("ada@example.com")).unwrap();
+        store.set("kernel", "PLAIN", "v", None).unwrap();
+        let creds = Credentials::from_env(map(&[("ENV_ONLY", "env-key")])).with_encrypted_store(store).unwrap();
+        assert_eq!(creds.label_of("SESSION", None), Ok(Some("ada@example.com".to_string())));
+        assert_ne!(creds.label_of("SESSION", None), creds.secret_of("SESSION", None), "the label is never the secret");
+        assert_eq!(creds.label_of("PLAIN", None), Ok(None));
+        assert_eq!(creds.label_of("ENV_ONLY", None), Ok(None));
+        assert_eq!(creds.label_of("SESSION", Some("alice")), Ok(None), "a user slot never borrows the app label");
+        assert_eq!(Credentials::default().label_of("SESSION", None), Ok(None));
+    }
+
+    #[test]
     fn an_empty_store_entry_revokes_the_env_value() {
         let creds = Credentials::from_env(map(&[("OPENAI_API_KEY", "env-key")]))
             .with_store(map(&[("OPENAI_API_KEY", "")]));
@@ -390,6 +405,10 @@ impl SecretSource for Credentials {
             return Ok(Some(held.clone()));
         }
         Ok(self.encrypted.as_ref().and_then(|store| store.resolve(name, Some(who))))
+    }
+
+    fn label_of(&self, name: &str, principal: Option<&str>) -> Result<Option<String>, String> {
+        Ok(self.encrypted.as_ref().and_then(|store| store.label(name, principal)))
     }
 
     fn store_secret_of(

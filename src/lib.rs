@@ -247,7 +247,7 @@ pub use orbital_core_base::schema;
 pub use orbital_core_base::secrets;
 pub mod credential_admin {
     pub use orbital_core_base::credential_admin::*;
-    pub use orbital_core_runtime::credential_admin::{catalog, run, AdminAsks, RotateCounts, StoreListing, StoredName};
+    pub use orbital_core_runtime::credential_admin::{catalog, run, AdminAsks, CredentialStanding, RotateCounts, StoreListing, StoredName};
 }
 pub use orbital_core_base::shell;
 pub use orbital_core_base::shell_protocol;

@@ -322,7 +322,7 @@ pub enum IoAnswer {
     Random(Result<Vec<u8>, String>),
     Clock(Result<i64, String>),
     Os(Result<Value, OsError>),
-    CredentialStatus(Result<bool, String>),
+    CredentialStatus(Result<crate::credential_admin::CredentialStanding, String>),
     CredentialForget(Result<(), String>),
     CredentialStoreList(Result<Option<StoreListing>, String>),
     CredentialStoreRead(Result<Option<String>, String>),
@@ -1845,7 +1845,7 @@ impl IoPort {
         }
     }
 
-    pub(crate) fn credential_status(&self, name: &str, principal: Option<&str>) -> Result<bool, String> {
+    pub(crate) fn credential_status(&self, name: &str, principal: Option<&str>) -> Result<crate::credential_admin::CredentialStanding, String> {
         match self.ask(|| IoRequest::CredentialStatus {
             name: name.to_string(),
             principal: principal.map(str::to_string),
@@ -2319,11 +2319,13 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
         (IoRequest::Clock, _) => IoAnswer::Clock(Ok(orbital_core_base::time_util::now_millis())),
         (IoRequest::Os { .. }, _) => answer_os_host(host, request),
         (IoRequest::CredentialStatus { name, principal }, Some(host)) => {
-            IoAnswer::CredentialStatus(host.secrets.secret_of(name, principal.as_deref()).map(|value| {
-                crate::http_service::credential_status_connected(
+            IoAnswer::CredentialStatus(host.secrets.secret_of(name, principal.as_deref()).and_then(|value| {
+                let connected = crate::http_service::credential_status_connected(
                     value.as_deref(),
                     principal.as_deref(),
-                )
+                );
+                let label = if connected { host.secrets.label_of(name, principal.as_deref())? } else { None };
+                Ok(crate::credential_admin::CredentialStanding { connected, label })
             }))
         }
         (IoRequest::CredentialForget { name, principal }, Some(host)) => {
@@ -2961,8 +2963,8 @@ mod http_replay_tests {
                 &IoRequest::CredentialStatus { name: "t".into(), principal: principal.map(str::to_string) },
             )
         };
-        assert_eq!(status(Some("u1")), IoAnswer::CredentialStatus(Ok(true)));
-        assert_eq!(status(Some("u2")), IoAnswer::CredentialStatus(Ok(false)));
+        assert_eq!(status(Some("u1")), IoAnswer::CredentialStatus(Ok(crate::credential_admin::CredentialStanding::of(true))));
+        assert_eq!(status(Some("u2")), IoAnswer::CredentialStatus(Ok(crate::credential_admin::CredentialStanding::of(false))));
         let forget = answer_http(
             Some(&host),
             &IoRequest::CredentialForget { name: "t".into(), principal: Some("u1".into()) },

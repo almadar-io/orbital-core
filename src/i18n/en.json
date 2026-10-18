@@ -134,7 +134,9 @@
     "update": "update",
     "delete": "delete",
     "icon": "icon",
-    "roles": "roles"
+    "roles": "roles",
+    "invariant": "invariant",
+    "holds": "holds"
   },
   "sigils": {
     "entity": "entity",

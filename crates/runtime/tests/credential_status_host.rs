@@ -1,3 +1,4 @@
+use orbital_core_runtime::credential_admin::CredentialStanding;
 use orbital_core_runtime::http_service::{HttpRequest, HttpResponse, SecretSource, Transport, TransportError};
 use orbital_core_runtime::resumable::{answer_http, BlockingHost, CallSite, HostAnswered, HttpHost, IoAnswer, IoRequest};
 use orbital_core_base::value::Value;
@@ -9,10 +10,16 @@ struct Secrets {
     values: Mutex<BTreeMap<(Option<String>, String), String>>,
     reads: Mutex<Vec<(Option<String>, String)>>,
     forgotten: Mutex<Vec<(Option<String>, String)>>,
+    labels: Mutex<BTreeMap<(Option<String>, String), String>>,
     failure: Option<String>,
+    label_failure: Option<String>,
 }
 
 impl Secrets {
+    fn label(&self, name: &str, principal: Option<&str>, label: &str) {
+        self.labels.lock().unwrap().insert((principal.map(str::to_string), name.to_string()), label.to_string());
+    }
+
     fn put(&self, name: &str, principal: Option<&str>, value: &str) {
         self.values.lock().unwrap().insert(
             (principal.map(str::to_string), name.to_string()),
@@ -33,6 +40,14 @@ impl SecretSource for Secrets {
             return Err(failure.clone());
         }
         Ok(self.values.lock().unwrap().get(&identity).cloned())
+    }
+
+    fn label_of(&self, name: &str, principal: Option<&str>) -> Result<Option<String>, String> {
+        if let Some(failure) = &self.label_failure {
+            return Err(failure.clone());
+        }
+        let identity = (principal.map(str::to_string), name.to_string());
+        Ok(self.labels.lock().unwrap().get(&identity).cloned())
     }
 
     fn forget_of(&self, name: &str, principal: Option<&str>) -> Result<(), String> {
@@ -98,7 +113,7 @@ fn app_status_requires_nonempty_presence_without_changing_raw_secret_resolution(
         with_host(&secrets, |host| {
             assert_eq!(
                 answer_http(Some(host), &status(None)),
-                IoAnswer::CredentialStatus(Ok(connected)),
+                IoAnswer::CredentialStatus(Ok(CredentialStanding::of(connected))),
                 "app value {value:?}"
             );
             assert_eq!(
@@ -124,7 +139,7 @@ fn user_status_keeps_empty_presence_and_never_falls_back_to_the_app() {
         for (principal, connected) in [("u1", true), ("u2", true), ("missing-user", false)] {
             assert_eq!(
                 answer_http(Some(host), &status(Some(principal))),
-                IoAnswer::CredentialStatus(Ok(connected)),
+                IoAnswer::CredentialStatus(Ok(CredentialStanding::of(connected))),
                 "principal {principal}"
             );
         }
@@ -158,7 +173,7 @@ fn blocking_host_reuses_the_same_status_policy_and_preserves_scopes() {
         for (principal, connected) in [(None, false), (Some("u1"), true), (Some("u2"), false)] {
             assert_eq!(
                 blocking.answer_with_http(host, &status(principal)),
-                IoAnswer::CredentialStatus(Ok(connected))
+                IoAnswer::CredentialStatus(Ok(CredentialStanding::of(connected)))
             );
         }
         assert_eq!(
@@ -201,7 +216,7 @@ fn forget_still_delegates_the_exact_requested_identity_without_fallback() {
         );
         assert_eq!(
             answer_http(Some(host), &status(Some("u1"))),
-            IoAnswer::CredentialStatus(Ok(false))
+            IoAnswer::CredentialStatus(Ok(CredentialStanding::of(false)))
         );
         assert_eq!(
             answer_http(Some(host), &secret(None)),
@@ -245,4 +260,46 @@ fn no_http_host_still_reports_unavailable_for_status_and_forget() {
             ))
         );
     }
+}
+
+#[test]
+fn status_carries_the_non_secret_label_stored_beside_the_credential_and_never_the_value() {
+    let secrets = Secrets::default();
+    secrets.put("KEY", None, "app-refresh-token");
+    secrets.label("KEY", None, "ada@example.com");
+    secrets.put("KEY", Some("u1"), "user-refresh-token");
+    with_host(&secrets, |host| {
+        let app = answer_http(Some(host), &status(None));
+        assert_eq!(
+            app,
+            IoAnswer::CredentialStatus(Ok(CredentialStanding { connected: true, label: Some("ada@example.com".to_string()) }))
+        );
+        assert!(!format!("{app:?}").contains("app-refresh-token"), "the answer never carries the value");
+        assert_eq!(
+            answer_http(Some(host), &status(Some("u1"))),
+            IoAnswer::CredentialStatus(Ok(CredentialStanding::of(true))),
+            "a user credential without a label reads no label, and never borrows the app one"
+        );
+    });
+}
+
+#[test]
+fn control_a_credential_that_is_not_connected_reports_no_label_and_a_label_failure_is_not_swallowed() {
+    let secrets = Secrets::default();
+    secrets.put("KEY", None, "");
+    secrets.label("KEY", None, "stale@example.com");
+    with_host(&secrets, |host| {
+        assert_eq!(
+            answer_http(Some(host), &status(None)),
+            IoAnswer::CredentialStatus(Ok(CredentialStanding::of(false)))
+        );
+    });
+    let broken = Secrets { label_failure: Some("label store failed".to_string()), ..Secrets::default() };
+    broken.put("KEY", None, "token");
+    with_host(&broken, |host| {
+        assert_eq!(
+            answer_http(Some(host), &status(None)),
+            IoAnswer::CredentialStatus(Err("label store failed".to_string()))
+        );
+    });
 }

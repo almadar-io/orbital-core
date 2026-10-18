@@ -1135,22 +1135,143 @@ impl Operator for ValidateNoneOfOp {
     }
 }
 
-/// validate/check - Custom predicate validation
+/// One field's rules: each is a rule name and its evaluated arguments.
+type FieldRules = Vec<(String, Vec<Value>)>;
+
+fn rule_list(field: &str, list: Vec<Value>) -> Result<FieldRules, OrbitalError> {
+    let broken = |actual: &str| {
+        OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: format!("a rule `[name, args…]` for field `{field}`"),
+            actual: actual.to_string(),
+        })
+    };
+    list.into_iter()
+        .map(|rule| match rule {
+            Value::Array(parts) => {
+                let mut parts = parts.into_iter();
+                match parts.next() {
+                    Some(Value::String(name)) => Ok((name, parts.collect())),
+                    _ => Err(broken("a list without a rule name")),
+                }
+            }
+            other => Err(broken(other.type_name())),
+        })
+        .collect()
+}
+
+/// The rules argument of `validate/check`: an object of field to rule list. A literal object is read as data, so
+/// a rule `["minLength", 2]` is a rule and not a call of `validate/minLength`; its rule arguments are evaluated.
+fn rules_by_field(expr: &SExpression, ctx: &BindingContext) -> Result<Vec<(String, FieldRules)>, OrbitalError> {
+    let mismatch = |actual: &str| {
+        OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: "rules by field (an object of rule lists)".to_string(),
+            actual: actual.to_string(),
+        })
+    };
+    if let SExpression::Object(fields) = expr {
+        return fields
+            .iter()
+            .map(|(field, list)| {
+                let SExpression::Array(rules) = list else {
+                    return Err(mismatch("a field whose rules are not a list"));
+                };
+                let evaluated = rules
+                    .iter()
+                    .map(|rule| match rule {
+                        SExpression::Array(parts) if matches!(parts.first(), Some(SExpression::String(_))) => {
+                            let mut out = vec![eval_literal_head(&parts[0])];
+                            for part in &parts[1..] {
+                                out.push(eval_expr(part, ctx)?);
+                            }
+                            Ok(Value::Array(out))
+                        }
+                        _ => Ok(Value::Null),
+                    })
+                    .collect::<Result<Vec<_>, OrbitalError>>()?;
+                Ok((field.clone(), rule_list(field, evaluated)?))
+            })
+            .collect();
+    }
+    match eval_expr(expr, ctx)? {
+        Value::Object(fields) => fields
+            .into_iter()
+            .map(|(field, list)| match list {
+                Value::Array(rules) => Ok((field.clone(), rule_list(&field, rules)?)),
+                other => Err(mismatch(other.type_name())),
+            })
+            .collect(),
+        Value::Null => Ok(Vec::new()),
+        other => Err(mismatch(other.type_name())),
+    }
+}
+
+fn eval_literal_head(head: &SExpression) -> Value {
+    match head {
+        SExpression::String(name) => Value::String(name.clone()),
+        _ => Value::Null,
+    }
+}
+
+fn rule_holds(name: &str, value: &Value, args: &[Value]) -> Result<Option<bool>, OrbitalError> {
+    let number = |at: usize| match args.get(at) {
+        Some(Value::Number(n)) => Some(*n),
+        _ => None,
+    };
+    let length = || match value {
+        Value::String(text) => Some(text.chars().count() as f64),
+        Value::Array(items) => Some(items.len() as f64),
+        _ => None,
+    };
+    let holds = match name {
+        "required" => !matches!(value, Value::Null) && !matches!(value, Value::String(text) if text.is_empty()),
+        "string" => matches!(value, Value::String(_)),
+        "number" => matches!(value, Value::Number(n) if !n.is_nan()),
+        "boolean" => matches!(value, Value::Bool(_)),
+        "email" => match value {
+            Value::String(text) => matches_semantic_pattern("validate/email", text)?,
+            _ => false,
+        },
+        "minLength" => length().zip(number(0)).is_some_and(|(len, min)| len >= min),
+        "maxLength" => length().zip(number(0)).is_some_and(|(len, max)| len <= max),
+        "min" => matches!(value, Value::Number(n) if number(0).is_some_and(|min| *n >= min)),
+        "max" => matches!(value, Value::Number(n) if number(0).is_some_and(|max| *n <= max)),
+        "range" => matches!(value, Value::Number(n) if number(0).zip(number(1)).is_some_and(|(lo, hi)| *n >= lo && *n <= hi)),
+        "pattern" => match (value, args.first()) {
+            (Value::String(text), Some(Value::String(pattern))) => {
+                super::string::compile_shared_regex(pattern).is_some_and(|re| re.is_match(text))
+            }
+            _ => false,
+        },
+        "oneOf" => matches!(args.first(), Some(Value::Array(options)) if options.iter().any(|opt| opt.loose_eq(value))),
+        _ => return Ok(None),
+    };
+    Ok(Some(holds))
+}
+
+/// validate/check - run rules by field over a value: `{ valid, errors }`, one `field: rule validation failed`
+/// per broken rule, in rule order; a rule the operator does not know is skipped.
 pub struct ValidateCheckOp;
 impl Operator for ValidateCheckOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/check", >= 2);
-        let val = eval_expr(&args[0], ctx)?;
-        let predicate = eval_expr(&args[1], ctx)?;
-
-        let (params, body) = require_lambda!(predicate);
-
-        let mut child_ctx = ctx.child();
-        if !params.is_empty() {
-            child_ctx.set_local(&params[0], val);
+        let value = eval_expr(&args[0], ctx)?;
+        let mut errors = Vec::new();
+        for (field, rules) in rules_by_field(&args[1], ctx)? {
+            let field_value = value
+                .as_object()
+                .and_then(|object| object.get(&field))
+                .cloned()
+                .unwrap_or(Value::Null);
+            for (name, rule_args) in rules {
+                if rule_holds(&name, &field_value, &rule_args)? == Some(false) {
+                    errors.push(Value::String(format!("{field}: {name} validation failed")));
+                }
+            }
         }
-        let result = eval_expr(&body, &child_ctx)?;
-        Ok(Value::Bool(result.is_truthy()))
+        let mut out = ValueMap::new();
+        out.insert("valid".to_string(), Value::Bool(errors.is_empty()));
+        out.insert("errors".to_string(), Value::Array(errors));
+        Ok(Value::Object(out))
     }
 }
 

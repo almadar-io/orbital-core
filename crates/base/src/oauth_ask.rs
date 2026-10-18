@@ -103,6 +103,10 @@ pub enum OAuthAsk {
     /// Mock mode: whether the access token is held, expired (and is dropped) or valid, by the host clock; a valid one
     /// answers the provider that issued it.
     MockTokenCheck { access_token: String },
+    /// Interactive consent: a host that can ask a person opens `auth_url` for them and answers the authorization code the
+    /// provider sent back to `redirect_uri` (checked against `state`); a host that cannot answers no code, and the
+    /// program carries the URL to the person itself.
+    Consent { auth_url: String, state: String, redirect_uri: String },
 }
 
 impl fmt::Debug for OAuthAsk {
@@ -134,6 +138,12 @@ impl fmt::Debug for OAuthAsk {
             Self::MockTokenRefresh { expires_at_ms, .. } => f.debug_struct("MockTokenRefresh").field("tokens", &HIDDEN).field("expires_at_ms", expires_at_ms).finish(),
             Self::MockTokenRevoke { .. } => f.debug_struct("MockTokenRevoke").field("token", &HIDDEN).finish(),
             Self::MockTokenCheck { .. } => f.debug_struct("MockTokenCheck").field("token", &HIDDEN).finish(),
+            Self::Consent { redirect_uri, .. } => f
+                .debug_struct("Consent")
+                .field("auth_url", &HIDDEN)
+                .field("state", &HIDDEN)
+                .field("redirect_uri", redirect_uri)
+                .finish(),
         }
     }
 }
@@ -178,6 +188,8 @@ pub enum OAuthReply {
     Metadata { metadata: Option<Map<String, Value>> },
     Millis { value: i64 },
     MockToken { state: MockTokenState, provider: Option<OAuthProvider> },
+    /// The authorization code a person's consent returned; `None` when this host asked no one or they declined.
+    Code { code: Option<String> },
 }
 
 impl fmt::Debug for OAuthReply {
@@ -191,6 +203,7 @@ impl fmt::Debug for OAuthReply {
             Self::Metadata { metadata } => f.debug_tuple("Metadata").field(&metadata.is_some()).finish(),
             Self::Millis { value } => f.debug_tuple("Millis").field(value).finish(),
             Self::MockToken { state, provider } => f.debug_tuple("MockToken").field(state).field(provider).finish(),
+            Self::Code { code } => f.debug_tuple("Code").field(&code.as_ref().map(|_| "<redacted>")).finish(),
         }
     }
 }
@@ -214,6 +227,7 @@ impl OAuthAsk {
                 | (Self::MockTokenPut { .. }, OAuthReply::Done)
                 | (Self::MockTokenRefresh { .. } | Self::MockTokenRevoke { .. }, OAuthReply::Flag { .. })
                 | (Self::MockTokenCheck { .. }, OAuthReply::MockToken { .. })
+                | (Self::Consent { .. }, OAuthReply::Code { .. })
         )
     }
 

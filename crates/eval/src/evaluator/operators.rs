@@ -46,6 +46,7 @@ pub mod noise;
 pub mod object;
 pub mod os_path;
 pub mod path;
+pub mod prob;
 pub mod string;
 pub mod system;
 pub mod util;
@@ -69,6 +70,7 @@ pub use noise::*;
 pub use object::*;
 pub use os_path::*;
 pub use path::*;
+pub use prob::*;
 pub use string::*;
 pub use system::*;
 pub use vector::*;
@@ -386,6 +388,24 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "behavior/detect-layout" => K::BehaviorCompositionStubOp("behavior/detect-layout"),
         "behavior/pipe" => K::BehaviorCompositionStubOp("behavior/pipe"),
 
+        // prob/*: seeded sampling, rejection-sampling inference, sample statistics
+        "prob/beta" => K::ProbBetaOp,
+        "prob/categorical" => K::ProbCategoricalOp,
+        "prob/condition" => K::ProbConditionOp,
+        "prob/credible-interval" => K::ProbCredibleIntervalOp,
+        "prob/expected-value" => K::ProbExpectedValueOp,
+        "prob/flip" => K::ProbFlipOp,
+        "prob/gaussian" => K::ProbGaussianOp,
+        "prob/histogram" => K::ProbHistogramOp,
+        "prob/infer" => K::ProbInferOp,
+        "prob/percentile" => K::ProbPercentileOp,
+        "prob/poisson" => K::ProbPoissonOp,
+        "prob/posterior" => K::ProbPosteriorOp,
+        "prob/sample" => K::ProbSampleOp,
+        "prob/seed" => K::ProbSeedOp,
+        "prob/uniform" => K::ProbUniformOp,
+        "prob/variance" => K::ProbVarianceOp,
+
         // Pure operators added for canonical-registry parity.
         "array/count" => K::CountOp,
         "array/removeItem" => K::ArrayRemoveItemOp,
@@ -574,7 +594,12 @@ fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
                     .into());
                 }
                 if let Some(operator) = get_operator(op) {
-                    let _frame = arg_types::signature_for(&operator)
+                    let declared = arg_types::declared_signature(&operator);
+                    if let Some(signature) = &declared {
+                        arg_types::check_arity(op, signature, arr.len() - 1)?;
+                    }
+                    let _frame = declared
+                        .filter(|signature| signature.checks_anything())
                         .map(|signature| arg_types::CallFrame::enter(signature, &arr[1..]));
                     return operator.evaluate(&arr[1..], ctx);
                 }

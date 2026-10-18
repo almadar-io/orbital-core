@@ -1514,6 +1514,7 @@ pub struct LazyPage {
 /// docs/Almadar_LOLO_Expects_Proposal.md.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
+#[expect(clippy::large_enum_variant, reason = "public unboxed layout is the API; the Entity variant carries the access policies and propositions inline")]
 pub enum ExpectDeclaration {
     /// `expects entity Customer [identity] { role : "admin" | "member" }` — the `@user`
     /// fields this orbital reads, typed. Bare `expects entity [identity]` (no name, no
@@ -1555,6 +1556,10 @@ pub enum ExpectDeclaration {
         /// `@<op> none "<reason>"`: the provider must carry a declared access waiver for each op named (reason text is not compared).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         access_waivers: Option<AccessWaivers>,
+        /// `@invariant <expr>` (spec only): every stored row of the provider satisfies each, proved by `orb validate`
+        /// over the program's writes. No runtime effect.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invariants: Option<Vec<SExpression>>,
         /// Set when the obligation was written in an expects-only orbital (a spec): unprovided is an error, not deferred.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         strict: bool,
@@ -1600,6 +1605,10 @@ pub enum ExpectDeclaration {
         #[serde(rename = "traitName")]
         trait_name: String,
         state: String,
+        /// `state paid @holds <expr>` (spec only): the trait's `@entity` satisfies it whenever the trait is in the
+        /// state, proved by `orb validate`. No runtime effect.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holds: Option<SExpression>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         strict: bool,
     },
@@ -4182,30 +4191,41 @@ pub struct TickDefinition {
 }
 
 impl TickDefinition {
-    /// Resolve this tick's interval to milliseconds. `None` = per-frame
-    /// (`"frame"`/`"every-frame"`), fired on every client frame. Mirrors the JS
-    /// runtime's `parseIntervalString` (`5s`/`1m`/`1h`/`30000`); an unrecognized
-    /// string falls back to 1000ms. The single canonical interval parser shared by
-    /// the runtime kernel's tick path and the client tick scheduler.
-    pub fn interval_ms(&self) -> Option<u64> {
+    /// This tick's interval as milliseconds when it is a duration: a number, or a string `<digits>[ms|s|m|h]` (a bare
+    /// digit string is milliseconds). `None` for a per-frame tick, a cron expression and any other string. The one
+    /// duration parser, the Rust twin of `@almadar/runtime`'s `parseDurationString` (`time/duration.ts`).
+    pub fn duration_ms(&self) -> Option<u64> {
         match &self.interval {
             StringOrNumber::Number(n) => Some(n.max(0.0) as u64),
             StringOrNumber::String(s) => {
                 let s = s.trim();
-                if s.eq_ignore_ascii_case("frame") || s.eq_ignore_ascii_case("every-frame") {
-                    return None;
-                }
-                let (digits, unit): (String, String) = s.chars().partition(|c| c.is_ascii_digit());
-                let value: u64 = digits.parse().unwrap_or(1000);
-                match unit.trim() {
+                let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+                let (digits, unit) = s.split_at(split);
+                let value: u64 = digits.parse().ok()?;
+                match unit {
                     "ms" | "" => Some(value),
                     "s" => Some(value * 1000),
                     "m" => Some(value * 60 * 1000),
                     "h" => Some(value * 60 * 60 * 1000),
-                    _ => Some(1000),
+                    _ => None,
                 }
             }
         }
+    }
+
+    /// Resolve this tick's interval to milliseconds. `None` = per-frame
+    /// (`"frame"`/`"every-frame"`), fired on every client frame. A string that is
+    /// neither a duration nor a frame keyword (a cron expression is scheduled by
+    /// its caller before this is asked) falls back to 1000ms. Shared by
+    /// the runtime kernel's tick path and the client tick scheduler.
+    pub fn interval_ms(&self) -> Option<u64> {
+        if let StringOrNumber::String(s) = &self.interval {
+            let s = s.trim();
+            if s.eq_ignore_ascii_case("frame") || s.eq_ignore_ascii_case("every-frame") {
+                return None;
+            }
+        }
+        Some(self.duration_ms().unwrap_or(1000))
     }
 }
 
@@ -4466,6 +4486,25 @@ pub struct DesignHints {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tick_interval_is_a_duration_only_when_it_is_a_number_or_digits_with_a_known_unit() {
+        let tick = |interval: StringOrNumber| TickDefinition { interval, ..serde_json::from_value(serde_json::json!({ "name": "t", "interval": 1, "effects": [] })).unwrap() };
+        let text = |s: &str| tick(StringOrNumber::String(s.to_string()));
+        assert_eq!(tick(StringOrNumber::Number(1500.0)).duration_ms(), Some(1500));
+        assert_eq!(text("5s").duration_ms(), Some(5000));
+        assert_eq!(text("2m").duration_ms(), Some(120_000));
+        assert_eq!(text("1h").duration_ms(), Some(3_600_000));
+        assert_eq!(text("40ms").duration_ms(), Some(40));
+        assert_eq!(text("40").duration_ms(), Some(40));
+        for not in ["frame", "0 9 * * *", "1d", "5 s", "s", "1.5s", ""] {
+            assert_eq!(text(not).duration_ms(), None, "{not:?}");
+        }
+        assert_eq!(text("frame").interval_ms(), None);
+        assert_eq!(text("every-frame").interval_ms(), None);
+        assert_eq!(text("0 9 * * *").interval_ms(), Some(1000), "the fallback the cron caller never reaches");
+        assert_eq!(text("7s").interval_ms(), Some(7000));
+    }
+
     #[test]
     fn busy_delay_reads_css_milliseconds_and_seconds() {
         let tokens = |delay: &str| super::MotionTokens {
