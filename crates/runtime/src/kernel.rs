@@ -2921,12 +2921,8 @@ impl RuntimeKernel {
     }
 
     /// The re-renders a step's composition calls for: each capture child of `trait_name` that the fired
-    /// arm's effects compose, to be re-fired under the step's payload (server role only: a client renders
-    /// its own children).
+    /// arm's effects compose, to be re-fired under the step's payload, on either role.
     fn first_repaints(&self, trait_name: &str, result: &ProcessEventResult) -> Vec<CascadeItem> {
-        if !self.config.environment.is_server() {
-            return Vec::new();
-        }
         let Some(children) = self.capture_children.read().get(trait_name).cloned() else {
             return Vec::new();
         };

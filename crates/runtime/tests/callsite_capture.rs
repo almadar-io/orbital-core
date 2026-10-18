@@ -4,7 +4,7 @@
 // repaint never moves a child. JS twins: `callsite-payload-embedded-child.test.ts`,
 // `callsite-capture-composed-by-event.test.ts`.
 
-use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
+use orbital_core_runtime::embed::{EmbeddedKernel, EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema};
 use serde_json::{json, Value as Json};
@@ -20,13 +20,24 @@ fn idle() -> Json {
     json!([{ "name": "idle", "isInitial": true }])
 }
 
-fn app(traits: Vec<Json>) -> EmbeddedServer {
+fn schema_of(traits: Vec<Json>) -> OrbitalSchema {
     let entity: Json = serde_json::from_str(ENTITY).unwrap();
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    serde_json::from_value(json!({
         "name": "App", "orbitals": [{ "name": "Main", "entity": entity, "traits": traits }]
     }))
-    .unwrap();
-    EmbeddedServer::new(schema).unwrap()
+    .unwrap()
+}
+
+fn app(traits: Vec<Json>) -> EmbeddedServer {
+    EmbeddedServer::new(schema_of(traits)).unwrap()
+}
+
+/// The client role: the same program in a browser's kernel, dispatched locally.
+fn client_send(client: &EmbeddedKernel, target: &str, event: &str, payload: Json) -> EventResponse {
+    client
+        .dispatch(target, None, event, serde_json::from_value(payload).unwrap())
+        .unwrap()
+        .response
 }
 
 fn send(server: &EmbeddedServer, target: &str, event: &str, payload: Json) -> EventResponse {
@@ -75,6 +86,10 @@ fn render_stack(children: Json) -> Json {
 }
 
 fn synthetic() -> EmbeddedServer {
+    app(synthetic_traits())
+}
+
+fn synthetic_traits() -> Vec<Json> {
     let loaded = |from: &str| json!({ "from": from, "to": "viewing", "event": "LOADED", "effects": [render_stack(json!(["@trait.Child"]))] });
     let host = trait_of(
         "Host",
@@ -92,7 +107,34 @@ fn synthetic() -> EmbeddedServer {
         json!([{ "from": "idle", "to": "idle", "event": "INIT",
             "effects": [["render-ui", "main", { "type": "button", "label": "@config.content", "disabled": "@config.disabled" }]] }]),
     );
-    app(vec![host, child])
+    vec![host, child]
+}
+
+#[test]
+fn on_the_client_role_the_composing_payload_re_renders_the_child() {
+    let client = EmbeddedKernel::new(schema_of(synthetic_traits()), "c1").unwrap();
+    let resolved = client_send(
+        &client,
+        "Host",
+        "LOADED",
+        json!({ "error": "Boom", "data": { "status": "resolved" } }),
+    );
+    let child = pattern(&resolved, "Child").expect("the client repaints the child it composed");
+    assert_eq!(child["label"], json!("Boom"));
+    assert_eq!(child["disabled"], json!(false));
+    assert_eq!(
+        frame_payload(&resolved, "Child"),
+        Some(json!({ "error": "Boom", "data": { "status": "resolved" } }))
+    );
+}
+
+#[test]
+fn control_on_the_client_role_a_dispatch_that_composes_no_child_repaints_none() {
+    let client = EmbeddedKernel::new(schema_of(synthetic_traits()), "c1").unwrap();
+    let own = client_send(&client, "Child", "INIT", json!({}));
+    assert!(pattern(&own, "Host").is_none());
+    let child = pattern(&own, "Child").expect("the child's own run paints it");
+    assert!(child.get("label").is_none(), "nothing composed it yet: {child}");
 }
 
 #[test]
