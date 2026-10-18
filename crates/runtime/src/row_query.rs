@@ -2,7 +2,7 @@
 //! the conditional writes, the capability shapes and the run of each over rows held in memory.
 //!
 //! Mirrors `@almadar/core` `service-types.ts` and `row-query.ts`; the serde forms are the TS JSON
-//! forms, so `packages/almadar-parity/fixtures/pushdown/*.json` load unchanged. Every evaluation
+//! forms, so `tests/baked/pushdown/*.json` load unchanged. Every evaluation
 //! site (the in-kernel evaluator behind [`EntitySource::query_page`](super::EntitySource), the
 //! in-memory cache's writes, the differential tests) goes through here.
 //!

@@ -1,4 +1,4 @@
-//! The Rust half of the shared codec operator vectors (`@almadar-io/parity`
+//! The Rust half of the shared codec operator vectors (orbital-core
 //! `fixtures/operators/codec-vectors.json`, mirrored byte-identically under
 //! `tests/fixtures/operators/`; the TS twin in `@almadar/evaluator` reads the same file).
 
@@ -54,19 +54,6 @@ fn every_shared_vector_matches() {
 }
 
 #[test]
-fn the_mirror_is_byte_identical_to_the_parity_fixture() {
-    let source = crate_path("../../../packages/almadar-parity/fixtures/operators/codec-vectors.json");
-    if !source.exists() {
-        return;
-    }
-    assert_eq!(
-        std::fs::read(source).unwrap(),
-        std::fs::read(crate_path("tests/fixtures/operators/codec-vectors.json")).unwrap(),
-        "re-copy packages/almadar-parity/fixtures/operators/codec-vectors.json"
-    );
-}
-
-#[test]
 fn an_unknown_digest_encoding_is_an_error_and_a_known_one_is_the_control() {
     assert!(eval("hash/sha256", &[json!("abc"), json!("hex")]).is_ok());
     assert!(eval("hash/sha256", &[json!("abc"), json!("octal")]).is_err());
@@ -97,15 +84,3 @@ fn every_shared_regex_vector_matches() {
     }
 }
 
-#[test]
-fn the_regex_mirror_is_byte_identical_to_the_parity_fixture() {
-    let source = crate_path("../../../packages/almadar-parity/fixtures/operators/regex-vectors.json");
-    if !source.exists() {
-        return;
-    }
-    assert_eq!(
-        std::fs::read(source).unwrap(),
-        std::fs::read(crate_path("tests/fixtures/operators/regex-vectors.json")).unwrap(),
-        "re-copy packages/almadar-parity/fixtures/operators/regex-vectors.json"
-    );
-}

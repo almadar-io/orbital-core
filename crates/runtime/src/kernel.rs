@@ -10,6 +10,9 @@ use super::listener::{ListenerManager, TriggerCallback};
 use super::process_result::{DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo, ProcessEventResult, RuntimeStats};
 use super::render_store::RenderStore;
 use super::resumable::{CallRoutes, CallSite, CallVerdict, IoPort, AWAITING_HOST};
+
+#[cfg(not(feature = "wire-drivers"))]
+const WIRE_DRIVERS_UNAVAILABLE: &str = "postgres and redis calls need the full kernel build; this is the client build";
 use super::row_query::{and_predicates, compile_predicate, default_row_order, query_unsupported_reason, resolve_row_set, NotExpressible, PredicateRole, QueryCapabilities, RowPage, RowWriteBatch, RowWriteOp, RowWriteOutcome, WriteCapabilities};
 use orbital_core_base::row_set::{nearest_rows, RowNearest, RowOrder, RowPredicate, RowQuery, RowSetRef, RowTotalMode};
 use super::server_leg::ServerLegCollector;
@@ -1109,6 +1112,13 @@ impl RuntimeKernel {
             }
         }
         Ok(found)
+    }
+
+    /// The credential catalog: the registry's services plus the credentials every registered program declares, what a
+    /// `store`-source boot seeds the credential store with.
+    pub fn credential_catalog(&self) -> Result<orbital_core_base::credential_admin::Catalog, String> {
+        let program = self.program_credentials()?;
+        crate::credential_admin::catalog(&program).map_err(|refusal| refusal.message)
     }
 
     /// The `egress` origins every registered program declares, unioned: what a host's transport may reach.
@@ -4170,6 +4180,7 @@ impl RuntimeKernel {
         }
     }
 
+    #[cfg(feature = "wire-drivers")]
     /// Run a `redis` effect on the shared driver loop; the `RedisDriver` owns the RESP protocol, the handshake and the
     /// credential, and every ask it makes is a journaled `os/*` or secret ask.
     fn run_redis(&self, effect: &Effect, principal: Option<&str>) -> EffectResult {
@@ -4195,6 +4206,7 @@ impl RuntimeKernel {
         }
     }
 
+    #[cfg(feature = "wire-drivers")]
     /// Run a `postgres` effect on the shared driver loop; the `PostgresDriver` owns the Postgres protocol, the login
     /// and the result decoding, and every ask it makes is a journaled `os/*`, secret, random or clock ask.
     fn run_postgres(&self, effect: &Effect, principal: Option<&str>) -> EffectResult {
@@ -4218,6 +4230,16 @@ impl RuntimeKernel {
             DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
             DriveEnd::NoBeaconHost => EffectResult::failed(effect.clone(), "a postgres call asked for a beacon"),
         }
+    }
+
+    #[cfg(not(feature = "wire-drivers"))]
+    fn run_redis(&self, effect: &Effect, _principal: Option<&str>) -> EffectResult {
+        EffectResult::failed(effect.clone(), WIRE_DRIVERS_UNAVAILABLE)
+    }
+
+    #[cfg(not(feature = "wire-drivers"))]
+    fn run_postgres(&self, effect: &Effect, _principal: Option<&str>) -> EffectResult {
+        EffectResult::failed(effect.clone(), WIRE_DRIVERS_UNAVAILABLE)
     }
 
     /// Run an `os/<op>` effect through one journaled ask. A streaming op needs a key, so `cancel-call` can end it.

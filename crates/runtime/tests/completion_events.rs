@@ -142,7 +142,7 @@ fn edge_a_substrate_op_on_a_server_with_no_host_fails_loudly() {
 }
 
 // program/inputs, program/dispatch and persist/read-named (EXEC-AGENT-1): the shared vectors
-// (`packages/almadar-parity/fixtures/agent-ports/vectors.json`) through the kernel, the same fixture and the
+// (`crates/runtime/tests/fixtures/agent-ports/vectors.json`) through the kernel, the same fixture and the
 // same emitted trace as the JS twin (`almadar-runtime/test/agent-ports-effects.test.ts`).
 mod agent_ports {
     use super::*;

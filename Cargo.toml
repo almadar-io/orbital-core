@@ -7,7 +7,8 @@ repository = "https://github.com/almadar-io/orbital-core"
 description = "Core types and runtime for Orbital schema execution"
 
 [features]
-default = []
+default = ["wire-drivers"]
+wire-drivers = ["orbital-core-runtime/wire-drivers"]
 async = ["orbital-core-base/async"]
 client-http = ["orbital-core-runtime/client-http"]
 native-transport = ["orbital-core-runtime/native-transport"]
@@ -15,7 +16,7 @@ native-transport = ["orbital-core-runtime/native-transport"]
 [dependencies]
 orbital-core-base = { path = "crates/base" }
 orbital-core-eval = { path = "crates/eval" }
-orbital-core-runtime = { path = "crates/runtime" }
+orbital-core-runtime = { path = "crates/runtime", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.10"

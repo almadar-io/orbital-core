@@ -214,7 +214,7 @@ pub struct SubstrateFailure {
 
 /// Host for substrate operators (`program/*`, `behavior/*`, `llm/*`, …): the effects the
 /// installed operator table routes to a host (`ir::is_substrate_operator`). The JS twin is
-/// `@almadar/integrations/program` `runProgramEffect` behind `EffectExecutor.ts`.
+/// `runProgramEffect` in `@almadar/runtime`'s program host (`host/program`).
 pub trait SubstrateHandler: Send + Sync {
     /// Run one op with its positional arguments (the trailing `{ emit }` already split off).
     fn run(&self, op: &str, args: &[Value]) -> Result<Value, SubstrateFailure>;

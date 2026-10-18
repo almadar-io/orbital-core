@@ -1,4 +1,4 @@
-//! The encrypted credential store, the native twin of `CredentialStore` in `@almadar/integrations`: one AES-256-GCM row per
+//! The encrypted credential store, the native twin of `CredentialStore` in `@almadar/runtime`: one AES-256-GCM row per
 //! (credential name, principal) kept through a row port, the master key held alone in `ALMADAR_CREDENTIAL_MASTER_KEY`. The rows
 //! are the same bytes the JS store writes (`service`, `envVar`, hex `ciphertext` / `iv` / `authTag`, `keyId`, `updatedAt`,
 //! `principal`), so one store file is read and written by both hosts. A stored value shadows its environment counterpart.
@@ -678,10 +678,7 @@ mod tests {
     use super::*;
 
     fn fixture() -> Value {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../../../packages/almadar-integrations/__tests__/fixtures/credential-store.json"
-        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/credential-store.json");
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture"))
             .expect("fixture json")
     }
@@ -890,7 +887,7 @@ mod tests {
             None,
         );
         let entry = store
-            .set("stripe", "STRIPE_KEY", "sk_live_zzzz-4321", None)
+            .set("stripe", "STRIPE_KEY", "fake-stripe-4321", None)
             .expect("set");
         assert_eq!(entry.last4, "4321");
         store
@@ -904,7 +901,7 @@ mod tests {
         assert_eq!(again.warm().expect("warm"), 2);
         assert_eq!(
             again.resolve("STRIPE_KEY", None).as_deref(),
-            Some("sk_live_zzzz-4321")
+            Some("fake-stripe-4321")
         );
         assert_eq!(
             again.resolve("OPENAI_KEY", Some("user-9")).as_deref(),
@@ -929,7 +926,7 @@ mod tests {
             assert!(!row[field].is_null(), "{field}");
         }
         assert!(row.get("principal").is_none());
-        assert!(!text.contains("sk_live_zzzz-4321"));
+        assert!(!text.contains("fake-stripe-4321"));
         assert!(again.remove("STRIPE_KEY", None).expect("remove"));
         assert!(!again.remove("STRIPE_KEY", None).expect("remove twice"));
     }
@@ -959,7 +956,7 @@ mod tests {
         retired.warm().expect("warm");
         assert_eq!(
             retired.resolve("GITHUB_TOKEN", None).as_deref(),
-            Some("ghp_previous_5555")
+            Some("fake-github-5555")
         );
     }
 

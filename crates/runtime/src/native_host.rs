@@ -14,8 +14,8 @@ use std::sync::Arc;
 /// Receives each event of a stream, with the call site whose `onMessage` route it belongs to.
 pub type StreamEvents = dyn Fn(Option<&CallSite>, Value) + Send + Sync;
 
-/// The refusal every `call-service` gets from a native host: it has no provider for any service (the integrations are TS
-/// providers, retiring; hosting and the registry wait on G-CROSS-170). The wording is the JS host's `NOT_CONFIGURED`
+/// The refusal every `call-service` gets from a native host: it has no provider for any service (hosting and the registry
+/// are `@almadar-io/hosting`'s, answered by the JS host; see G-CROSS-170). The wording is the JS host's `NOT_CONFIGURED`
 /// integration error, so a program sees one refusal on every host.
 struct NoProviders;
 

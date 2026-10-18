@@ -2061,7 +2061,7 @@ mod os_twin {
 
     #[test]
     fn a_service_the_native_host_has_no_provider_for_is_refused_as_not_configured() {
-        for (service, method) in [("hosting", "deploy"), ("registry", "publish"), ("knowledge", "search")] {
+        for (service, method) in [("hosting", "deploy"), ("registry", "publish"), ("no-such-service", "search")] {
             let request = IoRequest::CallService {
                 service: service.to_string(),
                 method: method.to_string(),

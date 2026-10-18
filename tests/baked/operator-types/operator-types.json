@@ -1,5 +1,5 @@
 {
-  "description": "Operator argument types (D-12) and type-variable consistency. A present argument that contradicts the signature the installed operator table declares for its call raises the typed TypeMismatch on every path: a declared concrete type, a variable's bound, and the agreement of every argument bound to one type variable (`= : T, T`, `array/append : [T], T`). null is absent and passes; a nominal std type is not checked; there are no generic types. Read by orbital-core tests/operator_types.rs and @almadar/evaluator operator-types.test.ts (canonical source @almadar-io/parity fixtures/operator-types, mirrored into each test dir).",
+  "description": "Operator argument types (D-12) and type-variable consistency. A present argument that contradicts the signature the installed operator table declares for its call raises the typed TypeMismatch on every path: a declared concrete type, a variable's bound, and the agreement of every argument bound to one type variable (`= : T, T`, `array/append : [T], T`). null is absent and passes; a nominal std type is not checked; there are no generic types. Read by orbital-core tests/operator_types.rs and @almadar/evaluator operator-types.test.ts (canonical source orbital-core fixtures/operator-types, mirrored into each test dir).",
   "cases": [
     {
       "name": "!=: [\"!=\",5,3]",

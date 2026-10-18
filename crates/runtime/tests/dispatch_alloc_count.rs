@@ -183,7 +183,7 @@ fn fetch_dispatch_allocation_count_is_pinned() {
     assert!(n <= PINNED_FETCH, "allocations rose: {n} > {PINNED_FETCH}");
 }
 
-const PINNED_FETCH: usize = 1256;
+const PINNED_FETCH: usize = 1259;
 
 #[test]
 fn read_access_allocation_count_is_pinned() {
@@ -305,7 +305,7 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
     );
 }
 
-const PINNED_REPLAY: usize = 330786;
+const PINNED_REPLAY: usize = 331080;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)

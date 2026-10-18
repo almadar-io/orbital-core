@@ -1,5 +1,5 @@
 //! The row-query contract on the Rust side: the shared push-down fixtures
-//! (`tests/baked/pushdown/*.json`, mirrored from `packages/almadar-parity/fixtures/pushdown`), the sexpr
+//! (`tests/baked/pushdown/*.json`, mirrored from `tests/baked/pushdown`), the sexpr
 //! compiler against the interpreter, and the kernel's tiers (pushed / compiled / interpreted) and writes.
 
 use orbital_core_eval::evaluator::BindingContext;

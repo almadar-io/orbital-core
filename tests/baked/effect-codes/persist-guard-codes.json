@@ -1,0 +1,51 @@
+{
+  "description": "persist update/delete under a declared @update/@delete policy: the owner writes, any other viewer is refused (`denied`, no `code`), a missing row is `not-found` before the policy is asked. Read by @almadar/runtime persist-guard-codes.test.ts on a capable and a plain adapter.",
+  "schema": {
+    "name": "persist-guard-codes",
+    "version": "1.0.0",
+    "orbitals": [
+      {
+        "name": "Docs",
+        "pages": [],
+        "entity": {
+          "name": "Doc",
+          "persistence": "persistent",
+          "update_policy": ["=", ["object/get", "@entity", "owner"], "@user.id"],
+          "delete_policy": ["=", ["object/get", "@entity", "owner"], "@user.id"],
+          "fields": [
+            { "name": "id", "type": "string" },
+            { "name": "title", "type": "string" },
+            { "name": "owner", "type": "string" }
+          ],
+          "instances": [{ "id": "d1", "title": "one", "owner": "u1" }, { "id": "d2", "title": "two", "owner": "u2" }]
+        },
+        "traits": [
+          {
+            "name": "Editor",
+            "linkedEntity": "Doc",
+            "stateMachine": {
+              "states": [{ "name": "idle", "isInitial": true }],
+              "events": [
+                { "key": "UPDATE_BY_ID", "name": "UPDATE_BY_ID" },
+                { "key": "DELETE_BY_ID", "name": "DELETE_BY_ID" }
+              ],
+              "transitions": [
+                { "from": "idle", "to": "idle", "event": "UPDATE_BY_ID", "effects": [["persist", "update", "Doc", { "id": "@payload.id", "title": "changed" }]] },
+                { "from": "idle", "to": "idle", "event": "DELETE_BY_ID", "effects": [["persist", "delete", "Doc", "@payload.id"]] }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "cases": [
+    { "name": "owner updates their row", "event": "UPDATE_BY_ID", "payload": { "id": "d1" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": true } },
+    { "name": "another viewer is refused", "event": "UPDATE_BY_ID", "payload": { "id": "d2" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": false, "denied": true } },
+    { "name": "no viewer is refused", "event": "UPDATE_BY_ID", "payload": { "id": "d1" }, "expect": { "success": false, "denied": true } },
+    { "name": "a missing row is not-found before the policy", "event": "UPDATE_BY_ID", "payload": { "id": "zz" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": false, "code": "not-found" } },
+    { "name": "owner deletes their row", "event": "DELETE_BY_ID", "payload": { "id": "d1" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": true } },
+    { "name": "another viewer cannot delete", "event": "DELETE_BY_ID", "payload": { "id": "d2" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": false, "denied": true } },
+    { "name": "delete of a missing row is not-found", "event": "DELETE_BY_ID", "payload": { "id": "zz" }, "user": { "id": "u1", "role": "member" }, "expect": { "success": false, "code": "not-found" } }
+  ]
+}

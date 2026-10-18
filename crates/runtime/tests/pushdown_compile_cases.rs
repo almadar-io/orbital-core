@@ -1,5 +1,5 @@
 //! The shared compile-decision fixture (`tests/baked/pushdown/compile-cases.json`, mirrored from
-//! `packages/almadar-parity/fixtures/pushdown`): each case is one fetch's filter and/or `@read` policy
+//! `tests/baked/pushdown`): each case is one fetch's filter and/or `@read` policy
 //! compiled for the entity's required fields, expecting the compiled slots or the interpreted reason.
 
 use orbital_core_eval::evaluator::BindingContext;

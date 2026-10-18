@@ -1,5 +1,5 @@
-//! The one set of wire codecs: percent-encoders, base64, SHA-256, MD5 and HMAC-SHA256. `orbital-integrations`,
-//! the `http` request builder and the std operators all read these.
+//! The one set of wire codecs: percent-encoders, base64, SHA-256, MD5 and HMAC-SHA256. The `http` request builder
+//! and the std operators all read these.
 
 use base64::Engine;
 use md5::Md5;

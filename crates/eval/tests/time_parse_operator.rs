@@ -1,4 +1,4 @@
-//! The Rust half of the shared `time/parse` vectors (`@almadar-io/parity`
+//! The Rust half of the shared `time/parse` vectors (orbital-core
 //! `fixtures/operators/time-vectors.json`, mirrored under `tests/fixtures/operators/`;
 //! the TS twin in `@almadar/evaluator` reads the same file).
 
@@ -42,17 +42,4 @@ fn every_shared_vector_matches() {
             assert_eq!(got.ok(), case.expect, "{}", case.expr);
         }
     }
-}
-
-#[test]
-fn the_mirror_is_byte_identical_to_the_parity_fixture() {
-    let source = crate_path("../../../packages/almadar-parity/fixtures/operators/time-vectors.json");
-    if !source.exists() {
-        return;
-    }
-    assert_eq!(
-        std::fs::read(source).unwrap(),
-        std::fs::read(crate_path("tests/fixtures/operators/time-vectors.json")).unwrap(),
-        "re-copy packages/almadar-parity/fixtures/operators/time-vectors.json"
-    );
 }

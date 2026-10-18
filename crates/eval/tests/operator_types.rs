@@ -1,6 +1,6 @@
 // D-12: a present argument that contradicts the type the operator table declares for its position raises the
 // typed `TypeMismatch`. One fixture, read by this suite and by `@almadar/evaluator` `operator-types.test.ts`
-// (canonical source `@almadar-io/parity` `fixtures/operator-types`, mirrored into `tests/baked/`).
+// (canonical source orbital-core `tests/baked/operator-types`, mirrored into `tests/baked/`).
 
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_base::error::{EvalError, OrbitalError}, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde::Deserialize;

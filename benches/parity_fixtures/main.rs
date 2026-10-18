@@ -1,4 +1,4 @@
-//! R0: criterion over the parity fixtures, plus the JSON row `@almadar-io/parity`'s `bench-report` merges.
+//! R0: criterion over the parity fixtures, plus the JSON row `@almadar-io/kernel-bench-tool`'s `bench-report` merges.
 //!
 //! The kernel is the server-role `orbital_core::runtime::RuntimeKernel`, because B1 (`@almadar/runtime`
 //! through `OrbitalServerRuntime`) is a server-role runtime and R0 must emit B1's traces: the

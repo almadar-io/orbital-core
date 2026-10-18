@@ -1,6 +1,6 @@
 // `ServerEffectResult.code` on a persist update/delete: `no-row-key` when no row key resolves,
 // `not-found` when the keyed row is absent, none when it lands. One fixture, read by this suite and by
-// `@almadar/runtime` `persist-effect-codes.test.ts` (canonical source `@almadar-io/parity`
+// `@almadar/runtime` `persist-effect-codes.test.ts` (canonical source orbital-core
 // `fixtures/effect-codes`, mirrored into `tests/baked/`).
 
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};

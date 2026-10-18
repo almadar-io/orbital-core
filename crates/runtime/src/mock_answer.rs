@@ -1,9 +1,9 @@
-//! The one mock `call-service` answer: twin of `mockValueForDescriptor` /
-//! `generateMockFromShape` in `@almadar/integrations`' `RuntimeIntegrationManager`.
+//! The one mock `call-service` answer: twin of `mockServiceAnswer` in `@almadar/core`
+//! (`src/mock/serviceAnswer.ts`).
 //!
 //! An action's answer is built from the `responseShape` the installed services
 //! registry declares for it, so every host (playground mock mode, `orb verify`
-//! fixtures, native previews, `orbital-integrations` mock mode) answers a service
+//! fixtures, native previews) answers a service
 //! call with the same value. No randomness and no clock: the value is a function of
 //! the registry shape.
 //! Parity with the TS function is pinned by `tests/mock_answer_parity.rs`.

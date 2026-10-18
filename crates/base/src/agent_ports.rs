@@ -6,7 +6,7 @@
 //! payload, the check of an argument against a stated payload, how an address resolves and what a dispatch
 //! plan is before the host is asked. The kernel (`orbital-core-runtime` `kernel/agent_ports`) runs the plan;
 //! the host runs the dispatch. Twin of `@almadar/core` `src/access/agentPorts.ts`; one corpus
-//! (`packages/almadar-parity/fixtures/agent-ports/vectors.json`) pins both.
+//! (`crates/runtime/tests/fixtures/agent-ports/vectors.json`) pins both.
 
 use crate::external_inputs::ExternalInput;
 use crate::schema::types::{

@@ -27,7 +27,7 @@ pub struct KernelConfig {
     /// which never delegates.
     pub delegate: Option<Arc<dyn EffectDelegate>>,
 
-    /// Runs `call-service` (the integrations); `None` leaves every call a no-op.
+    /// Runs `call-service`; `None` leaves every call a no-op.
     pub service_handler: Option<Arc<dyn ServiceHandler>>,
 
     /// Runs substrate operators (`program/*`, `behavior/*`, …); `None` fails them.

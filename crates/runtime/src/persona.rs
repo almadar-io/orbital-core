@@ -14,7 +14,7 @@
 //! **Cross-language mirror:** resolution semantics must stay in step with
 //! `resolvePersonaSpec` / `findPersonaInRoster` in
 //! `packages/almadar-core/src/types/user.ts`; the roster derivation is pinned to
-//! the interpreter path by the shared fixtures in `packages/almadar-parity`.
+//! the interpreter path by the shared fixtures in `orbital-core fixtures`.
 
 use super::mock_random::iso_from_ms;
 use orbital_core_base::policy::identity_entity_def;

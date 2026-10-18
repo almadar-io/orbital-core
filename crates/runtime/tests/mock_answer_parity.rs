@@ -1,24 +1,16 @@
 //! The Rust half of the shared mock `call-service` answer vector.
 //!
 //! `tests/fixtures/mock-answers/mock-answers.json` is the TS answer
-//! (`RuntimeIntegrationManager`'s `mockValueForDescriptor` in
-//! `@almadar/integrations`, reached through a mock-mode `factory.execute`) for every
-//! action of the installed services registry with empty params, plus the
-//! typed-array / nested-shape cases of `mock-shape-typed-arrays.test.ts`.
+//! (`mockServiceAnswer` in `@almadar/core`, `src/mock/serviceAnswer.ts`) for every
+//! action of the services registry with empty params.
 //! The TS function uses no randomness and no clock, so parity is exact.
 //!
 //! Re-record (after the registry changes):
 //!
 //! ```bash
-//! cd packages/almadar-integrations && pnpm exec tsx \
-//!   scripts/record-mock-answers.mts \
+//! cd packages/almadar-core && pnpm exec tsx scripts/record-mock-answers.mts \
 //!   ../../orbital-rust/crates/orbital-core/tests/fixtures/mock-answers/mock-answers.json
 //! ```
-//!
-//! The script (`@almadar/integrations` `scripts/record-mock-answers.mts`, monorepo only) builds a
-//! `RuntimeIntegrationManager`, `configureFromEnv({ALMADAR_INTEGRATIONS_MODE:'mock'})`,
-//! and for every non-`unmockedServices` action runs `getFactory().execute(service, action, {})`,
-//! writing `{cases:[{service,action,params,data}]}`.
 
 use orbital_core_base::language::registry::baked_service_registry;
 use orbital_core_runtime::mock_answer::{mock_answer, MockAnswerError};
@@ -50,7 +42,7 @@ fn vector() -> Vector {
 fn every_recorded_ts_answer_is_reproduced() {
     let v = vector();
     assert!(
-        v.cases.len() > 50,
+        v.cases.len() >= 14,
         "fixture looks truncated: {}",
         v.cases.len()
     );
@@ -69,7 +61,7 @@ fn every_recorded_ts_answer_is_reproduced() {
 }
 
 #[test]
-fn every_registry_action_is_in_the_vector_except_the_unmocked_services() {
+fn every_registry_action_is_in_the_vector() {
     let v = vector();
     let recorded: BTreeSet<(String, String)> = v
         .cases
@@ -85,19 +77,18 @@ fn every_registry_action_is_in_the_vector_except_the_unmocked_services() {
             }
         }
     }
-    let expected: BTreeSet<String> = ["credentials"].iter().map(|s| s.to_string()).collect();
-    assert_eq!(missing_services, expected);
+    assert_eq!(missing_services, BTreeSet::new());
 }
 
 #[test]
 fn typed_array_cases_from_the_ts_test() {
     assert_eq!(
-        mock_answer("knowledge", "currentTopics").unwrap(),
-        json!({"topics": [{"label": "mock_label", "keywords": [], "weight": 42}]})
+        mock_answer("registry", "handles").unwrap(),
+        json!({"handle": "mock_handle", "teams": [{"id": "mock_id", "name": "mock_name", "handle": "mock_handle"}]})
     );
     assert_eq!(
-        mock_answer("knowledge", "status").unwrap(),
-        json!({"connected": true, "account": "mock_account"})
+        mock_answer("registry", "removeTeamBehavior").unwrap(),
+        json!({"removed": true})
     );
 }
 
@@ -108,7 +99,7 @@ fn unknown_service_and_action_are_errors_not_invented_answers() {
         Err(MockAnswerError::UnknownService(_))
     ));
     assert!(matches!(
-        mock_answer("knowledge", "no-such-action"),
+        mock_answer("hosting", "no-such-action"),
         Err(MockAnswerError::UnknownAction { .. })
     ));
 }

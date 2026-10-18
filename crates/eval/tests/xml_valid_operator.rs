@@ -1,7 +1,6 @@
 use {orbital_core_base::schema::SExpression, orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde::Deserialize;
 use serde_json::json;
-use std::path::PathBuf;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -11,10 +10,6 @@ struct Case {
     #[serde(default)]
     error: bool,
     source: String,
-}
-
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join(name)
 }
 
 #[test]
@@ -48,19 +43,6 @@ fn every_shared_xml_valid_vector_matches() {
             panic!("{}: xml/valid did not return a boolean", case.source);
         };
         assert_eq!(Some(actual), case.expect, "{}", case.source);
-    }
-}
-
-#[test]
-fn xml_valid_mirror_matches_the_canonical_corpus() {
-    let canonical =
-        fixture("../../../packages/almadar-parity/fixtures/operators/xml-valid-vectors.json");
-    if canonical.exists() {
-        assert_eq!(
-            std::fs::read(canonical).unwrap(),
-            std::fs::read(fixture("tests/fixtures/operators/xml-valid-vectors.json")).unwrap(),
-            "xml/valid corpus differs"
-        );
     }
 }
 

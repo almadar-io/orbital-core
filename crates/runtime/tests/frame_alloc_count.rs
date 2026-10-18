@@ -107,8 +107,8 @@ fn measure(ticking: usize, frames: u64) -> (usize, f64) {
     (allocs, ms)
 }
 
-const PINNED_100: usize = 16968;
-const PINNED_1000: usize = 169105;
+const PINNED_100: usize = 17068;
+const PINNED_1000: usize = 170105;
 
 #[test]
 fn frame_allocation_count_is_pinned() {

@@ -1,7 +1,6 @@
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde::Deserialize;
 use serde_json::Value as Json;
-use std::path::PathBuf;
 
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -17,10 +16,6 @@ struct Case {
     #[serde(default)]
     error: bool,
     source: String,
-}
-
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join(name)
 }
 
 #[test]
@@ -59,17 +54,5 @@ fn every_shared_number_vector_matches() {
                 _ => panic!("invalid expected number tag: {tag}"),
             },
         }
-    }
-}
-
-#[test]
-fn number_mirror_matches_the_canonical_corpus() {
-    let canonical =
-        fixture("../../../packages/almadar-parity/fixtures/operators/number-vectors.json");
-    if canonical.exists() {
-        assert_eq!(
-            std::fs::read(canonical).unwrap(),
-            std::fs::read(fixture("tests/fixtures/operators/number-vectors.json")).unwrap()
-        );
     }
 }

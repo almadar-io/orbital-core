@@ -1625,19 +1625,20 @@ mod tests {
         }
         assert!(is_known_effect_name("random-bytes"));
         for op in crate::credential_admin::CredentialAdminOp::ALL {
+            let request = if op.takes_request() { r#"{"service": "s"}, "# } else { "" };
             let expr: SExpression =
-                serde_json::from_str(&format!(r#"["{}", {{"service": "s"}}, {{"emit": {{"success": "S", "failure": "F"}}}}]"#, op.name())).unwrap();
+                serde_json::from_str(&format!(r#"["{}", {request}{{"emit": {{"success": "S", "failure": "F"}}}}]"#, op.name())).unwrap();
             match parse_effect(&expr).unwrap() {
                 Effect::CredentialAdmin { op: parsed, request, emit } => {
                     assert_eq!(parsed, op);
-                    assert!(request.as_object().is_some_and(|fields| fields.contains_key("service")));
+                    assert_eq!(request.as_object().is_some_and(|fields| fields.contains_key("service")), op.takes_request());
                     assert_eq!(emit.and_then(|e| e.failure).as_deref(), Some("F"));
                 }
                 other => panic!("expected CredentialAdmin, got {other:?}"),
             }
             assert!(is_known_effect_name(op.name()));
             let bare: SExpression = serde_json::from_str(&format!(r#"["{}"]"#, op.name())).unwrap();
-            assert!(parse_effect(&bare).is_none(), "{} needs its request", op.name());
+            assert_eq!(parse_effect(&bare).is_none(), op.takes_request(), "{}: only an effect that takes a request needs one", op.name());
         }
         assert!(!is_known_effect_name("credential-purge"));
     }

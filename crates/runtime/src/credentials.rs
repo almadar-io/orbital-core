@@ -1,5 +1,5 @@
 //! Credential resolution: the tenant credential store first, then the host env, as `configureFromStore`
-//! layers `{ ...env, ...store.snapshotEnv() }` in `@almadar/integrations`.
+//! layers `{ ...env, ...store.snapshotEnv() }` in `@almadar/runtime`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use orbital_core_base::oauth_ask::{OAuthAsk, OAuthReply};
 use crate::oauth::store::CredentialOAuthStore;
 use crate::credential_store::EncryptedCredentialStore;
+use orbital_core_base::credential_admin as admin;
 use crate::http_service::SecretSource;
 
 /// One signed-in user's credentials, keyed by `(name, principal)`: derived secrets that expire, and durable ones
@@ -28,6 +29,8 @@ pub struct Credentials {
     users: Arc<Mutex<UserSlots>>,
     oauth: Arc<OnceLock<CredentialOAuthStore>>,
     encrypted: Option<Arc<EncryptedCredentialStore>>,
+    /// `ALMADAR_CREDENTIALS_SOURCE=store`: every credential but a host setting answers from the store alone.
+    store_source: bool,
 }
 
 impl std::fmt::Debug for Credentials {
@@ -41,7 +44,9 @@ impl std::fmt::Debug for Credentials {
 
 impl Credentials {
     pub fn from_env(env: HashMap<String, String>) -> Self {
+        let store_source = admin::source_is_store(env.get(admin::SOURCE_VAR).map(String::as_str));
         Self {
+            store_source,
             env,
             store: HashMap::new(),
             minted: Arc::default(),
@@ -55,12 +60,34 @@ impl Credentials {
         Self::from_env(std::env::vars().collect())
     }
 
-    /// The encrypted credential store (the twin of `@almadar/integrations` `CredentialStore`): a stored value shadows its
+    /// The encrypted credential store (the twin of `@almadar/runtime` `CredentialStore`): a stored value shadows its
     /// environment counterpart, and the kernel's credential administration asks reach it. The store is warmed here.
     pub fn with_encrypted_store(mut self, store: Arc<EncryptedCredentialStore>) -> Result<Self, String> {
         store.warm()?;
         self.encrypted = Some(store);
         Ok(self)
+    }
+
+    /// Whether `ALMADAR_CREDENTIALS_SOURCE=store` made the store the only source of credentials.
+    pub fn store_source(&self) -> bool {
+        self.store_source
+    }
+
+    /// Copy every declared credential the store lacks and the env holds into the store, as a `store`-source boot does,
+    /// and return how many rows it wrote. A host with no enabled store seeds nothing.
+    pub fn seed_store_from_env(&self, catalog: &admin::Catalog) -> Result<usize, String> {
+        let Some(store) = self.encrypted.as_ref().filter(|store| store.enabled()) else {
+            return Ok(0);
+        };
+        let rows = admin::seed_plan(
+            catalog,
+            &|name| store.resolve(name, None).is_some(),
+            &|name| self.env.get(name).cloned(),
+        );
+        for row in &rows {
+            store.set(&row.service, &row.env_var, &row.value, None)?;
+        }
+        Ok(rows.len())
     }
 
     pub fn with_store(mut self, store: HashMap<String, String>) -> Self {
@@ -81,6 +108,7 @@ impl Credentials {
             users: self.users.clone(),
             oauth: Arc::default(),
             encrypted: self.encrypted.clone(),
+            store_source: self.store_source,
         }
     }
 
@@ -124,6 +152,89 @@ mod tests {
         assert_eq!(listing.entries.len(), 1);
         assert!(creds.credential_store_remove("STRIPE_KEY").unwrap());
         assert_eq!(creds.secret("STRIPE_KEY").unwrap().as_deref(), Some("env-key"));
+    }
+
+    fn store_mode_env(extra: &[(&str, &str)]) -> HashMap<String, String> {
+        let mut pairs = vec![(admin::SOURCE_VAR, "store"), ("STRIPE_KEY", "env-key")];
+        pairs.extend_from_slice(extra);
+        map(&pairs)
+    }
+
+    #[test]
+    fn under_store_source_a_credential_answers_from_the_store_and_a_missing_row_is_not_configured_never_the_env() {
+        use crate::credential_store::MemoryCredentialRows;
+        let creds = Credentials::from_env(store_mode_env(&[]))
+            .with_encrypted_store(encrypted(Arc::new(MemoryCredentialRows::default())))
+            .unwrap();
+        assert!(creds.store_source());
+        assert_eq!(creds.secret("STRIPE_KEY").unwrap(), None, "the env value is hidden, not a fallback");
+        creds.credential_store_write("stripe", "STRIPE_KEY", "stored-9999").unwrap();
+        assert_eq!(creds.secret("STRIPE_KEY").unwrap().as_deref(), Some("stored-9999"));
+        assert!(creds.credential_store_remove("STRIPE_KEY").unwrap());
+        assert_eq!(creds.secret("STRIPE_KEY").unwrap(), None, "a removed row does not resurrect the env value");
+    }
+
+    #[test]
+    fn under_store_source_a_host_setting_still_reads_the_env_and_a_host_with_no_store_answers_nothing() {
+        let creds = Credentials::from_env(store_mode_env(&[(admin::ADMIN_ROLES_VAR, "admin,owner")]));
+        assert_eq!(creds.secret(admin::ADMIN_ROLES_VAR).unwrap().as_deref(), Some("admin,owner"));
+        assert_eq!(creds.secret(admin::SOURCE_VAR).unwrap().as_deref(), Some("store"));
+        assert_eq!(creds.secret("STRIPE_KEY").unwrap(), None);
+        let preloaded = Credentials::from_env(store_mode_env(&[])).with_store(map(&[("STRIPE_KEY", "preloaded")]));
+        assert_eq!(preloaded.secret("STRIPE_KEY").unwrap().as_deref(), Some("preloaded"));
+    }
+
+    #[test]
+    fn the_source_vector_the_js_host_replays_is_answered_by_the_native_host() {
+        let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/credentials-source.json")).unwrap();
+        let vector: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let text = |value: &serde_json::Value| value.as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string())).collect::<HashMap<_, _>>();
+        let cases = vector["cases"].as_array().unwrap();
+        assert!(cases.len() >= 8);
+        for case in cases {
+            let creds = Credentials::from_env(text(&case["env"])).with_store(text(&case["store"]));
+            assert_eq!(creds.secret(case["name"].as_str().unwrap()).unwrap().as_deref(), case["answer"].as_str(), "{}", case["case"]);
+        }
+    }
+
+    #[test]
+    fn control_any_other_source_value_keeps_the_store_then_env_order() {
+        for source in ["", "env", "Store"] {
+            let creds = Credentials::from_env(map(&[(admin::SOURCE_VAR, source), ("STRIPE_KEY", "env-key")]));
+            assert!(!creds.store_source(), "{source}");
+            assert_eq!(creds.secret("STRIPE_KEY").unwrap().as_deref(), Some("env-key"), "{source}");
+        }
+    }
+
+    #[test]
+    fn a_store_source_boot_seeds_the_declared_env_credentials_the_store_lacks_and_keeps_every_value_out_of_debug() {
+        use crate::credential_store::MemoryCredentialRows;
+        let catalog = admin::Catalog::from_registry(
+            r#"{ "services": { "stripe": { "backend": "production", "credentials": [{ "envVar": "STRIPE_KEY", "required": true, "description": "k" }, { "envVar": "STRIPE_WEBHOOK", "required": false, "description": "w" }] } } }"#,
+        )
+        .unwrap();
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let creds = Credentials::from_env(store_mode_env(&[("STRIPE_WEBHOOK", "whsec_live"), ("UNDECLARED", "x")]))
+            .with_encrypted_store(encrypted(rows.clone()))
+            .unwrap();
+        creds.credential_store_write("stripe", "STRIPE_WEBHOOK", "already-stored").unwrap();
+        assert_eq!(creds.seed_store_from_env(&catalog).unwrap(), 1, "only the missing STRIPE_KEY seeds");
+        assert_eq!(creds.secret("STRIPE_KEY").unwrap().as_deref(), Some("env-key"));
+        assert_eq!(creds.secret("STRIPE_WEBHOOK").unwrap().as_deref(), Some("already-stored"), "a held row is never overwritten by the env");
+        assert_eq!(creds.secret("UNDECLARED").unwrap(), None);
+        assert_eq!(creds.seed_store_from_env(&catalog).unwrap(), 0, "a second boot seeds nothing");
+        assert!(!format!("{creds:?}").contains("env-key"));
+        let listing = creds.credential_store_list().unwrap().expect("a store");
+        assert!(!format!("{listing:?}").contains("env-key"), "the listing names rows, never values");
+    }
+
+    #[test]
+    fn control_a_host_with_no_enabled_store_seeds_nothing() {
+        let catalog = admin::Catalog::from_registry(
+            r#"{ "services": { "stripe": { "backend": "production", "credentials": [{ "envVar": "STRIPE_KEY", "required": true, "description": "k" }] } } }"#,
+        )
+        .unwrap();
+        assert_eq!(Credentials::from_env(store_mode_env(&[])).seed_store_from_env(&catalog).unwrap(), 0);
     }
 
     #[test]
@@ -365,6 +476,9 @@ impl SecretSource for Credentials {
         }
         if let Some(stored) = self.encrypted.as_ref().and_then(|store| store.resolve(name, None)) {
             return Ok(Some(stored));
+        }
+        if self.store_source && admin::store_only_name(name) {
+            return Ok(self.store.get(name).filter(|value| !value.is_empty()).cloned());
         }
         Ok(self.get(name).map(str::to_string))
     }

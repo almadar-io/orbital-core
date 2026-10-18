@@ -554,3 +554,134 @@ fn every_wire_type_is_declared() {
     assert!(ts.contains("export type Settled<T, E> = "));
     assert!(!ts.contains("bigint"));
 }
+
+mod oauth_hand_declarations {
+    use orbital_core_base::oauth_ask::{MockTokenState, OAuthAsk, OAuthConnectionRow, OAuthProvider, OAuthReply, OAuthTokenGrant, PendingTake};
+    use orbital_core_base::oauth_wire::Pending;
+    use ts_rs::{Config, TS};
+
+    fn ask_decl() -> String {
+        <OAuthAsk as TS>::decl(&Config::default())
+    }
+
+    fn reply_decl() -> String {
+        <OAuthReply as TS>::decl(&Config::default())
+    }
+
+    fn pending() -> Pending {
+        Pending { provider: "google".into(), redirect_uri: "r".into(), verifier: "v".into(), subject: None, scopes: vec![] }
+    }
+
+    fn grant() -> OAuthTokenGrant {
+        OAuthTokenGrant {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_in: 1.0,
+            token_type: "bearer".into(),
+            scope: None,
+            subject: None,
+        }
+    }
+
+    /// Exhaustive on purpose: a new variant fails to compile here until it has a sample below.
+    fn listed(ask: &OAuthAsk) {
+        match ask {
+            OAuthAsk::PendingPut { .. }
+            | OAuthAsk::PendingTake { .. }
+            | OAuthAsk::ConnectionAvailable
+            | OAuthAsk::ConnectionSave { .. }
+            | OAuthAsk::ConnectionStatus { .. }
+            | OAuthAsk::ConnectionRemove { .. }
+            | OAuthAsk::SubjectRemember { .. }
+            | OAuthAsk::SubjectLookup { .. }
+            | OAuthAsk::SubjectForget { .. }
+            | OAuthAsk::MetadataGet { .. }
+            | OAuthAsk::MetadataPut { .. }
+            | OAuthAsk::Clock
+            | OAuthAsk::MockTokenPut { .. }
+            | OAuthAsk::MockTokenRefresh { .. }
+            | OAuthAsk::MockTokenRevoke { .. }
+            | OAuthAsk::MockTokenCheck { .. }
+            | OAuthAsk::Consent { .. } => {}
+        }
+    }
+
+    fn listed_reply(reply: &OAuthReply) {
+        match reply {
+            OAuthReply::Done
+            | OAuthReply::Flag { .. }
+            | OAuthReply::Taken { .. }
+            | OAuthReply::Row { .. }
+            | OAuthReply::Subject { .. }
+            | OAuthReply::Metadata { .. }
+            | OAuthReply::Millis { .. }
+            | OAuthReply::MockToken { .. }
+            | OAuthReply::Code { .. } => {}
+        }
+    }
+
+    fn tag(value: serde_json::Value, key: &str) -> String {
+        value[key].as_str().expect("tagged").to_string()
+    }
+
+    #[test]
+    fn every_oauth_ask_variant_is_in_the_hand_written_typescript() {
+        let p = OAuthProvider::Google;
+        let asks = vec![
+            OAuthAsk::PendingPut { state: "s".into(), grant: pending(), ttl_ms: 1 },
+            OAuthAsk::PendingTake { state: "s".into() },
+            OAuthAsk::ConnectionAvailable,
+            OAuthAsk::ConnectionSave { provider: p, grant: grant() },
+            OAuthAsk::ConnectionStatus { provider: p },
+            OAuthAsk::ConnectionRemove { provider: p },
+            OAuthAsk::SubjectRemember { access_token: "a".into(), subject: "u".into() },
+            OAuthAsk::SubjectLookup { access_token: "a".into() },
+            OAuthAsk::SubjectForget { access_token: "a".into() },
+            OAuthAsk::MetadataGet { issuer: "i".into() },
+            OAuthAsk::MetadataPut { issuer: "i".into(), metadata: Default::default() },
+            OAuthAsk::Clock,
+            OAuthAsk::MockTokenPut { access_token: "a".into(), refresh_token: "r".into(), expires_at_ms: 1, provider: p },
+            OAuthAsk::MockTokenRefresh { refresh_token: "r".into(), new_access_token: "a".into(), expires_at_ms: 1 },
+            OAuthAsk::MockTokenRevoke { token: "t".into() },
+            OAuthAsk::MockTokenCheck { access_token: "a".into() },
+            OAuthAsk::Consent { auth_url: "u".into(), state: "s".into(), redirect_uri: "r".into() },
+        ];
+        let decl = ask_decl();
+        for ask in &asks {
+            listed(ask);
+            let name = tag(serde_json::to_value(ask).unwrap(), "ask");
+            assert!(decl.contains(&format!("ask: \"{name}\"")), "OAuthAsk TS is missing `{name}`: {decl}");
+        }
+        assert!(!decl.contains("ask: \"nope\""), "control: an absent tag is not found");
+    }
+
+    #[test]
+    fn every_oauth_reply_variant_is_in_the_hand_written_typescript() {
+        let replies = vec![
+            OAuthReply::Done,
+            OAuthReply::Flag { value: true },
+            OAuthReply::Taken { taken: PendingTake::Missing },
+            OAuthReply::Row {
+                row: OAuthConnectionRow {
+                    provider: OAuthProvider::Google,
+                    connected: true,
+                    account: String::new(),
+                    avatar_url: String::new(),
+                    scope: vec![],
+                    connected_at: String::new(),
+                },
+            },
+            OAuthReply::Subject { subject: None },
+            OAuthReply::Metadata { metadata: None },
+            OAuthReply::Millis { value: 1 },
+            OAuthReply::MockToken { state: MockTokenState::Missing, provider: None },
+            OAuthReply::Code { code: None },
+        ];
+        let decl = reply_decl();
+        for reply in &replies {
+            listed_reply(reply);
+            let name = tag(serde_json::to_value(reply).unwrap(), "reply");
+            assert!(decl.contains(&format!("reply: \"{name}\"")), "OAuthReply TS is missing `{name}`: {decl}");
+        }
+    }
+}

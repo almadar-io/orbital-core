@@ -1,6 +1,6 @@
 //! R0 of the embedded-kernel benchmark: the server-role `RuntimeKernel` must leave the same trace as B1
 //! (`@almadar/runtime`) on the shared parity fixtures. The trace comparison itself has an in-process
-//! control; the B1 comparison reads a bench result written by `@almadar-io/parity`
+//! control; the B1 comparison reads a bench result written by `@almadar-io/kernel-bench-tool`
 //! (`ALMADAR_PARITY_FIXTURES` = the fixtures folder, `ALMADAR_PARITY_REFERENCE` = that JSON) and is
 //! run with `-- --ignored`.
 

@@ -18,10 +18,8 @@ pub const SOURCE_VAR: &str = "ALMADAR_CREDENTIALS_SOURCE";
 pub const MODE_ENV_VAR: &str = "ALMADAR_INTEGRATIONS_MODE";
 /// `true` here selects mock mode when the host has no mode flag of its own.
 pub const MOCK_DATA_VAR: &str = "USE_MOCK_DATA";
-/// A reachable Firestore emulator.
-pub const FIRESTORE_EMULATOR_VAR: &str = "FIRESTORE_EMULATOR_HOST";
-/// The Firestore targets that make the `knowledge` service reachable.
-pub const FIRESTORE_TARGET_VARS: [&str; 3] = [FIRESTORE_EMULATOR_VAR, "FIREBASE_PROJECT_ID", "FIREBASE_SERVICE_ACCOUNT_PATH"];
+/// The host settings the kernel reads through the credential ask; under `store` source they still come from the host env.
+pub const HOST_SETTING_VARS: [&str; 4] = [ADMIN_ROLES_VAR, SOURCE_VAR, MODE_ENV_VAR, MOCK_DATA_VAR];
 /// The message of a host that holds no credential store.
 pub const NO_STORE: &str = "No credential store is installed on this host";
 /// The message of a host with no mode flag.
@@ -29,8 +27,6 @@ pub const NO_MANAGER: &str = "No integration manager is installed on this host";
 
 const DEFAULT_ADMIN_ROLES: [&str; 2] = ["admin", "owner"];
 const UNMOCKED: [&str; 2] = ["credentials", "workspace"];
-const FIRESTORE_SERVICES: [&str; 1] = ["knowledge"];
-const FIRESTORE_NEEDS: &str = "FIRESTORE_EMULATOR_HOST (start the Firebase emulators), or FIREBASE_PROJECT_ID / FIREBASE_SERVICE_ACCOUNT_PATH";
 
 /// One credential administration effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -312,6 +308,85 @@ impl Catalog {
     }
 }
 
+/// Whether `value` of `ALMADAR_CREDENTIALS_SOURCE` selects store-only resolution.
+pub fn source_is_store(value: Option<&str>) -> bool {
+    value == Some("store")
+}
+
+/// Whether a credential `name` is answered from the store alone under `store` source: every name but a host setting.
+pub fn store_only_name(name: &str) -> bool {
+    !HOST_SETTING_VARS.contains(&name)
+}
+
+/// One declared credential a boot copies from the host env into the store.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SeedRow {
+    pub service: String,
+    pub env_var: String,
+    pub value: String,
+}
+
+impl std::fmt::Debug for SeedRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeedRow").field("service", &self.service).field("env_var", &self.env_var).finish_non_exhaustive()
+    }
+}
+
+/// The declared credentials the store does not hold yet and the env does: what `store` source seeds at boot, so the
+/// env stays the way to hand a deployment its first keys. A name declared by several services seeds once.
+pub fn seed_plan(catalog: &Catalog, held: &dyn Fn(&str) -> bool, env: &dyn Fn(&str) -> Option<String>) -> Vec<SeedRow> {
+    let set = |name: &str| env(name).is_some_and(|value| !value.is_empty());
+    seed_targets(catalog, held, &set)
+        .into_iter()
+        .filter_map(|(service, env_var)| env(&env_var).map(|value| SeedRow { service, env_var, value }))
+        .collect()
+}
+
+/// The (service, name) pairs to seed: each declared name, once, that the store does not hold and the env sets.
+fn seed_targets(catalog: &Catalog, held: &dyn Fn(&str) -> bool, set: &dyn Fn(&str) -> bool) -> Vec<(String, String)> {
+    let mut targets: Vec<(String, String)> = Vec::new();
+    for (service, declared) in &catalog.declared {
+        for d in declared {
+            if targets.iter().any(|(_, env_var)| *env_var == d.env_var) || held(&d.env_var) || !set(&d.env_var) {
+                continue;
+            }
+            targets.push((service.clone(), d.env_var.clone()));
+        }
+    }
+    targets
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SeedDeclared {
+    service: String,
+    env_var: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SeedTarget<'a> {
+    service: &'a str,
+    env_var: &'a str,
+}
+
+/// [`seed_plan`] over JSON for a host that drives its own store: `declared_json` is `[{ service, envVar }]`, `held_json`
+/// the names the store holds (`string[]`), `present_json` the declared names the host env sets to a non-empty value
+/// (`string[]`). The answer is the rows to seed (`[{ service, envVar }]`) in plan order; no value crosses either way.
+pub fn seed_plan_json(declared_json: &str, held_json: &str, present_json: &str) -> Result<String, String> {
+    let declared: Vec<SeedDeclared> = serde_json::from_str(declared_json).map_err(|e| format!("parse declared: {e}"))?;
+    let held: Vec<String> = serde_json::from_str(held_json).map_err(|e| format!("parse held: {e}"))?;
+    let present: Vec<String> = serde_json::from_str(present_json).map_err(|e| format!("parse present: {e}"))?;
+    let credentials: Vec<ProgramCredential> = declared
+        .into_iter()
+        .map(|d| ProgramCredential { group: d.service, env_var: d.env_var, description: String::new() })
+        .collect();
+    let catalog = Catalog::default().with_program_credentials(&credentials);
+    let targets = seed_targets(&catalog, &|name| held.iter().any(|h| h == name), &|name| present.iter().any(|p| p == name));
+    let targets: Vec<SeedTarget<'_>> = targets.iter().map(|(service, env_var)| SeedTarget { service, env_var }).collect();
+    serde_json::to_string(&targets).map_err(|e| e.to_string())
+}
+
 /// Only a declared credential of the named service may be written or removed, so the page can never become an
 /// arbitrary env-injection surface.
 pub fn settable(catalog: &Catalog, service: &str, env_var: &str) -> Result<(), Refusal> {
@@ -399,15 +474,6 @@ pub fn list_env_names(catalog: &Catalog, filter: Option<&str>, store: Option<&St
             }
         }
     }
-    let firestore_listed = catalog
-        .listed
-        .iter()
-        .any(|s| filter.is_none_or(|f| f == s) && FIRESTORE_SERVICES.contains(&s.as_str()));
-    if firestore_listed {
-        for var in FIRESTORE_TARGET_VARS {
-            push(var);
-        }
-    }
     names
 }
 
@@ -469,18 +535,13 @@ pub fn list_report(catalog: &Catalog, filter: Option<&str>, facts: &ListFacts<'_
     let is_configured = |service: &str, env_var: &str| {
         configured.iter().any(|(key, ok)| *ok && *key == format!("{service}\u{0}{env_var}"))
     };
-    let firestore_target = FIRESTORE_TARGET_VARS.iter().any(|var| (facts.env)(var).is_some());
-    let emulator = (facts.env)(FIRESTORE_EMULATOR_VAR).is_some();
     let mut services: Vec<Value> = Vec::new();
     for service in &catalog.listed {
         if filter.is_some_and(|f| f != service) {
             continue;
         }
         let declared = catalog.declared_for(service);
-        let on_firestore = FIRESTORE_SERVICES.contains(&service.as_str());
-        let ready = if on_firestore {
-            firestore_target
-        } else {
+        let ready = {
             let mut groups: Vec<(&str, bool)> = Vec::new();
             for d in declared.iter().filter(|d| d.one_of.is_some()) {
                 let group = d.one_of.as_deref().unwrap_or_default();
@@ -498,15 +559,11 @@ pub fn list_report(catalog: &Catalog, filter: Option<&str>, facts: &ListFacts<'_
             "mocked"
         } else if !ready {
             "not configured"
-        } else if on_firestore && emulator {
-            "emulated"
         } else {
             "real"
         };
         let needs = if ready {
             String::new()
-        } else if on_firestore {
-            FIRESTORE_NEEDS.to_string()
         } else {
             credential_needs(declared)
         };
@@ -617,8 +674,7 @@ mod tests {
         "apikeys": { "backend": "production", "credentials": [{ "envVar": "SALT", "required": true, "description": "salt" }] },
         "queue": { "backend": "simulated", "credentials": [{ "envVar": "Q_A", "oneOf": "q" }, { "envVar": "Q_B", "oneOf": "q" }] },
         "hosting": { "backend": "production", "credentials": [] },
-        "maps": { "backend": "host-injected" },
-        "knowledge": { "backend": "production" }
+        "maps": { "backend": "host-injected" }
     } }"#;
 
     fn catalog() -> Catalog {
@@ -689,6 +745,51 @@ mod tests {
     }
 
     #[test]
+    fn the_source_is_store_only_for_the_exact_word_and_a_host_setting_stays_on_the_env() {
+        assert!(source_is_store(Some("store")));
+        for other in [None, Some(""), Some("env"), Some("Store")] {
+            assert!(!source_is_store(other), "{other:?}");
+        }
+        assert!(store_only_name("OPENAI_API_KEY"));
+        for setting in HOST_SETTING_VARS {
+            assert!(!store_only_name(setting), "{setting}");
+        }
+    }
+
+    #[test]
+    fn the_seed_plan_copies_declared_env_values_the_store_lacks_once_and_never_prints_them() {
+        let catalog = catalog().with_program_credentials(&[ProgramCredential { group: "LlmOrbital".into(), env_var: "OPENAI".into(), description: "o".into() }]);
+        let env = |name: &str| match name {
+            "SALT" => Some("s3cret".to_string()),
+            "OPENAI" => Some("sk-live".to_string()),
+            "Q_A" => Some(String::new()),
+            "UNDECLARED" => Some("x".to_string()),
+            _ => None,
+        };
+        let rows = seed_plan(&catalog, &|name| name == "SALT", &env);
+        assert_eq!(rows.iter().map(|r| (r.service.as_str(), r.env_var.as_str())).collect::<Vec<_>>(), [("LlmOrbital", "OPENAI")], "SALT is held, Q_A is empty, UNDECLARED is not declared");
+        assert!(!format!("{rows:?}").contains("sk-live"));
+        let all = seed_plan(&catalog, &|_| false, &env);
+        assert_eq!(all.iter().map(|r| r.env_var.as_str()).collect::<Vec<_>>(), ["SALT", "OPENAI"]);
+        assert!(seed_plan(&catalog, &|_| false, &|_| None).is_empty(), "control: nothing in the env, nothing to seed");
+    }
+
+    #[test]
+    fn the_seed_plan_wire_takes_only_the_names_the_env_sets_and_names_the_rows_to_seed() {
+        let declared = r#"[{"service":"stripe","envVar":"STRIPE_KEY"},{"service":"stripe","envVar":"STRIPE_WEBHOOK"},{"service":"other","envVar":"STRIPE_KEY"},{"service":"mail","envVar":"EMPTY"}]"#;
+        let present = r#"["STRIPE_KEY","STRIPE_WEBHOOK","UNDECLARED"]"#;
+        assert_eq!(seed_plan_json(declared, r#"["STRIPE_WEBHOOK"]"#, present).unwrap(), r#"[{"service":"stripe","envVar":"STRIPE_KEY"}]"#);
+        assert_eq!(
+            seed_plan_json(declared, "[]", present).unwrap(),
+            r#"[{"service":"stripe","envVar":"STRIPE_KEY"},{"service":"stripe","envVar":"STRIPE_WEBHOOK"}]"#,
+            "EMPTY is not set, UNDECLARED is not declared"
+        );
+        assert_eq!(seed_plan_json(declared, "[]", "[]").unwrap(), "[]", "control: nothing set, nothing to seed");
+        assert!(seed_plan_json(declared, "[]", r#"{"STRIPE_KEY":"sk-env"}"#).unwrap_err().contains("present"), "an env map is refused: only names cross");
+        assert!(seed_plan_json("not json", "[]", "[]").unwrap_err().contains("declared"));
+    }
+
+    #[test]
     fn the_catalog_is_the_registry_then_the_program_groups() {
         let program = [
             ProgramCredential { group: "apikeys".into(), env_var: "EXTRA".into(), description: "d".into() },
@@ -699,12 +800,12 @@ mod tests {
         assert_eq!(catalog.declared_for("apikeys").iter().map(|d| d.env_var.as_str()).collect::<Vec<_>>(), ["SALT", "EXTRA"]);
         assert_eq!(catalog.declared_for("LlmOrbital").len(), 1);
         assert!(settable(&catalog, "LlmOrbital", "OPENAI").is_ok());
-        assert_eq!(catalog.listed, ["apikeys", "queue", "hosting", "knowledge"], "credentials is unmocked; maps is host-injected");
+        assert_eq!(catalog.listed, ["apikeys", "queue", "hosting"], "credentials is unmocked; maps is host-injected");
     }
 
     #[test]
     fn masking_keeps_the_last_four_code_units_only() {
-        assert_eq!(last4("sk_test_new_1111"), "1111");
+        assert_eq!(last4("fake-new-1111"), "1111");
         assert_eq!(last4("ab"), "ab");
         assert_eq!(last4(""), "");
         let report = saved_report("apikeys", "SALT", "secret-value-9876");
@@ -760,9 +861,7 @@ mod tests {
         let mock = list_report(&catalog, None, &ListFacts { store: Some(&store), store_first: false, env: &no_env, mock: true });
         assert_eq!(status(&mock, "apikeys").0, Value::String("mocked".into()));
         assert_eq!(status(&mock, "queue").0, Value::String("not configured".into()), "an unconfigured service is never mocked");
-        let emulator = |name: &str| (name == FIRESTORE_EMULATOR_VAR).then(|| "localhost:8080".to_string());
-        assert_eq!(status(&list_report(&catalog, None, &facts(None, &emulator)), "knowledge").0, Value::String("emulated".into()));
-        assert_eq!(status(&list_report(&catalog, None, &facts(None, &no_env)), "knowledge").1, Value::String(FIRESTORE_NEEDS.into()));
+        assert!(list_report(&catalog, Some("knowledge"), &facts(None, &no_env)).get_path("services").and_then(|v| v.as_array().map(Vec::is_empty)).unwrap_or(false), "knowledge is no listed service");
     }
 
     #[test]

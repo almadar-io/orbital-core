@@ -130,7 +130,7 @@ pub fn reason_phrase(status: u16) -> &'static str {
     }
 }
 
-/// A credential by name; `None` when the host holds no value. `Credentials` (orbital-integrations) implements it.
+/// A credential by name; `None` when the host holds no value. `Credentials` implements it.
 pub trait SecretSource: Send + Sync {
     fn secret(&self, name: &str) -> Result<Option<String>, String>;
     /// Keep a derived secret (an OAuth token) until `ttl_ms` has passed.

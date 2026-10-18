@@ -14,6 +14,7 @@ pub mod credential_admin;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod credential_store;
 pub mod dispatch_memory;
+#[cfg(feature = "wire-drivers")]
 pub mod byte_stream;
 pub mod driver;
 pub mod embed_index;
@@ -23,11 +24,13 @@ pub mod firestore;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store_config;
 pub mod http_request;
+#[cfg(feature = "wire-drivers")]
 pub mod postgres;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "wire-drivers", not(target_arch = "wasm32")))]
 pub mod pg_rows;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod couchdb;
+#[cfg(feature = "wire-drivers")]
 pub mod redis;
 pub mod http_service;
 pub mod oauth_flow;
@@ -58,6 +61,7 @@ pub mod seed;
 pub mod server_leg;
 pub mod tab;
 pub mod tick_clock;
+#[cfg(feature = "wire-drivers")]
 pub mod tls;
 pub mod trait_owners;
 

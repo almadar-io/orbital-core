@@ -51,7 +51,7 @@ impl Entropy<'_> {
 /// Synthesize sample rows for an entity from its declared fields. Each row gets a
 /// stable `id` (`"<name>-<n>"`) plus one value per field. Mirrors
 /// `@almadar/core/mock`'s `sampleRows` with `strategy: 'index'`; the shared fixture
-/// in `packages/almadar-parity` pins them to the same bytes.
+/// in `orbital-core fixtures` pins them to the same bytes.
 pub fn sample_rows(def: &EntityDefinition, count: usize) -> Vec<Value> {
     let rows = sample_row_count(def, count);
     (1..=rows)
@@ -730,7 +730,7 @@ pub fn seed_sample_data_as(
 ///   `@read` policy scopes by ownership uses `@read` admission instead of `@create`;
 /// - relation placeholders are then linked deterministically (see [`link_relations`]).
 ///
-/// `@almadar-io/parity` `fixtures/mock-seed/dataset.seeded.json` pins the result.
+/// orbital-core `tests/baked/mock-seed/dataset.seeded.json` pins the result.
 pub fn seed_mock_dataset(
     source: &dyn EntitySource,
     schema: &OrbitalSchema,

@@ -3,7 +3,7 @@
 //! `(xml/parse s Shape)` — pure, deterministic: XML text → `Value`; `Shape` names the type the value has (checked by
 //! `orb validate`, never evaluated). The root element's content is the result (its own name is dropped), mapped by
 //! one rule set the `@almadar/evaluator` twin (`std/xml.ts`) shares, vector for vector
-//! (`@almadar-io/parity` `fixtures/operators/xml-vectors.json`):
+//! (orbital-core `tests/fixtures/operators/xml-vectors.json`):
 //!
 //! - namespaces are ignored: names and attribute names are local names, `xmlns` declarations are dropped;
 //! - an attribute reads as the field `@name`;

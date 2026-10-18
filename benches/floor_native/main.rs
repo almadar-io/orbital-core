@@ -4,7 +4,7 @@
 //! what response building and serialization cost; F1 is the bound a faster kernel is measured against.
 //!
 //! The fixtures folder is `ALMADAR_PARITY_FIXTURES` (required) and the JSON row goes to `ALMADAR_BENCH_OUT`
-//! (required), in the shape `@almadar-io/parity`'s `bench-report` merges. `ALMADAR_BENCH_WARMUP`,
+//! (required), in the shape `@almadar-io/kernel-bench-tool`'s `bench-report` merges. `ALMADAR_BENCH_WARMUP`,
 //! `ALMADAR_BENCH_RUNS` and `ALMADAR_BENCH_MEMORY_EVENTS` shorten the run for the 100 000-row tables; the row
 //! has no reference to compare, so its recorded traces are empty.
 

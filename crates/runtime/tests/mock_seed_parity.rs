@@ -1,7 +1,7 @@
 //! The Rust half of the shared mock-seed parity vector.
 //!
 //! Reads the same vectors as `@almadar/core`'s `mock-parity-vector.test.ts`.
-//! Canonical source: `@almadar-io/parity` `fixtures/mock-seed/*.json`; the
+//! Canonical source: orbital-core `tests/baked/mock-seed/*.json`; the
 //! `almadar-sync rust` bake mirrors them into `tests/baked/mock-seed/` so this
 //! repo stays hermetic (CI has no monorepo sibling to climb to). One authored
 //! file, not a per-language pair — the point is that both implementations

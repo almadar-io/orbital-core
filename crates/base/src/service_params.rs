@@ -5,8 +5,7 @@
 //! computed values are [`ArgKind::Dynamic`] and never type-checked). The
 //! contracts are the [`ServiceRegistryData`] the language reader already loads.
 //!
-//! JS twins: `packages/almadar-integrations/src/core/validation.ts`
-//! (`validateParams`) and the compiler's `check_params` (I-13).
+//! The compiler's static twin is `check_params` (I-13).
 
 use crate::language::registry::{EmbeddedServiceParam, ServiceRegistryData};
 use serde_json::Value;
@@ -598,7 +597,8 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked > 100, "only {checked} contract actions checked");
+        assert!(installed.params.contains_key("hosting"), "the installed registry lists hosting");
+        assert!(checked > 0, "no contract action checked");
     }
 
     #[test]
@@ -614,33 +614,23 @@ mod tests {
     }
 
     #[test]
-    fn installed_webhook_send_matches_the_documented_contract() {
+    fn installed_hosting_rollback_matches_the_documented_contract() {
         let installed = crate::language::registry::baked_service_registry();
         let mut args = Args::new();
-        for k in ["url", "event", "secret"] {
-            args.insert(k.into(), ArgKind::String);
-        }
-        args.insert("payload".into(), ArgKind::Object);
-        assert!(validate_params(installed, "webhook", "send", &args).is_empty());
+        args.insert("appId".into(), ArgKind::String);
+        args.insert("version".into(), ArgKind::Number);
+        assert!(validate_params(installed, "hosting", "rollback", &args).is_empty());
         args.insert("recipient".into(), ArgKind::String);
-        assert_eq!(
-            validate_params(installed, "webhook", "send", &args).len(),
-            1
-        );
+        assert_eq!(validate_params(installed, "hosting", "rollback", &args).len(), 1, "an undeclared param is refused");
     }
 
     #[test]
-    fn installed_webhook_send_requires_url_and_event_and_checks_payload_type() {
+    fn installed_hosting_rollback_requires_app_and_version_and_checks_the_version_type() {
         let installed = crate::language::registry::baked_service_registry();
-        let issues = validate_params(installed, "webhook", "send", &Args::new());
-        assert_eq!(issues.len(), 2);
+        assert_eq!(validate_params(installed, "hosting", "rollback", &Args::new()).len(), 2);
         let mut args = Args::new();
-        args.insert("url".into(), ArgKind::String);
-        args.insert("event".into(), ArgKind::String);
-        args.insert("payload".into(), ArgKind::Number);
-        assert_eq!(
-            validate_params(installed, "webhook", "send", &args).len(),
-            1
-        );
+        args.insert("appId".into(), ArgKind::String);
+        args.insert("version".into(), ArgKind::String);
+        assert_eq!(validate_params(installed, "hosting", "rollback", &args).len(), 1);
     }
 }

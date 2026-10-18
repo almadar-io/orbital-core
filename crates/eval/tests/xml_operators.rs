@@ -1,4 +1,4 @@
-//! The Rust half of the shared `xml/parse` vectors (`@almadar-io/parity` `fixtures/operators/xml-vectors.json`,
+//! The Rust half of the shared `xml/parse` vectors (orbital-core `tests/fixtures/operators/xml-vectors.json`,
 //! mirrored byte-identically under `tests/fixtures/operators/`; the TS twin in `@almadar/evaluator` reads the
 //! same file).
 
@@ -48,19 +48,6 @@ fn every_shared_vector_matches() {
             assert_eq!(got.as_ref().ok(), Some(&case.expect), "{} {:?}", case.op, case.args);
         }
     }
-}
-
-#[test]
-fn the_mirror_is_byte_identical_to_the_parity_fixture() {
-    let source = crate_path("../../../packages/almadar-parity/fixtures/operators/xml-vectors.json");
-    if !source.exists() {
-        return;
-    }
-    assert_eq!(
-        std::fs::read(source).unwrap(),
-        std::fs::read(crate_path("tests/fixtures/operators/xml-vectors.json")).unwrap(),
-        "re-copy packages/almadar-parity/fixtures/operators/xml-vectors.json"
-    );
 }
 
 #[test]
