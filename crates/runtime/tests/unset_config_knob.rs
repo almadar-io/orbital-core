@@ -1,11 +1,19 @@
 // An unset `@config` knob in a render prop is an absent prop, not `null` (twin of the JS evaluator; ui `Chat.realtime-chat` lost its Send button to `placeholder: null`).
 
-use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
-use {orbital_core_base::client_effect::ClientEffect, orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
 use std::sync::Arc;
+use {
+    orbital_core_base::client_effect::ClientEffect,
+    orbital_core_base::effect_types::RuntimeEnvironment,
+    orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value,
+    orbital_core_runtime::effects::response::EventResponse,
+};
+use {
+    orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache},
+    orbital_core_runtime::kernel::RuntimeKernel,
+};
 
-fn rendered(config: Json, props: Json) -> Json {
+fn response(config: Json, slot: &str, props: Json) -> EventResponse {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
         "orbitals": [{
@@ -17,7 +25,7 @@ fn rendered(config: Json, props: Json) -> Json {
                 "stateMachine": {
                     "states": [{ "name": "idle", "isInitial": true }],
                     "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
-                        "effects": [["render-ui", "main", props]] }]
+                        "effects": [["render-ui", slot, props]] }]
                 }
             }]
         }]
@@ -30,8 +38,27 @@ fn rendered(config: Json, props: Json) -> Json {
     );
     k.register_schema(schema).unwrap();
     let outcomes = k.dispatch("T", None, "INIT", Value::Null).unwrap();
-    let response = EventResponse::from_process_results(&outcomes, "T", "INIT");
-    let pattern = response
+    EventResponse::from_process_results(&outcomes, "T", "INIT")
+}
+
+fn painted_slots(config: Json, slot: &str) -> Vec<String> {
+    response(
+        config,
+        slot,
+        json!({ "type": "typography", "content": "x" }),
+    )
+    .client_effects
+    .iter()
+    .flatten()
+    .filter_map(|e| match e {
+        ClientEffect::RenderUi { slot, .. } => Some(slot.clone()),
+        _ => None,
+    })
+    .collect()
+}
+
+fn rendered(config: Json, props: Json) -> Json {
+    let pattern = response(config, "main", props)
         .client_effects
         .iter()
         .flatten()
@@ -77,4 +104,29 @@ fn an_unset_knob_nested_in_children_is_absent_too() {
         pattern["children"][0].get("placeholder").is_none(),
         "{pattern}"
     );
+}
+
+#[test]
+fn a_slot_bound_to_a_knob_paints_into_the_knobs_value() {
+    assert_eq!(
+        painted_slots(
+            json!({ "detailSlot": { "type": "slot", "default": "modal" } }),
+            "@config.detailSlot"
+        ),
+        ["modal"]
+    );
+}
+
+#[test]
+fn control_a_literal_slot_paints_into_itself() {
+    assert_eq!(painted_slots(json!({}), "main"), ["main"]);
+}
+
+#[test]
+fn edge_a_slot_bound_to_an_unset_knob_paints_nothing() {
+    assert!(painted_slots(
+        json!({ "detailSlot": { "type": "slot" } }),
+        "@config.detailSlot"
+    )
+    .is_empty());
 }

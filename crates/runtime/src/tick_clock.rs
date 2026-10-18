@@ -92,12 +92,15 @@ struct Entry {
     tick_name: String,
     schedule: Schedule,
     last_ms: Option<u64>,
+    while_visible: bool,
 }
 
 /// Every declared tick of a schema plus the phase bookkeeping of its interval.
 pub struct TickClock {
     entries: Vec<Entry>,
     paused: bool,
+    /// Traits the host reports off screen; a trait it never reported counts as on screen.
+    off_screen: BTreeSet<String>,
 }
 
 impl TickClock {
@@ -142,6 +145,7 @@ impl TickClock {
                         tick_name: tick.name.clone(),
                         schedule,
                         last_ms: None,
+                        while_visible: tick.while_visible,
                     });
                 }
             }
@@ -149,6 +153,18 @@ impl TickClock {
         Self {
             entries,
             paused: false,
+            off_screen: BTreeSet::new(),
+        }
+    }
+
+    /// The host's report of whether `trait_name`'s rendered output is on screen. A `[visible]`
+    /// tick of an off-screen trait keeps its schedule but its fires are dropped (LOLO §11, the
+    /// web's `useClientTicks` `offScreen`).
+    pub fn set_on_screen(&mut self, trait_name: &str, on_screen: bool) {
+        if on_screen {
+            self.off_screen.remove(trait_name);
+        } else {
+            self.off_screen.insert(trait_name.to_string());
         }
     }
 
@@ -253,7 +269,7 @@ impl TickClock {
                     }
                 },
             };
-            if fire {
+            if fire && !(entry.while_visible && self.off_screen.contains(&entry.trait_name)) {
                 due.push((entry.trait_name.clone(), entry.tick_name.clone()));
             }
         }
@@ -448,6 +464,51 @@ mod tests {
         assert_eq!(
             checks, 0,
             "under a second since the last check: calendar not read"
+        );
+    }
+
+    #[test]
+    fn a_visible_tick_off_screen_drops_its_fires_and_keeps_its_phase() {
+        let mut c = clock(
+            json!([{ "name": "beat", "interval": 100, "whileVisible": true, "effects": [] }]),
+        );
+        c.due(0, || cal(1, 0));
+        c.set_on_screen("T", false);
+        assert!(
+            c.due(100, || cal(1, 0)).is_empty(),
+            "off screen: the due beat is dropped"
+        );
+        assert!(c.due(250, || cal(1, 0)).is_empty());
+        c.set_on_screen("T", true);
+        assert!(
+            c.due(299, || cal(1, 0)).is_empty(),
+            "phase kept: the next beat is at 300, not a catch-up burst"
+        );
+        assert_eq!(names(c.due(300, || cal(1, 0))), ["beat"]);
+    }
+
+    #[test]
+    fn control_a_plain_tick_fires_off_screen() {
+        let mut c = clock(json!([
+            { "name": "beat", "interval": 100, "effects": [] },
+            { "name": "seen", "interval": 100, "whileVisible": true, "effects": [] }
+        ]));
+        c.due(0, || cal(1, 0));
+        c.set_on_screen("T", false);
+        assert_eq!(names(c.due(100, || cal(1, 0))), ["beat"]);
+    }
+
+    #[test]
+    fn edge_a_visible_tick_never_reported_counts_as_on_screen() {
+        let mut c = clock(
+            json!([{ "name": "f", "interval": "frame", "whileVisible": true, "effects": [] }]),
+        );
+        assert_eq!(names(c.due(0, || cal(1, 0))), ["f"]);
+        c.set_on_screen("Other", false);
+        assert_eq!(
+            names(c.due(1, || cal(1, 0))),
+            ["f"],
+            "another trait's report does not gate it"
         );
     }
 

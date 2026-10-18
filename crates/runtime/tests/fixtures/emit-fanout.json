@@ -1,0 +1,82 @@
+{
+  "name": "emit-fanout",
+  "description": "A trait emits twice on GO; a listening trait acknowledges each and moves to done",
+  "schema": {
+    "name": "emit-fanout",
+    "version": "1.0.0",
+    "orbitals": [
+      {
+        "name": "Main",
+        "pages": [],
+        "entity": {
+          "name": "Item",
+          "persistence": "runtime",
+          "fields": [{ "name": "id", "type": "string", "required": true }]
+        },
+        "traits": [
+          {
+            "name": "Src",
+            "scope": "instance",
+            "emits": [{ "event": "X" }],
+            "stateMachine": {
+              "states": [{ "name": "idle", "isInitial": true }],
+              "events": [{ "key": "GO", "name": "GO" }],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    ["emit", "X", { "n": 1 }],
+                    ["emit", "X", { "n": 2 }]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "Sink",
+            "scope": "instance",
+            "emits": [{ "event": "ACK" }],
+            "listens": [
+              { "event": "X", "triggers": "GOT", "source": { "kind": "trait", "trait": "Src" } }
+            ],
+            "stateMachine": {
+              "states": [
+                { "name": "waiting", "isInitial": true },
+                { "name": "done" }
+              ],
+              "events": [{ "key": "GOT", "name": "GOT" }],
+              "transitions": [
+                {
+                  "from": ["waiting", "done"],
+                  "to": "done",
+                  "event": "GOT",
+                  "effects": [["emit", "ACK", { "n": "@payload.n" }]]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "go",
+      "orbital": "Main",
+      "trait": "Src",
+      "event": "GO",
+      "payload": {},
+      "expect": { "states": { "Src": "idle", "Sink": "done" } }
+    },
+    {
+      "name": "go-twice",
+      "orbital": "Main",
+      "steps": [
+        { "trait": "Src", "event": "GO", "payload": {} },
+        { "trait": "Src", "event": "GO", "payload": {}, "expect": { "states": { "Sink": "done" } } }
+      ]
+    }
+  ]
+}

@@ -603,7 +603,6 @@ pub(crate) fn drive_setup(
 ) -> DriveSetup {
     let viewer = ctx.viewer_id.as_deref();
     let owner_fields = ctx.owner_fields;
-    let seed_id = td.linked_entity.as_deref().map(|e| planner::effective_seed_id(e, owner_fields, viewer));
     let creates_own_row = |entity: &str| {
         planner::is_self_identity(entity, owner_fields)
             && planner::created_only_entities(td, event).iter().any(|e| e == entity)

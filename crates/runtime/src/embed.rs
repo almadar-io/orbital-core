@@ -802,4 +802,9 @@ impl EmbeddedKernel {
         }
         self.kernel.unmount_traits(traits);
     }
+
+    /// The host's report of whether `trait_name`'s rendered output is on screen (its `[visible]` ticks).
+    pub fn set_trait_on_screen(&self, trait_name: &str, on_screen: bool) {
+        self.ticks.lock().set_on_screen(trait_name, on_screen);
+    }
 }

@@ -1650,25 +1650,27 @@ impl RuntimeKernel {
             if held.is_empty() {
                 self.record_renders(trait_name, entity_id, sources, &state_effects, &ctx);
             } else {
-                let mut slots: Vec<&str> = Vec::new();
-                for (slot, _) in &sources {
-                    if !slots.contains(&slot.as_str()) {
-                        slots.push(slot);
+                let mut slots: Vec<String> = Vec::new();
+                for er in &state_effects {
+                    if let Effect::RenderUi { slot, .. } = &er.effect {
+                        if !slots.contains(slot) {
+                            slots.push(slot.clone());
+                        }
                     }
                 }
                 state_effects = slots
                     .into_iter()
                     .filter_map(|slot| {
-                        let painted = held.iter().find(|(held_slot, _)| held_slot == slot);
+                        let painted = held.iter().find(|(held_slot, _)| *held_slot == slot);
                         match painted {
                             Some((_, content)) => Some(EffectResult::executed(Effect::RenderUi {
-                                slot: slot.to_string(),
+                                slot,
                                 content: content.clone(),
                             })),
                             None => state_effects
                                 .iter()
                                 .rev()
-                                .find(|er| matches!(&er.effect, Effect::RenderUi { slot: s, .. } if s == slot))
+                                .find(|er| matches!(&er.effect, Effect::RenderUi { slot: s, .. } if *s == slot))
                                 .cloned(),
                         }
                     })
@@ -4497,13 +4499,13 @@ impl RuntimeKernel {
         }
         self.flush_row_writes();
         let resolved = resolved.iter().filter_map(|er| match &er.effect {
-            Effect::RenderUi { content, .. } => Some(content.clone()),
+            Effect::RenderUi { slot, content } => Some((slot.clone(), content.clone())),
             _ => None,
         });
         let renders = sources
             .into_iter()
             .zip(resolved)
-            .map(|((slot, source), content)| (slot, source, content))
+            .map(|((_, source), (slot, content))| (slot, source, content))
             .collect();
         self.renders
             .write()
@@ -5373,6 +5375,7 @@ fn merge_entity(base: &Value, set: &Value) -> Value {
 fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effect, EvalError> {
     Ok(match effect {
         Effect::RenderUi { slot, content } => {
+            let slot = resolve_render_slot(slot, ctx)?;
             let resolved = ctx.resolve_value_checked(&content)?.into_owned();
             debug!(
                 target: "almadar::kernel",
@@ -5671,6 +5674,21 @@ fn page_fact_fields(value: &Value) -> Result<Vec<orbital_core_base::ir::effects:
         fields.push(field);
     }
     Ok(fields)
+}
+
+/// A `render-ui` slot written as a binding (`@config.detailSlot`) paints into the slot it names, as the JS
+/// executor's `interpolateValue` does; one that names no slot is the effect's failure, never a slot of that text.
+fn resolve_render_slot(slot: String, ctx: &BindingContext) -> Result<String, EvalError> {
+    if BindingContext::binding_token_end(&slot, 0) != Some(slot.len()) {
+        return Ok(slot);
+    }
+    match ctx.resolve_binding(&slot) {
+        Some(Value::String(name)) if !name.is_empty() => Ok(name),
+        other => Err(EvalError::InvalidArgument(format!(
+            "render-ui slot {slot} must name a slot, got {}",
+            other.map_or_else(|| "nothing".to_string(), |v| v.to_string_value())
+        ))),
+    }
 }
 
 fn resolve_call_key(key: &Value, ctx: &BindingContext) -> Result<Value, EvalError> {

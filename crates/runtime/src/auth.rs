@@ -1196,7 +1196,7 @@ mod tests {
 
     #[test]
     fn a_discovery_document_cannot_send_the_verifier_to_another_origin() {
-        let (fx, documents) = oidc_world();
+        let (fx, _) = oidc_world();
         let o = &fx["oidc"];
         let elsewhere = "https://keys.elsewhere.test/jwks";
         let discovery = json!({ "issuer": o["issuer"], "jwks_uri": elsewhere }).to_string();

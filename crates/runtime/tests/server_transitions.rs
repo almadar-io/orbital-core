@@ -160,7 +160,7 @@ mod runtime_rows {
     use super::*;
 
     fn fanout(persistence: &str) -> OrbitalSchema {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../tools/kernel-bench/fixtures/scenarios/emit-fanout.json");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/emit-fanout.json");
         let mut doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json");
         doc["schema"]["orbitals"][0]["entity"]["persistence"] = json!(persistence);
         serde_json::from_value(doc["schema"].clone()).expect("schema")
