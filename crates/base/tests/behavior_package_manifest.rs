@@ -214,22 +214,18 @@ fn peer_package(root: &Path, live: bool, name: &str) {
 }
 
 #[test]
-fn duplicate_trailing_names_across_installed_packages_are_refused() {
+fn the_same_trailing_name_in_two_installed_packages_is_legal() {
+    // `<prefix>/<name>` tells them apart; only the bare `std/behaviors/<name>` spelling is ambiguous
+    // (`ORB_BEHAVIOR_AMBIGUOUS`, docs/Almadar_Behavior_Packages.md).
     for live in [false, true] {
         let tmp = tempfile::tempdir().unwrap();
         package(tmp.path(), None);
         peer_package(tmp.path(), live, "x");
-        let error = discover(tmp.path(), &tmp.path().join("store"))
-            .expect_err("a different package prefix must not hide a duplicate trailing name");
-        let message = error.to_string();
-        assert!(
-            message.contains("pkg-a") && message.contains("pkg-b"),
-            "{message}"
-        );
-        assert!(message.contains("x.orb"), "{message}");
-        assert!(
-            message.contains(if live { "x.lolo" } else { "x.orb" }),
-            "{message}"
+        assert_eq!(
+            discover(tmp.path(), &tmp.path().join("store"))
+                .unwrap()
+                .len(),
+            2
         );
     }
 }
