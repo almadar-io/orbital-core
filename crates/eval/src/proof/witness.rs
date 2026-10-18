@@ -131,6 +131,10 @@ pub fn solve_guard(expr: &SExpression, want: bool, payload: &mut serde_json::Val
                         }
                         solved
                     } else {
+                        // An operand that already holds (or fails) whatever the payload is settles the form unchanged.
+                        if args.iter().any(|arg| const_truth(arg) == Some(want)) {
+                            return true;
+                        }
                         args.iter().any(|arg| {
                             let mut attempt = payload.clone();
                             let solved = solve_guard(arg, want, &mut attempt, declared);
@@ -146,7 +150,7 @@ pub fn solve_guard(expr: &SExpression, want: bool, payload: &mut serde_json::Val
                     _ => false,
                 },
                 "object/has" | "object/get" | "array/includes" | "str/startsWith" | "validate/url" | "validate/required"
-                | "grid/in-bounds" => solve_membership_form(op, args, want, payload),
+                | "grid/in-bounds" => solve_membership_form(op, args, want, payload, declared),
                 "array/some" | "array/every" => solve_quantifier(op, args, want, payload, declared),
                 "if" => solve_if(args, want, payload, declared),
                 "let" => solve_let(args, want, payload, declared),
@@ -260,7 +264,7 @@ fn split_payload_arg<'a>(a: &'a SExpression, b: &'a SExpression) -> Option<(Vec<
     }
 }
 
-fn solve_membership_form(op: &str, args: &[SExpression], want: bool, payload: &mut serde_json::Value) -> bool {
+fn solve_membership_form(op: &str, args: &[SExpression], want: bool, payload: &mut serde_json::Value, declared: &Declared) -> bool {
     use serde_json::Value as J;
     let set = |payload: &mut J, path: &[String], value: J| set_payload_path(payload, path, value);
     match (op, args) {
@@ -320,7 +324,17 @@ fn solve_membership_form(op: &str, args: &[SExpression], want: bool, payload: &m
         }
         ("validate/required", [SExpression::String(p)]) => {
             let Some(path) = payload_path(p) else { return false };
-            set(payload, &path, J::String(if want { "mock-required-value" } else { "" }.to_string()));
+            // A field the event types as a row (not a scalar) is required as a row of its type.
+            let scalar = match path.as_slice() {
+                [field] => declared.types.get(field).is_none_or(|t| matches!(t.as_str(), "string" | "number" | "boolean")),
+                _ => true,
+            };
+            let value = if scalar {
+                J::String(if want { "mock-required-value" } else { "" }.to_string())
+            } else {
+                declared.truthiness(&path, want)
+            };
+            set(payload, &path, value);
             true
         }
         ("grid/in-bounds", [position, w, h, ..]) => {
@@ -740,4 +754,47 @@ fn solve_comparison(
     };
     set_payload_path(payload, &path, value);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn declared(types: &[(&str, &str)]) -> Declared {
+        Declared {
+            types: types.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            base: json!({}),
+            seed_id: Some("Contact Id 1".to_string()),
+            rows: Default::default(),
+        }
+    }
+
+    fn guard(expr: serde_json::Value) -> SExpression {
+        serde_json::from_value(expr).unwrap()
+    }
+
+    #[test]
+    fn a_required_object_field_gets_a_row_not_a_string() {
+        let payload = conform_payload(&guard(json!(["validate/required", "@payload.row"])), &json!({}), &declared(&[("row", "Contact")]));
+        assert_eq!(payload, Some(json!({ "row": { "id": "Contact Id 1" } })));
+    }
+
+    #[test]
+    fn control_a_required_string_field_gets_a_non_empty_string() {
+        let payload = conform_payload(&guard(json!(["validate/required", "@payload.name"])), &json!({}), &declared(&[("name", "string")]));
+        assert_eq!(payload, Some(json!({ "name": "mock-required-value" })));
+    }
+
+    #[test]
+    fn edge_an_or_settled_by_a_constant_true_operand_writes_nothing() {
+        let expr = guard(json!(["or", ["=", "create", "create"], ["validate/required", "@payload.row"]]));
+        assert_eq!(conform_payload(&expr, &json!({}), &declared(&[("row", "Contact")])), Some(json!({})));
+    }
+
+    #[test]
+    fn control_an_or_with_a_constant_false_operand_solves_the_next() {
+        let expr = guard(json!(["or", ["=", "create", "edit"], ["validate/required", "@payload.row"]]));
+        assert_eq!(conform_payload(&expr, &json!({}), &declared(&[("row", "Contact")])), Some(json!({ "row": { "id": "Contact Id 1" } })));
+    }
 }

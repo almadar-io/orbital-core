@@ -5,8 +5,12 @@
 
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{CallRoutes, CallSite, IoAnswer, IoReply, IoRequest};
-use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
+use {
+    orbital_core_base::schema::types::OrbitalSchema,
+    orbital_core_base::value::Value,
+    orbital_core_runtime::effects::response::{EventRequest, EventResponse},
+};
 
 const ROUTES: &str = r#"{ "key": "job", "emit": { "success": "ANSWERED", "failure": "ANSWER_FAILED", "cancelled": "STOPPED", "onMessage": "STEP" } }"#;
 
@@ -223,11 +227,9 @@ fn unrouted_schema() -> OrbitalSchema {
 }
 
 fn has_effect_failed(response: &EventResponse) -> bool {
-    response
-        .rejections
-        .iter()
-        .flatten()
-        .any(|r| r.code == orbital_core_runtime::effects::response::TransitionRejectionCode::EffectFailed)
+    response.rejections.iter().flatten().any(|r| {
+        r.code == orbital_core_runtime::effects::response::TransitionRejectionCode::EffectFailed
+    })
 }
 
 #[test]
@@ -255,4 +257,171 @@ fn control_a_call_that_succeeds_runs_the_effects_after_it() {
     let (response, _) = run_in(unrouted_schema(), request("ASK", "Plain"), ok());
     assert!(!has_effect_failed(&response));
     assert!(emitted(&response).iter().any(|(e, _)| *e == "AFTER"));
+}
+
+// The arguments a `call-service` hands its provider are resolved like any effect's: a binding at any depth is its value
+// (JS twin: `EffectExecutor` `call-service` interpolates its params).
+fn args_schema(args: Json) -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "Judge", "linkedEntity": "Job",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "JUDGE", "effects": [["call-service", "knowledge", "status", args]] }] } }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn asked_args(args: Json) -> Json {
+    let server = EmbeddedServer::new(args_schema(args)).unwrap();
+    let progress = server
+        .start(
+            "Main",
+            EventRequest {
+                event: "JUDGE".to_string(),
+                target_trait: Some("Judge".to_string()),
+                payload: Some(
+                    serde_json::from_value(json!({ "title": "Graphs 101", "tags": ["learn"] }))
+                        .unwrap(),
+                ),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    match progress {
+        ServerProgress::Await { requests, .. } => match &requests[0].request {
+            IoRequest::CallService { args, .. } => serde_json::to_value(args).unwrap(),
+            other => panic!("expected a call, got {other:?}"),
+        },
+        ServerProgress::Done(response) => panic!("the call was never asked: {response:?}"),
+    }
+}
+
+#[test]
+fn call_service_arguments_resolve_their_bindings() {
+    assert_eq!(
+        asked_args(
+            json!({ "text": "@payload.title", "nested": { "tags": "@payload.tags" }, "categories": ["learn", "laugh"] })
+        ),
+        json!({ "text": "Graphs 101", "nested": { "tags": ["learn"] }, "categories": ["learn", "laugh"] })
+    );
+}
+
+#[test]
+fn control_literal_call_service_arguments_pass_unchanged() {
+    assert_eq!(
+        asked_args(json!({ "text": "plain", "on": true })),
+        json!({ "text": "plain", "on": true })
+    );
+}
+
+// A step whose effects await a call commits its target state before the await: a dispatch that overlaps it sees the
+// state the transition entered, and a dispatch that moves the trait meanwhile keeps that move once the call answers
+// (G-CROSS-259, ruled 2026-10-18; JS host twin: `@almadar/runtime` `browser-host-midcall-state`, `browser-host-cancel-call`).
+fn overlap_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "Judge", "linkedEntity": "Job",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "busy" }],
+                    "transitions": [
+                        { "from": "idle", "to": "busy", "event": "CALL", "effects": [["call-service", "slow", "work", {}, { "key": "job", "emit": { "success": "DONE", "cancelled": "CANCELLED" } }]] },
+                        { "from": "busy", "to": "busy", "event": "PING", "effects": [] },
+                        { "from": "busy", "to": "idle", "event": "STOP", "effects": [["cancel-call", "job"]] },
+                        { "from": "busy", "to": "idle", "event": "DONE", "effects": [] },
+                        { "from": "busy", "to": "busy", "event": "CANCELLED", "effects": [] },
+                        { "from": "idle", "to": "idle", "event": "CANCELLED", "effects": [] }
+                    ] } }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn judge(event: &str) -> EventRequest {
+    request(event, "Judge")
+}
+
+/// Answer every ask of `progress` that is not a `call-service` (a cancel of another flight's call is acknowledged).
+fn settle_other_asks(server: &EmbeddedServer, mut progress: ServerProgress) -> EventResponse {
+    loop {
+        match progress {
+            ServerProgress::Done(response) => return response,
+            ServerProgress::Await { flight, requests } => {
+                let replies = requests
+                    .into_iter()
+                    .map(|pending| IoReply {
+                        id: pending.id,
+                        answer: match pending.request {
+                            IoRequest::CancelCall { .. } => IoAnswer::Cancelled(Ok(())),
+                            IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
+                            other => panic!("unexpected ask {other:?}"),
+                        },
+                    })
+                    .collect();
+                progress = server.resume(flight, replies).unwrap();
+            }
+        }
+    }
+}
+
+fn awaiting_call(
+    progress: ServerProgress,
+) -> (u64, Vec<orbital_core_runtime::resumable::PendingRequest>) {
+    match progress {
+        ServerProgress::Await { flight, requests } => (flight, requests),
+        ServerProgress::Done(response) => panic!("the call never suspended: {response:?}"),
+    }
+}
+
+#[test]
+fn a_suspended_step_shows_its_target_state_to_an_overlapping_dispatch() {
+    let server = EmbeddedServer::new(overlap_schema()).unwrap();
+    let (_flight, _) = awaiting_call(server.start("Main", judge("CALL")).unwrap());
+    assert_eq!(server.get_state("Judge", None), "busy");
+    let ping = settle_other_asks(&server, server.start("Main", judge("PING")).unwrap());
+    assert!(ping.transitioned, "PING has an arm only from busy");
+}
+
+#[test]
+fn control_an_unmoved_call_finishes_from_the_state_it_entered() {
+    let server = EmbeddedServer::new(overlap_schema()).unwrap();
+    let (flight, requests) = awaiting_call(server.start("Main", judge("CALL")).unwrap());
+    let replies = requests
+        .into_iter()
+        .map(|p| IoReply {
+            id: p.id,
+            answer: IoAnswer::Service(Ok(Value::Null)),
+        })
+        .collect();
+    let done = settle_other_asks(&server, server.resume(flight, replies).unwrap());
+    assert!(done.emitted_events.iter().any(|e| e.event == "DONE"));
+    assert_eq!(server.get_state("Judge", None), "idle");
+}
+
+#[test]
+fn a_call_result_after_another_dispatch_moved_the_trait_is_handled_from_the_moved_state() {
+    let server = EmbeddedServer::new(overlap_schema()).unwrap();
+    let (flight, requests) = awaiting_call(server.start("Main", judge("CALL")).unwrap());
+    let stop = settle_other_asks(&server, server.start("Main", judge("STOP")).unwrap());
+    assert!(stop.transitioned, "STOP has an arm only from busy");
+    assert_eq!(server.get_state("Judge", None), "idle");
+    let replies = requests
+        .into_iter()
+        .map(|p| IoReply {
+            id: p.id,
+            answer: IoAnswer::ServiceCancelled,
+        })
+        .collect();
+    settle_other_asks(&server, server.resume(flight, replies).unwrap());
+    assert_eq!(
+        server.get_state("Judge", None),
+        "idle",
+        "the replayed CALL must not put the trait back to busy"
+    );
+    awaiting_call(server.start("Main", judge("CALL")).unwrap());
 }

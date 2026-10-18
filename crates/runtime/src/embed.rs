@@ -21,7 +21,7 @@ use orbital_core_base::theme::ThemeMode;
 use crate::trait_owners::TraitOwners;
 use orbital_core_base::effect_types::{Effect, RuntimeEnvironment};
 use crate::entity_source::EntitySource;
-use crate::effects::response::EventResponse;
+use crate::effects::response::{EventRequest, EventResponse};
 use orbital_core_base::schema::types::OrbitalSchema;
 use crate::process_result::ProcessEventResult;
 use orbital_core_base::value::Value;
@@ -418,6 +418,22 @@ impl EmbeddedKernel {
         already_delivered: &HashSet<(String, String)>,
     ) -> Result<AppliedWire, String> {
         self.apply_server_response_since(response, already_delivered, None)
+    }
+
+    /// `leg` as a host that holds the circuit state takes it: no carried states, and only the rows of the `[shared]`
+    /// frames its traits read, since a client-side write into a shared frame is the one piece of state that host lacks.
+    pub fn stateful_leg(&self, mut leg: EventRequest) -> EventRequest {
+        leg.traits = None;
+        leg.entity_by_trait = leg
+            .entity_by_trait
+            .take()
+            .map(|rows| {
+                rows.into_iter()
+                    .filter(|(trait_name, _)| self.kernel.reads_shared_frame(trait_name))
+                    .collect::<ValueMap>()
+            })
+            .filter(|rows| !rows.is_empty());
+        leg
     }
 
     /// The rows a posted leg is folded against: the rows the leg carried, with each `seeded`

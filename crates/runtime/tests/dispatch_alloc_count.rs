@@ -305,7 +305,8 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
     );
 }
 
-const PINNED_REPLAY: usize = 331080;
+// 331158: each suspension now records the transition its step committed (two names and a box, G-CROSS-259, 2026-10-18).
+const PINNED_REPLAY: usize = 331158;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)

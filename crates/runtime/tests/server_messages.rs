@@ -115,9 +115,12 @@ fn edge_a_locale_the_program_does_not_declare_is_refused() {
     assert!(err.contains("\"fr\""), "{err}");
 }
 
+// A message the viewer's catalog lacks is a failed call, never a key painted as text (G-ORBITAL-CORE-033).
 #[test]
-fn control_without_installed_messages_a_message_key_renders_as_its_key() {
+fn control_without_installed_messages_the_render_fails_and_paints_nothing() {
     let bare = EmbeddedServer::new(schema()).unwrap();
-    let page = rendered(&init(&bare, Some("ar")).unwrap());
-    assert!(!page.contains("مرحبا"), "{page}");
+    let response = init(&bare, Some("ar")).unwrap();
+    assert!(response.client_effects.as_ref().is_none_or(|e| e.is_empty()), "{:?}", response.client_effects);
+    let rejections = serde_json::to_string(&response.rejections).unwrap();
+    assert!(rejections.contains("effect-failed"), "{rejections}");
 }

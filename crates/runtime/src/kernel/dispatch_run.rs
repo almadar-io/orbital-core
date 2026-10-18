@@ -95,6 +95,8 @@ pub(crate) struct DispatchRun {
     /// The viewer the dispatch was started as (see `enter_viewer`); `None` leaves the kernel's `@user` as it is.
     user: Option<Arc<Value>>,
     origin: Origin,
+    /// The transition the step in flight committed when it suspended (G-CROSS-259).
+    provisional: Option<Box<ProvisionalCommit>>,
 }
 
 enum Flow {
@@ -416,6 +418,7 @@ impl RuntimeKernel {
             locale: self.dispatch_locale.read().clone(),
             user: self.thread_viewer(),
             origin: self.next_dispatch_origin(),
+            provisional: None,
         }
     }
 
@@ -436,8 +439,36 @@ impl RuntimeKernel {
         mut c: DispatchContinuation,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         loop {
+            *self.suspended_commit.write() = None;
+            // The step committed its transition when it suspended: it replays from the state it left, and a state
+            // another dispatch moved the trait to meanwhile stands once the replay is done.
+            let replay = c.run.provisional.take().map(|p| {
+                let moved = self.rewind_provisional(&p);
+                (p, moved)
+            });
             let journal = std::mem::take(&mut c.journal);
             let (result, end) = self.io.run_step_reading(journal, std::mem::take(&mut c.reads), || self.unit(&mut c.run));
+            let committed = self.suspended_commit.write().take();
+            match replay {
+                Some((p, Some(moved))) => {
+                    self.set_held_state(&p.trait_name, &p.entity_id, moved);
+                    if !end.pending.is_empty() {
+                        c.run.provisional = Some(committed.map(Box::new).unwrap_or(p));
+                    }
+                }
+                Some((p, None)) if !end.pending.is_empty() => match committed {
+                    Some(again) => c.run.provisional = Some(Box::new(again)),
+                    None => {
+                        // Suspended before reaching its transition again: hold the state it had entered.
+                        let mut entered = p.from.clone();
+                        entered.transition_to(&p.to);
+                        self.set_held_state(&p.trait_name, &p.entity_id, entered);
+                        c.run.provisional = Some(p);
+                    }
+                },
+                _ if !end.pending.is_empty() => c.run.provisional = committed.map(Box::new),
+                _ => {}
+            }
             c.reads = end.reads;
             if let Some(diverged) = end.diverged {
                 return Err(DispatchError::Resume(diverged));
@@ -473,6 +504,7 @@ impl RuntimeKernel {
             locale,
             user,
             origin,
+            ..
         } = run;
         let Some(in_flight) = seed.as_mut() else {
             if plans

@@ -472,9 +472,9 @@ impl BindingContext {
         self.resolve_value_guarded(value, &mut Walk::default())
     }
 
-    /// [`Self::resolve_value`] that reports a typed argument mismatch (D-12) raised by an operator call
-    /// embedded in the value, as the JS runtime's `interpolateArray` does by letting it throw. Any other
-    /// evaluation failure keeps the value, as `resolve_value` does.
+    /// [`Self::resolve_value`] that reports the failure of an operator call embedded in the value (a typed
+    /// argument mismatch, D-12, or any other evaluation error), as the JS runtime's `interpolateArray` does by
+    /// letting it throw (G-ORBITAL-CORE-033).
     pub fn resolve_value_checked<'v>(
         &self,
         value: &'v Value,
@@ -649,12 +649,16 @@ impl BindingContext {
                     if super::operators::get_operator(op).is_some() {
                         let sexpr: orbital_core_base::schema::sexpr::SExpression =
                             value.clone().into();
+                        // An operator-headed array is a call: its failure is a fault the checked
+                        // resolution reports (G-ORBITAL-CORE-033); the unchecked one keeps the value.
                         match super::operators::eval_expr(&sexpr, self) {
                             Ok(result) => return Cow::Owned(result),
-                            Err(OrbitalError::Eval(fault @ EvalError::TypeMismatch { .. })) => {
+                            Err(OrbitalError::Eval(fault)) => {
                                 walk.fault.get_or_insert(fault);
                             }
-                            Err(_) => {}
+                            Err(other) => {
+                                walk.fault.get_or_insert(EvalError::InvalidArgument(other.to_string()));
+                            }
                         }
                         // Evaluation failed (e.g. malformed args) — fall through to
                         // per-element binding resolution rather than losing the value.
@@ -887,6 +891,30 @@ mod tests {
             Value::String("Current User".to_string()),
         );
         Value::Object(user)
+    }
+
+    // G-ORBITAL-CORE-033 (ruled 2026-10-18): an operator call in an effect argument that fails is a failure, never data.
+    fn untranslatable() -> Value {
+        Value::Array(vec![Value::String("i18n/t".to_string()), Value::String("greet:hello".to_string())])
+    }
+
+    #[test]
+    fn a_failing_operator_call_faults_the_checked_resolution() {
+        let ctx = BindingContextBuilder::new().build();
+        assert!(ctx.resolve_value_checked(&untranslatable()).is_err());
+    }
+
+    #[test]
+    fn control_a_working_operator_call_resolves_under_the_checked_resolution() {
+        let ctx = BindingContextBuilder::new().build();
+        let sum = Value::Array(vec![Value::String("+".to_string()), Value::Number(1.0), Value::Number(2.0)]);
+        assert_eq!(ctx.resolve_value_checked(&sum).unwrap().into_owned(), Value::Number(3.0));
+    }
+
+    #[test]
+    fn edge_the_unchecked_resolution_still_keeps_a_failing_call() {
+        let ctx = BindingContextBuilder::new().build();
+        assert_eq!(ctx.resolve_value(&untranslatable()).into_owned(), untranslatable());
     }
 
     #[test]

@@ -280,6 +280,11 @@ pub struct RuntimeKernel {
     /// entity's frame is `$shared::<Entity>` for every trait bound to it, any other trait's is
     /// its own name (Runtime Spec Clause 2.3). `@entity` is the row with the frame over it.
     frames: Arc<RwLock<HashMap<(String, String), Value>>>,
+    /// The state a step committed as it suspended on I/O (G-CROSS-259), for the resumable run to carry.
+    pub(crate) suspended_commit: Arc<RwLock<Option<ProvisionalCommit>>>,
+    /// Frame slot -> the id of the row a carried row named: that trait reads that row under its frame,
+    /// not the dispatch's address (G-CROSS-256).
+    carried_rows: Arc<RwLock<HashMap<(String, String), String>>>,
     /// The theme presets the registered programs carry (`themeDefinitions`,
     /// written by `orb` when it compiles a program) — the kernel has no
     /// filesystem access at runtime. Additive across registrations.
@@ -343,6 +348,15 @@ pub struct ClientDispatch {
     pub awaiting: Vec<AwaitingTrait>,
     /// The plain leg a stateful host is posted when no effect was delegated.
     pub stateful_leg: Option<StatefulLeg>,
+}
+
+/// A step's transition committed while its effects await host I/O: `from` is the state the step is replayed from.
+#[derive(Debug, Clone)]
+pub(crate) struct ProvisionalCommit {
+    pub(crate) trait_name: String,
+    pub(crate) entity_id: String,
+    pub(crate) from: TraitState,
+    pub(crate) to: String,
 }
 
 /// The leg of a server-backed dispatch that delegated nothing: the host holds the circuit state,
@@ -1037,6 +1051,8 @@ impl RuntimeKernel {
             capture_children: Arc::new(RwLock::new(HashMap::new())),
             composed_callsite: Arc::new(RwLock::new(ValueMap::new())),
             frames: Arc::new(RwLock::new(HashMap::new())),
+            carried_rows: Arc::new(RwLock::new(HashMap::new())),
+            suspended_commit: Arc::new(RwLock::new(None)),
             theme_presets: Arc::new(RwLock::new(ThemePresets::new())),
             theme_mode: Arc::new(RwLock::new(None)),
             nav_pages: Arc::new(RwLock::new(Value::Array(Vec::new()))),
@@ -1575,9 +1591,14 @@ impl RuntimeKernel {
                 }
             }
             if self.io.suspended() {
-                if let Some(state) = state_manager.get_state_mut(trait_name, Some(entity_id)) {
-                    *state = current_state;
-                }
+                // The transition is committed before its effects' I/O answers: an overlapping dispatch sees the
+                // state it entered. The replay runs the step again from `from` (G-CROSS-259).
+                *self.suspended_commit.write() = Some(ProvisionalCommit {
+                    trait_name: trait_name.to_string(),
+                    entity_id: entity_id.to_string(),
+                    from: current_state,
+                    to: new_state,
+                });
                 return Err(Fault::Suspended);
             }
 
@@ -2167,6 +2188,19 @@ impl RuntimeKernel {
             Vec::new()
         };
 
+        // The host holds the circuit state but not a client-side write into a `[shared]` frame: the leg carries the
+        // frame the host replays the event from (G-CROSS-260).
+        let shared_frame = self
+            .reads_shared_frame(trait_name)
+            .then(|| {
+                outcomes
+                    .iter()
+                    .find(|(t, r)| t == trait_name && r.executed)
+                    .and_then(|(_, r)| r.entry.as_ref())
+                    .map(|entry| entry.entity_before.clone())
+                    .filter(|row| !row.is_null())
+            })
+            .flatten();
         let stateful_leg =
             (server_legs.is_empty() && !hybrid && self.effect_executor.environment().is_client())
                 .then(|| StatefulLeg {
@@ -2177,6 +2211,8 @@ impl RuntimeKernel {
                         target_trait: Some(trait_name.to_string()),
                         client_id: client_id.map(str::to_string),
                         source_trait: Some(trait_name.to_string()),
+                        entity_by_trait: shared_frame
+                            .map(|row| ValueMap::from([(trait_name.to_string(), row)])),
                         ..Default::default()
                     },
                     awaiting: if tick.is_some() {
@@ -2520,6 +2556,20 @@ impl RuntimeKernel {
         self.frame_slot(trait_name, &entity_type, "").0
     }
 
+    /// Whether `trait_name` reads its entity's one `[shared]` frame.
+    pub fn reads_shared_frame(&self, trait_name: &str) -> bool {
+        let entity_type = self
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .and_then(|d| d.linked_entity.clone())
+            .unwrap_or_else(|| trait_name.to_string());
+        self.entity_definitions
+            .read()
+            .get(&entity_type)
+            .is_some_and(|d| d.shared)
+    }
+
     /// `(frame key, entity id)` of `trait_name`'s frame (Runtime Spec Clause 2.3).
     fn frame_slot(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> (String, String) {
         let shared = self
@@ -2543,8 +2593,12 @@ impl RuntimeKernel {
             .get(entity_type)
             .cloned()
             .unwrap_or_default();
-        let row = self.entity_source.read(entity_type, entity_id).ok();
         let slot = self.frame_slot(trait_name, entity_type, entity_id);
+        let row_id = self.carried_rows.read().get(&slot).cloned();
+        let row = self
+            .entity_source
+            .read(entity_type, row_id.as_deref().unwrap_or(entity_id))
+            .ok();
         let frames = self.frames.read();
         let layered = overlay(
             overlay(Cow::Borrowed(&*defaults), row.as_deref().unwrap_or(&Value::Null)),
@@ -2760,8 +2814,16 @@ impl RuntimeKernel {
 
         {
             let mut state_manager = self.state_manager.write();
+            // A client-only trait's state is the client's, unless the host ran it (a browser leg's cascade): then the
+            // host's state continues from the state the leg carried.
+            let host_ran: HashSet<&str> = response
+                .transitions
+                .iter()
+                .flatten()
+                .map(|hop| hop.trait_name.as_str())
+                .collect();
             for (trait_name, state_name) in &response.states {
-                if client_only.contains(trait_name) {
+                if client_only.contains(trait_name) && !host_ran.contains(trait_name.as_str()) {
                     continue;
                 }
                 let entity_id = Some(
@@ -4614,6 +4676,26 @@ impl RuntimeKernel {
     }
 
     /// Get the current state for an entity.
+    /// Put a suspended step's trait back to the state it is replayed from; returns the state another dispatch moved it to
+    /// meanwhile (`None` when it still holds the state the step entered).
+    pub(crate) fn rewind_provisional(&self, commit: &ProvisionalCommit) -> Option<TraitState> {
+        let mut state_manager = self.state_manager.write();
+        let held = state_manager.get_state_mut(&commit.trait_name, Some(&commit.entity_id))?;
+        let moved = (held.current_state != commit.to).then(|| held.clone());
+        *held = commit.from.clone();
+        moved
+    }
+
+    /// Hold `state` as `trait_name`'s state under `entity_id`.
+    pub(crate) fn set_held_state(&self, trait_name: &str, entity_id: &str, state: TraitState) {
+        let mut state_manager = self.state_manager.write();
+        if state_manager.get_or_create_state(trait_name, Some(entity_id)).is_ok() {
+            if let Some(held) = state_manager.get_state_mut(trait_name, Some(entity_id)) {
+                *held = state;
+            }
+        }
+    }
+
     pub fn get_state(&self, trait_name: &str, entity_id: Option<&str>) -> Option<TraitState> {
         self.state_manager
             .read()
@@ -4653,9 +4735,30 @@ impl RuntimeKernel {
                     .unwrap_or_else(|| trait_name.clone()),
                 None => continue,
             };
-            if row.as_object().is_some_and(|o| !o.is_empty()) {
-                self.write_trait_frame(trait_name, &entity_type, eid, row);
+            if !row.as_object().is_some_and(|o| !o.is_empty()) {
+                continue;
             }
+            let carried_id = row
+                .get_path("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
+            // A persisted `[shared]` entity's frame is its one working instance: a detail row's id never addresses it.
+            // A `[runtime]` row has no store behind it, so the client's copy is the row and always folds.
+            let persisted_shared = self
+                .entity_definitions
+                .read()
+                .get(&entity_type)
+                .is_some_and(|d| d.shared && d.persistence != Some(Persistence::Runtime));
+            if persisted_shared && carried_id.is_some() {
+                continue;
+            }
+            let slot = self.frame_slot(trait_name, &entity_type, eid);
+            match carried_id {
+                Some(id) => self.carried_rows.write().insert(slot, id),
+                None => self.carried_rows.write().remove(&slot),
+            };
+            self.write_trait_frame(trait_name, &entity_type, eid, row);
         }
     }
 
@@ -5452,7 +5555,7 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
         } => Effect::CallService {
             service,
             method,
-            args,
+            args: ctx.resolve_value_checked(&args)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },

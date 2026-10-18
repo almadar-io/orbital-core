@@ -3,9 +3,12 @@
 use orbital_core_base::value::ValueMap;
 use orbital_core_runtime::effects::{LifecycleEvent, MountSeed};
 use orbital_core_runtime::embed::EmbeddedKernel;
-use {orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::json;
 use std::collections::HashSet;
+use {
+    orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value,
+    orbital_core_runtime::effects::response::EventResponse,
+};
 
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
@@ -326,4 +329,96 @@ fn control_a_mount_whose_seeds_all_ran_awaits_nothing() {
         .unwrap();
     assert!(awaiting_init(&mount.legs[0].leg).is_empty());
     assert!(awaiting_init(&mount.stateful_legs[0].leg).is_empty());
+}
+
+// A leg to a stateful host carries the shared frames its traits read (G-CROSS-260): the host holds every other piece of
+// circuit state, but a client-side write into a `[shared]` frame is otherwise never seen by a host step reading that frame.
+fn shared_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "Chat",
+        "orbitals": [{
+            "name": "ChatOrbital",
+            "entity": { "name": "Message", "persistence": "persistent", "collection": "messages", "shared": true,
+                "fields": [{ "name": "id", "type": "string" }, { "name": "activeChannel", "type": "string" }] },
+            "traits": [
+                { "name": "Room", "linkedEntity": "Message", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "SELECT", "effects": [["set", "@entity.activeChannel", "@payload.channel"]] }] } },
+                { "name": "Thread", "linkedEntity": "Message", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] } }
+            ]
+        }, {
+            "name": "NoteOrbital",
+            "entity": { "name": "Note", "persistence": "persistent", "collection": "notes", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "Editor", "linkedEntity": "Note", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "TOUCH", "effects": [["set", "@entity.touched", true]] }] } }]
+        }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_stateful_leg_keeps_the_shared_frame_rows_and_drops_the_rest() {
+    let k = EmbeddedKernel::new(shared_schema(), "c1").unwrap();
+    let leg: orbital_core_runtime::effects::response::EventRequest = serde_json::from_value(json!({
+        "event": "INIT",
+        "targetTrait": "Thread",
+        "traits": [{ "trait": "Thread", "from": "idle" }, { "trait": "Editor", "from": "idle" }],
+        "entityByTrait": { "Thread": { "activeChannel": "chan-5" }, "Editor": { "id": "n1" } }
+    }))
+    .unwrap();
+    let shaped = serde_json::to_value(k.stateful_leg(leg)).unwrap();
+    assert_eq!(
+        shaped["entityByTrait"],
+        json!({ "Thread": { "activeChannel": "chan-5" } })
+    );
+    assert!(shaped.get("traits").is_none());
+    assert_eq!(shaped["targetTrait"], json!("Thread"));
+}
+
+#[test]
+fn control_a_stateful_leg_with_no_shared_frame_carries_no_rows() {
+    let k = EmbeddedKernel::new(shared_schema(), "c1").unwrap();
+    let leg: orbital_core_runtime::effects::response::EventRequest =
+        serde_json::from_value(json!({
+            "event": "SAVE", "targetTrait": "Editor",
+            "traits": [{ "trait": "Editor", "from": "idle" }],
+            "entityByTrait": { "Editor": { "id": "n1" } }
+        }))
+        .unwrap();
+    let shaped = serde_json::to_value(k.stateful_leg(leg)).unwrap();
+    assert!(shaped.get("entityByTrait").is_none());
+    assert!(shaped.get("traits").is_none());
+}
+
+#[test]
+fn a_kernel_built_stateful_leg_carries_the_shared_frame_as_it_was_before_the_dispatch() {
+    let k = EmbeddedKernel::new(shared_schema(), "c1").unwrap();
+    k.dispatch(
+        "Room",
+        None,
+        "SELECT",
+        serde_json::from_value(json!({ "channel": "chan-1" })).unwrap(),
+    )
+    .unwrap();
+    let wire = k
+        .dispatch(
+            "Room",
+            None,
+            "SELECT",
+            serde_json::from_value(json!({ "channel": "chan-5" })).unwrap(),
+        )
+        .unwrap();
+    let leg = serde_json::to_value(&wire.stateful_leg.expect("a stateful leg").leg).unwrap();
+    assert_eq!(
+        leg["entityByTrait"]["Room"]["activeChannel"],
+        json!("chan-1")
+    );
+    assert!(leg.get("traits").is_none());
+}
+
+#[test]
+fn control_a_kernel_built_stateful_leg_of_a_non_shared_trait_carries_no_rows() {
+    let k = EmbeddedKernel::new(shared_schema(), "c1").unwrap();
+    let wire = k.dispatch("Editor", None, "TOUCH", Value::Null).unwrap();
+    let leg = serde_json::to_value(&wire.stateful_leg.expect("a stateful leg").leg).unwrap();
+    assert!(leg.get("entityByTrait").is_none());
 }

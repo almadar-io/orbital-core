@@ -7,8 +7,14 @@ use orbital_core_base::value::ValueMap;
 use orbital_core_runtime::effects::TraitFrom;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
-use {orbital_core_runtime::effects::response::{EventRequest, EventResponse, TransitionRejectionCode}, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
+use {
+    orbital_core_base::schema::types::OrbitalSchema,
+    orbital_core_base::value::Value,
+    orbital_core_runtime::effects::response::{
+        EventRequest, EventResponse, TransitionRejectionCode,
+    },
+};
 
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
@@ -180,5 +186,161 @@ fn an_empty_declared_list_is_an_inert_rejection() {
     assert_eq!(
         response.rejections.expect("rejection")[0].code,
         TransitionRejectionCode::NoDispatchableTraits
+    );
+}
+
+// A carried row is addressed by its own id (G-CROSS-256, ruled 2026-10-18; JS twin: `evaluateOrbitalEvent`'s per-trait
+// address). A `[runtime]` row carried with an id is that row, never the singleton's seeded row; an id-carrying row of a
+// `[shared]` entity stays out of the one shared frame.
+fn carried_rows_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "CardOrbital",
+            "entity": { "name": "Card", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "label", "type": "string" }] },
+            "traits": [{ "name": "Viewer", "linkedEntity": "Card",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "PING", "effects": [] }] } }]
+        }, {
+            "name": "ChatOrbital",
+            "entity": { "name": "Draft", "persistence": "persistent", "collection": "drafts", "shared": true, "fields": [{ "name": "id", "type": "string" }, { "name": "channel", "type": "string" }] },
+            "traits": [
+                { "name": "Writer", "linkedEntity": "Draft",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "SELECT", "effects": [["set", "@entity.channel", "@payload.channel"]] }] } },
+                { "name": "Reader", "linkedEntity": "Draft",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] } }
+            ]
+        }, {
+            "name": "ScratchOrbital",
+            "entity": { "name": "Scratch", "persistence": "runtime", "shared": true, "fields": [{ "name": "id", "type": "string" }, { "name": "channel", "type": "string" }] },
+            "traits": [
+                { "name": "ScratchWriter", "linkedEntity": "Scratch",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "SELECT", "effects": [] }] } },
+                { "name": "ScratchReader", "linkedEntity": "Scratch",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn carried_rows_run(orbital: &str, request: EventRequest) -> EventResponse {
+    let server = EmbeddedServer::new(carried_rows_schema()).unwrap();
+    server
+        .seed_rows("Card", &[row(json!({ "id": "singleton", "label": "seeded", "createdAt": "2026-01-01T00:00:00.000Z" }))])
+        .unwrap();
+    let mut progress = server.start(orbital, request).unwrap();
+    loop {
+        match progress {
+            ServerProgress::Done(response) => return response,
+            ServerProgress::Await { flight, requests } => {
+                let replies = requests
+                    .into_iter()
+                    .map(|pending| IoReply {
+                        id: pending.id,
+                        answer: match pending.request {
+                            IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
+                            other => panic!("the fixture asks for {other:?}"),
+                        },
+                    })
+                    .collect();
+                progress = server.resume(flight, replies).unwrap();
+            }
+        }
+    }
+}
+
+fn ping(carried_row: Json) -> EventRequest {
+    EventRequest {
+        event: "PING".to_string(),
+        traits: Some(vec![carried("Viewer", "idle")]),
+        entity_by_trait: Some(ValueMap::from([("Viewer".to_string(), row(carried_row))])),
+        ..Default::default()
+    }
+}
+
+fn entity_of(response: &EventResponse, trait_name: &str) -> Json {
+    serde_json::to_value(
+        response
+            .entity_by_trait
+            .as_ref()
+            .and_then(|rows| rows.get(trait_name))
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_runtime_row_carried_with_its_own_id_is_that_row_not_the_seeded_singleton() {
+    let response = carried_rows_run(
+        "CardOrbital",
+        ping(json!({ "id": "row-1", "label": "hello" })),
+    );
+    let viewer = entity_of(&response, "Viewer");
+    assert_eq!(viewer["id"], json!("row-1"));
+    assert_eq!(viewer["label"], json!("hello"));
+    assert!(
+        viewer.get("createdAt").is_none(),
+        "the seeded singleton leaked into row-1: {viewer}"
+    );
+}
+
+#[test]
+fn control_a_runtime_row_carried_without_an_id_folds_over_the_singleton() {
+    let response = carried_rows_run("CardOrbital", ping(json!({ "label": "hello" })));
+    let viewer = entity_of(&response, "Viewer");
+    assert_eq!(viewer["label"], json!("hello"));
+    assert_eq!(viewer["createdAt"], json!("2026-01-01T00:00:00.000Z"));
+}
+
+#[test]
+fn a_persisted_shared_row_carried_with_an_id_stays_out_of_the_shared_frame() {
+    let response = carried_rows_run(
+        "ChatOrbital",
+        EventRequest {
+            event: "SELECT".to_string(),
+            payload: Some(row(json!({ "channel": "chan-1" }))),
+            traits: Some(vec![carried("Writer", "idle"), carried("Reader", "idle")]),
+            entity_by_trait: Some(ValueMap::from([
+                (
+                    "Writer".to_string(),
+                    row(json!({ "id": "row-1", "channel": "" })),
+                ),
+                ("Reader".to_string(), row(json!({ "channel": "" }))),
+            ])),
+            ..Default::default()
+        },
+    );
+    let reader = entity_of(&response, "Reader");
+    assert!(
+        reader.get("id").is_none(),
+        "the writer's detail row became the shared frame: {reader}"
+    );
+    assert_eq!(reader["channel"], json!("chan-1"));
+}
+
+#[test]
+fn control_a_runtime_shared_row_carried_with_an_id_folds_into_the_shared_frame() {
+    let response = carried_rows_run(
+        "ScratchOrbital",
+        EventRequest {
+            event: "SELECT".to_string(),
+            traits: Some(vec![
+                carried("ScratchWriter", "idle"),
+                carried("ScratchReader", "idle"),
+            ]),
+            entity_by_trait: Some(ValueMap::from([(
+                "ScratchWriter".to_string(),
+                row(json!({ "id": "row-1", "channel": "c1" })),
+            )])),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        entity_of(&response, "ScratchReader")["channel"],
+        json!("c1")
     );
 }
