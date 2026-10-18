@@ -116,7 +116,7 @@ pub fn obligations(schema: &OrbitalSchema) -> Vec<Obligation> {
                         })
                         .collect()
                 };
-                program.state_obligations(p, trait_name, state, expr, &row_invariants, &state_holds, &mut out);
+                program.state_obligations(p, trait_name, state, expr, &Known { rows: &row_invariants, states: &state_holds }, &mut out);
             }
         }
     }
@@ -126,6 +126,12 @@ pub fn obligations(schema: &OrbitalSchema) -> Vec<Obligation> {
 // ---------------------------------------------------------------------------------------------------------------
 // The program as the prover reads it
 // ---------------------------------------------------------------------------------------------------------------
+
+/// The propositions the rest of the program already owes, for induction.
+struct Known<'a> {
+    rows: &'a dyn Fn(&str) -> Vec<SExpression>,
+    states: &'a dyn Fn(&str, &str) -> Vec<SExpression>,
+}
 
 struct Program<'a> {
     schema: &'a OrbitalSchema,
@@ -356,10 +362,10 @@ impl<'a> Program<'a> {
         trait_name: &str,
         state: &str,
         holds: &SExpression,
-        row_invariants: &dyn Fn(&str) -> Vec<SExpression>,
-        state_holds: &dyn Fn(&str, &str) -> Vec<SExpression>,
+        known: &Known,
         out: &mut Vec<Obligation>,
     ) {
+        let (row_invariants, state_holds) = (known.rows, known.states);
         for td in self.traits.iter().filter(|t| t.name == trait_name) {
             let linked = td.linked_entity.as_deref().and_then(|e| self.entity(e));
             let set_fields = fields_set_anywhere(td);

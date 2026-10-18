@@ -166,7 +166,7 @@
 {"operator":"format/bytes","position":0,"expr":["format/bytes",2500000],"rejects":false},
 {"operator":"format/creditCard","position":0,"expr":["format/creditCard","4111111111111234"],"rejects":false},
 {"operator":"format/currency","position":0,"expr":["format/currency",1234.56,"USD"],"rejects":false},
-{"operator":"format/currency","position":1,"expr":["format/currency",1234.56,"USD"],"rejects":false},
+{"operator":"format/currency","position":1,"expr":["format/currency",1234.56,"USD"],"rejects":true},
 {"operator":"format/list","position":0,"expr":["format/list",["Alice","Bob","Charlie"],"and"],"rejects":false},
 {"operator":"format/list","position":1,"expr":["format/list",["Alice","Bob","Charlie"],"and"],"rejects":false},
 {"operator":"format/number","position":0,"expr":["format/number",1234567.89],"rejects":false},

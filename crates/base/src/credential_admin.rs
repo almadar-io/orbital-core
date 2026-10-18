@@ -96,6 +96,11 @@ impl CredentialAdminOp {
             Self::Rotate => (&[], &[]),
         }
     }
+
+    /// Whether the effect takes a request object before its options; `rotate` has no parameters, so it takes none.
+    pub fn takes_request(self) -> bool {
+        !matches!(self, Self::Rotate)
+    }
 }
 
 /// A refused request: the message and, for a gate or contract refusal, its code.

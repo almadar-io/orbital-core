@@ -1340,13 +1340,15 @@ fn parse_credential(args: &[SExpression], status: bool) -> Option<Effect> {
 /// `["credential-<verb>", request, { emit? }?]`.
 fn parse_credential_admin(head: &str, args: &[SExpression]) -> Option<Effect> {
     let op = crate::credential_admin::CredentialAdminOp::from_name(head)?;
-    if !(1..=2).contains(&args.len()) {
+    let first = usize::from(op.takes_request());
+    if !(first..=first + 1).contains(&args.len()) {
         return None;
     }
     let emit = args
-        .get(1)
+        .get(first)
         .and_then(|options| parse_emit_config(&Value::from(options.clone())));
-    Some(Effect::CredentialAdmin { op, request: Value::from(args[0].clone()), emit })
+    let request = if op.takes_request() { Value::from(args[0].clone()) } else { Value::Null };
+    Some(Effect::CredentialAdmin { op, request, emit })
 }
 
 /// `["oauth-authorize", client, options, { key?, emit? }?]`.

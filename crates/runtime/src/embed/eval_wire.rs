@@ -7,7 +7,7 @@ use crate::entity_access::{apply_read_access, check_mutation_access};
 use crate::kernel::envelope::mapped_listen_payload;
 use orbital_core_base::effect_types::PersistOperation;
 use orbital_core_base::schema::sexpr::{SExpression, SObject};
-use orbital_core_base::value::Value;
+use orbital_core_base::value::{Value, ValueMap};
 use orbital_core_eval::evaluator::trace::{evaluate_traced, PathSeg, TraceStep};
 use orbital_core_eval::evaluator::{BindingContext, BindingContextBuilder, Evaluator};
 use serde::{Deserialize, Serialize};
@@ -425,4 +425,393 @@ pub fn resolve_row_binding_json(term: &str, bindings_json: &str) -> Result<Strin
         }
     };
     to_json(&resolved)
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Running effects against a row: `traceEffects`
+// ---------------------------------------------------------------------------------------------------------
+
+/// What happened to one effect: it ran, it failed, or this operation has no handler for its kind.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EffectStatusWire {
+    Executed,
+    Failed,
+    Skipped,
+}
+
+/// One effect of the list, as `EffectTrace` in `@almadar/core` reports it: its operator head, its arguments, its
+/// outcome and the evaluation of the expressions it ran, node by node under the effect's own paths.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectTraceWire {
+    #[serde(rename = "type")]
+    #[cfg_attr(test, ts(rename = "type"))]
+    pub kind: String,
+    #[cfg_attr(test, ts(type = "Array<JsonValue>"))]
+    pub args: Vec<SExpression>,
+    pub status: EffectStatusWire,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eval_trace: Option<Vec<EvalStepWire>>,
+}
+
+/// An event an `emit` effect raised, with its evaluated payload.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmittedEffectWire {
+    pub event: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    pub payload: Option<Value>,
+}
+
+/// A field a `set` effect wrote, in write order (a field set twice appears twice).
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityWriteWire {
+    pub field: String,
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub value: Value,
+}
+
+/// The effects of one list run in order against one row: a trace per effect, the events raised, the writes made and
+/// the row after them. A later effect reads the writes of the earlier ones.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceEffectsWire {
+    pub effects: Vec<EffectTraceWire>,
+    pub emitted: Vec<EmittedEffectWire>,
+    pub writes: Vec<EntityWriteWire>,
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub entity: Value,
+}
+
+fn under(index: usize, steps: Vec<TraceStep>) -> Vec<TraceStep> {
+    let lift = |path: Vec<PathSeg>| {
+        let mut lifted = vec![PathSeg::Index(index)];
+        lifted.extend(path);
+        lifted
+    };
+    steps
+        .into_iter()
+        .map(|step| match step {
+            TraceStep::Enter { path } => TraceStep::Enter { path: lift(path) },
+            TraceStep::Iter { path } => TraceStep::Iter { path: lift(path) },
+            TraceStep::Skip { path } => TraceStep::Skip { path: lift(path) },
+            TraceStep::Exit { path, outcome } => TraceStep::Exit { path: lift(path), outcome },
+        })
+        .collect()
+}
+
+struct EffectRun {
+    ctx: BindingContext,
+    entity: ValueMap,
+    emitted: Vec<EmittedEffectWire>,
+    writes: Vec<EntityWriteWire>,
+}
+
+/// How one effect (or a control form's parts) ended.
+enum Ended {
+    Executed,
+    Failed(String),
+    Skipped(String),
+}
+
+impl EffectRun {
+    fn mirror(&mut self) {
+        self.ctx.set_entity(Value::Object(self.entity.clone()));
+    }
+
+    /// A leaf effect's value expression, traced under the effect's own paths: the root entered, the expression at
+    /// `at`, every argument before it not run, the root exited.
+    fn leaf(&mut self, expr: &SExpression, at: usize, skipped: &[usize], then: impl FnOnce(&mut Self, Value) -> Ended) -> (Ended, Vec<TraceStep>) {
+        let mut steps = vec![TraceStep::Enter { path: Vec::new() }];
+        let (outcome, inner) = evaluate_traced(expr, &self.ctx);
+        steps.extend(under(at, inner));
+        steps.extend(skipped.iter().map(|i| TraceStep::Skip { path: vec![PathSeg::Index(*i)] }));
+        let ended = match outcome {
+            Ok(value) => then(self, value),
+            Err(error) => Ended::Failed(error.to_string()),
+        };
+        let exit = match &ended {
+            Ended::Executed => Ok(Value::Null),
+            Ended::Failed(message) | Ended::Skipped(message) => Err(message.clone()),
+        };
+        steps.push(TraceStep::Exit { path: Vec::new(), outcome: exit });
+        (ended, steps)
+    }
+
+    fn run(&mut self, effect: &SExpression) -> (Ended, Vec<TraceStep>) {
+        let SExpression::Array(items) = effect else {
+            return (Ended::Skipped("not an effect: an effect is a list headed by its operator".to_string()), Vec::new());
+        };
+        let Some(SExpression::String(head)) = items.first() else {
+            return (Ended::Skipped("not an effect: an effect is a list headed by its operator".to_string()), Vec::new());
+        };
+        let rest = &items[1..];
+        match head.as_str() {
+            "set" if rest.len() == 2 => {
+                let SExpression::String(target) = &rest[0] else {
+                    return (Ended::Failed("set: the target is an @entity binding".to_string()), Vec::new());
+                };
+                let Some(field) = target.strip_prefix("@entity.") else {
+                    return (Ended::Failed(format!("set only supports @entity bindings, got: {target}")), Vec::new());
+                };
+                let field = field.to_string();
+                self.leaf(&rest[1], 2, &[1], move |run, value| {
+                    run.entity.insert(field.clone(), value.clone());
+                    run.writes.push(EntityWriteWire { field, value });
+                    run.mirror();
+                    Ended::Executed
+                })
+            }
+            "emit" if !rest.is_empty() && rest.len() <= 2 => {
+                let SExpression::String(event) = &rest[0] else {
+                    return (Ended::Failed("emit: the event is a name".to_string()), Vec::new());
+                };
+                let event = event.clone();
+                match rest.get(1) {
+                    Some(payload) => self.leaf(payload, 2, &[1], move |run, value| {
+                        run.emitted.push(EmittedEffectWire { event, payload: Some(value) });
+                        Ended::Executed
+                    }),
+                    None => {
+                        self.emitted.push(EmittedEffectWire { event, payload: None });
+                        (
+                            Ended::Executed,
+                            vec![
+                                TraceStep::Enter { path: Vec::new() },
+                                TraceStep::Skip { path: vec![PathSeg::Index(1)] },
+                                TraceStep::Exit { path: Vec::new(), outcome: Ok(Value::Null) },
+                            ],
+                        )
+                    }
+                }
+            }
+            "do" => (self.sequence(rest), Vec::new()),
+            "when" if !rest.is_empty() => match Evaluator::new().evaluate(&rest[0], &self.ctx) {
+                Ok(condition) if condition.is_truthy() => (self.sequence(&rest[1..]), Vec::new()),
+                Ok(_) => (Ended::Executed, Vec::new()),
+                Err(error) => (Ended::Failed(error.to_string()), Vec::new()),
+            },
+            "if" if rest.len() >= 2 => match Evaluator::new().evaluate(&rest[0], &self.ctx) {
+                Ok(condition) => {
+                    let branch = if condition.is_truthy() { rest.get(1) } else { rest.get(2) };
+                    (branch.map_or(Ended::Executed, |b| self.run(b).0), Vec::new())
+                }
+                Err(error) => (Ended::Failed(error.to_string()), Vec::new()),
+            },
+            "let" if rest.len() >= 2 => (self.scoped(rest), Vec::new()),
+            other => (Ended::Skipped(format!("`{other}` has no handler in traceEffects; only set and emit, and the do/when/if/let forms around them, run")), Vec::new()),
+        }
+    }
+
+    fn sequence(&mut self, effects: &[SExpression]) -> Ended {
+        let mut ran = false;
+        let mut skipped = None;
+        for effect in effects {
+            match self.run(effect).0 {
+                Ended::Failed(message) => return Ended::Failed(message),
+                Ended::Skipped(message) => skipped = Some(message),
+                Ended::Executed => ran = true,
+            }
+        }
+        match (ran, skipped) {
+            (false, Some(message)) => Ended::Skipped(message),
+            _ => Ended::Executed,
+        }
+    }
+
+    fn scoped(&mut self, rest: &[SExpression]) -> Ended {
+        let outer = self.ctx.clone();
+        let mut inner = outer.child();
+        if let SExpression::Array(bindings) = &rest[0] {
+            for binding in bindings {
+                if let SExpression::Array(pair) = binding {
+                    if let (Some(SExpression::String(name)), Some(value)) = (pair.first(), pair.get(1)) {
+                        match Evaluator::new().evaluate(value, &inner) {
+                            Ok(value) => {
+                                inner.set_local(name, value);
+                            }
+                            Err(error) => return Ended::Failed(error.to_string()),
+                        }
+                    }
+                }
+            }
+        }
+        self.ctx = inner;
+        let ended = self.sequence(&rest[1..]);
+        let entity = self.entity.clone();
+        self.ctx = outer;
+        self.entity = entity;
+        self.mirror();
+        ended
+    }
+}
+
+/// Run `effects` in order against the row in the context's `entity`, with the context's other bindings: the
+/// `TraceEffectsWire` as JSON. `set` writes the row (under the flat key the kernel writes) and `emit` raises an event,
+/// each with the evaluation of its value expression traced under the effect's own paths; `do`, `when`, `if` and `let`
+/// run their parts. Every other effect is reported `skipped`: this operation has no host to run it.
+pub fn trace_effects_json(context_json: &str, effects_json: &str) -> Result<String, String> {
+    let ctx = context_of(context_json)?;
+    let effects: Vec<SExpression> = parse(effects_json, "effects")?;
+    let entity = match &*ctx.entity {
+        Value::Object(map) => map.clone(),
+        _ => ValueMap::new(),
+    };
+    let mut run = EffectRun { ctx, entity, emitted: Vec::new(), writes: Vec::new() };
+    run.mirror();
+    let mut traced = Vec::with_capacity(effects.len());
+    for effect in &effects {
+        let (ended, steps) = run.run(effect);
+        let (status, error) = match ended {
+            Ended::Executed => (EffectStatusWire::Executed, None),
+            Ended::Failed(message) => (EffectStatusWire::Failed, Some(message)),
+            Ended::Skipped(message) => (EffectStatusWire::Skipped, Some(message)),
+        };
+        let (kind, args) = match effect {
+            SExpression::Array(items) => (
+                match items.first() {
+                    Some(SExpression::String(head)) => head.clone(),
+                    _ => "unknown".to_string(),
+                },
+                items.iter().skip(1).cloned().collect(),
+            ),
+            _ => ("unknown".to_string(), Vec::new()),
+        };
+        let trace: Vec<EvalStepWire> = steps
+            .into_iter()
+            .map(step)
+            .map(|mut wire| {
+                if matches!(wire.kind, EvalStepKind::Exit) && wire.path.is_empty() {
+                    wire.value = None;
+                }
+                wire
+            })
+            .collect();
+        traced.push(EffectTraceWire { kind, args, status, error, eval_trace: (!trace.is_empty()).then_some(trace) });
+    }
+    to_json(&TraceEffectsWire { effects: traced, emitted: run.emitted, writes: run.writes, entity: Value::Object(run.entity) })
+}
+
+#[cfg(test)]
+mod trace_effects_tests {
+    use super::trace_effects_json;
+    use serde_json::{json, Value as Json};
+
+    /// Whole floats compare as integers: the wire text `5.0` and `5` are one number.
+    fn norm(value: Json) -> Json {
+        match value {
+            Json::Number(n) => match n.as_f64() {
+                Some(f) if f.fract() == 0.0 && f.abs() < 1e15 => json!(f as i64),
+                _ => Json::Number(n),
+            },
+            Json::Array(items) => Json::Array(items.into_iter().map(norm).collect()),
+            Json::Object(map) => Json::Object(map.into_iter().map(|(k, v)| (k, norm(v))).collect()),
+            other => other,
+        }
+    }
+
+    macro_rules! same {
+        ($left:expr, $right:expr) => {
+            assert_eq!(norm($left.clone()), norm($right))
+        };
+    }
+
+    fn trace(entity: Json, effects: Json) -> Json {
+        let context = json!({ "entity": entity, "state": "idle" });
+        serde_json::from_str(&trace_effects_json(&context.to_string(), &effects.to_string()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_set_traces_its_value_under_the_effects_own_paths_exactly_as_the_js_interpreter_did() {
+        let out = trace(json!({ "x": 1 }), json!([["set", "@entity.x", ["+", "@entity.x", 2]]]));
+        same!(
+            out["effects"][0]["evalTrace"],
+            json!([
+                { "kind": "enter", "path": [] },
+                { "kind": "enter", "path": [2] },
+                { "kind": "enter", "path": [2, 1] },
+                { "kind": "exit", "path": [2, 1], "value": 1 },
+                { "kind": "enter", "path": [2, 2] },
+                { "kind": "exit", "path": [2, 2], "value": 2 },
+                { "kind": "exit", "path": [2], "value": 3 },
+                { "kind": "skip", "path": [1] },
+                { "kind": "exit", "path": [] }
+            ])
+        );
+        same!(out["effects"][0]["type"], json!("set"));
+        same!(out["effects"][0]["status"], json!("executed"));
+        same!(out["entity"], json!({ "x": 3 }));
+    }
+
+    #[test]
+    fn a_later_effect_reads_the_writes_of_the_earlier_ones_and_writes_keep_their_order() {
+        let out = trace(
+            json!({ "x": 1 }),
+            json!([["set", "@entity.x", ["+", "@entity.x", 2]], ["set", "@entity.y", ["*", "@entity.x", 10]], ["set", "@entity.x", 0]]),
+        );
+        same!(out["entity"], json!({ "x": 0, "y": 30 }));
+        same!(out["writes"], json!([{ "field": "x", "value": 3 }, { "field": "y", "value": 30 }, { "field": "x", "value": 0 }]));
+    }
+
+    #[test]
+    fn an_emit_reports_its_evaluated_payload_and_a_bare_emit_reports_none() {
+        let out = trace(json!({}), json!([["emit", "PING", { "a": ["+", 1, 1] }], ["emit", "BARE"]]));
+        same!(out["emitted"], json!([{ "event": "PING", "payload": { "a": 2 } }, { "event": "BARE" }]));
+        same!(out["effects"][1]["evalTrace"], json!([{ "kind": "enter", "path": [] }, { "kind": "skip", "path": [1] }, { "kind": "exit", "path": [] }]));
+    }
+
+    #[test]
+    fn a_failing_effect_is_failed_with_its_message_leaves_the_row_alone_and_does_not_stop_the_list() {
+        let out = trace(json!({ "x": 1 }), json!([["set", "@entity.y", ["/", 1, 0]], ["set", "@entity.x", 5]]));
+        same!(out["effects"][0]["status"], json!("failed"));
+        assert!(out["effects"][0]["error"].as_str().unwrap().contains("Division by zero"));
+        same!(out["effects"][1]["status"], json!("executed"));
+        same!(out["entity"], json!({ "x": 5 }));
+    }
+
+    #[test]
+    fn an_effect_with_no_handler_is_skipped_and_named_not_reported_executed() {
+        let out = trace(json!({}), json!([["render-ui", "main", { "type": "x" }], ["persist", "update", "Job", {}]]));
+        for index in 0..2 {
+            same!(out["effects"][index]["status"], json!("skipped"));
+            assert!(out["effects"][index]["error"].as_str().unwrap().contains("no handler in traceEffects"));
+        }
+        same!(out["effects"][0]["type"], json!("render-ui"));
+        same!(out["effects"][0]["args"], json!(["main", { "type": "x" }]));
+    }
+
+    #[test]
+    fn do_when_if_and_let_run_their_parts_against_the_same_row() {
+        let out = trace(
+            json!({ "n": 1 }),
+            json!([
+                ["when", ["=", "@entity.n", 1], ["set", "@entity.a", 1], ["emit", "A"]],
+                ["when", ["=", "@entity.n", 2], ["set", "@entity.skipped", 1]],
+                ["if", ["=", "@entity.a", 1], ["set", "@entity.b", 2], ["set", "@entity.c", 3]],
+                ["let", [["k", 10]], ["do", ["set", "@entity.d", "@k"]]]
+            ]),
+        );
+        same!(out["entity"], json!({ "n": 1, "a": 1, "b": 2, "d": 10 }));
+        same!(out["emitted"], json!([{ "event": "A" }]));
+        assert!(out["effects"].as_array().unwrap().iter().all(|e| e["status"] == "executed"));
+    }
+
+    #[test]
+    fn control_a_bad_target_fails_the_effect_and_a_malformed_wire_is_an_error() {
+        let out = trace(json!({}), json!([["set", "@payload.x", 1]]));
+        same!(out["effects"][0]["status"], json!("failed"));
+        assert!(out["effects"][0]["error"].as_str().unwrap().contains("only supports @entity"));
+        assert!(trace_effects_json("{}", "not json").unwrap_err().contains("parse effects"));
+        same!(trace(Json::Null, json!([]))["entity"], json!({}));
+    }
 }

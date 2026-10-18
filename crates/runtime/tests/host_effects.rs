@@ -565,14 +565,14 @@ mod credential_admin_effects {
 
     #[test]
     fn credential_rotate_and_remove_need_a_store_and_an_admin() {
-        let (response, _) = run(json!(["credential-rotate", {}, routes()]), go(admin()), |request| {
+        let (response, _) = run(json!(["credential-rotate", routes()]), go(admin()), |request| {
             secret_none(request).unwrap_or_else(|| match request {
                 IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(None)),
                 other => panic!("the fixture asks for {other:?}"),
             })
         });
         assert_eq!(payload_of(&response, "BAD")["error"], "No credential store is installed on this host");
-        let (rotated, _) = run(json!(["credential-rotate", {}, routes()]), go(admin()), |request| {
+        let (rotated, _) = run(json!(["credential-rotate", routes()]), go(admin()), |request| {
             secret_none(request).unwrap_or_else(|| match request {
                 IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(Some(
                     orbital_core_runtime::credential_admin::StoreListing { enabled: true, entries: Vec::new() },

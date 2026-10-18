@@ -1307,74 +1307,6 @@ impl Operator for ValidateMinOp {
 // Format operators - convert values to formatted strings
 // ============================================================================
 
-/// format/number - Format number with locale options
-pub struct FormatNumberOp;
-impl Operator for FormatNumberOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "format/number", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        let num = val.to_number().unwrap_or(0.0);
-        // Simple thousands separator formatting
-        let formatted = format!("{:.0}", num)
-            .chars()
-            .rev()
-            .collect::<Vec<_>>()
-            .chunks(3)
-            .map(|chunk| chunk.iter().collect::<String>())
-            .collect::<Vec<_>>()
-            .join(",")
-            .chars()
-            .rev()
-            .collect::<String>();
-        Ok(Value::String(formatted))
-    }
-}
-
-/// format/percent - Format as percentage
-pub struct FormatPercentOp;
-impl Operator for FormatPercentOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "format/percent", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        let num = val.to_number().unwrap_or(0.0);
-        Ok(Value::String(format!("{:.0}%", num * 100.0)))
-    }
-}
-
-/// format/currency - Format as currency
-pub struct FormatCurrencyOp;
-impl Operator for FormatCurrencyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "format/currency", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        let num = val.to_number().unwrap_or(0.0);
-        let symbol = if args.len() > 1 {
-            eval_expr(&args[1], ctx)?.to_string_value()
-        } else {
-            "$".to_string()
-        };
-        Ok(Value::String(format!("{}{:.2}", symbol, num)))
-    }
-}
-
-/// format/bytes - Format bytes to human-readable
-pub struct FormatBytesOp;
-impl Operator for FormatBytesOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "format/bytes", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        let bytes = val.to_number().unwrap_or(0.0);
-        let units = ["B", "KB", "MB", "GB", "TB"];
-        let mut size = bytes;
-        let mut unit_idx = 0;
-        while size >= 1024.0 && unit_idx < units.len() - 1 {
-            size /= 1024.0;
-            unit_idx += 1;
-        }
-        Ok(Value::String(format!("{:.1} {}", size, units[unit_idx])))
-    }
-}
-
 /// format/ordinal - Format number as ordinal (1st, 2nd, etc.)
 pub struct FormatOrdinalOp;
 impl Operator for FormatOrdinalOp {
@@ -1393,33 +1325,6 @@ impl Operator for FormatOrdinalOp {
     }
 }
 
-/// format/phone - Format phone number
-pub struct FormatPhoneOp;
-impl Operator for FormatPhoneOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "format/phone", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        let digits: String = val
-            .to_string_value()
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect();
-        let formatted = if digits.len() == 10 {
-            format!("({}) {}-{}", &digits[0..3], &digits[3..6], &digits[6..10])
-        } else if digits.len() == 11 && digits.starts_with('1') {
-            format!(
-                "+1 ({}) {}-{}",
-                &digits[1..4],
-                &digits[4..7],
-                &digits[7..11]
-            )
-        } else {
-            digits
-        };
-        Ok(Value::String(formatted))
-    }
-}
-
 /// format/plural - Format with plural form
 pub struct FormatPluralOp;
 impl Operator for FormatPluralOp {
@@ -1430,31 +1335,6 @@ impl Operator for FormatPluralOp {
         let plural = eval_expr(&args[2], ctx)?.to_string_value();
         let word = if count == 1 { singular } else { plural };
         Ok(Value::String(format!("{} {}", count, word)))
-    }
-}
-
-/// format/list - Format array as list
-pub struct FormatListOp;
-impl Operator for FormatListOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "format/list", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        let array = match val {
-            Value::Array(a) => a,
-            _ => return Ok(Value::String(val.to_string_value())),
-        };
-        let items: Vec<String> = array.iter().map(|v| v.to_string_value()).collect();
-        let formatted = match items.len() {
-            0 => String::new(),
-            1 => items[0].clone(),
-            2 => format!("{} and {}", items[0], items[1]),
-            _ => {
-                let last = items.last().unwrap();
-                let rest = &items[..items.len() - 1];
-                format!("{}, and {}", rest.join(", "), last)
-            }
-        };
-        Ok(Value::String(formatted))
     }
 }
 

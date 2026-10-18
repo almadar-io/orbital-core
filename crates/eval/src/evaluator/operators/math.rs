@@ -81,7 +81,7 @@ impl Operator for MulOp {
 pub struct DivOp;
 impl Operator for DivOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "/", >= 2);
+        require_arity!(args, "/", == 2);
         let numerator = require_number!(eval_expr(&args[0], ctx)?);
 
         let denominator = require_number!(eval_expr(&args[1], ctx)?);
@@ -97,7 +97,7 @@ impl Operator for DivOp {
 pub struct ModOp;
 impl Operator for ModOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "%", >= 2);
+        require_arity!(args, "%", == 2);
         let a = require_number!(eval_expr(&args[0], ctx)?);
 
         let b = require_number!(eval_expr(&args[1], ctx)?);
@@ -305,7 +305,7 @@ impl Operator for MathLerpOp {
 pub struct MathMapOp;
 impl Operator for MathMapOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "math/map", >= 5);
+        require_arity!(args, "math/map", == 5);
         let value = require_number!(eval_expr(&args[0], ctx)?);
         let in_min = require_number!(eval_expr(&args[1], ctx)?);
         let in_max = require_number!(eval_expr(&args[2], ctx)?);

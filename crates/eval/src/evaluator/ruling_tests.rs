@@ -187,3 +187,39 @@ fn the_kernel_raises_on_a_null_operand_exactly_where_the_operator_table_flags_it
     }
     assert!(failures.is_empty(), "{} of {} probes differ:\n{}", failures.len(), probes.len(), failures.join("\n"));
 }
+
+#[test]
+fn every_shared_format_vector_matches_the_js_evaluator() {
+    let failures = shared(include_str!("../../../../tests/fixtures/operators/format-vectors.json"));
+    assert!(failures.is_empty(), "{} differ:\n{}", failures.len(), failures.join("\n"));
+}
+
+#[test]
+fn an_unsupported_locale_or_currency_is_named_not_ignored() {
+    let locale = err(r#"["format/number", 1, {"locale": "xx-YY"}]"#);
+    assert!(locale.contains("`xx-YY` is not supported") && locale.contains("supported:"), "{locale}");
+    let currency = err(r#"["format/currency", 1, "XYZ"]"#);
+    assert!(currency.contains("currency `XYZ` is not supported"), "{currency}");
+    let currency_locale = err(r#"["format/currency", 1, "USD", "de-DE"]"#);
+    assert!(currency_locale.contains("locale `de-DE` is not supported"), "{currency_locale}");
+}
+
+#[test]
+fn bad_fraction_digits_are_errors() {
+    for call in [
+        r#"["format/number", 1, {"decimals": -1}]"#,
+        r#"["format/number", 1, {"decimals": 1.5}]"#,
+        r#"["format/number", 1, {"minimumFractionDigits": 3, "maximumFractionDigits": 1}]"#,
+        r#"["format/percent", 0.5, 2.5]"#,
+    ] {
+        assert!(err(call).contains("format/"), "{call}");
+    }
+}
+
+#[test]
+fn format_number_honors_minimum_and_maximum_fraction_digits() {
+    assert_eq!(ok(r#"["format/number", 5, {"minimumFractionDigits": 2, "maximumFractionDigits": 4}]"#), Value::String("5.00".into()));
+    assert_eq!(ok(r#"["format/number", 5.123456, {"minimumFractionDigits": 5}]"#), Value::String("5.12346".into()));
+    assert_eq!(ok(r#"["format/number", 5.123456, {"maximumFractionDigits": 1}]"#), Value::String("5.1".into()));
+    assert_eq!(ok(r#"["format/number", 5.123456, {"decimals": 2, "maximumFractionDigits": 1}]"#), Value::String("5.12".into()));
+}

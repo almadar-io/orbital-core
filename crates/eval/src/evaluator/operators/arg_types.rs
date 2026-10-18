@@ -29,13 +29,32 @@ use orbital_core_base::signature::{
 };
 use orbital_core_base::value::Value;
 
+/// Hashes an operator's discriminant to itself: the table is read on every operator call, and a keyed hash of one
+/// small integer is most of what a lookup cost.
+#[derive(Default)]
+struct DiscriminantHasher(u64);
+
+impl std::hash::Hasher for DiscriminantHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = self.0.wrapping_mul(0x100_0000_01b3).wrapping_add(u64::from(*byte) + 1);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type SignatureTable =
+    HashMap<Discriminant<OperatorKind>, Signature<'static>, std::hash::BuildHasherDefault<DiscriminantHasher>>;
+
 /// The signatures of the operators the evaluator checks, by operator.
-static SIGNATURES: OnceLock<HashMap<Discriminant<OperatorKind>, Signature<'static>>> =
-    OnceLock::new();
+static SIGNATURES: OnceLock<SignatureTable> = OnceLock::new();
 static LOAD_FAILED: AtomicBool = AtomicBool::new(false);
 
-fn build_signatures() -> HashMap<Discriminant<OperatorKind>, Signature<'static>> {
-    let mut signatures = HashMap::new();
+fn build_signatures() -> SignatureTable {
+    let mut signatures = SignatureTable::default();
     for (name, meta) in orbital_core_base::language::registry::operators() {
         if meta.has_side_effects {
             continue;
@@ -60,7 +79,7 @@ pub fn signature_for(kind: &OperatorKind) -> Option<Signature<'static>> {
     declared_signature(kind).filter(Signature::checks_anything)
 }
 
-pub(super) fn declared_signature(kind: &OperatorKind) -> Option<Signature<'static>> {
+fn declared_signature(kind: &OperatorKind) -> Option<Signature<'static>> {
     let signatures = match SIGNATURES.get() {
         Some(signatures) => signatures,
         None => {
@@ -77,19 +96,6 @@ pub(super) fn declared_signature(kind: &OperatorKind) -> Option<Signature<'stati
         }
     };
     signatures.get(&discriminant(kind)).copied()
-}
-
-/// A call with more arguments than the installed operator table declares raises `ArityMismatch`: the declared bound is
-/// the contract on every path, and an operator never reads past it silently.
-pub fn check_arity(name: &str, signature: &Signature<'static>, supplied: usize) -> Result<(), OrbitalError> {
-    match signature.max_arity() {
-        Some(max) if supplied > max => Err(OrbitalError::Eval(EvalError::ArityMismatch {
-            operator: name.to_string(),
-            expected: max,
-            actual: supplied,
-        })),
-        _ => Ok(()),
-    }
 }
 
 /// The signature the installed operator table declares for the evaluated operator `name` (an alias resolves to
@@ -404,6 +410,13 @@ pub fn check_argument(index: usize, value: &Value) -> Result<(), OrbitalError> {
             return Ok(());
         };
         let signature = top.signature;
+        // A primitive of the declared kind binds no variable and cannot disagree: the common call, answered without the binder.
+        if let Some(OperatorTypeRef::Primitive(kind)) = signature.formal(index) {
+            match (kind.as_str(), value) {
+                ("number", Value::Number(_)) | ("string", Value::String(_)) | ("boolean", Value::Bool(_)) => return Ok(()),
+                _ => {}
+            }
+        }
         if !matches!(value, Value::Array(_)) {
             return signature
                 .bind(

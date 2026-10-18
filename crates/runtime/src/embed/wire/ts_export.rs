@@ -17,7 +17,7 @@ use crate::verify::flows::{AffordanceQuery, AffordanceStep, ReplayQuery, Transie
 use crate::verify::plan_wire::{Credit, CreditStep, Expectation, Observation, PlanOptions, PlanOutcome, VerdictWire};
 
 
-use crate::embed::eval_wire::{EvalContextWire, EvalOutcomeWire, EvalTracedWire, GuardOutcomeWire, MutationOpWire, MutationVerdictWire, RowBindingWire};
+use crate::embed::eval_wire::{EvalContextWire, EvalOutcomeWire, EvalTracedWire, GuardOutcomeWire, TraceEffectsWire, MutationOpWire, MutationVerdictWire, RowBindingWire};
 use crate::canvas_theme::CanvasTheme;
 use crate::motion::ResolvedMotion;
 use crate::row_query::{QueryCapabilities, WriteCapabilities};
@@ -130,6 +130,7 @@ fn kernel_wire_ts() -> String {
     collect.visit::<EvalOutcomeWire>();
     collect.visit::<GuardOutcomeWire>();
     collect.visit::<EvalTracedWire>();
+    collect.visit::<TraceEffectsWire>();
     collect.visit::<RowBindingWire>();
     collect.visit::<MutationOpWire>();
     collect.visit::<MutationVerdictWire>();

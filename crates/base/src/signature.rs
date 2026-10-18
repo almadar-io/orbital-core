@@ -188,7 +188,7 @@ pub struct FieldProjection {
 pub struct Signature<'a> {
     params: &'a [EmbeddedOperatorParam],
     unbounded: bool,
-    max_arity: Option<u32>,
+    checks: bool,
     returns: &'a OperatorTypeRef,
 }
 
@@ -197,14 +197,9 @@ impl<'a> Signature<'a> {
         Self {
             params: &op.params,
             unbounded: op.max_arity.is_none(),
-            max_arity: op.max_arity,
+            checks: op.params.iter().any(|p| checks(&p.ty)),
             returns: &op.return_type,
         }
-    }
-
-    /// The most arguments the operator declares, or `None` when it is variadic.
-    pub fn max_arity(&self) -> Option<usize> {
-        self.max_arity.map(|m| m as usize)
     }
 
     /// Whether the operand at `index` raises in the kernel when it is null.
@@ -271,7 +266,7 @@ impl<'a> Signature<'a> {
     /// Whether any parameter declares a type a call is checked against. A signature of nominal std types and
     /// unevaluated expressions checks nothing, so a call to it needs no binding.
     pub fn checks_anything(&self) -> bool {
-        self.params.iter().any(|p| checks(&p.ty))
+        self.checks
     }
 
     /// Binds argument `index` against its declared type. `Ok` when it fits, the variables it names are bound
@@ -286,9 +281,16 @@ impl<'a> Signature<'a> {
         let Some(formal) = self.formal(index) else {
             return Ok(());
         };
+        // A runtime mismatch fails the whole call and its bindings are dropped with it, so the binding is made in place.
+        // A static check goes on to the next argument after a mismatch, so it binds a copy and keeps it only on success.
+        if mode == Mode::Runtime {
+            bindings.index = index;
+            bindings.strict = false;
+            return bind_type(formal, actual, bindings, mode);
+        }
         let mut scratch = bindings.clone();
         scratch.index = index;
-        scratch.strict = mode == Mode::Static;
+        scratch.strict = true;
         bind_type(formal, actual, &mut scratch, mode)?;
         *bindings = scratch;
         Ok(())

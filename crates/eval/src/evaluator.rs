@@ -2449,14 +2449,11 @@ mod tests {
 
     #[test]
     fn test_validate_check() {
-        assert_eq!(
-            eval(r#"["validate/check", 10, ["fn", ["x"], [">", "@x", 5]]]"#),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            eval(r#"["check", 3, ["fn", ["x"], [">", "@x", 5]]]"#),
-            Value::Bool(false)
-        );
+        let Value::Object(passed) = eval(r#"["validate/check", {"n": 10}, {"n": [["number"]]}]"#) else { panic!("not an object") };
+        assert_eq!(passed["valid"], Value::Bool(true));
+        let Value::Object(failed) = eval(r#"["check", {"n": "x"}, {"n": [["number"]]}]"#) else { panic!("not an object") };
+        assert_eq!(failed["valid"], Value::Bool(false));
+        assert!(eval_err(r#"["validate/check", 10, ["fn", ["x"], [">", "@x", 5]]]"#).contains("rules by field"));
     }
 
     // ========================================================================

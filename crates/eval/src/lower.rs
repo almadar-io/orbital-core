@@ -1564,15 +1564,17 @@ impl ExprLowerer {
     }
 
     fn resolve_credential_admin_effect(&self, head: &str, args: &[SExpression]) -> Result<OirExpr, LowerError> {
-        // Format: ["credential-<verb>", request, { emit? }?]
+        // Format: ["credential-<verb>", request, { emit? }?]; `credential-rotate` takes no request.
         let Some(op) = orbital_core_base::credential_admin::CredentialAdminOp::from_name(head) else {
             return Err(LowerError::InvalidSExpr(format!("{head} is not a credential effect")));
         };
-        if !(1..=2).contains(&args.len()) {
-            return Err(LowerError::InvalidSExpr(format!("{head} takes a request object and optional options")));
+        let first = usize::from(op.takes_request());
+        if !(first..=first + 1).contains(&args.len()) {
+            let shape = if op.takes_request() { "a request object and optional options" } else { "only optional options" };
+            return Err(LowerError::InvalidSExpr(format!("{head} takes {shape}")));
         }
-        let emit = self.resolve_emit_only_options(head, args.get(1))?;
-        let request = self.resolve_sexpr(&args[0])?;
+        let emit = self.resolve_emit_only_options(head, args.get(first))?;
+        let request = if op.takes_request() { self.resolve_sexpr(&args[0])? } else { OirExpr::null() };
         Ok(OirExpr::effect(OirEffect::credential_admin(op, request, emit)))
     }
 
