@@ -68,3 +68,76 @@ fn collection_declared_entity_reads_the_entity_name_key() {
         3
     );
 }
+
+mod runtime_mock_seed {
+    use orbital_core_runtime::effects::response::{EventRequest, EventResponse};
+    use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
+    use orbital_core_base::schema::types::OrbitalSchema;
+    use serde_json::{json, Value as Json};
+
+    fn server(persistence: &str) -> EmbeddedServer {
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "rm", "orbitals": [{ "name": "Main",
+                "entity": { "name": "Counter", "persistence": persistence, "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "count", "type": "number", "default": 0 },
+                    { "name": "label", "type": "string" }
+                ] },
+                "traits": [{ "name": "T", "linkedEntity": "Counter", "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
+                        "effects": [["fetch", "Counter", { "emit": { "success": "LOADED" } }]] }] } }] }]
+        }))
+        .unwrap();
+        EmbeddedServer::new(schema).unwrap()
+    }
+
+    fn start(server: &EmbeddedServer) -> ServerProgress {
+        let request = EventRequest {
+            event: "INIT".to_string(),
+            target_trait: Some("T".to_string()),
+            ..Default::default()
+        };
+        server.start("Main", request).unwrap()
+    }
+
+    fn loaded_rows(response: &EventResponse) -> Vec<Json> {
+        let loaded = response
+            .emitted_events
+            .iter()
+            .find(|e| e.event == "LOADED")
+            .expect("the fetch fires its success");
+        serde_json::to_value(&loaded.payload).unwrap()["data"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_seeded_runtime_entity_fetches_its_one_mock_row_at_the_singleton_address() {
+        let s = server("runtime");
+        s.seed_runtime_mock(Some("viewer-1".to_string()));
+        let ServerProgress::Done(response) = start(&s) else {
+            panic!("a [runtime] fetch never asks the host");
+        };
+        let rows = loaded_rows(&response);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["id"], json!("singleton"));
+        assert_eq!(rows[0]["count"].as_f64(), Some(0.0), "a literal default is honored");
+    }
+
+    #[test]
+    fn control_an_unseeded_runtime_entity_fetches_nothing() {
+        let ServerProgress::Done(response) = start(&server("runtime")) else {
+            panic!("a [runtime] fetch never asks the host");
+        };
+        assert!(loaded_rows(&response).is_empty());
+    }
+
+    #[test]
+    fn edge_a_persistent_entity_is_not_seeded_and_still_asks_the_host() {
+        let s = server("persistent");
+        s.seed_runtime_mock(Some("viewer-1".to_string()));
+        assert!(matches!(start(&s), ServerProgress::Await { .. }));
+    }
+}

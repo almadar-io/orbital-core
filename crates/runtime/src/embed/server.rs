@@ -155,6 +155,12 @@ impl EmbeddedServer {
         &self.kernel
     }
 
+
+    /// Mock-seed the `[runtime]` entities this kernel holds itself, owner columns stamped with `viewer_id`
+    /// ([`RuntimeKernel::seed_runtime_mock`]). A preview host calls it on a fresh kernel.
+    pub fn seed_runtime_mock(&self, viewer_id: Option<String>) {
+        self.kernel.seed_runtime_mock(viewer_id);
+    }
     /// The viewer a request that names none runs as.
     pub fn set_default_user(&self, user: Value) {
         *self.default_user.lock() = user;

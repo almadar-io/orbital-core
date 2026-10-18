@@ -18,6 +18,10 @@ use std::collections::HashMap;
 use super::entity_source::EntitySource;
 use super::mock_random::{iso_from_ms, MockRandom};
 
+/// Rows a mock store seeds per entity when the host names no count (`MOCK_SEED_COUNT` in the playground's
+/// `mock-seed.ts`, `MockPersistenceAdapter`'s `defaultSeedCount`).
+pub const MOCK_SEED_COUNT: usize = 6;
+
 /// Recursion cap for self-referential `items` / `properties` walks.
 const MAX_NESTED_DEPTH: usize = 3;
 

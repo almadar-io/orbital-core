@@ -981,6 +981,11 @@ impl IoPort {
         }
     }
 
+    /// Whether this kernel holds the rows of `entity_type` itself (a claimed `[runtime]` entity).
+    pub(crate) fn holds_runtime(&self, entity_type: &str) -> bool {
+        self.local(entity_type)
+    }
+
     fn local(&self, entity_type: &str) -> bool {
         self.runtime_in_kernel && self.runtime_types.read().contains(entity_type)
     }

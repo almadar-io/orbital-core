@@ -45,7 +45,7 @@ use parking_lot::RwLock;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// The most bytes one `random-bytes` may ask for.
 const RANDOM_BYTES_MAX: f64 = 1024.0;
@@ -4990,6 +4990,39 @@ impl RuntimeKernel {
     /// Access the entity source.
     pub fn entity_source(&self) -> &Arc<dyn EntitySource> {
         &self.entity_source
+    }
+
+    /// Mock-seed the `[runtime]` entities whose rows this kernel holds itself: each gets the one row the
+    /// canonical seeder ([`crate::seed::seed_sample_data_as`]) gives it, owner columns stamped with
+    /// `viewer_id`, at the `"singleton"` address its frame uses. A store the host answers is never written.
+    pub fn seed_runtime_mock(&self, viewer_id: Option<String>) {
+        let schemas: Vec<OrbitalSchema> = self.schemas.read().values().cloned().collect();
+        for schema in &schemas {
+            let scratch = crate::entity_source::InMemoryEntityCache::new();
+            crate::seed::seed_sample_data_as(&scratch, schema, crate::seed::MOCK_SEED_COUNT, viewer_id.clone());
+            for orbital in &schema.orbitals {
+                for entity_ref in std::iter::once(&orbital.entity)
+                    .chain(orbital.auxiliary_entities.iter().flatten())
+                {
+                    let EntityRef::Inline(def) = entity_ref else {
+                        continue;
+                    };
+                    if def.persistence != Some(Persistence::Runtime) || !self.io.holds_runtime(&def.name) {
+                        continue;
+                    }
+                    let Some(row) = scratch.list(&def.name).ok().and_then(|rows| rows.into_iter().next()) else {
+                        continue;
+                    };
+                    let mut row = (*row).clone();
+                    if let Some(fields) = row.as_object_mut() {
+                        fields.insert("id".to_string(), Value::String("singleton".to_string()));
+                    }
+                    if let Err(error) = self.io.write(&def.name, "singleton", &row) {
+                        warn!(target: "almadar::kernel", entity = %def.name, %error, "kernel: runtime mock seed not written");
+                    }
+                }
+            }
+        }
     }
 
     /// Access the effect executor.
