@@ -91,3 +91,52 @@ fn legacy_json_parse_controls_remain_unchanged() {
         assert_eq!(actual, expected, "input: {input}");
     }
 }
+
+fn nodes_of(value: serde_json::Value) -> Result<Value, String> {
+    let ctx = BindingContextBuilder::new()
+        .payload(serde_json::from_value(json!({ "v": value })).unwrap())
+        .build();
+    let expr: SExpression = serde_json::from_value(json!(["json/nodes", "@payload.v"])).unwrap();
+    Evaluator::new().evaluate(&expr, &ctx).map_err(|e| e.to_string())
+}
+
+#[test]
+fn json_nodes_lists_every_nested_value_in_pre_order() {
+    let tree = json!({ "a": [1, { "b": "x" }], "c": null });
+    let expected: Value = serde_json::from_value(json!([
+        { "a": [1, { "b": "x" }], "c": null },
+        [1, { "b": "x" }],
+        1,
+        { "b": "x" },
+        "x",
+        null
+    ]))
+    .unwrap();
+    assert_eq!(nodes_of(tree).unwrap(), expected);
+}
+
+#[test]
+fn json_nodes_keeps_operator_shaped_lists_as_data() {
+    let form = json!(["emit", "DONE", { "x": ["call-service", "llm", "embed", {}] }]);
+    let nodes = nodes_of(form).unwrap();
+    let Value::Array(items) = nodes else { panic!("json/nodes did not return a list") };
+    let calls: Vec<&Value> = items
+        .iter()
+        .filter(|item| matches!(item, Value::Array(parts) if parts.first() == Some(&Value::String("call-service".into()))))
+        .collect();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(items.len(), 9);
+}
+
+#[test]
+fn json_nodes_of_a_scalar_is_that_scalar_alone() {
+    assert_eq!(nodes_of(json!("leaf")).unwrap(), Value::Array(vec![Value::String("leaf".into())]));
+    assert_eq!(nodes_of(json!([])).unwrap(), Value::Array(vec![Value::Array(vec![])]));
+}
+
+#[test]
+fn json_nodes_takes_exactly_one_argument() {
+    let ctx = BindingContextBuilder::new().build();
+    let expr: SExpression = serde_json::from_value(json!(["json/nodes", 1, 2])).unwrap();
+    assert!(Evaluator::new().evaluate(&expr, &ctx).is_err());
+}

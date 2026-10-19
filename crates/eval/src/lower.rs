@@ -21,6 +21,19 @@ pub fn lower_sexpr(sexpr: &SExpression) -> Result<OirExpr, LowerError> {
     ExprLowerer.resolve_sexpr(sexpr)
 }
 
+thread_local! {
+    static KEEP_TYPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// [`lower_sexpr`] keeping each `typed` form as a call, for the compiler pass that records declared argument types
+/// (`orbital-compiler` `typed_args`). Every other lowering reads `["typed", value, type]` as its value.
+pub fn lower_sexpr_keeping_typed(sexpr: &SExpression) -> Result<OirExpr, LowerError> {
+    KEEP_TYPED.with(|keep| keep.set(true));
+    let lowered = ExprLowerer.resolve_sexpr(sexpr);
+    KEEP_TYPED.with(|keep| keep.set(false));
+    lowered
+}
+
 /// The existing lowering decision that distinguishes a registered call from literal array data.
 pub fn recognized_call_head(sexpr: &SExpression) -> Option<&str> {
     let op = sexpr.operator()?;
@@ -135,6 +148,9 @@ impl ExprLowerer {
     }
 
     fn resolve_sexpr_call(&self, op: &str, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+        if op == "typed" && args.len() == 2 && !KEEP_TYPED.with(std::cell::Cell::get) {
+            return self.resolve_sexpr(&args[0]);
+        }
         // Enforce canonical maxArity (canonical-operators.json). Variadic ops
         // (maxArity null) skip. Catches the silent-drop bug in binary_op /
         // unary_op, which keep only the first 1–2 args and discard the rest

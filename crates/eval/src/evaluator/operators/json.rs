@@ -66,6 +66,25 @@ impl Operator for JsonValidOp {
     }
 }
 
+/// `(json/nodes v)`: `v` and every value nested in it, pre-order (a list's items in order, an object's values in key order).
+pub struct JsonNodesOp;
+impl Operator for JsonNodesOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "json/nodes", == 1);
+        let mut nodes = Vec::new();
+        let mut stack = vec![eval_expr(&args[0], ctx)?];
+        while let Some(value) = stack.pop() {
+            match &value {
+                Value::Array(items) => stack.extend(items.iter().rev().cloned()),
+                Value::Object(map) => stack.extend(map.values().rev().cloned()),
+                _ => {}
+            }
+            nodes.push(value);
+        }
+        Ok(Value::Array(nodes))
+    }
+}
+
 pub struct JsonStringifyOp;
 impl Operator for JsonStringifyOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {

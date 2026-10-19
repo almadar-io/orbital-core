@@ -33,3 +33,17 @@ impl Operator for AsOp {
         }
     }
 }
+
+/// typed - `["typed", value, <declared type>]`: the value, checked to be of the type the program declared for it.
+/// Written by `orb resolve` (never `.lolo`) at an operator argument whose declared type is a list of a union or of
+/// `SExpr`, so the argument check binds that type instead of reading one from the items.
+pub struct TypedOp;
+impl Operator for TypedOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "typed", == 2);
+        let declared = super::arg_types::declared_type(&args[1])?;
+        let value = eval_expr(&args[0], ctx)?;
+        super::arg_types::value_of_declared(&value, &declared)?;
+        Ok(value)
+    }
+}

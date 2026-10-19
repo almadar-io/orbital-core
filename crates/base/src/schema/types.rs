@@ -52,6 +52,12 @@ pub struct OrbitalSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<ThemeRef>,
 
+    /// The registry themes the program switches to inside a page (a sub-frame's
+    /// `data-theme`), beyond its app and orbital themes. Authored as
+    /// `themes: [<key>, …]` in the `.lolo` app header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub themes: Option<Vec<String>>,
+
     /// The theme presets this program references plus the runtime default,
     /// written by `orb` when it compiles the program for a runtime, so a kernel
     /// with no installed `@almadar/core` (wasm, mobile) resolves `@currentTheme`
@@ -3915,6 +3921,10 @@ pub struct PayloadField {
         rename = "projectedFrom"
     )]
     pub projected_from: Option<FieldProjection>,
+    /// The element type of an `array` field whose element is itself a typed field (a union of named types:
+    /// `[(Adv | string)]`), the same nested form an entity field's `items` takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<Box<PayloadField>>,
 }
 
 /// The canonical string spelling of a resolved config literal, for comparison

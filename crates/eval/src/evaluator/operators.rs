@@ -154,11 +154,13 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
 
         // Explicit cast
         "as" => K::AsOp,
+        "typed" => K::TypedOp,
 
         // JSON
         "json/parse" => K::JsonParseOp,
         "json/stringify" => K::JsonStringifyOp,
         "json/valid" => K::JsonValidOp,
+        "json/nodes" => K::JsonNodesOp,
 
         // CSV
         "csv/parse" => K::CsvParseOp,
@@ -545,7 +547,10 @@ fn eval_checked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
     let slot = arg_types::argument_slot(expr);
     let value = eval_unchecked(expr, ctx)?;
     if let Some(index) = slot {
-        arg_types::check_argument(index, &value)?;
+        match arg_types::typed_declaration(expr)? {
+            Some(declared) => arg_types::check_declared_argument(index, &declared)?,
+            None => arg_types::check_argument(index, &value)?,
+        }
     }
     Ok(value)
 }

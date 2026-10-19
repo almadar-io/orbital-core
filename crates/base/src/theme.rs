@@ -176,6 +176,7 @@ pub fn carry_theme_definitions(schema: &mut OrbitalSchema, presets: &ThemePreset
             ThemeRef::Reference(key) if !key.is_empty() => Some(split_theme_key(key).0),
             _ => None,
         })
+        .chain(schema.themes.iter().flatten().map(|key| split_theme_key(key).0))
         .chain(std::iter::once(DEFAULT_THEME_BASE.to_string()))
         .collect();
     bases.sort();
@@ -982,6 +983,7 @@ mod tests {
     fn minimal_schema(app_theme: Option<ThemeRef>, orbitals: Vec<Orbital>) -> OrbitalSchema {
         OrbitalSchema {
             theme_definitions: None,
+            themes: None,
             site: None,
             public_dir: None,
             locales: None,
@@ -1154,6 +1156,27 @@ mod tests {
         );
         carry_theme_definitions(&mut schema, &presets());
         assert_eq!(carried(&schema), vec!["aqua", "clay", DEFAULT_THEME_BASE]);
+    }
+
+    #[test]
+    fn carries_the_themes_a_program_switches_to() {
+        let mut schema = minimal_schema(
+            Some(ThemeRef::Reference("clay-light".to_string())),
+            vec![minimal_orbital("A", None)],
+        );
+        schema.themes = Some(vec!["aqua-dark".to_string(), "clay-dark".to_string()]);
+        carry_theme_definitions(&mut schema, &presets());
+        assert_eq!(carried(&schema), vec!["aqua", "clay", DEFAULT_THEME_BASE]);
+    }
+
+    #[test]
+    fn control_switched_to_themes_never_become_the_resolved_theme() {
+        let mut schema = minimal_schema(
+            Some(ThemeRef::Reference("clay-light".to_string())),
+            vec![minimal_orbital("A", None)],
+        );
+        schema.themes = Some(vec!["aqua-dark".to_string()]);
+        assert_eq!(resolve_theme(&schema, Some("A"), &presets(), None).base, "clay");
     }
 
     #[test]

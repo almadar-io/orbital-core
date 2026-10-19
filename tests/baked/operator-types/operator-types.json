@@ -2575,7 +2575,7 @@
         "4111111111111234"
       ],
       "expect": {
-        "value": "•••• •••• •••• 1234"
+        "value": "\u2022\u2022\u2022\u2022 \u2022\u2022\u2022\u2022 \u2022\u2022\u2022\u2022 1234"
       }
     },
     {
@@ -9467,6 +9467,128 @@
           "kind": "TypeMismatch",
           "expected": "array",
           "actual": "array"
+        }
+      }
+    },
+    {
+      "name": "typed: a list of a declared union binds its type, so array/len counts unlike items",
+      "expr": [
+        "array/len",
+        [
+          "typed",
+          "@entity.xs",
+          "{\"kind\": \"array\", \"inner\": {\"kind\": \"union\", \"variants\": [{\"name\": \"number\", \"fieldType\": {\"kind\": \"number\"}}, {\"name\": \"string\", \"fieldType\": {\"kind\": \"string\"}}]}}"
+        ]
+      ],
+      "entity": {
+        "xs": [
+          1,
+          "b"
+        ]
+      },
+      "expect": {
+        "value": 2
+      }
+    },
+    {
+      "name": "typed: array/filter over a declared union list keeps every item, and its result is typed as resolve writes it",
+      "expr": [
+        "array/len",
+        [
+          "typed",
+          [
+            "array/filter",
+            [
+              "typed",
+              "@entity.xs",
+              "{\"kind\": \"array\", \"inner\": {\"kind\": \"union\", \"variants\": [{\"name\": \"number\", \"fieldType\": {\"kind\": \"number\"}}, {\"name\": \"string\", \"fieldType\": {\"kind\": \"string\"}}]}}"
+            ],
+            [
+              "fn",
+              "x",
+              true
+            ]
+          ],
+          "{\"kind\": \"array\", \"inner\": {\"kind\": \"union\", \"variants\": [{\"name\": \"number\", \"fieldType\": {\"kind\": \"number\"}}, {\"name\": \"string\", \"fieldType\": {\"kind\": \"string\"}}]}}"
+        ]
+      ],
+      "entity": {
+        "xs": [
+          1,
+          "b",
+          2
+        ]
+      },
+      "expect": {
+        "value": 3
+      }
+    },
+    {
+      "name": "typed: an item outside the declared union is a mismatch",
+      "expr": [
+        "array/len",
+        [
+          "typed",
+          "@entity.xs",
+          "{\"kind\": \"array\", \"inner\": {\"kind\": \"union\", \"variants\": [{\"name\": \"number\", \"fieldType\": {\"kind\": \"number\"}}, {\"name\": \"string\", \"fieldType\": {\"kind\": \"string\"}}]}}"
+        ]
+      ],
+      "entity": {
+        "xs": [
+          1,
+          true
+        ]
+      },
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "[number | string]",
+          "actual": "boolean"
+        }
+      }
+    },
+    {
+      "name": "typed: a list of SExpr takes items of every kind",
+      "expr": [
+        "array/len",
+        [
+          "typed",
+          [
+            "json/nodes",
+            "@entity.tree"
+          ],
+          "{\"kind\": \"array\", \"inner\": {\"kind\": \"sexpr\"}}"
+        ]
+      ],
+      "entity": {
+        "tree": {
+          "a": [
+            1,
+            "x"
+          ]
+        }
+      },
+      "expect": {
+        "value": 4
+      }
+    },
+    {
+      "name": "control: the same unlike list without a declared type is a mismatch",
+      "expr": [
+        "array/len",
+        "@entity.xs"
+      ],
+      "entity": {
+        "xs": [
+          1,
+          "b"
+        ]
+      },
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "string"
         }
       }
     }

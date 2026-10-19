@@ -64,7 +64,7 @@ fn build_signatures() -> SignatureTable {
         };
         if matches!(
             kind,
-            OperatorKind::BehaviorCompositionStubOp(_) | OperatorKind::AgentStubOp(_)
+            OperatorKind::BehaviorCompositionStubOp(_) | OperatorKind::AgentStubOp(_) | OperatorKind::TypedOp
         ) {
             continue;
         }
@@ -397,6 +397,125 @@ fn is_bare_variable(formal: Option<&OperatorTypeRef>) -> bool {
         }
         _ => false,
     }
+}
+
+thread_local! {
+    static DECLARED: RefCell<HashMap<String, OirType>> = RefCell::new(HashMap::new());
+}
+
+/// The type a `typed` form records: its second argument, the declared `OirType` as JSON text.
+pub fn declared_type(arg: &SExpression) -> Result<OirType, OrbitalError> {
+    let SExpression::String(text) = arg else {
+        return Err(OrbitalError::Eval(EvalError::InvalidArgument("typed: the declared type must be JSON text".into())));
+    };
+    if let Some(known) = DECLARED.with(|d| d.borrow().get(text).cloned()) {
+        return Ok(known);
+    }
+    let ty: OirType = serde_json::from_str(text)
+        .map_err(|e| OrbitalError::Eval(EvalError::InvalidArgument(format!("typed: the declared type is not a type: {e}"))))?;
+    DECLARED.with(|d| d.borrow_mut().insert(text.clone(), ty.clone()));
+    Ok(ty)
+}
+
+/// The declared type of `expr` when it is a `typed` form.
+pub fn typed_declaration(expr: &SExpression) -> Result<Option<OirType>, OrbitalError> {
+    match expr {
+        SExpression::Array(items) if items.len() == 3 && matches!(&items[0], SExpression::String(head) if head == "typed") => {
+            declared_type(&items[2]).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The type a declared type is written as in a message: `[number | string]`, `[Adv | string]`, `[SExpr]`.
+pub fn declared_text(ty: &OirType) -> String {
+    match ty {
+        OirType::Array { inner } => format!("[{}]", declared_text(inner)),
+        OirType::Optional { inner } => format!("{}?", declared_text(inner)),
+        OirType::Union { variants } => variants
+            .iter()
+            .map(|v| match &v.field_type {
+                OirType::Struct { .. } | OirType::TypeRef { .. } | OirType::Row { .. } => v.name.clone(),
+                other => declared_text(other),
+            })
+            .collect::<Vec<_>>()
+            .join(" | "),
+        OirType::Map { key, value } => format!("Map {} {}", declared_text(key), declared_text(value)),
+        OirType::Tuple { items } => format!("[{}]", items.iter().map(declared_text).collect::<Vec<_>>().join(", ")),
+        OirType::SExpr => "SExpr".to_string(),
+        OirType::Struct { .. } | OirType::File => "object".to_string(),
+        OirType::Row { entity } | OirType::Reference { entity } => entity.clone(),
+        OirType::TypeRef { name } | OirType::Enum { name } => name.clone(),
+        OirType::Integer | OirType::Money => "number".to_string(),
+        other => serde_json::to_value(other)
+            .ok()
+            .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string))
+            .unwrap_or_else(|| "a value".to_string()),
+    }
+}
+
+/// The kind of the first part of `value` that is not of `ty` (null is an absent value and is of every type).
+fn first_misfit(value: &Value, ty: &OirType) -> Option<&'static str> {
+    if value.is_null() {
+        return None;
+    }
+    let misfit = || Some(value.type_name());
+    match ty {
+        OirType::SExpr | OirType::Json | OirType::Node | OirType::Trait | OirType::Orbital | OirType::Behavior => None,
+        OirType::Optional { inner } => first_misfit(value, inner),
+        OirType::Union { variants } => {
+            if variants.iter().any(|v| first_misfit(value, &v.field_type).is_none()) {
+                None
+            } else {
+                misfit()
+            }
+        }
+        OirType::Array { inner } => match value {
+            Value::Array(items) => items.iter().find_map(|item| first_misfit(item, inner)),
+            _ => misfit(),
+        },
+        OirType::Tuple { items: slots } => match value {
+            Value::Array(items) => items.iter().zip(slots).find_map(|(item, slot)| first_misfit(item, slot)),
+            _ => misfit(),
+        },
+        OirType::Map { value: inner, .. } => match value {
+            Value::Object(map) => map.values().find_map(|item| first_misfit(item, inner)),
+            _ => misfit(),
+        },
+        OirType::Struct { .. } | OirType::File | OirType::Row { .. } | OirType::TypeRef { .. } => {
+            (!matches!(value, Value::Object(_))).then(|| value.type_name())
+        }
+        OirType::Reference { .. } => (!matches!(value, Value::Object(_) | Value::String(_))).then(|| value.type_name()),
+        OirType::Number | OirType::Integer | OirType::Money => (!matches!(value, Value::Number(_))).then(|| value.type_name()),
+        OirType::Boolean => (!matches!(value, Value::Bool(_))).then(|| value.type_name()),
+        OirType::Date | OirType::DateTime => (!matches!(value, Value::String(_) | Value::Number(_))).then(|| value.type_name()),
+        _ => (!matches!(value, Value::String(_))).then(|| value.type_name()),
+    }
+}
+
+/// `value` is of the declared `ty`, kind by kind (a record's fields are not read, as in every argument check).
+pub fn value_of_declared(value: &Value, ty: &OirType) -> Result<(), OrbitalError> {
+    match first_misfit(value, ty) {
+        None => Ok(()),
+        Some(actual) => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: declared_text(ty),
+            actual: actual.to_string(),
+        })),
+    }
+}
+
+/// Binds the argument at `index` of the call being evaluated to the type the program declared for it.
+pub fn check_declared_argument(index: usize, declared: &OirType) -> Result<(), OrbitalError> {
+    FRAMES.with(|f| {
+        let mut frames = f.borrow_mut();
+        let Some(top) = frames.last_mut() else {
+            return Ok(());
+        };
+        let signature = top.signature;
+        signature
+            .bind(&mut top.bindings, index, &actual_of_known(Some(Known::Type(declared.clone()))), Mode::Runtime)
+            .map_err(to_eval_error)
+    })
 }
 
 /// Binds the evaluated argument at `index` of the call being evaluated against its declared type.

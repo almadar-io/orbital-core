@@ -552,6 +552,15 @@ impl BindingContext {
                         // expanded higher up the same chain. Leave it literal.
                         return Cow::Borrowed(value);
                     }
+                    // Runtime data (`@payload`, `@entity`, `@user`, …) is a value: it is never walked again,
+                    // so an array whose head names an operator, or a string shaped like a binding, stays the
+                    // caller's data. Only authored roots carry structure to resolve further.
+                    if !(s.starts_with("@config.") || s.starts_with("@trait.")) {
+                        return match self.resolve_binding(s) {
+                            Some(resolved) => Cow::Owned(resolved),
+                            None => Cow::Borrowed(value),
+                        };
+                    }
                     match self.resolve_binding(s) {
                         // A config-held render-ui tree (e.g. `@config.bodyContent`) is a
                         // structure whose own strings may carry `@entity.*`/`@config.*`
@@ -1059,6 +1068,64 @@ mod tests {
             resolved.into_owned(),
             Value::String("clay-light".to_string()),
             "a config default forwarding to @currentTheme must resolve through BOTH hops"
+        );
+    }
+
+    #[test]
+    fn test_resolve_value_runtime_data_is_never_evaluated_as_code() {
+        let mut payload = ValueMap::new();
+        payload.insert(
+            "argv".to_string(),
+            Value::Array(vec![Value::String("list".into()), Value::String("-c".into()), Value::String("x".into())]),
+        );
+        payload.insert("note".to_string(), Value::String("@user.email".into()));
+        let mut entity = ValueMap::new();
+        entity.insert(
+            "form".to_string(),
+            Value::Array(vec![Value::String("if".into()), Value::Bool(true), Value::String("a".into()), Value::String("b".into())]),
+        );
+        let mut user = ValueMap::new();
+        user.insert("email".to_string(), Value::String("ada@example.com".into()));
+        let ctx = BindingContextBuilder::new()
+            .payload(Value::Object(payload))
+            .entity(Value::Object(entity))
+            .user(Value::Object(user))
+            .build();
+        assert_eq!(
+            ctx.resolve_value(&Value::String("@payload.argv".into())).into_owned(),
+            Value::Array(vec![Value::String("list".into()), Value::String("-c".into()), Value::String("x".into())]),
+            "a payload array whose head names an operator is data, not a `list` call"
+        );
+        assert_eq!(
+            ctx.resolve_value(&Value::String("@entity.form".into())).into_owned(),
+            Value::Array(vec![Value::String("if".into()), Value::Bool(true), Value::String("a".into()), Value::String("b".into())]),
+            "an entity value shaped like an `if` form is data"
+        );
+        assert_eq!(
+            ctx.resolve_value(&Value::String("@payload.note".into())).into_owned(),
+            Value::String("@user.email".into()),
+            "a payload string that looks like a binding stays the caller's text"
+        );
+    }
+
+    #[test]
+    fn test_resolve_value_config_trees_and_authored_forms_still_evaluate() {
+        let mut config = ValueMap::new();
+        config.insert(
+            "label".to_string(),
+            Value::Array(vec![Value::String("if".into()), Value::Bool(true), Value::String("A".into()), Value::String("B".into())]),
+        );
+        let ctx = BindingContextBuilder::new().config(Value::Object(config)).build();
+        assert_eq!(
+            ctx.resolve_value(&Value::String("@config.label".into())).into_owned(),
+            Value::String("A".into()),
+            "control: a config-held operator form is authored and evaluates"
+        );
+        let authored = Value::Array(vec![Value::String("str/concat".into()), Value::String("a".into()), Value::String("b".into())]);
+        assert_eq!(
+            ctx.resolve_value(&authored).into_owned(),
+            Value::String("ab".into()),
+            "control: an operator form written in the program evaluates"
         );
     }
 
