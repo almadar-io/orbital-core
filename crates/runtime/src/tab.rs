@@ -3,7 +3,7 @@
 //! here, and the host is asked only for raw tab and page operations ([`TabAsk`]).
 
 use crate::driver::{Driver, DriverAnswer, DriverAsk, DriverStep};
-use orbital_core_base::tab::{TabApply, TabAsk, TabCommand, TabFailure, TabFailureKind, TabField, TabOp};
+use orbital_core_base::tab::{TabApply, TabAsk, TabCommand, TabFailure, TabFailureKind, TabField, TabImageFormat, TabOp};
 use orbital_core_base::tab_call::{matches_pattern, TabCall, TabPlan};
 use orbital_core_base::value::{Value, ValueMap};
 
@@ -50,6 +50,7 @@ enum State {
     Apply { tab: i64, element_id: String, treatment: String },
     ApplyMany { groups: Vec<(i64, Vec<TabApply>)>, at: usize, applied: Vec<Value>, missing: Vec<Value> },
     Act { tab: i64, element_id: String },
+    Capture { tab: i64, format: TabImageFormat },
 }
 
 /// The step machine of one `browser/tab-*` call.
@@ -116,6 +117,7 @@ impl TabDriver {
                 let step = command(tab, TabCommand::Act { element_id: element_id.clone(), action, text });
                 (State::Act { tab, element_id }, step)
             }
+            TabPlan::Capture { tab, format, quality } => (State::Capture { tab, format }, ask(TabAsk::Capture { tab, format, quality })),
         };
         (TabDriver { state, key }, step)
     }
@@ -296,6 +298,17 @@ impl Driver for TabDriver {
                         ("elementId", Value::String(element_id)),
                     ]),
                     None => self.malformed(TabOp::Act, "a result that is not true or false"),
+                },
+            },
+            State::Capture { tab, format } => match result {
+                Err(f) => self.fail(f.kind, &f.message),
+                Ok(reply) => match reply.as_str().and_then(|url| url.strip_prefix(format.data_url_prefix())).filter(|image| !image.is_empty()) {
+                    Some(image) => self.ok(vec![
+                        ("tab", Value::Number(tab as f64)),
+                        ("format", Value::String(format.as_str().to_string())),
+                        ("image", Value::String(image.to_string())),
+                    ]),
+                    None => self.malformed(TabOp::Capture, &format!("an image that is not a {} data URL", format.as_str())),
                 },
             },
         }
@@ -531,6 +544,31 @@ mod tests {
         let out = done_ok(step);
         assert_eq!(get(&out, "done"), &Value::Bool(true));
         assert_eq!(get(&out, "tab"), &Value::Number(3.0));
+    }
+
+    #[test]
+    fn capture_asks_for_the_tab_in_its_format_and_hands_back_the_image_without_its_data_url_prefix() {
+        let (asks, step) = run(
+            call(TabOp::Capture, json!({ "tab": 5, "format": "jpeg", "quality": 70 })).unwrap(),
+            vec![Ok(Value::String("data:image/jpeg;base64,/9j/4AAQ".to_string()))],
+        );
+        assert_eq!(asks, vec![TabAsk::Capture { tab: 5, format: TabImageFormat::Jpeg, quality: Some(70) }]);
+        let out = done_ok(step);
+        assert_eq!(get(&out, "tab"), &Value::Number(5.0));
+        assert_eq!(get(&out, "format"), &Value::String("jpeg".to_string()));
+        assert_eq!(get(&out, "image"), &Value::String("/9j/4AAQ".to_string()));
+    }
+
+    #[test]
+    fn control_a_capture_reply_in_another_format_or_empty_is_malformed_and_a_host_failure_keeps_its_kind() {
+        for reply in ["data:image/png;base64,iVBOR", "data:image/jpeg;base64,", "not a url"] {
+            let (_, step) = run(call(TabOp::Capture, json!({ "tab": 1, "format": "jpeg" })).unwrap(), vec![Ok(Value::String(reply.to_string()))]);
+            let failure = done_err(step);
+            assert_eq!(get(&failure, "kind"), &Value::String("failed".to_string()), "{reply}");
+        }
+        let hidden = TabFailure::new(TabFailureKind::NotReady, "Tab 1 cannot be captured");
+        let (_, step) = run(call(TabOp::Capture, json!({ "tab": 1 })).unwrap(), vec![Err(hidden)]);
+        assert_eq!(get(&done_err(step), "kind"), &Value::String("not-ready".to_string()));
     }
 
     #[test]

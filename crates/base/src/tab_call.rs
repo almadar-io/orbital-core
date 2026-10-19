@@ -4,7 +4,7 @@
 
 use crate::agent_ports::find_input_by_address;
 use crate::external_inputs::ExternalInput;
-use crate::tab::{is_match_pattern, TabAction, TabApply, TabDelivery, TabField, TabOp, TabStyle};
+use crate::tab::{is_match_pattern, TabAction, TabApply, TabDelivery, TabField, TabImageFormat, TabOp, TabStyle};
 use crate::value::{Value, ValueMap};
 use url::Url;
 
@@ -38,6 +38,7 @@ pub enum TabPlan {
     Apply { tab: i64, apply: TabApply, treatment: String },
     ApplyMany { groups: Vec<(i64, Vec<TabApply>)> },
     Act { tab: i64, element_id: String, action: TabAction, text: Option<String> },
+    Capture { tab: i64, format: TabImageFormat, quality: Option<u8> },
 }
 
 /// Accept the request of `op`, or say why it is refused. Nothing is asked of a host for a refused request.
@@ -171,6 +172,22 @@ pub fn parse_tab_call(
                 return Err(format!("{name}: action 'type' needs 'text'"));
             }
             TabPlan::Act { tab: tab_id(name, map, "tab")?, element_id: text(name, map, "elementId")?, action, text: text_value }
+        }
+        TabOp::Capture => {
+            closed(name, map, op.request_keys())?;
+            let format = match opt_text(name, map, "format")? {
+                None => TabImageFormat::Png,
+                Some(given) => TabImageFormat::ALL
+                    .into_iter()
+                    .find(|f| f.as_str() == given)
+                    .ok_or_else(|| format!("{name}: 'format' must be one of png, jpeg, got '{given}'"))?,
+            };
+            let quality = match opt_count(name, map, "quality")? {
+                None => None,
+                Some(_) if format != TabImageFormat::Jpeg => return Err(format!("{name}: 'quality' is for format 'jpeg' only")),
+                Some(q) => Some(u8::try_from(q).ok().filter(|q| *q <= 100).ok_or_else(|| format!("{name}: 'quality' must be a whole number from 0 to 100"))?),
+            };
+            TabPlan::Capture { tab: tab_id(name, map, "tab")?, format, quality }
         }
     };
     Ok(TabCall { plan, key: key.map(str::to_string) })
@@ -534,6 +551,11 @@ mod tests {
             (TabOp::ApplyMany, json!({ "items": [{ "tab": 1, "elementId": "e", "treatment": "explode" }] }), "'treatment' must be one of"),
             (TabOp::ApplyMany, json!({ "items": "none" }), "'items' must be a list"),
             (TabOp::Unwatch, json!({}), "'watchId' must be a string"),
+            (TabOp::Capture, json!({}), "'tab' must be a whole number"),
+            (TabOp::Capture, json!({ "tab": 1, "format": "gif" }), "'format' must be one of png, jpeg"),
+            (TabOp::Capture, json!({ "tab": 1, "quality": 50 }), "'quality' is for format 'jpeg' only"),
+            (TabOp::Capture, json!({ "tab": 1, "format": "jpeg", "quality": 101 }), "'quality' must be a whole number from 0 to 100"),
+            (TabOp::Capture, json!({ "tab": 1, "selector": ".a" }), "'selector' is not a request key"),
         ] {
             let error = call(op, request.clone()).expect_err(&request.to_string());
             assert!(error.contains(fragment), "{error} should contain {fragment}");
@@ -550,9 +572,16 @@ mod tests {
             (TabOp::Apply, json!({ "tab": 1, "elementId": "e", "treatment": "label", "label": null })),
             (TabOp::Act, json!({ "tab": 1, "elementId": "e", "action": "click" })),
             (TabOp::ApplyMany, json!({ "items": [] })),
+            (TabOp::Capture, json!({ "tab": 1 })),
+            (TabOp::Capture, json!({ "tab": 1, "format": "jpeg", "quality": 0 })),
         ] {
             assert!(call(op, request.clone()).is_ok(), "{request}");
         }
+        assert_eq!(
+            call(TabOp::Capture, json!({ "tab": 4 })).unwrap().plan,
+            TabPlan::Capture { tab: 4, format: TabImageFormat::Png, quality: None },
+            "png is the default format"
+        );
     }
 
     #[test]

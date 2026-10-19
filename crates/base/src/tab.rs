@@ -20,10 +20,11 @@ pub enum TabOp {
     Apply,
     ApplyMany,
     Act,
+    Capture,
 }
 
 impl TabOp {
-    pub const ALL: [TabOp; 10] = [
+    pub const ALL: [TabOp; 11] = [
         TabOp::List,
         TabOp::Open,
         TabOp::Close,
@@ -34,6 +35,7 @@ impl TabOp {
         TabOp::Apply,
         TabOp::ApplyMany,
         TabOp::Act,
+        TabOp::Capture,
     ];
 
     /// The effect's spelling in a program.
@@ -49,6 +51,7 @@ impl TabOp {
             TabOp::Apply => "browser/tab-apply",
             TabOp::ApplyMany => "browser/tab-apply-many",
             TabOp::Act => "browser/tab-act",
+            TabOp::Capture => "browser/tab-capture",
         }
     }
 
@@ -69,6 +72,7 @@ impl TabOp {
             TabOp::Apply => &["tab", "elementId", "treatment", "label"],
             TabOp::ApplyMany => &["items"],
             TabOp::Act => &["tab", "elementId", "action", "text"],
+            TabOp::Capture => &["tab", "format", "quality"],
         }
     }
 
@@ -139,6 +143,34 @@ impl TabAction {
             TabAction::Click => "click",
             TabAction::Focus => "focus",
             TabAction::Type => "type",
+        }
+    }
+}
+
+/// The image format a `browser/tab-capture` asks for.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TabImageFormat {
+    Png,
+    Jpeg,
+}
+
+impl TabImageFormat {
+    pub const ALL: [TabImageFormat; 2] = [TabImageFormat::Png, TabImageFormat::Jpeg];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TabImageFormat::Png => "png",
+            TabImageFormat::Jpeg => "jpeg",
+        }
+    }
+
+    /// The `data:` URL prefix a host's capture of this format starts with.
+    pub fn data_url_prefix(self) -> &'static str {
+        match self {
+            TabImageFormat::Png => "data:image/png;base64,",
+            TabImageFormat::Jpeg => "data:image/jpeg;base64,",
         }
     }
 }
@@ -227,6 +259,14 @@ pub enum TabAsk {
     /// Drop a watch from the host and from every tab. Replies whether it was kept.
     #[serde(rename_all = "camelCase")]
     Unwatch { watch_id: String },
+    /// Show a tab in its window and capture what the window shows, as `format` (`quality` 0-100 for jpeg).
+    /// Replies the image as a `data:` URL.
+    Capture {
+        tab: i64,
+        format: TabImageFormat,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quality: Option<u8>,
+    },
 }
 
 /// Why a host did not perform a [`TabAsk`].
@@ -378,6 +418,15 @@ mod tests {
                 "deliver": { "orbital": "O", "trait": "T", "event": "ITEM_FOUND" }
             })
         );
+    }
+
+    #[test]
+    fn a_capture_ask_carries_its_tab_format_and_quality() {
+        let ask = TabAsk::Capture { tab: 3, format: TabImageFormat::Jpeg, quality: Some(80) };
+        assert_eq!(serde_json::to_value(&ask).unwrap(), json!({ "kind": "capture", "tab": 3, "format": "jpeg", "quality": 80 }));
+        let png = TabAsk::Capture { tab: 3, format: TabImageFormat::Png, quality: None };
+        assert_eq!(serde_json::to_value(&png).unwrap(), json!({ "kind": "capture", "tab": 3, "format": "png" }), "no quality is no key");
+        assert_eq!(TabImageFormat::Jpeg.data_url_prefix(), "data:image/jpeg;base64,");
     }
 
     #[test]

@@ -637,6 +637,7 @@
     "browser/tab-act": "browser/tab-act",
     "browser/tab-apply": "browser/tab-apply",
     "browser/tab-apply-many": "browser/tab-apply-many",
+    "browser/tab-capture": "browser/tab-capture",
     "browser/tab-close": "browser/tab-close",
     "browser/tab-list": "browser/tab-list",
     "browser/tab-navigate": "browser/tab-navigate",

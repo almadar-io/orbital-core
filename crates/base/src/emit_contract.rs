@@ -138,6 +138,10 @@ pub const TAB_NAVIGATE_SHAPE: &[ShapeField] = &[field("url", "string"), field("k
 pub const TAB_QUERY_SHAPE: &[ShapeField] =
     &[field("tab", "number"), field("elements", "array"), field("key", "string")];
 
+/// `browser/tab-capture` hands back the tab, the image format, the image as bytes, and the call's key.
+pub const TAB_CAPTURE_SHAPE: &[ShapeField] =
+    &[field("tab", "number"), field("format", "string"), field("image", "bytes"), field("key", "string")];
+
 /// `browser/tab-watch` hands back the watch's id and the call's key.
 pub const TAB_WATCH_SHAPE: &[ShapeField] = &[field("watchId", "string"), field("key", "string")];
 
@@ -185,6 +189,7 @@ pub fn tab_success_shape(op: crate::tab::TabOp) -> &'static [ShapeField] {
         TabOp::Apply => TAB_APPLY_SHAPE,
         TabOp::ApplyMany => TAB_APPLY_MANY_SHAPE,
         TabOp::Act => TAB_ACT_SHAPE,
+        TabOp::Capture => TAB_CAPTURE_SHAPE,
     }
 }
 
@@ -756,6 +761,8 @@ mod tests {
         }
         assert_eq!(undeclared_reads(&["tab", "elements", "key"], &success_payload("browser/tab-query", CallVariant::Plain), &[]), Vec::<&str>::new());
         assert_eq!(undeclared_reads(&["tabs"], &success_payload("browser/tab-query", CallVariant::Plain), &[]), vec!["tabs"]);
+        assert_eq!(undeclared_reads(&["tab", "format", "image", "key"], &success_payload("browser/tab-capture", CallVariant::Plain), &[]), Vec::<&str>::new());
+        assert_eq!(undeclared_reads(&["elements"], &success_payload("browser/tab-capture", CallVariant::Plain), &[]), vec!["elements"]);
         assert_eq!(success_payload("browser/tab-nope", CallVariant::Plain), ProducedPayload::Opaque);
     }
 

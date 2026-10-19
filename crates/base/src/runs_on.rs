@@ -44,6 +44,7 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("browser/tab-act", RunsOn::Client),
     ("browser/tab-apply", RunsOn::Client),
     ("browser/tab-apply-many", RunsOn::Client),
+    ("browser/tab-capture", RunsOn::Client),
     ("browser/tab-close", RunsOn::Client),
     ("browser/tab-list", RunsOn::Client),
     ("browser/tab-navigate", RunsOn::Client),

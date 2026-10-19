@@ -1242,7 +1242,7 @@ mod tab_effects {
     // asked only for raw tab and page operations (docs/Almadar_Embedded_Kernel.md D-A92).
 
     use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
-    use orbital_core_base::tab::{TabAsk, TabCommand, TabFailure, TabFailureKind};
+    use orbital_core_base::tab::{TabAsk, TabCommand, TabFailure, TabFailureKind, TabImageFormat};
     use orbital_core_runtime::resumable::{answer_http, IoAnswer, IoReply, IoRequest};
     use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
     use serde_json::{json, Value as Json};
@@ -1359,6 +1359,16 @@ mod tab_effects {
         );
         assert_eq!(tab(&seen[0]), &TabAsk::Open { url: "https://example.com/results?q=a+b".into(), active: false });
         assert_eq!(payload_of(&response, "OK"), json!({ "tab": 99.0, "key": null }));
+    }
+
+    #[test]
+    fn tab_capture_asks_for_the_tab_in_its_format_and_emits_the_image_without_its_data_url_prefix() {
+        let (response, seen) = run(
+            json!(["browser/tab-capture", { "tab": 2, "format": "jpeg", "quality": 70 }, routes()]),
+            |_| reply(json!("data:image/jpeg;base64,/9j/4AAQ")),
+        );
+        assert_eq!(tab(&seen[0]), &TabAsk::Capture { tab: 2, format: TabImageFormat::Jpeg, quality: Some(70) });
+        assert_eq!(payload_of(&response, "OK"), json!({ "tab": 2.0, "format": "jpeg", "image": "/9j/4AAQ", "key": null }));
     }
 
     #[test]
