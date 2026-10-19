@@ -14,7 +14,7 @@ use super::{
 };
 use crate::effects::response::{EventRequest, EventResponse};
 use crate::verify::flows::{AffordanceQuery, AffordanceStep, ReplayQuery, TransientOutcome, TransientQuery};
-use crate::verify::plan_wire::{Credit, CreditStep, Expectation, Observation, PlanOptions, PlanOutcome, VerdictWire};
+use crate::verify::plan_wire::{Credit, CreditStep, Expectation, Observation, PlanOptions, PlanOutcome, PropositionObservation, PropositionVerdict, VerdictWire};
 
 
 use crate::embed::eval_wire::{EvalContextWire, EvalOutcomeWire, EvalTracedWire, GuardOutcomeWire, TraceEffectsWire, MutationOpWire, MutationVerdictWire, RowBindingWire};
@@ -118,6 +118,8 @@ fn kernel_wire_ts() -> String {
     collect.visit::<Expectation>();
     collect.visit::<Observation>();
     collect.visit::<VerdictWire>();
+    collect.visit::<PropositionObservation>();
+    collect.visit::<PropositionVerdict>();
     collect.visit::<CreditStep>();
     collect.visit::<Credit>();
     collect.visit::<AffordanceQuery>();
@@ -516,6 +518,8 @@ fn every_wire_type_is_declared() {
         "Observation",
         "VerdictWire",
         "VerdictReason",
+        "PropositionObservation",
+        "PropositionVerdict",
         "CreditStep",
         "EmitStep",
         "EmitRowBinding",

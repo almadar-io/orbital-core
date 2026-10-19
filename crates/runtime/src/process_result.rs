@@ -87,6 +87,10 @@ pub struct EffectRun {
 #[derive(Debug, Clone)]
 pub struct DeliveryEntry {
     pub entity_before: Value,
+    /// The same layered read after the effects (the row after its persists, the frame with its sets), recorded only
+    /// when the kernel is asked to ([`RuntimeKernel::set_record_entity_after`](crate::kernel::RuntimeKernel)): what a
+    /// transition's `@ensures` is judged on, with `entity_before` as its `@fromEntity`.
+    pub entity_after: Option<Value>,
     pub view: DispatchView,
 }
 

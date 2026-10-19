@@ -77,6 +77,17 @@ pub struct EffectSummary {
     pub routed: Option<String>,
 }
 
+/// A fired transition's `@ensures`, judged on the run (`plan_wire::judge_propositions`).
+#[derive(Debug, Clone, Serialize)]
+pub struct PropositionCheck {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub from: String,
+    pub event: String,
+    pub to: String,
+    pub verdict: crate::verify::plan_wire::PropositionVerdict,
+}
+
 /// One driven step.
 #[derive(Debug, Clone, Serialize)]
 pub struct Frame {
@@ -101,5 +112,8 @@ pub struct Frame {
     /// Transitions the step's dispatch fired after the seed, in order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub fired: Vec<FiredHop>,
+    /// The `@ensures` of the seed and of every hop it fired, judged on this run.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub propositions: Vec<PropositionCheck>,
     pub errors: Vec<String>,
 }

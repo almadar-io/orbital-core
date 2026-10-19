@@ -160,6 +160,7 @@ fn persistor_hop() -> orbital_core_runtime::effects::response::TransitionHop {
         event: "DO_DELETE".to_string(),
         guard_result: None,
         effects: Vec::new(),
+        observed: None,
     }
 }
 
@@ -231,6 +232,7 @@ fn control_a_host_state_for_a_delivered_trait_the_host_ran_is_folded() {
         event: "CONFIRM".to_string(),
         guard_result: None,
         effects: Vec::new(),
+        observed: None,
     };
     k.apply_server_response(&echoed_answer(vec![persistor_hop(), host_ran_delete]), &already_delivered_from(&d)).unwrap();
     assert_eq!(k.get_state("Delete", None).map(|s| s.current_state).as_deref(), Some("confirming"));

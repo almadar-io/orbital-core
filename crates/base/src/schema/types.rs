@@ -1626,6 +1626,9 @@ pub enum ExpectDeclaration {
         from: String,
         event: String,
         to: String,
+        /// `@ensures <expr>`: the outcome contract the provider's transition owes (`@fromEntity` is the row before it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ensures: Option<Vec<SExpression>>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         strict: bool,
     },
@@ -2295,6 +2298,11 @@ pub struct EntityDefinition {
     /// mandatory and gets read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_waivers: Option<AccessWaivers>,
+
+    /// `@invariant <expr>`: every stored row satisfies each, proved by `orb validate` over the program's writes. No
+    /// runtime effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invariants: Option<Vec<SExpression>>,
 }
 
 impl EntityDefinition {
@@ -3161,6 +3169,18 @@ pub struct TraitDefinition {
 }
 
 impl TraitDefinition {
+    /// Every proposition the trait states: each state's `@holds` and each transition's `@ensures`. They read the same
+    /// roots as a guard, so every rewrite of the trait's guards (renames, config fold) applies to them too.
+    pub fn propositions_mut(&mut self) -> impl Iterator<Item = &mut SExpression> {
+        let StateMachine { states, transitions, .. } = &mut self.state_machine;
+        states
+            .iter_mut()
+            .filter_map(|s| s.holds.as_mut())
+            .chain(transitions.iter_mut().flat_map(|t| t.ensures.iter_mut().flatten()))
+    }
+}
+
+impl TraitDefinition {
     /// Client dispatch strategy for this trait — the schema-side entry point
     /// to the same [`crate::runtime::dispatch_mode::compute`] rule
     /// `ir::types::OirTrait::dispatch_mode` calls, so the compiled path and
@@ -3878,6 +3898,8 @@ pub struct PayloadTypeWhen {
 /// Payload field definition
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PayloadField {
+    /// The field's name; empty for a list's or map's element (`items`), which has none.
+    #[serde(default)]
     pub name: String,
     #[serde(rename = "type")]
     pub field_type: String,
@@ -4006,6 +4028,11 @@ pub struct StateDefinition {
     /// state with no time bound.
     #[serde(rename = "timeBoundMs", skip_serializing_if = "Option::is_none")]
     pub time_bound_ms: Option<u64>,
+
+    /// `@holds <expr>`: the trait's `@entity` satisfies it whenever the trait is in this state, proved by
+    /// `orb validate`. No runtime effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holds: Option<SExpression>,
 }
 
 /// Event definition (for documentation)
@@ -4118,6 +4145,11 @@ pub struct TransitionDefinition {
     /// Effects to execute (S-expressions)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effects: Option<Vec<SExpression>>,
+
+    /// `@ensures <expr>`: the outcome contract owed at this transition (`@fromEntity` is the row before it), proved
+    /// by `orb validate` and judged by `orb verify`. No runtime effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ensures: Option<Vec<SExpression>>,
 }
 
 /// String or array of strings (for `from` field)
@@ -4497,6 +4529,41 @@ pub struct DesignHints {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn propositions_on_real_declarations_and_on_the_transition_expectation_round_trip() {
+        use serde_json::json;
+        let ensures = json!([["=", "@entity.balance", ["-", "@fromEntity.balance", "@payload.amount"]]]);
+        let entity = json!({ "name": "Account", "fields": [{ "name": "balance", "type": "number" }], "invariants": [[">=", "@entity.balance", 0.0]] });
+        let state = json!({ "name": "active", "holds": [">=", "@entity.balance", 0.0] });
+        let transition = json!({ "from": "active", "to": "active", "event": "SPEND", "ensures": ensures });
+        let expectation = json!({ "kind": "transition", "traitName": "Wallet", "from": "active", "event": "SPEND", "to": "active", "ensures": ensures, "strict": true });
+        let e: super::EntityDefinition = serde_json::from_value(entity.clone()).unwrap();
+        assert_eq!(e.invariants.as_ref().map(Vec::len), Some(1));
+        assert_eq!(serde_json::to_value(&e).unwrap()["invariants"], entity["invariants"]);
+        let s: super::StateDefinition = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&s).unwrap(), state);
+        let t: super::TransitionDefinition = serde_json::from_value(transition.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&t).unwrap(), transition);
+        let x: super::ExpectDeclaration = serde_json::from_value(expectation.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&x).unwrap(), expectation);
+    }
+
+    #[test]
+    fn control_declarations_without_propositions_serialize_no_proposition_keys() {
+        use serde_json::json;
+        let state = json!({ "name": "idle" });
+        let transition = json!({ "from": "idle", "to": "busy", "event": "GO" });
+        let expectation = json!({ "kind": "transition", "traitName": "T", "from": "idle", "event": "GO", "to": "busy" });
+        let s: super::StateDefinition = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&s).unwrap(), state);
+        let t: super::TransitionDefinition = serde_json::from_value(transition.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&t).unwrap(), transition);
+        let x: super::ExpectDeclaration = serde_json::from_value(expectation.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&x).unwrap(), expectation);
+        let e: super::EntityDefinition = serde_json::from_value(json!({ "name": "A", "fields": [{ "name": "n", "type": "number" }] })).unwrap();
+        assert!(serde_json::to_value(&e).unwrap().get("invariants").is_none());
+    }
+
+    #[test]
     fn a_tick_interval_is_a_duration_only_when_it_is_a_number_or_digits_with_a_known_unit() {
         let tick = |interval: StringOrNumber| TickDefinition { interval, ..serde_json::from_value(serde_json::json!({ "name": "t", "interval": 1, "effects": [] })).unwrap() };
         let text = |s: &str| tick(StringOrNumber::String(s.to_string()));
@@ -4863,6 +4930,7 @@ mod tests {
             update_policy: None,
             delete_policy: None,
             access_waivers: None,
+            invariants: None,
         };
         let serialized = serde_json::to_string(&entity).unwrap();
         assert!(!serialized.contains("shared"));

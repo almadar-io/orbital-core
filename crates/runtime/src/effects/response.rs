@@ -456,6 +456,26 @@ pub struct TransitionHop {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard_result: Option<bool>,
     pub effects: Vec<HopEffect>,
+    /// What a verifier judges the hop's `@ensures` on; present only when the kernel records each step's entity
+    /// after its effects (`set_record_entity_after`, EXEC-STEP-10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed: Option<HopObservation>,
+}
+
+/// A hop as a proposition judge reads it: the arm that fired, the payload it was delivered with, and the trait's
+/// `@entity` at the step's start and after its effects.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HopObservation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fired_arm: Option<usize>,
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub payload: Value,
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub entity_before: Value,
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub entity_after: Value,
 }
 
 impl TransitionHop {
@@ -477,6 +497,14 @@ impl TransitionHop {
                     event,
                     guard_result,
                     effects: result.effect_runs.iter().map(HopEffect::of_run).collect(),
+                    observed: result.entry.as_ref().and_then(|entry| {
+                        Some(HopObservation {
+                            fired_arm: result.fired_arm,
+                            payload: result.payload.clone(),
+                            entity_before: entry.entity_before.clone(),
+                            entity_after: entry.entity_after.clone()?,
+                        })
+                    }),
                 })
             })
             .collect()

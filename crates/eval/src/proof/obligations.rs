@@ -41,7 +41,13 @@ const MAX_PATHS: usize = 64;
 pub enum Proposition {
     Row { entity: String, expr: SExpression },
     State { trait_name: String, state: String, expr: SExpression },
+    /// `@ensures` of the transition `from --event--> to`: holds over the `@entity` after its effects, with
+    /// `@fromEntity` the `@entity` before them.
+    Transition { trait_name: String, from: String, event: String, to: String, expr: SExpression },
 }
+
+/// The root an `@ensures` reads the entity before the transition through.
+pub const FROM_ENTITY: &str = "@fromEntity";
 
 pub struct Obligation {
     pub proposition: Proposition,
@@ -56,23 +62,68 @@ pub struct Obligation {
     pub unbuildable: Option<String>,
 }
 
-/// Every strict spec proposition of the program, once.
+/// Every proposition the program owes, once: each strict spec proposition, and each one written on a real entity,
+/// state or transition. A structurally equal pair is one proposition.
 pub fn propositions(schema: &OrbitalSchema) -> Vec<Proposition> {
     let mut out: Vec<Proposition> = Vec::new();
+    let mut add = |p: Proposition| {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    };
     for orbital in &schema.orbitals {
         for e in orbital.expects.iter().flatten().filter(|e| e.is_strict()) {
-            let found: Vec<Proposition> = match e {
+            match e {
                 ExpectDeclaration::Entity { name, invariants: Some(list), .. } => {
-                    list.iter().map(|expr| Proposition::Row { entity: name.clone(), expr: expr.clone() }).collect()
+                    for expr in list {
+                        add(Proposition::Row { entity: name.clone(), expr: expr.clone() });
+                    }
                 }
                 ExpectDeclaration::State { trait_name, state, holds: Some(expr), .. } => {
-                    vec![Proposition::State { trait_name: trait_name.clone(), state: state.clone(), expr: expr.clone() }]
+                    add(Proposition::State { trait_name: trait_name.clone(), state: state.clone(), expr: expr.clone() });
                 }
-                _ => Vec::new(),
-            };
-            for p in found {
-                if !out.contains(&p) {
-                    out.push(p);
+                ExpectDeclaration::Transition { trait_name, from, event, to, ensures: Some(list), .. } => {
+                    for expr in list {
+                        add(Proposition::Transition {
+                            trait_name: trait_name.clone(),
+                            from: from.clone(),
+                            event: event.clone(),
+                            to: to.clone(),
+                            expr: expr.clone(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        if orbital.is_spec() {
+            continue;
+        }
+        for e in std::iter::once(&orbital.entity).chain(orbital.auxiliary_entities.iter().flatten()) {
+            if let EntityRef::Inline(def) = e {
+                for expr in def.invariants.iter().flatten() {
+                    add(Proposition::Row { entity: def.name.clone(), expr: expr.clone() });
+                }
+            }
+        }
+        for t in &orbital.traits {
+            let TraitReference::Inline(td) = t else { continue };
+            for st in &td.state_machine.states {
+                if let Some(expr) = &st.holds {
+                    add(Proposition::State { trait_name: td.name.clone(), state: st.name.clone(), expr: expr.clone() });
+                }
+            }
+            for tr in &td.state_machine.transitions {
+                for expr in tr.ensures.iter().flatten() {
+                    for from in tr.from.states() {
+                        add(Proposition::Transition {
+                            trait_name: td.name.clone(),
+                            from: from.to_string(),
+                            event: tr.event.clone(),
+                            to: tr.to.clone(),
+                            expr: expr.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -117,6 +168,16 @@ pub fn obligations(schema: &OrbitalSchema) -> Vec<Obligation> {
                         .collect()
                 };
                 program.state_obligations(p, trait_name, state, expr, &Known { rows: &row_invariants, states: &state_holds }, &mut out);
+            }
+            Proposition::Transition { trait_name, from, event, to, expr } => {
+                let source_holds: Vec<SExpression> = props
+                    .iter()
+                    .filter_map(|q| match q {
+                        Proposition::State { trait_name: t, state: s, expr } if t == trait_name && s == from => Some(expr.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                program.transition_obligations(p, (trait_name, from, event, to), expr, &source_holds, &mut out);
             }
         }
     }
@@ -431,6 +492,56 @@ impl<'a> Program<'a> {
                 self.initial_obligations(prop, td, linked, holds, row_invariants, out);
             }
             self.foreign_obligations(prop, td, linked, &set_fields, holds, out);
+        }
+    }
+
+    /// `@ensures` of `from --event--> to`, owed on every effect path of each such transition, assuming its guard,
+    /// the branch conditions and the `@holds` of `from`. The goal reads `@entity` after the effects and `@fromEntity`
+    /// as the `@entity` before them.
+    fn transition_obligations(
+        &self,
+        prop: &Proposition,
+        (trait_name, from, event, to): (&str, &str, &str, &str),
+        ensures: &SExpression,
+        source_holds: &[SExpression],
+        out: &mut Vec<Obligation>,
+    ) {
+        for td in self.traits.iter().filter(|t| t.name == trait_name) {
+            let linked = td.linked_entity.as_deref().and_then(|e| self.entity(e));
+            let set_fields = fields_set_anywhere(td);
+            for step in steps(td) {
+                if step.event != Some(event) || step.to != Some(to) || !step.from.contains(&from) {
+                    continue;
+                }
+                let paths = match run(step.effects, td, step.event, self) {
+                    Ok(paths) => paths,
+                    Err(reason) => {
+                        out.push(unbuildable(prop, &step.site, reason));
+                        continue;
+                    }
+                };
+                for (pi, path) in paths.iter().enumerate() {
+                    let mut notes = path.notes.clone();
+                    let after = frame_after(path, td, linked, &set_fields, &mut notes);
+                    let mut vars = self.base_vars(td, step.event);
+                    if let Some(def) = linked {
+                        add_entity_vars(&mut vars, FETCHED, def, true);
+                    }
+                    let post = subst_fields(ensures, "@entity", &|f| after.get(f).cloned());
+                    let goal = subst_fields(&post, FROM_ENTITY, &|f| Some(bind("@entity", f)));
+                    let mut assumptions: Vec<SExpression> = step.guard.into_iter().cloned().chain(path.conds.iter().cloned()).collect();
+                    assumptions.extend(source_holds.iter().cloned());
+                    out.push(Obligation {
+                        proposition: prop.clone(),
+                        site: format!("{}{}", step.site, path_label(&paths, pi)),
+                        assumptions,
+                        goal,
+                        vars,
+                        inexact: join(&notes),
+                        unbuildable: None,
+                    });
+                }
+            }
         }
     }
 

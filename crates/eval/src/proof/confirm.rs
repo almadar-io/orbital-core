@@ -63,8 +63,21 @@ pub fn roots(model: &Model) -> BTreeMap<String, ValueMap> {
     out
 }
 
-/// Whether the model makes every assumption truthy and the goal falsy in the evaluator.
+fn reads_unresolved(e: &SExpression) -> bool {
+    match e {
+        SExpression::Array(items) => {
+            matches!(items.first(), Some(SExpression::String(h)) if h == super::obligations::UNRESOLVED) || items.iter().any(reads_unresolved)
+        }
+        _ => false,
+    }
+}
+
+/// Whether the model makes every assumption truthy and the goal falsy in the evaluator. A value the prover could not
+/// model is never confirmed, whatever the evaluator makes of its placeholder.
 pub fn confirms(model: &Model, assumptions: &[SExpression], goal: &SExpression) -> bool {
+    if reads_unresolved(goal) || assumptions.iter().any(reads_unresolved) {
+        return false;
+    }
     let mut builder = BindingContextBuilder::new();
     for (root, map) in roots(model) {
         let value = Value::Object(map);

@@ -234,6 +234,8 @@ pub struct RuntimeKernel {
     viewer_by_thread: Arc<RwLock<HashMap<std::thread::ThreadId, Arc<Value>>>>,
     /// The host runs an emit's listeners whenever it marks the emit `dispatched`, so a fold runs only the client-only ones.
     host_fans_out: std::sync::atomic::AtomicBool,
+    /// Record each step's `@entity` after its effects ([`DeliveryEntry::entity_after`]); off unless a verifier asks.
+    record_entity_after: std::sync::atomic::AtomicBool,
     /// The in-flight dispatch's one `now` stamp; set by the outermost entry, reused by nested steps.
     dispatch_now: Arc<RwLock<Option<f64>>>,
     /// The program's declared locales (the first is the default) and merged message catalogs.
@@ -1053,6 +1055,7 @@ impl RuntimeKernel {
             current_user: Arc::new(RwLock::new(current_user)),
             viewer_by_thread: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
+            record_entity_after: std::sync::atomic::AtomicBool::new(false),
             dispatch_now: Arc::new(RwLock::new(None)),
             i18n: Arc::new(RwLock::new(KernelI18n::default())),
             dispatch_locale: Arc::new(RwLock::new(None)),
@@ -1409,6 +1412,10 @@ impl RuntimeKernel {
             self.host_fans_out.load(std::sync::atomic::Ordering::SeqCst),
             std::sync::atomic::Ordering::SeqCst,
         );
+        fork.record_entity_after.store(
+            self.record_entity_after.load(std::sync::atomic::Ordering::SeqCst),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         *fork.schemas.write() = self.schemas.read().clone();
         *fork.trait_homes.write() = self.trait_homes.read().clone();
         *fork.trait_definitions.write() = self.trait_definitions.read().clone();
@@ -1687,6 +1694,12 @@ impl RuntimeKernel {
                     failure = Some(refused);
                 }
             }
+            // Read before the frame write below and before the suspension check, so a read that suspends replays the
+            // step like any other answer it waits for.
+            let entity_after = self
+                .record_entity_after
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .then(|| merge_entity(&self.read_trait_entity(trait_name, entity_type, entity_id), &captured_entity_data));
             if self.io.suspended() {
                 // The transition is committed before its effects' I/O answers: an overlapping dispatch sees the
                 // state it entered. The replay runs the step again from `from` (G-CROSS-259).
@@ -1731,6 +1744,7 @@ impl RuntimeKernel {
                 payload: payload.clone(),
                 entry: Some(DeliveryEntry {
                     entity_before: entity_data,
+                    entity_after,
                     view: view.cloned().unwrap_or_default(),
                 }),
                 fired_arm: result.fired_arm,
@@ -4882,6 +4896,13 @@ impl RuntimeKernel {
     pub fn set_host_fans_out(&self, fans_out: bool) {
         self.host_fans_out
             .store(fans_out, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Record every step's `@entity` after its effects next to the one it read at its start (propositions are judged
+    /// on the pair). Off by default: it reads the row once more per step, and has no effect on what a step does.
+    pub fn set_record_entity_after(&self, record: bool) {
+        self.record_entity_after
+            .store(record, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn set_current_user(&self, user: Value) {

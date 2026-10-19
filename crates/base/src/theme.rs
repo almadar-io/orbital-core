@@ -164,7 +164,7 @@ pub fn theme_keys(definition: &ThemeDefinition) -> Vec<String> {
 }
 
 /// Writes into `schema.themeDefinitions` the presets the program references
-/// (app and orbital `theme` keys) plus the runtime default, from `presets`, so
+/// (app and orbital `theme` keys, the app's `themes`) plus the runtime default, from `presets`, so
 /// a kernel resolves `@currentTheme` from the program alone. An inline theme
 /// needs no entry; an unknown key carries nothing (it resolves as before).
 pub fn carry_theme_definitions(schema: &mut OrbitalSchema, presets: &ThemePresets) {

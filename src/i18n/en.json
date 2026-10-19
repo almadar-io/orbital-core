@@ -51,6 +51,7 @@
     "lazy": "lazy",
     "locales": "locales",
     "egress": "egress",
+    "themes": "themes",
     "public": "public",
     "instances": "instances",
     "access": "access",
@@ -136,7 +137,8 @@
     "icon": "icon",
     "roles": "roles",
     "invariant": "invariant",
-    "holds": "holds"
+    "holds": "holds",
+    "ensures": "ensures"
   },
   "sigils": {
     "entity": "entity",
@@ -151,6 +153,7 @@
     "prevStates": "prevStates",
     "fromState": "fromState",
     "toState": "toState",
+    "fromEntity": "fromEntity",
     "locale": "locale"
   },
   "effects": {
@@ -256,6 +259,9 @@
     "_metadata": "_metadata",
     "_resolved": "_resolved",
     "access_waivers": "access_waivers",
+    "ensures": "ensures",
+    "holds": "holds",
+    "invariants": "invariants",
     "alias": "alias",
     "animations": "animations",
     "appliesTo": "appliesTo",
@@ -541,6 +547,7 @@
     "header": "header",
     "credential": "credential",
     "egress": "egress",
+    "themes": "themes",
     "osGrants": "osGrants",
     "deployment": "deployment"
   },
@@ -727,6 +734,7 @@
     "http": "http",
     "i18n/t": "i18n/t",
     "if": "if",
+    "json/nodes": "json/nodes",
     "json/parse": "json/parse",
     "json/stringify": "json/stringify",
     "json/valid": "json/valid",
@@ -1077,6 +1085,7 @@
     "train/sgd": "train/sgd",
     "train/step": "train/step",
     "train/validate": "train/validate",
+    "typed": "typed",
     "unquote": "unquote",
     "validate/array": "validate/array",
     "validate/boolean": "validate/boolean",

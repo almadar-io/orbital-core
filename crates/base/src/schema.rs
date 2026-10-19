@@ -54,6 +54,9 @@ pub fn normalize_fn_shapes(schema: &mut OrbitalSchema) {
         for tref in &mut orbital.traits {
             match tref {
                 TraitReference::Inline(td) => {
+                    for p in td.propositions_mut() {
+                        p.normalize_fn_shapes();
+                    }
                     for tr in &mut td.state_machine.transitions {
                         if let Some(g) = tr.guard.as_mut() {
                             g.normalize_fn_shapes();

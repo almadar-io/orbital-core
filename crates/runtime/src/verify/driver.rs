@@ -5,7 +5,7 @@
 
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::value::ValueMap;
-use crate::verify::frame::{Cause, EffectSummary, FiredHop, Frame, FrameStatus, GapReason};
+use crate::verify::frame::{Cause, EffectSummary, FiredHop, Frame, FrameStatus, GapReason, PropositionCheck};
 use crate::planner::Variant;
 use crate::verify::plan_wire::{self, Expectation, ObservedEffect, Observation};
 use crate::planner::{self, Step};
@@ -47,6 +47,8 @@ pub struct Harness {
     /// (`V-L1-WALKER-SYNTHETIC-ROW-HAS-NO-OWNER-COLUMN`); [`entity_ctx`](Self::entity_ctx)
     /// shares the same set with entity-typed payload-field synthesis.
     owner_fields: Vec<(String, String)>,
+    /// The program's traits by name, for the `@ensures` of each transition a step fires.
+    traits: BTreeMap<String, TraitDefinition>,
 }
 
 impl Harness {
@@ -54,6 +56,15 @@ impl Harness {
     /// run; render-ui is client-only and passes through for Layer 2).
     pub fn new(schema: OrbitalSchema) -> Result<Self, String> {
         let owner_fields = orbital_core_base::policy::owner_fields_from_schema(&schema);
+        let traits = schema
+            .orbitals
+            .iter()
+            .flat_map(|o| o.traits.iter())
+            .filter_map(|t| match t {
+                orbital_core_base::schema::types::TraitReference::Inline(td) => Some((td.name.clone(), td.clone())),
+                _ => None,
+            })
+            .collect();
         let entities = Arc::new(InMemoryEntityCache::new());
         let kernel = RuntimeKernel::new(
             RuntimeEnvironment::Server,
@@ -63,7 +74,8 @@ impl Harness {
         kernel
             .register_schema(schema)
             .map_err(|e| format!("register_schema: {e}"))?;
-        Ok(Self { kernel, entities, owner_fields })
+        kernel.set_record_entity_after(true);
+        Ok(Self { kernel, entities, owner_fields, traits })
     }
 
     /// Rebind the viewer `@user` resolves to for every subsequent `drive()` call.
@@ -180,12 +192,12 @@ impl Harness {
         let state_before = self.current_state(&step.trait_name, &instance_id);
 
         // The step under test.
-        let (executed, state_after, effects, deferred_bindings, fired_arm, fired) =
+        let ((executed, state_after, effects, deferred_bindings, fired_arm, fired), propositions) =
             match self.fire_walked(&step.trait_name, &instance_id, &step.event, &step.payload) {
                 Ok(tuple) => tuple,
                 Err(e) => {
                     errors.push(format!("process_event: {e}"));
-                    (false, state_before.clone(), Vec::new(), Vec::new(), None, Vec::new())
+                    ((false, state_before.clone(), Vec::new(), Vec::new(), None, Vec::new()), Vec::new())
                 }
             };
 
@@ -221,6 +233,7 @@ impl Harness {
             status,
             gap: None,
             fired,
+            propositions,
             errors,
         }
     }
@@ -246,6 +259,7 @@ impl Harness {
             status,
             gap,
             fired: Vec::new(),
+            propositions: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -274,7 +288,7 @@ impl Harness {
         instance_id: &str,
         event: &str,
         payload: &serde_json::Value,
-    ) -> Result<Fired, String> {
+    ) -> Result<(Fired, Vec<PropositionCheck>), String> {
         let value: Value = serde_json::from_value(payload.clone()).unwrap_or(Value::Null);
         let progress = self
             .kernel
@@ -292,6 +306,7 @@ impl Harness {
             other => store.answer(other),
         })
         .map_err(|e| e.to_string())?;
+        let propositions = outcomes.iter().filter_map(|(t, hop)| self.judge_ensures(t, hop)).collect();
         let mut outcomes = outcomes.into_iter();
         let (_, result) = outcomes
             .next()
@@ -307,7 +322,38 @@ impl Harness {
                 arm: hop.fired_arm,
             })
             .collect();
-        Ok(fired)
+        Ok((fired, propositions))
+    }
+
+    /// The `@ensures` of the arm a fired step took, judged on the rows it read before and after its effects.
+    fn judge_ensures(&self, trait_name: &str, hop: &ProcessEventResult) -> Option<PropositionCheck> {
+        let event = hop.event.as_deref()?;
+        let td = self.traits.get(trait_name)?;
+        let arm = td
+            .state_machine
+            .transitions
+            .iter()
+            .filter(|t| t.event == event && t.from.states().contains(&hop.previous_state.as_str()))
+            .nth(hop.fired_arm?)?;
+        let ensures = arm.ensures.as_deref().filter(|e| !e.is_empty())?;
+        let entry = hop.entry.as_ref();
+        let failed = hop.failure.is_some()
+            || hop.effect_results.iter().any(|r| matches!(r.outcome, EffectOutcome::Failed));
+        let observation = plan_wire::PropositionObservation {
+            executed: hop.executed,
+            failed,
+            entity_before: entry.map(|e| e.entity_before.clone()).unwrap_or(Value::Null),
+            entity_after: entry.and_then(|e| e.entity_after.clone()).unwrap_or(Value::Null),
+            payload: hop.payload.clone(),
+            unobserved: None,
+        };
+        Some(PropositionCheck {
+            trait_name: trait_name.to_string(),
+            from: hop.previous_state.clone(),
+            event: event.to_string(),
+            to: hop.new_state.clone(),
+            verdict: plan_wire::judge_propositions(ensures, &observation),
+        })
     }
 
     fn observe(

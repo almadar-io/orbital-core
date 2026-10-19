@@ -2232,3 +2232,93 @@ fn a_blocking_dispatch_has_no_router_so_the_delivery_is_refused_down() {
     let (_, watch) = outcomes.iter().find(|(name, _)| name == "Watch").expect("the refusal is delivered");
     assert_eq!(j(&watch.payload)["reason"], json!("down"));
 }
+
+/// The `@entity` each fired step read at its start and its layered read after its effects (row after its persists,
+/// frame plus its sets), per hop; `None` after when the kernel was not asked to record it.
+fn entity_views(outcomes: &DispatchOutcomes, field: &str) -> Vec<(String, Option<f64>, Option<Option<f64>>)> {
+    outcomes
+        .iter()
+        .filter(|(_, r)| r.executed)
+        .map(|(t, r)| {
+            let entry = r.entry.as_ref().expect("an executed step carries its entry");
+            let num = |v: &Value| j(v)[field].as_f64();
+            (t.clone(), num(&entry.entity_before), entry.entity_after.as_ref().map(num))
+        })
+        .collect()
+}
+
+fn hand_off_board() -> Setup {
+    let arm = |event: &str, effects: Json| json!({ "from": "idle", "to": "idle", "event": event, "effects": effects });
+    let schema = json!({
+        "name": "views",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Board", "shared": true, "persistence": "runtime",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "score", "type": "number", "default": 0 }] },
+            "traits": [
+                { "name": "Driver", "linkedEntity": "Board", "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [arm("BUMP", json!([["set", "@entity.score", ["+", "@entity.score", 1]], ["emit", "HAND_OFF", {}]]))] } },
+                { "name": "Second", "linkedEntity": "Board",
+                  "listens": [{ "event": "HAND_OFF", "triggers": "ADD", "source": { "kind": "trait", "trait": "Driver" } }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [arm("ADD", json!([["set", "@entity.score", ["+", "@entity.score", 100]]]))] } }
+            ]
+        }]
+    });
+    Setup::new(schema, &["Board"], vec![dispatch("Driver", "BUMP")])
+}
+
+#[test]
+fn each_hop_of_a_cascade_records_the_entity_before_and_after_it() {
+    let setup = hand_off_board();
+    let (kernel, store) = build(&setup, true);
+    kernel.set_record_entity_after(true);
+    let outcomes = drive_blocking(&kernel, start_step(&kernel, &setup.steps[0]), &host_answers(&setup, &store)).unwrap();
+    assert_eq!(
+        entity_views(&outcomes, "score"),
+        vec![
+            ("Driver".to_string(), Some(0.0), Some(Some(1.0))),
+            ("Second".to_string(), Some(1.0), Some(Some(101.0))),
+        ],
+        "hop 2 starts where hop 1 ended"
+    );
+    let hops = orbital_core_runtime::effects::response::TransitionHop::of_outcomes(&outcomes);
+    let seen: Vec<Json> = hops.iter().map(|h| serde_json::to_value(&h.observed).unwrap()).collect();
+    assert_eq!(seen[0]["entityBefore"]["score"], json!(0.0));
+    assert_eq!(seen[0]["entityAfter"]["score"], json!(1.0));
+    assert_eq!(seen[0]["firedArm"], json!(0));
+    assert_eq!(seen[1]["entityAfter"]["score"], json!(101.0), "the listener hop carries its own views");
+}
+
+#[test]
+fn control_without_the_record_a_step_carries_no_after_view() {
+    let setup = hand_off_board();
+    let (kernel, store) = build(&setup, true);
+    let outcomes = drive_blocking(&kernel, start_step(&kernel, &setup.steps[0]), &host_answers(&setup, &store)).unwrap();
+    assert!(entity_views(&outcomes, "score").iter().all(|(_, _, after)| after.is_none()));
+    let hops = orbital_core_runtime::effects::response::TransitionHop::of_outcomes(&outcomes);
+    assert!(hops.iter().all(|h| h.observed.is_none()), "an ordinary dispatch's wire is unchanged");
+}
+
+#[test]
+fn the_after_view_reads_the_row_a_step_persisted() {
+    let schema = json!({
+        "name": "views-row",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "persistence": "persistent", "collection": "notes",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "hits", "type": "number", "default": 0 }] },
+            "traits": [{ "name": "Notes", "linkedEntity": "Note", "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "HIT",
+                    "effects": [["persist", "update", "Note", "singleton", { "hits": ["+", "@entity.hits", 1] }]] }] } }]
+        }]
+    });
+    let setup = Setup::new(schema, &["Note"], vec![dispatch("Notes", "HIT")]);
+    let (kernel, store) = build(&setup, true);
+    store.write("Note", "singleton", &serde_json::from_value(json!({ "id": "singleton", "hits": 4 })).unwrap()).unwrap();
+    kernel.set_record_entity_after(true);
+    let outcomes = drive_blocking(&kernel, start_step(&kernel, &setup.steps[0]), &host_answers(&setup, &store)).unwrap();
+    assert_eq!(entity_views(&outcomes, "hits"), vec![("Notes".to_string(), Some(4.0), Some(Some(5.0)))]);
+}

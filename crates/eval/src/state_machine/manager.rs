@@ -436,6 +436,7 @@ mod tests {
                         is_terminal: None,
                         description: None,
                         time_bound_ms: None,
+                        holds: None,
                     },
                     StateDefinition {
                         name: "registering".to_string(),
@@ -443,6 +444,7 @@ mod tests {
                         is_terminal: None,
                         description: None,
                         time_bound_ms: None,
+                        holds: None,
                     },
                     StateDefinition {
                         name: "viewing".to_string(),
@@ -450,6 +452,7 @@ mod tests {
                         is_terminal: None,
                         description: None,
                         time_bound_ms: None,
+                        holds: None,
                     },
                     StateDefinition {
                         name: "editing".to_string(),
@@ -457,6 +460,7 @@ mod tests {
                         is_terminal: None,
                         description: None,
                         time_bound_ms: None,
+                        holds: None,
                     },
                 ],
                 events: None,
@@ -470,6 +474,7 @@ mod tests {
                         effects: Some(vec![
                             serde_json::from_str(r#"["render-ui", "main", {"type": "form-section"}]"#).unwrap(),
                         ]),
+                        ensures: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("registering".to_string()),
@@ -483,6 +488,7 @@ mod tests {
                             serde_json::from_str(r#"["persist", "create", "User", "@payload.data"]"#).unwrap(),
                             serde_json::from_str(r#"["emit", "USER_REGISTERED", {"userId": "@payload.data.id"}]"#).unwrap(),
                         ]),
+                        ensures: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("registering".to_string()),
@@ -491,6 +497,7 @@ mod tests {
                         event_id: None,
                         guard: None,
                         effects: None,
+                        ensures: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("browsing".to_string()),
@@ -501,6 +508,7 @@ mod tests {
                         effects: Some(vec![
                             serde_json::from_str(r#"["render-ui", "main", {"type": "entity-detail"}]"#).unwrap(),
                         ]),
+                        ensures: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("viewing".to_string()),
@@ -511,6 +519,7 @@ mod tests {
                         effects: Some(vec![
                             serde_json::from_str(r#"["render-ui", "main", {"type": "form-section"}]"#).unwrap(),
                         ]),
+                        ensures: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("editing".to_string()),
@@ -523,6 +532,7 @@ mod tests {
                         effects: Some(vec![
                             serde_json::from_str(r#"["persist", "update", "User", "@entity.id", "@payload.data"]"#).unwrap(),
                         ]),
+                        ensures: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("editing".to_string()),
@@ -531,6 +541,7 @@ mod tests {
                         event_id: None,
                         guard: None,
                         effects: None,
+                        ensures: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("viewing".to_string()),
@@ -539,6 +550,7 @@ mod tests {
                         event_id: None,
                         guard: None,
                         effects: None,
+                        ensures: None,
                     },
                 ],
             },
@@ -919,6 +931,7 @@ mod tests {
                         is_terminal: None,
                         description: None,
                         time_bound_ms: None,
+                        holds: None,
                     },
                     StateDefinition {
                         name: "closed".to_string(),
@@ -926,6 +939,7 @@ mod tests {
                         is_terminal: None,
                         description: None,
                         time_bound_ms: None,
+                        holds: None,
                     },
                 ],
                 events: None,
@@ -941,6 +955,7 @@ mod tests {
                         r#"["set", "@entity.limitSeen", "@config.limit"]"#,
                     )
                     .unwrap()]),
+                    ensures: None,
                 }],
             },
             ticks: None,
