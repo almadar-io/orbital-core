@@ -139,7 +139,6 @@ pub mod runtime {
     pub use orbital_core_runtime::process_result;
     pub use orbital_core_runtime::projected_payload;
     pub use orbital_core_runtime::relations;
-    pub use orbital_core_runtime::relay;
     pub use orbital_core_runtime::resumable;
     pub mod row_query {
         pub use orbital_core_base::row_set::row_set_marker;

@@ -141,3 +141,40 @@ mod runtime_mock_seed {
         assert!(matches!(start(&s), ServerProgress::Await { .. }));
     }
 }
+
+/// The fetch's own result for a by-id miss: what the verifier's judge reads as handled or not (G-ORBITAL-CORE-035).
+fn missed_fetch(fetch_cfg: serde_json::Value) -> orbital_core_base::effect_types::EffectResult {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "sf", "orbitals": [{ "name": "Main",
+            "entity": { "name": "Ticket", "persistence": "persistent", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "T", "linkedEntity": "Ticket", "stateMachine": {
+                "states": [{ "name": "loading", "isInitial": true }, { "name": "error" }],
+                "transitions": [
+                    { "from": "loading", "to": "loading", "event": "OPEN", "effects": [["fetch", "Ticket", fetch_cfg]] },
+                    { "from": "loading", "to": "error", "event": "LOAD_FAILED" }
+                ] } }] }]
+    }))
+    .unwrap();
+    let k = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>, Default::default());
+    k.register_schema(schema).unwrap();
+    let out = k.dispatch("T", None, "OPEN", Value::Null).unwrap();
+    out.iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .find(|er| matches!(er.effect, orbital_core_base::effect_types::Effect::Fetch { .. }))
+        .cloned()
+        .expect("the fetch ran")
+}
+
+#[test]
+fn a_missed_fetch_reports_the_failure_event_it_was_routed_to() {
+    let result = missed_fetch(json!({ "id": "absent", "emit": { "success": "LOADED", "failure": "LOAD_FAILED" } }));
+    assert!(result.is_failed(), "{result:?}");
+    assert_eq!(result.routed_failure().as_deref(), Some("LOAD_FAILED"));
+}
+
+#[test]
+fn control_a_missed_fetch_with_no_failure_route_reports_none() {
+    let result = missed_fetch(json!({ "id": "absent", "emit": { "success": "LOADED" } }));
+    assert!(result.is_failed(), "{result:?}");
+    assert_eq!(result.routed_failure(), None);
+}

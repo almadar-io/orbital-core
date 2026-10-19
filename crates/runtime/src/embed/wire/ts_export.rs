@@ -518,6 +518,7 @@ fn every_wire_type_is_declared() {
         "VerdictReason",
         "CreditStep",
         "EmitStep",
+        "EmitRowBinding",
         "ContractEvents",
         "ContractStep",
         "AffordanceStep",

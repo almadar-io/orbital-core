@@ -240,6 +240,8 @@ pub struct RuntimeKernel {
     i18n: Arc<RwLock<KernelI18n>>,
     /// The in-flight dispatch's viewer locale (`EventRequest.locale`), held by a [`LocaleGuard`].
     dispatch_locale: Arc<RwLock<Option<String>>>,
+    /// The credentials of the program a host names this kernel the console of ([`Self::set_managed_program`]).
+    managed_credentials: Arc<RwLock<Vec<orbital_core_base::secrets::ProgramCredential>>>,
     /// Schema-derived `@read`/`@create`/`@update`/`@delete` directives, keyed
     /// by entity name — populated at `register_schema`, shared with the
     /// `EffectExecutor` (write side) and `EntitySourceHandler` (read side) so
@@ -1054,6 +1056,7 @@ impl RuntimeKernel {
             dispatch_now: Arc::new(RwLock::new(None)),
             i18n: Arc::new(RwLock::new(KernelI18n::default())),
             dispatch_locale: Arc::new(RwLock::new(None)),
+            managed_credentials: Arc::new(RwLock::new(Vec::new())),
             entity_policies,
             embed_index: Arc::new(RwLock::new(EmbedIndex::default())),
             entity_definitions,
@@ -1134,15 +1137,23 @@ impl RuntimeKernel {
         let mut names: Vec<&String> = schemas.keys().collect();
         names.sort();
         let mut found: Vec<orbital_core_base::secrets::ProgramCredential> = Vec::new();
+        let mut add = |credential: orbital_core_base::secrets::ProgramCredential| {
+            if !found.iter().any(|c| c.group == credential.group && c.env_var == credential.env_var) {
+                found.push(credential);
+            }
+        };
         for name in names {
             let program = serde_json::to_value(&schemas[name]).map_err(|e| format!("schema `{name}`: {e}"))?;
-            for credential in orbital_core_base::secrets::program_credentials(&program) {
-                if !found.iter().any(|c| c.group == credential.group && c.env_var == credential.env_var) {
-                    found.push(credential);
-                }
-            }
+            orbital_core_base::secrets::program_credentials(&program).into_iter().for_each(&mut add);
         }
+        self.managed_credentials.read().iter().cloned().for_each(add);
         Ok(found)
+    }
+
+    /// Name the program whose credentials this kernel's credential effects manage beside its own (an integrations
+    /// console serving the app a host shows): its declared credentials join the catalog, replacing the last one named.
+    pub fn set_managed_program(&self, program: &serde_json::Value) {
+        *self.managed_credentials.write() = orbital_core_base::secrets::program_credentials(program);
     }
 
     /// The credential catalog: the registry's services plus the credentials every registered program declares, what a
@@ -1411,6 +1422,7 @@ impl RuntimeKernel {
         *fork.nav_pages.write() = self.nav_pages.read().clone();
         *fork.capture_children.write() = self.capture_children.read().clone();
         *fork.i18n.write() = self.i18n.read().clone();
+        *fork.managed_credentials.write() = self.managed_credentials.read().clone();
         *fork.current_user.write() = self.current_user.read().clone();
         fork.deliveries.write().copy_placement(&self.deliveries.read());
         let schemas = self.schemas.read();
@@ -2257,7 +2269,17 @@ impl RuntimeKernel {
                             target_trait: Some(t.clone()),
                             client_id: client_id.map(|s| s.to_string()),
                             source_trait: emitter.map(str::to_string),
-                            traits: traits.clone(),
+                            // Only the target replays on the host; every other carried trait is held where the
+                            // client left it, or the host's state echo would revert it.
+                            traits: traits.as_ref().map(|carried| {
+                                carried
+                                    .iter()
+                                    .map(|c| match outcomes.iter().find(|(name, _)| name == &c.r#trait) {
+                                        Some((_, ran)) if c.r#trait != *t => TraitFrom { from: ran.new_state.clone(), ..c.clone() },
+                                        _ => c.clone(),
+                                    })
+                                    .collect()
+                            }),
                             entity_by_trait: (!entry.entity_before.is_null()).then(|| {
                                 ValueMap::from([(t.clone(), entry.entity_before.clone())])
                             }),
@@ -3355,13 +3377,18 @@ impl RuntimeKernel {
                 }
             }
             if let Some(result) = run_results.remove(&index) {
-                let completion = match orbital_core_base::effect_types::parse_effect(effect_expr) {
+                let declared = orbital_core_base::effect_types::parse_effect(effect_expr);
+                let result = match declared.as_ref().and_then(Effect::emit_routes) {
+                    Some(routes) => result.with_declared_routes(routes),
+                    None => result,
+                };
+                let completion = match declared {
                     Some(effect @ Effect::Persist { .. }) => match &effect {
                         Effect::Persist {
                             emit: Some(persist_emit),
                             ..
                         } if !persist_emit.is_empty() => {
-                            persist_completion_emit(persist_emit, &effect, &result)
+                            persist_completion_emit(persist_emit, &effect, &result, ctx)
                         }
                         _ => None,
                     },
@@ -3619,7 +3646,7 @@ impl RuntimeKernel {
                     emit: Some(fetch_emit),
                     ..
                 } if !fetch_emit.is_empty() => {
-                    let result = self.effect_executor.execute(&effect, ctx);
+                    let result = self.effect_executor.execute(&effect, ctx).with_declared_routes(fetch_emit);
                     let completion = fetch_completion_emit(fetch_emit, &result);
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
@@ -3628,8 +3655,8 @@ impl RuntimeKernel {
                     emit: Some(persist_emit),
                     ..
                 } if !persist_emit.is_empty() => {
-                    let result = self.effect_executor.execute(&effect, ctx);
-                    let completion = persist_completion_emit(persist_emit, &effect, &result);
+                    let result = self.effect_executor.execute(&effect, ctx).with_declared_routes(persist_emit);
+                    let completion = persist_completion_emit(persist_emit, &effect, &result, ctx);
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -3637,8 +3664,8 @@ impl RuntimeKernel {
                     emit: Some(batch_emit),
                     ..
                 } if !batch_emit.is_empty() => {
-                    let result = self.effect_executor.execute(&effect, ctx);
-                    let completion = persist_completion_emit(batch_emit, &effect, &result);
+                    let result = self.effect_executor.execute(&effect, ctx).with_declared_routes(batch_emit);
+                    let completion = persist_completion_emit(batch_emit, &effect, &result, ctx);
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -5795,6 +5822,9 @@ fn resolved_or_failed(
 /// effect's failure, as it is when the JS executor throws.
 fn resolve_effect_result(result: EffectResult, ctx: &BindingContext) -> EffectResult {
     let mut result = result;
+    if resolved_when_run(&result.effect) {
+        return result;
+    }
     match resolve_effect_bindings(result.effect.clone(), ctx) {
         Ok(effect) => {
             result.effect = effect;
@@ -5802,6 +5832,27 @@ fn resolve_effect_result(result: EffectResult, ctx: &BindingContext) -> EffectRe
         }
         Err(fault) => EffectResult::failed(result.effect, &OrbitalError::Eval(fault).to_string()),
     }
+}
+
+/// An effect already resolved when it ran — every `emit` (its payload at emit time; a completion's is data) and
+/// each kind `exec_leaf_effect` passes through `resolved_or_failed`. Resolving it again would evaluate its data
+/// as code: a `(quote x)` payload's operator-headed lists, a row that holds an expression.
+fn resolved_when_run(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::Emit { .. }
+            | Effect::CallService { .. }
+            | Effect::Http { .. }
+            | Effect::Redis { .. }
+            | Effect::Postgres { .. }
+            | Effect::Os { .. }
+            | Effect::BrowserBeacon { .. }
+            | Effect::BrowserPrompt { .. }
+            | Effect::BrowserTab { .. }
+            | Effect::BrowserPageFacts { .. }
+            | Effect::CancelCall { .. }
+            | Effect::CredentialAdmin { .. }
+    )
 }
 
 /// A failed `os/` effect: its failure payload (`{ error, kind }`) rides the result's value.
@@ -6246,6 +6297,7 @@ fn persist_completion_emit(
     emit: &FetchEmit,
     effect: &Effect,
     result: &EffectResult,
+    ctx: &BindingContext,
 ) -> Option<EffectResult> {
     let (event, payload) = match result.outcome {
         EffectOutcome::Failed => {
@@ -6270,9 +6322,10 @@ fn persist_completion_emit(
                     ..
                 } => {
                     let mut payload = ValueMap::new();
+                    // The declared id is a binding (`@payload.id`): the payload carries the id it named.
                     payload.insert(
                         "id".to_string(),
-                        id.clone().map_or(Value::Null, Value::String),
+                        id.clone().map_or(Value::Null, |id| ctx.resolve_value(&Value::String(id)).into_owned()),
                     );
                     payload.insert("deleted".to_string(), Value::Bool(true));
                     Value::Object(payload)

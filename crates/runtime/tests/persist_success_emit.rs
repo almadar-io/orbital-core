@@ -25,6 +25,7 @@ fn kernel() -> RuntimeKernel {
                         arm("CREATE", json!([["persist", "create", "Note", { "id": "n1", "title": "first" }, emit]])),
                         arm("UPDATE", json!([["persist", "update", "Note", { "id": "n1", "title": "second" }, emit]])),
                         arm("DELETE", json!([["persist", "delete", "Note", "n1", emit]])),
+                        arm("DELETE_PICKED", json!([["persist", "delete", "Note", "@payload.id", emit]])),
                         arm("SILENT", json!([["persist", "create", "Note", { "id": "n2", "title": "quiet" }]])),
                         arm("ANON", json!([["persist", "create", "Note", { "title": "no id" }, emit]]))
                     ]
@@ -203,3 +204,25 @@ fn the_settled_response_lists_each_emit_among_the_effect_results() {
 fn control_an_effect_with_no_emit_lists_no_emit_result() {
     assert_eq!(emit_results(&kernel(), "SILENT"), Vec::<Json>::new());
 }
+
+fn send_with(k: &RuntimeKernel, event: &str, payload: Json) -> Vec<(String, Json)> {
+    k.dispatch("Notes", None, event, serde_json::from_value(payload).unwrap())
+        .unwrap()
+        .iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .filter_map(|er| match &er.effect {
+            Effect::Emit { event, payload } => Some((event.clone(), serde_json::to_value(payload).unwrap())),
+            _ => None,
+        })
+        .collect()
+}
+
+// The delete's success carries the id it deleted, never the binding it was declared with.
+#[test]
+fn a_delete_by_a_bound_id_fires_success_with_that_id() {
+    let k = kernel();
+    send(&k, "CREATE");
+    let emits = send_with(&k, "DELETE_PICKED", json!({ "id": "n1" }));
+    assert!(emits.contains(&("SAVED".to_string(), json!({ "id": "n1", "deleted": true }))), "{emits:?}");
+}
+

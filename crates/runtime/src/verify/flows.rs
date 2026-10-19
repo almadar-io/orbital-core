@@ -10,7 +10,7 @@ use orbital_core_base::schema::types::TraitDefinition;
 use orbital_core_base::schema::types::OrbitalSchema;
 use serde::{Deserialize, Serialize};
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmitStep {
@@ -22,6 +22,47 @@ pub struct EmitStep {
     pub payload: serde_json::Value,
     pub navigates: bool,
     pub coverage_key: String,
+    /// A listener persists an update or delete keyed by this emit's payload: the host binds a real row there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bind_row: Option<EmitRowBinding>,
+}
+
+/// The emitted payload field a listener's persist reads as its target row (`whole_row`: the field carries the row).
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmitRowBinding {
+    pub entity: String,
+    pub payload_field: String,
+    pub whole_row: bool,
+    /// A delete's restrict relations: the host binds a row nothing references.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub avoid_referenced_via: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub avoid_referenced_by_other_entities: Vec<InboundRelation>,
+}
+
+/// The row a listener of `event` from `td` writes by an id the emit carries, as an emitted payload field.
+fn emit_row_binding(schema: &OrbitalSchema, td: &TraitDefinition, event: &str) -> Option<EmitRowBinding> {
+    planner::listeners_of(schema, td, event).into_iter().find_map(|heard| {
+        heard.trait_def.state_machine.transitions.iter().filter(|t| t.event == heard.triggers).find_map(|arm| {
+            let (entity, kind, _) = find_persist_kind(arm.effects.as_deref().unwrap_or(&[]))?;
+            if kind == MutationKind::Create {
+                return None;
+            }
+            let binding = persist_binding(heard.trait_def, arm, &entity)?;
+            let payload_field = match &heard.listen.payload_mapping {
+                None => binding.payload_field,
+                Some(mapping) => match mapping.get(&binding.payload_field)? {
+                    SExpression::String(text) => bare_payload_field(text)?.to_string(),
+                    _ => return None,
+                },
+            };
+            let (avoid_referenced_via, avoid_referenced_by_other_entities) =
+                if kind == MutationKind::Delete { inbound_restrict(schema, &entity) } else { (Vec::new(), Vec::new()) };
+            Some(EmitRowBinding { entity, payload_field, whole_row: binding.whole_row, avoid_referenced_via, avoid_referenced_by_other_entities })
+        })
+    })
 }
 
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -1117,6 +1158,7 @@ pub fn plan_emit_sweep(schema: &OrbitalSchema, options: &PlanOptions) -> Vec<Emi
                 trait_name: td.name.clone(),
                 from: initial.clone(),
                 navigates: planner::dispatch_navigates(schema, td, &event),
+                bind_row: emit_row_binding(schema, td, &event),
                 coverage_key: format!("{}:{initial}+{event}->{initial}[emit]", td.name),
                 event,
                 payload,
@@ -1270,6 +1312,81 @@ mod tests {
         assert_eq!(loaded.coverage_key, "Runner:idle+LOADED->idle[emit]");
         assert!(loaded.payload["count"].is_number(), "payload is built from the event's declared schema: {}", loaded.payload);
         assert!(!loaded.navigates);
+    }
+
+    fn confirm_schema(persist: serde_json::Value, mapping: Option<serde_json::Value>) -> OrbitalSchema {
+        let mut listen = json!({ "event": "CONFIRM", "triggers": "DO_IT", "source": { "kind": "trait", "trait": "Confirm" } });
+        if let Some(mapping) = mapping {
+            listen["payloadMapping"] = mapping;
+        }
+        serde_json::from_value(json!({
+            "name": "Crm",
+            "orbitals": [{
+                "name": "ContactOrbital",
+                "entity": { "name": "Contact", "persistence": "persistent", "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] },
+                "traits": [
+                    { "name": "Confirm", "linkedEntity": "Contact",
+                      "emits": [
+                          { "event": "CONFIRM", "scope": "external", "payloadSchema": [{ "name": "id", "type": "string" }] },
+                          { "event": "CANCEL", "scope": "external" }],
+                      "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "confirming" }],
+                        "transitions": [
+                            { "from": "idle", "to": "confirming", "event": "REQUEST" },
+                            { "from": "confirming", "to": "idle", "event": "CONFIRM" },
+                            { "from": "confirming", "to": "idle", "event": "CANCEL" }] } },
+                    { "name": "Persistor", "linkedEntity": "Contact",
+                      "listens": [listen],
+                      "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "DO_IT", "effects": [persist] }] } }
+                ]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn sweep_of(schema: &OrbitalSchema, event: &str) -> EmitStep {
+        plan_emit_sweep(schema, &PlanOptions::default()).into_iter().find(|s| s.event == event).expect("the emit is swept")
+    }
+
+    #[test]
+    fn an_emit_a_listener_persists_by_id_binds_the_row_it_names() {
+        let schema = confirm_schema(json!(["persist", "delete", "Contact", "@payload.id"]), None);
+        assert_eq!(
+            sweep_of(&schema, "CONFIRM").bind_row,
+            Some(EmitRowBinding { entity: "Contact".into(), payload_field: "id".into(), whole_row: false, avoid_referenced_via: Vec::new(), avoid_referenced_by_other_entities: Vec::new() })
+        );
+    }
+
+    #[test]
+    fn control_an_emit_no_listener_writes_by_id_binds_no_row() {
+        let delete = confirm_schema(json!(["persist", "delete", "Contact", "@payload.id"]), None);
+        assert_eq!(sweep_of(&delete, "CANCEL").bind_row, None, "no listener hears CANCEL");
+        let create = confirm_schema(json!(["persist", "create", "Contact", { "name": "@payload.id" }]), None);
+        assert_eq!(sweep_of(&create, "CONFIRM").bind_row, None, "a create names no existing row");
+        let computed = confirm_schema(json!(["persist", "delete", "Contact", "@payload.id"]), Some(json!({ "id": ["str/concat", "@payload.id", "-x"] })));
+        assert_eq!(sweep_of(&computed, "CONFIRM").bind_row, None, "a computed mapping names no emitted field");
+    }
+
+    #[test]
+    fn a_delete_binding_avoids_rows_a_restrict_relation_references() {
+        let mut program = serde_json::to_value(confirm_schema(json!(["persist", "delete", "Contact", "@payload.id"]), None)).unwrap();
+        program["orbitals"][0]["auxiliaryEntities"] = json!([{ "name": "Deal", "persistence": "runtime", "fields": [
+            { "name": "id", "type": "string" },
+            { "name": "contactId", "type": "relation", "relation": { "entity": "Contact", "cardinality": "many-to-one" } }] }]);
+        let schema: OrbitalSchema = serde_json::from_value(program).unwrap();
+        let binding = sweep_of(&schema, "CONFIRM").bind_row.expect("the delete binds a row");
+        assert_eq!(binding.avoid_referenced_by_other_entities, vec![InboundRelation { entity: "Deal".into(), field: "contactId".into() }]);
+    }
+
+    #[test]
+    fn a_mapped_listen_binds_the_emitter_field_its_mapping_reads() {
+        let mapped = confirm_schema(json!(["persist", "delete", "Contact", "@payload.id"]), Some(json!({ "id": "@payload.contactId" })));
+        assert_eq!(
+            sweep_of(&mapped, "CONFIRM").bind_row,
+            Some(EmitRowBinding { entity: "Contact".into(), payload_field: "contactId".into(), whole_row: false, avoid_referenced_via: Vec::new(), avoid_referenced_by_other_entities: Vec::new() })
+        );
     }
 
     #[test]

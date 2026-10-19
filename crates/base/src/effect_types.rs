@@ -385,6 +385,78 @@ pub enum Effect {
 pub const CLIENT_EFFECT_KINDS: &[&str] = &["render-ui", "navigate", "navigate-back", "emit"];
 
 impl Effect {
+    /// The effect's `emit` slot; `None` for a kind that declares no completion events.
+    fn emit_slot(&mut self) -> Option<&mut Option<FetchEmit>> {
+        match self {
+            Effect::Persist { emit, .. }
+            | Effect::PersistBatch { emit, .. }
+            | Effect::CallService { emit, .. }
+            | Effect::Http { emit, .. }
+            | Effect::Redis { emit, .. }
+            | Effect::Postgres { emit, .. }
+            | Effect::RandomBytes { emit, .. }
+            | Effect::Os { emit, .. }
+            | Effect::CredentialStatus { emit, .. }
+            | Effect::CredentialForget { emit, .. }
+            | Effect::CredentialAdmin { emit, .. }
+            | Effect::OAuthAuthorize { emit, .. }
+            | Effect::OAuthConnectionStatus { emit, .. }
+            | Effect::OAuthConnectionForget { emit, .. }
+            | Effect::Fetch { emit, .. }
+            | Effect::BrowserPageFacts { emit, .. }
+            | Effect::BrowserBeacon { emit, .. }
+            | Effect::BrowserPrompt { emit, .. }
+            | Effect::BrowserEmbed { emit, .. }
+            | Effect::BrowserTab { emit, .. }
+            | Effect::Custom { emit, .. } => Some(emit),
+            Effect::Emit { .. }
+            | Effect::Set { .. }
+            | Effect::CancelCall { .. }
+            | Effect::RenderUi { .. }
+            | Effect::Navigate { .. }
+            | Effect::NavigateBack
+            | Effect::Spawn { .. }
+            | Effect::Despawn { .. }
+            | Effect::Log { .. } => None,
+        }
+    }
+
+    /// The completion events this effect declares (`emit: { success, failure, … }`); `None` for a kind that takes none.
+    pub fn emit_routes(&self) -> Option<&FetchEmit> {
+        match self {
+            Effect::Persist { emit, .. }
+            | Effect::PersistBatch { emit, .. }
+            | Effect::CallService { emit, .. }
+            | Effect::Http { emit, .. }
+            | Effect::Redis { emit, .. }
+            | Effect::Postgres { emit, .. }
+            | Effect::RandomBytes { emit, .. }
+            | Effect::Os { emit, .. }
+            | Effect::CredentialStatus { emit, .. }
+            | Effect::CredentialForget { emit, .. }
+            | Effect::CredentialAdmin { emit, .. }
+            | Effect::OAuthAuthorize { emit, .. }
+            | Effect::OAuthConnectionStatus { emit, .. }
+            | Effect::OAuthConnectionForget { emit, .. }
+            | Effect::Fetch { emit, .. }
+            | Effect::BrowserPageFacts { emit, .. }
+            | Effect::BrowserBeacon { emit, .. }
+            | Effect::BrowserPrompt { emit, .. }
+            | Effect::BrowserEmbed { emit, .. }
+            | Effect::BrowserTab { emit, .. }
+            | Effect::Custom { emit, .. } => emit.as_ref(),
+            Effect::Emit { .. }
+            | Effect::Set { .. }
+            | Effect::CancelCall { .. }
+            | Effect::RenderUi { .. }
+            | Effect::Navigate { .. }
+            | Effect::NavigateBack
+            | Effect::Spawn { .. }
+            | Effect::Despawn { .. }
+            | Effect::Log { .. } => None,
+        }
+    }
+
     /// What an `http` effect reaches, `"<METHOD> <origin><path>"`: the one spelling every verifier and host reads.
     pub fn http_target(&self) -> Option<String> {
         match self {
@@ -657,23 +729,25 @@ impl EffectResult {
         self
     }
 
+    /// This result, its effect carrying the completion events the declared effect routes to: an executor that
+    /// rebuilds the effect it ran (a `fetch`'s resolved query) drops them, and [`Self::routed_failure`] reads them.
+    pub fn with_declared_routes(mut self, emit: &FetchEmit) -> Self {
+        if let Some(slot) = self.effect.emit_slot() {
+            *slot = Some(emit.clone());
+        }
+        self
+    }
+
     pub fn as_persist_success(mut self) -> Self {
         self.persist_success = true;
         self
     }
 
-    /// The declared `emit.failure` event an `http` effect's failure was routed to; `None` for a success, an
-    /// effect that is not `http`, or a call that declares none.
+    /// The declared `emit.failure` event this effect's failure was routed to; `None` for a success or an effect
+    /// that declares no failure route. The kernel fires that event, so the failure is a handled outcome.
     pub fn routed_failure(&self) -> Option<String> {
-        match (&self.effect, &self.outcome) {
-            (
-                Effect::Http { emit: Some(emit), .. }
-                | Effect::Redis { emit: Some(emit), .. }
-                | Effect::Postgres { emit: Some(emit), .. },
-                EffectOutcome::Failed,
-            ) => {
-                emit.failure.clone()
-            }
+        match self.outcome {
+            EffectOutcome::Failed => self.effect.emit_routes()?.failure.clone(),
             _ => None,
         }
     }
@@ -1494,6 +1568,38 @@ fn parse_log(args: &[SExpression]) -> Option<Effect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn failed_with(src: &str) -> EffectResult {
+        EffectResult::failed(parse_effect(&serde_json::from_str::<SExpression>(src).unwrap()).unwrap(), "no row")
+    }
+
+    // A failure the program routed to its declared `emit.failure` is handled, whatever the effect's kind (G-ORBITAL-CORE-035).
+    #[test]
+    fn a_failure_routed_to_a_declared_event_is_handled_for_every_effect_kind() {
+        for src in [
+            r#"["fetch", "Contact", {"id": "x", "emit": {"success": "LOADED", "failure": "LOAD_FAILED"}}]"#,
+            r#"["persist", "create", "Contact", {"name": "a"}, {"emit": {"failure": "LOAD_FAILED"}}]"#,
+        ] {
+            assert_eq!(failed_with(src).routed_failure().as_deref(), Some("LOAD_FAILED"), "{src}");
+        }
+    }
+
+    #[test]
+    fn control_a_failure_with_no_declared_failure_route_is_not_handled() {
+        for src in [
+            r#"["fetch", "Contact", {"id": "x", "emit": {"success": "LOADED"}}]"#,
+            r#"["fetch", "Contact", {"id": "x"}]"#,
+            r#"["persist", "create", "Contact", {"name": "a"}]"#,
+        ] {
+            assert_eq!(failed_with(src).routed_failure(), None, "{src}");
+        }
+    }
+
+    #[test]
+    fn edge_a_success_is_never_a_routed_failure() {
+        let fetch = parse_effect(&serde_json::from_str::<SExpression>(r#"["fetch", "Contact", {"emit": {"failure": "LOAD_FAILED"}}]"#).unwrap()).unwrap();
+        assert_eq!(EffectResult::executed(fetch).routed_failure(), None);
+    }
 
     #[test]
     fn test_parse_emit_effect() {

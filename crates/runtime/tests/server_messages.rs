@@ -124,3 +124,26 @@ fn control_without_installed_messages_the_render_fails_and_paints_nothing() {
     let rejections = serde_json::to_string(&response.rejections).unwrap();
     assert!(rejections.contains("effect-failed"), "{rejections}");
 }
+
+// The client role paints the same `i18n/t` locally, from the catalogs its host installs (a browser kernel has no
+// program files to read them from).
+fn client_init(kernel: &orbital_core_runtime::embed::EmbeddedKernel) -> EventResponse {
+    kernel.dispatch("HomePage", None, "INIT", orbital_core_base::value::Value::Null).unwrap().response
+}
+
+#[test]
+fn the_client_role_paints_the_catalogs_its_host_installs() {
+    let kernel = orbital_core_runtime::embed::EmbeddedKernel::new(schema(), "c1").unwrap();
+    kernel.set_messages(vec!["ar".into()], catalogs());
+    let page = serde_json::to_string(&client_init(&kernel).client_effects).unwrap();
+    assert!(page.contains("مرحبا"), "{page}");
+    assert!(page.contains("\"content\":\"ar\""), "{page}");
+}
+
+#[test]
+fn control_a_client_role_without_installed_messages_fails_the_render() {
+    let kernel = orbital_core_runtime::embed::EmbeddedKernel::new(schema(), "c1").unwrap();
+    let response = client_init(&kernel);
+    let rejections = serde_json::to_string(&response.rejections).unwrap();
+    assert!(rejections.contains("effect-failed"), "{rejections}");
+}

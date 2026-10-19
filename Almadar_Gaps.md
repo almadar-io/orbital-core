@@ -11,7 +11,6 @@ Every open gap this repo owns lives here. This file is the source of truth; the 
 
 Next code: `G-ORBITAL-CORE-036`
 
-- **G-ORBITAL-CORE-035** — The Layer-1 judge counts a failed `fetch` (and `persist`) as a genuine offender even when the effect declares an `emit.failure` route: `EffectResult::routed_failure` (`base/src/effect_types.rs`) answers only for `http`/`redis`/`postgres`, and both `verify/observers.rs` `effects_fired` and `verify/plan_wire.rs` (`EffectFailed`) read it. `orbital-verify` `tests/smoke.rs` `verifies_std_crm_kernel_circuit` is red on it: `std-record-detail` `RecordItemDetail` INIT carries the `!=` witness id `-other` (`eval/src/proof/witness.rs`), `fetch Contact` fails `Contact -other not found` into its declared `RecordItemLoadFailed`, and ContactDetail/NoteViewer/ProposalDetail report `loading--INIT-->loading` plus 9 `effects_fired` offenders (checkpoint run 2026-10-18 night; the test has been red in earlier sessions with other offenders). Owner call: does a declared `emit.failure` make every effect kind's failure handled (one rule, `routed_failure` over every effect carrying `emit`), or only the I/O kinds (then the walker must not plan an INIT whose witness id names no row)? Either changes verdicts the verifier-efficacy fixtures pin, so it is decided before it is coded. `orbital-core-runtime` verify + `orbital-core-base` [owner-decision] — prevention rung: `orb verify` (the judge itself).
 
 
 
@@ -26,5 +25,5 @@ Next code: `G-ORBITAL-CORE-036`
 
 - **G-ORBITAL-CORE-017** — `Value::loose_eq` still coerces `1` = `"1"` and `true` = `1` (base `value.rs`), used by `array/includes`, `array/unique`, `array/index-of`, `validate/oneOf|noneOf`; `=` is type-checked first but these are not. EXEC-EVAL-1 dropped loose equality for operators, so the remaining arms are a drift. Owner: `base/src/value.rs`. Corpus check needed before removing. [mechanical]
 
-- **G-ORBITAL-CORE-018** — The JS interpreter `@almadar/evaluator` `std/validate.ts` still carries its own `validate/email|url` (regex, `new URL`), diverging from the kernel's `pattern` of `canonical-operators.json` (`@almadar/core` `SEMANTIC_STRING_PATTERNS`). Not extended (kernel-only); retires with the interpreter. Owner: `packages/almadar-evaluator/std/validate.ts`. [owner-decision]
+
 

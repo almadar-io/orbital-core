@@ -179,6 +179,12 @@ impl EmbeddedServer {
     pub fn seed_runtime_mock(&self, viewer_id: Option<String>) {
         self.kernel.seed_runtime_mock(viewer_id);
     }
+    /// Name the program whose declared credentials this server's credential effects manage
+    /// ([`RuntimeKernel::set_managed_program`]).
+    pub fn set_managed_program(&self, program: &serde_json::Value) {
+        self.kernel.set_managed_program(program);
+    }
+
     /// The viewer a request that names none runs as.
     pub fn set_default_user(&self, user: Value) {
         *self.default_user.lock() = user;

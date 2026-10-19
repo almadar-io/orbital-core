@@ -154,7 +154,7 @@ pub struct ServerEffectResult {
     /// What an `http` effect reached, `"<METHOD> <origin><path>"`; only on `ServerEffectKind::Http`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    /// The declared `emit.failure` event a failed `http` effect was routed to; absent when it declares none.
+    /// The declared `emit.failure` event a failed effect was routed to (the kernel fired it, so the failure is handled); absent when it declares none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routed: Option<String>,
 }
@@ -855,6 +855,10 @@ fn dedup_rows_by_id(data: &mut HashMap<String, Vec<Value>>) {
 /// `None` for effects with no server-effect wire form (client-targeted or internal-only
 /// kinds — `render-ui`/`navigate`/`navigate-back`/`emit`/`log`/`spawn`/`despawn`/`custom`).
 fn server_effect_result(er: &EffectResult) -> Option<ServerEffectResult> {
+    // The host runs a delegated effect and reports its own verdict (`with_server_effect_results`).
+    if matches!(er.outcome, EffectOutcome::Delegated(_)) {
+        return None;
+    }
     let (kind, entity_type, action) = match &er.effect {
         Effect::Set { path, .. } => (ServerEffectKind::Set, None, Some(path.clone())),
         Effect::Persist {
@@ -1206,6 +1210,37 @@ mod tests {
         let resp = EventResponse::success("idle");
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json.get("emittedEvents"), Some(&serde_json::json!([])));
+    }
+
+    fn delete_contact() -> Effect {
+        Effect::Persist {
+            operation: orbital_core_base::effect_types::PersistOperation::Delete,
+            entity_type: "Contact".to_string(),
+            data: Value::Null,
+            id: Some("c1".to_string()),
+            emit: None,
+        }
+    }
+
+    #[test]
+    fn a_persist_delegated_to_the_host_reports_no_result_of_its_own() {
+        let mut result = empty_result("idle", true);
+        result.effect_results = vec![EffectResult::delegated(
+            delete_contact(),
+            orbital_core_base::effect_types::RuntimeEnvironment::Server,
+        )];
+        let resp = EventResponse::from_process_results(&[("Persistor".to_string(), result)], "Persistor", "DO_DELETE");
+        assert!(resp.effect_results.unwrap_or_default().is_empty());
+    }
+
+    #[test]
+    fn control_a_persist_that_failed_here_still_reports_failure() {
+        let mut result = empty_result("idle", true);
+        result.effect_results = vec![EffectResult::failed(delete_contact(), "Contact c1 not found")];
+        let resp = EventResponse::from_process_results(&[("Persistor".to_string(), result)], "Persistor", "DO_DELETE");
+        let results = resp.effect_results.expect("a failed persist is reported");
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].success);
     }
 
     #[test]

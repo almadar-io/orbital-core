@@ -45,9 +45,16 @@ fn signed_in() -> Option<Json> {
 fn run(
     effect: Json,
     request: EventRequest,
+    host: impl FnMut(&IoRequest) -> IoAnswer,
+) -> (EventResponse, Vec<IoRequest>) {
+    run_on(EmbeddedServer::new(schema(effect)).unwrap(), request, host)
+}
+
+fn run_on(
+    server: EmbeddedServer,
+    request: EventRequest,
     mut host: impl FnMut(&IoRequest) -> IoAnswer,
 ) -> (EventResponse, Vec<IoRequest>) {
-    let server = EmbeddedServer::new(schema(effect)).unwrap();
     let mut seen = Vec::new();
     let mut progress = server.start("Main", request).unwrap();
     loop {
@@ -469,6 +476,61 @@ mod credential_admin_effects {
             secret_none(request).unwrap_or_else(|| panic!("anonymous asks nothing more, asked {request:?}"))
         });
         assert_eq!(payload_of(&anonymous, "BAD")["code"], "AUTH_ERROR");
+    }
+
+    /// The app a console manages: its `github` orbital reads the `GITHUB_TOKEN` secret knob in an `http` auth slot.
+    fn shown_program() -> Json {
+        json!({ "name": "shop", "orbitals": [{ "name": "github", "traits": [{
+            "name": "Repo", "config": { "token": { "type": "secret", "default": "GITHUB_TOKEN" } },
+            "stateMachine": { "transitions": [{ "from": "idle", "to": "idle", "event": "SYNC", "effects": [
+                ["http", "GET", "https://api.github.com", "/user", { "auth": { "scheme": "bearer", "credential": "@config.token" } }, { "emit": { "success": "OK" } }]
+            ] }] }
+        }] }] })
+    }
+
+    fn set_github_token(server: EmbeddedServer) -> (EventResponse, Vec<IoRequest>) {
+        run_on(server, go(admin()), |request| {
+            secret_none(request).unwrap_or_else(|| match request {
+                IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(Some(
+                    orbital_core_runtime::credential_admin::StoreListing { enabled: true, entries: Vec::new() },
+                ))),
+                IoRequest::CredentialStoreWrite { .. } => IoAnswer::CredentialStoreWrite(Ok(())),
+                other => panic!("the fixture asks for {other:?}"),
+            })
+        })
+    }
+
+    fn console() -> EmbeddedServer {
+        EmbeddedServer::new(schema(json!(["credential-set", {"service": "github", "envVar": "GITHUB_TOKEN", "value": "ghp-token-9876"}, routes()]))).unwrap()
+    }
+
+    // The integrations console manages the credentials of the app the host names (G-PLAYGROUND-RUNTIME-013).
+    #[test]
+    fn a_console_sets_a_credential_the_program_it_manages_declares() {
+        install_registry();
+        let server = console();
+        server.set_managed_program(&shown_program());
+        let (response, seen) = set_github_token(server);
+        assert_eq!(payload_of(&response, "OK"), json!({ "saved": true, "service": "github", "envVar": "GITHUB_TOKEN", "last4": "9876" }));
+        assert!(seen.iter().any(|r| matches!(r, IoRequest::CredentialStoreWrite { service, name, .. } if service == "github" && name == "GITHUB_TOKEN")));
+    }
+
+    #[test]
+    fn control_a_console_managing_no_program_refuses_it_by_service() {
+        install_registry();
+        let (response, seen) = set_github_token(console());
+        assert!(!seen.iter().any(|r| matches!(r, IoRequest::CredentialStoreWrite { .. })));
+        assert_eq!(payload_of(&response, "BAD")["error"], "Service \"github\" declares no credentials");
+    }
+
+    #[test]
+    fn edge_naming_another_program_replaces_the_managed_one() {
+        install_registry();
+        let server = console();
+        server.set_managed_program(&shown_program());
+        server.set_managed_program(&json!({ "name": "blank", "orbitals": [] }));
+        let (response, _) = set_github_token(server);
+        assert_eq!(payload_of(&response, "BAD")["error"], "Service \"github\" declares no credentials");
     }
 
     #[test]

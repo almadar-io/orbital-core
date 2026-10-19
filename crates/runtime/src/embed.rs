@@ -761,6 +761,16 @@ impl EmbeddedKernel {
         self.kernel.set_theme_mode(mode);
     }
 
+    /// Install the viewer's locales (the first is the one `i18n/t` paints) and their catalogs, keyed locale then message
+    /// key: the client role paints locally what the server role renders (twin: [`EmbeddedServer::set_messages`]).
+    pub fn set_messages(
+        &self,
+        locales: Vec<String>,
+        catalogs: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    ) {
+        self.kernel.set_messages(locales, catalogs);
+    }
+
     pub fn set_current_user(&self, user: Value) {
         self.kernel.set_current_user(user);
     }

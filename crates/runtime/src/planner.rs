@@ -1048,15 +1048,32 @@ fn effects_navigate(effects: &Option<Vec<SExpression>>) -> bool {
 /// Whether dispatching `event` at `td` ever changes the route: the trait's own arm navigates, or an arm a
 /// listener of that trait's event triggers does. One hop: a listener's own listener is a dispatch of its own.
 pub fn dispatch_navigates(schema: &OrbitalSchema, td: &TraitDefinition, event: &str) -> bool {
-    use orbital_core_base::schema::types::{split_event_address, ListenSource};
     if td.state_machine.transitions.iter().any(|t| t.event == event && effects_navigate(&t.effects)) {
         return true;
     }
+    listeners_of(schema, td, event).into_iter().filter(|heard| !heard.wildcard).any(|heard| {
+        heard.trait_def.state_machine.transitions.iter().any(|t| t.event == heard.triggers && effects_navigate(&t.effects))
+    })
+}
+
+/// One `listens` entry that hears an emit: the listening trait, the event it triggers, and the listen itself.
+pub struct HeardBy<'a> {
+    pub trait_def: &'a TraitDefinition,
+    pub triggers: String,
+    pub listen: &'a orbital_core_base::schema::types::ListenDefinition,
+    /// Heard through a `* EVENT` wildcard rather than a listen sourced on the emitter.
+    pub wildcard: bool,
+}
+
+/// The `listens` entries, in every orbital, that hear `event` emitted by `td`.
+pub fn listeners_of<'a>(schema: &'a OrbitalSchema, td: &TraitDefinition, event: &str) -> Vec<HeardBy<'a>> {
+    use orbital_core_base::schema::types::{split_event_address, ListenSource};
     let Some(source_orbital) = schema.orbitals.iter().find(|o| {
         o.traits.iter().any(|r| matches!(r, TraitReference::Inline(t) if std::ptr::eq(t, td)))
     }) else {
-        return false;
+        return Vec::new();
     };
+    let mut out = Vec::new();
     for orbital in &schema.orbitals {
         for reference in &orbital.traits {
             let TraitReference::Inline(listener) = reference else { continue };
@@ -1065,31 +1082,19 @@ pub fn dispatch_navigates(schema: &OrbitalSchema, td: &TraitDefinition, event: &
                     Some(source) => (l.event.clone(), Some(source.clone())),
                     None => split_event_address(&l.event),
                 };
-                let from_source = match addressed {
-                    Some(ListenSource::Trait { trait_name, .. }) => {
-                        orbital.name == source_orbital.name && trait_name == td.name
-                    }
-                    Some(ListenSource::Orbital { orbital: name, trait_name, .. }) => {
-                        name == source_orbital.name && trait_name == td.name
-                    }
-                    _ => false,
+                let (heard, wildcard) = match addressed {
+                    Some(ListenSource::Trait { trait_name, .. }) => (orbital.name == source_orbital.name && trait_name == td.name, false),
+                    Some(ListenSource::Orbital { orbital: name, trait_name, .. }) => (name == source_orbital.name && trait_name == td.name, false),
+                    Some(ListenSource::Any) => (true, true),
+                    None => (false, false),
                 };
-                if !from_source || bare != event {
-                    continue;
-                }
-                let triggers = l.triggers.as_deref().unwrap_or(&bare);
-                if listener
-                    .state_machine
-                    .transitions
-                    .iter()
-                    .any(|t| t.event == triggers && effects_navigate(&t.effects))
-                {
-                    return true;
+                if heard && bare == event {
+                    out.push(HeardBy { trait_def: listener, triggers: l.triggers.clone().unwrap_or(bare), listen: l, wildcard });
                 }
             }
         }
     }
-    false
+    out
 }
 
 /// A planned "open a non-`main` slot" step: the canonical
