@@ -452,6 +452,9 @@ pub struct TransitionHop {
     pub from: String,
     pub to: String,
     pub event: String,
+    /// The arm that fired, by its position among the state's arms for the event (declaration order).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fired_arm: Option<usize>,
     /// `true` when the fired arm's guard held; absent for an unguarded arm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard_result: Option<bool>,
@@ -462,14 +465,12 @@ pub struct TransitionHop {
     pub observed: Option<HopObservation>,
 }
 
-/// A hop as a proposition judge reads it: the arm that fired, the payload it was delivered with, and the trait's
-/// `@entity` at the step's start and after its effects.
+/// A hop as a proposition judge reads it: the payload it was delivered with, and the trait's `@entity` at the
+/// step's start and after its effects.
 #[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HopObservation {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fired_arm: Option<usize>,
     #[cfg_attr(test, ts(type = "JsonValue"))]
     pub payload: Value,
     #[cfg_attr(test, ts(type = "JsonValue"))]
@@ -495,11 +496,11 @@ impl TransitionHop {
                     from: result.previous_state.clone(),
                     to: result.new_state.clone(),
                     event,
+                    fired_arm: result.fired_arm,
                     guard_result,
                     effects: result.effect_runs.iter().map(HopEffect::of_run).collect(),
                     observed: result.entry.as_ref().and_then(|entry| {
                         Some(HopObservation {
-                            fired_arm: result.fired_arm,
                             payload: result.payload.clone(),
                             entity_before: entry.entity_before.clone(),
                             entity_after: entry.entity_after.clone()?,
@@ -1175,6 +1176,24 @@ mod tests {
             failure: None,
             callsite_payload: None,
         }
+    }
+
+    #[test]
+    fn a_hop_names_its_fired_arm_without_entity_recording() {
+        let mut fired = empty_result("editing", true);
+        fired.event = Some("KEY".to_string());
+        fired.fired_arm = Some(2);
+        let hops = TransitionHop::of_outcomes(&[("Modes".to_string(), fired)]);
+        assert_eq!(hops.len(), 1);
+        assert_eq!(hops[0].fired_arm, Some(2));
+        assert_eq!(hops[0].observed, None);
+    }
+
+    #[test]
+    fn control_an_unfired_step_is_no_hop() {
+        let mut blocked = empty_result("idle", false);
+        blocked.event = Some("KEY".to_string());
+        assert!(TransitionHop::of_outcomes(&[("Modes".to_string(), blocked)]).is_empty());
     }
 
     #[test]

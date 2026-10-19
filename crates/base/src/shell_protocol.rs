@@ -68,6 +68,10 @@ pub struct ShellDescription {
     /// Whether the shell needs the resolved program alongside the IR.
     #[serde(default)]
     pub needs_resolved: bool,
+    /// A prebuilt web client this shell ships that serves any program from the runtime files a client-mode generate
+    /// writes beside it (`orb serve`); `None` when the shell ships none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_client: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +141,7 @@ pub fn description(name: &str, version: &str, needs_resolved: bool, options: Vec
         ir_versions: IrVersions { min: IR_VERSION, max: IR_VERSION },
         options,
         needs_resolved,
+        web_client: None,
     }
 }
 
@@ -405,6 +410,7 @@ mod tests {
                 ir_versions: IrVersions { min: 1, max: 1 },
                 options: vec![],
                 needs_resolved: false,
+                web_client: None,
             }
         }
         fn generate(&self, request: &GenerateRequest, _output: &Path) -> Result<GenerateResponse, ShellFailure> {
@@ -438,6 +444,18 @@ mod tests {
                 warnings: vec![],
             })
         }
+    }
+
+    #[test]
+    fn a_shipped_web_client_rides_the_description_and_an_older_description_has_none() {
+        let mut shipping = Fake.describe();
+        shipping.web_client = Some(PathBuf::from("/opt/shell/templates/almadar-web-client"));
+        let json = serde_json::to_value(&shipping).unwrap();
+        assert_eq!(json["webClient"], "/opt/shell/templates/almadar-web-client");
+        assert_eq!(serde_json::from_value::<ShellDescription>(json).unwrap(), shipping);
+        let older = serde_json::json!({ "name": "fake", "version": "1.0.0", "irVersions": { "min": 1, "max": 1 } });
+        assert_eq!(serde_json::from_value::<ShellDescription>(older).unwrap().web_client, None);
+        assert!(serde_json::to_value(Fake.describe()).unwrap().get("webClient").is_none());
     }
 
     #[test]

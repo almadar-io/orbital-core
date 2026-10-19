@@ -19,6 +19,7 @@ on:
       shell: { required: false, type: string, default: "", description: "The shell's name (kind shell)" }
       cargo-args: { required: true, type: string, description: "e.g. --bin orb-shell-python" }
       linux-libc: { required: false, type: string, default: "musl", description: "musl (static, headless programs) | gnu (needs the system GUI libraries, e.g. orb-desktop)" }
+      prepare: { required: false, type: string, default: "", description: "A node script run before packaging that builds templates/ content, e.g. scripts/build-web-client.mjs" }
 
 env:
   CARGO_TERM_COLOR: always
@@ -59,6 +60,16 @@ jobs:
       - name: Split symbols and strip
         shell: bash
         run: bash .orbital-core/scripts/split-symbols.sh "target/${{ matrix.target }}/release/${{ inputs.name }}${{ matrix.ext }}" "dist/${{ inputs.name }}-${{ matrix.name }}.symbols"
+      - if: inputs.prepare != ''
+        uses: pnpm/action-setup@v4
+        with: { version: 10 }
+      - if: inputs.prepare != ''
+        uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - if: inputs.prepare != ''
+        name: Prepare templates
+        shell: bash
+        run: node ${{ inputs.prepare }}
       - name: Package
         shell: bash
         run: |
