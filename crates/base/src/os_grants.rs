@@ -612,8 +612,67 @@ pub fn os_requirements(op: OsOp, args: &[SExpression]) -> Result<Vec<OsRequireme
 }
 
 /// [`os_requirements`] for a caller that checks the program before every target is known: an argument for which
-/// `deferred` is true contributes no requirement instead of being reported as computed.
+/// `deferred` is true contributes no requirement instead of being reported as computed. An argument that picks
+/// from a literal list (`(array/nth (list a b) i)`) needs what each element it can pick needs: every element for
+/// a computed index, the one at a literal index.
 pub fn os_requirements_deferring(
+    op: OsOp,
+    args: &[SExpression],
+    deferred: &dyn Fn(&SExpression) -> bool,
+) -> Result<Vec<OsRequirement>, usize> {
+    let mut expansions: Vec<Vec<SExpression>> = vec![Vec::new()];
+    for arg in args {
+        let choices = literal_list_pick(arg).unwrap_or_else(|| vec![arg.clone()]);
+        expansions = expansions
+            .into_iter()
+            .flat_map(|prefix| {
+                choices.iter().map(move |choice| {
+                    let mut next = prefix.clone();
+                    next.push(choice.clone());
+                    next
+                })
+            })
+            .collect();
+    }
+    let mut needs = Vec::new();
+    for expansion in &expansions {
+        for need in requirements_of(op, expansion, deferred)? {
+            if !needs.contains(&need) {
+                needs.push(need);
+            }
+        }
+    }
+    Ok(needs)
+}
+
+/// The elements `(array/nth <literal list> <index>)` can yield: all of them for a computed index, the one at a
+/// literal whole index (none past the end). `None` when `expr` is not such a pick.
+fn literal_list_pick(expr: &SExpression) -> Option<Vec<SExpression>> {
+    let SExpression::Array(arr) = expr else {
+        return None;
+    };
+    if !matches!(
+        arr.first().and_then(SExpression::as_str),
+        Some("array/nth" | "nth")
+    ) {
+        return None;
+    }
+    let SExpression::Array(list) = arr.get(1)? else {
+        return None;
+    };
+    if list.first().and_then(SExpression::as_str) != Some("list") {
+        return None;
+    }
+    let items = &list[1..];
+    Some(match arr.get(2) {
+        Some(SExpression::Number(at)) if *at >= 0.0 && at.fract() == 0.0 => {
+            items.get(*at as usize).cloned().into_iter().collect()
+        }
+        _ => items.to_vec(),
+    })
+}
+
+fn requirements_of(
     op: OsOp,
     args: &[SExpression],
     deferred: &dyn Fn(&SExpression) -> bool,
@@ -1005,6 +1064,80 @@ mod tests {
 
     fn fs_req(path: &str, mode: FsMode) -> OsRequirement {
         OsRequirement::Fs { path: path.to_string(), mode }
+    }
+
+    #[test]
+    fn a_target_picked_from_a_literal_list_needs_every_element_it_can_pick() {
+        let env = |name: &str| OsRequirement::Env {
+            name: name.to_string(),
+        };
+        assert_eq!(
+            call(
+                OsOp::Getenv,
+                json!([["array/nth", ["list", "PATH", "HOME"], "@entity.cursor"]])
+            ),
+            Ok(vec![env("PATH"), env("HOME")])
+        );
+        assert_eq!(
+            call(
+                OsOp::Spawn,
+                json!([["array/nth", ["list", "gh", "git"], "@entity.i"], []])
+            ),
+            Ok(vec![
+                OsRequirement::Exec {
+                    command: "gh".into()
+                },
+                OsRequirement::Exec {
+                    command: "git".into()
+                }
+            ])
+        );
+        assert_eq!(
+            call(
+                OsOp::ReadFile,
+                json!([["nth", ["list", "/data/a", "/data/b"], "@entity.i"]])
+            ),
+            Ok(vec![
+                fs_req("/data/a", FsMode::Read),
+                fs_req("/data/b", FsMode::Read)
+            ])
+        );
+    }
+
+    #[test]
+    fn a_literal_index_into_a_literal_list_needs_only_that_element() {
+        assert_eq!(
+            call(
+                OsOp::Getenv,
+                json!([["array/nth", ["list", "PATH", "HOME"], 1]])
+            ),
+            Ok(vec![OsRequirement::Env {
+                name: "HOME".into()
+            }])
+        );
+        assert_eq!(
+            call(OsOp::Getenv, json!([["array/nth", ["list", "PATH"], 3]])),
+            Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn control_a_pick_from_a_computed_list_or_a_computed_element_is_still_not_static() {
+        assert_eq!(
+            call(OsOp::Getenv, json!([["array/nth", "@entity.names", 0]])),
+            Err(0)
+        );
+        assert_eq!(
+            call(
+                OsOp::Getenv,
+                json!([["array/nth", ["list", "PATH", "@entity.other"], "@entity.i"]])
+            ),
+            Err(0)
+        );
+        assert_eq!(
+            call(OsOp::Getenv, json!([["str/concat", "A", "@entity.x"]])),
+            Err(0)
+        );
     }
 
     #[test]

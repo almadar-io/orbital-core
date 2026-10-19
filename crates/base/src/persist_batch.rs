@@ -112,6 +112,69 @@ pub fn batch_entities(ops: &SExpression) -> Vec<&str> {
     out
 }
 
+/// Every entity a batch's `<ops>` can create, update or upsert, following the list builders a program writes a batch
+/// with (`array/concat`, `array/prepend`, `array/append`, `array/filter`, `array/map` over an op template,
+/// `array/flatten` of lists, `array/take` (nothing for a literal 0), `if` branches). `None` when some element comes from something it cannot follow (a binding, another call, an op whose
+/// entity is not a literal): the batch may then write anything.
+pub fn batch_written_entities(ops: &SExpression) -> Option<std::collections::BTreeSet<&str>> {
+    fn element<'a>(e: &'a SExpression, out: &mut std::collections::BTreeSet<&'a str>) -> Option<()> {
+        if is_op_tuple(e) {
+            let tuple = as_items(e)?;
+            let entity = op_entity(tuple)?;
+            if tuple.first()?.as_str()? != "delete" {
+                out.insert(entity);
+            }
+            return Some(());
+        }
+        let items = as_items(e)?;
+        match items.first()?.as_str()? {
+            "if" if items.len() == 4 => {
+                element(&items[2], out)?;
+                element(&items[3], out)
+            }
+            _ => None,
+        }
+    }
+    fn list<'a>(e: &'a SExpression, out: &mut std::collections::BTreeSet<&'a str>) -> Option<()> {
+        let items = as_items(e)?;
+        match items.first() {
+            None => Some(()),
+            Some(SExpression::String(head)) => match head.as_str() {
+                "list" => items[1..].iter().try_for_each(|x| element(x, out)),
+                "array/concat" => items[1..].iter().try_for_each(|x| list(x, out)),
+                "array/prepend" | "array/append" if items.len() == 3 => {
+                    list(&items[1], out)?;
+                    element(&items[2], out)
+                }
+                "array/filter" if items.len() == 3 => list(&items[1], out),
+                "array/map" if items.len() == 3 => element(lambda_body(&items[2])?, out),
+                "array/flatten" if items.len() == 2 => {
+                    let lists = as_items(&items[1])?;
+                    let lists = match lists.first().and_then(SExpression::as_str) {
+                        Some("list") => &lists[1..],
+                        Some(_) => return None,
+                        None => lists,
+                    };
+                    lists.iter().try_for_each(|x| list(x, out))
+                }
+                "array/take" if items.len() == 3 => match &items[2] {
+                    SExpression::Number(n) if *n == 0.0 => Some(()),
+                    _ => list(&items[1], out),
+                },
+                "if" if items.len() == 4 => {
+                    list(&items[2], out)?;
+                    list(&items[3], out)
+                }
+                _ => None,
+            },
+            Some(_) => items.iter().try_for_each(|x| element(x, out)),
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    list(ops, &mut out)?;
+    Some(out)
+}
+
 /// One statically-readable write of a batch: what a single `persist` of that op
 /// would do. `data` is `None` for `delete`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -190,6 +253,63 @@ pub fn batch_placement(ops: &SExpression, residence: &Residence) -> BatchPlaceme
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn ops(v: serde_json::Value) -> SExpression {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn a_flattened_batch_of_branches_names_what_each_branch_can_write() {
+        // The std-name-claim shape.
+        let built = ops(json!(["array/flatten", [
+            [["create", "NameLock", { "id": "n" }]],
+            ["if", "@entity.held", [["delete", "NameLock", "@entity.held"]], ["array/take", [["delete", "NameLock", ""]], 0.0]],
+            ["if", "@entity.heldRow", [["update", "NameHolder", "h", { "name": "n" }]], [["create", "NameHolder", { "id": "h" }]]]
+        ]]));
+        assert_eq!(batch_written_entities(&built).unwrap().into_iter().collect::<Vec<_>>(), vec!["NameHolder", "NameLock"]);
+        let listed = ops(json!(["array/flatten", ["list", [["create", "A", {}]], [["update", "B", "b", {}]]]]));
+        assert_eq!(batch_written_entities(&listed).unwrap().into_iter().collect::<Vec<_>>(), vec!["A", "B"]);
+    }
+
+    #[test]
+    fn a_take_of_none_writes_nothing_and_any_other_take_is_a_subset_of_its_list() {
+        assert!(batch_written_entities(&ops(json!(["array/take", [["create", "A", {}]], 0.0]))).unwrap().is_empty());
+        assert_eq!(batch_written_entities(&ops(json!(["array/take", [["create", "A", {}]], 1.0]))).unwrap().into_iter().collect::<Vec<_>>(), vec!["A"]);
+        assert_eq!(batch_written_entities(&ops(json!(["array/take", [["create", "A", {}]], "@entity.n"]))).unwrap().into_iter().collect::<Vec<_>>(), vec!["A"]);
+    }
+
+    #[test]
+    fn control_a_flatten_or_take_over_something_it_cannot_follow_may_write_anything() {
+        assert!(batch_written_entities(&ops(json!(["array/flatten", "@entity.lists"]))).is_none());
+        assert!(batch_written_entities(&ops(json!(["array/flatten", [[["create", "A", {}]], "@payload.more"]]))).is_none());
+        assert!(batch_written_entities(&ops(json!(["array/take", "@payload.ops", 0.0]))).unwrap().is_empty(), "taking none of anything is nothing");
+        assert!(batch_written_entities(&ops(json!(["array/take", "@payload.ops", 2.0]))).is_none());
+        assert!(batch_written_entities(&ops(json!(["if", "@c", [["create", "A", {}]], "@payload.ops"]))).is_none());
+    }
+
+    #[test]
+    fn a_built_batch_names_the_entities_its_op_templates_write() {
+        // The std-graph shape: a literal create, concatenated with a mapped update, behind a filter and a prepend.
+        let built = ops(json!(["array/concat",
+            [["create", "GraphEdge", { "id": "e" }]],
+            ["array/map", ["array/filter", "@entity.pending", ["fn", "u", true]], ["fn", "u", ["update", "GraphNode", "@u.id", { "depth": 1 }]]],
+            ["array/prepend", ["array/map", "@entity.edges", ["fn", "e", ["delete", "GraphEdge", "@e.id"]]], ["delete", "GraphNode", "n"]]
+        ]));
+        let written: Vec<&str> = batch_written_entities(&built).unwrap().into_iter().collect();
+        assert_eq!(written, vec!["GraphEdge", "GraphNode"]);
+        let deletes_only = ops(json!(["array/map", "@entity.edges", ["fn", "e", ["delete", "GraphEdge", "@e.id"]]]));
+        assert!(batch_written_entities(&deletes_only).unwrap().is_empty(), "a delete writes no row");
+        let branch = ops(json!(["array/map", "@entity.items", ["fn", "i", ["if", "@i.new", ["create", "A", {}], ["update", "B", "@i.id", {}]]]]));
+        assert_eq!(batch_written_entities(&branch).unwrap().into_iter().collect::<Vec<_>>(), vec!["A", "B"]);
+    }
+
+    #[test]
+    fn control_a_batch_it_cannot_follow_is_none() {
+        assert!(batch_written_entities(&ops(json!("@payload.ops"))).is_none(), "a binding can hold any op");
+        assert!(batch_written_entities(&ops(json!(["array/concat", [["create", "A", {}]], "@payload.ops"]))).is_none());
+        assert!(batch_written_entities(&ops(json!(["array/map", "@entity.items", ["fn", "i", "@i.op"]]))).is_none());
+        assert!(batch_written_entities(&ops(json!([["create", "@config.target", {}]]))).is_none(), "a bound entity name");
+    }
 
     fn sx(v: serde_json::Value) -> SExpression {
         serde_json::from_value(v).unwrap()

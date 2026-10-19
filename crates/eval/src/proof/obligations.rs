@@ -12,7 +12,7 @@
 
 use super::formula::{Sort, VarInfo, Vars};
 use orbital_core_base::effect_types::strip_trailing_emit_options;
-use orbital_core_base::persist_batch::{classify_ops, is_op_tuple, BatchOps};
+use orbital_core_base::persist_batch::{batch_written_entities, classify_ops, is_op_tuple, BatchOps};
 use orbital_core_base::policy::identity_entity_def;
 use orbital_core_base::schema::sexpr::{SExpression, SequentialBindings};
 use orbital_core_base::schema::types::{
@@ -851,7 +851,22 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
             };
             match args.first().and_then(|a| a.as_str()) {
                 Some("batch") => match args.get(1).and_then(batch_tuples) {
-                    None => unknown(&mut path, format!("{at} (batch)")),
+                    // Built at run time: what it writes is unknown, but which entities is known when every op is a
+                    // template naming its entity; the others' invariants owe it nothing.
+                    None => match args.get(1).and_then(batch_written_entities) {
+                        Some(entities) => {
+                            for entity in entities {
+                                path.writes.push(Write {
+                                    op: WriteOp::Upsert,
+                                    entity: entity.to_string(),
+                                    id: None,
+                                    data: Data::Whole(unresolved(&format!("a {entity} row a built batch writes"))),
+                                    at: format!("{at} (batch)"),
+                                });
+                            }
+                        }
+                        None => unknown(&mut path, format!("{at} (batch)")),
+                    },
                     Some(tuples) => {
                         for t in tuples {
                             let (op, id, data) = match t.first().and_then(|a| a.as_str()) {

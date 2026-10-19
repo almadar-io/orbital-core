@@ -374,6 +374,19 @@ mod tests {
     }
 
     #[test]
+    fn a_built_batch_that_never_writes_the_entity_owes_its_invariant_nothing() {
+        let inv = row_invariant(json!([">=", "@entity.total", 0]));
+        let elsewhere = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "batch",
+            ["array/concat", [["create", "Ledger", { "n": 1 }]], ["array/map", "@entity.items", ["fn", "i", ["update", "Ledger", "@i.id", { "n": 2 }]]]]]] }]);
+        assert!(prove(&program(elsewhere, J::Null, inv.clone())).is_empty(), "the batch writes only Ledger");
+        let here = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "batch",
+            ["array/map", "@entity.items", ["fn", "i", ["update", "Order", "@i.id", { "total": "@i.total" }]]]]] }]);
+        assert!(prove(&program(here, J::Null, inv.clone())).iter().all(|f| matches!(f.verdict, Verdict::Unproved { .. })), "it writes Order with data the prover cannot follow");
+        let opaque = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "batch", "@payload.ops"]] }]);
+        assert!(matches!(only(&program(opaque, J::Null, inv)), Verdict::Unproved { .. }), "control: a batch it cannot follow may write anything");
+    }
+
+    #[test]
     fn another_traits_write_is_unproved_not_violated() {
         let mut schema = program(
             json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.status", "paid"]] }]),

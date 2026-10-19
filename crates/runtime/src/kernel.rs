@@ -221,7 +221,8 @@ pub struct RuntimeKernel {
     effect_executor: Arc<EffectExecutor>,
     event_bus: SharedEventBus,
     listener_manager: ListenerManager,
-    schemas: Arc<RwLock<HashMap<String, OrbitalSchema>>>,
+    /// Shared with every fork (EXEC-DIST-5): a registration replaces the entry, never mutates it.
+    schemas: Arc<RwLock<HashMap<String, Arc<OrbitalSchema>>>>,
     /// Trait name to the schema and orbital index that declare it, rebuilt on every registration.
     trait_homes: Arc<RwLock<HashMap<String, (String, usize)>>>,
     trait_definitions: Arc<RwLock<HashMap<String, Arc<TraitDefinition>>>>,
@@ -1146,7 +1147,7 @@ impl RuntimeKernel {
             }
         };
         for name in names {
-            let program = serde_json::to_value(&schemas[name]).map_err(|e| format!("schema `{name}`: {e}"))?;
+            let program = serde_json::to_value(schemas[name].as_ref()).map_err(|e| format!("schema `{name}`: {e}"))?;
             orbital_core_base::secrets::program_credentials(&program).into_iter().for_each(&mut add);
         }
         self.managed_credentials.read().iter().cloned().for_each(add);
@@ -1313,7 +1314,7 @@ impl RuntimeKernel {
 
         {
             let mut schemas = self.schemas.write();
-            schemas.insert(schema_name.clone(), schema.clone());
+            schemas.insert(schema_name.clone(), Arc::new(schema.clone()));
             let mut homes = HashMap::new();
             for (name, schema) in schemas.iter() {
                 for (index, orbital) in schema.orbitals.iter().enumerate() {
@@ -1444,7 +1445,7 @@ impl RuntimeKernel {
                 if !seen.insert(trait_name.to_string()) {
                     continue;
                 }
-                fork.state_manager.write().register_trait((*def).clone());
+                fork.state_manager.write().register_shared_trait(def.clone());
                 fork.register_trait_listeners(&def, &orbital.name)?;
             }
         }
@@ -1463,7 +1464,7 @@ impl RuntimeKernel {
                 .and_then(|(schema, index)| schemas.get(schema)?.orbitals.get(*index))
                 .map(|o| o.name.clone())
                 .unwrap_or_default();
-            fork.state_manager.write().register_trait((*def).clone());
+            fork.state_manager.write().register_shared_trait(def.clone());
             fork.register_trait_listeners(&def, &orbital)?;
         }
         for name in names {
@@ -5155,7 +5156,7 @@ impl RuntimeKernel {
         self.schemas
             .read()
             .values()
-            .flat_map(orbital_core_base::external_inputs::external_inputs_of)
+            .flat_map(|schema| orbital_core_base::external_inputs::external_inputs_of(schema))
             .collect()
     }
 
@@ -5225,7 +5226,7 @@ impl RuntimeKernel {
     /// canonical seeder ([`crate::seed::seed_sample_data_as`]) gives it, owner columns stamped with
     /// `viewer_id`, at the `"singleton"` address its frame uses. A store the host answers is never written.
     pub fn seed_runtime_mock(&self, viewer_id: Option<String>) {
-        let schemas: Vec<OrbitalSchema> = self.schemas.read().values().cloned().collect();
+        let schemas: Vec<Arc<OrbitalSchema>> = self.schemas.read().values().cloned().collect();
         for schema in &schemas {
             let scratch = crate::entity_source::InMemoryEntityCache::new();
             crate::seed::seed_sample_data_as(&scratch, schema, crate::seed::MOCK_SEED_COUNT, viewer_id.clone());
@@ -9269,5 +9270,82 @@ mod os_grants_tests {
         let plain: OrbitalSchema =
             serde_json::from_value(json!({ "name": "p", "orbitals": [] })).unwrap();
         assert!(serde_json::to_value(&plain).unwrap().get("osGrants").is_none());
+    }
+}
+
+/// A stateless host forks the registered program for every request (EXEC-DIST-5), so a fork shares the program
+/// rather than copying it: eight concurrent forks of project-friday each deep-copied it, ~90 MB of wasm heap a fork,
+/// and the first such burst took minutes (G-UI-107).
+#[cfg(test)]
+mod fork_shares_program_tests {
+    use super::*;
+
+    fn kernel_with_program() -> RuntimeKernel {
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(crate::entity_source::InMemoryEntityCache::new()),
+            KernelConfig::default(),
+        );
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "Notes",
+            "orbitals": [{
+                "name": "NotesOrbital",
+                "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
+                "traits": [{
+                    "name": "NoteView", "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [{ "key": "INIT", "name": "INIT" }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [] }]
+                    }
+                }],
+                "pages": []
+            }]
+        }))
+        .expect("schema");
+        kernel.register_schema(schema).expect("registers");
+        kernel
+    }
+
+    fn fork_of(kernel: &RuntimeKernel) -> RuntimeKernel {
+        kernel
+            .fork_session(Arc::new(crate::entity_source::InMemoryEntityCache::new()), KernelConfig::default())
+            .expect("forks")
+    }
+
+    #[test]
+    fn a_fork_shares_the_registered_program() {
+        let template = kernel_with_program();
+        let fork = fork_of(&template);
+        let (ours, theirs) = (template.schemas.read(), fork.schemas.read());
+        assert!(Arc::ptr_eq(&ours["Notes"], &theirs["Notes"]), "the fork must share the program, not copy it");
+    }
+
+    #[test]
+    fn a_fork_shares_the_registered_trait_definitions() {
+        let template = kernel_with_program();
+        let fork = fork_of(&template);
+        let ours = template.trait_definitions.read()["NoteView"].clone();
+        let theirs = fork.state_manager.read().shared_trait("NoteView").expect("the fork knows the trait");
+        assert!(Arc::ptr_eq(&ours, &theirs), "the fork's state machine must share the definition, not copy it");
+    }
+
+    #[test]
+    fn control_a_program_registered_on_a_fork_stays_on_that_fork() {
+        let template = kernel_with_program();
+        let fork = fork_of(&template);
+        let mut other = (*fork.schemas.read()["Notes"]).clone();
+        other.name = "Other".to_string();
+        fork.register_schema(other).expect("registers on the fork");
+        assert!(fork.schemas.read().contains_key("Other"));
+        assert!(!template.schemas.read().contains_key("Other"));
+    }
+
+    #[test]
+    fn edge_mock_seeding_a_fork_reads_the_shared_program() {
+        let template = kernel_with_program();
+        let fork = fork_of(&template);
+        fork.seed_runtime_mock(Some("viewer-1".to_string()));
+        assert!(Arc::ptr_eq(&template.schemas.read()["Notes"], &fork.schemas.read()["Notes"]));
     }
 }

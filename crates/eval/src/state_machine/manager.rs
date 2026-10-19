@@ -64,6 +64,16 @@ impl StateMachineManager {
             .insert(trait_def.name.clone(), Arc::new(trait_def));
     }
 
+    /// Register a definition another manager already holds, sharing it rather than copying it (a kernel fork).
+    pub fn register_shared_trait(&mut self, trait_def: Arc<TraitDefinition>) {
+        self.trait_definitions.insert(trait_def.name.clone(), trait_def);
+    }
+
+    /// The registered definition itself, to share with another manager.
+    pub fn shared_trait(&self, name: &str) -> Option<Arc<TraitDefinition>> {
+        self.trait_definitions.get(name).cloned()
+    }
+
     /// Register multiple trait definitions
     pub fn register_traits(&mut self, traits: Vec<TraitDefinition>) {
         for trait_def in traits {

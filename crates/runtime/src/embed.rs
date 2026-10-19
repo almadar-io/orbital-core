@@ -781,6 +781,12 @@ impl EmbeddedKernel {
         self.kernel.set_host_fans_out(fans_out);
     }
 
+    /// Record every step's `@entity` after its effects and carry it on its `TransitionHop` (`observed`), for a
+    /// verifier judging `@ensures` ([`RuntimeKernel::set_record_entity_after`], EXEC-STEP-10).
+    pub fn set_record_entity_after(&self, record: bool) {
+        self.kernel.set_record_entity_after(record);
+    }
+
     /// A row-set reference resolved against this client's rows for its current user: the one kernel resolver
     /// ([`RuntimeKernel::resolve_rows`]) every renderer reaches. A store the client does not hold answers
     /// nothing here; the host resolves those through the server leg.
