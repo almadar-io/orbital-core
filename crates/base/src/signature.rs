@@ -296,6 +296,53 @@ impl<'a> Signature<'a> {
         Ok(())
     }
 
+    /// A literal object handed to a closed `shape` parameter, checked field by field: every declared field is
+    /// present (a field whose type allows null may hold null), each value is of its field's type, and no field is
+    /// undeclared. `None` when the parameter is not a closed shape; the caller binds the argument as a whole then.
+    pub fn bind_shape_literal(
+        &self,
+        bindings: &mut CallBindings,
+        index: usize,
+        fields: &[(String, Actual<'_>)],
+        mode: Mode,
+    ) -> Option<Result<(), Mismatch>> {
+        use crate::language::registry::OperatorTypeRefKind as K;
+        let OperatorTypeRef::Tagged(K::Object { fields: declared, open }) = self.formal(index)? else {
+            return None;
+        };
+        if *open == Some(true) || declared.is_empty() {
+            return None;
+        }
+        let mut names: Vec<&String> = declared.keys().collect();
+        names.sort();
+        let mut scratch = bindings.clone();
+        scratch.index = index;
+        scratch.strict = mode == Mode::Static;
+        for name in &names {
+            let Some((_, actual)) = fields.iter().find(|(given, _)| given == *name) else {
+                return Some(Err(Mismatch::Type {
+                    expected: format!("an object with `{name}` ({})", expected_name(&declared[*name])),
+                    actual: format!("an object where `{name}` is missing"),
+                }));
+            };
+            if let Err(found) = bind_type(&declared[*name], actual, &mut scratch, mode) {
+                return Some(Err(match found {
+                    Mismatch::Type { expected, actual } => Mismatch::Type { expected: format!("`{name}`: {expected}"), actual },
+                    other => other,
+                }));
+            }
+        }
+        if let Some((extra, _)) = fields.iter().find(|(given, _)| !declared.contains_key(given)) {
+            let allowed: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+            return Some(Err(Mismatch::Type {
+                expected: format!("an object of only {}", allowed.join(", ")),
+                actual: format!("an object with `{extra}`, which the shape does not declare"),
+            }));
+        }
+        *bindings = scratch;
+        Some(Ok(()))
+    }
+
     /// Checks what only the whole call decides, once `supplied` arguments are bound: a `key-of` argument that
     /// names no field of its record is an error when the call reads that field and supplies no default.
     pub fn finish(&self, bindings: &CallBindings, supplied: usize) -> Result<(), (usize, Mismatch)> {
@@ -804,13 +851,24 @@ fn bind_type(
                 // member fits".
                 Err(undetermined.unwrap_or_else(|| type_mismatch(formal, actual)))
             }
-            K::Literal { value } => {
-                if value.is_null() {
-                    Err(type_mismatch(formal, actual))
-                } else {
-                    Ok(())
+            K::Literal { value } => match (value, known) {
+                (serde_json::Value::Null, _) => Err(type_mismatch(formal, actual)),
+                // A literal string fits only itself; a string whose text is not known here could be it.
+                (serde_json::Value::String(want), Known::Type(ty)) if matches!(unwrap_optional(ty), OirType::String) => {
+                    match &actual.text {
+                        Some(text) if text != want => Err(type_mismatch(formal, actual)),
+                        _ => Ok(()),
+                    }
                 }
-            }
+                (serde_json::Value::String(_), Known::Type(ty)) if !is_uninformative(ty) => Err(type_mismatch(formal, actual)),
+                (serde_json::Value::Bool(_), Known::Type(ty)) if !is_uninformative(ty) && !matches!(unwrap_optional(ty), OirType::Boolean) => {
+                    Err(type_mismatch(formal, actual))
+                }
+                (serde_json::Value::Number(_), Known::Type(ty)) if !is_uninformative(ty) && !matches!(unwrap_optional(ty), OirType::Number) => {
+                    Err(type_mismatch(formal, actual))
+                }
+                _ => Ok(()),
+            },
             K::Array { of } => match known {
                 Known::Absent | Known::Void => Ok(()),
                 Known::EmptyList => {
@@ -1517,6 +1575,68 @@ mod tests {
 
     fn s_arr(of: OirType) -> OirType {
         OirType::array(of)
+    }
+
+    fn spawn_config() -> EmbeddedOperator {
+        let mode = json!({ "kind": "union", "of": [{ "kind": "literal", "value": "pipe" }, { "kind": "literal", "value": "null" }] });
+        op(
+            json!([p("config", json!({ "kind": "object", "fields": { "stdout": mode, "detached": "boolean", "cwd": { "kind": "union", "of": ["string", { "kind": "literal", "value": null }] } } }))]),
+            json!("void"),
+            None,
+        )
+    }
+
+    fn shape_check(fields: Vec<(&str, Actual<'static>)>) -> Option<Result<(), Mismatch>> {
+        let op = spawn_config();
+        let sig = Signature::of(&op);
+        let mut b = CallBindings::new();
+        let fields: Vec<(String, Actual<'static>)> = fields.into_iter().map(|(n, a)| (n.to_string(), a)).collect();
+        sig.bind_shape_literal(&mut b, 0, &fields, Mode::Static)
+    }
+
+    fn literal_text(v: &str) -> Actual<'static> {
+        Actual { text: Some(v.to_string()), ..Actual::of_type(OirType::String) }
+    }
+
+    fn null() -> Actual<'static> {
+        Actual { known: Some(Known::Absent), ..Actual::unknown() }
+    }
+
+    fn boolean() -> Actual<'static> {
+        Actual::of_type(OirType::Boolean)
+    }
+
+    #[test]
+    fn a_literal_object_for_a_closed_shape_is_checked_field_by_field() {
+        let good = vec![("stdout", literal_text("pipe")), ("detached", boolean()), ("cwd", null())];
+        assert_eq!(shape_check(good), Some(Ok(())), "control: every field, each of its type, null where the type allows it");
+        let wrong = shape_check(vec![("stdout", literal_text("pipe")), ("detached", literal_text("yes")), ("cwd", null())]);
+        let Some(Err(Mismatch::Type { expected, .. })) = wrong else { panic!("{wrong:?}") };
+        assert!(expected.contains("`detached`") && expected.contains("boolean"), "{expected}");
+        let number = shape_check(vec![("stdout", Actual::of_type(OirType::Number)), ("detached", boolean()), ("cwd", null())]);
+        assert!(matches!(number, Some(Err(Mismatch::Type { .. }))), "a number is none of the literals: {number:?}");
+        let other = shape_check(vec![("stdout", literal_text("inherit")), ("detached", boolean()), ("cwd", null())]);
+        assert!(matches!(other, Some(Err(Mismatch::Type { .. }))), "a literal string the union does not list: {other:?}");
+    }
+
+    #[test]
+    fn a_literal_object_for_a_closed_shape_names_a_missing_and_an_unknown_field() {
+        let missing = shape_check(vec![("stdout", literal_text("pipe")), ("cwd", null())]);
+        let Some(Err(Mismatch::Type { actual, .. })) = missing else { panic!("{missing:?}") };
+        assert!(actual.contains("`detached`") && actual.contains("missing"), "{actual}");
+        let extra = shape_check(vec![("stdout", literal_text("pipe")), ("detached", boolean()), ("cwd", null()), ("shell", Actual::unknown())]);
+        let Some(Err(Mismatch::Type { actual, .. })) = extra else { panic!("{extra:?}") };
+        assert!(actual.contains("`shell`"), "{actual}");
+    }
+
+    #[test]
+    fn a_parameter_that_is_not_a_closed_shape_is_left_to_bind() {
+        let any = op(json!([p("x", json!("object"))]), json!("void"), None);
+        let open = op(json!([p("x", json!({ "kind": "object", "fields": { "a": "string" }, "open": true }))]), json!("void"), None);
+        for o in [&any, &open] {
+            let mut b = CallBindings::new();
+            assert_eq!(Signature::of(o).bind_shape_literal(&mut b, 0, &[("z".to_string(), Actual::unknown())], Mode::Static), None);
+        }
     }
 
     fn struct_of(fields: &[(&str, OirType)]) -> OirType {

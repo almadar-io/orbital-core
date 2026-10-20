@@ -85,6 +85,24 @@ impl RuntimeKernel {
             .find_map(|schema| orbital_core_base::inbound::inbound_only_trait(schema, orbital, trait_name, event))
     }
 
+    /// Whether a delivery's outcomes settle it: the handler trait emitted the answer event or one of its effects failed.
+    /// A delivery that did neither waits for a later dispatch its keyed completions cause ([`Self::inbound_late_answer`]).
+    pub fn inbound_answered(route: &InboundRoute, outcomes: &DispatchOutcomes) -> bool {
+        Self::inbound_late_answer(route, outcomes).is_some()
+            || outcomes.iter().any(|(trait_name, result)| *trait_name == route.trait_name && result.failure.is_some())
+    }
+
+    /// The answer a later dispatch of the handler trait carries: present only when that dispatch emitted the route's
+    /// answer event (a handler whose keyed I/O completes after the delivering dispatch answers then).
+    pub fn inbound_late_answer(route: &InboundRoute, outcomes: &DispatchOutcomes) -> Option<InboundAnswer> {
+        let emitted = outcomes.iter().filter(|(trait_name, _)| *trait_name == route.trait_name).any(|(_, result)| {
+            result.effect_results.iter().any(|run| {
+                matches!((&run.effect, &run.outcome), (Effect::Emit { event, .. }, outcome) if *event == route.answer && !matches!(outcome, EffectOutcome::Failed))
+            })
+        });
+        emitted.then(|| Self::inbound_answer(route, outcomes))
+    }
+
     /// The answer a finished delivery produced: the first emit (one that did not fail; a kernel with no event bus reports it `NoOp`) of the route's answer event
     /// among the handler trait's outcomes. With none, the first effect failure of the handler is the
     /// answer's message; a dispatch that neither answered nor failed is `inbound-unanswered`.
@@ -275,5 +293,25 @@ mod tests {
         assert_eq!(k.inbound_only_trait("Cal", None, "PUSH"), Some("Push".to_string()));
         assert_eq!(k.inbound_only_trait("Cal", Some("Push"), "INIT"), None);
         assert_eq!(k.inbound_only_trait("Other", None, "PUSH"), None);
+    }
+
+    #[test]
+    fn a_later_dispatch_of_the_handler_carries_a_late_answer_and_no_other_does() {
+        let kernel = kernel(json!(["google-calendar"]));
+        let route = kernel.inbound_route("google-calendar").unwrap();
+        let answered = kernel
+            .dispatch(&route.trait_name, None, "PUSH", serde_json::from_value(json!({ "headers": { "x-goog-resource-state": "sync" }, "verified": true })).unwrap())
+            .unwrap();
+        let late = RuntimeKernel::inbound_late_answer(&route, &answered).expect("the handler emitted the answer event");
+        assert_eq!(late.status, 200);
+        assert!(RuntimeKernel::inbound_answered(&route, &answered));
+        let silent = kernel
+            .dispatch(&route.trait_name, None, "PUSH", serde_json::from_value(json!({ "headers": { "x-goog-resource-state": "gone" }, "verified": true })).unwrap())
+            .unwrap();
+        assert_eq!(RuntimeKernel::inbound_late_answer(&route, &silent), None, "control: no answer event, no late answer");
+        assert!(!RuntimeKernel::inbound_answered(&route, &silent));
+        let mut elsewhere = route.clone();
+        elsewhere.trait_name = "Other".to_string();
+        assert_eq!(RuntimeKernel::inbound_late_answer(&elsewhere, &answered), None, "control: another trait's emit answers nothing");
     }
 }

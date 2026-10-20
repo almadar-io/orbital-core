@@ -4,7 +4,7 @@
 use crate::os::OsOp;
 use crate::schema::sexpr::SExpression;
 use serde::{Deserialize, Serialize};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -157,12 +157,65 @@ fn segments_match(pattern: &[&str], path: &[String]) -> bool {
     }
 }
 
-/// Whether `glob` (absolute, no `..`) matches the already-normalized `path`.
-fn glob_matches(glob: &str, path: &[String]) -> bool {
-    if !glob.starts_with('/') {
+/// Where a grant glob or a path is rooted: the filesystem root, the user's home (`~/`) or the directory the host
+/// started the program in (`./`). An anchored form matches only a form under the same anchor; a host checks an
+/// absolute path against anchored grants through its [`OsAnchors`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    Root,
+    Home,
+    Start,
+}
+
+/// The anchor of `text` and the part after it; `None` for a bare relative path.
+fn anchor_of(text: &str) -> Option<(Anchor, &str)> {
+    if let Some(rest) = text.strip_prefix("~/") {
+        Some((Anchor::Home, rest))
+    } else if text == "~" {
+        Some((Anchor::Home, ""))
+    } else if let Some(rest) = text.strip_prefix("./") {
+        Some((Anchor::Start, rest))
+    } else if text == "." {
+        Some((Anchor::Start, ""))
+    } else if text.starts_with('/') {
+        Some((Anchor::Root, text))
+    } else {
+        None
+    }
+}
+
+/// [`normalized_segments`] for any anchored form: a home or start form is normalized under its anchor and refused
+/// when a `..` climbs above it.
+fn anchored_segments(path: &Path) -> Option<(Anchor, Vec<String>)> {
+    let text = path.to_str()?;
+    match anchor_of(text)? {
+        (Anchor::Root, _) => Some((Anchor::Root, normalized_segments(path)?)),
+        (anchor, rest) => {
+            let mut segments: Vec<String> = Vec::new();
+            for component in Path::new(rest).components() {
+                match component {
+                    Component::CurDir => {}
+                    Component::ParentDir => {
+                        segments.pop()?;
+                    }
+                    Component::Normal(part) => segments.push(part.to_str()?.to_string()),
+                    Component::RootDir | Component::Prefix(_) => return None,
+                }
+            }
+            Some((anchor, segments))
+        }
+    }
+}
+
+/// Whether `glob` (anchored, no `..`) matches the already-normalized `path` under `anchor`.
+fn glob_matches(glob: &str, anchor: Anchor, path: &[String]) -> bool {
+    let Some((glob_anchor, rest)) = anchor_of(glob) else {
+        return false;
+    };
+    if glob_anchor != anchor {
         return false;
     }
-    let pattern: Vec<&str> = glob
+    let pattern: Vec<&str> = rest
         .split('/')
         .filter(|s| !s.is_empty() && *s != ".")
         .collect();
@@ -217,22 +270,33 @@ impl OsGrants {
     /// Whether `path` may be used in `mode`. The path is matched lexically (`.`/`..` collapsed, refused when
     /// it escapes the root); symlinks are resolved by the caller, which re-checks the real path.
     pub fn fs_allows(&self, path: &Path, mode: FsMode) -> bool {
-        let Some(segments) = normalized_segments(path) else {
+        let Some((anchor, segments)) = anchored_segments(path) else {
             return false;
         };
         self.fs
             .iter()
-            .any(|g| g.modes.contains(&mode) && glob_matches(&g.glob, &segments))
+            .any(|g| g.modes.contains(&mode) && glob_matches(&g.glob, anchor, &segments))
+    }
+
+    /// [`Self::fs_allows`] for a host holding an absolute `path`: also matched in its `~/` and `./` forms when it lies
+    /// under the home or start directory the host knows, so an anchored grant covers it.
+    pub fn fs_allows_at(&self, path: &Path, mode: FsMode, anchors: &OsAnchors) -> bool {
+        anchors.forms(path).iter().any(|form| self.fs_allows(form, mode))
+    }
+
+    /// [`Self::fs_tree_allows`] for a host holding an absolute `root`, as [`Self::fs_allows_at`].
+    pub fn fs_tree_allows_at(&self, root: &Path, mode: FsMode, anchors: &OsAnchors) -> bool {
+        anchors.forms(root).iter().any(|form| self.fs_tree_allows(form, mode))
     }
 
     /// Whether every path under the directory `root` may be used in `mode`: a grant that lists the mode, ends in
     /// `/**` and matches `root` itself covers `root` and all it contains. Matched lexically like [`fs_allows`].
     pub fn fs_tree_allows(&self, root: &Path, mode: FsMode) -> bool {
-        let Some(segments) = normalized_segments(root) else {
+        let Some((anchor, segments)) = anchored_segments(root) else {
             return false;
         };
         self.fs.iter().any(|g| {
-            g.modes.contains(&mode) && g.glob.ends_with("/**") && glob_matches(&g.glob, &segments)
+            g.modes.contains(&mode) && g.glob.ends_with("/**") && glob_matches(&g.glob, anchor, &segments)
         })
     }
 
@@ -293,7 +357,50 @@ pub struct EntryProblem {
 }
 
 fn valid_glob(glob: &str) -> bool {
-    glob.starts_with('/') && !glob.split('/').any(|s| s == "..")
+    anchor_of(glob).is_some() && !glob.split('/').any(|s| s == "..")
+}
+
+/// The directories a host anchors `~/` and `./` to: the user's home and the directory it started the program in.
+/// A host without one of them grants nothing under that anchor.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OsAnchors {
+    pub home: Option<PathBuf>,
+    pub start: Option<PathBuf>,
+}
+
+impl OsAnchors {
+    /// The process's own: `HOME` (`USERPROFILE` on Windows) and its working directory.
+    pub fn of_process() -> Self {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+        Self { home, start: std::env::current_dir().ok() }
+    }
+
+    /// The absolute path a `~/` or `./` form names; `None` for any other form (an absolute path, or a bare relative
+    /// one, which keeps the working-directory rule). An anchor this host does not know is an error.
+    pub fn expand(&self, text: &str) -> Result<Option<PathBuf>, String> {
+        let (anchor, rest) = match anchor_of(text) {
+            Some((Anchor::Home, rest)) => (&self.home, rest),
+            Some((Anchor::Start, rest)) => (&self.start, rest),
+            _ => return Ok(None),
+        };
+        match anchor {
+            Some(dir) => Ok(Some(if rest.is_empty() { dir.clone() } else { dir.join(rest) })),
+            None => Err(format!("{text}: this host has no {} directory", if text.starts_with('~') { "home" } else { "start" })),
+        }
+    }
+
+    /// `path` and, when it lies under the home or start directory, its `~/` and `./` forms.
+    fn forms(&self, path: &Path) -> Vec<PathBuf> {
+        let mut forms = vec![path.to_path_buf()];
+        let under = |dir: &Option<PathBuf>, prefix: &str| {
+            let dir = dir.as_ref()?;
+            let rest = path.strip_prefix(dir).ok()?;
+            Some(PathBuf::from(format!("{prefix}{}", rest.display())))
+        };
+        forms.extend(under(&self.home, "~/"));
+        forms.extend(under(&self.start, "./"));
+        forms
+    }
 }
 
 fn valid_name(name: &str) -> bool {
@@ -1372,6 +1479,49 @@ mod tests {
             ..OsGrants::default()
         };
         assert!(good.entry_problems().is_empty());
+    }
+
+    fn grant(glob: &str, modes: &[FsMode]) -> OsGrants {
+        OsGrants { fs: vec![FsGrant { glob: glob.into(), modes: modes.to_vec() }], ..OsGrants::default() }
+    }
+
+    #[test]
+    fn an_anchored_grant_matches_paths_written_under_the_same_anchor_only() {
+        let home = grant("~/.orb/**", &[FsMode::Read]);
+        assert!(home.fs_allows(Path::new("~/.orb/package.json"), FsMode::Read));
+        assert!(!home.fs_allows(Path::new("~/.orb/package.json"), FsMode::Write), "control: the mode still counts");
+        assert!(!home.fs_allows(Path::new("./.orb/package.json"), FsMode::Read), "control: another anchor is another place");
+        assert!(!home.fs_allows(Path::new("/.orb/package.json"), FsMode::Read), "control: an absolute path is not under the home anchor");
+        assert!(!home.fs_allows(Path::new("~/.orb/../.ssh/id"), FsMode::Read), "edge: climbing out of the anchored tree is refused");
+        assert!(!home.fs_allows(Path::new("~/../etc/passwd"), FsMode::Read), "edge: climbing above the anchor is refused");
+        let start = grant("./**", &[FsMode::Read]);
+        assert!(start.fs_tree_allows(Path::new("./"), FsMode::Read));
+        assert!(start.fs_allows(Path::new("./docs/a.md"), FsMode::Read));
+        assert!(start.atoms().len() == 1 && start.entry_problems().is_empty(), "an anchored glob is a valid entry");
+    }
+
+    #[test]
+    fn a_host_checks_an_absolute_path_against_anchored_grants_through_its_anchors() {
+        let anchors = OsAnchors { home: Some(PathBuf::from("/home/u")), start: Some(PathBuf::from("/work/p")) };
+        let grants = OsGrants {
+            fs: vec![
+                FsGrant { glob: "~/.orb/**".into(), modes: vec![FsMode::Write] },
+                FsGrant { glob: "./**".into(), modes: vec![FsMode::Read] },
+            ],
+            ..OsGrants::default()
+        };
+        assert!(grants.fs_allows_at(Path::new("/home/u/.orb/x.json"), FsMode::Write, &anchors));
+        assert!(grants.fs_allows_at(Path::new("/work/p/src/a.ts"), FsMode::Read, &anchors));
+        assert!(grants.fs_tree_allows_at(Path::new("/work/p/"), FsMode::Read, &anchors));
+        assert!(!grants.fs_allows_at(Path::new("/home/u/.ssh/id"), FsMode::Write, &anchors), "control: outside the anchored tree");
+        assert!(!grants.fs_allows_at(Path::new("/work/other/a"), FsMode::Read, &anchors), "control: a sibling of the start directory");
+        let unknown = OsAnchors::default();
+        assert!(!grants.fs_allows_at(Path::new("/home/u/.orb/x.json"), FsMode::Write, &unknown), "edge: an anchor the host does not know grants nothing");
+        assert_eq!(anchors.expand("~/.orb/x").unwrap(), Some(PathBuf::from("/home/u/.orb/x")));
+        assert_eq!(anchors.expand("./a").unwrap(), Some(PathBuf::from("/work/p/a")));
+        assert_eq!(anchors.expand("/abs").unwrap(), None, "control: an absolute path is not anchored");
+        assert_eq!(anchors.expand("rel").unwrap(), None, "control: a bare relative path keeps the working-directory rule");
+        assert!(unknown.expand("~/x").is_err(), "edge: an anchor the host cannot place is an error");
     }
 
     fn concat(pieces: &[&str]) -> SExpression {

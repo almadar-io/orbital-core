@@ -829,7 +829,7 @@ mod os_effects {
         let site = site.as_ref().expect("a stream carries its call site");
         assert_eq!(site.trait_name, "Host");
         assert_eq!(site.emit.on_message.as_deref(), Some("BAD"));
-        assert_eq!(payload_of(&response, "OK"), json!({ "eof": true }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "eof": true, "key": "in" }));
     }
 
     #[test]
@@ -1730,11 +1730,11 @@ mod os_deferred {
     }
 
     #[test]
-    fn control_the_same_keyed_wait_answered_with_a_result_fires_the_success_route_unchanged() {
+    fn control_the_same_keyed_wait_answered_with_a_result_fires_the_success_route_with_its_key() {
         let (response, _) = run(keyed_wait(), go(None), |_| {
             IoAnswer::Os(Ok(serde_json::from_value(json!({ "code": 0 })).unwrap()))
         });
-        assert_eq!(payload_of(&response, "OK"), json!({ "code": 0.0 }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "code": 0.0, "key": "k" }));
     }
 
     #[test]
@@ -1857,6 +1857,63 @@ mod os_completion {
         let sink = Arc::new(KernelCompletionSink::new(kernel.clone(), answer, on_done));
         handles.completions.set_sink(sink.clone());
         Wired { kernel, sink, handles, done }
+    }
+
+    fn getenv_reply(name: &str, key: Option<&str>) -> (String, serde_json::Value) {
+        let options = match key {
+            Some(key) => json!({ "key": key, "emit": { "success": "ENV_OK", "failure": "ENV_BAD" } }),
+            None => json!({ "emit": { "success": "ENV_OK", "failure": "ENV_BAD" } }),
+        };
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Sup", "linkedEntity": "Job", "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "ok" }, { "name": "bad" }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "GO", "effects": [["os/getenv", name, options]] },
+                        { "from": "idle", "to": "ok", "event": "ENV_OK", "effects": [["set", "@entity.got", "@payload"]] },
+                        { "from": "idle", "to": "bad", "event": "ENV_BAD", "effects": [["set", "@entity.got", "@payload"]] }
+                    ]
+                } }]
+            }]
+        }))
+        .unwrap();
+        let store: Arc<dyn EntitySource> = Arc::new(InMemoryEntityCache::new());
+        let kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), KernelConfig::default()));
+        kernel.register_schema(schema).unwrap();
+        let handles = Arc::new(OsHandles::default());
+        let grants = Arc::new(OsGrants { env: vec!["HOME".to_string()], ..OsGrants::default() });
+        let answer: Arc<CompletionAnswerer> = Arc::new(move |request: &IoRequest| match request {
+            IoRequest::Os { .. } => {
+                let on_event = |_: Option<&CallSite>, _: Value| {};
+                answer_os(Some(&OsHost { grants: &grants, handles: &handles, on_event: &on_event }), request)
+            }
+            other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
+        });
+        let on_done: Arc<CompletionDone> = Arc::new(|_: &CallSite, _: &str, _: Result<DispatchOutcomes, DispatchError>| {});
+        let sink = Arc::new(KernelCompletionSink::new(kernel.clone(), answer, on_done));
+        let progress = kernel.start_dispatch("Sup", None, "GO", Value::Null, None, None).unwrap();
+        sink.drive(progress).unwrap();
+        let held = kernel.snapshot_trait("Sup", None);
+        (held.state, serde_json::to_value(&held.entity).unwrap()["got"].clone())
+    }
+
+    #[test]
+    fn an_os_answer_given_in_place_carries_its_key_on_success_and_failure() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(getenv_reply("HOME", Some("k1")), ("ok".to_string(), json!({ "value": home, "key": "k1" })));
+        let (state, got) = getenv_reply("PATH", Some("k2"));
+        assert_eq!((state.as_str(), &got["key"], &got["kind"]), ("bad", &json!("k2"), &json!("denied")));
+    }
+
+    #[test]
+    fn control_an_unkeyed_os_answer_carries_no_key() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(getenv_reply("HOME", None), ("ok".to_string(), json!({ "value": home })));
+        let (_, got) = getenv_reply("PATH", None);
+        assert_eq!(got.get("key"), None);
     }
 
     fn go_sup(wired: &Wired) {
@@ -2148,6 +2205,10 @@ mod os_twin {
         let fixture: Json = serde_json::from_str(&raw).unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let real = tmp.path().canonicalize().unwrap();
+        let anchors_dir = tempfile::tempdir().unwrap();
+        let anchors_root = anchors_dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(anchors_root.join("start")).unwrap();
+        std::fs::create_dir_all(anchors_root.join("home/.cfg")).unwrap();
         let echo = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = echo.local_addr().unwrap().port();
         let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
@@ -2167,11 +2228,18 @@ mod os_twin {
 
         let mut vars: HashMap<String, Json> = HashMap::new();
         vars.insert("tmp".into(), json!(real.to_string_lossy()));
+        vars.insert("anchors".into(), json!(anchors_root.to_string_lossy()));
         vars.insert("port".into(), json!(port));
         vars.insert("closedPort".into(), json!(closed));
 
         let grants: OsGrants = serde_json::from_value(substitute(&vars, &fixture["grants"])).unwrap();
-        let handles = Shared::new(OsHandles::default());
+        let handles = Shared::new(OsHandles {
+            anchors: orbital_core_runtime::os_host::OsAnchors {
+                home: Some(anchors_root.join("home")),
+                start: Some(anchors_root.join("start")),
+            },
+            ..OsHandles::default()
+        });
         let (told, rx) = channel();
         handles.completions.set_sink(Shared::new(Collect(StdMutex::new(told))));
         let mut arrived: HashMap<String, Json> = HashMap::new();

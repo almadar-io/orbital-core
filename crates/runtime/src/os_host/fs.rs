@@ -328,8 +328,27 @@ mod ops {
             self.io(Path::new("fd"), e)
         }
 
+        /// The absolute path `raw` names: as written, a `~/` or `./` form under its anchor, or a bare relative path
+        /// under the working directory `os/chdir` set.
+        fn absolute(&self, raw: &str) -> Result<PathBuf, OsError> {
+            if let Some(anchored) = self.host.handles.anchors.expand(raw).map_err(|m| self.err(OsErrorKind::Invalid, m))? {
+                return Ok(anchored);
+            }
+            let given = Path::new(raw);
+            if given.is_absolute() {
+                return Ok(given.to_path_buf());
+            }
+            match self.host.handles.fs.cwd.lock().as_ref() {
+                Some(cwd) => Ok(cwd.join(given)),
+                None => Err(self.err(
+                    OsErrorKind::Invalid,
+                    format!("{raw} is relative and no working directory is set (os/chdir)"),
+                )),
+            }
+        }
+
         fn allow(&self, path: &Path, mode: FsMode) -> Result<(), OsError> {
-            if self.host.grants.fs_allows(path, mode) {
+            if self.host.grants.fs_allows_at(path, mode, &self.host.handles.anchors) {
                 Ok(())
             } else {
                 Err(self.err(
@@ -343,20 +362,7 @@ mod ops {
             if raw.is_empty() {
                 return Err(self.err(OsErrorKind::Invalid, "empty path"));
             }
-            let given = Path::new(raw);
-            let absolute = if given.is_absolute() {
-                given.to_path_buf()
-            } else {
-                match self.host.handles.fs.cwd.lock().as_ref() {
-                    Some(cwd) => cwd.join(given),
-                    None => {
-                        return Err(self.err(
-                            OsErrorKind::Invalid,
-                            format!("{raw} is relative and no working directory is set (os/chdir)"),
-                        ))
-                    }
-                }
-            };
+            let absolute = self.absolute(raw)?;
             let norm = lexical(&absolute).ok_or_else(|| {
                 self.err(OsErrorKind::Denied, format!("{raw} climbs above the root"))
             })?;
@@ -875,20 +881,7 @@ mod ops {
             if raw.is_empty() {
                 return Err(self.err(OsErrorKind::Invalid, "empty pattern"));
             }
-            let given = Path::new(raw);
-            let absolute = if given.is_absolute() {
-                given.to_path_buf()
-            } else {
-                match self.host.handles.fs.cwd.lock().as_ref() {
-                    Some(cwd) => cwd.join(given),
-                    None => {
-                        return Err(self.err(
-                            OsErrorKind::Invalid,
-                            format!("{raw} is relative and no working directory is set (os/chdir)"),
-                        ))
-                    }
-                }
-            };
+            let absolute = self.absolute(raw)?;
             let pattern = lexical(&absolute).ok_or_else(|| {
                 self.err(OsErrorKind::Denied, format!("{raw} climbs above the root"))
             })?;
@@ -931,14 +924,14 @@ mod ops {
 
         fn consider(&self, path: &Path, matcher: &OsGrants, out: &mut Vec<String>) {
             if !matcher.fs_allows(path, FsMode::Read)
-                || !self.host.grants.fs_allows(path, FsMode::Read)
+                || !self.host.grants.fs_allows_at(path, FsMode::Read, &self.host.handles.anchors)
             {
                 return;
             }
             let Ok(real) = resolve(path, true) else {
                 return;
             };
-            if real != path && !self.host.grants.fs_allows(&real, FsMode::Read) {
+            if real != path && !self.host.grants.fs_allows_at(&real, FsMode::Read, &self.host.handles.anchors) {
                 return;
             }
             if fs::symlink_metadata(path).is_ok() {

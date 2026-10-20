@@ -254,6 +254,7 @@ pub use orbital_core_base::signature;
 pub use orbital_core_base::slots;
 pub use orbital_core_base::stamp;
 pub use orbital_core_base::str_utils;
+pub use orbital_core_base::json_value;
 pub use orbital_core_base::time_util;
 pub use orbital_core_eval::state_machine;
 pub mod type_compat {

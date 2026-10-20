@@ -69,6 +69,8 @@ pub struct OsHandles {
     pub process: process::ProcTable,
     pub net: net::NetTable,
     pub completions: Arc<completion::Completions>,
+    /// Where `~/` and `./` paths and grants are anchored: the user's home and the directory the program started in.
+    pub anchors: OsAnchors,
 }
 
 impl Default for OsHandles {
@@ -79,6 +81,7 @@ impl Default for OsHandles {
             process: process::ProcTable::default(),
             net: net::NetTable::new(ids),
             completions: Arc::default(),
+            anchors: OsAnchors::of_process(),
         }
     }
 }

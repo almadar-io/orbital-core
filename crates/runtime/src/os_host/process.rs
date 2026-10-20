@@ -10,7 +10,6 @@ use orbital_core_base::value::{Value, ValueMap};
 use parking_lot::Mutex;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
-use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -124,6 +123,25 @@ fn as_stdio(mode: Mode) -> Stdio {
     }
 }
 
+/// The child leads a new session (Unix) or process group without a console (Windows), so it outlives this process
+/// and a terminal's interrupt to our group does not reach it.
+#[cfg(unix)]
+fn detach(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: setsid is async-signal-safe and touches no memory of the parent.
+    unsafe {
+        cmd.pre_exec(|| if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+    }
+}
+
+#[cfg(windows)]
+fn detach(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+}
+
 fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     let op = OsOp::Spawn;
     let command = arg_str(args, 0, op)?;
@@ -144,7 +162,7 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     };
     if let Some(m) = opts {
         for key in m.keys() {
-            if !["cwd", "env", "stdin", "stdout", "stderr"].contains(&key.as_str()) {
+            if !["cwd", "env", "stdin", "stdout", "stderr", "detached"].contains(&key.as_str()) {
                 return Err(invalid(op, format!("unknown option {key}")));
             }
         }
@@ -155,16 +173,30 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     let cwd = match opts.and_then(|m| m.get("cwd")) {
         None | Some(Value::Null) => None,
         Some(Value::String(p)) => {
-            if !host.grants.fs_allows(Path::new(p), FsMode::Read) {
+            let dir = host
+                .handles
+                .anchors
+                .expand(p)
+                .map_err(|m| invalid(op, m))?
+                .unwrap_or_else(|| std::path::PathBuf::from(p));
+            if !host.grants.fs_allows_at(&dir, FsMode::Read, &host.handles.anchors) {
                 return Err(denied(op, &format!("cwd {p} is not granted for read")));
             }
-            Some(p.as_str())
+            Some(dir)
         }
         Some(_) => return Err(invalid(op, "cwd must be a string")),
     };
     let stdin_mode = stdio_mode(opts, "stdin", StdioKind::In, host)?;
     let stdout_mode = stdio_mode(opts, "stdout", StdioKind::Out, host)?;
     let stderr_mode = stdio_mode(opts, "stderr", StdioKind::Err, host)?;
+    let detached = match opts.and_then(|m| m.get("detached")) {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(invalid(op, "detached must be a boolean")),
+    };
+    if detached && [stdin_mode, stdout_mode, stderr_mode].contains(&Mode::Pipe) {
+        return Err(invalid(op, "a detached child takes no piped stream"));
+    }
 
     let mut vars: HashMap<String, String> = HashMap::new();
     for (name, value) in host.handles.process.env.lock().iter() {
@@ -217,6 +249,9 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
         .stderr(as_stdio(stderr_mode));
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
+    }
+    if detached {
+        detach(&mut cmd);
     }
     let mut child = cmd.spawn().map_err(|e| io_error(op, &e))?;
     let pid = i64::from(child.id());
@@ -744,6 +779,39 @@ mod tests {
         assert_eq!(read_all(&h, int(field(&r, "stdout"))), b"hello");
         let done = call(&g, &h, OsOp::Wait, vec![field(&r, "pid")]).expect("wait");
         assert_eq!(field(&done, "code"), Value::Number(0.0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_detached_child_runs_in_its_own_session_and_an_attached_one_in_ours() {
+        let (g, h) = (grants(), OsHandles::default());
+        let start = |detached: bool| {
+            let mut args = sh("exec sleep 30", &[]);
+            args.push(opts(vec![("detached", Value::Bool(detached))]));
+            int(field(&call(&g, &h, OsOp::Spawn, args).expect("spawn"), "pid"))
+        };
+        let (detached, attached) = (start(true), start(false));
+        let ours = unsafe { libc::getsid(0) };
+        assert_eq!(unsafe { libc::getsid(detached as libc::pid_t) }, detached as libc::pid_t, "a detached child leads its own session");
+        assert_eq!(unsafe { libc::getsid(attached as libc::pid_t) }, ours, "control: an attached child stays in ours");
+        for pid in [detached, attached] {
+            call(&g, &h, OsOp::Kill, vec![Value::Number(pid as f64), s("KILL")]).expect("kill");
+        }
+    }
+
+    #[test]
+    fn edge_a_detached_child_takes_no_pipe_and_detached_must_be_a_boolean() {
+        let (g, h) = (grants(), OsHandles::default());
+        let mut piped = sh("true", &[]);
+        piped.push(opts(vec![("stdout", s("pipe")), ("detached", Value::Bool(true))]));
+        let refused = call(&g, &h, OsOp::Spawn, piped).expect_err("a pipe would tie it to us");
+        assert_eq!(refused.kind, OsErrorKind::Invalid);
+        assert!(refused.message.contains("takes no piped stream"), "{}", refused.message);
+        let mut stringly = sh("true", &[]);
+        stringly.push(opts(vec![("detached", s("yes"))]));
+        let refused = call(&g, &h, OsOp::Spawn, stringly).expect_err("not a boolean");
+        assert_eq!(refused.kind, OsErrorKind::Invalid);
+        assert!(refused.message.contains("detached must be a boolean"), "{}", refused.message);
     }
 
     #[test]

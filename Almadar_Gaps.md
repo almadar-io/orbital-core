@@ -9,7 +9,9 @@ Every open gap this repo owns lives here. This file is the source of truth; the 
 - **G-ORBITAL-CORE-002** — `EmbeddedKernel::frame` costs about 0.11 ms per ticking trait. On the iOS simulator (iPhone 17 Pro, release C-ABI lib from `make ios-lib`), a frame with 100 ticking traits takes p50 11.4 ms and with 1 000 takes p50 557 ms / p95 752 ms, so every one of 600 frames misses the 16.7 ms budget and the R1-device frame gate (2 ms) by about 280×. Dispatch is fine (p50 0.15 ms over 10^4 events). Suspects: the frame path in `runtime/kernel.rs` and `effects/executor.rs` (per-trait entity layering, per-tick response building, render-store work per tick). Fix: profile one frame (allocation count + time per stage, like `tests/dispatch_alloc_count.rs`), then cut per-trait work so cost grows with traits that actually change. `orbital-core` [architectural] — evidence: `@almadar-io/parity` device rows (`frame-60hz-100`, `frame-60hz-1000`), `orbital-shell-ios/tests/device-bench/`; prevention rung: none of the language rungs (performance), gated by the device frame row.
 - **Close by deleting.** Remove the entry in the same commit as the fix.
 
-Next code: `G-ORBITAL-CORE-036`
+- **G-ORBITAL-CORE-036** — Two `orbital-core-runtime` tests are red on the 2026-10-20 tree because of uncommitted in-flight work adding `firedArm` to the transition response (`crates/runtime/src/effects/response.rs`, `tests/client_only_ignores_host_state.rs`): `tests/embed_session.rs` `every_script_matches_the_c_abi_golden` (the golden `tests/fixtures/embed/scripts/basic-entity.json` step 4 has no `firedArm`) and `tests/resumable_dispatch.rs` `each_hop_of_a_cascade_records_the_entity_before_and_after_it` (line 2290 expects `firedArm` 0 on the hop's observed view, which is `null`). Whoever owns the `firedArm` change refreshes the C-ABI golden and sets `firedArm` on the cascade hop view. `orbital-core` [mechanical] — prevention rung: tooling regression gate (the crate suite). Found by the 2026-10-20 night run; another session's files, not edited.
+
+Next code: `G-ORBITAL-CORE-037`
 
 
 

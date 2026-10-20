@@ -4437,9 +4437,24 @@ impl RuntimeKernel {
                 &OsError::new(OsErrorKind::Invalid, format!("{}: a stream needs a key", op.name())),
             );
         }
+        let keyed = |payload: Value| match (key, payload) {
+            (Some(key), Value::Object(mut fields)) => {
+                fields.insert("key".to_string(), Value::String(key.to_string()));
+                Value::Object(fields)
+            }
+            (Some(key), other) => Value::Object(ValueMap::from([
+                ("value".to_string(), other),
+                ("key".to_string(), Value::String(key.to_string())),
+            ])),
+            (None, payload) => payload,
+        };
         match self.io.os(*op, args, key) {
-            Ok(payload) => EffectResult::executed_with_value(effect.clone(), payload),
-            Err(error) => os_failure(effect, &error),
+            Ok(payload) => EffectResult::executed_with_value(effect.clone(), keyed(payload)),
+            Err(error) => {
+                let mut result = os_failure(effect, &error);
+                result.return_value = result.return_value.take().map(keyed);
+                result
+            }
         }
     }
 

@@ -1,7 +1,7 @@
 {
-  "about": "Twin host fixture: os asks in order against ONE fresh host, with the answers both the Node answerer and the Rust os_host must give. ${name} in a string is replaced by the variable of that name (tmp, port, closedPort, and every bind); {\"$var\":\"name\"} in an argument is the variable's value as is; {\"$number\":true} in an expected answer matches any number; an expected error carries kind and either message or messagePrefix; bind maps a variable name to a top-level field of the ok answer. A step with a key is asked with a call site whose success route is DONE and failure route FAILED; a deferred step expects the answer to be deferred and then the completion {event, payload} for its key (deferred \"pending\" does not wait for it); a cancel step cancels the pending completion of its key and expects cancelled true or false.",
+  "about": "Twin host fixture: os asks in order against ONE fresh host, with the answers both the Node answerer and the Rust os_host must give. ${name} in a string is replaced by the variable of that name (tmp, anchors, port, closedPort, and every bind); the host anchors ~/ at ${anchors}/home and ./ at ${anchors}/start, which only the anchored grants cover; {\"$var\":\"name\"} in an argument is the variable's value as is; {\"$number\":true} in an expected answer matches any number; an expected error carries kind and either message or messagePrefix; bind maps a variable name to a top-level field of the ok answer. A step with a key is asked with a call site whose success route is DONE and failure route FAILED; a deferred step expects the answer to be deferred and then the completion {event, payload} for its key (deferred \"pending\" does not wait for it); a cancel step cancels the pending completion of its key and expects cancelled true or false.",
   "grants": {
-    "fs": [{ "glob": "${tmp}/**", "modes": ["read", "write", "create", "remove", "meta"] }],
+    "fs": [{ "glob": "${tmp}/**", "modes": ["read", "write", "create", "remove", "meta"] }, { "glob": "./**", "modes": ["read", "write", "create"] }, { "glob": "~/.cfg/**", "modes": ["read", "write", "create"] }],
     "exec": ["echo", "sleep", "nope-not-a-command"],
     "net": [
       { "target": "127.0.0.1:${port}", "kinds": ["tcp"] },
@@ -15,6 +15,11 @@
     { "name": "write a file", "op": "os/write-file", "args": ["${tmp}/a.txt", "aGVsbG8="], "expect": { "ok": { "bytes": 5 } } },
     { "name": "read it back", "op": "os/read-file", "args": ["${tmp}/a.txt"], "expect": { "ok": { "data": "aGVsbG8=" } } },
     { "name": "append", "op": "os/append-file", "args": ["${tmp}/a.txt", "IHdvcmxk"], "expect": { "ok": { "bytes": 6 } } },
+    { "name": "write under the start anchor", "op": "os/write-file", "args": ["./anchored.txt", "aGk="], "expect": { "ok": { "bytes": 2 } } },
+    { "name": "the anchored file is the one under the start directory", "op": "os/read-file", "args": ["${anchors}/start/anchored.txt"], "expect": { "ok": { "data": "aGk=" } } },
+    { "name": "write under the home anchor", "op": "os/write-file", "args": ["~/.cfg/c.json", "e30="], "expect": { "ok": { "bytes": 2 } } },
+    { "name": "outside the anchored home grant", "op": "os/read-file", "args": ["~/other.txt"], "expect": { "error": { "kind": "denied", "message": "os/read-file: ${anchors}/home/other.txt is not granted for Read" } } },
+    { "name": "climbing out of the start anchor", "op": "os/read-file", "args": ["./../outside.txt"], "expect": { "error": { "kind": "denied", "message": "os/read-file: ${anchors}/outside.txt is not granted for Read" } } },
     { "name": "read the whole", "op": "os/read-file", "args": ["${tmp}/a.txt"], "expect": { "ok": { "data": "aGVsbG8gd29ybGQ=" } } },
     { "name": "chmod", "op": "os/chmod", "args": ["${tmp}/a.txt", 416], "expect": { "ok": {} } },
     {
@@ -68,6 +73,8 @@
     { "name": "close the pipe", "op": "os/close", "args": [{ "$var": "outFd" }], "expect": { "ok": {} } },
     { "name": "waiting twice", "op": "os/wait", "args": [{ "$var": "pid" }], "expect": { "error": { "kind": "closed", "message": "os/wait: pid ${pid} is not a spawned process" } } },
     { "name": "command not granted", "op": "os/spawn", "args": ["ls", []], "expect": { "error": { "kind": "denied", "message": "os/spawn: command ls is not granted" } } },
+    { "name": "a detached child takes no piped stream", "op": "os/spawn", "args": ["echo", ["x"], { "stdout": "pipe", "detached": true }], "expect": { "error": { "kind": "invalid", "message": "os/spawn: a detached child takes no piped stream" } } },
+    { "name": "detached must be a boolean", "op": "os/spawn", "args": ["echo", ["x"], { "detached": "yes" }], "expect": { "error": { "kind": "invalid", "message": "os/spawn: detached must be a boolean" } } },
     { "name": "command not found", "op": "os/spawn", "args": ["nope-not-a-command", []], "expect": { "error": { "kind": "not-found", "message": "os/spawn: No such file or directory (os error 2)" } } },
     { "name": "unknown option", "op": "os/spawn", "args": ["echo", [], { "shell": true }], "expect": { "error": { "kind": "invalid", "message": "os/spawn: unknown option shell" } } },
     { "name": "spawn sleep", "op": "os/spawn", "args": ["sleep", ["30"]], "bind": { "sleeper": "pid" }, "expect": { "ok": { "pid": { "$number": true } } } },
