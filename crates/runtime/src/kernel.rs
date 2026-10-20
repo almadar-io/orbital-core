@@ -1164,7 +1164,7 @@ impl RuntimeKernel {
     /// `store`-source boot seeds the credential store with.
     pub fn credential_catalog(&self) -> Result<orbital_core_base::credential_admin::Catalog, String> {
         let program = self.program_credentials()?;
-        crate::credential_admin::catalog(&program).map_err(|refusal| refusal.message)
+        orbital_core_base::credential_admin::catalog(&program).map_err(|refusal| refusal.message)
     }
 
     /// The `egress` origins every registered program declares, unioned: what a host's transport may reach.
@@ -4124,7 +4124,7 @@ impl RuntimeKernel {
                 let caller = ServiceCaller::of_user(&ctx.user);
                 let catalog = || {
                     let program = self.program_credentials().map_err(orbital_core_base::credential_admin::Refusal::plain)?;
-                    crate::credential_admin::catalog(&program)
+                    orbital_core_base::credential_admin::catalog(&program)
                 };
                 match crate::credential_admin::run(&*self.io, *op, request, caller.as_ref(), &catalog) {
                     Ok(reply) => EffectResult::executed_with_value(effect.clone(), reply),

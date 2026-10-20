@@ -15,6 +15,7 @@ pub mod envelope;
 pub mod error;
 pub mod expects;
 pub mod value;
+pub mod viewer;
 pub mod events;
 pub mod fixtures;
 pub mod generate;
@@ -61,3 +62,4 @@ pub mod oauth_wire;
 #[cfg(feature = "ts-export")]
 pub mod wire_ts_export;
 pub mod jwt_alg;
+pub mod jws;

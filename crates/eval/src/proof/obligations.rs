@@ -373,7 +373,7 @@ impl<'a> Program<'a> {
                         let fields: Vec<&str> = def.fields.iter().filter_map(|f| f.name.as_deref()).collect();
                         if matches!(w.op, WriteOp::Create | WriteOp::Upsert) {
                             let created: BTreeMap<&str, SExpression> = fields.iter().map(|f| (*f, new_field(f, None))).collect();
-                            out.push(Obligation {
+                            out.push(configured(td, Obligation {
                                 proposition: prop.clone(),
                                 site: format!("{site} (create)"),
                                 assumptions: base.clone(),
@@ -381,7 +381,7 @@ impl<'a> Program<'a> {
                                 vars: vars.clone(),
                                 inexact: join(&notes),
                                 unbuildable: None,
-                            });
+                            }));
                         }
                         if matches!(w.op, WriteOp::Update | WriteOp::Upsert) {
                             if matches!(w.data, Data::Whole(_) | Data::Merge(..)) {
@@ -392,7 +392,7 @@ impl<'a> Program<'a> {
                                 base.push(subst_fields(i, "@entity", &|f| Some(old(f))));
                             }
                             let updated: BTreeMap<&str, SExpression> = fields.iter().map(|f| (*f, new_field(f, Some(old(f))))).collect();
-                            out.push(Obligation {
+                            out.push(configured(td, Obligation {
                                 proposition: prop.clone(),
                                 site: format!("{site} (update)"),
                                 assumptions: base,
@@ -400,7 +400,7 @@ impl<'a> Program<'a> {
                                 vars,
                                 inexact: join(&notes),
                                 unbuildable: None,
-                            });
+                            }));
                         }
                     }
                 }
@@ -476,7 +476,7 @@ impl<'a> Program<'a> {
                             step.guard.into_iter().cloned().chain(path.conds.iter().cloned()).collect();
                         assumptions.extend(held.iter().cloned());
                         let label = if starts.len() > 1 { if inside { " (from the state)" } else { " (from another state)" } } else { "" };
-                        out.push(Obligation {
+                        out.push(configured(td, Obligation {
                             proposition: prop.clone(),
                             site: format!("{}{}{}", step.site, path_label(&paths, pi), label),
                             assumptions,
@@ -484,7 +484,7 @@ impl<'a> Program<'a> {
                             vars: vars.clone(),
                             inexact: join(&notes),
                             unbuildable: None,
-                        });
+                        }));
                     }
                 }
             }
@@ -531,7 +531,7 @@ impl<'a> Program<'a> {
                     let goal = subst_fields(&post, FROM_ENTITY, &|f| Some(bind("@entity", f)));
                     let mut assumptions: Vec<SExpression> = step.guard.into_iter().cloned().chain(path.conds.iter().cloned()).collect();
                     assumptions.extend(source_holds.iter().cloned());
-                    out.push(Obligation {
+                    out.push(configured(td, Obligation {
                         proposition: prop.clone(),
                         site: format!("{}{}", step.site, path_label(&paths, pi)),
                         assumptions,
@@ -539,7 +539,7 @@ impl<'a> Program<'a> {
                         vars,
                         inexact: join(&notes),
                         unbuildable: None,
-                    });
+                    }));
                 }
             }
         }
@@ -556,7 +556,7 @@ impl<'a> Program<'a> {
     ) {
         let mut vars = self.base_vars(td, None);
         let defaults = |f: &str| Some(linked.map_or(SExpression::Null, |def| default_of(def, f)));
-        out.push(Obligation {
+        out.push(configured(td, Obligation {
             proposition: prop.clone(),
             site: format!("{}: mounted with its entity's defaults", td.name),
             assumptions: Vec::new(),
@@ -564,11 +564,11 @@ impl<'a> Program<'a> {
             vars: vars.clone(),
             inexact: None,
             unbuildable: None,
-        });
+        }));
         let Some(def) = linked.filter(|d| d.persistence != Some(Persistence::Runtime)) else { return };
         add_entity_vars(&mut vars, INIT, def, true);
         let row = |f: &str| Some(bind(INIT, f));
-        out.push(Obligation {
+        out.push(configured(td, Obligation {
             proposition: prop.clone(),
             site: format!("{}: mounted on a stored {} row", td.name, def.name),
             assumptions: row_invariants(&def.name).iter().map(|i| subst_fields(i, "@entity", &row)).collect(),
@@ -576,7 +576,7 @@ impl<'a> Program<'a> {
             vars,
             inexact: None,
             unbuildable: None,
-        });
+        }));
     }
 
     /// Another trait's write of the row `td` may be showing, or of a shared frame, can change `td`'s `@entity`
@@ -591,6 +591,7 @@ impl<'a> Program<'a> {
         out: &mut Vec<Obligation>,
     ) {
         let Some(def) = linked else { return };
+        let holds = &config_read(td, holds);
         for other in self.traits.iter().filter(|u| u.name != td.name) {
             let shares_frame = def.shared && other.linked_entity.as_deref() == Some(def.name.as_str());
             for step in steps(other) {
@@ -599,7 +600,7 @@ impl<'a> Program<'a> {
                     continue;
                 };
                 for (pi, path) in paths.iter().enumerate() {
-                    let rename = |e: &SExpression| subst_fields(e, "@entity", &|f| Some(bind(OTHER, f)));
+                    let rename = |e: &SExpression| config_read(other, &subst_fields(e, "@entity", &|f| Some(bind(OTHER, f))));
                     let mut changed: BTreeMap<String, SExpression> = BTreeMap::new();
                     if path.writes.iter().any(|w| w.entity == UNKNOWN_TARGET) {
                         for f in def.fields.iter().filter_map(|f| f.name.as_deref()) {
@@ -821,21 +822,8 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
             match (items.get(1), items.get(2)) {
                 (Some(SExpression::String(target)), Some(value)) => match target.strip_prefix("@entity.") {
                     Some(field) if !field.contains('.') => {
-                        let v = match value {
-                            // A bare binding that does not resolve is written as its text (G-ORBITAL-CORE-019).
-                            SExpression::String(b) if b.starts_with('@') => {
-                                let read = path.read(value);
-                                let resolves = match &read {
-                                    SExpression::String(r) if r.starts_with('@') => {
-                                        program.base_vars(td, event).get(r).is_some_and(|i| !i.nullable)
-                                    }
-                                    _ => true,
-                                };
-                                if resolves { read } else { unresolved(&format!("set of {b}")) }
-                            }
-                            _ => path.read(value),
-                        };
-                        path.frame.insert(field.to_string(), v);
+                        // A binding that reads nothing stores null, as every other read of it (G-ORBITAL-CORE-019).
+                        path.frame.insert(field.to_string(), path.read(value));
                     }
                     _ => path.notes.push(format!("`set {target}` is not a top-level `@entity` field")),
                 },
@@ -1018,6 +1006,28 @@ fn fields_set_anywhere(td: &TraitDefinition) -> BTreeSet<String> {
 // ---------------------------------------------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------------------------------------------
+
+/// `expr` with each `@config.<knob>` read as the trait's resolved config holds it for the run (call-site overrides
+/// are folded in): a scalar default is that constant, no default reads null, and a default bound at run time
+/// (`@user.…`, a forward) or a structured one is unresolved. A knob the trait does not declare is left as written.
+fn config_read(td: &TraitDefinition, expr: &SExpression) -> SExpression {
+    let Some(config) = td.config.as_ref() else { return expr.clone() };
+    subst_fields(expr, "@config", &|knob| {
+        let field = config.get(knob)?;
+        Some(match &field.default {
+            None | Some(SExpression::Null) => SExpression::Null,
+            Some(v @ (SExpression::Number(_) | SExpression::Bool(_))) => v.clone(),
+            Some(SExpression::String(s)) if !s.starts_with('@') => SExpression::String(s.clone()),
+            Some(other) => unresolved(&format!("@config.{knob} = {}", canonical(other))),
+        })
+    })
+}
+
+fn configured(td: &TraitDefinition, mut o: Obligation) -> Obligation {
+    o.assumptions = o.assumptions.iter().map(|a| config_read(td, a)).collect();
+    o.goal = config_read(td, &o.goal);
+    o
+}
 
 fn bind(root: &str, field: &str) -> SExpression {
     SExpression::String(format!("{root}.{field}"))

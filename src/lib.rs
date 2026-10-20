@@ -248,7 +248,7 @@ pub use orbital_core_base::schema;
 pub use orbital_core_base::secrets;
 pub mod credential_admin {
     pub use orbital_core_base::credential_admin::*;
-    pub use orbital_core_runtime::credential_admin::{catalog, missing_required_credentials, run, schema_invoked_services, AdminAsks, CredentialStanding, RotateCounts, StoreListing, StoredName};
+    pub use orbital_core_runtime::credential_admin::{run, schema_invoked_services, AdminAsks, CredentialStanding, RotateCounts, StoreListing, StoredName};
 }
 pub use orbital_core_base::shell;
 pub use orbital_core_base::shell_protocol;
@@ -376,6 +376,7 @@ pub use orbital_core_runtime::listener::ListenerInfo;
 pub use orbital_core_runtime::listener::ListenerManager;
 pub use orbital_core_runtime::listener::TriggerCallback;
 pub use orbital_core_runtime::planner;
+pub use orbital_core_runtime::program_machine;
 pub use orbital_core_runtime::process_result::ProcessEventResult;
 pub use orbital_core_runtime::render_report;
 pub use orbital_core_runtime::seed::sample_rows;

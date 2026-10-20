@@ -22,6 +22,9 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes", "allo
 p256 = { version = "0.13", default-features = false, features = ["alloc", "ecdh", "ecdsa", "pem"] }
 rsa = { version = "0.9", default-features = false, features = ["pem", "sha2"] }
 url = "2"
+# The HTTP/1 codec orbital-server's hyper already uses: `http/listen` parses requests, `http/respond` checks headers.
+httparse = "1"
+http = "1"
 rustls = { version = "0.23", default-features = false, features = ["tls12"] }
 webpki-roots = "1"
 x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }

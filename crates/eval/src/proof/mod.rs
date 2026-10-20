@@ -135,7 +135,8 @@ mod tests {
                             { "key": "INIT", "name": "Init" },
                             { "key": "PAY", "name": "Pay", "payloadSchema": [
                                 { "name": "amount", "type": "number", "required": true },
-                                { "name": "status", "type": "string" }
+                                { "name": "status", "type": "string" },
+                                { "name": "tip", "type": "number" }
                             ] },
                             { "key": "ADD", "name": "Add", "payloadSchema": [{ "name": "total", "type": "number", "required": true }] }
                         ],
@@ -351,26 +352,106 @@ mod tests {
         assert!(matches!(v.iter().find(|(s, _)| s.contains("defaults")).unwrap().1, Verdict::Violated { .. }), "{v:#?}");
     }
 
+    // G-ORBITAL-CORE-019: a `set` of a binding that reads nothing stores null, so an optional binding is its value or null.
     #[test]
-    fn a_set_from_an_optional_binding_is_never_proved() {
+    fn a_set_from_an_optional_binding_is_its_value_or_null() {
         let holds = state_holds("paid", json!(["!=", "@entity.status", "refunded"]));
         let optional = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.status", "@payload.status"]] }]);
-        assert!(matches!(only(&program(optional, J::Null, holds.clone())), Verdict::Unproved { .. }));
+        assert!(matches!(only(&program(optional, J::Null, holds.clone())), Verdict::Violated { .. }), "the payload may carry `refunded`");
         let required = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.paid", "@payload.amount"], ["set", "@entity.status", "paid"]] }]);
         assert_eq!(only(&program(required, J::Null, holds)), Verdict::Proved);
     }
 
     #[test]
-    fn an_equality_over_an_unresolved_set_is_unproved_never_violated() {
+    fn an_equality_over_a_set_from_an_optional_binding_is_proved() {
         let holds = state_holds("paid", json!(["=", "@entity.status", "@payload.status"]));
         let optional = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.status", "@payload.status"]] }]);
-        let Verdict::Unproved { reason, .. } = only(&program(optional, J::Null, holds)) else { panic!("an unresolved write cannot be confirmed") };
-        assert!(reason.contains("not confirmed") || reason.contains("unresolved"), "{reason}");
-        let ensures = json!([["=", "@entity.status", "@payload.status"]]);
-        let t = json!([pay(json!([["set", "@entity.status", "@payload.status"]]), ensures, None)]);
-        assert!(matches!(only(&program(t, J::Null, J::Null)), Verdict::Unproved { .. }));
-        let resolved = json!([pay(json!([["set", "@entity.paid", "@payload.amount"]]), json!([["=", "@entity.paid", "@payload.amount"]]), None)]);
-        assert_eq!(only(&program(resolved, J::Null, J::Null)), Verdict::Proved, "control: a required binding resolves");
+        assert_eq!(only(&program(optional, J::Null, holds)), Verdict::Proved);
+        let ensures = json!([["=", "@entity.paid", "@payload.tip"]]);
+        let t = json!([pay(json!([["set", "@entity.paid", "@payload.tip"]]), ensures, None)]);
+        assert_eq!(only(&program(t, J::Null, J::Null)), Verdict::Proved);
+        let signed = json!([pay(json!([["set", "@entity.paid", "@payload.tip"]]), json!([[">=", "@entity.paid", 0]]), None)]);
+        assert!(matches!(only(&program(signed, J::Null, J::Null)), Verdict::Violated { .. }), "control: an optional tip may be negative");
+    }
+
+    #[test]
+    fn a_payload_read_in_a_guard_and_a_holds_is_proved_and_its_control_refuted() {
+        let holds = state_holds("open", json!(["<", "@entity.paid", "@entity.total"]));
+        let raise = |guard: Option<J>| {
+            let mut t = json!({ "from": "open", "to": "open", "event": "ADD", "effects": [["set", "@entity.total", "@payload.total"]] });
+            if let Some(g) = guard {
+                t["guard"] = g;
+            }
+            json!([t])
+        };
+        let v = verdicts(&program(raise(Some(json!(["<", "@entity.paid", "@payload.total"]))), J::Null, holds.clone()));
+        assert!(v.iter().filter(|(s, _)| s.contains("ADD")).all(|(_, x)| *x == Verdict::Proved), "{v:#?}");
+        let v = verdicts(&program(raise(None), J::Null, holds));
+        assert!(v.iter().any(|(s, x)| s.contains("ADD") && matches!(x, Verdict::Violated { .. })), "control: without the guard the new total may sit below paid {v:#?}");
+    }
+
+    #[test]
+    fn an_entity_read_inside_a_set_is_the_pre_state_value() {
+        let copy = json!([["set", "@entity.paid", "@entity.total"]]);
+        let t = json!([pay(copy.clone(), json!([["=", "@entity.paid", "@entity.total"]]), None)]);
+        assert_eq!(only(&program(t, J::Null, J::Null)), Verdict::Proved);
+        let t = json!([pay(copy.clone(), json!([["=", "@entity.paid", "@fromEntity.total"]]), None)]);
+        assert_eq!(only(&program(t, J::Null, J::Null)), Verdict::Proved);
+        let t = json!([pay(copy, json!([["=", "@entity.paid", "@fromEntity.paid"]]), None)]);
+        assert!(matches!(only(&program(t, J::Null, J::Null)), Verdict::Violated { .. }), "control: the old paid is gone");
+        let reset = json!([["set", "@entity.total", 0], ["set", "@entity.paid", "@entity.total"]]);
+        let t = json!([pay(reset, json!([["=", "@entity.paid", 0]]), None)]);
+        assert_eq!(only(&program(t, J::Null, J::Null)), Verdict::Proved, "a later set reads the earlier one");
+    }
+
+    /// The fixture with `Checkout`'s config knobs set to the given fields.
+    fn configured(transitions: J, knobs: J) -> OrbitalSchema {
+        use orbital_core_base::schema::types::ConfigField;
+        let mut schema = program(transitions, J::Null, J::Null);
+        let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] else { panic!() };
+        let knobs: std::collections::HashMap<String, ConfigField> = serde_json::from_value(knobs).unwrap();
+        td.config = Some(knobs);
+        schema
+    }
+
+    #[test]
+    fn a_config_knob_is_the_runs_constant() {
+        let knobs = json!({ "cap": { "type": "number", "default": 10 }, "on": { "type": "boolean", "default": true } });
+        let capped = |effects: J| json!([pay(effects, json!([["<=", "@entity.paid", "@config.cap"]]), None)]);
+        assert_eq!(only(&configured(capped(json!([["set", "@entity.paid", "@config.cap"]])), knobs.clone())), Verdict::Proved);
+        assert!(
+            matches!(only(&configured(capped(json!([["set", "@entity.paid", ["+", "@config.cap", 1]]])), knobs.clone())), Verdict::Violated { .. }),
+            "control: one past the cap"
+        );
+        let guarded = json!([pay(json!([["set", "@entity.paid", ["+", "@entity.paid", 1]]]), json!([["<", "@fromEntity.paid", "@config.cap"]]), Some(json!(["<", "@entity.paid", "@config.cap"])))]);
+        assert_eq!(only(&configured(guarded, knobs)), Verdict::Proved, "a guard reads the knob");
+    }
+
+    #[test]
+    fn a_count_gated_by_a_config_flag_is_proved_per_flag() {
+        let count = json!([["when", "@config.on", ["set", "@entity.paid", ["+", "@entity.paid", 1]]]]);
+        let either = json!([["if", "@config.on", ["=", "@entity.paid", ["+", "@fromEntity.paid", 1]], ["=", "@entity.paid", "@fromEntity.paid"]]]);
+        let grows = json!([["=", "@entity.paid", ["+", "@fromEntity.paid", 1]]]);
+        let flag = |on: bool| json!({ "on": { "type": "boolean", "default": on } });
+        let proved = |s: &OrbitalSchema| verdicts(s).iter().all(|(_, v)| *v == Verdict::Proved);
+        for on in [true, false] {
+            assert!(proved(&configured(json!([pay(count.clone(), either.clone(), None)]), flag(on))), "on = {on}");
+        }
+        assert!(proved(&configured(json!([pay(count.clone(), grows.clone(), None)]), flag(true))));
+        let v = verdicts(&configured(json!([pay(count, grows, None)]), flag(false)));
+        assert!(v.iter().any(|(_, x)| matches!(x, Verdict::Violated { .. })), "control: a disabled flag counts nothing {v:#?}");
+    }
+
+    #[test]
+    fn a_config_knob_bound_at_run_time_is_unproved_and_an_unset_one_is_null() {
+        let ensures = json!([["=", "@entity.paid", "@config.cap"]]);
+        let t = json!([pay(json!([["set", "@entity.paid", 3]]), ensures.clone(), None)]);
+        let bound = json!({ "cap": { "type": "number", "default": "@user.cap" } });
+        assert!(matches!(only(&configured(t.clone(), bound)), Verdict::Unproved { .. }), "a viewer-bound knob is never refuted");
+        let unset = json!({ "cap": { "type": "number" } });
+        assert!(matches!(only(&configured(t, unset.clone())), Verdict::Violated { .. }), "an unset knob reads null");
+        let t = json!([pay(json!([["set", "@entity.paid", "@config.cap"]]), json!([["=", "@entity.paid", null]]), None)]);
+        assert_eq!(only(&configured(t, unset)), Verdict::Proved);
     }
 
     #[test]

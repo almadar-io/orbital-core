@@ -50,6 +50,10 @@ impl NativeHost {
         handles: Arc<OsHandles>,
         on_event: Arc<StreamEvents>,
     ) -> Self {
+        let (grants, problems) = grants.resolve_anchors(&handles.anchors);
+        for problem in problems {
+            tracing::warn!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, at = %problem.path, message = %problem.message, "os grant anchor");
+        }
         Self {
             source,
             transport,

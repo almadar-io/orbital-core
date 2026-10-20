@@ -41,6 +41,7 @@ pub mod geo;
 pub mod grid;
 pub mod i18n;
 pub mod json;
+pub mod jws;
 pub mod logic;
 pub mod math;
 pub mod noise;
@@ -48,8 +49,10 @@ pub mod object;
 pub mod os_path;
 pub mod path;
 pub mod prob;
+pub mod row;
 pub mod string;
 pub mod system;
+pub mod tree;
 pub mod util;
 pub mod vector;
 pub mod xml;
@@ -66,6 +69,7 @@ pub use geo::*;
 pub use grid::*;
 pub use i18n::*;
 pub use json::*;
+pub use jws::*;
 pub use logic::*;
 pub use math::*;
 pub use noise::*;
@@ -73,8 +77,10 @@ pub use object::*;
 pub use os_path::*;
 pub use path::*;
 pub use prob::*;
+pub use row::*;
 pub use string::*;
 pub use system::*;
+pub use tree::*;
 pub use vector::*;
 pub use xml::*;
 
@@ -161,6 +167,10 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "json/stringify" => K::JsonStringifyOp,
         "json/valid" => K::JsonValidOp,
         "json/nodes" => K::JsonNodesOp,
+
+        // Structural fold over a recursive type; the kernel's one row predicate evaluator
+        "tree/fold" => K::TreeFoldOp,
+        "row/matches" => K::RowMatchesOp,
 
         // CSV
         "csv/parse" => K::CsvParseOp,
@@ -320,6 +330,7 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "str/decode-uri-component" => K::StrDecodeUriComponentOp,
         "str/uri-component-valid" => K::StrUriComponentValidOp,
         "str/to-number" => K::StrToNumberOp,
+        "str/to-int" => K::StrToIntOp,
         "str/collate" => K::StrCollateOp,
         "str/collate-key" => K::StrCollateKeyOp,
         "bytes/from-string" => K::BytesFromStringOp,
@@ -328,13 +339,22 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "bytes/slice" => K::BytesSliceOp,
         "bytes/concat" => K::BytesConcatOp,
         "bytes/equals" => K::BytesEqualsOp,
+        "bytes/index-of" => K::BytesIndexOfOp,
+        "bytes/at" => K::BytesAtOp,
+        "bytes/read-uint" => K::BytesReadUintOp,
+        "bytes/write-uint" => K::BytesWriteUintOp,
         "base64/encode" => K::Base64EncodeOp,
         "base64/decode" => K::Base64DecodeOp,
         "base64/valid" => K::Base64ValidOp,
         "hash/sha256" => K::HashSha256Op,
         "hash/md5" => K::HashMd5Op,
         "hash/scrypt" => K::HashScryptOp,
+        "hash/pbkdf2" => K::HashPbkdf2Op,
         "hmac/sha256" => K::HmacSha256Op,
+        "jws/verify" => K::JwsVerifyOp,
+        "jws/decode" => K::JwsDecodeOp,
+        "jwk/keyset-from-jwks" => K::JwkKeysetFromJwksOp,
+        "jwk/keyset-from-x509" => K::JwkKeysetFromX509Op,
         "titleCase" | "str/titleCase" => K::StrTitleCaseOp,
         "camelCase" | "str/camelCase" => K::StrCamelCaseOp,
         "kebabCase" | "str/kebabCase" => K::StrKebabCaseOp,

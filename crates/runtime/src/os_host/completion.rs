@@ -5,7 +5,7 @@
 use crate::kernel::RuntimeKernel;
 pub use crate::resumable::completion_event;
 use crate::resumable::{
-    drive_blocking, CallSite, DispatchError, DispatchOutcomes, IoAnswer, IoRequest, Progress,
+    drive_blocking, CallRoutes, CallSite, DispatchError, DispatchOutcomes, IoAnswer, IoRequest, Progress,
 };
 use orbital_core_base::os::OsError;
 use orbital_core_base::value::Value;
@@ -16,6 +16,18 @@ use std::sync::Arc;
 /// Receives the outcome of a deferred keyed `os/` call, on the host's watcher thread.
 pub trait OsCompletionSink: Send + Sync {
     fn complete(&self, site: &CallSite, key: &str, outcome: Result<Value, OsError>);
+
+    /// One event of a keyed stream: the completion of the call's `onMessage` route, the call staying open.
+    fn message(&self, site: &CallSite, key: &str, event: Value) {
+        let routed = CallSite {
+            emit: CallRoutes {
+                success: site.emit.on_message.clone(),
+                ..CallRoutes::default()
+            },
+            ..site.clone()
+        };
+        self.complete(&routed, key, Ok(event));
+    }
 }
 
 /// The sink a program instance delivers to, and the keys whose completion is still wanted.
@@ -39,9 +51,26 @@ impl Completions {
         self.live.lock().insert(key.to_string())
     }
 
-    #[cfg(test)]
     pub(super) fn is_live(&self, key: &str) -> bool {
         self.live.lock().contains(key)
+    }
+
+    /// Hand one event of the live stream `key` to the sink; `false` when the stream was cancelled or ended.
+    pub(super) fn message(&self, key: &str, site: &CallSite, event: Value) -> bool {
+        if !self.is_live(key) {
+            return false;
+        }
+        if let Some(sink) = self.sink() {
+            sink.message(site, key, event);
+        }
+        true
+    }
+
+    /// The keys whose completion is still wanted (open streams and pending deferred answers), sorted.
+    pub fn live_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.live.lock().iter().cloned().collect();
+        keys.sort();
+        keys
     }
 
     /// Drop the pending completion of `key`: its outcome is never delivered. `false` when none is pending.
@@ -148,17 +177,23 @@ pub struct DispatchScope {
 }
 
 impl DispatchScope {
-    /// Answer `request` with `inner`. A keyed ask that may defer is registered to this dispatch before it is answered
-    /// (the watcher may finish before the answer returns) and released again if the host did not defer it.
+    /// Answer `request` with `inner`. A keyed ask that may defer, or that opens a stream, is registered to this
+    /// dispatch before it is answered (the watcher may deliver before the answer returns) and released again if the
+    /// host neither deferred it nor opened the stream.
     pub fn answer(&self, inner: &dyn Fn(&IoRequest) -> IoAnswer, request: &IoRequest) -> IoAnswer {
         let IoRequest::Os { op, key: Some(key), .. } = request else { return inner(request) };
-        if !op.defers_completion() {
+        if !op.defers_completion() && !op.is_stream() {
             return inner(request);
         }
         self.owners.lock().insert(key.clone(), self.ended.clone());
         self.ended.keys.lock().push(key.clone());
         let answered = inner(request);
-        if !matches!(answered, IoAnswer::ServiceDeferred) {
+        let open = match &answered {
+            IoAnswer::ServiceDeferred => true,
+            IoAnswer::Os(Ok(_)) => op.is_stream(),
+            _ => false,
+        };
+        if !open {
             self.release(key);
         }
         answered
@@ -466,6 +501,52 @@ mod tests {
         complete_on_a_thread(&sink, "stranger", "STRANGER").join().expect("stranger");
         assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).as_deref(), Ok("STRANGER"));
         drop(open);
+    }
+
+    fn listens(key: &str) -> IoRequest {
+        IoRequest::Os {
+            op: orbital_core_base::os::OsOp::TcpListen,
+            args: Vec::new(),
+            key: Some(key.to_string()),
+            site: Some(site(Some("OK"), None)),
+        }
+    }
+
+    #[test]
+    fn a_stream_event_waits_for_the_dispatch_that_opened_the_stream_and_a_refused_open_is_not_waited_for() {
+        let (sink, ran) = lone_sink();
+        let open = sink.begin_dispatch();
+        let opened = open.answer(&|_| IoAnswer::Os(Ok(Value::Null)), &listens("s1"));
+        assert!(matches!(opened, IoAnswer::Os(Ok(_))));
+        let refused = open.answer(&|_| IoAnswer::Os(Err(OsError::new(OsErrorKind::Denied, "no"))), &listens("s2"));
+        assert!(matches!(refused, IoAnswer::Os(Err(_))));
+        let w1 = complete_on_a_thread(&sink, "s1", "MSG");
+        complete_on_a_thread(&sink, "s2", "REFUSED").join().expect("s2");
+        assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).as_deref(), Ok("REFUSED"), "control: a refused open owns nothing");
+        assert!(ran.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "the event waits while the opening dispatch runs");
+        drop(open);
+        assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).as_deref(), Ok("MSG"));
+        w1.join().expect("s1");
+    }
+
+    #[test]
+    fn a_stream_message_fires_the_message_route_and_never_success() {
+        let mut routed = site(Some("OK"), Some("BAD"));
+        routed.emit.on_message = Some("MSG".to_string());
+        struct Fired(Mutex<Vec<Option<(String, Value)>>>);
+        impl OsCompletionSink for Fired {
+            fn complete(&self, site: &CallSite, key: &str, outcome: Result<Value, OsError>) {
+                self.0.lock().push(completion_event(site, key, outcome));
+            }
+        }
+        let fired = Fired(Mutex::new(Vec::new()));
+        fired.message(&routed, "s", exited(1.0));
+        fired.message(&site(Some("OK"), Some("BAD")), "s", exited(1.0));
+        let got = fired.0.into_inner();
+        let (event, payload) = got[0].clone().expect("routed");
+        assert_eq!(event, "MSG");
+        assert_eq!(payload.get_path("key"), Some(&Value::String("s".to_string())));
+        assert!(got[1].is_none(), "control: a stream with no onMessage route fires nothing");
     }
 
     #[test]

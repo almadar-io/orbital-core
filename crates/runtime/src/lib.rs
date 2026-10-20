@@ -106,5 +106,6 @@ pub mod renderer_coverage;
 pub mod client;
 pub mod desktop_protocol;
 pub mod planner;
+pub mod program_machine;
 pub mod render_report;
 pub mod verify;

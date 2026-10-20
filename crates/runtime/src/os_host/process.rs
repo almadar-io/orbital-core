@@ -639,6 +639,15 @@ fn stdin_read(
     Ok(object(vec![("bytes", number(total as i64))]))
 }
 
+fn current_exe() -> Result<Value, OsError> {
+    let op = OsOp::CurrentExe;
+    let path = std::env::current_exe().map_err(|e| io_error(op, &e))?;
+    match path.to_str() {
+        Some(p) => Ok(object(vec![("path", Value::String(p.to_string()))])),
+        None => Err(invalid(op, format!("{} is not UTF-8", path.display()))),
+    }
+}
+
 pub(super) fn answer(
     op: OsOp,
     args: &[Value],
@@ -668,6 +677,7 @@ pub(super) fn answer(
                 ))
             }
         }
+        OsOp::CurrentExe => current_exe(),
         OsOp::Getenv => getenv(args, host),
         OsOp::Setenv => setenv(args, host, true),
         OsOp::Unsetenv => setenv(args, host, false),
@@ -1058,6 +1068,31 @@ mod tests {
     }
 
     #[test]
+    fn a_granted_inherited_stream_hands_the_terminal_to_the_child_and_captures_nothing() {
+        let (g, h) = (
+            OsGrants {
+                stdio: vec![StdioKind::In, StdioKind::Out, StdioKind::Err],
+                ..grants()
+            },
+            OsHandles::default(),
+        );
+        let mut a = sh("exit 3", &[]);
+        a.push(opts(vec![("stdin", s("inherit")), ("stdout", s("inherit")), ("stderr", s("inherit"))]));
+        let r = call(&g, &h, OsOp::Spawn, a).expect("spawn");
+        for stream in ["stdin", "stdout", "stderr"] {
+            assert_eq!(field(&r, stream), Value::Null, "{stream} is the host's, not a captured fd");
+        }
+        let done = call(&g, &h, OsOp::Wait, vec![field(&r, "pid")]).expect("wait");
+        assert_eq!(field(&done, "code"), Value::Number(3.0), "the exit code still comes back");
+        let mut piped = sh("exit 0", &[]);
+        piped.push(opts(vec![("stdout", s("pipe")), ("stderr", s("inherit"))]));
+        let r = call(&g, &h, OsOp::Spawn, piped).expect("spawn");
+        assert!(matches!(field(&r, "stdout"), Value::Number(_)), "control: a piped stream is captured");
+        assert_eq!(field(&r, "stderr"), Value::Null, "control: the inherited one beside it is not");
+        call(&g, &h, OsOp::Wait, vec![field(&r, "pid")]).expect("wait");
+    }
+
+    #[test]
     fn stdout_and_stderr_writes_need_stdio_grants() {
         let h = OsHandles::default();
         for op in [OsOp::StdoutWrite, OsOp::StderrWrite] {
@@ -1090,6 +1125,16 @@ mod tests {
         }
         let r = call(&g, &h, OsOp::Isatty, vec![Value::Number(1.0)]).expect("isatty");
         assert!(matches!(field(&r, "ok"), Value::Bool(_)));
+    }
+
+    #[test]
+    fn current_exe_answers_the_running_binary_as_an_absolute_path_under_no_grant() {
+        let h = OsHandles::default();
+        let r = call(&OsGrants::default(), &h, OsOp::CurrentExe, vec![]).expect("current-exe");
+        let Value::String(path) = field(&r, "path") else { panic!("a path string") };
+        assert!(std::path::Path::new(&path).is_absolute(), "{path}");
+        assert_eq!(std::path::PathBuf::from(&path), std::env::current_exe().expect("exe"));
+        assert!(std::path::Path::new(&path).is_file(), "control: it names an existing binary");
     }
 
     #[test]

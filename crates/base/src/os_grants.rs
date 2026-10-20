@@ -3,6 +3,7 @@
 
 use crate::os::OsOp;
 use crate::schema::sexpr::SExpression;
+use crate::value::Value;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
@@ -100,6 +101,95 @@ pub struct NetGrant {
     pub kinds: Vec<NetKind>,
 }
 
+/// Where an anchored grant or path is rooted, resolved once when the host boots: the directory of the running
+/// executable, the directory the program was invoked in, or the value of an environment variable, which must be an
+/// absolute path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GrantAnchor {
+    ExeDir,
+    Cwd,
+    Env(String),
+}
+
+impl GrantAnchor {
+    /// The `.lolo` spelling: `exe-dir` or `env NAME`.
+    pub fn label(&self) -> String {
+        match self {
+            GrantAnchor::ExeDir => "exe-dir".to_string(),
+            GrantAnchor::Cwd => "cwd".to_string(),
+            GrantAnchor::Env(name) => format!("env {name}"),
+        }
+    }
+}
+
+/// A glob relative to its anchor and the modes it grants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnchoredFsGrant {
+    pub anchor: GrantAnchor,
+    pub glob: String,
+    pub modes: Vec<FsMode>,
+}
+
+/// A command at an anchor: `path` under it, or with no `path` the anchor's own value (an `env` anchor naming the
+/// executable itself).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnchoredExec {
+    pub anchor: GrantAnchor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// One half of an anchored `net` target: a literal host or port, or an `env` anchor whose boot value is it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetPart {
+    Literal(String),
+    Anchor(GrantAnchor),
+}
+
+impl NetPart {
+    pub fn label(&self) -> String {
+        match self {
+            NetPart::Literal(text) => format!("{text:?}"),
+            NetPart::Anchor(anchor) => anchor.label(),
+        }
+    }
+}
+
+/// A `net` target whose host, port or both come from an anchor, and the kinds of traffic it grants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnchoredNetGrant {
+    pub host: NetPart,
+    pub port: NetPart,
+    pub kinds: Vec<NetKind>,
+}
+
+impl AnchoredNetGrant {
+    fn label(&self) -> String {
+        format!("{}, {}", self.host.label(), self.port.label())
+    }
+}
+
+/// The `fs`, `exec` and `net` entries rooted at an anchor. They match nothing until a host resolves them
+/// ([`OsGrants::resolve_anchors`]) into plain entries.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnchoredGrants {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fs: Vec<AnchoredFsGrant>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exec: Vec<AnchoredExec>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub net: Vec<AnchoredNetGrant>,
+}
+
+impl AnchoredGrants {
+    pub fn is_empty(&self) -> bool {
+        self.fs.is_empty() && self.exec.is_empty() && self.net.is_empty()
+    }
+}
+
 /// Every grant a program declares; the default grants nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -111,6 +201,8 @@ pub struct OsGrants {
     pub stdio: Vec<StdioKind>,
     pub sys: Vec<SysKind>,
     pub desktop: Vec<DesktopKind>,
+    #[serde(skip_serializing_if = "AnchoredGrants::is_empty")]
+    pub anchored: AnchoredGrants,
 }
 
 /// The absolute path as its `/`-separated segments with `.` dropped and `..` collapsed; `None` for a
@@ -225,6 +317,15 @@ fn glob_matches(glob: &str, anchor: Anchor, path: &[String]) -> bool {
     segments_match(&pattern, path)
 }
 
+/// Whether the anchor-relative `glob` (no `..`) matches the already-normalized relative `path`.
+fn relative_glob_matches(glob: &str, path: &[String]) -> bool {
+    if !valid_relative(glob) {
+        return false;
+    }
+    let pattern: Vec<&str> = glob.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+    segments_match(&pattern, path)
+}
+
 fn split_target(target: &str) -> Option<(&str, u16)> {
     let (host, port) = target.rsplit_once(':')?;
     let host = host.trim_start_matches('[').trim_end_matches(']');
@@ -258,6 +359,29 @@ impl OsGrants {
             match self.net.iter_mut().find(|g| g.target == grant.target) {
                 Some(held) => extend_missing(&mut held.kinds, &grant.kinds),
                 None => self.net.push(grant.clone()),
+            }
+        }
+        for grant in &other.anchored.fs {
+            match self
+                .anchored
+                .fs
+                .iter_mut()
+                .find(|g| g.anchor == grant.anchor && g.glob == grant.glob)
+            {
+                Some(held) => extend_missing(&mut held.modes, &grant.modes),
+                None => self.anchored.fs.push(grant.clone()),
+            }
+        }
+        extend_missing(&mut self.anchored.exec, &other.anchored.exec);
+        for grant in &other.anchored.net {
+            match self
+                .anchored
+                .net
+                .iter_mut()
+                .find(|g| g.host == grant.host && g.port == grant.port)
+            {
+                Some(held) => extend_missing(&mut held.kinds, &grant.kinds),
+                None => self.anchored.net.push(grant.clone()),
             }
         }
         extend_missing(&mut self.exec, &other.exec);
@@ -360,19 +484,90 @@ fn valid_glob(glob: &str) -> bool {
     anchor_of(glob).is_some() && !glob.split('/').any(|s| s == "..")
 }
 
-/// The directories a host anchors `~/` and `./` to: the user's home and the directory it started the program in.
+/// A grant-relative path: not anchored itself and never climbing with `..`.
+fn valid_relative(text: &str) -> bool {
+    !text.is_empty() && anchor_of(text).is_none() && !text.split('/').any(|s| s == "..")
+}
+
+/// The process environment as it was when the host booted, so a variable the program sets later never moves an
+/// anchored grant. Its `Debug` names the variables only.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct EnvSnapshot(std::collections::BTreeMap<String, String>);
+
+impl std::fmt::Debug for EnvSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.0.keys()).finish()
+    }
+}
+
+impl EnvSnapshot {
+    /// Every variable of this process whose name and value are UTF-8.
+    pub fn of_process() -> Self {
+        Self::from_pairs(
+            std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))),
+        )
+    }
+
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (String, String)>) -> Self {
+        Self(pairs.into_iter().collect())
+    }
+
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.0.get(name).map(String::as_str)
+    }
+}
+
+/// The directories a host anchors `~/` and `./` to (the user's home and the directory it started the program in),
+/// and what a grant's declared anchors resolve to: the running executable's directory and the boot environment.
 /// A host without one of them grants nothing under that anchor.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OsAnchors {
     pub home: Option<PathBuf>,
     pub start: Option<PathBuf>,
+    pub exe_dir: Option<PathBuf>,
+    pub env: EnvSnapshot,
 }
 
 impl OsAnchors {
-    /// The process's own: `HOME` (`USERPROFILE` on Windows) and its working directory.
+    /// The process's own: `HOME` (`USERPROFILE` on Windows), its working directory, the directory of its executable
+    /// and its environment, read once.
     pub fn of_process() -> Self {
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
-        Self { home, start: std::env::current_dir().ok() }
+        Self {
+            home,
+            start: std::env::current_dir().ok(),
+            exe_dir: std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)),
+            env: EnvSnapshot::of_process(),
+        }
+    }
+
+    /// The `/`-rooted segments of the directory `anchor` names on this host, or why it names none: an unknown
+    /// executable directory, an unset or empty variable, a value that is not an absolute path, or one holding a glob
+    /// character (`*`, `?`), which would widen the grant.
+    pub fn anchor_segments(&self, anchor: &GrantAnchor) -> Result<Vec<String>, String> {
+        let dir = match anchor {
+            GrantAnchor::ExeDir => self
+                .exe_dir
+                .clone()
+                .ok_or_else(|| "this host does not know the directory of its executable".to_string())?,
+            GrantAnchor::Cwd => self
+                .start
+                .clone()
+                .ok_or_else(|| "this host does not know the directory the program was invoked in".to_string())?,
+            GrantAnchor::Env(name) => match self.env.get(name) {
+                None | Some("") => return Err(format!("env {name} is unset")),
+                Some(value) if !Path::new(value).is_absolute() => {
+                    return Err(format!("env {name} is {value:?}, which is not an absolute path"))
+                }
+                Some(value) => PathBuf::from(value),
+            },
+        };
+        let segments = normalized_segments(&dir)
+            .ok_or_else(|| format!("{} ({}) is not an absolute UTF-8 path", anchor.label(), dir.display()))?;
+        if segments.iter().any(|s| s.contains(['*', '?'])) {
+            return Err(format!("{} ({}) holds a glob character", anchor.label(), dir.display()));
+        }
+        Ok(segments)
     }
 
     /// The absolute path a `~/` or `./` form names; `None` for any other form (an absolute path, or a bare relative
@@ -405,6 +600,229 @@ impl OsAnchors {
 
 fn valid_name(name: &str) -> bool {
     !name.is_empty() && !name.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+fn rooted(segments: &[String], rest: Option<&str>) -> String {
+    let mut out = format!("/{}", segments.join("/"));
+    if let Some(rest) = rest {
+        if !segments.is_empty() {
+            out.push('/');
+        }
+        out.push_str(rest);
+    }
+    out
+}
+
+impl OsGrants {
+    /// The plain grant set a host checks against: every anchored entry resolved through `anchors` into an absolute
+    /// `fs` glob or `exec` command, with the anchored part emptied. An entry whose anchor this host cannot place, or
+    /// whose shape is invalid, grants nothing and is returned as a problem for the host to report.
+    pub fn resolve_anchors(&self, anchors: &OsAnchors) -> (OsGrants, Vec<EntryProblem>) {
+        let mut problems = Vec::new();
+        let mut added = OsGrants::default();
+        for (i, g) in self.anchored.fs.iter().enumerate() {
+            let path = format!("anchored.fs[{i}]");
+            if !valid_relative(&g.glob) {
+                problems.push(EntryProblem { path, message: format!("{} {:?} is not a relative glob without `..`", g.anchor.label(), g.glob) });
+                continue;
+            }
+            match anchors.anchor_segments(&g.anchor) {
+                Ok(segments) => added.fs.push(FsGrant { glob: rooted(&segments, Some(&g.glob)), modes: g.modes.clone() }),
+                Err(why) => problems.push(EntryProblem { path, message: format!("{} {:?} grants nothing: {why}", g.anchor.label(), g.glob) }),
+            }
+        }
+        for (i, e) in self.anchored.exec.iter().enumerate() {
+            let path = format!("anchored.exec[{i}]");
+            if let Some(message) = anchored_exec_problem(e) {
+                problems.push(EntryProblem { path, message });
+                continue;
+            }
+            match anchors.anchor_segments(&e.anchor) {
+                Ok(segments) => added.exec.push(rooted(&segments, e.path.as_deref())),
+                Err(why) => problems.push(EntryProblem { path, message: format!("exec {} grants nothing: {why}", anchored_exec_label(e)) }),
+            }
+        }
+        for (i, g) in self.anchored.net.iter().enumerate() {
+            let path = format!("anchored.net[{i}]");
+            if let Some(message) = anchored_net_problem(g) {
+                problems.push(EntryProblem { path, message });
+                continue;
+            }
+            match (anchors.net_part(&g.host), anchors.net_part(&g.port)) {
+                (Ok(host), Ok(port)) => match port.parse::<u16>() {
+                    Ok(port) => added.net.push(NetGrant { target: net_target(&host, port), kinds: g.kinds.clone() }),
+                    Err(_) => problems.push(EntryProblem {
+                        path,
+                        message: format!("net {} grants nothing: the port {port:?} is not a port number", g.label()),
+                    }),
+                },
+                (Err(why), _) | (_, Err(why)) => {
+                    problems.push(EntryProblem { path, message: format!("net {} grants nothing: {why}", g.label()) })
+                }
+            }
+        }
+        let mut resolved = OsGrants { anchored: AnchoredGrants::default(), ..self.clone() };
+        resolved.union(&added);
+        (resolved, problems)
+    }
+}
+
+/// An `os/` path or command argument written against an anchor, `{ anchor: "cwd", path: "docs/a.md" }`: `path` is
+/// relative to the anchor and may not climb above it; without `path` it names the anchor itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchoredPath {
+    pub anchor: GrantAnchor,
+    pub path: Option<String>,
+}
+
+/// The relative segments of `path` with `.` dropped and `..` collapsed; `None` for an anchored or absolute form or
+/// a `..` that climbs above the anchor.
+fn relative_segments(path: &str) -> Option<Vec<String>> {
+    if anchor_of(path).is_some() {
+        return None;
+    }
+    let mut segments: Vec<String> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                segments.pop()?;
+            }
+            other => segments.push(other.to_string()),
+        }
+    }
+    Some(segments)
+}
+
+fn anchor_from_value(value: &Value) -> Option<GrantAnchor> {
+    match value {
+        Value::String(word) if word == "exe-dir" => Some(GrantAnchor::ExeDir),
+        Value::String(word) if word == "cwd" => Some(GrantAnchor::Cwd),
+        Value::Object(map) if map.len() == 1 => match map.get("env") {
+            Some(Value::String(name)) => Some(GrantAnchor::Env(name.clone())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn anchor_from_sexpr(expr: &SExpression) -> Option<GrantAnchor> {
+    match expr {
+        SExpression::String(word) if word == "exe-dir" => Some(GrantAnchor::ExeDir),
+        SExpression::String(word) if word == "cwd" => Some(GrantAnchor::Cwd),
+        SExpression::Object(map) if map.len() == 1 => match map.get("env") {
+            Some(SExpression::String(name)) if !name.starts_with('@') => Some(GrantAnchor::Env(name.clone())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `object` has exactly the keys of an anchored path: `anchor` and, optionally, `path`.
+fn anchored_keys<'a>(mut keys: impl Iterator<Item = &'a String>) -> bool {
+    keys.all(|k| k == "anchor" || k == "path")
+}
+
+impl AnchoredPath {
+    /// The evaluated argument a host receives; `None` when it is not an anchored path.
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Object(map) = value else { return None };
+        if !anchored_keys(map.keys()) {
+            return None;
+        }
+        let anchor = anchor_from_value(map.get("anchor")?)?;
+        let path = match map.get("path") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(p)) => Some(p.clone()),
+            Some(_) => return None,
+        };
+        Some(Self { anchor, path })
+    }
+}
+
+/// An argument written as an anchored path: its literal anchor and its `path` expression (absent for the anchor
+/// itself). `Ok(None)` when the argument is not an object of that shape; `Err(())` when it is one whose anchor is
+/// not a literal anchor.
+fn anchored_sexpr(expr: &SExpression) -> Result<Option<(GrantAnchor, Option<&SExpression>)>, ()> {
+    let SExpression::Object(map) = expr else { return Ok(None) };
+    if !map.contains_key("anchor") || !anchored_keys(map.keys()) {
+        return Ok(None);
+    }
+    let anchor = map.get("anchor").and_then(anchor_from_sexpr).ok_or(())?;
+    Ok(Some((anchor, map.get("path").filter(|p| !matches!(p, SExpression::Null)))))
+}
+
+impl OsAnchors {
+    /// The absolute path an anchored path names on this host, or why it names none.
+    pub fn resolve_path(&self, anchored: &AnchoredPath) -> Result<String, String> {
+        let base = self.anchor_segments(&anchored.anchor)?;
+        let rest = match &anchored.path {
+            None => Vec::new(),
+            Some(path) => relative_segments(path).ok_or_else(|| {
+                format!("{path:?} is not a path relative to {} that stays under it", anchored.anchor.label())
+            })?,
+        };
+        let mut segments = base;
+        segments.extend(rest);
+        Ok(rooted(&segments, None))
+    }
+}
+
+fn net_target(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn anchored_net_problem(g: &AnchoredNetGrant) -> Option<String> {
+    let part = |p: &NetPart| match p {
+        NetPart::Anchor(GrantAnchor::Env(_)) => None,
+        NetPart::Anchor(other) => Some(format!("net {} takes only `env` anchors, not {}", g.label(), other.label())),
+        NetPart::Literal(text) if text.is_empty() => Some(format!("net {} has an empty part", g.label())),
+        NetPart::Literal(_) => None,
+    };
+    if matches!((&g.host, &g.port), (NetPart::Literal(_), NetPart::Literal(_))) {
+        return Some(format!("net {} anchors nothing: write it as \"host:port\"", g.label()));
+    }
+    if let NetPart::Literal(port) = &g.port {
+        if port.parse::<u16>().is_err() {
+            return Some(format!("net {} has a port that is not a port number", g.label()));
+        }
+    }
+    part(&g.host).or_else(|| part(&g.port)).or_else(|| g.kinds.is_empty().then(|| format!("net {} grants no kind", g.label())))
+}
+
+impl OsAnchors {
+    /// The text a net part names on this host: the literal, or the boot value of its `env` anchor.
+    pub fn net_part(&self, part: &NetPart) -> Result<String, String> {
+        match part {
+            NetPart::Literal(text) => Ok(text.clone()),
+            NetPart::Anchor(GrantAnchor::Env(name)) => match self.env.get(name) {
+                None | Some("") => Err(format!("env {name} is unset")),
+                Some(value) => Ok(value.trim_start_matches('[').trim_end_matches(']').to_string()),
+            },
+            NetPart::Anchor(other) => Err(format!("{} is not a net anchor", other.label())),
+        }
+    }
+}
+
+fn anchored_exec_label(e: &AnchoredExec) -> String {
+    match &e.path {
+        Some(path) => format!("{} {path:?}", e.anchor.label()),
+        None => e.anchor.label(),
+    }
+}
+
+fn anchored_exec_problem(e: &AnchoredExec) -> Option<String> {
+    match (&e.anchor, &e.path) {
+        (GrantAnchor::ExeDir, None) => Some("exec exe-dir names a directory, not a command: give the command under it, e.g. exe-dir \"bun\"".to_string()),
+        (_, Some(path)) if !valid_relative(path) || path.contains(['*', '?']) => {
+            Some(format!("exec {} is not a relative command path without `..` or glob characters", anchored_exec_label(e)))
+        }
+        _ => None,
+    }
 }
 
 impl OsGrants {
@@ -470,6 +888,46 @@ impl OsGrants {
                 grants: OsGrants { desktop: vec![*kind], ..OsGrants::default() },
             });
         }
+        for (i, g) in self.anchored.fs.iter().enumerate() {
+            for mode in &g.modes {
+                out.push(GrantAtom {
+                    path: format!("anchored.fs[{i}]"),
+                    label: format!("fs {} {:?} {}", g.anchor.label(), g.glob, mode.name()),
+                    grants: OsGrants {
+                        anchored: AnchoredGrants {
+                            fs: vec![AnchoredFsGrant { anchor: g.anchor.clone(), glob: g.glob.clone(), modes: vec![*mode] }],
+                            ..AnchoredGrants::default()
+                        },
+                        ..OsGrants::default()
+                    },
+                });
+            }
+        }
+        for (i, g) in self.anchored.net.iter().enumerate() {
+            for kind in &g.kinds {
+                out.push(GrantAtom {
+                    path: format!("anchored.net[{i}]"),
+                    label: format!("net {} {}", g.label(), kind.name()),
+                    grants: OsGrants {
+                        anchored: AnchoredGrants {
+                            net: vec![AnchoredNetGrant { host: g.host.clone(), port: g.port.clone(), kinds: vec![*kind] }],
+                            ..AnchoredGrants::default()
+                        },
+                        ..OsGrants::default()
+                    },
+                });
+            }
+        }
+        for (i, e) in self.anchored.exec.iter().enumerate() {
+            out.push(GrantAtom {
+                path: format!("anchored.exec[{i}]"),
+                label: format!("exec {}", anchored_exec_label(e)),
+                grants: OsGrants {
+                    anchored: AnchoredGrants { exec: vec![e.clone()], ..AnchoredGrants::default() },
+                    ..OsGrants::default()
+                },
+            });
+        }
         out
     }
 
@@ -505,6 +963,46 @@ impl OsGrants {
                 problem(format!("env[{i}]"), format!("{name:?} is not a variable name"));
             }
         }
+        let anchor_problem = |anchor: &GrantAnchor| match anchor {
+            GrantAnchor::Env(name) if !valid_name(name) || name.contains('=') => {
+                Some(format!("env {name:?} is not a variable name"))
+            }
+            _ => None,
+        };
+        for (i, g) in self.anchored.fs.iter().enumerate() {
+            let at = format!("anchored.fs[{i}]");
+            if let Some(message) = anchor_problem(&g.anchor) {
+                problem(at.clone(), message);
+            }
+            if !valid_relative(&g.glob) {
+                problem(at.clone(), format!("{} {:?} is not a relative glob without `..`", g.anchor.label(), g.glob));
+            }
+            if g.modes.is_empty() {
+                problem(at, format!("{} {:?} grants no mode", g.anchor.label(), g.glob));
+            }
+        }
+        for (i, e) in self.anchored.exec.iter().enumerate() {
+            let at = format!("anchored.exec[{i}]");
+            if let Some(message) = anchor_problem(&e.anchor) {
+                problem(at.clone(), message);
+            }
+            if let Some(message) = anchored_exec_problem(e) {
+                problem(at, message);
+            }
+        }
+        for (i, g) in self.anchored.net.iter().enumerate() {
+            let at = format!("anchored.net[{i}]");
+            for part in [&g.host, &g.port] {
+                if let NetPart::Anchor(anchor) = part {
+                    if let Some(message) = anchor_problem(anchor) {
+                        problem(at.clone(), message);
+                    }
+                }
+            }
+            if let Some(message) = anchored_net_problem(g) {
+                problem(at, message);
+            }
+        }
         out
     }
 }
@@ -517,7 +1015,18 @@ pub enum OsRequirement {
     /// Every path under `root` (which ends in `/`): the target is a `str/concat` whose static prefix is
     /// `root` and whose rest is computed. Covered only by a grant glob ending in `/**` that contains `root`.
     FsTree { root: String, mode: FsMode },
+    /// A path written against an anchor (`path` relative to it, empty for the anchor itself): covered only by an
+    /// anchored `fs` grant on the same anchor whose glob matches it.
+    FsAnchored { anchor: GrantAnchor, path: String, mode: FsMode },
+    /// Every path under `root` (empty, or ending in `/`) of an anchor: the anchored path's `path` is computed past
+    /// that literal directory. Covered only by an anchored glob on the same anchor ending in `**` that contains `root`.
+    FsAnchoredTree { anchor: GrantAnchor, root: String, mode: FsMode },
     Exec { command: String },
+    /// A host and port of which at least one is written against an `env` anchor: covered only by an anchored `net`
+    /// grant with the same parts and one of the kinds.
+    NetAnchored { host: NetPart, port: NetPart, kinds: Vec<NetKind> },
+    /// A command written against an anchor: covered only by the same anchored `exec` entry.
+    ExecAnchored { anchor: GrantAnchor, path: Option<String> },
     Net { host: String, port: u16, kinds: Vec<NetKind> },
     Env { name: String },
     Stdio { kind: StdioKind },
@@ -539,7 +1048,28 @@ impl OsGrants {
         match need {
             OsRequirement::Fs { path, mode } => self.fs_allows(Path::new(path), *mode),
             OsRequirement::FsTree { root, mode } => self.fs_tree_allows(Path::new(root), *mode),
+            OsRequirement::FsAnchored { anchor, path, mode } => relative_segments(path).is_some_and(|segments| {
+                self.anchored.fs.iter().any(|g| {
+                    g.anchor == *anchor && g.modes.contains(mode) && relative_glob_matches(&g.glob, &segments)
+                })
+            }),
+            OsRequirement::FsAnchoredTree { anchor, root, mode } => relative_segments(root).is_some_and(|segments| {
+                self.anchored.fs.iter().any(|g| {
+                    g.anchor == *anchor
+                        && g.modes.contains(mode)
+                        && (g.glob == "**" || g.glob.ends_with("/**"))
+                        && relative_glob_matches(&g.glob, &segments)
+                })
+            }),
             OsRequirement::Exec { command } => self.exec_allows(command),
+            OsRequirement::NetAnchored { host, port, kinds } => self.anchored.net.iter().any(|g| {
+                g.host == *host && g.port == *port && kinds.iter().any(|k| g.kinds.contains(k))
+            }),
+            OsRequirement::ExecAnchored { anchor, path } => self
+                .anchored
+                .exec
+                .iter()
+                .any(|e| e.anchor == *anchor && e.path == *path),
             OsRequirement::Net { host, port, kinds } => {
                 kinds.iter().any(|kind| self.net_allows(host, *port, *kind))
             }
@@ -604,13 +1134,35 @@ pub fn concat_static_prefix<'a>(
     last_dir.map(|end| &pieces[..end])
 }
 
+#[derive(Clone)]
 enum FsTarget {
     Exact(String),
     Tree(String),
+    AnchoredExact(GrantAnchor, String),
+    AnchoredTree(GrantAnchor, String),
+}
+
+/// The target of an anchored path argument: its literal `path` exactly, a `str/concat` `path` as the tree under its
+/// literal directory prefix, or any other computed `path` as the anchor's whole tree.
+fn anchored_target(anchor: GrantAnchor, path: Option<&SExpression>, deferred: Deferred) -> FsTarget {
+    match path {
+        None => FsTarget::AnchoredExact(anchor, String::new()),
+        Some(SExpression::String(p)) if !p.starts_with('@') => FsTarget::AnchoredExact(anchor, p.clone()),
+        Some(expr) => {
+            let root: String = concat_static_prefix(expr, deferred)
+                .filter(|prefix| !prefix.iter().any(deferred))
+                .map(|prefix| prefix.iter().filter_map(SExpression::as_str).collect())
+                .unwrap_or_default();
+            FsTarget::AnchoredTree(anchor, root)
+        }
+    }
 }
 
 fn fs_target(args: &[SExpression], index: usize, deferred: Deferred) -> Result<Option<FsTarget>, usize> {
     if let Some(arg) = args.get(index) {
+        if let Some((anchor, path)) = anchored_sexpr(arg).map_err(|()| index)? {
+            return Ok(Some(anchored_target(anchor, path, deferred)));
+        }
         if matches!(arg, SExpression::Array(a) if a.first().and_then(SExpression::as_str) == Some("str/concat")) {
             let prefix = concat_static_prefix(arg, deferred).ok_or(index)?;
             if prefix.iter().any(deferred) {
@@ -627,6 +1179,8 @@ fn fs_requirement(target: FsTarget, mode: FsMode) -> OsRequirement {
     match target {
         FsTarget::Exact(path) => OsRequirement::Fs { path, mode },
         FsTarget::Tree(root) => OsRequirement::FsTree { root, mode },
+        FsTarget::AnchoredExact(anchor, path) => OsRequirement::FsAnchored { anchor, path, mode },
+        FsTarget::AnchoredTree(anchor, root) => OsRequirement::FsAnchoredTree { anchor, root, mode },
     }
 }
 
@@ -644,10 +1198,34 @@ fn net_need(
     kinds: &[NetKind],
     deferred: Deferred,
 ) -> Result<Vec<OsRequirement>, usize> {
-    let (Some(name), Some(port)) = (literal(args, host, deferred)?, literal_port(args, port, deferred)?) else {
+    let anchored_part = |index: usize| -> Result<Option<NetPart>, usize> {
+        match args.get(index) {
+            Some(expr @ SExpression::Object(map)) if map.contains_key("anchor") => match anchored_sexpr(expr) {
+                Ok(Some((anchor @ GrantAnchor::Env(_), None))) => Ok(Some(NetPart::Anchor(anchor))),
+                _ => Err(index),
+            },
+            _ => Ok(None),
+        }
+    };
+    let (host_anchor, port_anchor) = (anchored_part(host)?, anchored_part(port)?);
+    if host_anchor.is_none() && port_anchor.is_none() {
+        let (Some(name), Some(port)) = (literal(args, host, deferred)?, literal_port(args, port, deferred)?) else {
+            return Ok(Vec::new());
+        };
+        return Ok(vec![OsRequirement::Net { host: name.to_string(), port, kinds: kinds.to_vec() }]);
+    }
+    let host_part = match host_anchor {
+        Some(part) => Some(part),
+        None => literal(args, host, deferred)?.map(|h| NetPart::Literal(h.to_string())),
+    };
+    let port_part = match port_anchor {
+        Some(part) => Some(part),
+        None => literal_port(args, port, deferred)?.map(|p| NetPart::Literal(p.to_string())),
+    };
+    let (Some(host), Some(port)) = (host_part, port_part) else {
         return Ok(Vec::new());
     };
-    Ok(vec![OsRequirement::Net { host: name.to_string(), port, kinds: kinds.to_vec() }])
+    Ok(vec![OsRequirement::NetAnchored { host, port, kinds: kinds.to_vec() }])
 }
 
 /// The prefix of a glob up to its first wildcard segment, as an absolute path.
@@ -675,8 +1253,20 @@ fn open_modes(flags: &str) -> Vec<FsMode> {
 
 fn spawn_needs(args: &[SExpression], deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
     let mut needs = Vec::new();
-    if let Some(command) = literal(args, 0, deferred)? {
-        needs.push(OsRequirement::Exec { command: command.to_string() });
+    match args.first().map(anchored_sexpr) {
+        Some(Err(())) => return Err(0),
+        Some(Ok(Some((anchor, path)))) => match path {
+            None => needs.push(OsRequirement::ExecAnchored { anchor, path: None }),
+            Some(SExpression::String(p)) if !p.starts_with('@') => {
+                needs.push(OsRequirement::ExecAnchored { anchor, path: Some(p.clone()) })
+            }
+            Some(_) => return Err(0),
+        },
+        _ => {
+            if let Some(command) = literal(args, 0, deferred)? {
+                needs.push(OsRequirement::Exec { command: command.to_string() });
+            }
+        }
     }
     if let Some(SExpression::Object(options)) = args.get(2) {
         for (key, value) in options {
@@ -684,6 +1274,12 @@ fn spawn_needs(args: &[SExpression], deferred: Deferred) -> Result<Vec<OsRequire
                 ("cwd", SExpression::String(path)) if !path.starts_with('@') => {
                     needs.push(OsRequirement::Fs { path: path.clone(), mode: FsMode::Read });
                 }
+                ("cwd", SExpression::Object(_)) => match anchored_sexpr(value) {
+                    Ok(Some((anchor, path))) => {
+                        needs.push(fs_requirement(anchored_target(anchor, path, deferred), FsMode::Read))
+                    }
+                    _ => return Err(2),
+                },
                 ("cwd", SExpression::Null) => {}
                 ("cwd", value) if deferred(value) => {}
                 ("cwd", _) => return Err(2),
@@ -779,6 +1375,31 @@ fn literal_list_pick(expr: &SExpression) -> Option<Vec<SExpression>> {
     })
 }
 
+/// The positional arguments of `op` that may be written as an anchored path (`{ anchor, path }`): the file targets,
+/// and the command of `os/spawn`. A host resolves them to absolute paths before the call runs; the `cwd` option of
+/// `os/spawn` may be one too.
+pub fn anchored_arg_positions(op: OsOp) -> &'static [usize] {
+    use OsOp::*;
+    match op {
+        ReadFile | Readlink | WatchFiles | ListDir | Realpath | Chdir | Stat | Lstat | Access | Exists | WriteFile
+        | AppendFile | Truncate | Open | Remove | Rmdir | Mkdir | Mktemp | Chmod | Chown | Utimes | Spawn => &[0],
+        Copy | Rename | Link => &[0, 1],
+        Symlink => &[1],
+        _ => &[],
+    }
+}
+
+/// The host and port positions of `op` that may be written as an `env` anchor (`{ anchor: { env: NAME } }`); a host
+/// resolves them to the boot value (the port as a number) before the call runs.
+pub fn anchored_net_args(op: OsOp) -> Option<(usize, usize)> {
+    use OsOp::*;
+    match op {
+        TcpConnect | TcpListen | HttpListen | UdpBind => Some((0, 1)),
+        Sendto => Some((2, 3)),
+        _ => None,
+    }
+}
+
 fn requirements_of(
     op: OsOp,
     args: &[SExpression],
@@ -795,16 +1416,7 @@ fn requirements_of(
         Open => {
             let mut needs = Vec::new();
             if let (Some(target), Some(flags)) = (fs_target(args, 0, deferred)?, literal(args, 1, deferred)?) {
-                let tree = matches!(target, FsTarget::Tree(_));
-                let path = match target {
-                    FsTarget::Exact(p) | FsTarget::Tree(p) => p,
-                };
-                needs.extend(open_modes(flags).into_iter().map(|mode| {
-                    fs_requirement(
-                        if tree { FsTarget::Tree(path.clone()) } else { FsTarget::Exact(path.clone()) },
-                        mode,
-                    )
-                }));
+                needs.extend(open_modes(flags).into_iter().map(|mode| fs_requirement(target.clone(), mode)));
             }
             Ok(needs)
         }
@@ -837,7 +1449,7 @@ fn requirements_of(
         StdoutWrite => Ok(vec![OsRequirement::Stdio { kind: StdioKind::Out }]),
         StderrWrite => Ok(vec![OsRequirement::Stdio { kind: StdioKind::Err }]),
         TcpConnect => net_need(args, 0, 1, &[NetKind::Tcp], deferred),
-        TcpListen => net_need(args, 0, 1, &[NetKind::Listen], deferred),
+        TcpListen | HttpListen => net_need(args, 0, 1, &[NetKind::Listen], deferred),
         UdpBind => net_need(args, 0, 1, &[NetKind::Udp], deferred),
         Sendto => net_need(args, 2, 3, &[NetKind::Udp], deferred),
         DnsResolve => Ok(literal(args, 0, deferred)?
@@ -859,9 +1471,9 @@ fn requirements_of(
         BrightnessGet | BrightnessSet => desktop(DesktopKind::Brightness),
         VolumeGet | VolumeSet | VolumeMute => desktop(DesktopKind::Volume),
         Suspend | Hibernate => desktop(DesktopKind::Power),
-        Close | Read | Write | Seek | Fsync | Cwd | Wait | Kill | Pid | Ppid | WatchProcess
+        Close | Read | Write | Seek | Fsync | Cwd | Wait | Kill | Pid | Ppid | CurrentExe | WatchProcess
         | WatchSignal | Environ | Isatty | TtySize | Send | Recv | Recvfrom | Shutdown | WatchPort
-        | ClockMonotonic | WatchCron => Ok(Vec::new()),
+        | ClockMonotonic | WatchCron | HttpRespond => Ok(Vec::new()),
     }
 }
 
@@ -1330,6 +1942,8 @@ mod tests {
         );
         assert_eq!(call(OsOp::Close, json!(["@payload.fd"])), Ok(vec![]));
         assert_eq!(call(OsOp::Pid, json!([])), Ok(vec![]));
+        assert_eq!(call(OsOp::CurrentExe, json!([])), Ok(vec![]), "like os/cwd and os/pid, a fact of the process itself");
+        assert_eq!(call(OsOp::Hostname, json!([])), Ok(vec![OsRequirement::Sys { kind: SysKind::Identity }]), "control: a host fact needs sys");
     }
 
     #[test]
@@ -1502,7 +2116,7 @@ mod tests {
 
     #[test]
     fn a_host_checks_an_absolute_path_against_anchored_grants_through_its_anchors() {
-        let anchors = OsAnchors { home: Some(PathBuf::from("/home/u")), start: Some(PathBuf::from("/work/p")) };
+        let anchors = OsAnchors { home: Some(PathBuf::from("/home/u")), start: Some(PathBuf::from("/work/p")), ..OsAnchors::default() };
         let grants = OsGrants {
             fs: vec![
                 FsGrant { glob: "~/.orb/**".into(), modes: vec![FsMode::Write] },
@@ -1522,6 +2136,277 @@ mod tests {
         assert_eq!(anchors.expand("/abs").unwrap(), None, "control: an absolute path is not anchored");
         assert_eq!(anchors.expand("rel").unwrap(), None, "control: a bare relative path keeps the working-directory rule");
         assert!(unknown.expand("~/x").is_err(), "edge: an anchor the host cannot place is an error");
+    }
+
+    fn boot(exe_dir: Option<&str>, env: &[(&str, &str)]) -> OsAnchors {
+        OsAnchors {
+            exe_dir: exe_dir.map(PathBuf::from),
+            env: EnvSnapshot::from_pairs(env.iter().map(|(k, v)| (k.to_string(), v.to_string()))),
+            ..OsAnchors::default()
+        }
+    }
+
+    fn anchored(fs: Vec<AnchoredFsGrant>, exec: Vec<AnchoredExec>) -> OsGrants {
+        OsGrants { anchored: AnchoredGrants { fs, exec, net: Vec::new() }, ..OsGrants::default() }
+    }
+
+    fn afs(anchor: GrantAnchor, glob: &str) -> AnchoredFsGrant {
+        AnchoredFsGrant { anchor, glob: glob.into(), modes: vec![FsMode::Read] }
+    }
+
+    fn aexec(anchor: GrantAnchor, path: Option<&str>) -> AnchoredExec {
+        AnchoredExec { anchor, path: path.map(str::to_string) }
+    }
+
+    #[test]
+    fn an_anchored_grant_matches_nothing_until_a_host_resolves_it() {
+        let g = anchored(
+            vec![afs(GrantAnchor::ExeDir, "agent/**")],
+            vec![aexec(GrantAnchor::ExeDir, Some("bun"))],
+        );
+        assert!(!g.is_empty());
+        assert!(!g.fs_allows(Path::new("/opt/orb/agent/cli.js"), FsMode::Read));
+        assert!(!g.fs_allows(Path::new("/agent/cli.js"), FsMode::Read), "control: the relative glob is not read as absolute");
+        assert!(!g.exec_allows("bun") && !g.exec_allows("/opt/orb/bun"));
+        let (resolved, problems) = g.resolve_anchors(&boot(Some("/opt/orb"), &[]));
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(resolved.anchored.is_empty(), "resolution empties the anchored part");
+        assert!(resolved.fs_allows(Path::new("/opt/orb/agent/cli.js"), FsMode::Read));
+        assert!(resolved.fs_allows(Path::new("/opt/orb/agent"), FsMode::Read));
+        assert!(!resolved.fs_allows(Path::new("/opt/orb/agent/cli.js"), FsMode::Write), "control: the mode still counts");
+        assert!(!resolved.fs_allows(Path::new("/opt/orb/other"), FsMode::Read), "control: a sibling of the anchored tree");
+        assert!(!resolved.fs_allows(Path::new("/opt/orb/agent/../../etc/passwd"), FsMode::Read), "edge: climbing out is refused");
+        assert!(resolved.exec_allows("/opt/orb/bun"));
+        assert!(!resolved.exec_allows("bun"), "control: the anchored command is the resolved path, not the bare name");
+    }
+
+    #[test]
+    fn an_env_anchor_roots_at_its_boot_value_and_names_the_command_itself_without_a_path() {
+        let g = anchored(
+            vec![afs(GrantAnchor::Env("ORB_AGENT_DIR".into()), "**")],
+            vec![aexec(GrantAnchor::Env("ORB_BUN_PATH".into()), None)],
+        );
+        let host = boot(None, &[("ORB_AGENT_DIR", "/srv/agent/"), ("ORB_BUN_PATH", "/usr/local/bin/bun")]);
+        let (resolved, problems) = g.resolve_anchors(&host);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(resolved.fs[0].glob, "/srv/agent/**", "a trailing slash in the value is normalized");
+        assert!(resolved.fs_allows(Path::new("/srv/agent/cli.js"), FsMode::Read));
+        assert!(!resolved.fs_allows(Path::new("/srv/agentx/cli.js"), FsMode::Read), "control: a prefix-sharing sibling");
+        assert_eq!(resolved.exec, ["/usr/local/bin/bun"]);
+        let under = anchored(Vec::new(), vec![aexec(GrantAnchor::Env("ORB_HOME".into()), Some("bin/bun"))]);
+        let (resolved, _) = under.resolve_anchors(&boot(None, &[("ORB_HOME", "/o")]));
+        assert_eq!(resolved.exec, ["/o/bin/bun"]);
+    }
+
+    #[test]
+    fn an_unset_relative_or_widening_anchor_grants_nothing_and_is_reported() {
+        let env = |name: &str| GrantAnchor::Env(name.into());
+        let g = anchored(
+            vec![afs(env("UNSET"), "**"), afs(env("EMPTY"), "**"), afs(env("REL"), "**"), afs(env("WILD"), "**")],
+            vec![aexec(env("UNSET"), None), aexec(GrantAnchor::ExeDir, Some("bun"))],
+        );
+        let host = boot(None, &[("EMPTY", ""), ("REL", "agent"), ("WILD", "/a/*")]);
+        let (resolved, problems) = g.resolve_anchors(&host);
+        assert!(resolved.fs.is_empty() && resolved.exec.is_empty(), "nothing is widened: {resolved:?}");
+        assert!(!resolved.fs_allows(Path::new("/x"), FsMode::Read));
+        let paths: Vec<&str> = problems.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(paths, ["anchored.fs[0]", "anchored.fs[1]", "anchored.fs[2]", "anchored.fs[3]", "anchored.exec[0]", "anchored.exec[1]"]);
+        assert!(problems[0].message.contains("unset"), "{}", problems[0].message);
+        assert!(problems[2].message.contains("not an absolute path"), "{}", problems[2].message);
+        assert!(problems[3].message.contains("glob character"), "{}", problems[3].message);
+        assert!(problems[5].message.contains("executable"), "edge: a host that cannot place exe-dir: {}", problems[5].message);
+        let plain = OsGrants { exec: vec!["bun".into()], ..g.clone() };
+        let (kept, _) = plain.resolve_anchors(&host);
+        assert_eq!(kept.exec, ["bun"], "control: plain entries pass through unresolved anchors untouched");
+    }
+
+    #[test]
+    fn a_variable_set_after_boot_never_moves_an_env_anchor() {
+        let host = boot(None, &[]);
+        std::env::set_var("ORB_GRANT_ANCHOR_TEST_LATE", "/late");
+        let g = anchored(vec![afs(GrantAnchor::Env("ORB_GRANT_ANCHOR_TEST_LATE".into()), "**")], Vec::new());
+        let (resolved, problems) = g.resolve_anchors(&host);
+        std::env::remove_var("ORB_GRANT_ANCHOR_TEST_LATE");
+        assert!(resolved.fs.is_empty() && problems.len() == 1);
+        assert!(!format!("{:?}", boot(None, &[("SECRET", "hunter2")])).contains("hunter2"), "the snapshot's Debug names variables only");
+    }
+
+    #[test]
+    fn anchored_entries_round_trip_split_into_atoms_and_report_bad_shapes() {
+        let g = anchored(
+            vec![AnchoredFsGrant { anchor: GrantAnchor::ExeDir, glob: "agent/**".into(), modes: vec![FsMode::Read, FsMode::Meta] }],
+            vec![aexec(GrantAnchor::Env("ORB_BUN_PATH".into()), None), aexec(GrantAnchor::ExeDir, Some("bun"))],
+        );
+        let wire = serde_json::to_value(&g).unwrap();
+        assert_eq!(
+            wire["anchored"],
+            json!({"fs": [{"anchor": "exe-dir", "glob": "agent/**", "modes": ["read", "meta"]}],
+                   "exec": [{"anchor": {"env": "ORB_BUN_PATH"}}, {"anchor": "exe-dir", "path": "bun"}]})
+        );
+        assert_eq!(serde_json::from_value::<OsGrants>(wire).unwrap(), g);
+        assert!(serde_json::to_value(OsGrants::default()).unwrap().get("anchored").is_none(), "control: no anchored key when empty");
+        let labels: Vec<String> = g.atoms().into_iter().map(|a| a.label).collect();
+        assert_eq!(labels, [r#"fs exe-dir "agent/**" read"#, r#"fs exe-dir "agent/**" meta"#, "exec env ORB_BUN_PATH", r#"exec exe-dir "bun""#]);
+        assert!(g.entry_problems().is_empty());
+        let mut merged = OsGrants::default();
+        merged.union(&g);
+        merged.union(&g);
+        assert_eq!(merged, g, "union is idempotent over anchored entries");
+        let bad = anchored(
+            vec![
+                afs(GrantAnchor::ExeDir, "/abs/**"),
+                afs(GrantAnchor::ExeDir, "../up/**"),
+                afs(GrantAnchor::ExeDir, "~/x"),
+                AnchoredFsGrant { anchor: GrantAnchor::ExeDir, glob: "a".into(), modes: vec![] },
+                afs(GrantAnchor::Env("A=B".into()), "**"),
+            ],
+            vec![aexec(GrantAnchor::ExeDir, None), aexec(GrantAnchor::ExeDir, Some("../bun")), aexec(GrantAnchor::ExeDir, Some("b*"))],
+        );
+        let paths: Vec<String> = bad.entry_problems().into_iter().map(|p| p.path).collect();
+        assert_eq!(
+            paths,
+            ["anchored.fs[0]", "anchored.fs[1]", "anchored.fs[2]", "anchored.fs[3]", "anchored.fs[4]", "anchored.exec[0]", "anchored.exec[1]", "anchored.exec[2]"]
+        );
+    }
+
+    #[test]
+    fn an_anchored_path_argument_needs_an_anchored_grant_on_the_same_anchor() {
+        let cwd_docs = anchored(vec![afs(GrantAnchor::Cwd, "docs/**")], Vec::new());
+        let read = call(OsOp::ReadFile, json!([{"anchor": "cwd", "path": "docs/Almadar_Gaps.md"}])).expect("static");
+        assert_eq!(read, vec![OsRequirement::FsAnchored { anchor: GrantAnchor::Cwd, path: "docs/Almadar_Gaps.md".into(), mode: FsMode::Read }]);
+        assert!(cwd_docs.allows(&read[0]));
+        let outside = call(OsOp::ReadFile, json!([{"anchor": "cwd", "path": "src/a.rs"}])).unwrap();
+        assert!(!cwd_docs.allows(&outside[0]), "control: outside the anchored glob");
+        let escape = call(OsOp::ReadFile, json!([{"anchor": "cwd", "path": "docs/../../etc/passwd"}])).unwrap();
+        assert!(!cwd_docs.allows(&escape[0]), "edge: climbing above the anchor");
+        let other = call(OsOp::ReadFile, json!([{"anchor": "exe-dir", "path": "docs/a.md"}])).unwrap();
+        assert!(!cwd_docs.allows(&other[0]), "control: another anchor is another place");
+        assert!(!cwd_docs.allows(&fs_req("docs/a.md", FsMode::Read)), "control: a plain path is never covered by an anchored grant");
+        let write = call(OsOp::WriteFile, json!([{"anchor": "cwd", "path": "docs/a.md"}, "x"])).unwrap();
+        assert!(!cwd_docs.allows(&write[0]), "control: the mode still counts");
+        let env = anchored(vec![afs(GrantAnchor::Env("ORB_AGENT_DIR".into()), "**")], Vec::new());
+        let entry = call(OsOp::Exists, json!([{"anchor": {"env": "ORB_AGENT_DIR"}, "path": "cli.js"}])).unwrap();
+        assert!(env.allows(&entry[0]));
+        let itself = call(OsOp::Exists, json!([{"anchor": {"env": "ORB_AGENT_DIR"}}])).unwrap();
+        assert!(env.allows(&itself[0]), "a `**` glob covers the anchor itself");
+        assert!(!env.allows(&call(OsOp::Exists, json!([{"anchor": {"env": "OTHER"}, "path": "cli.js"}])).unwrap()[0]), "control: another variable");
+    }
+
+    #[test]
+    fn a_computed_anchored_path_needs_the_tree_under_its_literal_directory() {
+        let tree = call(OsOp::ReadFile, json!([{"anchor": "cwd", "path": ["str/concat", "docs/", "@entity.name"]}])).unwrap();
+        assert_eq!(tree, vec![OsRequirement::FsAnchoredTree { anchor: GrantAnchor::Cwd, root: "docs/".into(), mode: FsMode::Read }]);
+        assert!(anchored(vec![afs(GrantAnchor::Cwd, "docs/**")], Vec::new()).allows(&tree[0]));
+        assert!(!anchored(vec![afs(GrantAnchor::Cwd, "docs/*.md")], Vec::new()).allows(&tree[0]), "control: a tree needs a `**` glob");
+        let whole = call(OsOp::ReadFile, json!([{"anchor": "cwd", "path": "@entity.path"}])).unwrap();
+        assert_eq!(whole, vec![OsRequirement::FsAnchoredTree { anchor: GrantAnchor::Cwd, root: String::new(), mode: FsMode::Read }]);
+        assert!(anchored(vec![afs(GrantAnchor::Cwd, "**")], Vec::new()).allows(&whole[0]));
+        assert!(!anchored(vec![afs(GrantAnchor::Cwd, "docs/**")], Vec::new()).allows(&whole[0]), "control: a computed path may reach the whole anchor");
+        assert_eq!(call(OsOp::ReadFile, json!([{"anchor": "@entity.where", "path": "a"}])), Err(0), "the anchor itself must be a literal");
+        assert_eq!(call(OsOp::ReadFile, json!([{"anchor": {"env": "@entity.n"}, "path": "a"}])), Err(0));
+        assert_eq!(
+            call(OsOp::ReadFile, json!([{"anchor": "cwd", "path": "a", "extra": 1}])),
+            Err(0),
+            "control: an object of another shape is not an anchored path"
+        );
+    }
+
+    #[test]
+    fn spawn_takes_an_anchored_command_and_cwd() {
+        let needs = call(OsOp::Spawn, json!([{"anchor": "exe-dir", "path": "bun"}, [], {"cwd": {"anchor": "cwd"}}])).unwrap();
+        assert_eq!(
+            needs,
+            vec![
+                OsRequirement::ExecAnchored { anchor: GrantAnchor::ExeDir, path: Some("bun".into()) },
+                OsRequirement::FsAnchored { anchor: GrantAnchor::Cwd, path: String::new(), mode: FsMode::Read },
+            ]
+        );
+        let g = anchored(Vec::new(), vec![aexec(GrantAnchor::ExeDir, Some("bun")), aexec(GrantAnchor::Env("ORB_BUN_PATH".into()), None)]);
+        assert!(g.allows(&needs[0]));
+        assert!(g.allows(&OsRequirement::ExecAnchored { anchor: GrantAnchor::Env("ORB_BUN_PATH".into()), path: None }));
+        assert!(!g.allows(&OsRequirement::ExecAnchored { anchor: GrantAnchor::ExeDir, path: Some("node".into()) }), "control: another command");
+        assert!(!g.allows(&OsRequirement::Exec { command: "bun".into() }), "control: the bare name is not granted");
+        assert_eq!(call(OsOp::Spawn, json!([{"anchor": "exe-dir", "path": "@entity.cmd"}, []])), Err(0), "a command is never computed");
+        assert_eq!(anchored_arg_positions(OsOp::Spawn), [0]);
+        assert_eq!(anchored_arg_positions(OsOp::Rename), [0, 1]);
+        assert!(anchored_arg_positions(OsOp::Getenv).is_empty());
+    }
+
+    fn anet(host: NetPart, port: NetPart, kinds: &[NetKind]) -> OsGrants {
+        OsGrants {
+            anchored: AnchoredGrants { net: vec![AnchoredNetGrant { host, port, kinds: kinds.to_vec() }], ..AnchoredGrants::default() },
+            ..OsGrants::default()
+        }
+    }
+
+    fn envp(name: &str) -> NetPart {
+        NetPart::Anchor(GrantAnchor::Env(name.into()))
+    }
+
+    #[test]
+    fn a_listen_on_env_host_and_port_needs_the_anchored_net_grant() {
+        let g = anet(envp("HOST"), envp("PORT"), &[NetKind::Listen]);
+        let needs = call(OsOp::HttpListen, json!([{"anchor": {"env": "HOST"}}, {"anchor": {"env": "PORT"}}])).unwrap();
+        assert_eq!(needs, vec![OsRequirement::NetAnchored { host: envp("HOST"), port: envp("PORT"), kinds: vec![NetKind::Listen] }]);
+        assert!(g.allows(&needs[0]));
+        let tcp = call(OsOp::TcpConnect, json!([{"anchor": {"env": "HOST"}}, {"anchor": {"env": "PORT"}}])).unwrap();
+        assert!(!g.allows(&tcp[0]), "control: another kind");
+        let mixed = call(OsOp::TcpListen, json!(["0.0.0.0", {"anchor": {"env": "PORT"}}])).unwrap();
+        assert_eq!(mixed, vec![OsRequirement::NetAnchored { host: NetPart::Literal("0.0.0.0".into()), port: envp("PORT"), kinds: vec![NetKind::Listen] }]);
+        assert!(!g.allows(&mixed[0]), "control: a literal host is not the env host");
+        assert!(anet(NetPart::Literal("0.0.0.0".into()), envp("PORT"), &[NetKind::Listen]).allows(&mixed[0]));
+        assert!(!g.allows(&OsRequirement::Net { host: "localhost".into(), port: 80, kinds: vec![NetKind::Listen] }), "control: a literal target");
+        assert_eq!(call(OsOp::TcpListen, json!([{"anchor": "cwd"}, 80])), Err(0), "a net part takes only an env anchor");
+        assert_eq!(call(OsOp::TcpListen, json!([{"anchor": {"env": "H"}, "path": "x"}, 80])), Err(0));
+        assert_eq!(anchored_net_args(OsOp::Sendto), Some((2, 3)));
+        assert_eq!(anchored_net_args(OsOp::ReadFile), None);
+    }
+
+    #[test]
+    fn an_anchored_net_grant_resolves_at_boot_and_an_unset_part_grants_nothing() {
+        let g = anet(envp("HOST"), envp("PORT"), &[NetKind::Listen]);
+        let (resolved, problems) = g.resolve_anchors(&boot(None, &[("HOST", "127.0.0.1"), ("PORT", "8080")]));
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(resolved.net_allows("127.0.0.1", 8080, NetKind::Listen));
+        assert!(!resolved.net_allows("127.0.0.1", 8081, NetKind::Listen), "control: another port");
+        let (v6, _) = g.resolve_anchors(&boot(None, &[("HOST", "::1"), ("PORT", "9")]));
+        assert!(v6.net_allows("::1", 9, NetKind::Listen));
+        let (none, problems) = g.resolve_anchors(&boot(None, &[("HOST", "127.0.0.1")]));
+        assert!(none.net.is_empty() && problems.len() == 1 && problems[0].message.contains("PORT is unset"), "{problems:?}");
+        let (bad, problems) = g.resolve_anchors(&boot(None, &[("HOST", "h"), ("PORT", "http")]));
+        assert!(bad.net.is_empty() && problems[0].message.contains("not a port number"));
+        let shapes = OsGrants {
+            anchored: AnchoredGrants {
+                net: vec![
+                    AnchoredNetGrant { host: NetPart::Literal("h".into()), port: NetPart::Literal("1".into()), kinds: vec![NetKind::Tcp] },
+                    AnchoredNetGrant { host: NetPart::Anchor(GrantAnchor::Cwd), port: envp("P"), kinds: vec![NetKind::Tcp] },
+                    AnchoredNetGrant { host: envp("H"), port: NetPart::Literal("x".into()), kinds: vec![NetKind::Tcp] },
+                    AnchoredNetGrant { host: envp("H"), port: envp("P"), kinds: vec![] },
+                    AnchoredNetGrant { host: envp("H"), port: envp("P"), kinds: vec![NetKind::Udp] },
+                ],
+                ..AnchoredGrants::default()
+            },
+            ..OsGrants::default()
+        };
+        let paths: Vec<String> = shapes.entry_problems().into_iter().map(|p| p.path).collect();
+        assert_eq!(paths, ["anchored.net[0]", "anchored.net[1]", "anchored.net[2]", "anchored.net[3]"]);
+        assert_eq!(g.atoms()[0].label, "net env HOST, env PORT listen");
+    }
+
+    #[test]
+    fn a_host_resolves_an_anchored_path_under_its_anchor_or_refuses_it() {
+        let host = OsAnchors { start: Some(PathBuf::from("/work/p")), ..boot(Some("/opt/orb"), &[("D", "/srv/a")]) };
+        let at = |v: serde_json::Value| AnchoredPath::from_value(&serde_json::from_value::<Value>(v).unwrap()).expect("anchored");
+        assert_eq!(host.resolve_path(&at(json!({"anchor": "cwd", "path": "docs/a.md"}))), Ok("/work/p/docs/a.md".into()));
+        assert_eq!(host.resolve_path(&at(json!({"anchor": "exe-dir", "path": "agent/./cli.js"}))), Ok("/opt/orb/agent/cli.js".into()));
+        assert_eq!(host.resolve_path(&at(json!({"anchor": {"env": "D"}}))), Ok("/srv/a".into()));
+        assert!(host.resolve_path(&at(json!({"anchor": "cwd", "path": "../x"}))).is_err(), "edge: climbing above the anchor");
+        assert!(host.resolve_path(&at(json!({"anchor": "cwd", "path": "/etc/passwd"}))).is_err(), "edge: an absolute path is not relative");
+        assert!(host.resolve_path(&at(json!({"anchor": {"env": "UNSET"}, "path": "a"}))).is_err(), "edge: an unset variable");
+        assert!(AnchoredPath::from_value(&Value::String("cwd".into())).is_none(), "control: a string is not an anchored path");
+        let (resolved, problems) = anchored(vec![afs(GrantAnchor::Cwd, "docs/**")], Vec::new()).resolve_anchors(&host);
+        assert!(problems.is_empty());
+        assert!(resolved.fs_allows(Path::new("/work/p/docs/a.md"), FsMode::Read));
     }
 
     fn concat(pieces: &[&str]) -> SExpression {

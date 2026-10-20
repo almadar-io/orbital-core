@@ -56,7 +56,8 @@ impl OperatorTypeRef {
                 | OperatorTypeRefKind::Record
                 | OperatorTypeRefKind::PickOf { .. }
                 | OperatorTypeRefKind::OmitOf { .. }
-                | OperatorTypeRefKind::MergeOf { .. } => "object",
+                | OperatorTypeRefKind::MergeOf { .. }
+                | OperatorTypeRefKind::ChildrenOf { .. } => "object",
                 OperatorTypeRefKind::Entity { .. } => "entity",
                 OperatorTypeRefKind::EntityRef => "entityRef",
                 OperatorTypeRefKind::EventKey { .. } => "eventKey",
@@ -173,6 +174,13 @@ pub enum OperatorTypeRefKind {
     },
     /// The declared target shape of the call: an argument naming a type, which is also the result type.
     Shape,
+    /// `children-of T R`: a structural fold's `childResults` over the record `of` (the call's shape): every field of
+    /// `of` declared the shape, a list of it or a map of it, with the shape replaced by `result`.
+    #[serde(rename = "childrenOf")]
+    ChildrenOf {
+        of: String,
+        result: String,
+    },
 }
 
 /// Effect-specific metadata on an operator, mirror of `OperatorEffectMeta` in

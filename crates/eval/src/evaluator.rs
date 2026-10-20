@@ -2762,4 +2762,188 @@ mod tests {
         );
         assert_ne!(eval(r#"["str/collate-key", "a"]"#), eval(r#"["str/collate-key", "b"]"#));
     }
+
+    fn by_name(shape: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "union", "values": [shape] })
+    }
+
+    fn tag(value: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "string", "required": true, "values": [value] })
+    }
+
+    /// RowPredicate's `.orb` definition, as lowering writes a field of it: a tagged union whose back-references
+    /// are by-name references.
+    fn predicate_definition() -> String {
+        let text = serde_json::json!({ "type": "string", "required": true });
+        serde_json::json!({
+            "name": "RowPredicate",
+            "type": "union",
+            "values": ["Compare", "All", "Any", "Not"],
+            "properties": {
+                "Compare": { "type": "object", "properties": {
+                    "kind": tag("compare"), "field": text, "op": text, "value": text } },
+                "All": { "type": "object", "properties": {
+                    "kind": tag("all"), "of": { "type": "array", "required": true, "items": by_name("RowPredicate") } } },
+                "Any": { "type": "object", "properties": {
+                    "kind": tag("any"), "of": { "type": "array", "required": true, "items": by_name("RowPredicate") } } },
+                "Not": { "type": "object", "properties": {
+                    "kind": tag("not"), "of": by_name("RowPredicate") } }
+            }
+        })
+        .to_string()
+    }
+
+    fn fold_with(value: serde_json::Value, step: serde_json::Value, shape: &str, definition: &str) -> Result<Value, String> {
+        let ctx = crate::evaluator::context::BindingContextBuilder::new()
+            .payload(serde_json::from_value(serde_json::json!({ "v": value })).unwrap())
+            .build();
+        let expr: SExpression =
+            serde_json::from_value(serde_json::json!(["tree/fold", "@payload.v", step, shape, definition])).unwrap();
+        Evaluator::new().evaluate(&expr, &ctx).map_err(|e| e.to_string())
+    }
+
+    fn json_value(json: serde_json::Value) -> Value {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn tree_fold_translates_a_nested_predicate_bottom_up() {
+        let step = serde_json::json!(["fn", ["node", "kids"],
+            ["if", ["=", "@node.kind", "compare"], ["str/concat", "@node.field", "@node.op", "@node.value"],
+            ["if", ["=", "@node.kind", "all"], ["str/concat", "(", ["str/join", "@kids.of", " AND "], ")"],
+            ["if", ["=", "@node.kind", "any"], ["str/concat", "(", ["str/join", "@kids.of", " OR "], ")"],
+            ["str/concat", "NOT ", "@kids.of"]]]]]);
+        let pred = serde_json::json!({ "kind": "all", "of": [
+            { "kind": "compare", "field": "a", "op": "==", "value": "1" },
+            { "kind": "not", "of": { "kind": "any", "of": [
+                { "kind": "compare", "field": "b", "op": "<", "value": "2" },
+                { "kind": "compare", "field": "c", "op": ">", "value": "3" } ] } } ] });
+        assert_eq!(
+            fold_with(pred, step, "RowPredicate", &predicate_definition()).unwrap(),
+            Value::String("(a==1 AND NOT (b<2 OR c>3))".into())
+        );
+    }
+
+    #[test]
+    fn tree_fold_child_results_mirror_list_map_and_field_positions() {
+        let definition = serde_json::json!({
+            "name": "Tree", "type": "object", "properties": {
+                "label": { "type": "string", "required": true },
+                "kids": { "type": "array", "items": by_name("Tree") },
+                "named": { "type": "object", "items": by_name("Tree") },
+                "parent": by_name("Tree"),
+                "tags": { "type": "array", "items": { "type": "string" } }
+            }
+        })
+        .to_string();
+        let step = serde_json::json!(["fn", ["n", "k"], { "label": "@n.label", "k": "@k" }]);
+        let leaf = |label: &str| serde_json::json!({ "label": label, "tags": ["t"] });
+        let tree = serde_json::json!({
+            "label": "root", "tags": ["x"],
+            "kids": [leaf("a"), { "label": "b", "kids": [leaf("c")] }],
+            "named": { "m": leaf("d") },
+            "parent": leaf("p")
+        });
+        let done = |label: &str| serde_json::json!({ "label": label, "k": {} });
+        assert_eq!(
+            fold_with(tree, step, "Tree", &definition).unwrap(),
+            json_value(serde_json::json!({ "label": "root", "k": {
+                "kids": [done("a"), { "label": "b", "k": { "kids": [done("c")] } }],
+                "named": { "m": done("d") },
+                "parent": done("p")
+            } }))
+        );
+    }
+
+    #[test]
+    fn tree_fold_calls_the_step_once_on_a_leaf() {
+        let step = serde_json::json!(["fn", ["n", "k"], { "kind": "@n.kind", "k": "@k" }]);
+        let leaf = serde_json::json!({ "kind": "compare", "field": "a", "op": "==", "value": "1" });
+        assert_eq!(
+            fold_with(leaf, step, "RowPredicate", &predicate_definition()).unwrap(),
+            json_value(serde_json::json!({ "kind": "compare", "k": {} }))
+        );
+    }
+
+    #[test]
+    fn control_tree_fold_over_a_non_recursive_type_folds_once() {
+        let definition = serde_json::json!({
+            "name": "Note", "type": "object", "properties": {
+                "of": { "type": "array", "items": { "type": "string" } },
+                "Note": { "type": "string" }
+            }
+        })
+        .to_string();
+        let step = serde_json::json!(["fn", ["n", "k"], { "of": "@n.of", "k": "@k" }]);
+        assert_eq!(
+            fold_with(serde_json::json!({ "of": ["a", "b"], "Note": "x" }), step, "Note", &definition).unwrap(),
+            json_value(serde_json::json!({ "of": ["a", "b"], "k": {} })),
+            "a list of strings and a field named like the type are not children"
+        );
+    }
+
+    #[test]
+    fn tree_fold_reads_positions_from_the_selected_variant_never_the_value_shape() {
+        let step = serde_json::json!(["fn", ["n", "k"], "@k"]);
+        let not_with_a_list = serde_json::json!({ "kind": "not", "of": [{ "kind": "compare", "field": "a", "op": "==", "value": "1" }] });
+        let err = fold_with(not_with_a_list, step.clone(), "RowPredicate", &predicate_definition()).unwrap_err();
+        assert!(err.contains("RowPredicate") && err.contains("array"), "{err}");
+        let untagged = serde_json::json!({ "kind": "xor", "of": [] });
+        let err = fold_with(untagged, step.clone(), "RowPredicate", &predicate_definition()).unwrap_err();
+        assert!(err.contains("no variant"), "{err}");
+        assert_eq!(
+            fold_with(serde_json::Value::Null, step.clone(), "RowPredicate", &predicate_definition()).unwrap(),
+            Value::Null,
+            "an absent value folds to null"
+        );
+        let unbaked: SExpression = serde_json::from_value(serde_json::json!(["tree/fold", null, step, "RowPredicate"])).unwrap();
+        let err = Evaluator::new().evaluate(&unbaked, &BindingContext::new()).unwrap_err().to_string();
+        assert!(err.contains("was not written into the call"), "{err}");
+    }
+
+    fn row_matches(pred: &serde_json::Value, row: &serde_json::Value) -> Value {
+        let ctx = crate::evaluator::context::BindingContextBuilder::new()
+            .payload(json_value(serde_json::json!({ "pred": pred, "row": row })))
+            .build();
+        eval_with_ctx(r#"["row/matches", "@payload.pred", "@payload.row"]"#, &ctx)
+    }
+
+    #[test]
+    fn row_matches_decides_a_typed_predicate() {
+        let open = serde_json::json!({ "kind": "compare", "field": "status", "op": "==", "value": "open" });
+        assert_eq!(row_matches(&open, &serde_json::json!({ "id": "t1", "status": "open" })), Value::Bool(true));
+        assert_eq!(row_matches(&open, &serde_json::json!({ "id": "t2", "status": "closed" })), Value::Bool(false));
+        let negated = serde_json::json!({ "kind": "not", "of": open });
+        assert_eq!(row_matches(&negated, &serde_json::json!({ "id": "t2", "status": "closed" })), Value::Bool(true));
+        assert_eq!(row_matches(&serde_json::Value::Null, &serde_json::json!({ "id": "t1" })), Value::Null);
+        let ctx = crate::evaluator::context::BindingContextBuilder::new()
+            .payload(json_value(serde_json::json!({ "pred": { "kind": "nope" }, "row": { "id": "t1" } })))
+            .build();
+        let expr: SExpression = serde_json::from_str(r#"["row/matches", "@payload.pred", "@payload.row"]"#).unwrap();
+        let err = Evaluator::new().evaluate(&expr, &ctx).unwrap_err().to_string();
+        assert!(err.contains("not a RowPredicate"), "{err}");
+    }
+
+    #[test]
+    fn control_row_matches_agrees_with_compile_predicate_on_the_same_inputs() {
+        use orbital_core::runtime::row_query::{compile_predicate, PredicateRole};
+        let source: Value = json_value(serde_json::json!(["and",
+            ["==", "@entity.status", "open"],
+            ["not", [">", "@entity.n", 3]]]));
+        let compiled = compile_predicate(
+            &source,
+            &orbital_core::evaluator::context::BindingContext::new(),
+            PredicateRole::Filter,
+            &|_: &str| true,
+        )
+        .unwrap();
+        let pred = serde_json::to_value(&compiled).unwrap();
+        for row in [
+            serde_json::json!({ "id": "a", "status": "open", "n": 1 }),
+            serde_json::json!({ "id": "b", "status": "open", "n": 5 }),
+            serde_json::json!({ "id": "c", "status": "closed", "n": 1 }),
+        ] {
+            assert_eq!(row_matches(&pred, &row), Value::Bool(compiled.matches(&json_value(row.clone()))), "{row}");
+        }
+    }
 }

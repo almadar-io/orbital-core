@@ -1,5 +1,6 @@
 //! The `os/` effect family at the kernel: the closed set of operations a host can be asked to perform
-//! ([`OsOp`]), the error a host answers with ([`OsError`]) and how an `os/<op>` call site is read.
+//! ([`OsOp`]), the error a host answers with ([`OsError`]) and how an `os/<op>` call site is read. The host
+//! ports outside the `os/` namespace (`http/listen`, `http/respond`) are in the same table.
 //! The contract is `docs/Almadar_OS_Operators.md`; the pure `os/path-*` operators are not here (they are
 //! evaluator operators, `evaluator/operators/os_path.rs`).
 
@@ -92,6 +93,7 @@ os_ops! {
     Kill => ("os/kill", 2, 2, Single),
     Pid => ("os/pid", 0, 0, Single),
     Ppid => ("os/ppid", 0, 0, Single),
+    CurrentExe => ("os/current-exe", 0, 0, Single),
     WatchProcess => ("os/watch-process", 1, 2, Stream),
     WatchSignal => ("os/watch-signal", 1, 1, Stream),
     Getenv => ("os/getenv", 1, 1, Single),
@@ -114,6 +116,8 @@ os_ops! {
     DnsResolve => ("os/dns-resolve", 1, 2, Single),
     Shutdown => ("os/shutdown", 1, 1, Single),
     WatchPort => ("os/watch-port", 2, 2, Stream),
+    HttpListen => ("http/listen", 2, 2, Stream),
+    HttpRespond => ("http/respond", 4, 4, Single),
     ClockMonotonic => ("os/clock-monotonic", 0, 0, Single),
     Uid => ("os/uid", 0, 0, Single),
     Gid => ("os/gid", 0, 0, Single),
@@ -258,10 +262,11 @@ mod tests {
     fn every_name_round_trips_through_the_one_table() {
         for op in OsOp::ALL {
             assert_eq!(OsOp::from_name(op.name()), Some(*op));
-            assert!(op.name().starts_with("os/"));
+            assert!(op.name().starts_with("os/") || op.name().starts_with("http/"));
             assert!(op.min_args() <= op.max_args());
         }
-        assert_eq!(OsOp::ALL.len(), 90);
+        assert_eq!(OsOp::ALL.len(), 93);
+        assert_eq!(OsOp::from_name("http"), None);
     }
 
     #[test]
@@ -314,6 +319,7 @@ mod tests {
                 "os/stdin-read",
                 "os/tcp-listen",
                 "os/watch-port",
+                "http/listen",
                 "os/watch-cron",
             ]
         );
@@ -395,5 +401,14 @@ mod tests {
         assert!(!accepts_arity(OsOp::ReadFile, 3));
         assert!(accepts_arity(OsOp::Cwd, 0));
         assert!(!accepts_arity(OsOp::Cwd, 1));
+    }
+
+    #[test]
+    fn current_exe_is_a_single_op_taking_no_argument() {
+        assert_eq!(OsOp::from_name("os/current-exe"), Some(OsOp::CurrentExe));
+        assert_eq!(OsOp::CurrentExe.name(), "os/current-exe");
+        assert!(!OsOp::CurrentExe.is_stream() && !OsOp::CurrentExe.defers_completion());
+        assert!(accepts_arity(OsOp::CurrentExe, 0));
+        assert!(!accepts_arity(OsOp::CurrentExe, 1), "control: it takes no path");
     }
 }

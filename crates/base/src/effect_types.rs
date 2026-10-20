@@ -914,6 +914,7 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
 pub fn is_known_effect_name(op: &str) -> bool {
     if op.starts_with("agent/")
         || op.starts_with("os/")
+        || OsOp::from_name(op).is_some()
         || op.starts_with("browser/")
         || op.starts_with("llm/")
         || op.starts_with("memory/")

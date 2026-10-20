@@ -163,6 +163,35 @@ impl Operator for HashScryptOp {
     }
 }
 
+/// hash/pbkdf2 (password, salt, iterations, length) - PBKDF2-HMAC-SHA256 (RFC 8018) of bytes, answering length bytes
+pub struct HashPbkdf2Op;
+impl Operator for HashPbkdf2Op {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        const OP: &str = "hash/pbkdf2";
+        require_arity!(args, OP, == 4);
+        let bytes = |arg: &SExpression| -> Result<Vec<u8>, OrbitalError> {
+            let s = string_arg(arg, ctx, OP)?;
+            codec::base64_decode(&s)
+                .map_err(|e| OrbitalError::Eval(EvalError::InvalidArgument(format!("{OP}: invalid bytes ({e})"))))
+        };
+        let password = bytes(&args[0])?;
+        let salt = bytes(&args[1])?;
+        let count = |arg: &SExpression, what: &str| -> Result<u32, OrbitalError> {
+            match eval_expr(arg, ctx)? {
+                Value::Number(n) if n.fract() == 0.0 && (1.0..=f64::from(u32::MAX)).contains(&n) => Ok(n as u32),
+                other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                    "{OP}: {what} {}: expected a whole number from 1",
+                    other.to_text()
+                )))),
+            }
+        };
+        let iterations = count(&args[2], "iterations")?;
+        let length = count(&args[3], "length")?;
+        let key = codec::pbkdf2_hmac_sha256(&password, &salt, iterations, length as usize);
+        Ok(Value::String(codec::base64_encode(&key)))
+    }
+}
+
 /// hmac/sha256 (key, message, encoding)
 pub struct HmacSha256Op;
 impl Operator for HmacSha256Op {
@@ -176,5 +205,49 @@ impl Operator for HmacSha256Op {
             &encoding,
             "hmac/sha256",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval(form: serde_json::Value) -> EvalResult {
+        let expr: SExpression = serde_json::from_value(form).expect("s-expression");
+        eval_expr(&expr, &BindingContext::default())
+    }
+
+    fn pbkdf2_hex(password: &[u8], salt: &[u8], iterations: i64, length: i64) -> String {
+        let form = serde_json::json!([
+            "hash/pbkdf2",
+            codec::base64_encode(password),
+            codec::base64_encode(salt),
+            iterations,
+            length
+        ]);
+        match eval(form) {
+            Ok(Value::String(b64)) => codec::hex(&codec::base64_decode(&b64).expect("bytes")),
+            other => panic!("expected bytes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pbkdf2_answers_the_rfc_vectors_as_bytes() {
+        assert_eq!(pbkdf2_hex(b"password", b"salt", 1, 32), "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
+        assert_eq!(pbkdf2_hex(b"password", b"salt", 4096, 32), "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a");
+        assert_eq!(pbkdf2_hex(b"password", b"salt", 1, 40).len(), 80);
+        assert_eq!(pbkdf2_hex(b"password", b"salt", 1, 1), "12");
+    }
+
+    #[test]
+    fn pbkdf2_control_differs_by_salt_and_refuses_bad_counts() {
+        assert_ne!(pbkdf2_hex(b"password", b"pepper", 1, 32), pbkdf2_hex(b"password", b"salt", 1, 32));
+        let pw = codec::base64_encode(b"password");
+        let salt = codec::base64_encode(b"salt");
+        for (iterations, length) in [(0.0, 32.0), (1.5, 32.0), (-1.0, 32.0), (1.0, 0.0), (1.0, 2.5)] {
+            let err = eval(serde_json::json!(["hash/pbkdf2", pw, salt, iterations, length])).expect_err("refused");
+            assert!(err.to_string().contains("hash/pbkdf2"), "{err}");
+        }
+        assert!(eval(serde_json::json!(["hash/pbkdf2", "%%", salt, 1, 32])).is_err());
     }
 }

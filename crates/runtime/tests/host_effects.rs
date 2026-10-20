@@ -2237,6 +2237,7 @@ mod os_twin {
             anchors: orbital_core_runtime::os_host::OsAnchors {
                 home: Some(anchors_root.join("home")),
                 start: Some(anchors_root.join("start")),
+                ..orbital_core_runtime::os_host::OsAnchors::default()
             },
             ..OsHandles::default()
         });

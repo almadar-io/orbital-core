@@ -109,6 +109,35 @@ pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// `Buffer.from(text, 'base64')`: lenient about padding and whitespace; skips characters outside the standard alphabet.
+pub fn base64_decode_lenient(text: &str) -> Vec<u8> {
+    let cleaned: String = text
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/'))
+        .collect();
+    let trimmed = cleaned.trim_end_matches('=');
+    let mut out = Vec::with_capacity(trimmed.len() * 3 / 4);
+    let mut acc: u32 = 0;
+    let mut bits = 0u32;
+    for c in trimmed.chars() {
+        let v = match c {
+            'A'..='Z' => c as u32 - 'A' as u32,
+            'a'..='z' => c as u32 - 'a' as u32 + 26,
+            '0'..='9' => c as u32 - '0' as u32 + 52,
+            '+' => 62,
+            _ => 63,
+        };
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    out
+}
+
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }

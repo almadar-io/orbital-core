@@ -256,7 +256,7 @@ impl TokenVerifier for OidcVerifier {
         }
         let uri = self.jwks_uri()?;
         let policy = VerifyPolicy { issuer: &self.issuer, audience: &self.audience, now: seconds(&self.clock) };
-        let claims = self.feed.verify_with(&uri, &KeySet::from_jwks, &|keys| verify_compact(token, keys, &policy))?;
+        let claims = self.feed.verify_with(&uri, &|text| Ok(KeySet::from_jwks(text)?), &|keys| verify_compact(token, keys, &policy))?;
         Ok(VerifiedUser {
             uid: text_claim(&claims, "sub").unwrap_or_default(),
             provider: Provider::Oidc,
@@ -322,7 +322,7 @@ impl TokenVerifier for FirebaseVerifier {
         let claims = if self.emulator.is_some() && is_unsigned(token) {
             verify_unsigned(token, &policy)?
         } else {
-            self.feed.verify_with(&self.certs_url, &KeySet::from_x509_map, &|keys| verify_compact(token, keys, &policy))?
+            self.feed.verify_with(&self.certs_url, &|text| Ok(KeySet::from_x509_map(text)?), &|keys| verify_compact(token, keys, &policy))?
         };
         let auth_time = claims.get("auth_time").and_then(Json::as_f64);
         if !auth_time.is_some_and(|at| at <= now as f64) {

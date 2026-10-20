@@ -126,6 +126,130 @@ impl Operator for BytesEqualsOp {
     }
 }
 
+/// A whole-number argument (a null is refused), or an `invalid` error naming what it is for.
+fn whole(arg: &SExpression, ctx: &BindingContext, op: &str, what: &str) -> Result<i64, OrbitalError> {
+    match eval_expr(arg, ctx)? {
+        Value::Number(n) if n.is_finite() && n.fract() == 0.0 && n.abs() <= MAX_SAFE => Ok(n as i64),
+        other => Err(invalid(op, format!("{what} {}: expected a whole number", other.to_text()))),
+    }
+}
+
+/// The largest integer a number holds exactly, 2^53 - 1.
+const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
+
+fn width_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<usize, OrbitalError> {
+    match eval_expr(arg, ctx)? {
+        Value::Number(n) if n == 1.0 || n == 2.0 || n == 4.0 || n == 8.0 => Ok(n as usize),
+        other => Err(invalid(op, format!("width {}: expected 1, 2, 4 or 8", other.to_text()))),
+    }
+}
+
+fn big_endian_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<bool, OrbitalError> {
+    match eval_expr(arg, ctx)? {
+        Value::String(s) if s == "be" => Ok(true),
+        Value::String(s) if s == "le" => Ok(false),
+        other => Err(invalid(op, format!("endian {}: expected \"be\" or \"le\"", other.to_text()))),
+    }
+}
+
+/// bytes/index-of (data, needle, from?) - first byte offset of needle at or after from (negatives count from the end), else -1
+pub struct BytesIndexOfOp;
+impl Operator for BytesIndexOfOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "bytes/index-of", >= 2);
+        if args.len() > 3 {
+            return Err(OrbitalError::Eval(EvalError::ArityMismatch {
+                operator: "bytes/index-of".to_string(),
+                expected: 3,
+                actual: args.len(),
+            }));
+        }
+        let data = bytes_arg(&args[0], ctx, "bytes/index-of")?;
+        let needle = bytes_arg(&args[1], ctx, "bytes/index-of")?;
+        let from = if args.len() == 3 {
+            match eval_expr(&args[2], ctx)? {
+                Value::Null => 0,
+                other => index(data.len(), require_number!(other)),
+            }
+        } else {
+            0
+        };
+        if needle.is_empty() {
+            return Ok(Value::Number(from as f64));
+        }
+        let found = data
+            .get(from..)
+            .and_then(|tail| tail.windows(needle.len()).position(|w| w == needle.as_slice()));
+        Ok(Value::Number(found.map_or(-1.0, |at| (from + at) as f64)))
+    }
+}
+
+/// bytes/at (data, i) - the byte at i as 0-255; null when i is outside the data
+pub struct BytesAtOp;
+impl Operator for BytesAtOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "bytes/at", == 2);
+        let data = bytes_arg(&args[0], ctx, "bytes/at")?;
+        let at = whole(&args[1], ctx, "bytes/at", "index")?;
+        Ok(usize::try_from(at)
+            .ok()
+            .and_then(|i| data.get(i))
+            .map_or(Value::Null, |b| Value::Number(f64::from(*b))))
+    }
+}
+
+/// bytes/read-uint (data, offset, width, endian) - the unsigned integer in width bytes at offset; null when they run
+/// past the data. A width-8 value above 2^53 - 1 is refused, never rounded.
+pub struct BytesReadUintOp;
+impl Operator for BytesReadUintOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        const OP: &str = "bytes/read-uint";
+        require_arity!(args, OP, == 4);
+        let data = bytes_arg(&args[0], ctx, OP)?;
+        let offset = whole(&args[1], ctx, OP, "offset")?;
+        let width = width_arg(&args[2], ctx, OP)?;
+        let big = big_endian_arg(&args[3], ctx, OP)?;
+        let Some(field) = usize::try_from(offset)
+            .ok()
+            .and_then(|start| data.get(start..start.checked_add(width)?))
+        else {
+            return Ok(Value::Null);
+        };
+        let fold = |acc: u64, b: &u8| (acc << 8) | u64::from(*b);
+        let value = if big {
+            field.iter().fold(0, fold)
+        } else {
+            field.iter().rev().fold(0, fold)
+        };
+        if value as f64 > MAX_SAFE {
+            return Err(invalid(OP, format!("value {value}: above 2^53 - 1, not exact as a number")));
+        }
+        Ok(Value::Number(value as f64))
+    }
+}
+
+/// bytes/write-uint (value, width, endian) - value as width bytes; a value the width (or a number) cannot hold exactly is refused
+pub struct BytesWriteUintOp;
+impl Operator for BytesWriteUintOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        const OP: &str = "bytes/write-uint";
+        require_arity!(args, OP, == 3);
+        let value = whole(&args[0], ctx, OP, "value")?;
+        let width = width_arg(&args[1], ctx, OP)?;
+        let big = big_endian_arg(&args[2], ctx, OP)?;
+        let fits = value >= 0 && (width == 8 || value < 1i64 << (8 * width));
+        if !fits {
+            return Err(invalid(OP, format!("value {value}: does not fit {width} unsigned bytes")));
+        }
+        let all = (value as u64).to_be_bytes();
+        let mut field = all[8 - width..].to_vec();
+        if !big {
+            field.reverse();
+        }
+        Ok(Value::String(codec::base64_encode(&field)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +405,110 @@ mod tests {
             Value::Bool(true)
         );
         fails_invalid(serde_json::json!(["bytes/equals", "aGk=", "%%"]));
+    }
+
+    fn fails(form: serde_json::Value) {
+        assert!(eval(form).is_err());
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        codec::base64_encode(bytes)
+    }
+
+    #[test]
+    fn index_of_finds_the_first_offset_from_the_start_or_from() {
+        let hello = b64(b"hello");
+        let at = |form: serde_json::Value| eval(form).unwrap();
+        assert_eq!(at(serde_json::json!(["bytes/index-of", hello, b64(b"l")])), Value::Number(2.0));
+        assert_eq!(at(serde_json::json!(["bytes/index-of", hello, b64(b"lo")])), Value::Number(3.0));
+        assert_eq!(at(serde_json::json!(["bytes/index-of", hello, b64(b"l"), 3])), Value::Number(3.0));
+        assert_eq!(at(serde_json::json!(["bytes/index-of", hello, b64(b"l"), -2])), Value::Number(3.0));
+        assert_eq!(at(serde_json::json!(["bytes/index-of", hello, b64(b"l"), null])), Value::Number(2.0));
+        assert_eq!(at(serde_json::json!(["bytes/index-of", hello, "", 2])), Value::Number(2.0));
+        assert_eq!(at(serde_json::json!(["bytes/index-of", b64(b"\r\n+OK\r\n"), b64(b"\r\n"), 1])), Value::Number(5.0));
+    }
+
+    #[test]
+    fn index_of_answers_minus_one_when_absent_and_control_rejects_bad_bytes() {
+        let hello = b64(b"hello");
+        assert_eq!(eval(serde_json::json!(["bytes/index-of", hello, b64(b"z")])).unwrap(), Value::Number(-1.0));
+        assert_eq!(eval(serde_json::json!(["bytes/index-of", hello, b64(b"l"), 4])).unwrap(), Value::Number(-1.0));
+        assert_eq!(eval(serde_json::json!(["bytes/index-of", hello, b64(b"hello!")])).unwrap(), Value::Number(-1.0));
+        assert_eq!(eval(serde_json::json!(["bytes/index-of", "", b64(b"a")])).unwrap(), Value::Number(-1.0));
+        fails_invalid(serde_json::json!(["bytes/index-of", "%%", b64(b"a")]));
+        fails_invalid(serde_json::json!(["bytes/index-of", hello, "%%"]));
+    }
+
+    #[test]
+    fn at_answers_the_byte_value_or_null_out_of_range() {
+        let data = b64(&[0, 1, 2, 255]);
+        assert_eq!(eval(serde_json::json!(["bytes/at", data, 0])).unwrap(), Value::Number(0.0));
+        assert_eq!(eval(serde_json::json!(["bytes/at", data, 3])).unwrap(), Value::Number(255.0));
+        assert_eq!(eval(serde_json::json!(["bytes/at", data, 4])).unwrap(), Value::Null);
+        assert_eq!(eval(serde_json::json!(["bytes/at", data, -1])).unwrap(), Value::Null);
+        assert_eq!(eval(serde_json::json!(["bytes/at", "", 0])).unwrap(), Value::Null);
+        fails_invalid(serde_json::json!(["bytes/at", data, 1.5]));
+        fails_invalid(serde_json::json!(["bytes/at", data, null]));
+        fails_invalid(serde_json::json!(["bytes/at", "%%", 0]));
+    }
+
+    #[test]
+    fn read_uint_reads_big_and_little_endian_at_each_width() {
+        let data = b64(&[0x12, 0x34, 0x56, 0x78, 0x9a]);
+        let read = |offset: i64, width: i64, endian: &str| {
+            eval(serde_json::json!(["bytes/read-uint", data, offset, width, endian])).unwrap()
+        };
+        assert_eq!(read(0, 1, "be"), Value::Number(0x12 as f64));
+        assert_eq!(read(4, 1, "le"), Value::Number(0x9a as f64));
+        assert_eq!(read(0, 2, "be"), Value::Number(0x1234 as f64));
+        assert_eq!(read(0, 2, "le"), Value::Number(0x3412 as f64));
+        assert_eq!(read(1, 4, "be"), Value::Number(0x3456789a_u32 as f64));
+        assert_eq!(read(1, 4, "le"), Value::Number(0x9a785634_u32 as f64));
+        let wide = b64(&[0, 0x1f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(
+            eval(serde_json::json!(["bytes/read-uint", wide, 0, 8, "be"])).unwrap(),
+            Value::Number(9_007_199_254_740_991.0)
+        );
+    }
+
+    #[test]
+    fn read_uint_answers_null_past_the_end_and_refuses_bad_shape() {
+        let data = b64(&[1, 2, 3]);
+        assert_eq!(eval(serde_json::json!(["bytes/read-uint", data, 2, 2, "be"])).unwrap(), Value::Null);
+        assert_eq!(eval(serde_json::json!(["bytes/read-uint", data, -1, 1, "be"])).unwrap(), Value::Null);
+        assert_eq!(eval(serde_json::json!(["bytes/read-uint", data, 3, 1, "le"])).unwrap(), Value::Null);
+        fails(serde_json::json!(["bytes/read-uint", data, 0, 3, "be"]));
+        fails(serde_json::json!(["bytes/read-uint", data, 0, 1, "middle"]));
+        fails_invalid(serde_json::json!(["bytes/read-uint", data, 0.5, 1, "be"]));
+        let too_wide = b64(&[0, 0x20, 0, 0, 0, 0, 0, 0]);
+        fails_invalid(serde_json::json!(["bytes/read-uint", too_wide, 0, 8, "be"]));
+    }
+
+    #[test]
+    fn write_uint_encodes_each_width_and_round_trips_through_read() {
+        assert_eq!(text(serde_json::json!(["bytes/write-uint", 0x1234, 2, "be"])), b64(&[0x12, 0x34]));
+        assert_eq!(text(serde_json::json!(["bytes/write-uint", 0x1234, 2, "le"])), b64(&[0x34, 0x12]));
+        assert_eq!(text(serde_json::json!(["bytes/write-uint", 255, 1, "be"])), b64(&[255]));
+        assert_eq!(text(serde_json::json!(["bytes/write-uint", 0, 4, "le"])), b64(&[0, 0, 0, 0]));
+        assert_eq!(
+            text(serde_json::json!(["bytes/write-uint", 9_007_199_254_740_991_i64, 8, "be"])),
+            b64(&[0, 0x1f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
+        );
+        assert_eq!(
+            eval(serde_json::json!(["bytes/read-uint", ["bytes/write-uint", 305_419_896, 4, "le"], 0, 4, "le"])).unwrap(),
+            Value::Number(305_419_896.0)
+        );
+    }
+
+    #[test]
+    fn write_uint_refuses_values_the_width_cannot_hold() {
+        fails_invalid(serde_json::json!(["bytes/write-uint", 256, 1, "be"]));
+        fails_invalid(serde_json::json!(["bytes/write-uint", -1, 2, "be"]));
+        fails_invalid(serde_json::json!(["bytes/write-uint", 1.5, 2, "be"]));
+        fails_invalid(serde_json::json!(["bytes/write-uint", null, 2, "be"]));
+        fails_invalid(serde_json::json!(["bytes/write-uint", 65_536, 2, "le"]));
+        fails_invalid(serde_json::json!(["bytes/write-uint", 9_007_199_254_740_992_i64, 8, "be"]));
+        fails(serde_json::json!(["bytes/write-uint", 1, 3, "be"]));
+        fails(serde_json::json!(["bytes/write-uint", 1, 2, "big"]));
     }
 }

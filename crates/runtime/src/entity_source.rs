@@ -4,7 +4,10 @@
 //! and a server-side persistence adapter so the kernel can read and write entity
 //! data without knowing which environment it is running in.
 
-use super::row_query::{apply_write, CreateIds, QueryRun, RowIdPage, RowPage, RowTable, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome, ScanControl};
+use super::row_query::{
+    apply_write, CreateIds, QueryRun, RowIdPage, RowPage, RowTable, RowWriteBatch,
+    RowWriteFailureMode, RowWriteOp, RowWriteOutcome, ScanControl,
+};
 use orbital_core_base::row_set::RowQuery;
 use orbital_core_base::value::Value;
 use parking_lot::RwLock;
@@ -90,6 +93,12 @@ pub trait EntitySource: Send + Sync {
     /// collection are one table (JS `MockPersistenceAdapter`, the TS shell); a
     /// source that already keys its storage by collection ignores this.
     fn bind_collection(&self, _entity_type: &str, _collection: &str) {}
+
+    /// The stores this source holds rows in (a bound collection, else an entity name); a remote store does not
+    /// enumerate its collections and answers none.
+    fn entity_types(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// In-memory entity cache used by the client runtime.
@@ -101,12 +110,23 @@ pub struct InMemoryEntityCache {
     id_counter: std::sync::atomic::AtomicUsize,
     /// Entity name -> its bound collection: the store key it reads and writes.
     collections: RwLock<HashMap<String, String>>,
+    /// A create naming a taken id fails (JS `MockPersistenceAdapter`, the database drivers) instead of merging.
+    refuse_duplicate_ids: bool,
 }
 
 impl InMemoryEntityCache {
     /// Create a new empty cache.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The server's mock store: a create naming a taken id fails, as `MockPersistenceAdapter` and the database
+    /// drivers refuse it.
+    pub fn refusing_duplicate_ids() -> Self {
+        Self {
+            refuse_duplicate_ids: true,
+            ..Self::default()
+        }
     }
 
     /// The store an entity's rows live in: its bound collection, else its name.
@@ -227,7 +247,21 @@ impl EntitySource for InMemoryEntityCache {
         let data = &data;
         let field_count = data.as_object().map(|o| o.len()).unwrap_or(0);
         tracing::debug!(target: orbital_core_base::logging::ns::SERVER_DATA, entity = %entity_type, id = %id, fields = field_count, "data:create");
-        self.write(entity_type, &id, data)
+        if !self.refuse_duplicate_ids {
+            return self.write(entity_type, &id, data);
+        }
+        let key = self.store_key(entity_type);
+        let mut cache = self.data.write();
+        let table = cache.entry(key).or_default();
+        if table.contains_key(&id) {
+            return Err(format!("Entity {entity_type} with id {id} already exists"));
+        }
+        let mut record = data.clone();
+        if let Some(obj) = record.as_object_mut() {
+            obj.insert("id".to_string(), Value::String(id.clone()));
+        }
+        table.insert(id, Arc::new(record.clone()));
+        Ok(record)
     }
 
     fn delete(&self, entity_type: &str, id: &str) -> Result<(), String> {
@@ -307,6 +341,10 @@ impl EntitySource for InMemoryEntityCache {
         self.collections
             .write()
             .insert(entity_type.to_string(), collection.to_string());
+    }
+
+    fn entity_types(&self) -> Vec<String> {
+        self.data.read().keys().cloned().collect()
     }
 }
 
@@ -473,5 +511,81 @@ mod tests {
         cache.write("Item", "d", &Value::Object(patch)).unwrap();
         cache.delete("Item", "b").unwrap();
         assert_eq!(listed(&cache), ["e", "a", "d", "c", "f", "h", "g"]);
+    }
+
+    #[test]
+    fn a_refusing_store_fails_a_create_on_a_taken_id() {
+        let cache = InMemoryEntityCache::refusing_duplicate_ids();
+        cache.bind_collection("PipelineDeal", "deals");
+        cache.bind_collection("Deal", "deals");
+        cache
+            .create(
+                "Deal",
+                &obj(&[
+                    ("id", Value::String("d1".into())),
+                    ("n", Value::Number(1.0)),
+                ]),
+            )
+            .expect("first create");
+        let err = cache
+            .create("PipelineDeal", &obj(&[("id", Value::String("d1".into()))]))
+            .expect_err("the id is taken through the collection mate");
+        assert!(err.contains("already exists"), "{err}");
+        assert_eq!(
+            cache.read("Deal", "d1").unwrap().as_object().unwrap()["n"],
+            Value::Number(1.0),
+            "the refused create wrote nothing"
+        );
+        let minted = cache
+            .create("Deal", &obj(&[]))
+            .expect("an id-less create mints");
+        assert!(minted.as_object().unwrap()["id"]
+            .as_str()
+            .is_some_and(|id| id != "d1"));
+    }
+
+    #[test]
+    fn control_the_client_cache_merges_a_create_on_a_taken_id() {
+        let cache = InMemoryEntityCache::new();
+        cache
+            .create(
+                "Deal",
+                &obj(&[
+                    ("id", Value::String("d1".into())),
+                    ("n", Value::Number(1.0)),
+                ]),
+            )
+            .unwrap();
+        cache
+            .create(
+                "Deal",
+                &obj(&[
+                    ("id", Value::String("d1".into())),
+                    ("m", Value::Number(2.0)),
+                ]),
+            )
+            .expect("the client cache upserts");
+        let row = cache.read("Deal", "d1").unwrap();
+        assert_eq!(row.as_object().unwrap()["n"], Value::Number(1.0));
+        assert_eq!(row.as_object().unwrap()["m"], Value::Number(2.0));
+    }
+
+    #[test]
+    fn entity_types_names_each_store_once() {
+        let cache = InMemoryEntityCache::new();
+        assert!(
+            cache.entity_types().is_empty(),
+            "control: an empty cache holds no store"
+        );
+        cache.bind_collection("Deal", "deals");
+        cache.bind_collection("PipelineDeal", "deals");
+        for (entity, id) in [("Deal", "d1"), ("PipelineDeal", "d2"), ("Note", "n1")] {
+            cache
+                .create(entity, &obj(&[("id", Value::String(id.into()))]))
+                .unwrap();
+        }
+        let mut types = cache.entity_types();
+        types.sort();
+        assert_eq!(types, ["Note", "deals"]);
     }
 }

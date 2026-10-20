@@ -270,9 +270,31 @@ mod tests {
 
     fn table(op: &str, category_targets: &str) -> String {
         format!(
-            r#"{{"categories":{{"arithmetic":{{"target":["rust","ts"]}},"other":{{"target":{category_targets}}}}},
-                "operators":{{"+":{{"category":"arithmetic"}},"{op}":{{"category":"other"}}}}}}"#
+            r#"{{"categories":{{"arithmetic":{{"description":"","target":["rust","ts"]}},"other":{{"description":"","target":{category_targets}}}}},
+                "operators":{{"+":{{"category":"arithmetic","minArity":2,"returnType":"number"}},"{op}":{{"category":"other","minArity":0,"returnType":"number"}}}}}}"#
         )
+    }
+
+    #[test]
+    fn an_operator_entry_this_orb_cannot_read_is_incompatible_naming_it_not_a_panic() {
+        let tmp = Tmp::new("ops-unknown-kind");
+        let newer = table("-", r#"["rust"]"#).replace(
+            r#""minArity":0,"returnType":"number""#,
+            r#""minArity":0,"returnType":{"kind":"zzNewerKind"}"#,
+        );
+        install_std(&tmp.0, ">=17.0.0", &newer);
+        let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
+        assert!(!err.needs_install());
+        let msg = err.to_string();
+        assert!(msg.contains("operator `-`") && msg.contains("@almadar/std@8.2.0"), "{msg}");
+
+        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        v["std"]["operators"]["categories"]["other"] = json!({"target": ["rust"], "zzNewerField": {}});
+        v["std"]["operators"]["categories"]["other"].as_object_mut().unwrap().remove("description");
+        let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
+        assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
+        assert!(err.to_string().contains("category `other`"), "{err}");
     }
 
     #[test]

@@ -12,6 +12,14 @@ use crate::schema::types::FieldDefinition;
 
 /// The language value types by name (`OrbitalValue`, `TraitValue`, `BehaviorRef`), from `text`.
 pub fn parse(text: &str) -> Result<BTreeMap<String, OirType>, String> {
+    Ok(definitions(text)?
+        .into_iter()
+        .map(|(name, field)| (name, field_shape(&field)))
+        .collect())
+}
+
+/// The language value types' `.orb` field definitions by name, each checked to be a record.
+fn definitions(text: &str) -> Result<BTreeMap<String, FieldDefinition>, String> {
     let declared: BTreeMap<String, serde_json::Value> =
         serde_json::from_str(text).map_err(|e| format!("invalid program types: {e}"))?;
     declared
@@ -20,9 +28,24 @@ pub fn parse(text: &str) -> Result<BTreeMap<String, OirType>, String> {
             let field: FieldDefinition = serde_json::from_value(value)
                 .map_err(|e| format!("program type `{name}`: invalid field definition: {e}"))?;
             check(&field).map_err(|reason| format!("program type `{name}`: {reason}"))?;
-            Ok((name, field_shape(&field)))
+            Ok((name, field))
         })
         .collect()
+}
+
+/// The members of the record `field`, each named, in name order.
+fn members(field: FieldDefinition) -> Vec<FieldDefinition> {
+    let mut members: Vec<FieldDefinition> = field
+        .properties
+        .into_iter()
+        .flatten()
+        .map(|(name, mut member)| {
+            member.name = Some(name);
+            member
+        })
+        .collect();
+    members.sort_by(|a, b| a.name.cmp(&b.name));
+    members
 }
 
 /// A program value type is a record or a tagged union of records, so a read through it has members to find.
@@ -47,6 +70,20 @@ fn table() -> &'static BTreeMap<String, OirType> {
 /// The installed language's type of `name`, when it declares one.
 pub fn program_type(name: &str) -> Option<&'static OirType> {
     table().get(name)
+}
+
+static VIEWER: OnceLock<Vec<FieldDefinition>> = OnceLock::new();
+
+/// The installed language's `Viewer` members (who `@user` is), each named, in name order.
+pub fn viewer_fields() -> &'static [FieldDefinition] {
+    VIEWER.get_or_init(|| {
+        let data = crate::language_data::language_data_after_preflight();
+        definitions(&data.program_types)
+            .ok()
+            .and_then(|mut d| d.remove("Viewer"))
+            .map(members)
+            .unwrap_or_default()
+    })
 }
 
 #[cfg(test)]
@@ -99,6 +136,22 @@ mod tests {
         assert!(
             matches!(&by_name("source").field_type, OirType::Union { variants } if variants.len() == 2)
         );
+    }
+
+    #[test]
+    fn a_records_members_are_named_and_in_name_order() {
+        let mut d = definitions(&text()).unwrap();
+        let names: Vec<Option<String>> = members(d.remove("Sample").unwrap())
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(
+            names,
+            ["behavior", "data", "pages", "source"].map(|n| Some(n.to_string()))
+        );
+        let map: FieldDefinition =
+            serde_json::from_value(json!({ "type": "object", "items": { "type": "string" } })).unwrap();
+        assert!(members(map).is_empty(), "control: a map record declares no members");
     }
 
     #[test]

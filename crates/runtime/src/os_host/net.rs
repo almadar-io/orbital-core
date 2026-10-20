@@ -1,5 +1,7 @@
-//! The `net` family: TCP, UDP and DNS. Listening and port watching are unbounded streams a synchronous
-//! answerer cannot serve, so they answer `unsupported`.
+//! The `net` family: TCP, UDP and DNS. `os/tcp-listen` is a keyed stream: it answers the bound listener at once and
+//! hands each accepted connection to the completion sink as an event of the call's `onMessage` route, until the
+//! key is cancelled or the listener closed. `http/listen` is the same stream with an HTTP/1.1 reader on each
+//! connection (`super::http`). Port watching answers `unsupported`.
 //!
 //! Grant rules. Every target is checked with `net_allows(host, port, kind)` before any syscall, spelled exactly
 //! as the program wrote it. `os/dns-resolve` checks `net_allows(name, 0, tcp)` or `(name, 0, udp)`: a grant
@@ -21,30 +23,35 @@ use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::os_grants::NetKind;
 use orbital_core_base::value::{Value, ValueMap};
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::sync::Arc;
 use std::time::Duration;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_RECV: usize = 64 * 1024 * 1024;
+pub(super) const MAX_RECV: usize = 64 * 1024 * 1024;
 const MAX_DATAGRAM: usize = 65_535;
+/// How long an accept loop sleeps when no connection is waiting before it looks again for a cancel or a close.
+const ACCEPT_POLL: Duration = Duration::from_millis(20);
 
-#[allow(dead_code)]
 pub(super) enum SockEntry {
     Stream(TcpStream),
-    Listener(std::net::TcpListener),
+    Listener(TcpListener),
     Datagram(UdpSocket),
+    /// An `http/listen` request delivered to the program and waiting for its one `http/respond`.
+    Request(TcpStream),
 }
 
-/// Open sockets; ids come from the counter shared with the fs table, so an id names one handle.
+/// Open sockets; ids come from the counter shared with the fs table, so an id names one handle. Shared with the
+/// accept loops, which add each accepted connection.
 pub struct NetTable {
-    pub(super) socks: HandleSlab<SockEntry>,
+    pub(super) socks: Arc<HandleSlab<SockEntry>>,
 }
 
 impl NetTable {
     pub(super) fn new(ids: IdCounter) -> Self {
         Self {
-            socks: HandleSlab::new(ids),
+            socks: Arc::new(HandleSlab::new(ids)),
         }
     }
 
@@ -53,7 +60,7 @@ impl NetTable {
     }
 }
 
-fn err(op: OsOp, kind: OsErrorKind, what: impl std::fmt::Display) -> OsError {
+pub(super) fn err(op: OsOp, kind: OsErrorKind, what: impl std::fmt::Display) -> OsError {
     OsError::new(kind, format!("{}: {what}", op.name()))
 }
 
@@ -73,7 +80,7 @@ pub(super) fn io_error(op: OsOp, e: &io::Error) -> OsError {
     err(op, kind, e)
 }
 
-fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
+pub(super) fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     let mut map = ValueMap::new();
     for (key, value) in pairs {
         map.insert(key.to_string(), value);
@@ -320,6 +327,143 @@ pub(super) fn recvfrom_later(args: &[Value], key: &str, site: &CallSite, host: &
         .map_err(|e| later_error(op, e, key))
 }
 
+/// What an accept loop does with each ready connection; `false` ends the stream.
+pub(super) type OnAccept =
+    fn(TcpStream, SocketAddr, &Arc<HandleSlab<SockEntry>>, &Arc<Completions>, &str, &CallSite) -> bool;
+
+/// `os/tcp-listen`: bind, answer `{ sock, address, port }`, and accept on a thread of its own. Each connection is
+/// added to the socket table and delivered as `{ sock, peer }` on the `onMessage` route. Cancelling the key or
+/// closing the listener ends the stream; an accept error ends it on the failure route.
+fn tcp_listen(
+    args: &[Value],
+    key: Option<&str>,
+    site: Option<&CallSite>,
+    host: &OsHost<'_>,
+) -> Result<Value, OsError> {
+    listen(OsOp::TcpListen, NetKind::Listen, deliver_connection, args, key, site, host)
+}
+
+fn deliver_connection(
+    stream: TcpStream,
+    peer: SocketAddr,
+    socks: &Arc<HandleSlab<SockEntry>>,
+    completions: &Arc<Completions>,
+    key: &str,
+    site: &CallSite,
+) -> bool {
+    let conn = socks.insert(SockEntry::Stream(stream));
+    let event = object([
+        ("sock", Value::Number(conn as f64)),
+        ("peer", Value::String(peer.to_string())),
+    ]);
+    if completions.message(key, site, event) {
+        return true;
+    }
+    socks.remove(conn);
+    false
+}
+
+/// The keyed listening stream `os/tcp-listen` and `http/listen` share; `on_accept` takes each connection.
+pub(super) fn listen(
+    op: OsOp,
+    kind: NetKind,
+    on_accept: OnAccept,
+    args: &[Value],
+    key: Option<&str>,
+    site: Option<&CallSite>,
+    host: &OsHost<'_>,
+) -> Result<Value, OsError> {
+    let name = host_arg(args, 0, op)?;
+    let port = port_arg(args, 1, op)?;
+    let (Some(key), Some(site)) = (key, site) else {
+        return Err(err(op, OsErrorKind::Invalid, "a stream needs a key and a call site"));
+    };
+    let completions = host.handles.completions.clone();
+    if completions.sink().is_none() {
+        return Err(err(op, OsErrorKind::Unsupported, "this host has no completion sink to stream to"));
+    }
+    check_grant(host, op, &name, port, kind)?;
+    let addrs = resolve(op, &name, port)?;
+    let listener = TcpListener::bind(addrs.as_slice()).map_err(|e| io_error(op, &e))?;
+    let local = listener.local_addr().map_err(|e| io_error(op, &e))?;
+    listener.set_nonblocking(true).map_err(|e| io_error(op, &e))?;
+    if !completions.begin(key) {
+        return Err(err(op, OsErrorKind::Invalid, format!("key {key} already has a stream open")));
+    }
+    let socks = host.handles.net.socks.clone();
+    let id = socks.insert(SockEntry::Listener(listener));
+    let (owned_key, owned_site) = (key.to_string(), site.clone());
+    let started = std::thread::Builder::new()
+        .name(format!("os-listen-{key}"))
+        .spawn({
+            let (completions, socks) = (completions.clone(), socks.clone());
+            move || accept_loop(op, id, &socks, &completions, &owned_key, &owned_site, on_accept)
+        });
+    if let Err(e) = started {
+        completions.cancel(key);
+        socks.remove(id);
+        return Err(io_error(op, &e));
+    }
+    Ok(object([
+        ("sock", Value::Number(id as f64)),
+        ("address", Value::String(local.ip().to_string())),
+        ("port", count(usize::from(local.port()))),
+    ]))
+}
+
+/// Accepts on the listener the table holds, so closing the handle stops listening at once.
+fn accept_loop(
+    op: OsOp,
+    id: i64,
+    socks: &Arc<HandleSlab<SockEntry>>,
+    completions: &Arc<Completions>,
+    key: &str,
+    site: &CallSite,
+    on_accept: OnAccept,
+) {
+    loop {
+        if !completions.is_live(key) {
+            return;
+        }
+        let accepted = socks.with(id, |entry| match entry {
+            SockEntry::Listener(listener) => Some(listener.accept()),
+            _ => None,
+        });
+        let Some(Some(accepted)) = accepted else {
+            completions.cancel(key);
+            return;
+        };
+        match accepted {
+            Ok((stream, peer)) => {
+                let ready = stream
+                    .set_nonblocking(false)
+                    .map_err(|e| io_error(op, &e))
+                    .and_then(|()| {
+                        set_timeouts(op, |t| stream.set_read_timeout(t), |t| stream.set_write_timeout(t))
+                    });
+                if let Err(error) = ready {
+                    if completions.claim(key) {
+                        completions.deliver(key, site, Err(error));
+                    }
+                    return;
+                }
+                if !on_accept(stream, peer, socks, completions, key, site) {
+                    return;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted => {
+                std::thread::sleep(ACCEPT_POLL);
+            }
+            Err(e) => {
+                if completions.claim(key) {
+                    completions.deliver(key, site, Err(io_error(op, &e)));
+                }
+                return;
+            }
+        }
+    }
+}
+
 fn dns_resolve(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     let op = OsOp::DnsResolve;
     let name = host_arg(args, 0, op)?;
@@ -383,12 +527,15 @@ fn close(args: &[Value], host: &OsHost<'_>) -> Option<Result<Value, OsError>> {
 pub(super) fn answer(
     op: OsOp,
     args: &[Value],
-    _key: Option<&str>,
-    _site: Option<&CallSite>,
+    key: Option<&str>,
+    site: Option<&CallSite>,
     host: &OsHost<'_>,
 ) -> Option<Result<Value, OsError>> {
     Some(match op {
         OsOp::TcpConnect => tcp_connect(args, host),
+        OsOp::TcpListen => tcp_listen(args, key, site, host),
+        OsOp::HttpListen => listen(op, NetKind::Listen, super::http::serve, args, key, site, host),
+        OsOp::HttpRespond => super::http::respond(args, host),
         OsOp::Send => send(args, host),
         OsOp::Recv => recv(args, host),
         OsOp::UdpBind => udp_bind(args, host),
@@ -397,7 +544,7 @@ pub(super) fn answer(
         OsOp::DnsResolve => dns_resolve(args, host),
         OsOp::Shutdown => shutdown(args, host),
         OsOp::Close => return close(args, host),
-        OsOp::TcpListen | OsOp::WatchPort => Err(err(
+        OsOp::WatchPort => Err(err(
             op,
             OsErrorKind::Unsupported,
             "streaming host not implemented",
@@ -512,6 +659,299 @@ mod tests {
             host.handles.completions.cancel("r3");
         });
         drop(server.join());
+    }
+
+    type Fired = (CallSite, String, Result<Value, OsError>);
+
+    fn collecting_sink(handles: &OsHandles) -> mpsc::Receiver<Fired> {
+        use crate::os_host::completion::OsCompletionSink;
+        use std::sync::{Arc, Mutex};
+        struct Collect(Mutex<mpsc::Sender<Fired>>);
+        impl OsCompletionSink for Collect {
+            fn complete(&self, site: &CallSite, key: &str, outcome: Result<Value, OsError>) {
+                let _ = self.0.lock().expect("lock").send((site.clone(), key.to_string(), outcome));
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        handles.completions.set_sink(Arc::new(Collect(Mutex::new(tx))));
+        rx
+    }
+
+    fn listen_site() -> CallSite {
+        CallSite {
+            orbital: None,
+            trait_name: "T".to_string(),
+            follow_on: false,
+            entity_id: "singleton".to_string(),
+            emit: crate::resumable::CallRoutes {
+                success: Some("LISTENING".to_string()),
+                failure: Some("FAILED".to_string()),
+                on_message: Some("ACCEPTED".to_string()),
+                ..crate::resumable::CallRoutes::default()
+            },
+        }
+    }
+
+    fn id_of(value: &Value) -> i64 {
+        match value {
+            Value::Number(v) => *v as i64,
+            other => panic!("not a handle: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_keyed_tcp_listen_streams_each_accepted_connection_to_the_message_route_until_closed() {
+        use crate::resumable::completion_event;
+        let handles = OsHandles::default();
+        let rx = collecting_sink(&handles);
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let listen_grants = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Listen])]);
+        let listening = OsHost { grants: &listen_grants, handles: &handles, on_event: &on_event };
+        let site = listen_site();
+        let bound = answer(OsOp::TcpListen, &[s("127.0.0.1"), n(0)], Some("l1"), Some(&site), &listening)
+            .expect("net answers tcp-listen")
+            .expect("listening");
+        let listener = id_of(&field(&bound, "sock"));
+        let port = id_of(&field(&bound, "port"));
+        assert!(port > 0, "an ephemeral port is reported");
+        assert_eq!(field(&bound, "address"), s("127.0.0.1"));
+        let connect_grants = tcp_grant(port as u16);
+        let client = OsHost { grants: &connect_grants, handles: &handles, on_event: &on_event };
+        let mut accepted = Vec::new();
+        for _ in 0..2 {
+            let sock = field(&ask(&client, OsOp::TcpConnect, &[s("127.0.0.1"), n(port)]).expect("connected"), "sock");
+            let (at, key, outcome) = rx.recv_timeout(Duration::from_secs(5)).expect("an accepted connection arrives");
+            assert_eq!(key, "l1");
+            let (event, payload) = completion_event(&at, &key, outcome).expect("routed");
+            assert_eq!(event, "ACCEPTED", "each connection fires the message route, never success");
+            assert_eq!(payload.get_path("key"), Some(&s("l1")));
+            assert!(matches!(payload.get_path("peer"), Some(Value::String(p)) if p.starts_with("127.0.0.1:")));
+            let conn = payload.get_path("sock").cloned().expect("the accepted socket");
+            assert_ne!(id_of(&conn), listener);
+            accepted.push((sock, conn));
+        }
+        let (client_sock, server_sock) = accepted.pop().expect("one");
+        ask(&client, OsOp::Send, &[client_sock, bytes_value(b"ping")]).expect("send");
+        let got = ask(&client, OsOp::Recv, &[server_sock, n(16)]).expect("the accepted socket reads");
+        assert_eq!(field(&got, "data"), bytes_value(b"ping"));
+        assert!(handles.completions.is_live("l1"), "the stream stays open across connections");
+        answer(OsOp::Close, &[n(listener)], None, None, &client).expect("a socket").expect("closed");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while handles.completions.is_live("l1") && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!handles.completions.is_live("l1"), "closing the listener ends the stream and frees its key");
+        assert!(
+            ask(&client, OsOp::TcpConnect, &[s("127.0.0.1"), n(port)]).is_err(),
+            "control: nothing listens after close"
+        );
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "no event after close");
+        handles.close_all();
+    }
+
+    #[test]
+    fn cancelling_a_listen_key_ends_its_stream_and_a_listen_needs_a_key_a_sink_and_a_grant() {
+        let handles = OsHandles::default();
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let listen_grants = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Listen])]);
+        let host = OsHost { grants: &listen_grants, handles: &handles, on_event: &on_event };
+        let site = listen_site();
+        let args = [s("127.0.0.1"), n(0)];
+        let no_sink = answer(OsOp::TcpListen, &args, Some("l0"), Some(&site), &host).expect("answered");
+        assert_eq!(kind_of(no_sink), OsErrorKind::Unsupported, "no sink: nowhere to stream to");
+        let rx = collecting_sink(&handles);
+        let unkeyed = answer(OsOp::TcpListen, &args, None, None, &host).expect("answered");
+        assert_eq!(kind_of(unkeyed), OsErrorKind::Invalid, "a stream needs a key");
+        with_host(OsGrants::default(), |ungranted| {
+            ungranted.handles.completions.set_sink(handles.completions.sink().expect("sink"));
+            let denied = answer(OsOp::TcpListen, &args, Some("l9"), Some(&site), ungranted).expect("answered");
+            assert_eq!(kind_of(denied), OsErrorKind::Denied);
+        });
+        let bound = answer(OsOp::TcpListen, &args, Some("l2"), Some(&site), &host)
+            .expect("answered")
+            .expect("listening");
+        let again = answer(OsOp::TcpListen, &args, Some("l2"), Some(&site), &host).expect("answered");
+        assert_eq!(kind_of(again), OsErrorKind::Invalid, "control: a live key is refused");
+        let port = id_of(&field(&bound, "port"));
+        assert!(handles.cancel_completion("l2"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut quiet = false;
+        while Instant::now() < deadline && !quiet {
+            let _ = TcpStream::connect(("127.0.0.1", port as u16));
+            quiet = rx.recv_timeout(Duration::from_millis(200)).is_err();
+        }
+        assert!(quiet, "a cancelled stream delivers nothing");
+        handles.close_all();
+    }
+
+    #[test]
+    fn listening_needs_the_listen_grant_the_program_check_requires_and_a_tcp_grant_alone_is_denied() {
+        use orbital_core_base::os_grants::{os_requirements, OsRequirement};
+        use orbital_core_base::schema::sexpr::SExpression;
+        let program_needs = os_requirements(
+            OsOp::TcpListen,
+            &[SExpression::String("127.0.0.1".into()), SExpression::Number(0.0)],
+        );
+        assert_eq!(
+            program_needs,
+            Ok(vec![OsRequirement::Net { host: "127.0.0.1".into(), port: 0, kinds: vec![NetKind::Listen] }])
+        );
+        let site = listen_site();
+        let args = [s("127.0.0.1"), n(0)];
+        for (op, key) in [(OsOp::TcpListen, "g1"), (OsOp::HttpListen, "g2")] {
+            let handles = OsHandles::default();
+            let _rx = collecting_sink(&handles);
+            let on_event = |_: Option<&CallSite>, _: Value| {};
+            let listen_only = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Listen])]);
+            let host = OsHost { grants: &listen_only, handles: &handles, on_event: &on_event };
+            assert!(
+                answer(op, &args, Some(key), Some(&site), &host).expect("answered").is_ok(),
+                "{}: a listen grant alone listens",
+                op.name()
+            );
+            let tcp_only = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Tcp])]);
+            let host = OsHost { grants: &tcp_only, handles: &handles, on_event: &on_event };
+            let denied = answer(op, &args, Some("other"), Some(&site), &host).expect("answered");
+            assert_eq!(kind_of(denied), OsErrorKind::Denied, "control {}: a tcp grant does not listen", op.name());
+            handles.close_all();
+        }
+    }
+
+    fn http_site() -> CallSite {
+        let mut site = listen_site();
+        site.emit.on_message = Some("REQUEST".to_string());
+        site
+    }
+
+    fn http_listening(handles: &OsHandles, key: &str) -> (mpsc::Receiver<Fired>, i64, i64) {
+        let rx = collecting_sink(handles);
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let listen_grants = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Listen])]);
+        let host = OsHost { grants: &listen_grants, handles, on_event: &on_event };
+        let bound = answer(OsOp::HttpListen, &[s("127.0.0.1"), n(0)], Some(key), Some(&http_site()), &host)
+            .expect("net answers http/listen")
+            .expect("listening");
+        (rx, id_of(&field(&bound, "sock")), id_of(&field(&bound, "port")))
+    }
+
+    /// Sends `raw` over `os/tcp-connect` and reads with `os/recv` until the server closes.
+    fn exchange<'a>(client: &'a OsHost<'a>, port: i64, raw: &[u8]) -> impl FnOnce() -> Vec<u8> + 'a {
+        let sock = field(&ask(client, OsOp::TcpConnect, &[s("127.0.0.1"), n(port)]).expect("connected"), "sock");
+        ask(client, OsOp::Send, &[sock.clone(), bytes_value(raw)]).expect("sent");
+        let read = move || {
+            let mut got = Vec::new();
+            loop {
+                let chunk = ask(client, OsOp::Recv, &[sock.clone(), n(4096)]).expect("recv");
+                if field(&chunk, "eof") == Value::Bool(true) {
+                    return got;
+                }
+                got.extend(arg_bytes(&[field(&chunk, "data")], 0, OsOp::Recv).expect("bytes"));
+            }
+        };
+        read
+    }
+
+    fn parse_reply(raw: &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>) {
+        let mut headers = [httparse::EMPTY_HEADER; 32];
+        let mut reply = httparse::Response::new(&mut headers);
+        let httparse::Status::Complete(head) = reply.parse(raw).expect("an HTTP reply") else { panic!("partial reply") };
+        let named = reply
+            .headers
+            .iter()
+            .map(|h| (h.name.to_ascii_lowercase(), String::from_utf8_lossy(h.value).into_owned()))
+            .collect();
+        (reply.code.expect("status"), named, raw[head..].to_vec())
+    }
+
+    #[test]
+    fn an_http_listen_delivers_each_request_as_a_typed_record_and_http_respond_answers_it_once() {
+        use crate::resumable::completion_event;
+        let handles = OsHandles::default();
+        let (rx, listener, port) = http_listening(&handles, "h1");
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let connect_grants = tcp_grant(port as u16);
+        let client = OsHost { grants: &connect_grants, handles: &handles, on_event: &on_event };
+        let raw = b"POST /items/7?x=1&y=two HTTP/1.1\r\nHost: a\r\nX-Two: a\r\nx-two: b\r\nContent-Length: 5\r\n\r\nhello";
+        let read = exchange(&client, port, raw);
+        let (at, key, outcome) = rx.recv_timeout(Duration::from_secs(5)).expect("the request arrives");
+        let (event, request) = completion_event(&at, &key, outcome).expect("routed");
+        assert_eq!(event, "REQUEST", "a request fires the message route, never success");
+        assert_eq!(request.get_path("key"), Some(&s("h1")));
+        assert_eq!(request.get_path("method"), Some(&s("POST")));
+        assert_eq!(request.get_path("path"), Some(&s("/items/7")));
+        assert_eq!(request.get_path("query"), Some(&s("x=1&y=two")));
+        assert_eq!(request.get_path("headers.x-two"), Some(&s("a, b")), "names lower-cased, repeats joined");
+        assert_eq!(request.get_path("headers.host"), Some(&s("a")));
+        assert_eq!(request.get_path("body"), Some(&s("hello")));
+        assert!(matches!(request.get_path("peer"), Some(Value::String(p)) if p.starts_with("127.0.0.1:")));
+        let request_id = request.get_path("requestId").cloned().expect("a request id");
+        assert!(
+            ask(&client, OsOp::Send, &[request_id.clone(), bytes_value(b"raw")]).is_err(),
+            "control: a pending request is not a raw socket"
+        );
+        let mut reply_headers = ValueMap::new();
+        reply_headers.insert("Content-Type".to_string(), s("text/plain"));
+        let answered = ask(&client, OsOp::HttpRespond, &[request_id.clone(), n(201), Value::Object(reply_headers), s("made")])
+            .expect("answered");
+        assert!(id_of(&field(&answered, "bytes")) > 4);
+        let (status, headers, body) = parse_reply(&read());
+        assert_eq!(status, 201);
+        assert_eq!(body, b"made");
+        assert!(headers.contains(&("content-type".to_string(), "text/plain".to_string())));
+        assert!(headers.contains(&("content-length".to_string(), "4".to_string())));
+        assert!(headers.contains(&("connection".to_string(), "close".to_string())));
+        let again = ask(&client, OsOp::HttpRespond, &[request_id, n(200), Value::Object(ValueMap::new()), s("")]);
+        assert_eq!(kind_of(again), OsErrorKind::Closed, "control: a request is answered once");
+        let not_a_request = ask(&client, OsOp::HttpRespond, &[n(listener), n(200), Value::Object(ValueMap::new()), s("")]);
+        assert_eq!(kind_of(not_a_request), OsErrorKind::Invalid, "control: a listener is not a request");
+        assert!(handles.completions.is_live("h1"), "the stream stays open across requests");
+        handles.close_all();
+    }
+
+    #[test]
+    fn a_refused_answer_leaves_the_request_pending_and_a_bad_or_chunked_request_is_answered_by_the_host_unseen() {
+        use crate::resumable::completion_event;
+        let handles = OsHandles::default();
+        let (rx, _, port) = http_listening(&handles, "h2");
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let connect_grants = tcp_grant(port as u16);
+        let client = OsHost { grants: &connect_grants, handles: &handles, on_event: &on_event };
+        for (raw, want) in [
+            (&b"NOT HTTP AT ALL\r\n\r\n"[..], 400u16),
+            (&b"POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n"[..], 411),
+        ] {
+            let read = exchange(&client, port, raw);
+            assert_eq!(parse_reply(&read()).0, want);
+        }
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "neither reached the program");
+        let read = exchange(&client, port, b"GET /ok HTTP/1.1\r\nHost: a\r\n\r\n");
+        let (at, key, outcome) = rx.recv_timeout(Duration::from_secs(5)).expect("a good request still arrives");
+        let request = completion_event(&at, &key, outcome).expect("routed").1;
+        assert_eq!(request.get_path("query"), Some(&s("")));
+        assert_eq!(request.get_path("body"), Some(&s("")));
+        let id = request.get_path("requestId").cloned().expect("id");
+        let mut injected = ValueMap::new();
+        injected.insert("x-a".to_string(), s("1\r\nx-b: 2"));
+        let mut framing = ValueMap::new();
+        framing.insert("content-length".to_string(), s("99"));
+        for (status, headers) in [(n(99), ValueMap::new()), (n(200), injected), (n(200), framing)] {
+            let refused = ask(&client, OsOp::HttpRespond, &[id.clone(), status, Value::Object(headers), s("x")]);
+            assert_eq!(kind_of(refused), OsErrorKind::Invalid);
+        }
+        ask(&client, OsOp::HttpRespond, &[id, n(404), Value::Object(ValueMap::new()), s("gone")])
+            .expect("still pending after the refused answers");
+        let (status, _, body) = parse_reply(&read());
+        assert_eq!((status, body.as_slice()), (404, &b"gone"[..]));
+        assert!(handles.cancel_completion("h2"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut quiet = false;
+        while Instant::now() < deadline && !quiet {
+            let _ = TcpStream::connect(("127.0.0.1", port as u16))
+                .and_then(|mut c| c.write_all(b"GET / HTTP/1.1\r\nHost: a\r\n\r\n"));
+            quiet = rx.recv_timeout(Duration::from_millis(200)).is_err();
+        }
+        assert!(quiet, "control: a cancelled http stream delivers nothing");
+        handles.close_all();
     }
 
     #[test]
@@ -791,16 +1231,11 @@ mod tests {
     }
 
     #[test]
-    fn unbounded_streams_are_unsupported_and_bad_arguments_are_invalid() {
+    fn watching_a_port_is_unsupported_and_bad_arguments_are_invalid() {
         with_host(OsGrants::default(), |host| {
-            for (op, args) in [
-                (OsOp::TcpListen, vec![s("127.0.0.1"), n(0)]),
-                (OsOp::WatchPort, vec![n(80), s("tcp")]),
-            ] {
-                let error = ask(host, op, &args).expect_err("unsupported");
-                assert_eq!(error.kind, OsErrorKind::Unsupported);
-                assert!(error.message.contains("streaming host not implemented"));
-            }
+            let error = ask(host, OsOp::WatchPort, &[n(80), s("tcp")]).expect_err("unsupported");
+            assert_eq!(error.kind, OsErrorKind::Unsupported);
+            assert!(error.message.contains("streaming host not implemented"));
             for args in [
                 vec![s("127.0.0.1"), n(70_000)],
                 vec![s("127.0.0.1"), n(-1)],

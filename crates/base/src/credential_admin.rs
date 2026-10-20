@@ -308,6 +308,30 @@ impl Catalog {
     }
 }
 
+/// The catalog of the installed services registry plus the credentials the running program declares.
+pub fn catalog(program: &[ProgramCredential]) -> Result<Catalog, Refusal> {
+    let data = crate::language_data::language_data().map_err(|e| Refusal::plain(e.to_string()))?;
+    Ok(Catalog::from_registry(&data.services).map_err(Refusal::plain)?.with_program_credentials(program))
+}
+
+/// `<service>: <ENV_VAR> (<description>)` for every required credential of `services` that `present` does not hold.
+pub fn missing_required_credentials(
+    catalog: &Catalog,
+    services: &std::collections::BTreeSet<String>,
+    present: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    services
+        .iter()
+        .flat_map(|service| {
+            catalog
+                .declared_for(service)
+                .iter()
+                .filter(|c| c.required && !present(&c.env_var))
+                .map(move |c| format!("{service}: {} ({})", c.env_var, c.description))
+        })
+        .collect()
+}
+
 /// Whether `value` of `ALMADAR_CREDENTIALS_SOURCE` selects store-only resolution.
 pub fn source_is_store(value: Option<&str>) -> bool {
     value == Some("store")
@@ -904,6 +928,31 @@ mod tests {
         let mock_env = |name: &str| (name == MOCK_DATA_VAR).then(|| "true".to_string());
         assert!(env_mock(&mock_env));
         assert!(!env_mock(&no_env));
+    }
+
+    #[test]
+    fn only_the_required_credentials_of_the_called_services_are_owed() {
+        let catalog = Catalog::from_registry(
+            r#"{ "services": {
+                "stripe": { "backend": "production", "credentials": [
+                    { "envVar": "STRIPE_SECRET_KEY", "required": true, "description": "API key" },
+                    { "envVar": "STRIPE_WEBHOOK_SECRET", "required": false, "description": "webhooks" }] },
+                "email": { "backend": "production", "credentials": [{ "envVar": "SMTP_URL", "required": true, "description": "mail" }] },
+                "slack": { "backend": "production", "credentials": [{ "envVar": "SLACK_TOKEN", "required": true, "description": "bot" }] } } }"#,
+        )
+        .unwrap();
+        let called: std::collections::BTreeSet<String> = ["email".to_string(), "stripe".to_string()].into();
+        assert_eq!(
+            missing_required_credentials(&catalog, &called, &|name| name == "SMTP_URL"),
+            ["stripe: STRIPE_SECRET_KEY (API key)"]
+        );
+        assert!(missing_required_credentials(&catalog, &called, &|_| true).is_empty(), "control: everything held owes nothing");
+        assert!(
+            missing_required_credentials(&catalog, &std::collections::BTreeSet::new(), &|_| false).is_empty(),
+            "control: a service the program never calls (slack) is not owed"
+        );
+        let unknown: std::collections::BTreeSet<String> = ["nowhere".to_string()].into();
+        assert!(missing_required_credentials(&catalog, &unknown, &|_| false).is_empty(), "an undeclared service owes nothing");
     }
 
     #[test]

@@ -5,6 +5,7 @@
 pub mod args;
 pub mod completion;
 pub mod fs;
+pub mod http;
 pub mod net;
 pub mod process;
 pub mod sys;
@@ -124,11 +125,11 @@ pub(crate) fn family_of(op: OsOp) -> OsFamily {
         | Fsync | Copy | Rename | Remove | Link | Symlink | Readlink | WatchFiles | Mkdir
         | Rmdir | ListDir | Glob | Mktemp | Realpath | Cwd | Chdir | Stat | Lstat | Access
         | Exists | Chmod | Chown | Utimes => OsFamily::Fs,
-        Spawn | Wait | Kill | Pid | Ppid | WatchProcess | WatchSignal | Getenv | Setenv
+        Spawn | Wait | Kill | Pid | Ppid | CurrentExe | WatchProcess | WatchSignal | Getenv | Setenv
         | Unsetenv | Environ | WatchEnv | StdinRead | StdoutWrite | StderrWrite | Isatty
         | TtySize => OsFamily::Process,
         TcpConnect | TcpListen | Send | Recv | UdpBind | Sendto | Recvfrom | DnsResolve
-        | Shutdown | WatchPort => OsFamily::Net,
+        | Shutdown | WatchPort | HttpListen | HttpRespond => OsFamily::Net,
         ClockMonotonic | Uid | Gid | Username | GroupOf | WatchCron | CpuUsage | MemoryInfo
         | Uptime | LoadAvg | Hostname | Uname | DiskUsage | Mounts | DiskIo | NetworkInterfaces
         | NetworkStats | NetworkConnected | DefaultGateway | BatteryStatus | AcPower
@@ -194,6 +195,51 @@ fn defer(
     })
 }
 
+/// The call's arguments with every anchored path (`{ anchor, path }`) at a path or command position, the anchored
+/// `cwd` of `os/spawn`, and every `env`-anchored host or port replaced by what it names on this host. The grant
+/// check then runs on the plain value against the boot-resolved grants.
+pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> Result<Vec<Value>, OsError> {
+    let refuse = |why: String| OsError::new(OsErrorKind::Denied, format!("{}: {why}", op.name()));
+    let path = |value: &Value| -> Result<Option<Value>, OsError> {
+        match AnchoredPath::from_value(value) {
+            Some(anchored) => anchors.resolve_path(&anchored).map(|p| Some(Value::String(p))).map_err(refuse),
+            None => Ok(None),
+        }
+    };
+    let mut out = args.to_vec();
+    for &at in anchored_arg_positions(op) {
+        if let Some(value) = out.get(at) {
+            if let Some(resolved) = path(value)? {
+                out[at] = resolved;
+            }
+        }
+    }
+    if op == OsOp::Spawn {
+        if let Some(Value::Object(options)) = out.get_mut(2) {
+            if let Some(cwd) = options.get("cwd") {
+                if let Some(resolved) = path(cwd)? {
+                    options.insert("cwd".to_string(), resolved);
+                }
+            }
+        }
+    }
+    if let Some((host_at, port_at)) = anchored_net_args(op) {
+        for (at, is_port) in [(host_at, false), (port_at, true)] {
+            let Some(AnchoredPath { anchor, path: None }) = out.get(at).and_then(AnchoredPath::from_value) else {
+                continue;
+            };
+            let text = anchors.net_part(&NetPart::Anchor(anchor)).map_err(refuse)?;
+            out[at] = if is_port {
+                let port: u16 = text.parse().map_err(|_| refuse(format!("the port {text:?} is not a port number")))?;
+                Value::Number(f64::from(port))
+            } else {
+                Value::String(text)
+            };
+        }
+    }
+    Ok(out)
+}
+
 /// Answer an [`IoRequest::Os`]. With no host every op is `denied`: the `os/` family is closed by default.
 pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
     let IoRequest::Os {
@@ -208,6 +254,11 @@ pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
     let Some(host) = host else {
         return IoAnswer::Os(Err(args::denied(*op, "no os host configured")));
     };
+    let resolved = match resolve_anchored_args(*op, args, &host.handles.anchors) {
+        Ok(resolved) => resolved,
+        Err(error) => return IoAnswer::Os(Err(error)),
+    };
+    let args = &resolved;
     if let Some(started) = defer(*op, args, key.as_deref(), site.as_ref(), host) {
         return match started {
             Ok(()) => IoAnswer::ServiceDeferred,
@@ -239,6 +290,66 @@ mod tests {
             handles: &handles,
             on_event: &on_event,
         })
+    }
+
+    fn anchored_value(json: serde_json::Value) -> Value {
+        serde_json::from_value(json).expect("value")
+    }
+
+    fn os_answer(op: OsOp, args: Vec<Value>, grants: &OsGrants, handles: &OsHandles) -> Result<Value, OsError> {
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let request = IoRequest::Os { op, args, key: None, site: None };
+        match answer_os(Some(&OsHost { grants, handles, on_event: &on_event }), &request) {
+            IoAnswer::Os(answer) => answer,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_anchored_path_is_resolved_at_the_boot_anchor_and_checked_against_the_resolved_grant() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("real");
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs/a.md"), "ledger").unwrap();
+        std::fs::write(root.join("secret.txt"), "no").unwrap();
+        let handles = OsHandles {
+            anchors: OsAnchors { start: Some(root.clone()), ..OsAnchors::default() },
+            ..OsHandles::default()
+        };
+        let declared = OsGrants {
+            anchored: AnchoredGrants {
+                fs: vec![AnchoredFsGrant { anchor: GrantAnchor::Cwd, glob: "docs/**".into(), modes: vec![FsMode::Read] }],
+                ..AnchoredGrants::default()
+            },
+            ..OsGrants::default()
+        };
+        let (grants, problems) = declared.resolve_anchors(&handles.anchors);
+        assert!(problems.is_empty());
+        let read = |path: &str| os_answer(OsOp::ReadFile, vec![anchored_value(serde_json::json!({"anchor": "cwd", "path": path}))], &grants, &handles);
+        assert!(read("docs/a.md").is_ok());
+        assert_eq!(read("secret.txt").expect_err("outside").kind, OsErrorKind::Denied, "control: outside the anchored glob");
+        assert_eq!(read("../x").expect_err("climbs").kind, OsErrorKind::Denied, "edge: climbing above the anchor");
+        assert_eq!(
+            os_answer(OsOp::ReadFile, vec![anchored_value(serde_json::json!({"anchor": "cwd", "path": "docs/a.md"}))], &declared, &handles)
+                .expect_err("unresolved")
+                .kind,
+            OsErrorKind::Denied,
+            "control: grants never resolved at boot match nothing"
+        );
+        let unplaced = OsHandles::default();
+        let env_read = os_answer(OsOp::ReadFile, vec![anchored_value(serde_json::json!({"anchor": {"env": "ORB_L2_NEVER_SET"}, "path": "a"}))], &grants, &unplaced);
+        assert_eq!(env_read.expect_err("unset").kind, OsErrorKind::Denied, "edge: an unset env anchor names nothing");
+    }
+
+    #[test]
+    fn an_env_anchored_port_is_the_boot_value_as_a_number() {
+        let anchors = OsAnchors { env: EnvSnapshot::from_pairs([("PORT".to_string(), "8080".to_string()), ("BAD".to_string(), "x".to_string())]), ..OsAnchors::default() };
+        let port = anchored_value(serde_json::json!({"anchor": {"env": "PORT"}}));
+        let args = resolve_anchored_args(OsOp::TcpListen, &[Value::String("127.0.0.1".into()), port.clone()], &anchors).unwrap();
+        assert_eq!(args[1], Value::Number(8080.0));
+        assert_eq!(resolve_anchored_args(OsOp::Getenv, &[port.clone()], &anchors).unwrap()[0], port, "control: not a net or path position");
+        let bad = anchored_value(serde_json::json!({"anchor": {"env": "BAD"}}));
+        assert!(resolve_anchored_args(OsOp::TcpListen, &[Value::String("h".into()), bad], &anchors).is_err());
     }
 
     #[test]
@@ -275,7 +386,7 @@ mod tests {
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 17, 10, 31]);
+        assert_eq!(counts, [32, 18, 12, 31]);
     }
 
     #[test]
@@ -291,6 +402,7 @@ mod tests {
         }
         for op in [
             OsOp::Spawn,
+            OsOp::CurrentExe,
             OsOp::Getenv,
             OsOp::WatchEnv,
             OsOp::StdinRead,

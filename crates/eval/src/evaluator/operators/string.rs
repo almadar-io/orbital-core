@@ -40,6 +40,26 @@ impl Operator for StrToNumberOp {
     }
 }
 
+/// str/to-int - Rust `i64::from_str`: an optional `+` or `-`, then one or more ASCII digits, nothing else; null for
+/// any other text and for a value beyond 2^53 - 1 either way.
+pub struct StrToIntOp;
+impl Operator for StrToIntOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "str/to-int", == 1);
+        match eval_expr(&args[0], ctx)? {
+            Value::String(text) => Ok(text
+                .parse::<i64>()
+                .ok()
+                .filter(|n| n.unsigned_abs() <= (1u64 << 53) - 1)
+                .map_or(Value::Null, |n| Value::Number(n as f64))),
+            other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+                expected: "string".into(),
+                actual: other.type_name().into(),
+            })),
+        }
+    }
+}
+
 impl Operator for UpperOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "upper", 1);
@@ -960,4 +980,35 @@ fn replace_each_match(regex: &regex::Regex, text: &str, replacement: &str) -> St
 /// Compiles a pattern of the shared dialect; `None` when it is outside the dialect.
 pub fn compile_shared_regex(pattern: &str) -> Option<regex::Regex> {
     regex::Regex::new(&translate_shared_regex(pattern)?).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn to_int(text: &str) -> Value {
+        let expr: SExpression = serde_json::from_value(serde_json::json!(["str/to-int", text])).expect("s-expression");
+        eval_expr(&expr, &BindingContext::default()).expect("evaluates")
+    }
+
+    #[test]
+    fn to_int_reads_signed_ascii_decimal_integers() {
+        assert_eq!(to_int("0"), Value::Number(0.0));
+        assert_eq!(to_int("42"), Value::Number(42.0));
+        assert_eq!(to_int("-42"), Value::Number(-42.0));
+        assert_eq!(to_int("+5"), Value::Number(5.0));
+        assert_eq!(to_int("007"), Value::Number(7.0));
+        assert_eq!(to_int("-0"), Value::Number(0.0));
+        assert_eq!(to_int("9007199254740991"), Value::Number(9_007_199_254_740_991.0));
+        assert_eq!(to_int("-9007199254740991"), Value::Number(-9_007_199_254_740_991.0));
+    }
+
+    #[test]
+    fn to_int_control_answers_null_for_anything_else() {
+        for text in ["", "-", "+", " 5", "5 ", "1e3", "1.0", "0x10", "--1", "+-1", "١٢", "9007199254740992", "-9007199254740992", "99999999999999999999999"] {
+            assert_eq!(to_int(text), Value::Null, "{text:?}");
+        }
+        let expr: SExpression = serde_json::from_value(serde_json::json!(["str/to-int", 5])).unwrap();
+        assert!(eval_expr(&expr, &BindingContext::default()).is_err());
+    }
 }

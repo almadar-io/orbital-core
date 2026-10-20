@@ -102,7 +102,7 @@
     { "name": "a host name must resolve public", "op": "os/tcp-connect", "args": ["localhost", { "$var": "port" }], "expect": { "error": { "kind": "denied", "messagePrefix": "os/tcp-connect: localhost resolves to " } } },
     { "name": "dns-resolve a literal", "op": "os/dns-resolve", "args": ["127.0.0.1"], "expect": { "ok": { "addresses": ["127.0.0.1"] } } },
     { "name": "dns-resolve not granted", "op": "os/dns-resolve", "args": ["example.org"], "expect": { "error": { "kind": "denied", "message": "os/dns-resolve: example.org:0 is not granted" } } },
-    { "name": "tcp-listen is unsupported", "op": "os/tcp-listen", "args": ["127.0.0.1", 0], "expect": { "error": { "kind": "unsupported", "message": "os/tcp-listen: streaming host not implemented" } } },
+    { "name": "an unkeyed tcp-listen is invalid", "op": "os/tcp-listen", "args": ["127.0.0.1", 0], "expect": { "error": { "kind": "invalid", "message": "os/tcp-listen: a stream needs a key and a call site" } } },
 
     { "name": "spawn echo for the deferred asks", "op": "os/spawn", "args": ["echo", ["hi"], { "stdout": "pipe" }], "bind": { "pidD": "pid", "outD": "stdout" }, "expect": { "ok": { "pid": { "$number": true }, "stdout": { "$number": true } } } },
     { "name": "a keyed wait is deferred and its completion carries the exit and the key", "op": "os/wait", "key": "w1", "args": [{ "$var": "pidD" }], "deferred": { "event": "DONE", "payload": { "code": 0, "key": "w1" } } },

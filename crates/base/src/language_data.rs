@@ -84,6 +84,16 @@ pub enum LanguageDataError {
         version: String,
         operators: Vec<String>,
     },
+    #[error(
+        "installed {package}@{version} declares {entry} this orb cannot read ({reason}) \
+         — upgrade orb, or install a {package} this orb supports"
+    )]
+    Unreadable {
+        package: &'static str,
+        version: String,
+        entry: String,
+        reason: String,
+    },
     #[error("installed language data is invalid at {path:?}: {reason}")]
     Invalid { path: PathBuf, reason: String },
     #[error(
@@ -107,6 +117,7 @@ impl LanguageDataError {
             LanguageDataError::NotInstalled { .. } => CODE_NOT_INSTALLED,
             LanguageDataError::Incompatible { .. }
             | LanguageDataError::Unimplemented { .. }
+            | LanguageDataError::Unreadable { .. }
             | LanguageDataError::PackIncompatible { .. } => CODE_INCOMPATIBLE,
             LanguageDataError::Invalid { .. } => CODE_INVALID,
         }
@@ -175,11 +186,42 @@ pub fn load_operator_data_for(
 ) -> Result<OperatorData, LanguageDataError> {
     let block = read_language_block(STD_PACKAGE, start_dir, user_store, running)?;
     let operators = block.read("operators")?;
-    Ok(OperatorData {
+    let data = OperatorData {
         operators,
         std_version: block.pkg.version,
         root: block.pkg.root,
-    })
+    };
+    check_operator_entries(&data)?;
+    Ok(data)
+}
+
+/// Every category and operator entry reads as this binary's registry types, so a table from a newer std (a new type
+/// kind, a new required field) is refused here, naming the entry, instead of panicking where the registry is first read.
+pub fn check_operator_entries(data: &OperatorData) -> Result<(), LanguageDataError> {
+    use crate::language::registry::{EmbeddedCategory, EmbeddedOperator};
+    let invalid = |reason: String| LanguageDataError::Invalid {
+        path: data.root.clone(),
+        reason,
+    };
+    let doc: Value = serde_json::from_str(&data.operators).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
+    let section = |name: &str| {
+        doc.get(name)
+            .and_then(Value::as_object)
+            .ok_or_else(|| invalid(format!("missing `{name}`")))
+    };
+    let unreadable = |entry: String, e: serde_json::Error| LanguageDataError::Unreadable {
+        package: STD_PACKAGE,
+        version: data.std_version.clone(),
+        entry,
+        reason: e.to_string(),
+    };
+    for (name, meta) in section("categories")? {
+        serde_json::from_value::<EmbeddedCategory>(meta.clone()).map_err(|e| unreadable(format!("category `{name}`"), e))?;
+    }
+    for (name, meta) in section("operators")? {
+        serde_json::from_value::<EmbeddedOperator>(meta.clone()).map_err(|e| unreadable(format!("operator `{name}`"), e))?;
+    }
+    Ok(())
 }
 
 /// Operators whose canonical category targets `rust` but that the evaluator
@@ -536,6 +578,7 @@ pub fn parse_language_bundle(
         root: PathBuf::new(),
         operators,
     };
+    check_operator_entries(&ops)?;
     let packs = value
         .get("vocabularies")
         .and_then(Value::as_array)

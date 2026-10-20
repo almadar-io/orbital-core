@@ -1632,6 +1632,14 @@ pub enum ExpectDeclaration {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         strict: bool,
     },
+    /// `expects config { stdio : string = "pipe" }`: a trait of the program declares this knob, of this type and,
+    /// when one is stated, with this default.
+    Config {
+        name: String,
+        knob: ConfigField,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        strict: bool,
+    },
 }
 
 impl ExpectDeclaration {
@@ -1643,7 +1651,8 @@ impl ExpectDeclaration {
             | ExpectDeclaration::Event { strict, .. }
             | ExpectDeclaration::Page { strict, .. }
             | ExpectDeclaration::State { strict, .. }
-            | ExpectDeclaration::Transition { strict, .. } => *strict,
+            | ExpectDeclaration::Transition { strict, .. }
+            | ExpectDeclaration::Config { strict, .. } => *strict,
         }
     }
 }
@@ -2475,6 +2484,118 @@ impl FieldDefinition {
     pub fn tuple_slots(&self) -> Vec<&FieldDefinition> {
         tuple_slots_of(self.properties.as_ref())
     }
+
+    /// The variant of this tagged union a value belongs to (the LOLO tagged-union rule). A variant is chosen by its
+    /// tags (each single-valued field that is not a by-name reference) when the value carries them all; a value
+    /// carrying no variant's tags selects the one untagged variant whose closed shape it fits (every key declared;
+    /// on a tie, every required member present). None or several is never a guess. `keys` are the value's keys;
+    /// `read_tag(field, tag)` reads the value's `field` against `tag`.
+    pub fn select_union_variant<'d>(
+        &'d self,
+        keys: &[&str],
+        read_tag: impl Fn(&str, &str) -> TagReading,
+    ) -> UnionVariantChoice<'d> {
+        let (Some(names), Some(variants)) = (&self.values, &self.properties) else {
+            return UnionVariantChoice::Malformed(
+                "a union definition declares its variants (values + properties)".to_string(),
+            );
+        };
+        let mut untagged: Vec<(&str, &FieldDefinition)> = Vec::new();
+        let mut deferred = false;
+        for name in names {
+            let Some(variant) = variants.get(name) else {
+                return UnionVariantChoice::Malformed(format!(
+                    "the union names variant {name} but does not declare it"
+                ));
+            };
+            let Some(props) = &variant.properties else {
+                continue;
+            };
+            let tags: Vec<(&str, &str)> = props
+                .iter()
+                .filter_map(|(field, d)| match d.values.as_deref() {
+                    Some([only]) if d.by_name_reference().is_none() => {
+                        Some((field.as_str(), only.as_str()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if tags.is_empty() {
+                untagged.push((name, variant));
+                continue;
+            }
+            let mut agreed = 0usize;
+            for (field, tag) in &tags {
+                match read_tag(field, tag) {
+                    TagReading::Equal => agreed += 1,
+                    TagReading::LateBound => deferred = true,
+                    TagReading::Differs => {}
+                }
+            }
+            if agreed == tags.len() {
+                return UnionVariantChoice::Matched(variant);
+            }
+        }
+        if deferred {
+            return UnionVariantChoice::Deferred;
+        }
+        let declares_every_key = |v: &FieldDefinition| {
+            v.properties
+                .as_ref()
+                .is_some_and(|props| keys.iter().all(|k| props.contains_key(*k)))
+        };
+        let mut fits: Vec<(&str, &FieldDefinition)> = untagged
+            .into_iter()
+            .filter(|(_, v)| declares_every_key(v))
+            .collect();
+        if fits.len() > 1 {
+            let complete: Vec<(&str, &FieldDefinition)> = fits
+                .iter()
+                .copied()
+                .filter(|(_, v)| {
+                    v.properties.as_ref().is_some_and(|props| {
+                        props
+                            .iter()
+                            .all(|(k, d)| d.required != Some(true) || keys.contains(&k.as_str()))
+                    })
+                })
+                .collect();
+            if !complete.is_empty() {
+                fits = complete;
+            }
+        }
+        match fits.as_slice() {
+            [(_, one)] => UnionVariantChoice::Matched(one),
+            [] => UnionVariantChoice::NoMatch,
+            many => {
+                let mut names: Vec<String> = many.iter().map(|(n, _)| n.to_string()).collect();
+                names.sort_unstable();
+                UnionVariantChoice::Ambiguous(names)
+            }
+        }
+    }
+}
+
+/// How a value's discriminator field reads against one variant tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagReading {
+    Equal,
+    Differs,
+    /// The field holds a late-bound reference (`@config.shape`): which variant applies is not decidable yet.
+    LateBound,
+}
+
+/// The outcome of [`FieldDefinition::select_union_variant`].
+#[derive(Debug)]
+pub enum UnionVariantChoice<'d> {
+    Matched(&'d FieldDefinition),
+    /// A tag is late-bound, so the variant is decided later, never guessed now.
+    Deferred,
+    NoMatch,
+    /// Several untagged variants fit the value equally (sorted names); the union needs a discriminator.
+    Ambiguous(Vec<String>),
+    /// The union definition itself is ill-formed.
+    Malformed(String),
 }
 
 /// Tuple slots carried in a `properties` map keyed by slot index, in slot order — the
@@ -4630,6 +4751,128 @@ mod tests {
     }
 
     use super::*;
+
+    mod union_variant {
+        use super::*;
+        use serde_json::json;
+
+        fn union(variants: serde_json::Value, order: &[&str]) -> FieldDefinition {
+            serde_json::from_value(json!({ "type": "union", "values": order, "properties": variants })).unwrap()
+        }
+
+        fn tag(value: &str) -> serde_json::Value {
+            json!({ "type": "string", "required": true, "values": [value] })
+        }
+
+        fn by_name(shape: &str) -> serde_json::Value {
+            json!({ "type": "union", "values": [shape] })
+        }
+
+        fn pick<'d>(def: &'d FieldDefinition, value: &[(&str, &str)]) -> UnionVariantChoice<'d> {
+            let keys: Vec<&str> = value.iter().map(|(k, _)| *k).collect();
+            def.select_union_variant(&keys, |field, tag| {
+                match value.iter().find(|(k, _)| *k == field) {
+                    Some((_, v)) if v.starts_with('@') => TagReading::LateBound,
+                    Some((_, v)) if *v == tag => TagReading::Equal,
+                    _ => TagReading::Differs,
+                }
+            })
+        }
+
+        fn chosen<'d>(def: &'d FieldDefinition, c: UnionVariantChoice<'d>) -> Option<&'d str> {
+            let UnionVariantChoice::Matched(v) = c else { return None };
+            let (names, variants) = (def.values.as_ref()?, def.properties.as_ref()?);
+            names.iter().find(|n| variants.get(*n).is_some_and(|d| std::ptr::eq(d, v))).map(String::as_str)
+        }
+
+        fn agent_tool() -> FieldDefinition {
+            let text = json!({ "type": "string", "required": true });
+            union(
+                json!({
+                    "Scope": { "type": "object", "properties": { "scope": tag("declared") } },
+                    "Input": { "type": "object", "properties": { "event": text } },
+                    "Read": { "type": "object", "properties": { "read": text } }
+                }),
+                &["Scope", "Input", "Read"],
+            )
+        }
+
+        /// A union variant whose only single-valued field is a by-name back-reference (`of : Pred`).
+        fn predicate() -> FieldDefinition {
+            union(
+                json!({
+                    "Compare": { "type": "object", "properties": { "kind": tag("compare"), "field": { "type": "string" } } },
+                    "Not": { "type": "object", "properties": { "of": by_name("Pred") } },
+                    "Leaf": { "type": "object", "properties": { "label": { "type": "string" } } }
+                }),
+                &["Compare", "Not", "Leaf"],
+            )
+        }
+
+        #[test]
+        fn a_by_name_reference_is_not_a_variant_tag() {
+            let def = predicate();
+            assert_eq!(chosen(&def, pick(&def, &[("of", "x")])), Some("Not"));
+            assert_eq!(
+                chosen(&def, pick(&def, &[("of", "Pred")])),
+                Some("Not"),
+                "a value equal to the referenced name is still not a tag match"
+            );
+        }
+
+        #[test]
+        fn control_a_real_tag_still_selects_beside_a_by_name_variant() {
+            let def = predicate();
+            assert_eq!(chosen(&def, pick(&def, &[("kind", "compare"), ("field", "a")])), Some("Compare"));
+            assert_eq!(chosen(&def, pick(&def, &[("label", "l")])), Some("Leaf"));
+        }
+
+        #[test]
+        fn a_tag_selects_and_an_untagged_value_selects_by_closed_shape() {
+            let def = agent_tool();
+            assert_eq!(chosen(&def, pick(&def, &[("scope", "declared")])), Some("Scope"));
+            assert_eq!(chosen(&def, pick(&def, &[("read", "Product")])), Some("Read"));
+            assert_eq!(chosen(&def, pick(&def, &[("event", "Shop.ADD")])), Some("Input"));
+        }
+
+        #[test]
+        fn a_value_merging_two_variants_fits_none() {
+            let def = agent_tool();
+            assert!(matches!(pick(&def, &[("event", "Shop.ADD"), ("read", "Product")]), UnionVariantChoice::NoMatch));
+        }
+
+        #[test]
+        fn equal_fits_are_ambiguous_and_required_members_break_a_tie() {
+            let x = json!({ "type": "string" });
+            let x_req = json!({ "type": "string", "required": true });
+            let tie = union(
+                json!({ "A": { "type": "object", "properties": { "x": x } },
+                        "B": { "type": "object", "properties": { "x": x, "y": x } } }),
+                &["A", "B"],
+            );
+            assert!(matches!(pick(&tie, &[("x", "1")]), UnionVariantChoice::Ambiguous(n) if n == ["A", "B"]));
+            let broken = union(
+                json!({ "A": { "type": "object", "properties": { "x": x_req } },
+                        "B": { "type": "object", "properties": { "x": x, "y": x_req } } }),
+                &["B", "A"],
+            );
+            assert_eq!(chosen(&broken, pick(&broken, &[("x", "1")])), Some("A"));
+        }
+
+        #[test]
+        fn a_late_bound_tag_defers() {
+            let def = agent_tool();
+            assert!(matches!(pick(&def, &[("scope", "@config.scope")]), UnionVariantChoice::Deferred));
+        }
+
+        #[test]
+        fn an_undeclared_variant_or_a_by_name_reference_is_malformed() {
+            let def = union(json!({ "A": { "type": "object", "properties": {} } }), &["A", "Missing"]);
+            assert!(matches!(pick(&def, &[]), UnionVariantChoice::Malformed(m) if m.contains("Missing")));
+            let back: FieldDefinition = serde_json::from_value(by_name("Pred")).unwrap();
+            assert!(matches!(pick(&back, &[]), UnionVariantChoice::Malformed(_)));
+        }
+    }
 
     #[test]
     fn field_type_event_serde_round_trips_as_lowercase_tag() {

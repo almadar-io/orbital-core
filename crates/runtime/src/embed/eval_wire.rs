@@ -121,7 +121,7 @@ pub enum GuardOutcomeWire {
 
 /// One step of a traced evaluation (`EvalStep` in `@almadar/core`).
 #[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvalStepWire {
     pub kind: EvalStepKind,
@@ -135,7 +135,7 @@ pub struct EvalStepWire {
 }
 
 #[cfg_attr(test, derive(ts_rs::TS))]
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EvalStepKind {
     Enter,
@@ -144,7 +144,7 @@ pub enum EvalStepKind {
     Skip,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PathSegWire {
     Index(usize),

@@ -44,6 +44,9 @@ pub enum Known {
     Absent,
 }
 
+/// A lambda's result type given its parameters' types. A lambda whose declared type has a `children-of` parameter
+/// is read twice: first with that parameter untyped (a provisional reading, whose findings the caller drops), then
+/// with it typed by the result the first reading gave.
 pub type LambdaResult<'a> = &'a (dyn Fn(&[Option<OirType>]) -> Option<OirType> + 'a);
 
 /// One argument of a call, as the checker sees it.
@@ -263,6 +266,15 @@ impl<'a> Signature<'a> {
             .position(|p| matches!(p.ty, OperatorTypeRef::Tagged(OperatorTypeRefKind::Shape)))
     }
 
+    /// Whether the lambda at `index` is read twice, a provisional reading first (see [`LambdaResult`]).
+    pub fn reads_lambda_twice(&self, index: usize) -> bool {
+        matches!(
+            self.formal(index),
+            Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Fn { params, .. }))
+                if params.iter().any(|p| matches!(p, OperatorTypeRef::Tagged(OperatorTypeRefKind::ChildrenOf { .. })))
+        )
+    }
+
     /// Whether any parameter declares a type a call is checked against. A signature of nominal std types and
     /// unevaluated expressions checks nothing, so a call to it needs no binding.
     pub fn checks_anything(&self) -> bool {
@@ -416,7 +428,8 @@ fn checks(ty: &OperatorTypeRef) -> bool {
             | K::FieldOf { .. }
             | K::PickOf { .. }
             | K::OmitOf { .. }
-            | K::MergeOf { .. } => false,
+            | K::MergeOf { .. }
+            | K::ChildrenOf { .. } => false,
         },
     }
 }
@@ -1085,7 +1098,7 @@ fn bind_type(
                 }
                 Ok(())
             }
-            K::PickOf { .. } | K::OmitOf { .. } | K::MergeOf { .. } => Ok(()),
+            K::PickOf { .. } | K::OmitOf { .. } | K::MergeOf { .. } | K::ChildrenOf { .. } => Ok(()),
             K::Shape => match (&actual.text, mode) {
                 (Some(text), _) => {
                     b.shape = Some(text.clone());
@@ -1129,10 +1142,30 @@ fn bind_unknown(
                 return Ok(());
             };
             let inputs: Vec<Option<OirType>> = params.iter().map(|p| resolve(p, b)).collect();
-            if let Some(result) = lambda(&inputs) {
-                bind_type(returns, &Actual::of_type(result), b, mode)?;
+            let first = lambda(&inputs);
+            if let Some(result) = &first {
+                bind_type(returns, &Actual::of_type(result.clone()), b, mode)?;
             }
-            Ok(())
+            if !params.iter().any(|p| matches!(p, OperatorTypeRef::Tagged(K::ChildrenOf { .. }))) {
+                return Ok(());
+            }
+            // The children's results are the step's own result: read with them typed so, it must give that type.
+            let typed: Vec<Option<OirType>> = params.iter().map(|p| resolve(p, b)).collect();
+            match (first, lambda(&typed)) {
+                (Some(before), Some(after)) if !agrees(&before, &after) => Err(Mismatch::Type {
+                    expected: format!(
+                        "a step whose result is the type of its childResults entries ({})",
+                        oir_type_kind(&before)
+                    ),
+                    actual: format!(
+                        "a step returning {} when its childResults entries are {}",
+                        oir_type_kind(&after),
+                        oir_type_kind(&before)
+                    ),
+                }),
+                (None, Some(after)) => bind_type(returns, &Actual::of_type(after), b, mode),
+                _ => Ok(()),
+            }
         }
         K::Union { of } => {
             for member in of {
@@ -1368,6 +1401,42 @@ pub fn type_at_path(ty: &OirType, segments: &[String]) -> Option<OirType> {
     }
 }
 
+/// `children-of`: the fields of `ty` declared `shape`, `[shape]` or `Map K shape`, with `shape` replaced by
+/// `result`; each is present only when the node holds it. A tagged union maps each variant.
+fn children_of(ty: &OirType, shape: &str, result: &OirType) -> Option<OirType> {
+    let is_shape = |t: &OirType| matches!(unwrap_optional(t), OirType::TypeRef { name } if name == shape);
+    let slot = |t: &OirType| match unwrap_optional(t) {
+        own if is_shape(own) => Some(result.clone()),
+        OirType::Array { inner } if is_shape(inner) => Some(OirType::array(result.clone())),
+        OirType::Map { key, value } if is_shape(value) => Some(OirType::map((**key).clone(), result.clone())),
+        _ => None,
+    };
+    match unwrap_optional(ty) {
+        OirType::Struct { fields } => Some(OirType::Struct {
+            fields: fields
+                .iter()
+                .filter_map(|f| {
+                    let mut child = OirField::new(f.name.clone(), slot(&f.field_type)?);
+                    child.required = false;
+                    Some(child)
+                })
+                .collect(),
+        }),
+        OirType::Union { variants } => Some(OirType::Union {
+            variants: variants
+                .iter()
+                .map(|v| {
+                    Some(OirField {
+                        field_type: children_of(&v.field_type, shape, result)?,
+                        ..v.clone()
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        }),
+        _ => None,
+    }
+}
+
 /// The concrete type a signature type stands for under `b`, or `None` when it is not determined.
 pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
     use crate::language::registry::OperatorTypeRefKind as K;
@@ -1526,6 +1595,7 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 Some(OirType::Struct { fields: merged })
             }
             K::Shape => b.shape.clone().map(|name| nominal_type(&name).unwrap_or(OirType::TypeRef { name })),
+            K::ChildrenOf { of, result } => children_of(b.bound(of)?, b.shape.as_deref()?, b.last(result)?),
             K::Sexpr { .. } => Some(OirType::SExpr),
             K::Literal { .. }
             | K::Record
@@ -1887,6 +1957,127 @@ mod tests {
         sig.bind(&mut b, 1, &lambda, Mode::Static).unwrap();
         assert_eq!(sig.result(&b), Some(s_arr(OirType::Boolean)));
         assert_eq!(seen.borrow().as_slice(), &[vec![Some(OirType::Number)]]);
+    }
+
+    fn tree_fold_op() -> EmbeddedOperator {
+        let kids = json!({ "kind": "childrenOf", "of": "T", "result": "R" });
+        op(
+            json!([
+                p("value", var("T")),
+                p("step", json!({ "kind": "fn", "params": [var("T"), kids], "returns": var("R") })),
+                p("shape", json!({ "kind": "shape" })),
+            ]),
+            var("R"),
+            Some(4),
+        )
+    }
+
+    fn tree_type() -> OirType {
+        let own = || OirType::TypeRef { name: "Tree".to_string() };
+        struct_of(&[
+            ("label", OirType::String),
+            ("kids", s_arr(own())),
+            ("parent", own()),
+            ("named", OirType::map(OirType::String, own())),
+            ("tags", s_arr(OirType::String)),
+        ])
+    }
+
+    /// Binds the shape first (as the checker does), then the value and the step.
+    fn fold(t: OirType, shape: Option<&str>, step: LambdaResult<'_>) -> Result<Option<OirType>, Mismatch> {
+        let operator = tree_fold_op();
+        let sig = Signature::of(&operator);
+        let mut b = CallBindings::new();
+        if let Some(shape) = shape {
+            sig.bind(&mut b, 2, &text(shape), Mode::Static)?;
+        }
+        sig.bind(&mut b, 0, &ty(t), Mode::Static)?;
+        let lambda = Actual { known: None, text: None, texts: None, lambda: Some(step) };
+        sig.bind(&mut b, 1, &lambda, Mode::Static)?;
+        Ok(sig.result(&b))
+    }
+
+    fn optional_fields(fields: &[(&str, OirType)]) -> OirType {
+        let OirType::Struct { mut fields } = struct_of(fields) else { unreachable!() };
+        fields.iter_mut().for_each(|f| f.required = false);
+        OirType::Struct { fields }
+    }
+
+    #[test]
+    fn a_fold_step_reads_its_children_typed_by_its_own_result() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let step = |params: &[Option<OirType>]| {
+            seen.borrow_mut().push(params.to_vec());
+            Some(OirType::String)
+        };
+        assert_eq!(fold(tree_type(), Some("Tree"), &step), Ok(Some(OirType::String)));
+        let kids = optional_fields(&[
+            ("kids", s_arr(OirType::String)),
+            ("parent", OirType::String),
+            ("named", OirType::map(OirType::String, OirType::String)),
+        ]);
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[vec![Some(tree_type()), None], vec![Some(tree_type()), Some(kids)]],
+            "a provisional reading, then one with the children typed; `tags` is no child"
+        );
+    }
+
+    #[test]
+    fn a_fold_step_whose_result_changes_with_its_children_is_a_mismatch() {
+        let step = |params: &[Option<OirType>]| Some(if params[1].is_some() { OirType::Number } else { OirType::String });
+        let Err(Mismatch::Type { expected, actual }) = fold(tree_type(), Some("Tree"), &step) else {
+            panic!("a step returning number over string children is refused");
+        };
+        assert!(expected.contains("childResults") && expected.contains("string"), "{expected}");
+        assert!(actual.contains("number"), "{actual}");
+    }
+
+    #[test]
+    fn control_a_fold_step_over_a_non_recursive_type_gets_no_children() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let step = |params: &[Option<OirType>]| {
+            seen.borrow_mut().push(params[1].clone());
+            Some(OirType::Boolean)
+        };
+        let note = struct_of(&[("of", s_arr(OirType::String)), ("Note", OirType::String)]);
+        assert_eq!(fold(note, Some("Note"), &step), Ok(Some(OirType::Boolean)));
+        assert_eq!(seen.borrow().last(), Some(&Some(optional_fields(&[]))));
+    }
+
+    #[test]
+    fn a_fold_over_a_tagged_union_types_the_children_of_every_variant() {
+        let own = || OirType::TypeRef { name: "Pred".to_string() };
+        let union = OirType::Union {
+            variants: vec![
+                OirField::new("All", struct_of(&[("kind", OirType::String), ("of", s_arr(own()))])),
+                OirField::new("Not", struct_of(&[("kind", OirType::String), ("of", own())])),
+            ],
+        };
+        let last = std::cell::RefCell::new(None);
+        let step = |params: &[Option<OirType>]| {
+            *last.borrow_mut() = params[1].clone();
+            Some(OirType::String)
+        };
+        assert_eq!(fold(union, Some("Pred"), &step), Ok(Some(OirType::String)));
+        let expected = OirType::Union {
+            variants: vec![
+                OirField::new("All", optional_fields(&[("of", s_arr(OirType::String))])),
+                OirField::new("Not", optional_fields(&[("of", OirType::String)])),
+            ],
+        };
+        assert_eq!(last.borrow().clone(), Some(expected));
+    }
+
+    #[test]
+    fn control_without_the_shape_the_children_stay_untyped() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let step = |params: &[Option<OirType>]| {
+            seen.borrow_mut().push(params[1].clone());
+            Some(OirType::String)
+        };
+        assert_eq!(fold(tree_type(), None, &step), Ok(Some(OirType::String)));
+        assert_eq!(seen.borrow().as_slice(), &[None, None]);
     }
 
     #[test]

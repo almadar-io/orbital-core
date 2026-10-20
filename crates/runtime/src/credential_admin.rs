@@ -99,12 +99,6 @@ impl AdminAsks for IoPort {
     }
 }
 
-/// The catalog of the installed services registry plus the credentials the running program declares.
-pub fn catalog(program: &[orbital_core_base::secrets::ProgramCredential]) -> Result<Catalog, Refusal> {
-    let data = orbital_core_base::language_data::language_data().map_err(|e| Refusal::plain(e.to_string()))?;
-    Ok(Catalog::from_registry(&data.services).map_err(Refusal::plain)?.with_program_credentials(program))
-}
-
 fn host(message: String) -> Refusal {
     Refusal::plain(message)
 }
@@ -154,7 +148,7 @@ fn mock_mode(asks: &dyn AdminAsks) -> Result<bool, Refusal> {
 
 fn list(asks: &dyn AdminAsks, catalog: &Catalog, filter: Option<&str>) -> Result<Value, Refusal> {
     let view = store_view(asks)?;
-    let store_first = env(asks, admin::SOURCE_VAR)?.as_deref() == Some("store");
+    let store_first = admin::source_is_store(env(asks, admin::SOURCE_VAR)?.as_deref());
     let mock = mock_mode(asks)?;
     let names = admin::list_env_names(catalog, filter, view.as_ref(), store_first);
     let values = env_map(asks, &names)?;
@@ -260,24 +254,6 @@ pub fn schema_invoked_services(
         }
     }
     names
-}
-
-/// `<service>: <ENV_VAR> (<description>)` for every required credential of `services` that `present` does not hold.
-pub fn missing_required_credentials(
-    catalog: &Catalog,
-    services: &std::collections::BTreeSet<String>,
-    present: &dyn Fn(&str) -> bool,
-) -> Vec<String> {
-    services
-        .iter()
-        .flat_map(|service| {
-            catalog
-                .declared_for(service)
-                .iter()
-                .filter(|c| c.required && !present(&c.env_var))
-                .map(move |c| format!("{service}: {} ({})", c.env_var, c.description))
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -492,8 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn the_services_a_program_calls_come_from_its_transitions_and_ticks_and_only_their_required_credentials_are_owed(
-    ) {
+    fn the_services_a_program_calls_come_from_its_transitions_and_ticks() {
         let schema: orbital_core_base::schema::types::OrbitalSchema = serde_json::from_value(serde_json::json!({
             "name": "App",
             "orbitals": [{
@@ -520,29 +495,6 @@ mod tests {
             called.iter().map(String::as_str).collect::<Vec<_>>(),
             ["email", "stripe"],
             "nested and tick effects count"
-        );
-        let catalog = Catalog::from_registry(
-            r#"{ "services": {
-                "stripe": { "backend": "production", "credentials": [
-                    { "envVar": "STRIPE_SECRET_KEY", "required": true, "description": "API key" },
-                    { "envVar": "STRIPE_WEBHOOK_SECRET", "required": false, "description": "webhooks" }] },
-                "email": { "backend": "production", "credentials": [{ "envVar": "SMTP_URL", "required": true, "description": "mail" }] },
-                "slack": { "backend": "production", "credentials": [{ "envVar": "SLACK_TOKEN", "required": true, "description": "bot" }] } } }"#,
-        )
-        .unwrap();
-        let held = |name: &str| name == "SMTP_URL";
-        assert_eq!(
-            missing_required_credentials(&catalog, &called, &held),
-            ["stripe: STRIPE_SECRET_KEY (API key)"]
-        );
-        assert!(
-            missing_required_credentials(&catalog, &called, &|_| true).is_empty(),
-            "control: everything held owes nothing"
-        );
-        assert!(
-            missing_required_credentials(&catalog, &std::collections::BTreeSet::new(), &|_| false)
-                .is_empty(),
-            "control: a service the program never calls (slack) is not owed"
         );
     }
 }
