@@ -645,15 +645,27 @@ impl SecretSource for Credentials {
 /// The process environment's credentials; with `ALMADAR_CREDENTIAL_MASTER_KEY` set, the encrypted store in
 /// `ALMADAR_CREDENTIALS_FILE` (else `.almadar/dev-credentials.json`) answers first, the same file the JS host reads.
 pub fn credentials_from_env() -> Credentials {
-    use crate::credential_store::{EncryptedCredentialStore, FileCredentialRows, CREDENTIAL_MASTER_KEY_ENV};
+    let (credentials, failure) = credentials_with_rows(None);
+    if let Some(error) = failure {
+        tracing::error!(target: orbital_core_base::logging::ns::SERVER_DATA, %error, "credential store unavailable");
+    }
+    credentials
+}
+
+/// The process environment's credentials, with `ALMADAR_CREDENTIAL_MASTER_KEY` set layered under the encrypted store
+/// kept in `rows` (else the [`credentials_from_env`] file). A store that cannot be opened leaves the environment alone
+/// and names why, for the host to refuse or warn.
+pub fn credentials_with_rows(
+    rows: Option<Arc<dyn crate::credential_store::CredentialRows>>,
+) -> (Credentials, Option<String>) {
+    use crate::credential_store::{FileCredentialRows, CREDENTIAL_MASTER_KEY_ENV};
     let base = Credentials::from_process_env();
     if std::env::var(CREDENTIAL_MASTER_KEY_ENV).is_err() {
-        return base;
+        return (base, None);
     }
-    let stored = EncryptedCredentialStore::from_env(std::sync::Arc::new(FileCredentialRows::from_env()))
-        .and_then(|store| base.clone().with_encrypted_store(std::sync::Arc::new(store)));
-    stored.unwrap_or_else(|error| {
-        tracing::error!(target: orbital_core_base::logging::ns::SERVER_DATA, %error, "credential store unavailable");
-        base
-    })
+    let rows = rows.unwrap_or_else(|| Arc::new(FileCredentialRows::from_env()));
+    match EncryptedCredentialStore::from_env(rows).and_then(|store| base.clone().with_encrypted_store(Arc::new(store))) {
+        Ok(stored) => (stored, None),
+        Err(error) => (base, Some(error)),
+    }
 }

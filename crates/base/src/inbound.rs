@@ -183,6 +183,20 @@ pub fn answer_of<'a>(route: &InboundRoute, emits: impl IntoIterator<Item = (&'a 
     }
 }
 
+/// The answer a host reads off a finished dispatch's response: [`answer_of`] its emitted events when the route's
+/// answer event is among them; otherwise `failure` (the response's error) or `inbound-unanswered`, as a 500. The
+/// response-level twin of `inboundAnswerOf` in `@almadar/core`.
+pub fn answer_of_response<'a>(
+    route: &InboundRoute,
+    emitted: impl IntoIterator<Item = (&'a str, &'a Value)> + Clone,
+    failure: Option<&str>,
+) -> InboundAnswer {
+    if emitted.clone().into_iter().any(|(event, _)| event == route.answer) {
+        return answer_of(route, emitted);
+    }
+    dispatch_failed(failure.unwrap_or("inbound-unanswered"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +417,26 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    fn calendar_route() -> InboundRoute {
+        find_inbound(&schema(json!(["google-calendar"]), false), "google-calendar").unwrap()
+    }
+
+    #[test]
+    fn a_response_that_emitted_the_answer_event_answers_with_its_status_and_body() {
+        let answer = json!({ "status": 202, "body": "ok" });
+        let other = json!({});
+        let answer: Value = serde_json::from_value(answer).unwrap();
+        let other: Value = serde_json::from_value(other).unwrap();
+        let emitted = [("NOISE", &other), ("PUSH_ANSWERED", &answer)];
+        assert_eq!(answer_of_response(&calendar_route(), emitted, Some("ignored")), InboundAnswer { status: 202, body: "ok".into() });
+    }
+
+    #[test]
+    fn control_without_the_answer_event_the_responses_error_or_unanswered_is_a_500() {
+        let empty: [(&str, &Value); 0] = [];
+        assert_eq!(answer_of_response(&calendar_route(), empty, Some("boom")), dispatch_failed("boom"));
+        assert_eq!(answer_of_response(&calendar_route(), empty, None), dispatch_failed("inbound-unanswered"));
     }
 }

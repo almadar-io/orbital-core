@@ -3,7 +3,7 @@
 //! from the secret source and the operating system. Each piece is the existing answerer (`BlockingHost`, `HttpHost`,
 //! `answer_os`); this owns them so a host can share one answerer across threads and rebuild it when a program registers.
 
-use crate::effects::executor::{ServiceCaller, ServiceHandler};
+use crate::effects::executor::{ServiceCaller, ServiceHandler, SubstrateHandler};
 use crate::entity_source::EntitySource;
 use crate::http_service::{SecretSource, Transport};
 use crate::os_host::{OsGrants, OsHandles, OsHost};
@@ -37,6 +37,7 @@ pub struct NativeHost {
     grants: OsGrants,
     handles: Arc<OsHandles>,
     on_event: Arc<StreamEvents>,
+    substrate: Option<Arc<dyn SubstrateHandler>>,
 }
 
 impl NativeHost {
@@ -57,7 +58,14 @@ impl NativeHost {
             grants,
             handles,
             on_event,
+            substrate: None,
         }
+    }
+
+    /// Answer the substrate operators (`program/*`, `behavior/*`) through `handler`; without one they fail.
+    pub fn with_substrate(mut self, handler: Option<Arc<dyn SubstrateHandler>>) -> Self {
+        self.substrate = handler;
+        self
     }
 
     pub fn answer(&self, request: &IoRequest) -> IoAnswer {
@@ -77,8 +85,63 @@ impl NativeHost {
         BlockingHost {
             source: self.source.as_ref(),
             service: Some(&NoProviders),
-            substrate: None,
+            substrate: self.substrate.as_deref(),
         }
         .answer_with_http(&http, request)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::effects::executor::SubstrateFailure;
+    use crate::entity_source::InMemoryEntityCache;
+    use crate::http_service::{HttpRequest, HttpResponse, TransportError};
+
+    struct Echo;
+    struct Offline;
+
+    impl Transport for Offline {
+        fn send(&self, _: &HttpRequest) -> Result<HttpResponse, TransportError> {
+            unreachable!("a substrate ask sends no request")
+        }
+    }
+
+    impl SubstrateHandler for Echo {
+        fn run(&self, op: &str, args: &[Value]) -> Result<Value, SubstrateFailure> {
+            Ok(Value::String(format!("{op}/{}", args.len())))
+        }
+    }
+
+    fn host() -> NativeHost {
+        NativeHost::new(
+            Arc::new(InMemoryEntityCache::new()),
+            Arc::new(Offline),
+            Arc::new(crate::credentials::Credentials::from_env(Default::default())),
+            Vec::new(),
+            OsGrants::default(),
+            Arc::new(OsHandles::default()),
+            Arc::new(|_: Option<&CallSite>, _: Value| {}),
+        )
+    }
+
+    fn ask(host: &NativeHost) -> IoAnswer {
+        host.answer(&IoRequest::Substrate { op: "program/read".to_string(), args: vec![Value::Null] })
+    }
+
+    #[test]
+    fn a_substrate_ask_reaches_the_handler_the_host_was_given() {
+        match ask(&host().with_substrate(Some(Arc::new(Echo)))) {
+            IoAnswer::Substrate(Ok(Value::String(answer))) => assert_eq!(answer, "program/read/1"),
+            other => panic!("expected the handler's answer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn control_a_host_without_a_handler_names_the_op_it_cannot_answer() {
+        match ask(&host()) {
+            IoAnswer::Substrate(Err(failure)) => assert_eq!(failure.message, "no substrate host configured for program/read"),
+            other => panic!("expected the refusal, got {other:?}"),
+        }
     }
 }

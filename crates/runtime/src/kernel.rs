@@ -2238,8 +2238,20 @@ impl RuntimeKernel {
                 if delegating_traits.contains(trait_name) {
                     // The seed's own arm needs the server: it replays from its
                     // pre-dispatch row and the server cascades the rest itself.
-                    let entity_by_trait = (!seed_row.is_null())
-                        .then(|| ValueMap::from([(trait_name.to_string(), seed_row.clone())]));
+                    // A never-written shared frame replays from the view the step read (its defaults), as the
+                    // stateful leg carries it, so the host's echo of those defaults is not taken for a write.
+                    let replayed_from = if seed_row.is_null() && self.reads_shared_frame(trait_name) {
+                        outcomes
+                            .iter()
+                            .find(|(t, r)| t == trait_name && r.executed)
+                            .and_then(|(_, r)| r.entry.as_ref())
+                            .map(|entry| entry.entity_before.clone())
+                            .unwrap_or(Value::Null)
+                    } else {
+                        seed_row.clone()
+                    };
+                    let entity_by_trait = (!replayed_from.is_null())
+                        .then(|| ValueMap::from([(trait_name.to_string(), replayed_from)]));
                     vec![EventRequest {
                         event: event.to_string(),
                         tick: tick.map(str::to_string),

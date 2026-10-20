@@ -422,3 +422,91 @@ fn control_a_kernel_built_stateful_leg_of_a_non_shared_trait_carries_no_rows() {
     let leg = serde_json::to_value(&wire.stateful_leg.expect("a stateful leg").leg).unwrap();
     assert!(leg.get("entityByTrait").is_none());
 }
+
+// A mount batch's stateful leg carries each seed's shared frame as it was before that seed ran (EXEC-DIST-2), so the
+// host's echo of a field a client-only seed wrote later in the batch is not a write (G-VERIFY-054).
+fn composer_schema() -> OrbitalSchema {
+    composer_schema_with(json!([]))
+}
+
+fn composer_schema_with(thread_init: serde_json::Value) -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "Chat",
+        "orbitals": [{
+            "name": "ChatOrbital",
+            "entity": { "name": "Message", "persistence": "persistent", "collection": "messages", "shared": true,
+                "fields": [{ "name": "id", "type": "string" }, { "name": "activeChannel", "type": "string", "default": "" }] },
+            "traits": [
+                { "name": "Thread", "linkedEntity": "Message", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": thread_init }] } },
+                { "name": "Composer", "linkedEntity": "Message", "local": true, "stateMachine": { "states": [{ "name": "ready", "isInitial": true }],
+                    "transitions": [{ "from": "ready", "to": "ready", "event": "INIT", "effects": [["set", "@entity.activeChannel", "general"]] }] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn host_answer(active_channel: &str) -> EventResponse {
+    answer(ValueMap::from([(
+        "Thread".to_string(),
+        row(json!({ "activeChannel": active_channel })),
+    )]))
+}
+
+fn mounted_composer() -> (
+    EmbeddedKernel,
+    Option<orbital_core_runtime::embed::FoldBase>,
+) {
+    mounted(composer_schema())
+}
+
+fn mounted(
+    schema: OrbitalSchema,
+) -> (
+    EmbeddedKernel,
+    Option<orbital_core_runtime::embed::FoldBase>,
+) {
+    let k = EmbeddedKernel::new(schema, "c1").unwrap();
+    let mount = k
+        .dispatch_mount(&[seed("Thread"), seed("Composer")], None, Value::Null)
+        .unwrap();
+    assert_eq!(frame(&k, "Composer")["activeChannel"], json!("general"));
+    let group = &mount.stateful_legs[0];
+    let carried = group.leg.entity_by_trait.clone();
+    assert_eq!(
+        carried
+            .as_ref()
+            .map(|rows| serde_json::to_value(&rows["Thread"]).unwrap()["activeChannel"].clone()),
+        Some(json!("")),
+        "the stateful mount leg carries the shared frame Thread ran from"
+    );
+    let base = k.fold_base(carried.as_ref(), &group.fold_seeded, None);
+    (k, base)
+}
+
+#[test]
+fn a_mounts_host_echo_of_the_shared_frame_keeps_a_client_only_seeds_write() {
+    let (k, base) = mounted_composer();
+    k.apply_server_response_since(&host_answer(""), &HashSet::new(), base.as_ref())
+        .unwrap();
+    assert_eq!(frame(&k, "Composer")["activeChannel"], json!("general"));
+}
+
+#[test]
+fn control_a_field_the_host_changed_on_the_shared_frame_folds() {
+    let (k, base) = mounted_composer();
+    k.apply_server_response_since(&host_answer("random"), &HashSet::new(), base.as_ref())
+        .unwrap();
+    assert_eq!(frame(&k, "Composer")["activeChannel"], json!("random"));
+}
+
+#[test]
+fn a_mount_seed_that_delegates_a_fetch_also_carries_its_shared_frame_to_a_stateful_host() {
+    let (k, base) = mounted(composer_schema_with(
+        json!([["fetch", "Message", { "emit": { "success": "LOADED" } }]]),
+    ));
+    k.apply_server_response_since(&host_answer(""), &HashSet::new(), base.as_ref())
+        .unwrap();
+    assert_eq!(frame(&k, "Composer")["activeChannel"], json!("general"));
+}

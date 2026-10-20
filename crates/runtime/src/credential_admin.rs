@@ -230,6 +230,56 @@ pub fn run(
     }
 }
 
+/// The services the `call-service` effects of `schema`'s transitions and ticks name, as `OirModule::invoked_services`
+/// reads them off the lowered program. An effect that does not lower names nothing here; `orb validate` reports it.
+pub fn schema_invoked_services(
+    schema: &orbital_core_base::schema::types::OrbitalSchema,
+) -> std::collections::BTreeSet<String> {
+    use orbital_core_base::schema::types::TraitReference;
+    let mut names = std::collections::BTreeSet::new();
+    let mut visit = |effect: &orbital_core_base::schema::sexpr::SExpression| {
+        if let Ok(lowered) = orbital_core_eval::lower::lower_sexpr(effect) {
+            orbital_core_base::ir::invoked_services_in(&lowered, &mut names);
+        }
+    };
+    for orbital in &schema.orbitals {
+        for reference in &orbital.traits {
+            let TraitReference::Inline(t) = reference else {
+                continue;
+            };
+            t.state_machine
+                .transitions
+                .iter()
+                .flat_map(|tr| tr.effects.iter().flatten())
+                .for_each(&mut visit);
+            t.ticks
+                .iter()
+                .flatten()
+                .flat_map(|tick| &tick.effects)
+                .for_each(&mut visit);
+        }
+    }
+    names
+}
+
+/// `<service>: <ENV_VAR> (<description>)` for every required credential of `services` that `present` does not hold.
+pub fn missing_required_credentials(
+    catalog: &Catalog,
+    services: &std::collections::BTreeSet<String>,
+    present: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    services
+        .iter()
+        .flat_map(|service| {
+            catalog
+                .declared_for(service)
+                .iter()
+                .filter(|c| c.required && !present(&c.env_var))
+                .map(move |c| format!("{service}: {} ({})", c.env_var, c.description))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,4 +491,58 @@ mod tests {
         assert_eq!(get(&run(&env_only, CredentialAdminOp::Test, &request, admin.as_ref(), &group).unwrap(), "ok"), &Value::Bool(true));
     }
 
+    #[test]
+    fn the_services_a_program_calls_come_from_its_transitions_and_ticks_and_only_their_required_credentials_are_owed(
+    ) {
+        let schema: orbital_core_base::schema::types::OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Billing",
+                "entity": { "name": "Invoice", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Pay",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [{ "key": "PAY", "name": "Pay" }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "PAY",
+                            "effects": [["do", ["call-service", "stripe", "charge", {}]]] }]
+                    },
+                    "ticks": [{ "name": "sync", "interval": "1m", "effects": [["call-service", "email", "send", {}]] }]
+                }, {
+                    "name": "Quiet",
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "events": [], "transitions": [] }
+                }]
+            }]
+        }))
+        .unwrap();
+        let called = schema_invoked_services(&schema);
+        assert_eq!(
+            called.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["email", "stripe"],
+            "nested and tick effects count"
+        );
+        let catalog = Catalog::from_registry(
+            r#"{ "services": {
+                "stripe": { "backend": "production", "credentials": [
+                    { "envVar": "STRIPE_SECRET_KEY", "required": true, "description": "API key" },
+                    { "envVar": "STRIPE_WEBHOOK_SECRET", "required": false, "description": "webhooks" }] },
+                "email": { "backend": "production", "credentials": [{ "envVar": "SMTP_URL", "required": true, "description": "mail" }] },
+                "slack": { "backend": "production", "credentials": [{ "envVar": "SLACK_TOKEN", "required": true, "description": "bot" }] } } }"#,
+        )
+        .unwrap();
+        let held = |name: &str| name == "SMTP_URL";
+        assert_eq!(
+            missing_required_credentials(&catalog, &called, &held),
+            ["stripe: STRIPE_SECRET_KEY (API key)"]
+        );
+        assert!(
+            missing_required_credentials(&catalog, &called, &|_| true).is_empty(),
+            "control: everything held owes nothing"
+        );
+        assert!(
+            missing_required_credentials(&catalog, &std::collections::BTreeSet::new(), &|_| false)
+                .is_empty(),
+            "control: a service the program never calls (slack) is not owed"
+        );
+    }
 }

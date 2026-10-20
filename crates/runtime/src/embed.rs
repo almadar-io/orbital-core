@@ -7,24 +7,27 @@ pub mod eval_wire;
 pub mod server;
 pub mod wire;
 
-pub use server::{os_completion_event_json, os_deferring_ops_json, os_glob_matches, tab_url_matches, EmbeddedServer, ServerProgress, ServerResolve};
+pub use server::{
+    os_completion_event_json, os_deferring_ops_json, os_glob_matches, tab_url_matches,
+    EmbeddedServer, ServerProgress, ServerResolve,
+};
 
-use orbital_core_base::value::ValueMap;
-use crate::effects::response::{MountSeed, TransitionHop};
-use crate::kernel::{already_delivered_from, ClientDispatch, RuntimeKernel, TraitSnapshot};
-use crate::tick_clock::{Calendar, TickClock};
-use orbital_core_base::dispatch_mode::DispatchMode;
-use crate::entity_source::InMemoryEntityCache;
 use crate::config::KernelConfig;
-use crate::server_leg::ServerLegCollector;
-use orbital_core_base::theme::ThemeMode;
-use crate::trait_owners::TraitOwners;
-use orbital_core_base::effect_types::{Effect, RuntimeEnvironment};
-use crate::entity_source::EntitySource;
 use crate::effects::response::{EventRequest, EventResponse};
-use orbital_core_base::schema::types::OrbitalSchema;
+use crate::effects::response::{MountSeed, TransitionHop};
+use crate::entity_source::EntitySource;
+use crate::entity_source::InMemoryEntityCache;
+use crate::kernel::{already_delivered_from, ClientDispatch, RuntimeKernel, TraitSnapshot};
 use crate::process_result::ProcessEventResult;
+use crate::server_leg::ServerLegCollector;
+use crate::tick_clock::{Calendar, TickClock};
+use crate::trait_owners::TraitOwners;
+use orbital_core_base::dispatch_mode::DispatchMode;
+use orbital_core_base::effect_types::{Effect, RuntimeEnvironment};
+use orbital_core_base::schema::types::OrbitalSchema;
+use orbital_core_base::theme::ThemeMode;
 use orbital_core_base::value::Value;
+use orbital_core_base::value::ValueMap;
 use parking_lot::Mutex;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -393,6 +396,25 @@ impl EmbeddedKernel {
                             entity_id.map(str::to_string),
                             &self.client_id,
                         );
+                        // A stateful host replays each seed from the shared frame it ran from (EXEC-DIST-2).
+                        if stateful {
+                            let shared = group
+                                .iter()
+                                .flat_map(|(_, wire)| {
+                                    wire.stateful_leg
+                                        .iter()
+                                        .map(|stateful| &stateful.leg)
+                                        .chain(wire.server_legs.iter().map(|routed| &routed.leg))
+                                })
+                                .flat_map(|leg| leg.entity_by_trait.iter().flatten())
+                                .filter(|(name, _)| self.kernel.reads_shared_frame(name));
+                            for (name, row) in shared {
+                                leg.entity_by_trait
+                                    .get_or_insert_with(ValueMap::new)
+                                    .entry(name.clone())
+                                    .or_insert_with(|| row.clone());
+                            }
+                        }
                         // Every seed has run by now: what the host must still hold is what is left.
                         leg.payload = Some(with_awaiting_init(
                             leg.payload.take().unwrap_or(Value::Null),
@@ -521,10 +543,13 @@ impl EmbeddedKernel {
             .map(|(trait_name, row)| (self.kernel.trait_frame_key(trait_name), row))
             .collect();
         let delta = |trait_name: &String, row: &Value| -> Value {
+            let own = base.get(trait_name.as_str());
             let (Some(Value::Object(carried)), Value::Object(fields)) = (
-                by_frame
-                    .get(&self.kernel.trait_frame_key(trait_name))
-                    .copied(),
+                own.or_else(|| {
+                    by_frame
+                        .get(&self.kernel.trait_frame_key(trait_name))
+                        .copied()
+                }),
                 row,
             ) else {
                 return row.clone();
@@ -673,10 +698,8 @@ impl EmbeddedKernel {
             for rerender in &tail {
                 for effect in &rerender.effects {
                     if let Effect::RenderUi { slot, .. } = effect {
-                        last_repaint.insert(
-                            (rerender.trait_name.clone(), slot.clone()),
-                            fired.len() - 1,
-                        );
+                        last_repaint
+                            .insert((rerender.trait_name.clone(), slot.clone()), fired.len() - 1);
                     }
                 }
             }

@@ -7,8 +7,8 @@
 //! `<spec>.orbitals.<Pascal>`. A local embed (`@trait.X`) is a different, string
 //! form and never a behavior value.
 
-use crate::value::ValueMap;
 use crate::value::Value;
+use crate::value::ValueMap;
 
 const TRAITS_SEGMENT: &str = ".traits.";
 const ORBITALS_SEGMENT: &str = ".orbitals.";
@@ -166,10 +166,7 @@ fn merge_object_key(out: &mut ValueMap, key: &str, new: &Value) {
     }
 }
 
-fn merge_trait_overrides(
-    base: &ValueMap,
-    over: &ValueMap,
-) -> Option<ValueMap> {
+fn merge_trait_overrides(base: &ValueMap, over: &ValueMap) -> Option<ValueMap> {
     if over
         .keys()
         .any(|k| !MERGE_KEYS.contains(&k.as_str()) && !REPLACE_KEYS.contains(&k.as_str()))
@@ -367,6 +364,164 @@ impl OrbitalValueRef {
     }
 }
 
+/// The alias an orbital value's import names its source behavior by (`Source.orbitals.<Orbital>`).
+pub const ORBITAL_VALUE_IMPORT_ALIAS: &str = "Source";
+
+fn json_is_call_site_declaration(entry: &serde_json::Value) -> bool {
+    entry.as_object().is_some_and(|o| {
+        o.get("type").is_some_and(serde_json::Value::is_string) && o.contains_key("default")
+    })
+}
+
+/// Call-site config values as declarations: a declaration stays, any other value becomes `{ type: "unknown", default }`.
+fn json_config_declarations(config: &serde_json::Value) -> serde_json::Value {
+    serde_json::Value::Object(
+        config
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, v)| {
+                let declared = if json_is_call_site_declaration(v) {
+                    v.clone()
+                } else {
+                    serde_json::json!({ "type": "unknown", "default": v })
+                };
+                (k.clone(), declared)
+            })
+            .collect(),
+    )
+}
+
+/// Structural guard for an orbital value held as JSON: a behavior specifier and a PascalCase orbital.
+pub fn is_json_orbital_value(value: &serde_json::Value) -> bool {
+    let (Some(behavior), Some(orbital)) = (
+        value.get("behavior").and_then(serde_json::Value::as_str),
+        value.get("orbital").and_then(serde_json::Value::as_str),
+    ) else {
+        return false;
+    };
+    value.is_object() && is_behavior_specifier(behavior) && is_pascal(orbital)
+}
+
+/// The import orbital an orbital value stands for (LOLO §8b): its source behavior used as `Source`, the value's
+/// overrides as the import body, its siblings as the orbital's own traits. Twin of `@almadar/core`
+/// `orbitalImportFromValue`.
+pub fn orbital_import_from_value(value: &serde_json::Value) -> Result<serde_json::Value, String> {
+    use serde_json::{json, Map, Value as J};
+    let o = value.as_object().ok_or("an orbital value is an object")?;
+    let behavior = o
+        .get("behavior")
+        .and_then(J::as_str)
+        .ok_or("an orbital value names its behavior")?;
+    let orbital = o
+        .get("orbital")
+        .and_then(J::as_str)
+        .ok_or("an orbital value names its orbital")?;
+    let reference_ref = format!("{ORBITAL_VALUE_IMPORT_ALIAS}.orbitals.{orbital}");
+    let uses: Vec<J> = o
+        .get("uses")
+        .and_then(J::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(clash) = uses
+        .iter()
+        .find(|u| u.get("as").and_then(J::as_str) == Some(ORBITAL_VALUE_IMPORT_ALIAS))
+    {
+        return Err(format!(
+            "orbital value {orbital}: an import aliased '{ORBITAL_VALUE_IMPORT_ALIAS}' (from {}) collides with the value's own source alias",
+            clash.get("from").and_then(J::as_str).unwrap_or("")
+        ));
+    }
+    let mut source_use = json!({ "from": behavior, "as": ORBITAL_VALUE_IMPORT_ALIAS });
+    if let Some(app) = o.get("app") {
+        source_use["config"] = json_config_declarations(app);
+    }
+    let mut all_uses = vec![source_use];
+    all_uses.extend(uses);
+    let traits: Vec<J> = o
+        .get("siblings")
+        .and_then(J::as_array)
+        .into_iter()
+        .flatten()
+        .map(|sibling| {
+            let mut t = json!({ "name": sibling.get("name").cloned().unwrap_or(J::Null), "ref": sibling.get("ref").cloned().unwrap_or(J::Null) });
+            if let Some(linked) = sibling.get("linkedEntity") {
+                t["linkedEntity"] = linked.clone();
+            }
+            if let Some(config) = sibling.get("config") {
+                t["config"] = json_config_declarations(config);
+            }
+            t
+        })
+        .collect();
+    let mut reference = Map::new();
+    reference.insert("ref".to_string(), J::String(reference_ref.clone()));
+    for (k, v) in o {
+        if !matches!(
+            k.as_str(),
+            "behavior" | "orbital" | "name" | "app" | "config" | "traits" | "uses" | "siblings"
+        ) {
+            reference.insert(k.clone(), v.clone());
+        }
+    }
+    if let Some(config) = o.get("config") {
+        reference.insert("config".to_string(), json_config_declarations(config));
+    }
+    if let Some(trait_overrides) = o.get("traits").and_then(J::as_object) {
+        let overrides: Map<String, J> = trait_overrides
+            .iter()
+            .map(|(name, over)| {
+                let mut next: Map<String, J> = over
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter(|(k, _)| *k != "config")
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                if let Some(config) = over.get("config") {
+                    next.insert("config".to_string(), json_config_declarations(config));
+                }
+                (name.clone(), J::Object(next))
+            })
+            .collect();
+        reference.insert("traits".to_string(), J::Object(overrides));
+    }
+    Ok(json!({
+        "name": o.get("name").and_then(J::as_str).unwrap_or(orbital),
+        "uses": all_uses,
+        "entity": format!("{reference_ref}.entity"),
+        "traits": traits,
+        "pages": [],
+        "reference": J::Object(reference),
+    }))
+}
+
+/// A program held as data with every orbital value at `orbitals[i]` replaced by the import orbital it stands for.
+/// Twin of `@almadar/core` `parseProgram`'s value step.
+pub fn program_with_orbital_imports(
+    program: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(orbitals) = program
+        .get("orbitals")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(program.clone());
+    };
+    let converted = orbitals
+        .iter()
+        .map(|entry| {
+            if is_json_orbital_value(entry) {
+                orbital_import_from_value(entry)
+            } else {
+                Ok(entry.clone())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut out = program.clone();
+    out["orbitals"] = serde_json::Value::Array(converted);
+    Ok(out)
+}
+
 /// Parse an orbital-value literal straight to its wire object.
 pub fn parse_orbital_value_literal(raw: &str) -> Option<Value> {
     OrbitalValueRef::parse(raw).map(|r| r.to_value())
@@ -434,4 +589,58 @@ pub fn apply_behavior_ref_overrides(value: &Value, overrides: &Value) -> Option<
 /// Parse either literal form.
 pub fn parse_behavior_value_literal(raw: &str) -> Option<Value> {
     parse_trait_value_literal(raw).or_else(|| parse_orbital_value_literal(raw))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_orbital_value_in_a_program_is_the_import_orbital_it_stands_for() {
+        let program = serde_json::json!({ "name": "App", "orbitals": [
+            { "behavior": "almadar-behaviors/std-crm", "orbital": "ContactOrbital", "name": "Contacts",
+              "config": { "pageSize": 20 }, "app": { "appName": "Crm" },
+              "traits": { "ContactList": { "config": { "dense": { "type": "boolean", "default": true } }, "events": { "OPEN": "VIEW" } } },
+              "siblings": [{ "name": "Extra", "ref": "Ui.traits.Card", "linkedEntity": "Contact" }],
+              "entities": { "Person": "Customer" } },
+            { "name": "Plain", "entity": { "name": "Thing", "fields": [] }, "traits": [], "pages": [] }
+        ] });
+        let out = program_with_orbital_imports(&program).unwrap();
+        assert_eq!(
+            out["orbitals"][0],
+            serde_json::json!({
+                "name": "Contacts",
+                "uses": [{ "from": "almadar-behaviors/std-crm", "as": "Source", "config": { "appName": { "type": "unknown", "default": "Crm" } } }],
+                "entity": "Source.orbitals.ContactOrbital.entity",
+                "traits": [{ "name": "Extra", "ref": "Ui.traits.Card", "linkedEntity": "Contact" }],
+                "pages": [],
+                "reference": {
+                    "ref": "Source.orbitals.ContactOrbital",
+                    "entities": { "Person": "Customer" },
+                    "config": { "pageSize": { "type": "unknown", "default": 20 } },
+                    "traits": { "ContactList": { "events": { "OPEN": "VIEW" }, "config": { "dense": { "type": "boolean", "default": true } } } }
+                }
+            })
+        );
+        assert_eq!(
+            out["orbitals"][1], program["orbitals"][1],
+            "control: an IR orbital is untouched"
+        );
+    }
+
+    #[test]
+    fn edge_an_orbital_value_using_the_source_alias_itself_is_refused() {
+        let value = serde_json::json!({ "behavior": "std/behaviors/std-x", "orbital": "XOrbital", "uses": [{ "from": "std/behaviors/std-y", "as": "Source" }] });
+        let err = orbital_import_from_value(&value).unwrap_err();
+        assert!(
+            err.contains("collides with the value's own source alias"),
+            "{err}"
+        );
+        assert!(
+            !is_json_orbital_value(
+                &serde_json::json!({ "behavior": "not a spec", "orbital": "X" })
+            ),
+            "control: a non-specifier is no value"
+        );
+    }
 }

@@ -3,32 +3,41 @@
 //!
 //! The kernel is the executor under test; the planner's declared `to` is the oracle.
 
-use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
-use orbital_core_base::value::ValueMap;
-use crate::verify::frame::{Cause, EffectSummary, FiredHop, Frame, FrameStatus, GapReason, PropositionCheck};
-use crate::planner::Variant;
-use crate::verify::plan_wire::{self, Expectation, ObservedEffect, Observation};
-use crate::planner::{self, Step};
-use orbital_core_base::client_effect::ClientEffect;
-use orbital_core_base::effect_types::{Effect, EffectOutcome, EffectResult};
-use crate::entity_source::{EntitySource, InMemoryEntityCache};
 use crate::config::KernelConfig;
-use crate::kernel::RuntimeKernel;
 use crate::effects::response::EventResponse;
-use orbital_core_base::schema::types::{OrbitalSchema, TraitDefinition};
-use orbital_core_base::effect_types::RuntimeEnvironment;
-use orbital_core_base::value::Value;
-use std::collections::BTreeMap;
+use crate::entity_source::{EntitySource, InMemoryEntityCache};
 use crate::http_service::TransportError;
+use crate::kernel::RuntimeKernel;
+use crate::planner::Variant;
+use crate::planner::{self, Step};
 use crate::process_result::ProcessEventResult;
 use crate::resumable::{drive_blocking, BlockingHost, IoAnswer, IoRequest};
+use crate::verify::frame::{
+    Cause, EffectSummary, FiredHop, Frame, FrameStatus, GapReason, PropositionCheck,
+};
+use crate::verify::plan_wire::{self, Expectation, Observation, ObservedEffect};
+use orbital_core_base::client_effect::ClientEffect;
+use orbital_core_base::effect_types::RuntimeEnvironment;
+use orbital_core_base::effect_types::{Effect, EffectOutcome, EffectResult};
+use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
+use orbital_core_base::schema::types::{OrbitalSchema, TraitDefinition};
+use orbital_core_base::value::Value;
+use orbital_core_base::value::ValueMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) const ENTITY_ID: &str = "verify";
 
 /// What one fired event left behind: executed, new state, effects, deferred bindings and the arm the kernel
 /// selected among the `from --event-->` arms.
-type Fired = (bool, String, Vec<EffectSummary>, Vec<String>, Option<usize>, Vec<FiredHop>);
+type Fired = (
+    bool,
+    String,
+    Vec<EffectSummary>,
+    Vec<String>,
+    Option<usize>,
+    Vec<FiredHop>,
+);
 
 /// What every credential read is answered with during a walk, so a request that needs one is built and recorded.
 const PLACEHOLDER_SECRET: &str = "verify-placeholder-secret";
@@ -61,7 +70,9 @@ impl Harness {
             .iter()
             .flat_map(|o| o.traits.iter())
             .filter_map(|t| match t {
-                orbital_core_base::schema::types::TraitReference::Inline(td) => Some((td.name.clone(), td.clone())),
+                orbital_core_base::schema::types::TraitReference::Inline(td) => {
+                    Some((td.name.clone(), td.clone()))
+                }
                 _ => None,
             })
             .collect();
@@ -75,7 +86,12 @@ impl Harness {
             .register_schema(schema)
             .map_err(|e| format!("register_schema: {e}"))?;
         kernel.set_record_entity_after(true);
-        Ok(Self { kernel, entities, owner_fields, traits })
+        Ok(Self {
+            kernel,
+            entities,
+            owner_fields,
+            traits,
+        })
     }
 
     /// Rebind the viewer `@user` resolves to for every subsequent `drive()` call.
@@ -122,12 +138,22 @@ impl Harness {
     /// `{id}` skeleton. Built fresh per call so it always reflects whatever persona
     /// is bound right now (`set_persona` may have rebound it since the last call).
     pub fn entity_ctx<'a>(&'a self, schema: &'a OrbitalSchema) -> planner::EntityCtx<'a> {
-        planner::EntityCtx { schema, owner_fields: &self.owner_fields, viewer_id: self.viewer_id() }
+        planner::EntityCtx {
+            schema,
+            owner_fields: &self.owner_fields,
+            viewer_id: self.viewer_id(),
+        }
     }
 
     /// Drive one step with a hermetic preamble (clear entities + reset state + replay to
     /// `step.from`) and capture a frame.
-    pub fn drive(&self, td: &TraitDefinition, step: &Step, index: usize, ctx: &planner::EntityCtx<'_>) -> Frame {
+    pub fn drive(
+        &self,
+        td: &TraitDefinition,
+        step: &Step,
+        index: usize,
+        ctx: &planner::EntityCtx<'_>,
+    ) -> Frame {
         let mut errors = Vec::new();
 
         // Hermetic preamble.
@@ -140,7 +166,9 @@ impl Harness {
         // seeding it first would make the create a guaranteed duplicate.
         let creates_own_row = |entity: &str| {
             planner::is_self_identity(entity, &self.owner_fields)
-                && planner::created_only_entities(td, &step.event).iter().any(|e| e == entity)
+                && planner::created_only_entities(td, &step.event)
+                    .iter()
+                    .any(|e| e == entity)
         };
         if let Some(entity) = step.linked_entity.as_ref().filter(|e| !creates_own_row(e)) {
             let seed_id = self.effective_seed_id(entity);
@@ -167,7 +195,8 @@ impl Harness {
             .linked_entity
             .as_deref()
             .map_or_else(|| ENTITY_ID.to_string(), |e| self.effective_seed_id(e));
-        self.kernel.reset_state(&step.trait_name, Some(&instance_id));
+        self.kernel
+            .reset_state(&step.trait_name, Some(&instance_id));
         // `AutoInit` only means "already in `from` after reset — no PATH to walk". It does
         // NOT mean no preamble: the real runtime still fires INIT on mount, and a later
         // step legitimately reads what INIT established (e.g. `(set @entity.projectId ?id)`
@@ -197,20 +226,33 @@ impl Harness {
                 Ok(tuple) => tuple,
                 Err(e) => {
                     errors.push(format!("process_event: {e}"));
-                    ((false, state_before.clone(), Vec::new(), Vec::new(), None, Vec::new()), Vec::new())
+                    (
+                        (
+                            false,
+                            state_before.clone(),
+                            Vec::new(),
+                            Vec::new(),
+                            None,
+                            Vec::new(),
+                        ),
+                        Vec::new(),
+                    )
                 }
             };
 
         let entity_counts = self.entity_counts(step.linked_entity.as_deref());
 
-        let status = plan_wire::judge(
-            &Expectation::from_step(step),
-            &Observation {
-                state_before: state_before.clone(),
-                state_after: state_after.clone(),
-                fired_arm,
-                effects: effects.iter().map(ObservedEffect::from_summary).collect(),
-            },
+        let status = plan_wire::unless_produced_by_effect(
+            plan_wire::judge(
+                &Expectation::from_step(step),
+                &Observation {
+                    state_before: state_before.clone(),
+                    state_after: state_after.clone(),
+                    fired_arm,
+                    effects: effects.iter().map(ObservedEffect::from_summary).collect(),
+                },
+            ),
+            planner::effect_emitted_events(td).contains(&step.event),
         )
         .status;
 
@@ -239,7 +281,15 @@ impl Harness {
     }
 
     /// A step that is never driven: the typed `gap` says why.
-    pub fn not_driven(&self, step: &Step, index: usize, ctx_payload: serde_json::Value, status: FrameStatus, gap: Option<GapReason>, state: &str) -> Frame {
+    pub fn not_driven(
+        &self,
+        step: &Step,
+        index: usize,
+        ctx_payload: serde_json::Value,
+        status: FrameStatus,
+        gap: Option<GapReason>,
+        state: &str,
+    ) -> Frame {
         Frame {
             index,
             cause: Cause {
@@ -294,19 +344,27 @@ impl Harness {
             .kernel
             .start_dispatch(trait_name, Some(instance_id), event, value, None, None)
             .map_err(|e| e.to_string())?;
-        let store = BlockingHost { source: &*self.entities, service: None, substrate: None };
+        let store = BlockingHost {
+            source: &*self.entities,
+            service: None,
+            substrate: None,
+        };
         let outcomes = drive_blocking(&self.kernel, progress, &|request| match request {
             IoRequest::Http { .. } | IoRequest::HttpStream { .. } => {
                 IoAnswer::Http(Err(TransportError::Failed(NO_NETWORK.to_string())))
             }
-            IoRequest::Os { op: OsOp::TcpConnect, .. } => {
-                IoAnswer::Os(Err(OsError::new(OsErrorKind::Io, NO_NETWORK)))
-            }
+            IoRequest::Os {
+                op: OsOp::TcpConnect,
+                ..
+            } => IoAnswer::Os(Err(OsError::new(OsErrorKind::Io, NO_NETWORK))),
             IoRequest::Secret { .. } => IoAnswer::Secret(Ok(Some(PLACEHOLDER_SECRET.to_string()))),
             other => store.answer(other),
         })
         .map_err(|e| e.to_string())?;
-        let propositions = outcomes.iter().filter_map(|(t, hop)| self.judge_ensures(t, hop)).collect();
+        let propositions = outcomes
+            .iter()
+            .filter_map(|(t, hop)| self.judge_ensures(t, hop))
+            .collect();
         let mut outcomes = outcomes.into_iter();
         let (_, result) = outcomes
             .next()
@@ -326,7 +384,11 @@ impl Harness {
     }
 
     /// The `@ensures` of the arm a fired step took, judged on the rows it read before and after its effects.
-    fn judge_ensures(&self, trait_name: &str, hop: &ProcessEventResult) -> Option<PropositionCheck> {
+    fn judge_ensures(
+        &self,
+        trait_name: &str,
+        hop: &ProcessEventResult,
+    ) -> Option<PropositionCheck> {
         let event = hop.event.as_deref()?;
         let td = self.traits.get(trait_name)?;
         let arm = td
@@ -338,12 +400,19 @@ impl Harness {
         let ensures = arm.ensures.as_deref().filter(|e| !e.is_empty())?;
         let entry = hop.entry.as_ref();
         let failed = hop.failure.is_some()
-            || hop.effect_results.iter().any(|r| matches!(r.outcome, EffectOutcome::Failed));
+            || hop
+                .effect_results
+                .iter()
+                .any(|r| matches!(r.outcome, EffectOutcome::Failed));
         let observation = plan_wire::PropositionObservation {
             executed: hop.executed,
             failed,
-            entity_before: entry.map(|e| e.entity_before.clone()).unwrap_or(Value::Null),
-            entity_after: entry.and_then(|e| e.entity_after.clone()).unwrap_or(Value::Null),
+            entity_before: entry
+                .map(|e| e.entity_before.clone())
+                .unwrap_or(Value::Null),
+            entity_after: entry
+                .and_then(|e| e.entity_after.clone())
+                .unwrap_or(Value::Null),
             payload: hop.payload.clone(),
             unobserved: None,
         };
@@ -356,10 +425,7 @@ impl Harness {
         })
     }
 
-    fn observe(
-        trait_name: &str,
-        result: &ProcessEventResult,
-    ) -> Fired {
+    fn observe(trait_name: &str, result: &ProcessEventResult) -> Fired {
         // Server-effect outcomes (persist/fetch failures) come from the kernel results.
         let effects = result.effect_results.iter().map(summarize_effect).collect();
         // Render-ui binding deferral is measured on the CANONICAL client response, whose
@@ -370,7 +436,14 @@ impl Harness {
         for effect in response.client_effects.iter().flatten() {
             collect_deferred(effect, &mut deferred);
         }
-        (result.executed, result.new_state.clone(), effects, deferred, result.fired_arm, Vec::new())
+        (
+            result.executed,
+            result.new_state.clone(),
+            effects,
+            deferred,
+            result.fired_arm,
+            Vec::new(),
+        )
     }
 
     fn current_state(&self, trait_name: &str, instance_id: &str) -> String {
@@ -443,7 +516,11 @@ fn describe_effect(effect: &Effect) -> (String, String) {
 /// Collect render-ui `@…` binding literals the kernel passed through — the Layer-2
 /// resolution obligation (recorded, not failed).
 fn collect_deferred(effect: &ClientEffect, out: &mut Vec<String>) {
-    if let ClientEffect::RenderUi { config: Some(config), .. } = effect {
+    if let ClientEffect::RenderUi {
+        config: Some(config),
+        ..
+    } = effect
+    {
         collect_literals(config, out);
     }
 }
@@ -458,6 +535,8 @@ fn collect_literals(value: &Value, out: &mut Vec<String>) {
 }
 
 fn is_binding_literal(s: &str) -> bool {
-    const ROOTS: &[&str] = &["@trait", "@entity", "@payload", "@config", "@state", "@user"];
+    const ROOTS: &[&str] = &[
+        "@trait", "@entity", "@payload", "@config", "@state", "@user",
+    ];
     ROOTS.iter().any(|r| s.starts_with(r))
 }

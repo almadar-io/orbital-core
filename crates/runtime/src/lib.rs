@@ -23,6 +23,7 @@ pub mod entity_source;
 pub mod firestore;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store_config;
+pub mod stream_ticket;
 pub mod http_request;
 #[cfg(feature = "wire-drivers")]
 pub mod postgres;

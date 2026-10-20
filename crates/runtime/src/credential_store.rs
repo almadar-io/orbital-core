@@ -171,6 +171,39 @@ impl CredentialRows for FileCredentialRows {
     }
 }
 
+/// Rows kept in the app's own store, as the entity [`CREDENTIAL_ENTITY_TYPE`] (`FirestoreCredentialPersistence` in
+/// `@almadar/db` keeps them in the app's Firestore the same way).
+pub struct StoreCredentialRows(pub Arc<dyn crate::effects::executor::PersistenceHandler>);
+
+impl StoreCredentialRows {
+    fn json(value: orbital_core_base::value::Value) -> Result<Value, String> {
+        serde_json::to_value(value).map_err(|e| e.to_string())
+    }
+
+    fn value(json: &Value) -> Result<orbital_core_base::value::Value, String> {
+        serde_json::from_value(json.clone()).map_err(|e| e.to_string())
+    }
+}
+
+impl CredentialRows for StoreCredentialRows {
+    fn list(&self) -> Result<Vec<Value>, String> {
+        self.0.list(CREDENTIAL_ENTITY_TYPE)?.into_iter().map(Self::json).collect()
+    }
+    fn create(&self, data: &Value) -> Result<String, String> {
+        let row = Self::json(self.0.create(CREDENTIAL_ENTITY_TYPE, &Self::value(data)?)?)?;
+        row["id"].as_str().map(str::to_string).ok_or_else(|| "the store created a credential row without an id".to_string())
+    }
+    fn update(&self, id: &str, data: &Value) -> Result<(), String> {
+        if self.0.find(CREDENTIAL_ENTITY_TYPE, id)?.is_none() {
+            return Ok(());
+        }
+        self.0.update(CREDENTIAL_ENTITY_TYPE, id, &Self::value(data)?).map(|_| ())
+    }
+    fn delete(&self, id: &str) -> Result<(), String> {
+        self.0.delete(CREDENTIAL_ENTITY_TYPE, id)
+    }
+}
+
 fn chrono_free_now_ms() -> i64 {
     orbital_core_base::time_util::now_millis()
 }
@@ -975,5 +1008,30 @@ mod tests {
         let listing = store.listing().expect("listing");
         assert!(!listing.enabled && listing.entries.is_empty());
         assert!(js_store(&fx).enabled());
+    }
+
+    #[test]
+    fn rows_kept_in_the_apps_store_survive_a_new_store_and_resolve_the_same_value() {
+        let fx = fixture();
+        let persistence = Arc::new(crate::effects::executor::InMemoryPersistence::new());
+        let rows = || Arc::new(StoreCredentialRows(persistence.clone())) as Arc<dyn CredentialRows>;
+        let store = EncryptedCredentialStore::new(rows(), fx["masterKey"].as_str(), None);
+        store.set("stripe", "STRIPE_KEY", "sk_live_1234", None).expect("set");
+        let reopened = EncryptedCredentialStore::new(rows(), fx["masterKey"].as_str(), None);
+        reopened.warm().expect("warm");
+        assert_eq!(reopened.resolve("STRIPE_KEY", None).as_deref(), Some("sk_live_1234"));
+        let kept = crate::effects::executor::PersistenceHandler::list(persistence.as_ref(), CREDENTIAL_ENTITY_TYPE).unwrap();
+        let row = serde_json::to_value(&kept[0]).unwrap();
+        assert!(row["ciphertext"].is_string() && row.get("value").is_none(), "the store keeps ciphertext, never the value: {row}");
+        assert!(reopened.remove("STRIPE_KEY", None).expect("remove"));
+        assert!(crate::effects::executor::PersistenceHandler::list(persistence.as_ref(), CREDENTIAL_ENTITY_TYPE).unwrap().is_empty());
+    }
+
+    #[test]
+    fn control_an_update_of_a_missing_row_leaves_it_missing() {
+        let persistence = Arc::new(crate::effects::executor::InMemoryPersistence::new());
+        let rows = StoreCredentialRows(persistence.clone());
+        rows.update("absent", &json!({ "envVar": "X" })).expect("a missing row is not an error");
+        assert!(rows.list().unwrap().is_empty());
     }
 }

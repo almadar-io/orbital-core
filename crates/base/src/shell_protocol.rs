@@ -396,6 +396,24 @@ pub fn invoke_emit(binary: &Path, request: &GenerateRequest) -> Result<crate::ge
     }
 }
 
+/// Copy the native kernel add-on `file` that ships beside the running shell program into `<output>/kernel/`, where a
+/// kernel-hosted project loads it. Its absence is the project's note (the app then needs it in `kernel/` or
+/// `ORBITAL_KERNEL_DIR`), not a failure.
+pub fn ship_kernel_beside_program(file: &str, output: &std::path::Path) -> Result<Option<String>, ShellFailure> {
+    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(file)));
+    let Some(source) = beside.filter(|path| path.exists()) else {
+        return Ok(Some(format!(
+            "{file} is not beside this shell program; put it in kernel/ or set ORBITAL_KERNEL_DIR before running the app"
+        )));
+    };
+    let target = output.join("kernel");
+    std::fs::create_dir_all(&target)
+        .map_err(|e| ShellFailure::new(CODE_GENERATE_FAILED, format!("create {}: {e}", target.display())))?;
+    std::fs::copy(&source, target.join(file))
+        .map_err(|e| ShellFailure::new(CODE_GENERATE_FAILED, format!("copy {}: {e}", source.display())))?;
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

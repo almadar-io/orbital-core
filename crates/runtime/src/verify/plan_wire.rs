@@ -3,7 +3,9 @@
 //! asks the kernel for the plan and judges each observed step here, so the planner and the verdict
 //! exist once. The native walk (`verify::driver`) judges through the same [`judge`].
 
-use crate::planner::{self, ArmConflict, Precondition, GuardCase, PayloadCase, ReplyRoute, Step, Variant};
+use crate::planner::{
+    self, ArmConflict, GuardCase, PayloadCase, Precondition, ReplyRoute, Step, Variant,
+};
 use crate::verify::frame::{EffectSummary, FiredHop, FrameStatus, GapReason};
 use orbital_core_base::schema::types::OrbitalSchema;
 use serde::{Deserialize, Serialize};
@@ -195,8 +197,37 @@ pub enum VerdictReason {
         actual: String,
     },
     EffectFailed,
+    /// A data mutation landed: its persist succeeded, its declared success event was emitted, or the row count moved
+    /// as planned.
+    MutationLanded,
+    /// The mutation's persist reported `denied` or `failed`.
+    MutationRefused {
+        outcome: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// The mutation declares a success event and the dispatch's cascade did not emit it.
+    SuccessNotEmitted {
+        expected: String,
+        emitted: Vec<String>,
+    },
+    /// No success event to read, and the row count did not move by the planned delta (`actual` is absent when the
+    /// host recorded no change).
+    RowDeltaMismatch {
+        expected: i32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actual: Option<i32>,
+    },
     /// The step failed, but the kernel could not show its guard precondition holds.
-    PreconditionUnproven { reason: planner::UnprovenReason },
+    PreconditionUnproven {
+        reason: planner::UnprovenReason,
+    },
+    /// The step failed on a hand dispatch of an event the trait's own effect produces: the planner's payload stands in
+    /// for the effect's, so the failure proves nothing and the event's proof is the cascade that delivers it.
+    /// `failed` names the reason the step failed (its `kind`).
+    ProducedByEffect {
+        failed: String,
+    },
 }
 
 #[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
@@ -269,7 +300,9 @@ pub enum PlanOutcome {
         tick_steps: Vec<crate::verify::flows::TickStep>,
         data_mutations: Vec<crate::verify::flows::DataMutation>,
     },
-    Refused { failure: PlanFailure },
+    Refused {
+        failure: PlanFailure,
+    },
 }
 
 impl Expectation {
@@ -308,6 +341,28 @@ impl StepWire {
             guard_steerable: self.guard_steerable,
             accept_states: self.accept_states.clone(),
             precondition_gap: self.precondition.as_ref().and_then(Precondition::gap),
+        }
+    }
+}
+
+impl InitCredit {
+    /// The mount as a judged step: the trait boots in `state` (a host observes the state after mount, it dispatches
+    /// nothing).
+    pub fn expectation(&self) -> Expectation {
+        Expectation {
+            trait_name: self.trait_name.clone(),
+            from: self.state.clone(),
+            event: "INIT".to_string(),
+            to_states: vec![self.state.clone()],
+            guarded: false,
+            arm: None,
+            solved: true,
+            reply: None,
+            payload_case: planner::PayloadCase::Success,
+            guard_case: None,
+            guard_steerable: None,
+            accept_states: Vec::new(),
+            precondition_gap: None,
         }
     }
 }
@@ -359,7 +414,9 @@ pub enum PropositionVerdict {
         proposition: orbital_core_base::schema::SExpression,
     },
     /// Never a pass: the transition did not complete, or a proposition could not be evaluated.
-    Inconclusive { reason: String },
+    Inconclusive {
+        reason: String,
+    },
 }
 
 /// Judge a transition's `@ensures` on one run, through the evaluator the guards use: `@entity` is the row after the
@@ -370,13 +427,19 @@ pub fn judge_propositions(
 ) -> PropositionVerdict {
     use orbital_core_eval::evaluator::{context::BindingContextBuilder, Evaluator};
     if !observation.executed {
-        return PropositionVerdict::Inconclusive { reason: "the transition did not fire".to_string() };
+        return PropositionVerdict::Inconclusive {
+            reason: "the transition did not fire".to_string(),
+        };
     }
     if observation.failed {
-        return PropositionVerdict::Inconclusive { reason: "an effect failed, so the transition did not complete".to_string() };
+        return PropositionVerdict::Inconclusive {
+            reason: "an effect failed, so the transition did not complete".to_string(),
+        };
     }
     if let Some(reason) = &observation.unobserved {
-        return PropositionVerdict::Inconclusive { reason: format!("the row after the transition was not observed: {reason}") };
+        return PropositionVerdict::Inconclusive {
+            reason: format!("the row after the transition was not observed: {reason}"),
+        };
     }
     let ctx = BindingContextBuilder::new()
         .entity(observation.entity_after.clone())
@@ -388,14 +451,25 @@ pub fn judge_propositions(
         let shown = orbital_core_base::schema::format_sexpr(p);
         match evaluator.evaluate(p, &ctx) {
             Ok(orbital_core_base::value::Value::Bool(true)) => {}
-            Ok(orbital_core_base::value::Value::Bool(false)) => return PropositionVerdict::Broken { proposition: p.clone() },
+            Ok(orbital_core_base::value::Value::Bool(false)) => {
+                return PropositionVerdict::Broken {
+                    proposition: p.clone(),
+                }
+            }
             // A proposition is a comparison: any other value (an unknown head reads as a list) proves nothing.
             Ok(other) => {
                 return PropositionVerdict::Inconclusive {
-                    reason: format!("`{shown}` evaluated to {}, not a boolean", serde_json::to_string(&other).unwrap_or_default()),
+                    reason: format!(
+                        "`{shown}` evaluated to {}, not a boolean",
+                        serde_json::to_string(&other).unwrap_or_default()
+                    ),
                 }
             }
-            Err(e) => return PropositionVerdict::Inconclusive { reason: format!("`{shown}` could not be evaluated: {e}") },
+            Err(e) => {
+                return PropositionVerdict::Inconclusive {
+                    reason: format!("`{shown}` could not be evaluated: {e}"),
+                }
+            }
         }
     }
     PropositionVerdict::Held
@@ -406,7 +480,8 @@ pub fn judge_propositions(
 pub fn verify_proposition(ensures_json: &str, observation_json: &str) -> Result<String, String> {
     let ensures: Vec<orbital_core_base::schema::SExpression> =
         serde_json::from_str(ensures_json).map_err(|e| format!("ensures: {e}"))?;
-    let observation: PropositionObservation = serde_json::from_str(observation_json).map_err(|e| format!("observation: {e}"))?;
+    let observation: PropositionObservation =
+        serde_json::from_str(observation_json).map_err(|e| format!("observation: {e}"))?;
     serde_json::to_string(&judge_propositions(&ensures, &observation)).map_err(|e| e.to_string())
 }
 
@@ -414,14 +489,20 @@ pub fn verify_proposition(ensures_json: &str, observation_json: &str) -> Result<
 /// did not fire, is inconclusive (a coverage gap, not a transition failure); a reply route is never driven.
 pub fn judge(expectation: &Expectation, observation: &Observation) -> VerdictWire {
     let verdict = judge_observed(expectation, observation);
-    match (verdict.status, expectation.precondition_gap, &verdict.reason) {
-        (FrameStatus::Fail, Some(reason), VerdictReason::WrongState { .. } | VerdictReason::ArmNotFired { .. }) => {
-            VerdictWire {
-                status: FrameStatus::Inconclusive,
-                gap: None,
-                reason: VerdictReason::PreconditionUnproven { reason },
-            }
-        }
+    match (
+        verdict.status,
+        expectation.precondition_gap,
+        &verdict.reason,
+    ) {
+        (
+            FrameStatus::Fail,
+            Some(reason),
+            VerdictReason::WrongState { .. } | VerdictReason::ArmNotFired { .. },
+        ) => VerdictWire {
+            status: FrameStatus::Inconclusive,
+            gap: None,
+            reason: VerdictReason::PreconditionUnproven { reason },
+        },
         _ => verdict,
     }
 }
@@ -563,7 +644,11 @@ pub fn credit_failure_routes(steps: &[CreditStep]) -> Vec<Credit> {
                     && hop.event == step.event
                     && step.arm.is_none_or(|arm| hop.arm == Some(arm))
             })?;
-            Some(Credit { index, state_before: hop.from.clone(), state_after: hop.to.clone() })
+            Some(Credit {
+                index,
+                state_before: hop.from.clone(),
+                state_after: hop.to.clone(),
+            })
         })
         .collect()
 }
@@ -581,7 +666,10 @@ fn traits_in_scope<'a>(
 
 /// The config sweep of every trait in scope: the baseline defaults, then each knob varied alone over the values
 /// it declares (both booleans, an enum's members). Number and free-string knobs declare none and are reported.
-pub fn plan_config_variants(schema: &OrbitalSchema, options: &PlanOptions) -> Vec<TraitConfigVariants> {
+pub fn plan_config_variants(
+    schema: &OrbitalSchema,
+    options: &PlanOptions,
+) -> Vec<TraitConfigVariants> {
     let mut out = Vec::new();
     for td in traits_in_scope(schema, options) {
         let Some(config) = td.config.as_ref().filter(|c| !c.is_empty()) else {
@@ -591,7 +679,11 @@ pub fn plan_config_variants(schema: &OrbitalSchema, options: &PlanOptions) -> Ve
         names.sort();
         let mut baseline = serde_json::Map::new();
         for name in &names {
-            if let Some(default) = config[*name].default.as_ref().and_then(planner::literal_json) {
+            if let Some(default) = config[*name]
+                .default
+                .as_ref()
+                .and_then(planner::literal_json)
+            {
                 baseline.insert((*name).clone(), default);
             }
         }
@@ -599,14 +691,17 @@ pub fn plan_config_variants(schema: &OrbitalSchema, options: &PlanOptions) -> Ve
         let mut no_declared_values = Vec::new();
         for name in names {
             let field = &config[name];
-            let declared: Vec<serde_json::Value> = match (field.field_type.as_str(), field.values.as_deref()) {
-                ("boolean", _) => vec![true.into(), false.into()],
-                ("string", Some(values)) if !values.is_empty() => values.iter().map(|v| v.clone().into()).collect(),
-                _ => {
-                    no_declared_values.push(name.clone());
-                    continue;
-                }
-            };
+            let declared: Vec<serde_json::Value> =
+                match (field.field_type.as_str(), field.values.as_deref()) {
+                    ("boolean", _) => vec![true.into(), false.into()],
+                    ("string", Some(values)) if !values.is_empty() => {
+                        values.iter().map(|v| v.clone().into()).collect()
+                    }
+                    _ => {
+                        no_declared_values.push(name.clone());
+                        continue;
+                    }
+                };
             for value in declared {
                 if baseline.get(name) == Some(&value) {
                     continue;
@@ -659,10 +754,20 @@ pub(crate) fn preamble_to(
     if boots {
         return Some(Vec::new());
     }
-    let seed_id = td.linked_entity.as_deref().map(|e| planner::effective_seed_id(e, ctx.owner_fields, ctx.viewer_id.as_deref()));
+    let seed_id = td
+        .linked_entity
+        .as_deref()
+        .map(|e| planner::effective_seed_id(e, ctx.owner_fields, ctx.viewer_id.as_deref()));
     planner::replay_steps(td, from, ctx, seed_id.as_deref()).map(|path| {
         path.into_iter()
-            .map(|h| PreambleEvent { event: h.event, payload: h.payload, from: h.from, to: h.to, accept_states: h.accept_states, navigates: h.navigates })
+            .map(|h| PreambleEvent {
+                event: h.event,
+                payload: h.payload,
+                from: h.from,
+                to: h.to,
+                accept_states: h.accept_states,
+                navigates: h.navigates,
+            })
             .collect()
     })
 }
@@ -688,7 +793,9 @@ pub(crate) fn drive_setup(
     let owner_fields = ctx.owner_fields;
     let creates_own_row = |entity: &str| {
         planner::is_self_identity(entity, owner_fields)
-            && planner::created_only_entities(td, event).iter().any(|e| e == entity)
+            && planner::created_only_entities(td, event)
+                .iter()
+                .any(|e| e == entity)
     };
     DriveSetup {
         seed_row_id: linked_entity
@@ -700,10 +807,109 @@ pub(crate) fn drive_setup(
         ),
         role: planner::persist_targets(td, from, event)
             .into_iter()
-            .find_map(|(entity, kind)| crate::entity_access::role_satisfying_policy(schema, &entity, kind))
+            .find_map(|(entity, kind)| {
+                crate::entity_access::role_satisfying_policy(schema, &entity, kind)
+            })
             .map(|(field, value)| RoleWire { field, value }),
         preamble: preamble_to(td, ctx, from, boots),
     }
+}
+
+/// [`judge`] for a step of `schema`'s plan: a failure on an event the trait's own effect produces is inconclusive
+/// (the twin of `assertWalkStepsFired`'s effect-emitted skip).
+pub fn judge_step(
+    schema: &OrbitalSchema,
+    step: &StepWire,
+    observation: &Observation,
+) -> VerdictWire {
+    unless_produced_by_effect(
+        judge(&step.expectation(), observation),
+        produced_by_effect(schema, &step.trait_name, &step.event),
+    )
+}
+
+/// Whether `trait_name`'s own effects produce `event` (a success or failure route): a hand dispatch of it carries the
+/// planner's stand-in payload, so what it does proves nothing about the program.
+pub fn produced_by_effect(schema: &OrbitalSchema, trait_name: &str, event: &str) -> bool {
+    planner::inline_traits(schema)
+        .into_iter()
+        .find(|td| td.name == trait_name)
+        .is_some_and(|td| planner::effect_emitted_events(td).contains(event))
+}
+
+/// A failing verdict on an event the trait's own effect produces, made inconclusive ([`VerdictReason::ProducedByEffect`]).
+pub fn unless_produced_by_effect(verdict: VerdictWire, produced: bool) -> VerdictWire {
+    if verdict.status != FrameStatus::Fail || !produced {
+        return verdict;
+    }
+    let failed = serde_json::to_value(&verdict.reason)
+        .ok()
+        .and_then(|reason| reason["kind"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    VerdictWire {
+        status: FrameStatus::Inconclusive,
+        gap: verdict.gap,
+        reason: VerdictReason::ProducedByEffect { failed },
+    }
+}
+
+/// The twin of `guard-precondition-unreachable` (`@almadar-io/verify` `establishFromPrecondition`): a guarded step whose
+/// guard reads `@entity` fields no transition of the trait or a sibling ever sets to a satisfying value can never fire.
+pub fn judge_precondition(step: &StepWire) -> Option<super::observers::Verdict> {
+    let Some(Precondition::Unreachable { fields }) = &step.precondition else {
+        return None;
+    };
+    Some(super::observers::Verdict::from_offenders(
+        "guard-precondition-unreachable",
+        vec![format!(
+            "{} {} --{}-->: no transition on this trait or any sibling ever sets '@entity.{}' to a value that satisfies the guard",
+            step.trait_name,
+            step.from,
+            step.event,
+            fields.join("', '@entity."),
+        )],
+    ))
+}
+
+/// The twin of runtime-verify's `replay-diverged`: each preamble hop the host played, with the state the machine
+/// settled in after it, must land on the hop's target or a state its effects advance it to. A navigating hop may
+/// unmount the trait, so it is not judged. A hop of an event the trait's own effect produces carries the planner's
+/// stand-in payload, so from it on the replay is no longer the program's path and nothing is judged; nor is a hop the
+/// machine did not stand in `from` for (an earlier landing it was allowed to move on from left the plan). Each entry is
+/// the hop, the state it was fired from, and the state it settled in. `None` when no hop was played.
+pub fn judge_replay(
+    schema: &OrbitalSchema,
+    trait_name: &str,
+    landed: &[(PreambleEvent, String, String)],
+) -> Option<super::observers::Verdict> {
+    if landed.is_empty() {
+        return None;
+    }
+    let produced = planner::inline_traits(schema)
+        .into_iter()
+        .find(|td| td.name == trait_name)
+        .map(planner::effect_emitted_events)
+        .unwrap_or_default();
+    let offenders = landed
+        .iter()
+        .take_while(|(hop, _, _)| !produced.contains(&hop.event))
+        .filter(|(hop, before, state)| {
+            *before == hop.from
+                && !hop.navigates
+                && *state != hop.to
+                && !hop.accept_states.contains(state)
+        })
+        .map(|(hop, _, state)| {
+            format!(
+                "{trait_name}: replay {} --{}--> expected {}, the machine settled in {state}",
+                hop.from, hop.event, hop.to
+            )
+        })
+        .collect();
+    Some(super::observers::Verdict::from_offenders(
+        "replay-diverged",
+        offenders,
+    ))
 }
 
 /// Plan every trait of a resolved program (or the `options.traits` scope): the steps a host fires.
@@ -742,7 +948,12 @@ pub fn plan_program(
                 continue;
             }
             let boots = step.variant == Variant::AutoInit && step.event == "INIT";
-            let DriveSetup { seed_row_id, instance_id, role, preamble } = drive_setup(
+            let DriveSetup {
+                seed_row_id,
+                instance_id,
+                role,
+                preamble,
+            } = drive_setup(
                 schema,
                 td,
                 &ctx,
@@ -824,7 +1035,13 @@ pub fn plan_program(
 mod tests {
     use super::*;
 
-    fn prop_obs(executed: bool, failed: bool, before: f64, after: f64, amount: f64) -> PropositionObservation {
+    fn prop_obs(
+        executed: bool,
+        failed: bool,
+        before: f64,
+        after: f64,
+        amount: f64,
+    ) -> PropositionObservation {
         serde_json::from_value(serde_json::json!({
             "executed": executed, "failed": failed,
             "entityBefore": { "balance": before }, "entityAfter": { "balance": after }, "payload": { "amount": amount }
@@ -833,17 +1050,27 @@ mod tests {
     }
 
     fn spend() -> Vec<orbital_core_base::schema::SExpression> {
-        serde_json::from_value(serde_json::json!([["=", "@entity.balance", ["-", "@fromEntity.balance", "@payload.amount"]]])).unwrap()
+        serde_json::from_value(serde_json::json!([[
+            "=",
+            "@entity.balance",
+            ["-", "@fromEntity.balance", "@payload.amount"]
+        ]]))
+        .unwrap()
     }
 
     #[test]
     fn an_ensures_that_held_on_the_run_is_held() {
-        assert_eq!(judge_propositions(&spend(), &prop_obs(true, false, 10.0, 7.0, 3.0)), PropositionVerdict::Held);
+        assert_eq!(
+            judge_propositions(&spend(), &prop_obs(true, false, 10.0, 7.0, 3.0)),
+            PropositionVerdict::Held
+        );
     }
 
     #[test]
     fn a_wrong_value_in_the_right_state_breaks_the_ensures() {
-        let PropositionVerdict::Broken { proposition } = judge_propositions(&spend(), &prop_obs(true, false, 10.0, 6.0, 3.0)) else {
+        let PropositionVerdict::Broken { proposition } =
+            judge_propositions(&spend(), &prop_obs(true, false, 10.0, 6.0, 3.0))
+        else {
             panic!("an off-by-one write must break it")
         };
         assert_eq!(proposition, spend()[0]);
@@ -851,21 +1078,39 @@ mod tests {
 
     #[test]
     fn a_step_that_did_not_complete_is_inconclusive_never_held() {
-        assert!(matches!(judge_propositions(&spend(), &prop_obs(false, false, 10.0, 10.0, 3.0)), PropositionVerdict::Inconclusive { .. }), "its guard did not hold");
-        assert!(matches!(judge_propositions(&spend(), &prop_obs(true, true, 10.0, 7.0, 3.0)), PropositionVerdict::Inconclusive { .. }), "an effect failed (EXEC-STEP-7)");
+        assert!(
+            matches!(
+                judge_propositions(&spend(), &prop_obs(false, false, 10.0, 10.0, 3.0)),
+                PropositionVerdict::Inconclusive { .. }
+            ),
+            "its guard did not hold"
+        );
+        assert!(
+            matches!(
+                judge_propositions(&spend(), &prop_obs(true, true, 10.0, 7.0, 3.0)),
+                PropositionVerdict::Inconclusive { .. }
+            ),
+            "an effect failed (EXEC-STEP-7)"
+        );
     }
 
     #[test]
     fn a_proposition_the_evaluator_cannot_run_is_inconclusive() {
-        let broken: Vec<orbital_core_base::schema::SExpression> = serde_json::from_value(serde_json::json!([["no/such-op", "@entity.balance"]])).unwrap();
-        assert!(matches!(judge_propositions(&broken, &prop_obs(true, false, 1.0, 1.0, 0.0)), PropositionVerdict::Inconclusive { .. }));
+        let broken: Vec<orbital_core_base::schema::SExpression> =
+            serde_json::from_value(serde_json::json!([["no/such-op", "@entity.balance"]])).unwrap();
+        assert!(matches!(
+            judge_propositions(&broken, &prop_obs(true, false, 1.0, 1.0, 0.0)),
+            PropositionVerdict::Inconclusive { .. }
+        ));
     }
 
     #[test]
     fn a_driver_that_could_not_observe_the_row_gets_inconclusive() {
         let mut o = prop_obs(true, false, 10.0, 7.0, 3.0);
         o.unobserved = Some("the walk does not run persists".to_string());
-        let PropositionVerdict::Inconclusive { reason } = judge_propositions(&spend(), &o) else { panic!("never held on a partial row") };
+        let PropositionVerdict::Inconclusive { reason } = judge_propositions(&spend(), &o) else {
+            panic!("never held on a partial row")
+        };
         assert!(reason.contains("persists"), "{reason}");
     }
 
@@ -991,6 +1236,264 @@ mod tests {
     }
 
     #[test]
+    fn a_guard_field_only_a_tick_sets_is_not_unreachable() {
+        let program = |raised: bool| -> OrbitalSchema {
+            serde_json::from_value(serde_json::json!({
+                "name": "App",
+                "orbitals": [{
+                    "name": "Main",
+                    "entity": { "name": "Gate", "persistence": "runtime", "fields": [
+                        { "name": "id", "type": "string" }, { "name": "ready", "type": "boolean", "default": false }] },
+                    "traits": [{ "name": "Warmup", "linkedEntity": "Gate",
+                        "ticks": [{ "name": "warm", "interval": 1000, "effects": [["set", "@entity.ready", raised]] }],
+                        "stateMachine": {
+                            "states": [{ "name": "warming", "isInitial": true }, { "name": "running" }],
+                            "events": [],
+                            "transitions": [
+                                { "from": "warming", "to": "warming", "event": "INIT", "effects": [["set", "@entity.ready", false]] },
+                                { "from": "warming", "to": "running", "event": "START", "guard": ["==", "@entity.ready", true] }
+                            ] } }]
+                }]
+            }))
+            .unwrap()
+        };
+        let findings = |schema: &OrbitalSchema| -> usize {
+            plan_program(schema, &PlanOptions::default())
+                .unwrap()
+                .iter()
+                .filter(|s| s.event == "START")
+                .filter_map(judge_precondition)
+                .count()
+        };
+        assert_eq!(
+            findings(&program(true)),
+            0,
+            "the tick raises the flag the guard reads"
+        );
+        assert!(
+            findings(&program(false)) > 0,
+            "control: a tick that only ever lowers it cannot satisfy the guard"
+        );
+    }
+
+    #[test]
+    fn a_literal_setter_reached_only_through_a_cascade_is_judged_by_its_value() {
+        let program = |cleared: serde_json::Value| -> OrbitalSchema {
+            serde_json::from_value(serde_json::json!({
+                "name": "App",
+                "orbitals": [{
+                    "name": "Main",
+                    "entity": { "name": "Post", "persistence": "persistent", "collection": "posts", "fields": [
+                        { "name": "id", "type": "string" }, { "name": "draft", "type": "string", "default": "" },
+                        { "name": "parent", "type": "string", "default": "" }] },
+                    "traits": [{ "name": "Reply", "linkedEntity": "Post", "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "idle", "event": "EDIT", "effects": [["set", "@entity.parent", "@payload.value"]] },
+                            { "from": "idle", "to": "idle", "event": "SUBMIT", "guard": ["not", ["=", "@entity.draft", ""]],
+                              "effects": [["persist", "create", "Post", {}, { "emit": { "success": "SAVED" } }]] },
+                            { "from": "idle", "to": "idle", "event": "SAVED", "effects": [["set", "@entity.draft", cleared]] }
+                        ] } }]
+                }]
+            }))
+            .unwrap()
+        };
+        let findings = |schema: &OrbitalSchema| -> Vec<String> {
+            plan_program(schema, &PlanOptions::default())
+                .unwrap()
+                .iter()
+                .filter(|s| s.event == "SUBMIT")
+                .filter_map(judge_precondition)
+                .map(|v| v.detail)
+                .collect()
+        };
+        assert!(
+            !findings(&program(serde_json::json!(""))).is_empty(),
+            "a cascade that only ever clears the draft cannot satisfy the guard"
+        );
+        assert!(
+            findings(&program(serde_json::json!("@payload.text"))).is_empty(),
+            "control: a payload-fed value stays unproven, not unreachable"
+        );
+    }
+
+    #[test]
+    fn a_failure_on_an_event_the_traits_own_effect_produces_is_inconclusive() {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Loader", "linkedEntity": "Job", "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "ready" }],
+                    "events": [],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "LOAD", "effects": [["fetch", "Job", { "emit": { "success": "LOADED" } }]] },
+                        { "from": "idle", "to": "ready", "event": "LOADED" },
+                        { "from": "idle", "to": "ready", "event": "PICK" }
+                    ] } }]
+            }]
+        }))
+        .unwrap();
+        let steps = plan_program(&schema, &PlanOptions::default()).unwrap();
+        let step = |event: &str| {
+            steps
+                .iter()
+                .find(|s| s.event == event)
+                .expect("planned")
+                .clone()
+        };
+        let stuck = Observation {
+            state_before: "idle".into(),
+            state_after: "ready".into(),
+            fired_arm: None,
+            effects: vec![ObservedEffect {
+                outcome: ObservedOutcome::Failed,
+                routed: None,
+            }],
+        };
+        let produced = judge_step(&schema, &step("LOADED"), &stuck);
+        assert_eq!(produced.status, FrameStatus::Inconclusive);
+        assert_eq!(
+            produced.reason,
+            VerdictReason::ProducedByEffect {
+                failed: "effect-failed".into()
+            }
+        );
+        assert_eq!(
+            judge_step(&schema, &step("PICK"), &stuck).status,
+            FrameStatus::Fail,
+            "control: an event only a host sends"
+        );
+    }
+
+    #[test]
+    fn a_replay_hop_that_settles_off_its_target_diverges() {
+        let hop = |to: &str, accept: &[&str], navigates: bool| PreambleEvent {
+            event: "OPEN".into(),
+            payload: serde_json::json!({}),
+            from: "closed".into(),
+            to: to.into(),
+            accept_states: accept.iter().map(|s| s.to_string()).collect(),
+            navigates,
+        };
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Rec", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Modal", "linkedEntity": "Rec", "stateMachine": {
+                    "states": [{ "name": "closed", "isInitial": true }, { "name": "open" }],
+                    "events": [],
+                    "transitions": [
+                        { "from": "closed", "to": "closed", "event": "LOAD", "effects": [["fetch", "Rec", { "emit": { "success": "LOADED" } }]] },
+                        { "from": "closed", "to": "open", "event": "LOADED" },
+                        { "from": "closed", "to": "open", "event": "OPEN" }
+                    ] } }]
+            }]
+        }))
+        .unwrap();
+        let judged = |landed: Vec<(PreambleEvent, &str)>| {
+            let landed: Vec<(PreambleEvent, String, String)> = landed
+                .into_iter()
+                .map(|(h, after)| (h, "closed".to_string(), after.to_string()))
+                .collect();
+            judge_replay(&schema, "Modal", &landed)
+        };
+        assert!(judged(Vec::new()).is_none());
+        assert!(judged(vec![(hop("open", &[], false), "open")]).is_some_and(|v| v.passed));
+        assert!(
+            judged(vec![(hop("loading", &["ready"], false), "ready")]).is_some_and(|v| v.passed),
+            "an effect-advanced state"
+        );
+        let diverged = judged(vec![(hop("open", &[], false), "closed")]).expect("a verdict");
+        assert!(
+            !diverged.passed && diverged.detail.contains("expected open"),
+            "{}",
+            diverged.detail
+        );
+        assert!(
+            judged(vec![(hop("open", &[], true), "")]).is_some_and(|v| v.passed),
+            "control: a navigating hop is not judged"
+        );
+        let off_plan = judge_replay(
+            &schema,
+            "Modal",
+            &[(
+                hop("open", &[], false),
+                "searching".into(),
+                "searching".into(),
+            )],
+        )
+        .expect("a verdict");
+        assert!(
+            off_plan.passed,
+            "a hop fired outside its `from` is not judged: {}",
+            off_plan.detail
+        );
+        let mut produced = hop("open", &[], false);
+        produced.event = "LOADED".into();
+        let after = judged(vec![
+            (produced, "closed"),
+            (hop("open", &[], false), "closed"),
+        ])
+        .expect("a verdict");
+        assert!(
+            after.passed,
+            "nothing after a hand-fired effect-produced hop is judged: {}",
+            after.detail
+        );
+    }
+
+    #[test]
+    fn a_step_whose_guard_no_transition_can_satisfy_is_a_finding() {
+        let program = |setter: serde_json::Value| -> OrbitalSchema {
+            serde_json::from_value(serde_json::json!({
+                "name": "App",
+                "orbitals": [{
+                    "name": "Main",
+                    "entity": { "name": "Job", "persistence": "runtime", "fields": [
+                        { "name": "id", "type": "string" }, { "name": "status", "type": "string", "default": "open" }] },
+                    "traits": [{ "name": "Closer", "linkedEntity": "Job", "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "closed" }],
+                        "events": [],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "closed", "event": "CLOSE", "guard": ["=", "@entity.status", "done"] },
+                            setter
+                        ] } }]
+                }]
+            }))
+            .unwrap()
+        };
+        let findings = |schema: &OrbitalSchema| -> Vec<super::super::observers::Verdict> {
+            plan_program(schema, &PlanOptions::default())
+                .unwrap()
+                .iter()
+                .filter_map(judge_precondition)
+                .collect()
+        };
+        let unreachable = findings(&program(
+            serde_json::json!({ "from": "idle", "to": "idle", "event": "TOUCH" }),
+        ));
+        assert!(
+            unreachable
+                .iter()
+                .any(|v| !v.passed && v.detail.contains("@entity.status")),
+            "{unreachable:?}"
+        );
+        let reachable = findings(&program(serde_json::json!({
+            "from": "idle", "to": "idle", "event": "FINISH", "effects": [["set", "@entity.status", "done"]]
+        })));
+        assert!(
+            reachable.is_empty(),
+            "control: a setter satisfies the guard: {reachable:?}"
+        );
+    }
+
+    #[test]
     fn judge_ports_the_step_expectation_rules() {
         let status = |e: &Expectation, o: &Observation| judge(e, o).reason;
         let mut fail_arm = expect(&["b"], true, Some(1), true);
@@ -1081,10 +1584,28 @@ mod tests {
     fn a_bare_binding_guard_gets_a_value_of_the_declared_type() {
         let steps = plan_program(&bare_guard_schema(), &PlanOptions::default()).unwrap();
         let pass = |event: &str| payload_of(&steps, event, PayloadCase::Success);
-        assert!(pass("OPEN_ROW")["row"].as_object().is_some_and(|o| !o.is_empty()), "{}", pass("OPEN_ROW"));
+        assert!(
+            pass("OPEN_ROW")["row"]
+                .as_object()
+                .is_some_and(|o| !o.is_empty()),
+            "{}",
+            pass("OPEN_ROW")
+        );
         assert_eq!(pass("OPEN_FLAG")["on"], true);
-        assert!(pass("OPEN_TEXT")["text"].as_str().is_some_and(|t| !t.is_empty()), "{}", pass("OPEN_TEXT"));
-        assert!(pass("OPEN_COUNT")["count"].as_f64().is_some_and(|n| n != 0.0), "{}", pass("OPEN_COUNT"));
+        assert!(
+            pass("OPEN_TEXT")["text"]
+                .as_str()
+                .is_some_and(|t| !t.is_empty()),
+            "{}",
+            pass("OPEN_TEXT")
+        );
+        assert!(
+            pass("OPEN_COUNT")["count"]
+                .as_f64()
+                .is_some_and(|n| n != 0.0),
+            "{}",
+            pass("OPEN_COUNT")
+        );
     }
 
     #[test]
@@ -1098,7 +1619,8 @@ mod tests {
     }
 
     fn arms_schema(arms: serde_json::Value) -> OrbitalSchema {
-        let mut transitions = vec![serde_json::json!({ "from": "idle", "to": "idle", "event": "INIT" })];
+        let mut transitions =
+            vec![serde_json::json!({ "from": "idle", "to": "idle", "event": "INIT" })];
         transitions.extend(arms.as_array().unwrap().clone());
         serde_json::from_value(serde_json::json!({
             "name": "App",
@@ -1134,7 +1656,13 @@ mod tests {
         assert!(first.solved && first.arm_conflict.is_none());
         let second = arm_step(&steps, 1, PayloadCase::Success);
         assert!(!second.solved);
-        assert_eq!(second.arm_conflict, Some(ArmConflict::EarlierArmFirst { arm: 0, to: "done".into() }));
+        assert_eq!(
+            second.arm_conflict,
+            Some(ArmConflict::EarlierArmFirst {
+                arm: 0,
+                to: "done".into()
+            })
+        );
     }
 
     #[test]
@@ -1151,7 +1679,8 @@ mod tests {
     }
 
     #[test]
-    fn a_fail_payload_that_still_passes_its_own_guard_is_unsolved_and_a_catching_sibling_is_named() {
+    fn a_fail_payload_that_still_passes_its_own_guard_is_unsolved_and_a_catching_sibling_is_named()
+    {
         let own = arms_schema(serde_json::json!([
             { "from": "idle", "to": "done", "event": "REPLY",
               "guard": ["or", ["<", "@payload.status", 5], [">", "@payload.status", 1]] }
@@ -1167,7 +1696,11 @@ mod tests {
         let steps = plan_program(&siblings, &PlanOptions::default()).unwrap();
         let fail = arm_step(&steps, 0, PayloadCase::GuardFail);
         assert!(fail.solved && fail.arm_conflict.is_none());
-        assert_eq!(fail.guard_sibling_targets, vec!["done".to_string()], "the catching sibling is named even when it shares the target");
+        assert_eq!(
+            fail.guard_sibling_targets,
+            vec!["done".to_string()],
+            "the catching sibling is named even when it shares the target"
+        );
     }
 
     fn json_schema(transitions: serde_json::Value, events: serde_json::Value) -> OrbitalSchema {
@@ -1205,8 +1738,12 @@ mod tests {
     }
 
     fn parsed_field(payload: &serde_json::Value, field: &str) -> serde_json::Value {
-        serde_json::from_str(payload[field].as_str().unwrap_or_else(|| panic!("{field} is text: {payload}")))
-            .unwrap_or_else(|e| panic!("{field} is JSON text: {e}: {payload}"))
+        serde_json::from_str(
+            payload[field]
+                .as_str()
+                .unwrap_or_else(|| panic!("{field} is text: {payload}")),
+        )
+        .unwrap_or_else(|e| panic!("{field} is JSON text: {e}: {payload}"))
     }
 
     #[test]
@@ -1222,14 +1759,34 @@ mod tests {
         let steps = plan_program(&schema, &PlanOptions::default()).unwrap();
         let payload = payload_of(&steps, "DONE", PayloadCase::Success);
         let instance = parsed_field(&payload, "state");
-        assert!(instance["key"].as_str().is_some_and(|k| !k.is_empty()), "{instance}");
-        assert!(instance["size"].is_number() && instance["isPublic"].is_boolean(), "{instance}");
-        assert!(serde_json::from_str::<serde_json::Value>(payload["other"].as_str().unwrap()).is_err(), "control: a field not parsed stays plain text");
+        assert!(
+            instance["key"].as_str().is_some_and(|k| !k.is_empty()),
+            "{instance}"
+        );
+        assert!(
+            instance["size"].is_number() && instance["isPublic"].is_boolean(),
+            "{instance}"
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(payload["other"].as_str().unwrap()).is_err(),
+            "control: a field not parsed stays plain text"
+        );
     }
 
     #[test]
     fn each_arm_json_member_is_solved_from_its_guard() {
-        let mode = |value: &str| serde_json::json!(["=", ["object/get", ["json/parse", "@payload.state", "Pending"], "mode", "single"], value]);
+        let mode = |value: &str| {
+            serde_json::json!([
+                "=",
+                [
+                    "object/get",
+                    ["json/parse", "@payload.state", "Pending"],
+                    "mode",
+                    "single"
+                ],
+                value
+            ])
+        };
         let schema = json_schema(
             serde_json::json!([
                 { "from": "idle", "to": "idle", "event": "INIT" },
@@ -1242,17 +1799,34 @@ mod tests {
         for (arm, expected) in [(0, "single"), (1, "batch")] {
             let step = steps
                 .iter()
-                .find(|s| s.event == "DONE" && s.arm == Some(arm) && s.payload_case == PayloadCase::Success)
+                .find(|s| {
+                    s.event == "DONE"
+                        && s.arm == Some(arm)
+                        && s.payload_case == PayloadCase::Success
+                })
                 .unwrap();
-            assert!(step.solved && step.arm_conflict.is_none(), "arm {arm}: {step:?}");
+            assert!(
+                step.solved && step.arm_conflict.is_none(),
+                "arm {arm}: {step:?}"
+            );
             assert_eq!(parsed_field(&step.payload, "state")["mode"], expected);
         }
     }
 
     #[test]
     fn two_json_members_are_solved_together_and_an_unsolvable_guard_stays_unsolved() {
-        let items = serde_json::json!(["object/get", ["json/parse", "@payload.batch", "Batch"], "items", []]);
-        let idx = serde_json::json!(["object/get", ["json/parse", "@payload.batch", "Batch"], "idx", 0]);
+        let items = serde_json::json!([
+            "object/get",
+            ["json/parse", "@payload.batch", "Batch"],
+            "items",
+            []
+        ]);
+        let idx = serde_json::json!([
+            "object/get",
+            ["json/parse", "@payload.batch", "Batch"],
+            "idx",
+            0
+        ]);
         let schema = json_schema(
             serde_json::json!([
                 { "from": "idle", "to": "idle", "event": "INIT" },
@@ -1261,10 +1835,16 @@ mod tests {
             string_events(),
         );
         let steps = plan_program(&schema, &PlanOptions::default()).unwrap();
-        let pass = steps.iter().find(|s| s.event == "NEXT" && s.guard_case == Some(GuardCase::Pass)).unwrap();
+        let pass = steps
+            .iter()
+            .find(|s| s.event == "NEXT" && s.guard_case == Some(GuardCase::Pass))
+            .unwrap();
         let batch = parsed_field(&pass.payload, "batch");
         assert!(pass.solved, "{pass:?}");
-        assert!(batch["items"].as_array().unwrap().len() as f64 > batch["idx"].as_f64().unwrap(), "{batch}");
+        assert!(
+            batch["items"].as_array().unwrap().len() as f64 > batch["idx"].as_f64().unwrap(),
+            "{batch}"
+        );
         let never = json_schema(
             serde_json::json!([
                 { "from": "idle", "to": "idle", "event": "INIT" },
@@ -1275,8 +1855,14 @@ mod tests {
             string_events(),
         );
         let steps = plan_program(&never, &PlanOptions::default()).unwrap();
-        let pass = steps.iter().find(|s| s.event == "NEXT" && s.guard_case == Some(GuardCase::Pass)).unwrap();
-        assert!(!pass.solved, "control: a contradictory guard has no payload");
+        let pass = steps
+            .iter()
+            .find(|s| s.event == "NEXT" && s.guard_case == Some(GuardCase::Pass))
+            .unwrap();
+        assert!(
+            !pass.solved,
+            "control: a contradictory guard has no payload"
+        );
     }
 
     #[test]
@@ -1291,12 +1877,24 @@ mod tests {
         );
         let steps = plan_program(&schema, &PlanOptions::default()).unwrap();
         let pass = payload_of(&steps, "LOADED", PayloadCase::Success);
-        let rows = pass["data"].as_array().unwrap_or_else(|| panic!("data is an array: {pass}"));
-        assert!(!rows.is_empty() && rows.iter().all(|r| r["id"].is_string()), "{pass}");
-        assert_eq!(payload_of(&steps, "LOADED", PayloadCase::GuardFail)["data"], serde_json::json!([]));
+        let rows = pass["data"]
+            .as_array()
+            .unwrap_or_else(|| panic!("data is an array: {pass}"));
+        assert!(
+            !rows.is_empty() && rows.iter().all(|r| r["id"].is_string()),
+            "{pass}"
+        );
+        assert_eq!(
+            payload_of(&steps, "LOADED", PayloadCase::GuardFail)["data"],
+            serde_json::json!([])
+        );
     }
 
-    fn sibling_schema(guard: serde_json::Value, setter_effects: serde_json::Value, extra_fields: serde_json::Value) -> OrbitalSchema {
+    fn sibling_schema(
+        guard: serde_json::Value,
+        setter_effects: serde_json::Value,
+        extra_fields: serde_json::Value,
+    ) -> OrbitalSchema {
         let mut fields = vec![
             serde_json::json!({ "name": "id", "type": "string" }),
             serde_json::json!({ "name": "activeId", "type": "string", "default": "" }),
@@ -1346,10 +1944,27 @@ mod tests {
         );
         let step = send_step(&schema);
         match step.precondition {
-            Some(Precondition::Established { trait_name, event, establish_at_state, proof, payload, .. }) => {
-                assert_eq!((trait_name.as_str(), event.as_str(), establish_at_state.as_str()), ("Picker", "SELECT", "waiting"));
+            Some(Precondition::Established {
+                trait_name,
+                event,
+                establish_at_state,
+                proof,
+                payload,
+                ..
+            }) => {
+                assert_eq!(
+                    (
+                        trait_name.as_str(),
+                        event.as_str(),
+                        establish_at_state.as_str()
+                    ),
+                    ("Picker", "SELECT", "waiting")
+                );
                 assert_eq!(proof, planner::Proof::Proven);
-                assert!(payload["id"].as_str().is_some_and(|id| !id.is_empty()), "{payload}");
+                assert!(
+                    payload["id"].as_str().is_some_and(|id| !id.is_empty()),
+                    "{payload}"
+                );
             }
             other => panic!("expected an established preamble, got {other:?}"),
         }
@@ -1364,14 +1979,20 @@ mod tests {
         );
         assert_eq!(
             send_step(&schema).precondition,
-            Some(Precondition::Unreachable { fields: vec!["activeId".to_string()] })
+            Some(Precondition::Unreachable {
+                fields: vec!["activeId".to_string()]
+            })
         );
         let held = sibling_schema(
             serde_json::json!(["=", "@entity.activeId", ""]),
             serde_json::json!([["set", "@entity.activeId", "@payload.id"]]),
             serde_json::json!([]),
         );
-        assert_eq!(send_step(&held).precondition, None, "the declared default already satisfies the guard");
+        assert_eq!(
+            send_step(&held).precondition,
+            None,
+            "the declared default already satisfies the guard"
+        );
     }
 
     #[test]
@@ -1384,7 +2005,9 @@ mod tests {
         match send_step(&schema).precondition {
             Some(Precondition::Established { proof, .. }) => assert_eq!(
                 proof,
-                planner::Proof::Unproven { reason: planner::UnprovenReason::SetterValueUnresolved }
+                planner::Proof::Unproven {
+                    reason: planner::UnprovenReason::SetterValueUnresolved
+                }
             ),
             other => panic!("expected an unproven preamble, got {other:?}"),
         }
@@ -1398,7 +2021,9 @@ mod tests {
             serde_json::json!([{ "name": "mode", "type": "string", "default": "" }]),
         );
         match send_step(&schema).precondition {
-            Some(Precondition::Established { unplanned_fields, .. }) => assert_eq!(unplanned_fields, vec!["mode".to_string()]),
+            Some(Precondition::Established {
+                unplanned_fields, ..
+            }) => assert_eq!(unplanned_fields, vec!["mode".to_string()]),
             other => panic!("expected an established preamble, got {other:?}"),
         }
     }
@@ -1407,10 +2032,19 @@ mod tests {
     fn the_judge_makes_a_failing_step_with_an_unproven_precondition_inconclusive() {
         let mut e = expect(&["b"], false, None, true);
         e.precondition_gap = Some(planner::UnprovenReason::Unreachable);
-        assert_eq!(judge(&e, &obs("a", "a", None, vec![])).status, FrameStatus::Inconclusive);
-        assert_eq!(judge(&e, &obs("a", "b", None, vec![])).status, FrameStatus::Pass);
+        assert_eq!(
+            judge(&e, &obs("a", "a", None, vec![])).status,
+            FrameStatus::Inconclusive
+        );
+        assert_eq!(
+            judge(&e, &obs("a", "b", None, vec![])).status,
+            FrameStatus::Pass
+        );
         e.precondition_gap = None;
-        assert_eq!(judge(&e, &obs("a", "a", None, vec![])).status, FrameStatus::Fail);
+        assert_eq!(
+            judge(&e, &obs("a", "a", None, vec![])).status,
+            FrameStatus::Fail
+        );
     }
 
     fn config_schema() -> OrbitalSchema {
@@ -1438,13 +2072,31 @@ mod tests {
     #[test]
     fn config_variants_use_only_declared_values_and_report_the_knobs_with_none() {
         let sweep = plan_config_variants(&config_schema(), &PlanOptions::default());
-        let [gauge] = &sweep[..] else { panic!("one trait: {sweep:?}") };
-        assert_eq!(gauge.baseline, serde_json::json!({ "format": "hearts", "animated": true, "current": 0, "className": "" }));
+        let [gauge] = &sweep[..] else {
+            panic!("one trait: {sweep:?}")
+        };
+        assert_eq!(
+            gauge.baseline,
+            serde_json::json!({ "format": "hearts", "animated": true, "current": 0, "className": "" })
+        );
         let labels: Vec<&str> = gauge.variants.iter().map(|v| v.label.as_str()).collect();
-        assert_eq!(labels, vec!["animated = false", "format = bar", "format = numeric"]);
-        let bar = gauge.variants.iter().find(|v| v.label == "format = bar").unwrap();
-        assert_eq!(bar.config, serde_json::json!({ "format": "bar", "animated": true, "current": 0, "className": "" }));
-        assert_eq!(gauge.no_declared_values, vec!["className".to_string(), "current".to_string()]);
+        assert_eq!(
+            labels,
+            vec!["animated = false", "format = bar", "format = numeric"]
+        );
+        let bar = gauge
+            .variants
+            .iter()
+            .find(|v| v.label == "format = bar")
+            .unwrap();
+        assert_eq!(
+            bar.config,
+            serde_json::json!({ "format": "bar", "animated": true, "current": 0, "className": "" })
+        );
+        assert_eq!(
+            gauge.no_declared_values,
+            vec!["className".to_string(), "current".to_string()]
+        );
     }
 
     #[test]
@@ -1454,17 +2106,39 @@ mod tests {
         let credits = plan_init_credits(&config_schema(), &PlanOptions::default());
         assert_eq!(
             credits,
-            vec![InitCredit { trait_name: "Gauge".into(), state: "idle".into(), coverage_key: "Gauge:idle+INIT->idle".into() }],
+            vec![InitCredit {
+                trait_name: "Gauge".into(),
+                state: "idle".into(),
+                coverage_key: "Gauge:idle+INIT->idle".into()
+            }],
             "credited even though the trait declares no INIT arm"
         );
     }
 
-    fn credit_step(event: &str, arm: Option<usize>, reply: Option<ReplyRoute>, fired: Vec<FiredHop>) -> CreditStep {
-        CreditStep { trait_name: "Caller".into(), from: "waiting".into(), event: event.into(), arm, reply, fired }
+    fn credit_step(
+        event: &str,
+        arm: Option<usize>,
+        reply: Option<ReplyRoute>,
+        fired: Vec<FiredHop>,
+    ) -> CreditStep {
+        CreditStep {
+            trait_name: "Caller".into(),
+            from: "waiting".into(),
+            event: event.into(),
+            arm,
+            reply,
+            fired,
+        }
     }
 
     fn hop(event: &str, arm: Option<usize>) -> FiredHop {
-        FiredHop { trait_name: "Caller".into(), from: "waiting".into(), event: event.into(), to: "failed".into(), arm }
+        FiredHop {
+            trait_name: "Caller".into(),
+            from: "waiting".into(),
+            event: event.into(),
+            to: "failed".into(),
+            arm,
+        }
     }
 
     #[test]
@@ -1475,7 +2149,11 @@ mod tests {
         ];
         assert_eq!(
             credit_failure_routes(&steps),
-            vec![Credit { index: 1, state_before: "waiting".into(), state_after: "failed".into() }]
+            vec![Credit {
+                index: 1,
+                state_before: "waiting".into(),
+                state_after: "failed".into()
+            }]
         );
     }
 
@@ -1488,17 +2166,30 @@ mod tests {
         assert!(credit_failure_routes(&other_event).is_empty());
         let other_arm = vec![
             credit_step("CALL", None, None, vec![hop("CALL_FAILED", Some(0))]),
-            credit_step("CALL_FAILED", Some(1), Some(ReplyRoute::Failure), Vec::new()),
+            credit_step(
+                "CALL_FAILED",
+                Some(1),
+                Some(ReplyRoute::Failure),
+                Vec::new(),
+            ),
         ];
         assert!(credit_failure_routes(&other_arm).is_empty());
         let success_route = vec![
             credit_step("CALL", None, None, vec![hop("CALLED", None)]),
             credit_step("CALLED", None, Some(ReplyRoute::Other), Vec::new()),
         ];
-        assert!(credit_failure_routes(&success_route).is_empty(), "only a failure route is credited");
+        assert!(
+            credit_failure_routes(&success_route).is_empty(),
+            "only a failure route is credited"
+        );
         let arm_matches = vec![
             credit_step("CALL", None, None, vec![hop("CALL_FAILED", Some(1))]),
-            credit_step("CALL_FAILED", Some(1), Some(ReplyRoute::Failure), Vec::new()),
+            credit_step(
+                "CALL_FAILED",
+                Some(1),
+                Some(ReplyRoute::Failure),
+                Vec::new(),
+            ),
         ];
         assert_eq!(credit_failure_routes(&arm_matches).len(), 1);
     }
@@ -1536,21 +2227,43 @@ mod tests {
     fn a_replay_preamble_skips_effect_emitted_events_and_settles_through_their_closure() {
         let hops = reset_preamble(&replay_schema());
         let events: Vec<&str> = hops.iter().map(|h| h.event.as_str()).collect();
-        assert_eq!(events, vec!["GO", "FINISH"], "LOADED is fired by the fetch, never dispatched");
-        assert_eq!((hops[0].from.as_str(), hops[0].to.as_str()), ("idle", "loading"));
-        assert_eq!(hops[0].accept_states, vec!["loading".to_string(), "ready".to_string()]);
-        assert_eq!((hops[1].from.as_str(), hops[1].to.as_str()), ("ready", "done"), "the next hop stands where the closure settled");
-        assert_eq!(hops[1].payload["ok"], true, "a guarded hop carries the payload its guard accepts");
+        assert_eq!(
+            events,
+            vec!["GO", "FINISH"],
+            "LOADED is fired by the fetch, never dispatched"
+        );
+        assert_eq!(
+            (hops[0].from.as_str(), hops[0].to.as_str()),
+            ("idle", "loading")
+        );
+        assert_eq!(
+            hops[0].accept_states,
+            vec!["loading".to_string(), "ready".to_string()]
+        );
+        assert_eq!(
+            (hops[1].from.as_str(), hops[1].to.as_str()),
+            ("ready", "done"),
+            "the next hop stands where the closure settled"
+        );
+        assert_eq!(
+            hops[1].payload["ok"], true,
+            "a guarded hop carries the payload its guard accepts"
+        );
         assert!(hops.iter().all(|h| !h.navigates));
     }
 
     #[test]
     fn control_a_replay_without_effect_emitted_events_takes_the_plain_shortest_path() {
         let mut program = serde_json::to_value(replay_schema()).unwrap();
-        let transitions = program["orbitals"][0]["traits"][0]["stateMachine"]["transitions"].as_array_mut().unwrap();
+        let transitions = program["orbitals"][0]["traits"][0]["stateMachine"]["transitions"]
+            .as_array_mut()
+            .unwrap();
         transitions[1]["effects"] = serde_json::json!([]);
         let plain: OrbitalSchema = serde_json::from_value(program).unwrap();
-        let events: Vec<String> = reset_preamble(&plain).into_iter().map(|h| h.event).collect();
+        let events: Vec<String> = reset_preamble(&plain)
+            .into_iter()
+            .map(|h| h.event)
+            .collect();
         assert_eq!(events, vec!["GO", "LOADED", "FINISH"]);
     }
 
@@ -1570,7 +2283,9 @@ mod tests {
             .map(|(from, event, to, emits)| {
                 let effects = match *emits {
                     Some("navigate") => serde_json::json!([["navigate", "/away"]]),
-                    Some(event) => serde_json::json!([["fetch", "Job", { "emit": { "success": event } }]]),
+                    Some(event) => {
+                        serde_json::json!([["fetch", "Job", { "emit": { "success": event } }]])
+                    }
                     None => serde_json::json!([]),
                 };
                 serde_json::json!({ "from": from, "to": to, "event": event, "effects": effects })
@@ -1588,45 +2303,82 @@ mod tests {
         .unwrap()
     }
 
-    fn replay(rows: &[(&str, &str, &str, Option<&str>)], target: &str) -> Option<Vec<planner::ReplayStep>> {
+    fn replay(
+        rows: &[(&str, &str, &str, Option<&str>)],
+        target: &str,
+    ) -> Option<Vec<planner::ReplayStep>> {
         let program = machine(rows);
         let td = planner::inline_traits(&program).into_iter().next().unwrap();
         let owner_fields = Vec::new();
-        let ctx = planner::EntityCtx { schema: &program, owner_fields: &owner_fields, viewer_id: None };
+        let ctx = planner::EntityCtx {
+            schema: &program,
+            owner_fields: &owner_fields,
+            viewer_id: None,
+        };
         planner::replay_steps(td, target, &ctx, None)
     }
 
     fn events(path: &Option<Vec<planner::ReplayStep>>) -> Vec<String> {
-        path.as_ref().expect("reachable").iter().map(|h| h.event.clone()).collect()
+        path.as_ref()
+            .expect("reachable")
+            .iter()
+            .map(|h| h.event.clone())
+            .collect()
     }
 
     #[test]
     fn a_replay_is_the_shortest_dispatchable_path_and_none_when_unreachable() {
-        let rows = [("a", "GO", "b", None), ("b", "NEXT", "c", None), ("z", "LOST", "a", None)];
-        assert_eq!(events(&replay(&rows, "a")), Vec::<String>::new(), "the initial state needs no hop");
+        let rows = [
+            ("a", "GO", "b", None),
+            ("b", "NEXT", "c", None),
+            ("z", "LOST", "a", None),
+        ];
+        assert_eq!(
+            events(&replay(&rows, "a")),
+            Vec::<String>::new(),
+            "the initial state needs no hop"
+        );
         assert_eq!(events(&replay(&rows, "c")), vec!["GO", "NEXT"]);
         assert!(replay(&rows, "z").is_none(), "genuinely unreachable");
     }
 
     #[test]
     fn a_target_reachable_only_through_a_transient_closure_is_reached_by_the_hop_into_its_source() {
-        let rows = [("idle", "GO", "loading", Some("LOADED")), ("loading", "LOADED", "reviewing", None)];
+        let rows = [
+            ("idle", "GO", "loading", Some("LOADED")),
+            ("loading", "LOADED", "reviewing", None),
+        ];
         let path = replay(&rows, "reviewing");
         assert_eq!(events(&path), vec!["GO"]);
-        assert_eq!(path.unwrap()[0].accept_states, vec!["loading".to_string(), "reviewing".to_string()]);
+        assert_eq!(
+            path.unwrap()[0].accept_states,
+            vec!["loading".to_string(), "reviewing".to_string()]
+        );
     }
 
     #[test]
     fn a_target_in_the_initial_states_own_closure_needs_zero_hops() {
-        let rows = [("idle", "INIT", "idle", Some("SCAN")), ("idle", "SCAN", "scanning", None)];
+        let rows = [
+            ("idle", "INIT", "idle", Some("SCAN")),
+            ("idle", "SCAN", "scanning", None),
+        ];
         assert_eq!(events(&replay(&rows, "scanning")), Vec::<String>::new());
     }
 
     #[test]
     fn a_transient_settle_chains_into_further_real_hops() {
-        let one = [("idle", "GO", "loading", Some("LOADED")), ("loading", "LOADED", "browsing", None), ("browsing", "REPLY", "replying", None)];
+        let one = [
+            ("idle", "GO", "loading", Some("LOADED")),
+            ("loading", "LOADED", "browsing", None),
+            ("browsing", "REPLY", "replying", None),
+        ];
         let path = replay(&one, "replying").unwrap();
-        assert_eq!(path.iter().map(|h| (h.from.as_str(), h.event.as_str())).collect::<Vec<_>>(), vec![("idle", "GO"), ("browsing", "REPLY")]);
+        assert_eq!(
+            path.iter()
+                .map(|h| (h.from.as_str(), h.event.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("idle", "GO"), ("browsing", "REPLY")]
+        );
         let two = [
             ("idle", "GO", "loading", Some("LOADED")),
             ("loading", "LOADED", "browsing", None),
@@ -1638,11 +2390,17 @@ mod tests {
 
     #[test]
     fn a_replay_hop_over_a_navigating_edge_is_marked_navigating() {
-        let rows = [("idle", "GO", "away", Some("navigate")), ("away", "BACK", "idle", None)];
+        let rows = [
+            ("idle", "GO", "away", Some("navigate")),
+            ("away", "BACK", "idle", None),
+        ];
         let path = replay(&rows, "away").unwrap();
         assert!(path[0].navigates);
         let plain = replay(&[("idle", "GO", "away", None)], "away").unwrap();
-        assert!(!plain[0].navigates, "control: a hop with no navigate effect stays unmarked");
+        assert!(
+            !plain[0].navigates,
+            "control: a hop with no navigate effect stays unmarked"
+        );
     }
 
     /// One-arm trait whose only guard is `guard`; the event declares the payload fields the guard reads.
@@ -1664,18 +2422,27 @@ mod tests {
     }
 
     /// The pass and fail payloads the kernel plans for `guard`, each checked against the real evaluator.
-    fn steered(guard: serde_json::Value, fields: serde_json::Value) -> (Option<bool>, Option<bool>) {
+    fn steered(
+        guard: serde_json::Value,
+        fields: serde_json::Value,
+    ) -> (Option<bool>, Option<bool>) {
         let schema = guard_schema(guard.clone(), fields);
         let steps = plan_program(&schema, &PlanOptions::default()).unwrap();
-        let sexpr: orbital_core_base::schema::sexpr::SExpression = serde_json::from_value(guard).unwrap();
+        let sexpr: orbital_core_base::schema::sexpr::SExpression =
+            serde_json::from_value(guard).unwrap();
         let verdict = |case: PayloadCase| {
-            let step = steps.iter().find(|s| s.event == "GO" && s.payload_case == case)?;
+            let step = steps
+                .iter()
+                .find(|s| s.event == "GO" && s.payload_case == case)?;
             if !step.solved {
                 return None;
             }
             planner::guard_passes(&sexpr, &step.payload, "idle").ok()
         };
-        (verdict(PayloadCase::Success), verdict(PayloadCase::GuardFail))
+        (
+            verdict(PayloadCase::Success),
+            verdict(PayloadCase::GuardFail),
+        )
     }
 
     fn text(name: &str) -> serde_json::Value {
@@ -1686,17 +2453,61 @@ mod tests {
     fn the_guard_solver_steers_every_canonical_payload_guard_shape_and_the_evaluator_agrees() {
         let map = serde_json::json!({ "a": true, "b": false, "c": true });
         let cases: Vec<(&str, serde_json::Value, serde_json::Value)> = vec![
-            ("str/default fallback", serde_json::json!(["!=", ["str/default", "@payload.entityId", ""], ""]), serde_json::json!([text("entityId")])),
-            ("== alias", serde_json::json!(["==", "@payload.s", "x"]), serde_json::json!([text("s")])),
-            ("object/has", serde_json::json!(["object/has", map, "@payload.k"]), serde_json::json!([text("k")])),
-            ("object/get truthy", serde_json::json!(["object/get", map, "@payload.k"]), serde_json::json!([text("k")])),
-            ("object/get =", serde_json::json!(["=", ["object/get", { "a": "x", "b": "y" }, "@payload.k"], "y"]), serde_json::json!([text("k")])),
-            ("array/includes", serde_json::json!(["array/includes", ["x", "y"], "@payload.v"]), serde_json::json!([text("v")])),
-            ("str/startsWith", serde_json::json!(["str/startsWith", "@payload.name", "pre"]), serde_json::json!([text("name")])),
-            ("validate/url", serde_json::json!(["validate/url", "@payload.u"]), serde_json::json!([text("u")])),
-            ("validate/required", serde_json::json!(["validate/required", "@payload.r"]), serde_json::json!([text("r")])),
-            ("and intersects in the other order", serde_json::json!(["and", ["=", ["object/get", { "a": "x", "change": "y" }, "@payload.k"], "y"], ["object/has", { "a": 1, "change": 2 }, "@payload.k"]]), serde_json::json!([text("k")])),
-            ("and intersects a shared field", serde_json::json!(["and", ["object/has", { "a": 1, "change": 2 }, "@payload.k"], ["=", ["object/get", { "a": "x", "change": "y" }, "@payload.k"], "y"]]), serde_json::json!([text("k")])),
+            (
+                "str/default fallback",
+                serde_json::json!(["!=", ["str/default", "@payload.entityId", ""], ""]),
+                serde_json::json!([text("entityId")]),
+            ),
+            (
+                "== alias",
+                serde_json::json!(["==", "@payload.s", "x"]),
+                serde_json::json!([text("s")]),
+            ),
+            (
+                "object/has",
+                serde_json::json!(["object/has", map, "@payload.k"]),
+                serde_json::json!([text("k")]),
+            ),
+            (
+                "object/get truthy",
+                serde_json::json!(["object/get", map, "@payload.k"]),
+                serde_json::json!([text("k")]),
+            ),
+            (
+                "object/get =",
+                serde_json::json!(["=", ["object/get", { "a": "x", "b": "y" }, "@payload.k"], "y"]),
+                serde_json::json!([text("k")]),
+            ),
+            (
+                "array/includes",
+                serde_json::json!(["array/includes", ["x", "y"], "@payload.v"]),
+                serde_json::json!([text("v")]),
+            ),
+            (
+                "str/startsWith",
+                serde_json::json!(["str/startsWith", "@payload.name", "pre"]),
+                serde_json::json!([text("name")]),
+            ),
+            (
+                "validate/url",
+                serde_json::json!(["validate/url", "@payload.u"]),
+                serde_json::json!([text("u")]),
+            ),
+            (
+                "validate/required",
+                serde_json::json!(["validate/required", "@payload.r"]),
+                serde_json::json!([text("r")]),
+            ),
+            (
+                "and intersects in the other order",
+                serde_json::json!(["and", ["=", ["object/get", { "a": "x", "change": "y" }, "@payload.k"], "y"], ["object/has", { "a": 1, "change": 2 }, "@payload.k"]]),
+                serde_json::json!([text("k")]),
+            ),
+            (
+                "and intersects a shared field",
+                serde_json::json!(["and", ["object/has", { "a": 1, "change": 2 }, "@payload.k"], ["=", ["object/get", { "a": "x", "change": "y" }, "@payload.k"], "y"]]),
+                serde_json::json!([text("k")]),
+            ),
         ];
         for (name, guard, fields) in cases {
             let (pass, fail) = steered(guard, fields);
@@ -1708,11 +2519,39 @@ mod tests {
     fn the_guard_solver_steers_quantifiers_conditionals_bindings_and_grid_bounds() {
         let items = serde_json::json!({ "name": "items", "type": "[object]" });
         let cases: Vec<(&str, serde_json::Value, serde_json::Value)> = vec![
-            ("array/some", serde_json::json!(["array/some", "@payload.items", ["fn", "x", ["=", "@x.kind", "a"]]]), serde_json::json!([items.clone()])),
-            ("array/every", serde_json::json!(["array/every", "@payload.items", ["fn", "x", ["=", "@x.kind", "a"]]]), serde_json::json!([items])),
-            ("if", serde_json::json!(["if", ["=", "@payload.s", "x"], ["=", "@payload.t", 1], true]), serde_json::json!([text("s"), { "name": "t", "type": "number" }])),
-            ("let", serde_json::json!(["let", [["v", "@payload.s"]], ["=", "@v", "x"]]), serde_json::json!([text("s")])),
-            ("grid/in-bounds", serde_json::json!(["grid/in-bounds", "@payload.pos", 5, 5]), serde_json::json!([{ "name": "pos", "type": "object" }])),
+            (
+                "array/some",
+                serde_json::json!([
+                    "array/some",
+                    "@payload.items",
+                    ["fn", "x", ["=", "@x.kind", "a"]]
+                ]),
+                serde_json::json!([items.clone()]),
+            ),
+            (
+                "array/every",
+                serde_json::json!([
+                    "array/every",
+                    "@payload.items",
+                    ["fn", "x", ["=", "@x.kind", "a"]]
+                ]),
+                serde_json::json!([items]),
+            ),
+            (
+                "if",
+                serde_json::json!(["if", ["=", "@payload.s", "x"], ["=", "@payload.t", 1], true]),
+                serde_json::json!([text("s"), { "name": "t", "type": "number" }]),
+            ),
+            (
+                "let",
+                serde_json::json!(["let", [["v", "@payload.s"]], ["=", "@v", "x"]]),
+                serde_json::json!([text("s")]),
+            ),
+            (
+                "grid/in-bounds",
+                serde_json::json!(["grid/in-bounds", "@payload.pos", 5, 5]),
+                serde_json::json!([{ "name": "pos", "type": "object" }]),
+            ),
         ];
         for (name, guard, fields) in cases {
             let (pass, fail) = steered(guard, fields);
@@ -1725,8 +2564,22 @@ mod tests {
         let key = serde_json::json!([{ "name": "k", "type": "string" }]);
         let by_kind = |op: &str| serde_json::json!([op, [{ "kind": "a" }, { "kind": "a" }], ["fn", "x", ["=", "@payload.k", "@x.kind"]]]);
         let cases: Vec<(&str, serde_json::Value)> = vec![
-            ("some over scalars", serde_json::json!(["array/some", ["a", "b"], ["fn", "x", ["=", "@payload.k", "@x"]]])),
-            ("some over a list call", serde_json::json!(["array/some", ["list", "a", "b"], ["fn", "x", ["=", "@payload.k", "@x"]]])),
+            (
+                "some over scalars",
+                serde_json::json!([
+                    "array/some",
+                    ["a", "b"],
+                    ["fn", "x", ["=", "@payload.k", "@x"]]
+                ]),
+            ),
+            (
+                "some over a list call",
+                serde_json::json!([
+                    "array/some",
+                    ["list", "a", "b"],
+                    ["fn", "x", ["=", "@payload.k", "@x"]]
+                ]),
+            ),
             ("some over objects", by_kind("array/some")),
             ("every over objects", by_kind("array/every")),
         ];
@@ -1734,28 +2587,45 @@ mod tests {
             let (pass, fail) = steered(guard, key.clone());
             assert_eq!((pass, fail), (Some(true), Some(false)), "{name}");
         }
-        let (empty_some, _) = steered(serde_json::json!(["array/some", [], ["fn", "x", ["=", "@payload.k", "@x"]]]), key.clone());
+        let (empty_some, _) = steered(
+            serde_json::json!(["array/some", [], ["fn", "x", ["=", "@payload.k", "@x"]]]),
+            key.clone(),
+        );
         assert_eq!(empty_some, None, "control: no element can satisfy `some` over an empty list, so no passing payload is claimed");
-        let (_, empty_every_fail) = steered(serde_json::json!(["array/every", [], ["fn", "x", ["=", "@payload.k", "@x"]]]), key);
+        let (_, empty_every_fail) = steered(
+            serde_json::json!(["array/every", [], ["fn", "x", ["=", "@payload.k", "@x"]]]),
+            key,
+        );
         assert_eq!(empty_every_fail, None, "control: every element of an empty list satisfies `every`, so no failing payload is claimed");
     }
 
     #[test]
     fn control_a_guard_over_no_payload_stays_unsolved_rather_than_claiming_a_payload() {
-        let (pass, fail) = steered(serde_json::json!(["=", "@entity.mode", "on"]), serde_json::json!([]));
+        let (pass, fail) = steered(
+            serde_json::json!(["=", "@entity.mode", "on"]),
+            serde_json::json!([]),
+        );
         assert_eq!((pass, fail), (None, None));
     }
 
     #[test]
     fn steps_are_planned_in_the_order_the_transitions_are_declared() {
-        let schema = machine(&[("idle", "ZED", "b", None), ("idle", "ALPHA", "c", None), ("b", "MID", "idle", None)]);
+        let schema = machine(&[
+            ("idle", "ZED", "b", None),
+            ("idle", "ALPHA", "c", None),
+            ("b", "MID", "idle", None),
+        ]);
         let events: Vec<String> = plan_program(&schema, &PlanOptions::default())
             .unwrap()
             .into_iter()
             .filter(|s| s.payload_case == PayloadCase::Success)
             .map(|s| s.event)
             .collect();
-        assert_eq!(events, vec!["ZED", "ALPHA", "MID"], "not sorted by state and event name");
+        assert_eq!(
+            events,
+            vec!["ZED", "ALPHA", "MID"],
+            "not sorted by state and event name"
+        );
     }
 
     fn steerable(guard: serde_json::Value) -> Option<bool> {
@@ -1769,14 +2639,46 @@ mod tests {
 
     #[test]
     fn a_guard_is_steerable_only_when_every_binding_it_reads_is_a_payload_path() {
-        assert_eq!(steerable(serde_json::json!(["=", "@payload.s", "x"])), Some(true));
-        assert_eq!(steerable(serde_json::json!(["=", "@entity.mode", "x"])), Some(false), "@entity side unreachable");
-        assert_eq!(steerable(serde_json::json!(["=", "@config.mode", "x"])), Some(false));
-        assert_eq!(steerable(serde_json::json!("@config.enabled")), Some(false), "a bare config atom");
-        assert_eq!(steerable(serde_json::json!(["and", ["=", "@payload.s", "x"], ["=", "@entity.mode", "x"]])), Some(false));
-        assert_eq!(steerable(serde_json::json!(["or", true, ["=", "@payload.s", "x"]])), Some(true), "control: a payload binding keeps it steerable");
+        assert_eq!(
+            steerable(serde_json::json!(["=", "@payload.s", "x"])),
+            Some(true)
+        );
+        assert_eq!(
+            steerable(serde_json::json!(["=", "@entity.mode", "x"])),
+            Some(false),
+            "@entity side unreachable"
+        );
+        assert_eq!(
+            steerable(serde_json::json!(["=", "@config.mode", "x"])),
+            Some(false)
+        );
+        assert_eq!(
+            steerable(serde_json::json!("@config.enabled")),
+            Some(false),
+            "a bare config atom"
+        );
+        assert_eq!(
+            steerable(serde_json::json!([
+                "and",
+                ["=", "@payload.s", "x"],
+                ["=", "@entity.mode", "x"]
+            ])),
+            Some(false)
+        );
+        assert_eq!(
+            steerable(serde_json::json!(["or", true, ["=", "@payload.s", "x"]])),
+            Some(true),
+            "control: a payload binding keeps it steerable"
+        );
         let unguarded = guard_schema(serde_json::json!(null), serde_json::json!([]));
-        let step = plan_program(&unguarded, &PlanOptions::default()).unwrap().into_iter().find(|s| s.event == "GO").unwrap();
-        assert_eq!(step.guard_steerable, None, "an unguarded step carries no steerability stamp");
+        let step = plan_program(&unguarded, &PlanOptions::default())
+            .unwrap()
+            .into_iter()
+            .find(|s| s.event == "GO")
+            .unwrap();
+        assert_eq!(
+            step.guard_steerable, None,
+            "an unguarded step carries no steerability stamp"
+        );
     }
 }

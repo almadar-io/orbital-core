@@ -763,6 +763,54 @@ impl SignIn {
     }
 }
 
+// ----- the tick invoker ------------------------------------------------------------------------------
+
+/// The Google issuer whose OIDC tokens Cloud Scheduler signs, and where its keys are published.
+pub const GOOGLE_ISSUER: &str = "https://accounts.google.com";
+pub const GOOGLE_JWKS_ORIGIN: &str = "https://www.googleapis.com";
+
+/// Who may run a tick pass over HTTP (`POST /api/tick`, the exported Terraform's scheduler): a token from the issuer for
+/// the audience, whose verified `email` is the invoker's.
+pub struct TickInvoker {
+    verifier: Arc<dyn TokenVerifier>,
+    email: String,
+}
+
+impl TickInvoker {
+    pub fn new(verifier: Arc<dyn TokenVerifier>, email: &str) -> Self {
+        Self { verifier, email: email.to_string() }
+    }
+
+    /// The invoker `ORB_TICK_INVOKER` names, its tokens for `ORB_TICK_AUDIENCE` (the service URL the scheduler calls);
+    /// `None` when no invoker is named. An invoker without an audience is an error.
+    pub fn from_env(
+        env: &AuthEnv,
+        feed_host: &dyn Fn(&[String]) -> HostAnswer,
+        cache: Arc<dyn SecretSource>,
+        clock: Clock,
+    ) -> Result<Option<Self>, String> {
+        let Some(email) = env_text(env, "ORB_TICK_INVOKER") else { return Ok(None) };
+        let audience = env_text(env, "ORB_TICK_AUDIENCE")
+            .ok_or("ORB_TICK_INVOKER needs ORB_TICK_AUDIENCE, the service URL the scheduler's token is minted for")?;
+        let allowed = vec![GOOGLE_ISSUER.to_string(), GOOGLE_JWKS_ORIGIN.to_string()];
+        let feed = Feed::new(feed_host(&allowed), cache, clock.clone(), allowed);
+        Ok(Some(Self::new(Arc::new(OidcVerifier::new(GOOGLE_ISSUER, audience, feed, clock)), email)))
+    }
+
+    /// Whether `authorization` (the `Authorization` header) is the invoker's.
+    pub fn admits(&self, authorization: Option<&str>) -> Result<(), AuthError> {
+        let token = authorization
+            .and_then(|header| header.strip_prefix(BEARER_PREFIX))
+            .ok_or_else(|| AuthError::new("missing", "Authorization header missing or malformed"))?;
+        let verified = self.verifier.verify(token, None)?;
+        let email_verified = verified.claims.get("email_verified").and_then(Json::as_bool) == Some(true);
+        match verified.email.as_deref() {
+            Some(email) if email == self.email && email_verified => Ok(()),
+            _ => Err(AuthError::new("not-invoker", "the token is not the tick invoker's")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1237,5 +1285,55 @@ mod tests {
         assert_eq!(origin_of("https://allowed.test@evil.test/x"), None, "credentials in the authority hide the real host");
         assert_eq!(origin_of("ftp://x/y"), None);
         assert_eq!(origin_of("not a url"), None);
+    }
+
+    struct Scripted(Json);
+
+    impl TokenVerifier for Scripted {
+        fn provider(&self) -> Provider {
+            Provider::Oidc
+        }
+        fn verify(&self, token: &str, _: Option<&str>) -> Result<VerifiedUser, AuthError> {
+            if token != "good" {
+                return Err(AuthError::new("invalid", "bad signature"));
+            }
+            Ok(VerifiedUser {
+                uid: "sa".into(),
+                provider: Provider::Oidc,
+                email: self.0["email"].as_str().map(str::to_string),
+                name: None,
+                tenant: None,
+                claims: self.0.clone(),
+            })
+        }
+    }
+
+    fn invoker(claims: Json) -> TickInvoker {
+        TickInvoker::new(Arc::new(Scripted(claims)), "app-sa@p.iam.gserviceaccount.com")
+    }
+
+    #[test]
+    fn the_tick_invoker_admits_only_its_own_verified_email() {
+        let own = serde_json::json!({ "email": "app-sa@p.iam.gserviceaccount.com", "email_verified": true });
+        assert!(invoker(own.clone()).admits(Some("Bearer good")).is_ok());
+        assert_eq!(invoker(own.clone()).admits(Some("Bearer bad")).unwrap_err().reason, "invalid", "control: a bad signature");
+        assert_eq!(invoker(own).admits(None).unwrap_err().reason, "missing");
+        let other = serde_json::json!({ "email": "someone@p.iam.gserviceaccount.com", "email_verified": true });
+        assert_eq!(invoker(other).admits(Some("Bearer good")).unwrap_err().reason, "not-invoker");
+        let unverified = serde_json::json!({ "email": "app-sa@p.iam.gserviceaccount.com", "email_verified": false });
+        assert_eq!(invoker(unverified).admits(Some("Bearer good")).unwrap_err().reason, "not-invoker");
+    }
+
+    #[test]
+    fn edge_an_invoker_without_an_audience_is_refused_and_none_named_is_none() {
+        let host = |_: &[String]| -> HostAnswer { Arc::new(|_| IoAnswer::Random(Ok(Vec::new()))) };
+        let cache: Arc<dyn SecretSource> = Arc::new(crate::credentials::Credentials::from_env(Default::default()));
+        let clock: Clock = Arc::new(|| 0);
+        let env = |pairs: &[(&str, &str)]| -> AuthEnv { pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+        assert!(TickInvoker::from_env(&env(&[]), &host, cache.clone(), clock.clone()).unwrap().is_none());
+        assert!(TickInvoker::from_env(&env(&[("ORB_TICK_INVOKER", "a@b")]), &host, cache.clone(), clock.clone()).is_err());
+        assert!(TickInvoker::from_env(&env(&[("ORB_TICK_INVOKER", "a@b"), ("ORB_TICK_AUDIENCE", "https://app.run.app")]), &host, cache, clock)
+            .unwrap()
+            .is_some());
     }
 }

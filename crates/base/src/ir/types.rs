@@ -160,17 +160,7 @@ impl OirModule {
 
     /// Every service a `call-service` in a transition or tick names.
     pub fn invoked_services(&self) -> std::collections::BTreeSet<String> {
-        use {crate::ir::effects::OirEffect, crate::ir::expr::OirExpr};
-        fn visit(e: &OirExpr, names: &mut std::collections::BTreeSet<String>) {
-            if let OirExpr::Effect { effect } = e {
-                if let OirEffect::CallService { service, .. } = effect.as_ref() {
-                    names.insert(service.clone());
-                }
-            }
-            for child in e.child_exprs() {
-                visit(child, names);
-            }
-        }
+        let visit = invoked_services_in;
         let mut names = std::collections::BTreeSet::new();
         for t in &self.traits {
             for e in t
@@ -2055,6 +2045,22 @@ pub struct OirMetadata {
 
 // `to_snake_case` is the canonical `crate::str_utils::to_snake_case` (imported
 // at module top) — the byte-identical local copy was removed (Pillar F3).
+
+/// Add every service a `call-service` effect inside `e` names to `names`.
+pub fn invoked_services_in(
+    e: &crate::ir::expr::OirExpr,
+    names: &mut std::collections::BTreeSet<String>,
+) {
+    use {crate::ir::effects::OirEffect, crate::ir::expr::OirExpr};
+    if let OirExpr::Effect { effect } = e {
+        if let OirEffect::CallService { service, .. } = effect.as_ref() {
+            names.insert(service.clone());
+        }
+    }
+    for child in e.child_exprs() {
+        invoked_services_in(child, names);
+    }
+}
 
 #[cfg(test)]
 mod tests {

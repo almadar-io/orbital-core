@@ -43,6 +43,9 @@ pub enum GapReason {
     /// dispatch delivered) of an `http` effect. In real semantics the reply arrives inside the request's own
     /// dispatch, and the walk has no network to produce one.
     NotReachableWithoutNetwork,
+    /// The step is a lifecycle `INIT` in a state other than the trait's boot state: it reaches the trait only when the
+    /// trait remounts holding that state, and a page walk mounts it fresh.
+    DeliveredOnlyByRemount,
 }
 
 /// A transition a dispatch fired after its seed (a cascaded emit or listener).

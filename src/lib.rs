@@ -64,6 +64,7 @@ pub use orbital_core_base::route;
 pub use orbital_core_runtime::renderer_coverage;
 pub mod runtime {
     pub use orbital_core_base::dispatch_mode;
+    pub use orbital_core_runtime::agent_ports;
     pub use orbital_core_runtime::callsite_capture;
     pub use orbital_core_runtime::canvas_theme;
     pub use orbital_core_runtime::config;
@@ -86,6 +87,7 @@ pub mod runtime {
     pub use orbital_core_runtime::couchdb;
     #[cfg(not(target_arch = "wasm32"))]
     pub use orbital_core_runtime::store_config;
+    pub use orbital_core_runtime::stream_ticket;
     pub mod http_request {
         pub use orbital_core_base::http_wire::is_header_name;
         pub use orbital_core_base::http_wire::is_header_value;
@@ -246,7 +248,7 @@ pub use orbital_core_base::schema;
 pub use orbital_core_base::secrets;
 pub mod credential_admin {
     pub use orbital_core_base::credential_admin::*;
-    pub use orbital_core_runtime::credential_admin::{catalog, run, AdminAsks, CredentialStanding, RotateCounts, StoreListing, StoredName};
+    pub use orbital_core_runtime::credential_admin::{catalog, missing_required_credentials, run, schema_invoked_services, AdminAsks, CredentialStanding, RotateCounts, StoreListing, StoredName};
 }
 pub use orbital_core_base::shell;
 pub use orbital_core_base::shell_protocol;
@@ -263,6 +265,7 @@ pub mod type_compat {
 }
 pub use orbital_core_base::bus_event::BusEventSource;
 pub use orbital_core_base::bus_event::EmittedEvent;
+pub use orbital_core_base::bus_event::tick_event_key;
 pub use orbital_core_base::client_effect::ClientEffect;
 pub use orbital_core_base::client_effect::NavigateOptions;
 pub use orbital_core_base::dispatch_mode::DispatchMode;

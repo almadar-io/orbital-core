@@ -593,6 +593,45 @@ impl EventResponse {
         }
     }
 
+    /// A request refused before any dispatch, for `code` on `trait_name.event`.
+    pub fn refused(code: TransitionRejectionCode, trait_name: &str, event: &str, message: String) -> Self {
+        Self {
+            success: false,
+            error: Some(message),
+            rejections: Some(vec![TransitionRejection {
+                code,
+                trait_name: Some(trait_name.to_string()),
+                from: None,
+                event: Some(event.to_string()),
+                states_declaring_event: None,
+                transition: None,
+                guard: None,
+                error: None,
+            }]),
+            ..Default::default()
+        }
+    }
+
+    /// A client-facing request naming an inbound hook's event: only `/api/hooks/<name>` delivers it.
+    pub fn inbound_only(trait_name: &str, event: &str) -> Self {
+        Self::refused(
+            TransitionRejectionCode::InboundOnlyEvent,
+            trait_name,
+            event,
+            orbital_core_base::inbound::inbound_only_message(trait_name, event),
+        )
+    }
+
+    /// An input-channel request for an event that is not a declared external input of its trait.
+    pub fn not_an_external_input(trait_name: &str, event: &str) -> Self {
+        Self::refused(
+            TransitionRejectionCode::NotAnExternalInput,
+            trait_name,
+            event,
+            format!("{trait_name}.{event} is not a declared external input"),
+        )
+    }
+
     /// Append the renders of traits repainted for an entity change
     /// ([`crate::runtime::Rerender`]), after everything the dispatch itself rendered.
     pub fn fold_rerenders(&mut self, rerenders: &[crate::kernel::Rerender]) {

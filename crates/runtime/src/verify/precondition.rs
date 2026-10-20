@@ -3,8 +3,9 @@
 //! The hermetic reset strands such a field at its default, so the step needs the setter dispatched first.
 
 use crate::planner::{
-    collect_binding_texts, collect_emitted, entity_def, effective_seed_id, initial_state, inline_traits, literal_json,
-    persist_targets, replay_transitions, synth_payload, BindRowFrom, EntityCtx, Precondition, Proof, UnprovenReason,
+    collect_binding_texts, collect_emitted, effective_seed_id, entity_def, initial_state,
+    inline_traits, literal_json, persist_targets, replay_transitions, synth_payload, BindRowFrom,
+    EntityCtx, Precondition, Proof, UnprovenReason,
 };
 use crate::verify::plan_wire::RoleWire;
 use orbital_core_base::schema::sexpr::SExpression;
@@ -21,8 +22,11 @@ fn entity_field_bindings(guard: &SExpression) -> Vec<String> {
     collect_binding_texts(guard, &mut texts);
     let mut out: Vec<String> = Vec::new();
     for text in texts {
-        let Some(field) = text.strip_prefix("@entity.") else { continue };
-        let plain = !field.is_empty() && field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        let Some(field) = text.strip_prefix("@entity.") else {
+            continue;
+        };
+        let plain =
+            !field.is_empty() && field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
         if plain && field != "id" && !out.iter().any(|f| f == field) {
             out.push(field.to_string());
         }
@@ -53,7 +57,11 @@ pub(crate) fn find_set<'a>(node: &'a SExpression, target: &str) -> Option<&'a SE
 
 fn field_set<'a>(transition: &'a TransitionDefinition, field: &str) -> Option<FieldSet<'a>> {
     let target = format!("@entity.{field}");
-    let value = transition.effects.iter().flatten().find_map(|e| find_set(e, &target))?;
+    let value = transition
+        .effects
+        .iter()
+        .flatten()
+        .find_map(|e| find_set(e, &target))?;
     let payload_path = match value {
         SExpression::String(v) => v
             .strip_prefix("@payload.")
@@ -61,7 +69,10 @@ fn field_set<'a>(transition: &'a TransitionDefinition, field: &str) -> Option<Fi
             .map(str::to_string),
         _ => None,
     };
-    Some(FieldSet { value, payload_path })
+    Some(FieldSet {
+        value,
+        payload_path,
+    })
 }
 
 fn evaluate(
@@ -70,17 +81,26 @@ fn evaluate(
     payload: &serde_json::Value,
     state: &str,
 ) -> Result<Value, String> {
-    let context = |v: &serde_json::Value| serde_json::from_value::<Value>(v.clone()).map_err(|e| e.to_string());
+    let context = |v: &serde_json::Value| {
+        serde_json::from_value::<Value>(v.clone()).map_err(|e| e.to_string())
+    };
     let mut ctx = BindingContextBuilder::new()
         .entity(context(entity)?)
         .payload(context(payload)?)
         .state(Value::String(state.to_string()))
         .build();
     ctx.from_state = Some(state.to_string());
-    Evaluator::new().evaluate(expr, &ctx).map_err(|e| e.to_string())
+    Evaluator::new()
+        .evaluate(expr, &ctx)
+        .map_err(|e| e.to_string())
 }
 
-fn guard_holds(guard: &SExpression, entity: &serde_json::Value, payload: &serde_json::Value, state: &str) -> bool {
+fn guard_holds(
+    guard: &SExpression,
+    entity: &serde_json::Value,
+    payload: &serde_json::Value,
+    state: &str,
+) -> bool {
     matches!(evaluate(guard, entity, payload, state), Ok(v) if v.is_truthy())
 }
 
@@ -96,10 +116,17 @@ fn baseline(
 ) -> (serde_json::Map<String, serde_json::Value>, Vec<String>) {
     let mut out = serde_json::Map::new();
     let mut established = Vec::new();
-    let entity = td.linked_entity.as_deref().and_then(|name| entity_def(schema, name));
+    let entity = td
+        .linked_entity
+        .as_deref()
+        .and_then(|name| entity_def(schema, name));
     for field in fields {
         let default = entity
-            .and_then(|e| e.fields.iter().find(|f| f.name.as_deref() == Some(field.as_str())))
+            .and_then(|e| {
+                e.fields
+                    .iter()
+                    .find(|f| f.name.as_deref() == Some(field.as_str()))
+            })
             .and_then(|f| f.default.as_ref())
             .and_then(literal_json);
         if let Some(value) = default {
@@ -112,11 +139,18 @@ fn baseline(
                 continue;
             }
             for field in fields {
-                let Some(set) = field_set(t, field) else { continue };
+                let Some(set) = field_set(t, field) else {
+                    continue;
+                };
                 if set.payload_path.is_some() || out.contains_key(field) && entity.is_none() {
                     continue;
                 }
-                if let Ok(value) = evaluate(set.value, &serde_json::json!({}), &serde_json::json!({}), &initial) {
+                if let Ok(value) = evaluate(
+                    set.value,
+                    &serde_json::json!({}),
+                    &serde_json::json!({}),
+                    &initial,
+                ) {
                     out.insert(field.clone(), to_json(&value));
                     established.push(field.clone());
                 }
@@ -128,21 +162,33 @@ fn baseline(
 
 /// Chase an effect-emitted setter event back to the first event a user can dispatch: a result event settles as a
 /// side effect of the transition that produces it, so dispatching it directly would no-op.
-fn dispatchable(td: &TraitDefinition, event: &str, at_state: &str, visited: &mut Vec<String>) -> (String, String) {
+fn dispatchable(
+    td: &TraitDefinition,
+    event: &str,
+    at_state: &str,
+    visited: &mut Vec<String>,
+) -> (String, String) {
     if visited.iter().any(|v| v == event) {
         return (event.to_string(), at_state.to_string());
     }
     visited.push(event.to_string());
     let produces = |t: &TransitionDefinition| {
         let mut emits = false;
-        t.effects.iter().flatten().for_each(|e| collect_emitted(e, &mut |name| emits |= name == event));
+        t.effects
+            .iter()
+            .flatten()
+            .for_each(|e| collect_emitted(e, &mut |name| emits |= name == event));
         emits
     };
     let Some(producer) = td.state_machine.transitions.iter().find(|t| produces(t)) else {
         return (event.to_string(), at_state.to_string());
     };
     let from = producer.from.states().first().copied().unwrap_or("*");
-    let from = if from == "*" { initial_state(td).unwrap_or_else(|| at_state.to_string()) } else { from.to_string() };
+    let from = if from == "*" {
+        initial_state(td).unwrap_or_else(|| at_state.to_string())
+    } else {
+        from.to_string()
+    };
     dispatchable(td, &producer.event, &from, visited)
 }
 
@@ -166,7 +212,13 @@ fn candidates<'a>(
             continue;
         }
         let same = td.name == guarded.name;
-        let Some(required) = (if same { Some(at_state.to_string()) } else { initial_state(td) }) else { continue };
+        let Some(required) = (if same {
+            Some(at_state.to_string())
+        } else {
+            initial_state(td)
+        }) else {
+            continue;
+        };
         let emitted = crate::planner::effect_emitted_events(td);
         for t in &td.state_machine.transitions {
             if t.event == "INIT" || !(t.from.matches(&required) || t.from.matches("*")) {
@@ -183,7 +235,12 @@ fn candidates<'a>(
             } else {
                 (t.event.clone(), required.clone())
             };
-            out.push(Candidate { td, transition: t, anchor, event });
+            out.push(Candidate {
+                td,
+                transition: t,
+                anchor,
+                event,
+            });
         }
     }
     out
@@ -206,12 +263,22 @@ fn judge_value(
     step_payload: &serde_json::Value,
     others_unestablished: bool,
 ) -> Verdict {
-    match evaluate(set.value, &serde_json::Value::Object(base.clone()), payload, state) {
+    match evaluate(
+        set.value,
+        &serde_json::Value::Object(base.clone()),
+        payload,
+        state,
+    ) {
         Err(_) => Verdict::Unknown,
         Ok(value) => {
             let mut entity = base.clone();
             entity.insert(field.to_string(), to_json(&value));
-            if guard_holds(guard, &serde_json::Value::Object(entity), step_payload, state) {
+            if guard_holds(
+                guard,
+                &serde_json::Value::Object(entity),
+                step_payload,
+                state,
+            ) {
                 Verdict::Satisfies
             } else if others_unestablished {
                 Verdict::Unknown
@@ -222,7 +289,20 @@ fn judge_value(
     }
 }
 
-fn referenced_entity(schema: &OrbitalSchema, setter: &TraitDefinition, event: &str, payload_path: &str) -> Option<String> {
+fn reads_payload(value: &SExpression) -> bool {
+    let mut texts = Vec::new();
+    collect_binding_texts(value, &mut texts);
+    texts.iter().any(|t| {
+        *t == "@payload" || t.starts_with("@payload.") || t.starts_with("@callsitePayload")
+    })
+}
+
+fn referenced_entity(
+    schema: &OrbitalSchema,
+    setter: &TraitDefinition,
+    event: &str,
+    payload_path: &str,
+) -> Option<String> {
     let declared = setter
         .state_machine
         .events
@@ -234,18 +314,25 @@ fn referenced_entity(schema: &OrbitalSchema, setter: &TraitDefinition, event: &s
     if let Some(entity) = declared.and_then(|f| f.entity.clone()) {
         return Some(entity);
     }
-    let listen = setter
-        .listens
-        .iter()
-        .flatten()
-        .find(|l| l.triggers.as_deref() == Some(event) && matches!(l.source, Some(ListenSource::Trait { .. })))?;
-    let SExpression::String(mapped) = listen.payload_mapping.as_ref()?.get(payload_path)? else { return None };
-    let single = mapped.strip_prefix("@payload.").is_some_and(|r| !r.is_empty() && !r.contains('.'));
+    let listen = setter.listens.iter().flatten().find(|l| {
+        l.triggers.as_deref() == Some(event) && matches!(l.source, Some(ListenSource::Trait { .. }))
+    })?;
+    let SExpression::String(mapped) = listen.payload_mapping.as_ref()?.get(payload_path)? else {
+        return None;
+    };
+    let single = mapped
+        .strip_prefix("@payload.")
+        .is_some_and(|r| !r.is_empty() && !r.contains('.'));
     if !single {
         return None;
     }
-    let Some(ListenSource::Trait { trait_name, .. }) = &listen.source else { return None };
-    inline_traits(schema).into_iter().find(|t| &t.name == trait_name).and_then(|t| t.linked_entity.clone())
+    let Some(ListenSource::Trait { trait_name, .. }) = &listen.source else {
+        return None;
+    };
+    inline_traits(schema)
+        .into_iter()
+        .find(|t| &t.name == trait_name)
+        .and_then(|t| t.linked_entity.clone())
 }
 
 /// The precondition of the `pass` step of `transition` at `at_state`, or `None` when the guard needs none.
@@ -267,36 +354,75 @@ pub fn plan_precondition(
     }
     let schema = ctx.schema;
     let (base, init_established) = baseline(schema, td, &fields);
-    if !base.is_empty() && guard_holds(guard, &serde_json::Value::Object(base.clone()), step_payload, at_state) {
+    if !base.is_empty()
+        && guard_holds(
+            guard,
+            &serde_json::Value::Object(base.clone()),
+            step_payload,
+            at_state,
+        )
+    {
         return None;
     }
     let viewer = ctx.viewer_id.as_deref();
     for field in &fields {
         for candidate in candidates(schema, linked, field, td, at_state) {
-            let Some(set) = field_set(candidate.transition, field) else { continue };
-            let seed = candidate.td.linked_entity.as_deref().map(|e| effective_seed_id(e, ctx.owner_fields, viewer));
+            let Some(set) = field_set(candidate.transition, field) else {
+                continue;
+            };
+            let seed = candidate
+                .td
+                .linked_entity
+                .as_deref()
+                .map(|e| effective_seed_id(e, ctx.owner_fields, viewer));
             let mut payload = synth_payload(candidate.td, &candidate.event, ctx, seed.as_deref());
             let chased = candidate.event != candidate.transition.event;
             let mut bind_row_from = None;
             if let (Some(path), false) = (&set.payload_path, chased) {
-                if let Some(entity) = referenced_entity(schema, candidate.td, &candidate.event, path) {
-                    payload[path] = serde_json::Value::from(effective_seed_id(&entity, ctx.owner_fields, viewer));
-                    bind_row_from = Some(BindRowFrom { entity, payload_field: path.clone() });
+                if let Some(entity) =
+                    referenced_entity(schema, candidate.td, &candidate.event, path)
+                {
+                    payload[path] = serde_json::Value::from(effective_seed_id(
+                        &entity,
+                        ctx.owner_fields,
+                        viewer,
+                    ));
+                    bind_row_from = Some(BindRowFrom {
+                        entity,
+                        payload_field: path.clone(),
+                    });
                 }
             }
-            let verdict = if chased {
+            // A chased setter's payload is not the one the arm it reaches receives, so only a value that reads no
+            // payload can be judged there.
+            let verdict = if chased && reads_payload(set.value) {
                 Verdict::Unknown
             } else {
-                judge_value(&set, field, guard, &base, &payload, &candidate.anchor, step_payload, fields.iter().any(|f| f != field && !init_established.contains(f)))
+                judge_value(
+                    &set,
+                    field,
+                    guard,
+                    &base,
+                    &payload,
+                    &candidate.anchor,
+                    step_payload,
+                    fields
+                        .iter()
+                        .any(|f| f != field && !init_established.contains(f)),
+                )
             };
             let proof = match verdict {
                 Verdict::Fails => continue,
                 Verdict::Satisfies => Proof::Proven,
-                Verdict::Unknown => Proof::Unproven { reason: UnprovenReason::SetterValueUnresolved },
+                Verdict::Unknown => Proof::Unproven {
+                    reason: UnprovenReason::SetterValueUnresolved,
+                },
             };
             let role = persist_targets(candidate.td, &candidate.anchor, &candidate.event)
                 .into_iter()
-                .find_map(|(entity, kind)| crate::entity_access::role_satisfying_policy(schema, &entity, kind))
+                .find_map(|(entity, kind)| {
+                    crate::entity_access::role_satisfying_policy(schema, &entity, kind)
+                })
                 .map(|(field, value)| RoleWire { field, value });
             let unplanned_fields = fields
                 .iter()
@@ -319,22 +445,67 @@ pub fn plan_precondition(
         fields.iter().any(|field| {
             field_set(t, field).is_some_and(|set| {
                 !matches!(
-                    judge_value(&set, field, guard, &base, &serde_json::json!({}), at_state, step_payload, fields.len() > 1),
+                    judge_value(
+                        &set,
+                        field,
+                        guard,
+                        &base,
+                        &serde_json::json!({}),
+                        at_state,
+                        step_payload,
+                        fields.len() > 1
+                    ),
                     Verdict::Fails
                 )
             })
         })
     };
-    let on_path = replay_transitions(td, at_state).is_some_and(|path| path.into_iter().any(setters_value));
+    let on_path =
+        replay_transitions(td, at_state).is_some_and(|path| path.into_iter().any(setters_value));
     if on_path {
         return None;
     }
-    if td.state_machine.transitions.iter().any(|t| t.event != "INIT" && setters_value(t)) {
+    // A tick writes the trait's own frame on its clock, off any replay path (G-VERIFY-044).
+    let tick_sets = td.ticks.iter().flatten().any(|tick| {
+        fields.iter().any(|field| {
+            let target = format!("@entity.{field}");
+            tick.effects
+                .iter()
+                .find_map(|e| find_set(e, &target))
+                .is_some_and(|value| {
+                    let set = FieldSet {
+                        value,
+                        payload_path: None,
+                    };
+                    !matches!(
+                        judge_value(
+                            &set,
+                            field,
+                            guard,
+                            &base,
+                            &serde_json::json!({}),
+                            at_state,
+                            step_payload,
+                            fields.len() > 1
+                        ),
+                        Verdict::Fails
+                    )
+                })
+        })
+    });
+    if tick_sets
+        || td
+            .state_machine
+            .transitions
+            .iter()
+            .any(|t| t.event != "INIT" && setters_value(t))
+    {
         return Some(Precondition::SameTraitSetter {
             fields,
-            proof: Proof::Unproven { reason: UnprovenReason::SetterNotOnReplayPath },
+            proof: Proof::Unproven {
+                reason: UnprovenReason::SetterNotOnReplayPath,
+            },
         });
     }
     Some(Precondition::Unreachable { fields })
 }
-
