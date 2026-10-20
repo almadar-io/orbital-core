@@ -62,4 +62,3 @@ pub mod oauth_wire;
 #[cfg(feature = "ts-export")]
 pub mod wire_ts_export;
 pub mod jwt_alg;
-pub mod jws;

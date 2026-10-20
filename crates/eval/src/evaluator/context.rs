@@ -145,8 +145,9 @@ pub struct BindingContext {
     /// `@fromState` / `@toState`: the transition's ends.
     pub from_state: Option<String>,
     pub to_state: Option<String>,
-    /// Local bindings (from `let` expressions)
-    locals: ValueMap,
+    /// Local bindings (`let`, callback params, `@item`/`@index`): a chain of shared frames, so a child scope
+    /// pushes one frame instead of copying every enclosing binding.
+    locals: Arc<LocalFrame>,
     /// Custom bindings for entity types (for `count` queries).
     ///
     /// Shared via `Arc` so cloning a child context (hot path in map/filter/reduce)
@@ -162,6 +163,32 @@ pub struct BindingContext {
     prob: Arc<ProbState>,
     /// The dispatch's seed source for an unseeded `prob/*` stream; `None` in a pure evaluation.
     prob_entropy: Option<EntropySource>,
+}
+
+/// One scope's local bindings over its parent's. `None` marks a binding removed in this scope.
+#[derive(Debug, Clone, Default)]
+struct LocalFrame {
+    vars: Vec<(String, Option<Value>)>,
+    parent: Option<Arc<LocalFrame>>,
+}
+
+impl LocalFrame {
+    fn get(&self, name: &str) -> Option<&Value> {
+        let mut frame = self;
+        loop {
+            if let Some((_, value)) = frame.vars.iter().find(|(key, _)| key == name) {
+                return value.as_ref();
+            }
+            frame = frame.parent.as_deref()?;
+        }
+    }
+
+    fn put(&mut self, name: &str, value: Option<Value>) {
+        match self.vars.iter_mut().find(|(key, _)| key == name) {
+            Some(slot) => slot.1 = value,
+            None => self.vars.push((name.to_string(), value)),
+        }
+    }
 }
 
 /// The credential values of one evaluation. `Debug` shows only the names.
@@ -285,13 +312,27 @@ impl BindingContext {
 
     /// Set a local binding
     pub fn set_local(&mut self, name: &str, value: Value) -> &mut Self {
-        self.locals.insert(name.to_string(), value);
+        self.own_frame().put(name, Some(value));
         self
     }
 
     /// Remove a local binding
     pub fn remove_local(&mut self, name: &str) -> Option<Value> {
-        self.locals.shift_remove(name)
+        let removed = self.locals.get(name).cloned();
+        if removed.is_some() {
+            self.own_frame().put(name, None);
+        }
+        removed
+    }
+
+    /// This context's own innermost frame: written in place when no other context shares it, else a fresh frame
+    /// pushed over the shared chain (which stays untouched for every context holding it).
+    fn own_frame(&mut self) -> &mut LocalFrame {
+        if Arc::get_mut(&mut self.locals).is_none() {
+            let parent = Arc::clone(&self.locals);
+            self.locals = Arc::new(LocalFrame { vars: Vec::new(), parent: Some(parent) });
+        }
+        Arc::make_mut(&mut self.locals)
     }
 
     /// Register an entity store for count queries
@@ -751,7 +792,7 @@ impl BindingContext {
             prev_states: self.prev_states.clone(),
             from_state: self.from_state.clone(),
             to_state: self.to_state.clone(),
-            locals: self.locals.clone(),
+            locals: Arc::clone(&self.locals),
             entity_stores: Arc::clone(&self.entity_stores),
             drop_unset: self.drop_unset,
             secrets: Arc::clone(&self.secrets),
@@ -855,7 +896,7 @@ impl BindingContextBuilder {
     }
 
     pub fn local(mut self, name: &str, value: Value) -> Self {
-        self.context.locals.insert(name.to_string(), value);
+        self.context.set_local(name, value);
         self
     }
 
@@ -1430,5 +1471,85 @@ mod tests {
             resolved, content,
             "the fn form must pass through literally, not evaluate to a Value::Lambda"
         );
+    }
+
+    fn eval_json(json: &str, ctx: &BindingContext) -> Value {
+        let expr: orbital_core_base::schema::sexpr::SExpression = serde_json::from_str(json).unwrap();
+        crate::evaluator::Evaluator::new().evaluate(&expr, ctx).unwrap()
+    }
+
+    fn big_list(n: usize) -> Value {
+        Value::Array(
+            (0..n)
+                .map(|i| {
+                    let mut row = ValueMap::new();
+                    row.insert("n".to_string(), Value::Number(i as f64));
+                    row.insert("label".to_string(), Value::String(format!("row-{i}")));
+                    Value::Object(row)
+                })
+                .collect(),
+        )
+    }
+
+    // L13: a callback's scope is one frame over its parent, so a nested callback never copies an enclosing binding.
+    #[test]
+    fn a_nested_callback_does_not_copy_an_enclosing_big_binding() {
+        let ctx = BindingContextBuilder::new()
+            .local("big", big_list(2000))
+            .local("small", Value::Array((0..50).map(|i| Value::Number(i as f64)).collect()))
+            .build();
+        let started = std::time::Instant::now();
+        let out = eval_json(
+            r#"["array/map", "@big", ["fn", "x", ["array/reduce", "@small", "@x.n", ["fn", ["acc", "y"], ["+", "@acc", "@y"]]]]]"#,
+            &ctx,
+        );
+        let elapsed = started.elapsed();
+        let Value::Array(rows) = out else { panic!("map returns an array") };
+        assert_eq!(rows.len(), 2000);
+        assert_eq!(rows[1999], Value::Number(1999.0 + 1225.0));
+        assert!(elapsed < std::time::Duration::from_secs(2), "nested callbacks took {elapsed:?}");
+    }
+
+    #[test]
+    fn an_inner_callback_shadows_the_outer_item_and_index_and_sees_outer_params() {
+        let ctx = BindingContext::new();
+        let out = eval_json(
+            r#"["array/map", ["list", 10, 20], ["fn", "x", ["array/map", ["list", 1, 2, 3], ["fn", "y", ["+", ["*", "@x", 100], "@y", ["*", "@index", 1000]]]]]]"#,
+            &ctx,
+        );
+        let expect = |x: f64| Value::Array((0..3).map(|i| Value::Number(x * 100.0 + (i + 1) as f64 + i as f64 * 1000.0)).collect());
+        assert_eq!(out, Value::Array(vec![expect(10.0), expect(20.0)]));
+    }
+
+    #[test]
+    fn a_callback_scope_shares_its_enclosing_frames_instead_of_copying_them() {
+        let parent = BindingContextBuilder::new().local("big", big_list(2000)).build();
+        let mut child = parent.child();
+        assert!(Arc::ptr_eq(&child.locals, &parent.locals));
+        child.set_local("item", Value::Number(1.0));
+        child.set_local("index", Value::Number(0.0));
+        assert_eq!(child.locals.vars.len(), 2, "the callback frame holds only its own bindings");
+        let shared = child.locals.parent.as_ref().expect("the callback frame sits over its parent's");
+        assert!(Arc::ptr_eq(shared, &parent.locals), "the enclosing frame is shared, not copied");
+        let mut grandchild = child.child();
+        grandchild.set_local("item", Value::Number(2.0));
+        assert!(Arc::ptr_eq(grandchild.locals.parent.as_ref().unwrap(), &child.locals));
+        assert_eq!(grandchild.resolve("big.length"), Some(Value::Number(2000.0)));
+    }
+
+    #[test]
+    fn a_child_binding_never_leaks_into_its_parent() {
+        let mut parent = BindingContextBuilder::new().local("a", Value::Number(1.0)).build();
+        let mut child = parent.child();
+        child.set_local("a", Value::Number(2.0));
+        child.set_local("b", Value::Number(3.0));
+        assert_eq!(parent.resolve("a"), Some(Value::Number(1.0)));
+        assert_eq!(parent.resolve("b"), None);
+        assert_eq!(child.resolve("a"), Some(Value::Number(2.0)));
+        parent.set_local("c", Value::Number(4.0));
+        assert_eq!(child.resolve("c"), None, "a child is a snapshot of its parent at creation");
+        assert_eq!(child.remove_local("a"), Some(Value::Number(2.0)));
+        assert_eq!(child.resolve("a"), None, "a removed local is gone from the child, as with a copied map");
+        assert_eq!(parent.resolve("a"), Some(Value::Number(1.0)));
     }
 }

@@ -562,7 +562,7 @@ fn trace_of(outcomes: &DispatchOutcomes) -> Json {
                         "entityType": er.entity_type,
                         "total": er.total_count,
                     })).collect::<Vec<_>>(),
-                    "entity": j(&r.entity_data),
+                    "entity": j(&r.entity_data.to_value()),
                     "linked": r.linked_entity,
                     "event": r.event,
                     "payload": j(&r.payload),
@@ -2242,7 +2242,7 @@ fn entity_views(outcomes: &DispatchOutcomes, field: &str) -> Vec<(String, Option
         .map(|(t, r)| {
             let entry = r.entry.as_ref().expect("an executed step carries its entry");
             let num = |v: &Value| j(v)[field].as_f64();
-            (t.clone(), num(&entry.entity_before), entry.entity_after.as_ref().map(num))
+            (t.clone(), num(&entry.entity_before.to_value()), entry.entity_after.as_ref().map(|after| num(&after.to_value())))
         })
         .collect()
 }
@@ -2287,7 +2287,7 @@ fn each_hop_of_a_cascade_records_the_entity_before_and_after_it() {
     let seen: Vec<Json> = hops.iter().map(|h| serde_json::to_value(&h.observed).unwrap()).collect();
     assert_eq!(seen[0]["entityBefore"]["score"], json!(0.0));
     assert_eq!(seen[0]["entityAfter"]["score"], json!(1.0));
-    assert_eq!(seen[0]["firedArm"], json!(0));
+    assert_eq!(serde_json::to_value(&hops[0]).unwrap()["firedArm"], json!(0));
     assert_eq!(seen[1]["entityAfter"]["score"], json!(101.0), "the listener hop carries its own views");
 }
 

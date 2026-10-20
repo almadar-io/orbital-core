@@ -59,6 +59,7 @@ pub mod resumable;
 pub mod row_query;
 pub mod seed;
 pub mod server_leg;
+pub mod shared_entity;
 pub mod tab;
 pub mod tick_clock;
 #[cfg(feature = "wire-drivers")]

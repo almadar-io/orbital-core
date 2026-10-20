@@ -139,6 +139,7 @@ pub mod runtime {
     pub use orbital_core_runtime::payload_validation;
     pub use orbital_core_runtime::persona;
     pub use orbital_core_runtime::process_result;
+    pub use orbital_core_runtime::shared_entity;
     pub use orbital_core_runtime::projected_payload;
     pub use orbital_core_runtime::relations;
     pub use orbital_core_runtime::resumable;

@@ -805,7 +805,7 @@ impl RuntimeKernel {
                     result.consumed_emits = followups.consumed_emits;
                 }
                 if let (Some(result), None) = (&result, tick.as_ref()) {
-                    memory.record_delivery(scope, seed_delivery);
+                    memory.record_delivery(scope, seed_delivery, view);
                     if result.executed {
                         memory.record_transition(scope, &result.previous_state, &result.new_state);
                     }
@@ -1084,7 +1084,7 @@ impl RuntimeKernel {
             result.consumed_emits = consumed_emits;
         }
         if let Some(result) = &result {
-            memory.record_delivery(&t, &delivery);
+            memory.record_delivery(&t, &delivery, view);
             if result.executed {
                 memory.record_transition(&t, &result.previous_state, &result.new_state);
             }

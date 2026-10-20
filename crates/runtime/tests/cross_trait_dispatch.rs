@@ -238,7 +238,7 @@ fn bare_listen_route_forwards_source_payload_unchanged() {
         .unwrap();
     let target = outcomes.iter().find(|(t, _)| t == "Target").expect("Target should fire");
     assert_eq!(
-        target.1.entity_data.as_object().and_then(|o| o.get("id")).and_then(|v| v.as_str()),
+        target.1.entity_data.get("id").and_then(|v| v.as_str()),
         Some("abc123"),
         "bare route must forward the source payload's `id` field unchanged"
     );
@@ -258,7 +258,7 @@ fn with_listen_route_remaps_payload() {
         .unwrap();
     let target = outcomes.iter().find(|(t, _)| t == "Target").expect("Target should fire");
     assert_eq!(
-        target.1.entity_data.as_object().and_then(|o| o.get("id")).and_then(|v| v.as_str()),
+        target.1.entity_data.get("id").and_then(|v| v.as_str()),
         Some("abc123"),
         "a with-mapping route must still resolve the mapped field"
     );

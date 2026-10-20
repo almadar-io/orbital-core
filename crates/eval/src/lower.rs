@@ -1772,9 +1772,7 @@ impl ExprLowerer {
 
     /// Extract the `emit:` config from an options object, if present.
     ///
-    /// Accepts both snake_case (`on_change`, `on_message`) and camelCase
-    /// (`onChange`, `onMessage`) keys — lolo-authored source uses the former;
-    /// JSON-authored `.orb` uses the latter. All five keys (with `cancelled`) are optional; the
+    /// The stream keys are spelled `onChange` and `onMessage`, as the runtime routes them. All five keys (with `cancelled`) are optional; the
     /// validator enforces which ones are allowed per operator.
     ///
     /// Returns `None` if no `emit:` key is present, so the caller stores
@@ -1805,8 +1803,8 @@ impl ExprLowerer {
             }
         };
 
-        let on_change = read_str("on_change")?.or(read_str("onChange")?);
-        let on_message = read_str("on_message")?.or(read_str("onMessage")?);
+        let on_change = read_str("onChange")?;
+        let on_message = read_str("onMessage")?;
 
         let cfg = OirEmitConfig {
             success: read_str("success")?,

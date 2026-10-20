@@ -485,17 +485,6 @@ const OS_TTY_SIZE: &[ShapeField] = &[field("rows", "number"), field("cols", "num
 const OS_SOCK: &[ShapeField] = &[field("sock", "number")];
 const OS_ACCEPTED: &[ShapeField] = &[field("sock", "number"), field("peer", "string")];
 const OS_RECVFROM: &[ShapeField] = &[field("data", "string"), field("peer", "string")];
-const HTTP_LISTENING: &[ShapeField] = &[field("sock", "number"), field("address", "string"), field("port", "number")];
-/// One request an `http/listen` stream delivers: `requestId` is what `http/respond` answers.
-const HTTP_REQUEST: &[ShapeField] = &[
-    field("requestId", "number"),
-    field("method", "string"),
-    field("path", "string"),
-    field("query", "string"),
-    field("headers", "object"),
-    field("body", "string"),
-    field("peer", "string"),
-];
 const OS_ADDRESSES: &[ShapeField] = &[field("addresses", "array")];
 const OS_NANOS: &[ShapeField] = &[field("nanos", "number")];
 const OS_UID: &[ShapeField] = &[field("uid", "number")];
@@ -576,8 +565,6 @@ fn os_contract(op: OsOp) -> OsContract {
         OsOp::Recvfrom => single(OS_RECVFROM),
         OsOp::DnsResolve => single(OS_ADDRESSES),
         OsOp::WatchPort => stream(OS_NONE, OS_EVENT_PORT),
-        OsOp::HttpListen => stream(HTTP_LISTENING, HTTP_REQUEST),
-        OsOp::HttpRespond => single(OS_BYTES),
         OsOp::ClockMonotonic => single(OS_NANOS),
         OsOp::Uid => single(OS_UID),
         OsOp::Gid => single(OS_GID),
@@ -702,11 +689,11 @@ pub fn message_payload(operator: &str) -> ProducedPayload {
 
 /// The bus key an operator fires its success payload on.
 ///
-/// `ref` uses `on_change` in both executors, so reading `emit.success` for it
+/// `ref` uses `onChange` in both executors, so reading `emit.success` for it
 /// inspects a key the runtime never fires.
 pub fn success_emit_key(operator: &str) -> &'static str {
     match operator {
-        "ref" => "on_change",
+        "ref" => "onChange",
         _ => "success",
     }
 }
@@ -907,7 +894,7 @@ mod tests {
             ProducedPayload::Fields(FETCH_WRAPPER_FIELDS)
         );
         assert_eq!(success_emit_key("fetch"), "success");
-        assert_eq!(success_emit_key("ref"), "on_change");
+        assert_eq!(success_emit_key("ref"), "onChange");
     }
 
     /// The defect that started this: `persist create` emits the row flat, so a

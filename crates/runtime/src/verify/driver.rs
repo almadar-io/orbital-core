@@ -408,10 +408,10 @@ impl Harness {
             executed: hop.executed,
             failed,
             entity_before: entry
-                .map(|e| e.entity_before.clone())
+                .map(|e| e.entity_before.to_value())
                 .unwrap_or(Value::Null),
             entity_after: entry
-                .and_then(|e| e.entity_after.clone())
+                .and_then(|e| e.entity_after.as_ref().map(|after| after.to_value()))
                 .unwrap_or(Value::Null),
             payload: hop.payload.clone(),
             unobserved: None,

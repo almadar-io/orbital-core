@@ -67,6 +67,7 @@ fn field(
         .unwrap_or_else(|| panic!("{trait_name} must execute"));
     result
         .entity_data
+        .to_value()
         .get_path(key)
         .and_then(Value::as_number)
         .unwrap_or_else(|| {
@@ -112,6 +113,7 @@ fn each_tick_firing_is_stamped_on_its_own() {
     let second = kernel.process_tick("Source", None, "beat").unwrap();
     let at = |r: &orbital_core_runtime::process_result::ProcessEventResult| {
         r.entity_data
+            .to_value()
             .get_path("tickedAt")
             .and_then(Value::as_number)
     };

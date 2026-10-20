@@ -16,6 +16,7 @@ const WIRE_DRIVERS_UNAVAILABLE: &str = "postgres and redis calls need the full k
 use super::row_query::{and_predicates, compile_predicate, default_row_order, query_unsupported_reason, resolve_row_set, NotExpressible, PredicateRole, QueryCapabilities, RowPage, RowWriteBatch, RowWriteOp, RowWriteOutcome, WriteCapabilities};
 use orbital_core_base::row_set::{nearest_rows, RowNearest, RowOrder, RowPredicate, RowQuery, RowSetRef, RowTotalMode};
 use super::server_leg::ServerLegCollector;
+use super::shared_entity::SharedEntity;
 use orbital_core_base::theme::{resolve_theme, resolve_theme_default, ResolvedTheme, ThemeMode, ThemePresets};
 use crate::config::KernelConfig;
 use crate::effects::response::{delivery_record_value, DeliveryRecord, DispatchLog};
@@ -42,7 +43,6 @@ use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_eval::state_machine::types::{EventPayload, TraitState};
 use orbital_core_eval::state_machine::manager::StateMachineManager;
 use parking_lot::RwLock;
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -265,7 +265,7 @@ pub struct RuntimeKernel {
     entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
     /// Each entity type's declared field defaults as one object (`Null` when none), built when the
     /// schema registers; `read_trait_entity` layers a row and a frame over it.
-    entity_defaults: Arc<RwLock<HashMap<String, Arc<Value>>>>,
+    entity_defaults: Arc<RwLock<HashMap<String, SharedEntity>>>,
     /// The `egress` origins the registered programs declare: the only hosts the `http` effect may reach.
     egress: Arc<RwLock<Vec<String>>>,
     /// The `os/` grants the registered programs declare, unioned.
@@ -284,7 +284,7 @@ pub struct RuntimeKernel {
     /// Trait frames (`(set @entity.X)` writes), keyed `(frame key, entity id)`: a `[shared]`
     /// entity's frame is `$shared::<Entity>` for every trait bound to it, any other trait's is
     /// its own name (Runtime Spec Clause 2.3). `@entity` is the row with the frame over it.
-    frames: Arc<RwLock<HashMap<(String, String), Value>>>,
+    frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
     /// The state a step committed as it suspended on I/O (G-CROSS-259), for the resumable run to carry.
     pub(crate) suspended_commit: Arc<RwLock<Option<ProvisionalCommit>>>,
     /// Frame slot -> the id of the row a carried row named: that trait reads that row under its frame,
@@ -1288,7 +1288,7 @@ impl RuntimeKernel {
                 {
                     if let EntityRef::Inline(def) = entity_ref {
                         if let Some(registered) = defs.get(&def.name) {
-                            defaults.insert(def.name.clone(), Arc::new(declared_defaults(registered)));
+                            defaults.insert(def.name.clone(), SharedEntity::from_value(declared_defaults(registered)));
                         }
                     }
                 }
@@ -1612,14 +1612,14 @@ impl RuntimeKernel {
             return Err(Fault::Suspended);
         }
         if !entity_data.is_null() {
-            ctx.set_entity(entity_data.clone());
+            ctx.set_entity(entity_data.to_value());
         }
         debug!(
             target: "almadar::kernel",
             entity_type = %entity_type,
             entity_id = %entity_id,
             resolved = !entity_data.is_null(),
-            entity_keys = ?entity_data.as_object().map(|o| o.keys().collect::<Vec<_>>()),
+            entity_keys = ?entity_data.fields().map(|o| o.keys().collect::<Vec<_>>()),
             "kernel: entity read for @entity bindings"
         );
 
@@ -1667,13 +1667,14 @@ impl RuntimeKernel {
             // `@entity.<untouched-field>` (tabs `activeTab: @entity.filterKind`, board
             // `current*` card fields, …) reverts to a literal token. The merged value is
             // also what render-ui resolves against below and what the client receives.
-            let effective_entity = merge_entity(&entity_data, &captured_entity_data);
+            let captured_entity_data = SharedEntity::from_value(captured_entity_data);
+            let effective_entity = entity_data.merged(&captured_entity_data);
 
             // Resolve EVERY binding (@payload.X / @entity.X / @config.X / @state / @user)
             // in the client-facing effects against the full context, through the ONE
             // canonical resolver — `@payload` is a typed payload so `X` is arbitrary; no
             // per-field special-cases. The entity is the post-Set effective entity.
-            ctx.set_entity(effective_entity.clone());
+            ctx.set_entity(effective_entity.to_value());
             let sources = render_sources(&effect_results);
             let mut effect_results = effect_results
                 .into_iter()
@@ -1700,7 +1701,7 @@ impl RuntimeKernel {
             let entity_after = self
                 .record_entity_after
                 .load(std::sync::atomic::Ordering::Relaxed)
-                .then(|| merge_entity(&self.read_trait_entity(trait_name, entity_type, entity_id), &captured_entity_data));
+                .then(|| self.read_trait_entity(trait_name, entity_type, entity_id).merged(&captured_entity_data));
             if self.io.suspended() {
                 // The transition is committed before its effects' I/O answers: an overlapping dispatch sees the
                 // state it entered. The replay runs the step again from `from` (G-CROSS-259).
@@ -1713,12 +1714,7 @@ impl RuntimeKernel {
                 return Err(Fault::Suspended);
             }
 
-            if !captured_entity_data.is_null()
-                && captured_entity_data
-                    .as_object()
-                    .map(|o| !o.is_empty())
-                    .unwrap_or(false)
-            {
+            if captured_entity_data.fields().is_some_and(|o| !o.is_empty()) {
                 self.write_trait_frame(trait_name, entity_type, entity_id, &captured_entity_data);
             }
 
@@ -1764,10 +1760,10 @@ impl RuntimeKernel {
                 "Event not processed (guard blocked or no matching transition)"
             );
 
-            let entity_data = if ctx.entity.is_null() {
-                Value::Object(ValueMap::new())
+            let entity_data = if entity_data.is_null() {
+                SharedEntity::empty_object()
             } else {
-                (*ctx.entity).clone()
+                entity_data
             };
 
             // EXEC-STEP-5: a step that does not fire repaints the slots the state renders into; each shows what it
@@ -1972,7 +1968,7 @@ impl RuntimeKernel {
                 new_state: current_state,
                 effects_executed: 0,
                 effect_results: Vec::new(),
-                entity_data: Value::Null,
+                entity_data: SharedEntity::null(),
                 linked_entity: trait_def
                     .linked_entity
                     .clone()
@@ -2014,7 +2010,7 @@ impl RuntimeKernel {
             return Err(Fault::Suspended);
         }
         if !entity_data.is_null() {
-            ctx.set_entity(entity_data.clone());
+            ctx.set_entity(entity_data.to_value());
         }
 
         // Guard gates the tick exactly like the JS runtime — evaluated through the one
@@ -2053,9 +2049,10 @@ impl RuntimeKernel {
         // Persist the MERGED entity (read-modify-write), not the partial — same
         // reasoning as process_event: a replace-write of only the tick's Set fields
         // would drop every untouched field on the next render.
-        let effective_entity = merge_entity(&entity_data, &captured_entity_data);
+        let captured_entity_data = SharedEntity::from_value(captured_entity_data);
+        let effective_entity = entity_data.merged(&captured_entity_data);
 
-        ctx.set_entity(effective_entity.clone());
+        ctx.set_entity(effective_entity.to_value());
         let sources = render_sources(&effect_results);
         let mut effect_results = effect_results
             .into_iter()
@@ -2067,11 +2064,7 @@ impl RuntimeKernel {
             return Err(Fault::Suspended);
         }
 
-        if captured_entity_data
-            .as_object()
-            .map(|o| !o.is_empty())
-            .unwrap_or(false)
-        {
+        if captured_entity_data.fields().is_some_and(|o| !o.is_empty()) {
             self.write_trait_frame(trait_name, entity_type, entity_id, &captured_entity_data);
         }
 
@@ -2245,7 +2238,7 @@ impl RuntimeKernel {
                             .iter()
                             .find(|(t, r)| t == trait_name && r.executed)
                             .and_then(|(_, r)| r.entry.as_ref())
-                            .map(|entry| entry.entity_before.clone())
+                            .map(|entry| entry.entity_before.to_value())
                             .unwrap_or(Value::Null)
                     } else {
                         seed_row.clone()
@@ -2308,7 +2301,7 @@ impl RuntimeKernel {
                                     .collect()
                             }),
                             entity_by_trait: (!entry.entity_before.is_null()).then(|| {
-                                ValueMap::from([(t.clone(), entry.entity_before.clone())])
+                                ValueMap::from([(t.clone(), entry.entity_before.to_value())])
                             }),
                             delivery,
                             dispatch_log,
@@ -2331,7 +2324,7 @@ impl RuntimeKernel {
                     .iter()
                     .find(|(t, r)| t == trait_name && r.executed)
                     .and_then(|(_, r)| r.entry.as_ref())
-                    .map(|entry| entry.entity_before.clone())
+                    .map(|entry| entry.entity_before.to_value())
                     .filter(|row| !row.is_null())
             })
             .flatten();
@@ -2437,7 +2430,7 @@ impl RuntimeKernel {
                         event: Some(event),
                     }]),
                     entity_by_trait: (!entry.entity_before.is_null()).then(|| {
-                        ValueMap::from([(trait_name.clone(), entry.entity_before.clone())])
+                        ValueMap::from([(trait_name.clone(), entry.entity_before.to_value())])
                     }),
                     delivery,
                     dispatch_log: dispatch_log_of(entry),
@@ -2720,7 +2713,7 @@ impl RuntimeKernel {
     }
 
     /// A trait's `@entity`: declared field defaults, then its row, then its frame.
-    fn read_trait_entity(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> Value {
+    fn read_trait_entity(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> SharedEntity {
         let defaults = self
             .entity_defaults
             .read()
@@ -2732,13 +2725,11 @@ impl RuntimeKernel {
         let row = self
             .entity_source
             .read(entity_type, row_id.as_deref().unwrap_or(entity_id))
-            .ok();
-        let frames = self.frames.read();
-        let layered = overlay(
-            overlay(Cow::Borrowed(&*defaults), row.as_deref().unwrap_or(&Value::Null)),
-            frames.get(&slot).unwrap_or(&Value::Null),
-        );
-        layered.into_owned()
+            .ok()
+            .map(|row| SharedEntity::from_value_ref(&row))
+            .unwrap_or_default();
+        let frame = self.frames.read().get(&slot).cloned().unwrap_or_default();
+        defaults.merged(&row).merged(&frame)
     }
 
     /// The `@entity` a step of `trait_name` would read now, for the cascade's visit key.
@@ -2749,7 +2740,7 @@ impl RuntimeKernel {
             .get(trait_name)
             .and_then(|d| d.linked_entity.clone())
             .unwrap_or_else(|| trait_name.to_string());
-        self.read_trait_entity(trait_name, &entity_type, entity_id)
+        self.read_trait_entity(trait_name, &entity_type, entity_id).to_value()
     }
 
     /// Merge `set` writes into a trait's frame; the row store is never touched.
@@ -2758,11 +2749,11 @@ impl RuntimeKernel {
         trait_name: &str,
         entity_type: &str,
         entity_id: &str,
-        writes: &Value,
+        writes: &SharedEntity,
     ) {
         let slot = self.frame_slot(trait_name, entity_type, entity_id);
         let mut frames = self.frames.write();
-        let merged = merge_entity(frames.get(&slot).unwrap_or(&Value::Null), writes);
+        let merged = frames.get(&slot).cloned().unwrap_or_default().merged(writes);
         frames.insert(slot, merged);
     }
 
@@ -2799,7 +2790,7 @@ impl RuntimeKernel {
             .frames
             .read()
             .get(&slot)
-            .cloned()
+            .map(SharedEntity::to_value)
             .unwrap_or(Value::Null);
         TraitSnapshot { state, entity }
     }
@@ -2846,7 +2837,7 @@ impl RuntimeKernel {
         if snapshot.entity.is_null() {
             frames.remove(&slot);
         } else {
-            frames.insert(slot, snapshot.entity);
+            frames.insert(slot, SharedEntity::from_value(snapshot.entity));
         }
     }
 
@@ -2941,7 +2932,7 @@ impl RuntimeKernel {
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .unwrap_or_else(|| "singleton".to_string());
-                self.write_trait_frame(trait_name, &entity_type, &id, entity_val);
+                self.write_trait_frame(trait_name, &entity_type, &id, &SharedEntity::from_value_ref(entity_val));
                 trait_entity_ids.insert(trait_name.clone(), id);
             }
         }
@@ -3276,7 +3267,7 @@ impl RuntimeKernel {
         let frames = self.frames.read();
         let mut rows = response.entity_by_trait.take().unwrap_or_default();
         for ((key, frame_eid), frame) in frames.iter() {
-            let Some(frame_fields) = frame.as_object().filter(|f| !f.is_empty()) else {
+            let Some(frame_fields) = frame.fields().filter(|f| !f.is_empty()) else {
                 continue;
             };
             if frame_eid != eid {
@@ -3299,7 +3290,7 @@ impl RuntimeKernel {
                     .entry(trait_name.to_string())
                     .or_insert_with(|| Value::Object(ValueMap::new()));
                 if let Value::Object(fields) = row {
-                    fields.extend(frame_fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+                    fields.extend(frame_fields.iter().map(|(k, v)| (k.clone(), (**v).clone())));
                 }
             }
         }
@@ -4673,7 +4664,7 @@ impl RuntimeKernel {
         trait_def: &TraitDefinition,
         state_name: &str,
         ctx: &BindingContext,
-        _entity_data: &Value,
+        _entity_data: &SharedEntity,
     ) -> Vec<EffectResult> {
         // Resolve every binding through the one canonical walker
         // (`ctx.entity` already carries the current entity here).
@@ -4905,7 +4896,7 @@ impl RuntimeKernel {
                 Some(id) => self.carried_rows.write().insert(slot, id),
                 None => self.carried_rows.write().remove(&slot),
             };
-            self.write_trait_frame(trait_name, &entity_type, eid, row);
+            self.write_trait_frame(trait_name, &entity_type, eid, &SharedEntity::from_value_ref(row));
         }
     }
 
@@ -5616,44 +5607,9 @@ fn declared_defaults(def: &EntityDefinition) -> Value {
     }
 }
 
-/// `set` laid over `base` with `merge_entity`'s rules, extending an owned `base` in place and
-/// copying a borrowed layer only when it must change.
-fn overlay<'a>(base: Cow<'a, Value>, set: &'a Value) -> Cow<'a, Value> {
-    let set_fields = set.as_object().filter(|s| !s.is_empty());
-    let Some(set_fields) = set_fields else {
-        return base;
-    };
-    match base {
-        Cow::Owned(Value::Object(mut fields)) => {
-            for (k, v) in set_fields {
-                fields.insert(k.clone(), v.clone());
-            }
-            Cow::Owned(Value::Object(fields))
-        }
-        Cow::Borrowed(Value::Object(fields)) => {
-            let mut merged = ValueMap::with_capacity(fields.len() + set_fields.len());
-            merged.extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
-            for (k, v) in set_fields {
-                merged.insert(k.clone(), v.clone());
-            }
-            Cow::Owned(Value::Object(merged))
-        }
-        _ => Cow::Borrowed(set),
-    }
-}
-
+#[cfg(test)]
 fn merge_entity(base: &Value, set: &Value) -> Value {
-    match (base.as_object(), set.as_object()) {
-        (Some(b), Some(s)) if !s.is_empty() => {
-            let mut merged = b.clone();
-            for (k, v) in s {
-                merged.insert(k.clone(), v.clone());
-            }
-            Value::Object(merged)
-        }
-        _ if set.as_object().map(|o| o.is_empty()).unwrap_or(true) => base.clone(),
-        _ => set.clone(),
-    }
+    SharedEntity::from_value_ref(base).merged(&SharedEntity::from_value_ref(set)).to_value()
 }
 
 /// Resolve every `@`-binding in a client-facing effect's content/payload against `ctx`,
@@ -7928,7 +7884,7 @@ mod client_dispatch_tests {
                 event: "DRAFT_CREATED".to_string(),
                 payload: Value::Null,
             })],
-            entity_data: Value::Null,
+            entity_data: SharedEntity::null(),
             linked_entity: "Note".to_string(),
             payload: Value::Null,
             entry: None,
@@ -8935,7 +8891,8 @@ mod set_eval_failure_tests {
     #[test]
     fn a_set_that_fails_to_evaluate_writes_nothing_and_records_the_failure() {
         let result = run("INIT");
-        let row = result.entity_data.as_object().expect("an entity row");
+        let row_value = result.entity_data.to_value();
+        let row = row_value.as_object().expect("an entity row");
         assert!(!row.contains_key("app"), "{row:?}");
         let failed = result
             .effect_results
@@ -8961,7 +8918,8 @@ mod set_eval_failure_tests {
     #[test]
     fn a_failed_effect_stops_the_remaining_effects_of_its_transition() {
         let result = run("INIT");
-        let row = result.entity_data.as_object().expect("an entity row");
+        let row_value = result.entity_data.to_value();
+        let row = row_value.as_object().expect("an entity row");
         assert!(!row.contains_key("ok"), "{row:?}");
         assert!(!has_set(&result, "ok"));
         assert_eq!(result.effect_runs.len(), 6, "one run per authored effect");
@@ -8976,7 +8934,7 @@ mod set_eval_failure_tests {
 
     #[test]
     fn writes_before_the_failure_stand() {
-        let row = run("INIT").entity_data;
+        let row = run("INIT").entity_data.to_value();
         assert_eq!(
             row.as_object().and_then(|o| o.get("before")),
             Some(&Value::Bool(true))
@@ -9007,7 +8965,8 @@ mod set_eval_failure_tests {
     fn control_a_transition_with_no_failure_runs_every_effect() {
         let result = run("PLAIN");
         assert!(result.failure.is_none());
-        let row = result.entity_data.as_object().expect("an entity row");
+        let row_value = result.entity_data.to_value();
+        let row = row_value.as_object().expect("an entity row");
         assert_eq!(row.get("ok"), Some(&Value::Bool(true)));
         let renders = result
             .effect_results
@@ -9056,7 +9015,7 @@ mod set_object_literal_tests {
         kernel.register_schema(schema).unwrap();
         let payload: Value = serde_json::from_value(serde_json::json!({ "data": { "id": "abc", "n": 3 } })).unwrap();
         let outcomes = kernel.dispatch("Holder", None, "GO", payload).unwrap();
-        outcomes.into_iter().find(|(t, _)| t == "Holder").expect("Holder ran").1.entity_data
+        outcomes.into_iter().find(|(t, _)| t == "Holder").expect("Holder ran").1.entity_data.to_value()
     }
 
     fn prof(row: &Value) -> Value {

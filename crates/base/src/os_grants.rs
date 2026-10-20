@@ -326,6 +326,23 @@ fn relative_glob_matches(glob: &str, path: &[String]) -> bool {
     segments_match(&pattern, path)
 }
 
+/// Whether the anchor-relative `glob` (no `..`) can match some path strictly under the normalized directory `root`.
+/// A computed path under `root` is then accepted statically and the host checks the glob on the resolved path.
+fn relative_glob_reaches_under(glob: &str, root: &[String]) -> bool {
+    if !valid_relative(glob) {
+        return false;
+    }
+    let mut pattern: &[&str] = &glob.split('/').filter(|s| !s.is_empty() && *s != ".").collect::<Vec<_>>();
+    for segment in root {
+        match pattern.split_first() {
+            Some((&"**", _)) => return true,
+            Some((head, rest)) if segment_matches(&head.chars().collect::<Vec<_>>(), &segment.chars().collect::<Vec<_>>()) => pattern = rest,
+            _ => return false,
+        }
+    }
+    !pattern.is_empty()
+}
+
 fn split_target(target: &str) -> Option<(&str, u16)> {
     let (host, port) = target.rsplit_once(':')?;
     let host = host.trim_start_matches('[').trim_end_matches(']');
@@ -675,10 +692,10 @@ pub struct AnchoredPath {
     pub path: Option<String>,
 }
 
-/// The relative segments of `path` with `.` dropped and `..` collapsed; `None` for an anchored or absolute form or
-/// a `..` that climbs above the anchor.
+/// The relative segments of `path` with `.` dropped and `..` collapsed; `None` for an absolute or `~/` form or a
+/// `..` that climbs above the anchor. `.` and `./a` name the anchor and `a` under it.
 fn relative_segments(path: &str) -> Option<Vec<String>> {
-    if anchor_of(path).is_some() {
+    if path.starts_with('/') || path == "~" || path.starts_with("~/") {
         return None;
     }
     let mut segments: Vec<String> = Vec::new();
@@ -1019,7 +1036,8 @@ pub enum OsRequirement {
     /// anchored `fs` grant on the same anchor whose glob matches it.
     FsAnchored { anchor: GrantAnchor, path: String, mode: FsMode },
     /// Every path under `root` (empty, or ending in `/`) of an anchor: the anchored path's `path` is computed past
-    /// that literal directory. Covered only by an anchored glob on the same anchor ending in `**` that contains `root`.
+    /// that literal directory. Covered by an anchored glob on the same anchor that can match under `root` (`**`, or a
+    /// narrow one such as `**/*.lolo`); the host checks the glob on the resolved path and answers `denied` outside it.
     FsAnchoredTree { anchor: GrantAnchor, root: String, mode: FsMode },
     Exec { command: String },
     /// A host and port of which at least one is written against an `env` anchor: covered only by an anchored `net`
@@ -1055,10 +1073,7 @@ impl OsGrants {
             }),
             OsRequirement::FsAnchoredTree { anchor, root, mode } => relative_segments(root).is_some_and(|segments| {
                 self.anchored.fs.iter().any(|g| {
-                    g.anchor == *anchor
-                        && g.modes.contains(mode)
-                        && (g.glob == "**" || g.glob.ends_with("/**"))
-                        && relative_glob_matches(&g.glob, &segments)
+                    g.anchor == *anchor && g.modes.contains(mode) && relative_glob_reaches_under(&g.glob, &segments)
                 })
             }),
             OsRequirement::Exec { command } => self.exec_allows(command),
@@ -1349,7 +1364,8 @@ pub fn os_requirements_deferring(
 }
 
 /// The elements `(array/nth <literal list> <index>)` can yield: all of them for a computed index, the one at a
-/// literal whole index (none past the end). `None` when `expr` is not such a pick.
+/// literal whole index (none past the end). The list is a `(list …)` or a data array whose head is not a string (a
+/// substituted config list of objects, which needs no `list` marker). `None` when `expr` is not such a pick.
 fn literal_list_pick(expr: &SExpression) -> Option<Vec<SExpression>> {
     let SExpression::Array(arr) = expr else {
         return None;
@@ -1360,13 +1376,22 @@ fn literal_list_pick(expr: &SExpression) -> Option<Vec<SExpression>> {
     ) {
         return None;
     }
-    let SExpression::Array(list) = arr.get(1)? else {
+    let mut source = arr.get(1)?;
+    // A list carrying its declared type (`["typed", list, type]`) is that list.
+    if let SExpression::Array(parts) = source {
+        if parts.len() == 3 && parts[0].as_str() == Some("typed") {
+            source = &parts[1];
+        }
+    }
+    let SExpression::Array(list) = source else {
         return None;
     };
-    if list.first().and_then(SExpression::as_str) != Some("list") {
-        return None;
-    }
-    let items = &list[1..];
+    let items = match list.first().and_then(SExpression::as_str) {
+        Some("list") => &list[1..],
+        Some(_) => return None,
+        None if !list.is_empty() && !source.is_call() => &list[..],
+        None => return None,
+    };
     Some(match arr.get(2) {
         Some(SExpression::Number(at)) if *at >= 0.0 && at.fract() == 0.0 => {
             items.get(*at as usize).cloned().into_iter().collect()
@@ -1394,7 +1419,7 @@ pub fn anchored_arg_positions(op: OsOp) -> &'static [usize] {
 pub fn anchored_net_args(op: OsOp) -> Option<(usize, usize)> {
     use OsOp::*;
     match op {
-        TcpConnect | TcpListen | HttpListen | UdpBind => Some((0, 1)),
+        TcpConnect | TcpListen | UdpBind => Some((0, 1)),
         Sendto => Some((2, 3)),
         _ => None,
     }
@@ -1449,7 +1474,7 @@ fn requirements_of(
         StdoutWrite => Ok(vec![OsRequirement::Stdio { kind: StdioKind::Out }]),
         StderrWrite => Ok(vec![OsRequirement::Stdio { kind: StdioKind::Err }]),
         TcpConnect => net_need(args, 0, 1, &[NetKind::Tcp], deferred),
-        TcpListen | HttpListen => net_need(args, 0, 1, &[NetKind::Listen], deferred),
+        TcpListen => net_need(args, 0, 1, &[NetKind::Listen], deferred),
         UdpBind => net_need(args, 0, 1, &[NetKind::Udp], deferred),
         Sendto => net_need(args, 2, 3, &[NetKind::Udp], deferred),
         DnsResolve => Ok(literal(args, 0, deferred)?
@@ -1473,7 +1498,7 @@ fn requirements_of(
         Suspend | Hibernate => desktop(DesktopKind::Power),
         Close | Read | Write | Seek | Fsync | Cwd | Wait | Kill | Pid | Ppid | CurrentExe | WatchProcess
         | WatchSignal | Environ | Isatty | TtySize | Send | Recv | Recvfrom | Shutdown | WatchPort
-        | ClockMonotonic | WatchCron | HttpRespond => Ok(Vec::new()),
+        | ClockMonotonic | WatchCron => Ok(Vec::new()),
     }
 }
 
@@ -1820,6 +1845,38 @@ mod tests {
                 fs_req("/data/a", FsMode::Read),
                 fs_req("/data/b", FsMode::Read)
             ])
+        );
+    }
+
+    #[test]
+    fn a_command_picked_from_a_config_fed_mixed_list_needs_each_anchored_or_plain_command() {
+        let picked = call(
+            OsOp::Spawn,
+            json!([["array/nth", [{ "anchor": { "env": "ORB_BUN_PATH" } }, { "anchor": "exe-dir", "path": "bun" }, "bun"], "@entity.cmdCursor"], []]),
+        );
+        assert_eq!(
+            picked,
+            Ok(vec![
+                OsRequirement::ExecAnchored { anchor: GrantAnchor::Env("ORB_BUN_PATH".into()), path: None },
+                OsRequirement::ExecAnchored { anchor: GrantAnchor::ExeDir, path: Some("bun".into()) },
+                OsRequirement::Exec { command: "bun".into() },
+            ])
+        );
+        assert_eq!(
+            call(OsOp::Spawn, json!([["array/nth", [{ "anchor": "exe-dir", "path": "@entity.p" }, "bun"], "@entity.i"], []])),
+            Err(0),
+            "control: a computed anchored path in the list is still not static"
+        );
+        assert_eq!(
+            call(
+                OsOp::Spawn,
+                json!([["array/nth", ["typed", ["list", { "anchor": "exe-dir", "path": "bun" }, "bun"], "<declared type>"], "@entity.cmdCursor"], []])
+            ),
+            Ok(vec![
+                OsRequirement::ExecAnchored { anchor: GrantAnchor::ExeDir, path: Some("bun".into()) },
+                OsRequirement::Exec { command: "bun".into() },
+            ]),
+            "a marked list carrying its declared type is the same list"
         );
     }
 
@@ -2297,11 +2354,12 @@ mod tests {
         let tree = call(OsOp::ReadFile, json!([{"anchor": "cwd", "path": ["str/concat", "docs/", "@entity.name"]}])).unwrap();
         assert_eq!(tree, vec![OsRequirement::FsAnchoredTree { anchor: GrantAnchor::Cwd, root: "docs/".into(), mode: FsMode::Read }]);
         assert!(anchored(vec![afs(GrantAnchor::Cwd, "docs/**")], Vec::new()).allows(&tree[0]));
-        assert!(!anchored(vec![afs(GrantAnchor::Cwd, "docs/*.md")], Vec::new()).allows(&tree[0]), "control: a tree needs a `**` glob");
+        assert!(!anchored(vec![afs(GrantAnchor::Cwd, "src/*.md")], Vec::new()).allows(&tree[0]), "control: a glob that cannot reach under the directory");
         let whole = call(OsOp::ReadFile, json!([{"anchor": "cwd", "path": "@entity.path"}])).unwrap();
         assert_eq!(whole, vec![OsRequirement::FsAnchoredTree { anchor: GrantAnchor::Cwd, root: String::new(), mode: FsMode::Read }]);
         assert!(anchored(vec![afs(GrantAnchor::Cwd, "**")], Vec::new()).allows(&whole[0]));
-        assert!(!anchored(vec![afs(GrantAnchor::Cwd, "docs/**")], Vec::new()).allows(&whole[0]), "control: a computed path may reach the whole anchor");
+        assert!(anchored(vec![afs(GrantAnchor::Cwd, "docs/**")], Vec::new()).allows(&whole[0]), "a narrow glob covers it; the host checks the resolved path");
+        assert!(!anchored(vec![afs(GrantAnchor::ExeDir, "docs/**")], Vec::new()).allows(&whole[0]), "control: another anchor");
         assert_eq!(call(OsOp::ReadFile, json!([{"anchor": "@entity.where", "path": "a"}])), Err(0), "the anchor itself must be a literal");
         assert_eq!(call(OsOp::ReadFile, json!([{"anchor": {"env": "@entity.n"}, "path": "a"}])), Err(0));
         assert_eq!(
@@ -2309,6 +2367,23 @@ mod tests {
             Err(0),
             "control: an object of another shape is not an anchored path"
         );
+    }
+
+    #[test]
+    fn a_computed_anchored_path_is_covered_by_a_narrow_glob_that_can_reach_under_its_directory() {
+        let lolo = |modes: Vec<FsMode>| anchored(vec![AnchoredFsGrant { anchor: GrantAnchor::Cwd, glob: "**/*.lolo".into(), modes }], Vec::new());
+        let read = call(OsOp::ReadFile, json!([{"anchor": "cwd", "path": "@payload.path"}])).unwrap();
+        let write = call(OsOp::WriteFile, json!([{"anchor": "cwd", "path": "@payload.path"}, "x"])).unwrap();
+        let rw = lolo(vec![FsMode::Read, FsMode::Write]);
+        assert!(rw.allows(&read[0]) && rw.allows(&write[0]), "the host enforces the glob on the resolved path");
+        assert!(!lolo(vec![FsMode::Read]).allows(&write[0]), "control: the mode still counts");
+        assert!(!anchored(vec![AnchoredFsGrant { anchor: GrantAnchor::ExeDir, glob: "**/*.lolo".into(), modes: vec![FsMode::Read] }], Vec::new()).allows(&read[0]), "control: another anchor");
+        let under = call(OsOp::ReadFile, json!([{"anchor": "cwd", "path": ["str/concat", "src/", "@payload.name"]}])).unwrap();
+        assert!(anchored(vec![afs(GrantAnchor::Cwd, "src/*.lolo")], Vec::new()).allows(&under[0]));
+        assert!(rw.allows(&under[0]), "a leading `**` reaches under any directory");
+        assert!(!anchored(vec![afs(GrantAnchor::Cwd, "docs/*.lolo")], Vec::new()).allows(&under[0]), "control: a sibling directory");
+        assert!(!anchored(vec![afs(GrantAnchor::Cwd, "src")], Vec::new()).allows(&under[0]), "edge: a glob naming the directory itself reaches nothing under it");
+        assert!(!anchored(Vec::new(), Vec::new()).allows(&read[0]), "control: no anchored glob at all");
     }
 
     #[test]
@@ -2346,7 +2421,7 @@ mod tests {
     #[test]
     fn a_listen_on_env_host_and_port_needs_the_anchored_net_grant() {
         let g = anet(envp("HOST"), envp("PORT"), &[NetKind::Listen]);
-        let needs = call(OsOp::HttpListen, json!([{"anchor": {"env": "HOST"}}, {"anchor": {"env": "PORT"}}])).unwrap();
+        let needs = call(OsOp::TcpListen, json!([{"anchor": {"env": "HOST"}}, {"anchor": {"env": "PORT"}}])).unwrap();
         assert_eq!(needs, vec![OsRequirement::NetAnchored { host: envp("HOST"), port: envp("PORT"), kinds: vec![NetKind::Listen] }]);
         assert!(g.allows(&needs[0]));
         let tcp = call(OsOp::TcpConnect, json!([{"anchor": {"env": "HOST"}}, {"anchor": {"env": "PORT"}}])).unwrap();
@@ -2400,6 +2475,9 @@ mod tests {
         assert_eq!(host.resolve_path(&at(json!({"anchor": "cwd", "path": "docs/a.md"}))), Ok("/work/p/docs/a.md".into()));
         assert_eq!(host.resolve_path(&at(json!({"anchor": "exe-dir", "path": "agent/./cli.js"}))), Ok("/opt/orb/agent/cli.js".into()));
         assert_eq!(host.resolve_path(&at(json!({"anchor": {"env": "D"}}))), Ok("/srv/a".into()));
+        assert_eq!(host.resolve_path(&at(json!({"anchor": "cwd", "path": "."}))), Ok("/work/p".into()), "`.` is the anchor itself");
+        assert_eq!(host.resolve_path(&at(json!({"anchor": "cwd", "path": "./docs"}))), Ok("/work/p/docs".into()));
+        assert!(host.resolve_path(&at(json!({"anchor": "cwd", "path": "~/x"}))).is_err(), "edge: a home form is not relative");
         assert!(host.resolve_path(&at(json!({"anchor": "cwd", "path": "../x"}))).is_err(), "edge: climbing above the anchor");
         assert!(host.resolve_path(&at(json!({"anchor": "cwd", "path": "/etc/passwd"}))).is_err(), "edge: an absolute path is not relative");
         assert!(host.resolve_path(&at(json!({"anchor": {"env": "UNSET"}, "path": "a"}))).is_err(), "edge: an unset variable");

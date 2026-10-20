@@ -11,17 +11,21 @@ use std::sync::Arc;
 
 struct Counting;
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+static LIVE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
+        LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed);
         System.alloc(layout)
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        LIVE.fetch_sub(layout.size() as isize, Ordering::Relaxed);
         System.dealloc(ptr, layout)
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
+        LIVE.fetch_add(new_size as isize - layout.size() as isize, Ordering::Relaxed);
         System.realloc(ptr, layout, new_size)
     }
 }
@@ -127,7 +131,7 @@ fn search_dispatch_allocation_count_is_pinned() {
     );
 }
 
-const PINNED_SEARCH: usize = 1717;
+const PINNED_SEARCH: usize = 1510;
 
 fn fetch_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
@@ -183,8 +187,8 @@ fn fetch_dispatch_allocation_count_is_pinned() {
     assert!(n <= PINNED_FETCH, "allocations rose: {n} > {PINNED_FETCH}");
 }
 
-// 1258: a dispatch clones the kernel's one `prob/*` seed source instead of building one (G-ORBITAL-CORE-029, 2026-10-18).
-const PINNED_FETCH: usize = 1258;
+// 746 (was 1258): a dispatch clones the kernel's one `prob/*` seed source instead of building one (G-ORBITAL-CORE-029, 2026-10-18).
+const PINNED_FETCH: usize = 746;
 
 #[test]
 fn read_access_allocation_count_is_pinned() {
@@ -306,9 +310,9 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
     );
 }
 
-// 331144: each suspension records the transition its step committed (two names and a box, G-CROSS-259), and a dispatch
+// 174201 (was 331144): each suspension records the transition its step committed (two names and a box, G-CROSS-259), and a dispatch
 // clones the kernel's one `prob/*` seed source (G-ORBITAL-CORE-029), 2026-10-18.
-const PINNED_REPLAY: usize = 331144;
+const PINNED_REPLAY: usize = 174201;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)
@@ -320,4 +324,67 @@ fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
         })
         .collect();
     orbital_core_runtime::resumable::IoAnswer::Rows(Ok(rows))
+}
+
+fn scanner_schema(blob: &str) -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "alloc-loop",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Scan", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "blob", "type": "string", "default": blob },
+                { "name": "scans", "type": "array", "default": [] }
+            ] },
+            "traits": [{
+                "name": "Scanner", "linkedEntity": "Scan",
+                "listens": [{ "event": "SCAN_NEXT", "triggers": "SCAN", "source": { "kind": "trait", "trait": "Scanner" } }],
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "SCAN",
+                        "guard": [">", "@payload.left", 0],
+                        "effects": [
+                            ["set", "@entity.scans", ["array/append", "@entity.scans", "s"]],
+                            ["emit", "SCAN_NEXT", { "left": ["-", "@payload.left", 1] }]
+                        ] }]
+                }
+            }]
+        }]
+    }))
+    .unwrap()
+}
+
+/// Bytes a single self-emitting dispatch of `steps` steps still holds once it returns.
+fn retained_by_loop(blob: &str, steps: usize) -> isize {
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(scanner_schema(blob)).unwrap();
+    let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
+    let before = LIVE.load(Ordering::SeqCst);
+    let out = k.dispatch("Scanner", None, "SCAN", payload).unwrap();
+    let held = LIVE.load(Ordering::SeqCst) - before;
+    let executed = out.iter().filter(|(_, r)| r.executed).count();
+    assert_eq!(executed, steps);
+    held
+}
+
+/// L20: the per-step entity copies a dispatch records share an unchanged field instead of copying it each step.
+#[test]
+fn an_unchanged_large_field_is_shared_across_the_recorded_steps() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    const STEPS: usize = 30;
+    const BLOB: usize = 64 * 1024;
+    // The first dispatch in the process loads the language data once; keep it out of the measured runs.
+    retained_by_loop("x", 1);
+    let large = retained_by_loop(&"x".repeat(BLOB), STEPS);
+    let small = retained_by_loop("x", STEPS);
+    let extra = large - small;
+    println!("RETAINED_LARGE_FIELD {extra} over {STEPS} steps");
+    assert!(
+        extra < (4 * BLOB) as isize,
+        "the {BLOB}-byte field is copied per step: {extra} extra bytes over {STEPS} steps"
+    );
 }

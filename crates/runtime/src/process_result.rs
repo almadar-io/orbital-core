@@ -1,6 +1,7 @@
 //! Shared result and info types produced by the runtime kernel.
 
 use super::dispatch_memory::DispatchView;
+use super::shared_entity::SharedEntity;
 use orbital_core_base::effect_types::EffectResult;
 use orbital_core_base::value::Value;
 use orbital_core_base::schema::types::{FieldDefinition, PageRef};
@@ -26,7 +27,7 @@ pub struct ProcessEventResult {
     pub effect_results: Vec<EffectResult>,
 
     /// Entity data after effect execution (captures Set effects).
-    pub entity_data: Value,
+    pub entity_data: SharedEntity,
 
     /// Linked entity type name (for data keying in responses).
     pub linked_entity: String,
@@ -86,11 +87,11 @@ pub struct EffectRun {
 /// The state a transition ran against: the trait's `@entity` frame before its effects, and the dispatch's `@event` / `@prevEvents` / `@prevStates` view.
 #[derive(Debug, Clone)]
 pub struct DeliveryEntry {
-    pub entity_before: Value,
+    pub entity_before: SharedEntity,
     /// The same layered read after the effects (the row after its persists, the frame with its sets), recorded only
     /// when the kernel is asked to ([`RuntimeKernel::set_record_entity_after`](crate::kernel::RuntimeKernel)): what a
     /// transition's `@ensures` is judged on, with `entity_before` as its `@fromEntity`.
-    pub entity_after: Option<Value>,
+    pub entity_after: Option<SharedEntity>,
     pub view: DispatchView,
 }
 

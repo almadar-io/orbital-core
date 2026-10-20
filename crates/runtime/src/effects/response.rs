@@ -502,8 +502,8 @@ impl TransitionHop {
                     observed: result.entry.as_ref().and_then(|entry| {
                         Some(HopObservation {
                             payload: result.payload.clone(),
-                            entity_before: entry.entity_before.clone(),
-                            entity_after: entry.entity_after.clone()?,
+                            entity_before: entry.entity_before.to_value(),
+                            entity_after: entry.entity_after.as_ref()?.to_value(),
                         })
                     }),
                 })
@@ -764,13 +764,9 @@ impl EventResponse {
                     .get_or_insert_with(|| format!("{seed_trait}.{event_name}"));
             }
 
-            let is_empty_obj = result
-                .entity_data
-                .as_object()
-                .map(|o| o.is_empty())
-                .unwrap_or(false);
+            let is_empty_obj = result.entity_data.fields().is_some_and(|o| o.is_empty());
             if !result.entity_data.is_null() && !is_empty_obj {
-                entity_by_trait.insert(trait_name.to_string(), result.entity_data.clone());
+                entity_by_trait.insert(trait_name.to_string(), result.entity_data.to_value());
             }
 
             for (index, er) in result.effect_results.iter().enumerate() {
@@ -1203,7 +1199,7 @@ mod tests {
             new_state: new_state.to_string(),
             effects_executed: 0,
             effect_results: Vec::new(),
-            entity_data: Value::Null,
+            entity_data: crate::shared_entity::SharedEntity::null(),
             linked_entity: "Note".to_string(),
             payload: Value::Null,
             entry: None,

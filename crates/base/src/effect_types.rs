@@ -1006,17 +1006,12 @@ fn parse_emit_config(obj: &Value) -> Option<FetchEmit> {
                 .get("failure")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let route = |snake: &str, camel: &str| {
-                e.get(snake)
-                    .or_else(|| e.get(camel))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            };
+            let route = |key: &str| e.get(key).and_then(|v| v.as_str()).map(|s| s.to_string());
             let fe = FetchEmit {
                 success,
                 failure,
-                cancelled: route("cancelled", "cancelled"),
-                on_message: route("on_message", "onMessage"),
+                cancelled: route("cancelled"),
+                on_message: route("onMessage"),
             };
             (!fe.is_empty() || fe.on_message.is_some()).then_some(fe)
         })

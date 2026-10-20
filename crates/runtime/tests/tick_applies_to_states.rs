@@ -50,6 +50,7 @@ fn beats(kernel: &RuntimeKernel) -> Option<f64> {
         .process_tick("Clock", None, "beat")
         .unwrap()
         .entity_data
+        .to_value()
         .get_path("beats")
         .and_then(Value::as_number)
 }

@@ -35,6 +35,8 @@ pub trait OsCompletionSink: Send + Sync {
 pub struct Completions {
     sink: Mutex<Option<Arc<dyn OsCompletionSink>>>,
     live: Mutex<HashSet<String>>,
+    /// Claimed completions still being delivered: open until their dispatch (and any call it starts) has run.
+    delivering: Mutex<HashMap<String, usize>>,
 }
 
 impl Completions {
@@ -66,10 +68,13 @@ impl Completions {
         true
     }
 
-    /// The keys whose completion is still wanted (open streams and pending deferred answers), sorted.
+    /// The keys of every open call, sorted: completions still wanted (streams, pending deferred answers) and claimed
+    /// completions whose delivery has not finished.
     pub fn live_keys(&self) -> Vec<String> {
         let mut keys: Vec<String> = self.live.lock().iter().cloned().collect();
+        keys.extend(self.delivering.lock().keys().cloned());
         keys.sort();
+        keys.dedup();
         keys
     }
 
@@ -80,18 +85,31 @@ impl Completions {
 
     pub(super) fn clear(&self) {
         self.live.lock().clear();
+        self.delivering.lock().clear();
     }
 
     /// Take the right to deliver `key`'s completion: `false` when it was cancelled first. Once claimed, a late
     /// `cancel` finds nothing pending, so the host can reap its child and still deliver the outcome.
     pub(super) fn claim(&self, key: &str) -> bool {
-        self.live.lock().remove(key)
+        let mut live = self.live.lock();
+        if !live.remove(key) {
+            return false;
+        }
+        *self.delivering.lock().entry(key.to_string()).or_default() += 1;
+        true
     }
 
-    /// Hand a claimed completion to the sink.
+    /// Hand a claimed completion to the sink; the key stays open until the sink's dispatch has run.
     pub(super) fn deliver(&self, key: &str, site: &CallSite, outcome: Result<Value, OsError>) {
         if let Some(sink) = self.sink() {
             sink.complete(site, key, outcome);
+        }
+        let mut delivering = self.delivering.lock();
+        if let Some(count) = delivering.get_mut(key) {
+            *count -= 1;
+            if *count == 0 {
+                delivering.remove(key);
+            }
         }
     }
 
@@ -125,12 +143,8 @@ impl Completions {
     /// Claim then deliver in one step, for tests that do not reap a child between them.
     #[cfg(test)]
     pub(super) fn finish(&self, key: &str, site: &CallSite, outcome: Result<Value, OsError>) {
-        let wanted = self.claim(key);
-        if !wanted {
-            return;
-        }
-        if let Some(sink) = self.sink() {
-            sink.complete(site, key, outcome);
+        if self.claim(key) {
+            self.deliver(key, site, outcome);
         }
     }
 }
@@ -596,5 +610,43 @@ mod tests {
         completions.finish("b", &site, Ok(exited(0.0)));
         completions.finish("b", &site, Ok(exited(0.0)));
         assert_eq!(*count.0.lock(), 1);
+    }
+
+    #[test]
+    fn a_completion_being_delivered_keeps_its_key_open_until_its_follow_up_call_opens() {
+        // A one-shot `a` whose completion starts the one-shot `b`: no instant between them may show no open key.
+        struct Chain {
+            completions: std::sync::Weak<Completions>,
+            seen_while_delivering: Mutex<Vec<Vec<String>>>,
+            delivered: Mutex<Vec<String>>,
+            done: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        }
+        impl OsCompletionSink for Chain {
+            fn complete(&self, site: &CallSite, key: &str, _: Result<Value, OsError>) {
+                let completions = self.completions.upgrade().expect("completions");
+                self.seen_while_delivering.lock().push(completions.live_keys());
+                self.delivered.lock().push(key.to_string());
+                if key == "a" {
+                    Completions::run_later(&completions, "b", site, || Ok(exited(0.0))).is_ok().then_some(()).expect("b starts");
+                } else if let Some(done) = self.done.lock().take() {
+                    let _ = done.send(());
+                }
+            }
+        }
+        let completions = Arc::new(Completions::default());
+        let (done, finished) = std::sync::mpsc::channel();
+        let chain = Arc::new(Chain {
+            completions: Arc::downgrade(&completions),
+            seen_while_delivering: Mutex::new(Vec::new()),
+            delivered: Mutex::new(Vec::new()),
+            done: Mutex::new(Some(done)),
+        });
+        completions.set_sink(chain.clone());
+        Completions::run_later(&completions, "a", &site(Some("OK"), None), || Ok(exited(0.0))).is_ok().then_some(()).expect("a starts");
+        finished.recv_timeout(std::time::Duration::from_secs(5)).expect("b's completion is delivered");
+        assert_eq!(*chain.delivered.lock(), vec!["a".to_string(), "b".to_string()]);
+        for seen in chain.seen_while_delivering.lock().iter() {
+            assert!(!seen.is_empty(), "a completion in delivery is still an open call: {seen:?}");
+        }
     }
 }

@@ -5,7 +5,6 @@
 pub mod args;
 pub mod completion;
 pub mod fs;
-pub mod http;
 pub mod net;
 pub mod process;
 pub mod sys;
@@ -129,7 +128,7 @@ pub(crate) fn family_of(op: OsOp) -> OsFamily {
         | Unsetenv | Environ | WatchEnv | StdinRead | StdoutWrite | StderrWrite | Isatty
         | TtySize => OsFamily::Process,
         TcpConnect | TcpListen | Send | Recv | UdpBind | Sendto | Recvfrom | DnsResolve
-        | Shutdown | WatchPort | HttpListen | HttpRespond => OsFamily::Net,
+        | Shutdown | WatchPort => OsFamily::Net,
         ClockMonotonic | Uid | Gid | Username | GroupOf | WatchCron | CpuUsage | MemoryInfo
         | Uptime | LoadAvg | Hostname | Uname | DiskUsage | Mounts | DiskIo | NetworkInterfaces
         | NetworkStats | NetworkConnected | DefaultGateway | BatteryStatus | AcPower
@@ -200,9 +199,19 @@ fn defer(
 /// check then runs on the plain value against the boot-resolved grants.
 pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> Result<Vec<Value>, OsError> {
     let refuse = |why: String| OsError::new(OsErrorKind::Denied, format!("{}: {why}", op.name()));
+    // An `env` anchor that is unset or empty names nothing: the target is absent, not refused.
+    let unset = |anchor: &GrantAnchor| match anchor {
+        GrantAnchor::Env(name) if anchors.env.get(name).is_none_or(str::is_empty) => {
+            Some(OsError::new(OsErrorKind::NotFound, format!("{}: env {name} is unset", op.name())))
+        }
+        _ => None,
+    };
     let path = |value: &Value| -> Result<Option<Value>, OsError> {
         match AnchoredPath::from_value(value) {
-            Some(anchored) => anchors.resolve_path(&anchored).map(|p| Some(Value::String(p))).map_err(refuse),
+            Some(anchored) => match unset(&anchored.anchor) {
+                Some(absent) => Err(absent),
+                None => anchors.resolve_path(&anchored).map(|p| Some(Value::String(p))).map_err(refuse),
+            },
             None => Ok(None),
         }
     };
@@ -228,6 +237,9 @@ pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> R
             let Some(AnchoredPath { anchor, path: None }) = out.get(at).and_then(AnchoredPath::from_value) else {
                 continue;
             };
+            if let Some(absent) = unset(&anchor) {
+                return Err(absent);
+            }
             let text = anchors.net_part(&NetPart::Anchor(anchor)).map_err(refuse)?;
             out[at] = if is_port {
                 let port: u16 = text.parse().map_err(|_| refuse(format!("the port {text:?} is not a port number")))?;
@@ -338,7 +350,60 @@ mod tests {
         );
         let unplaced = OsHandles::default();
         let env_read = os_answer(OsOp::ReadFile, vec![anchored_value(serde_json::json!({"anchor": {"env": "ORB_L2_NEVER_SET"}, "path": "a"}))], &grants, &unplaced);
-        assert_eq!(env_read.expect_err("unset").kind, OsErrorKind::Denied, "edge: an unset env anchor names nothing");
+        assert_eq!(env_read.expect_err("unset").kind, OsErrorKind::NotFound, "edge: an unset env anchor names nothing");
+    }
+
+    #[test]
+    fn a_computed_anchored_path_is_checked_against_the_narrow_glob_after_resolution() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("real");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/app.lolo"), "app").unwrap();
+        std::fs::write(root.join("notes.txt"), "no").unwrap();
+        let handles = OsHandles {
+            anchors: OsAnchors { start: Some(root.join("src")), ..OsAnchors::default() },
+            ..OsHandles::default()
+        };
+        let declared = OsGrants {
+            anchored: AnchoredGrants {
+                fs: vec![AnchoredFsGrant { anchor: GrantAnchor::Cwd, glob: "**/*.lolo".into(), modes: vec![FsMode::Read] }],
+                ..AnchoredGrants::default()
+            },
+            ..OsGrants::default()
+        };
+        let (grants, problems) = declared.resolve_anchors(&handles.anchors);
+        assert!(problems.is_empty());
+        let read = |path: &str| os_answer(OsOp::ReadFile, vec![anchored_value(serde_json::json!({"anchor": "cwd", "path": path}))], &grants, &handles);
+        assert!(read("app.lolo").is_ok());
+        assert!(read("./sub/../app.lolo").is_ok(), "edge: `..` that stays under the anchor collapses");
+        std::fs::write(root.join("x.lolo"), "outside").unwrap();
+        assert_eq!(read("../x.lolo").expect_err("climbs").kind, OsErrorKind::Denied, "edge: a `..` escape is refused before the glob");
+        let wide = OsHandles { anchors: OsAnchors { start: Some(root.clone()), ..OsAnchors::default() }, ..OsHandles::default() };
+        let (wide_grants, _) = declared.resolve_anchors(&wide.anchors);
+        let wide_read = |path: &str| os_answer(OsOp::ReadFile, vec![anchored_value(serde_json::json!({"anchor": "cwd", "path": path}))], &wide_grants, &wide);
+        assert!(wide_read("src/app.lolo").is_ok());
+        assert_eq!(wide_read("notes.txt").expect_err("not lolo").kind, OsErrorKind::Denied, "control: outside the glob");
+    }
+
+    #[test]
+    fn an_unset_or_empty_env_anchored_spawn_command_is_not_found() {
+        let anchors = OsAnchors {
+            exe_dir: Some("/opt/orb".into()),
+            env: EnvSnapshot::from_pairs([("ORB_L19_EMPTY".to_string(), String::new()), ("ORB_L19_RELATIVE".to_string(), "bin/tool".to_string())]),
+            ..OsAnchors::default()
+        };
+        let unset = anchored_value(serde_json::json!({"anchor": {"env": "ORB_L18_NEVER_SET"}}));
+        let e = resolve_anchored_args(OsOp::Spawn, &[unset, Value::Array(Vec::new())], &anchors).expect_err("unset");
+        assert_eq!(e.kind, OsErrorKind::NotFound);
+        let empty = anchored_value(serde_json::json!({"anchor": {"env": "ORB_L19_EMPTY"}}));
+        let e = resolve_anchored_args(OsOp::Spawn, &[empty, Value::Array(Vec::new())], &anchors).expect_err("empty");
+        assert_eq!(e.kind, OsErrorKind::NotFound, "an empty value names nothing either");
+        let relative = anchored_value(serde_json::json!({"anchor": {"env": "ORB_L19_RELATIVE"}}));
+        let e = resolve_anchored_args(OsOp::Spawn, &[relative, Value::Array(Vec::new())], &anchors).expect_err("relative");
+        assert_eq!(e.kind, OsErrorKind::Denied, "control: a relative value is refused");
+        let beside = anchored_value(serde_json::json!({"anchor": "exe-dir", "path": "bun"}));
+        let args = resolve_anchored_args(OsOp::Spawn, &[beside, Value::Array(Vec::new())], &anchors).expect("control: a set anchor resolves");
+        assert_eq!(args[0], Value::String("/opt/orb/bun".into()));
     }
 
     #[test]
@@ -386,7 +451,7 @@ mod tests {
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 18, 12, 31]);
+        assert_eq!(counts, [32, 18, 10, 31]);
     }
 
     #[test]

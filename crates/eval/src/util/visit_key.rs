@@ -3,7 +3,8 @@
 
 use serde::Serialize;
 use serde_json::{Map, Number, Value};
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 
 use orbital_core_base::value::Value as EvalValue;
 
@@ -37,52 +38,6 @@ fn canonical_number(n: &Number) -> Number {
     }
 }
 
-/// `canonical_json(a) == canonical_json(b)` on two JSON trees, without building either string.
-fn same_canonical(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Object(x), Value::Object(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .all(|(k, v)| y.get(k).is_some_and(|w| same_canonical(v, w)))
-        }
-        (Value::Array(x), Value::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(v, w)| same_canonical(v, w))
-        }
-        (Value::Number(x), Value::Number(y)) => canonical_number(x) == canonical_number(y),
-        _ => a == b,
-    }
-}
-
-/// `canonical_json(a) == canonical_json(b)` on two evaluator values (a non-finite number
-/// serializes as null; a lambda as its s-expression).
-fn same_value(a: &EvalValue, b: &EvalValue) -> bool {
-    match (a, b) {
-        (EvalValue::Lambda { .. }, _) | (_, EvalValue::Lambda { .. }) => same_canonical(
-            &serde_json::to_value(a).unwrap_or(Value::Null),
-            &serde_json::to_value(b).unwrap_or(Value::Null),
-        ),
-        (EvalValue::Number(x), EvalValue::Number(y)) => {
-            if x.is_finite() && y.is_finite() {
-                x == y
-            } else {
-                !x.is_finite() && !y.is_finite()
-            }
-        }
-        (EvalValue::Number(n), EvalValue::Null) | (EvalValue::Null, EvalValue::Number(n)) => {
-            !n.is_finite()
-        }
-        (EvalValue::Object(x), EvalValue::Object(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .all(|(k, v)| y.get(k).is_some_and(|w| same_value(v, w)))
-        }
-        (EvalValue::Array(x), EvalValue::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(v, w)| same_value(v, w))
-        }
-        _ => a == b,
-    }
-}
-
 fn canonical_json(value: &impl Serialize) -> String {
     let value = serde_json::to_value(value).unwrap_or(Value::Null);
     serde_json::to_string(&canonical_payload(&value)).unwrap_or_else(|_| "null".to_string())
@@ -104,11 +59,11 @@ pub fn dispatch_visit_key(
 }
 
 /// A set of deliveries under the `dispatch_visit_key` identity. Steps are filed by
-/// `(trait, event, from)`; payload and frame are compared only against earlier visits of that
-/// same step, so a large entity frame is not serialized on every cascade step.
+/// `(trait, event, from)` and each visit keeps only the SHA-256 of its canonical payload and
+/// frame, so a long loop over a large entity does not retain a copy of every frame it passed.
 #[derive(Debug, Default)]
 pub struct DispatchVisits {
-    steps: HashMap<String, Vec<(EvalValue, EvalValue)>>,
+    steps: HashMap<String, HashSet<[u8; 32]>>,
 }
 
 impl DispatchVisits {
@@ -122,10 +77,7 @@ impl DispatchVisits {
     ) -> bool {
         self.steps
             .get(&format!("{trait_name}\u{0}{event}\u{0}{from}"))
-            .is_some_and(|seen| {
-                seen.iter()
-                    .any(|(p, f)| same_value(p, payload) && same_value(f, frame))
-            })
+            .is_some_and(|seen| seen.contains(&visit_digest(payload, frame)))
     }
 
     /// `true` when the step was not visited before (as `HashSet::insert`).
@@ -137,14 +89,92 @@ impl DispatchVisits {
         payload: EvalValue,
         frame: EvalValue,
     ) -> bool {
-        if self.contains(trait_name, event, from, &payload, &frame) {
-            return false;
-        }
         self.steps
             .entry(format!("{trait_name}\u{0}{event}\u{0}{from}"))
             .or_default()
-            .push((payload, frame));
-        true
+            .insert(visit_digest(&payload, &frame))
+    }
+}
+
+/// SHA-256 over an injective encoding of `canonical_json(payload)` and `canonical_json(frame)`.
+fn visit_digest(payload: &EvalValue, frame: &EvalValue) -> [u8; 32] {
+    let mut h = Sha256::new();
+    digest_value(&mut h, payload);
+    digest_value(&mut h, frame);
+    h.finalize().into()
+}
+
+fn digest_len(h: &mut Sha256, n: usize) {
+    h.update((n as u64).to_le_bytes());
+}
+
+fn digest_str(h: &mut Sha256, s: &str) {
+    digest_len(h, s.len());
+    h.update(s.as_bytes());
+}
+
+fn digest_number(h: &mut Sha256, n: &Number) {
+    h.update(b"#");
+    digest_str(h, &canonical_number(n).to_string());
+}
+
+fn digest_value(h: &mut Sha256, value: &EvalValue) {
+    match value {
+        EvalValue::Lambda { .. } => {
+            digest_json(h, &serde_json::to_value(value).unwrap_or(Value::Null))
+        }
+        EvalValue::Null => h.update(b"n"),
+        EvalValue::Bool(b) => h.update(if *b { b"t" } else { b"f" }),
+        EvalValue::Number(n) => match Number::from_f64(*n) {
+            Some(n) => digest_number(h, &n),
+            None => h.update(b"n"),
+        },
+        EvalValue::String(s) => {
+            h.update(b"s");
+            digest_str(h, s);
+        }
+        EvalValue::Array(items) => {
+            h.update(b"a");
+            digest_len(h, items.len());
+            items.iter().for_each(|v| digest_value(h, v));
+        }
+        EvalValue::Object(map) => {
+            h.update(b"o");
+            digest_len(h, map.len());
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            for k in keys {
+                digest_str(h, k);
+                digest_value(h, &map[k]);
+            }
+        }
+    }
+}
+
+fn digest_json(h: &mut Sha256, value: &Value) {
+    match value {
+        Value::Null => h.update(b"n"),
+        Value::Bool(b) => h.update(if *b { b"t" } else { b"f" }),
+        Value::Number(n) => digest_number(h, n),
+        Value::String(s) => {
+            h.update(b"s");
+            digest_str(h, s);
+        }
+        Value::Array(items) => {
+            h.update(b"a");
+            digest_len(h, items.len());
+            items.iter().for_each(|v| digest_json(h, v));
+        }
+        Value::Object(map) => {
+            h.update(b"o");
+            digest_len(h, map.len());
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            for k in keys {
+                digest_str(h, k);
+                digest_json(h, &map[k]);
+            }
+        }
     }
 }
 
@@ -371,6 +401,19 @@ mod tests {
             &ev(json!({ "n": 1 }))
         ));
         assert!(!visits.insert("T", "E", "s", ev(json!({ "k": 1 })), ev(json!({ "n": 1 }))));
+    }
+
+    #[test]
+    fn visits_hold_no_copy_of_a_payload_or_frame() {
+        let body = Arc::new(SExpression::String("x".to_string()));
+        let held = || EValue::Lambda {
+            params: vec!["x".to_string()],
+            body: Arc::clone(&body),
+        };
+        let mut visits = DispatchVisits::default();
+        assert!(visits.insert("T", "E", "s", held(), EValue::Array(vec![held(), held()])));
+        assert_eq!(Arc::strong_count(&body), 1);
+        assert!(visits.contains("T", "E", "s", &held(), &EValue::Array(vec![held(), held()])));
     }
 
     #[test]

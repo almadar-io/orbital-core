@@ -41,7 +41,6 @@ pub mod geo;
 pub mod grid;
 pub mod i18n;
 pub mod json;
-pub mod jws;
 pub mod logic;
 pub mod math;
 pub mod noise;
@@ -69,7 +68,6 @@ pub use geo::*;
 pub use grid::*;
 pub use i18n::*;
 pub use json::*;
-pub use jws::*;
 pub use logic::*;
 pub use math::*;
 pub use noise::*;
@@ -351,10 +349,6 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "hash/scrypt" => K::HashScryptOp,
         "hash/pbkdf2" => K::HashPbkdf2Op,
         "hmac/sha256" => K::HmacSha256Op,
-        "jws/verify" => K::JwsVerifyOp,
-        "jws/decode" => K::JwsDecodeOp,
-        "jwk/keyset-from-jwks" => K::JwkKeysetFromJwksOp,
-        "jwk/keyset-from-x509" => K::JwkKeysetFromX509Op,
         "titleCase" | "str/titleCase" => K::StrTitleCaseOp,
         "camelCase" | "str/camelCase" => K::StrCamelCaseOp,
         "kebabCase" | "str/kebabCase" => K::StrKebabCaseOp,

@@ -1,6 +1,5 @@
 //! The `os/` effect family at the kernel: the closed set of operations a host can be asked to perform
-//! ([`OsOp`]), the error a host answers with ([`OsError`]) and how an `os/<op>` call site is read. The host
-//! ports outside the `os/` namespace (`http/listen`, `http/respond`) are in the same table.
+//! ([`OsOp`]), the error a host answers with ([`OsError`]) and how an `os/<op>` call site is read.
 //! The contract is `docs/Almadar_OS_Operators.md`; the pure `os/path-*` operators are not here (they are
 //! evaluator operators, `evaluator/operators/os_path.rs`).
 
@@ -116,8 +115,6 @@ os_ops! {
     DnsResolve => ("os/dns-resolve", 1, 2, Single),
     Shutdown => ("os/shutdown", 1, 1, Single),
     WatchPort => ("os/watch-port", 2, 2, Stream),
-    HttpListen => ("http/listen", 2, 2, Stream),
-    HttpRespond => ("http/respond", 4, 4, Single),
     ClockMonotonic => ("os/clock-monotonic", 0, 0, Single),
     Uid => ("os/uid", 0, 0, Single),
     Gid => ("os/gid", 0, 0, Single),
@@ -262,10 +259,10 @@ mod tests {
     fn every_name_round_trips_through_the_one_table() {
         for op in OsOp::ALL {
             assert_eq!(OsOp::from_name(op.name()), Some(*op));
-            assert!(op.name().starts_with("os/") || op.name().starts_with("http/"));
+            assert!(op.name().starts_with("os/"));
             assert!(op.min_args() <= op.max_args());
         }
-        assert_eq!(OsOp::ALL.len(), 93);
+        assert_eq!(OsOp::ALL.len(), 91);
         assert_eq!(OsOp::from_name("http"), None);
     }
 
@@ -319,7 +316,6 @@ mod tests {
                 "os/stdin-read",
                 "os/tcp-listen",
                 "os/watch-port",
-                "http/listen",
                 "os/watch-cron",
             ]
         );

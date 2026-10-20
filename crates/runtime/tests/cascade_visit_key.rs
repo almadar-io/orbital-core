@@ -376,3 +376,50 @@ fn a_traits_own_endless_loop_names_itself_as_truncated() {
         .unwrap();
     assert_eq!(EventResponse::from_process_results(&outcomes, "Looper", "TICK").cascade_truncated, None);
 }
+
+/// L20: the serialized response of a two-hop cascade with sets and a render stays byte-identical across the entity-sharing change.
+#[test]
+fn a_two_hop_cascade_response_serializes_byte_identically() {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "title", "type": "string", "default": "t" },
+                { "name": "tags", "type": "array", "default": ["a"] },
+                { "name": "hits", "type": "number", "default": 0 }
+            ] },
+            "traits": [{
+                "name": "Hop", "linkedEntity": "Note",
+                "listens": [{ "event": "HOP_NEXT", "triggers": "HOP", "source": { "kind": "trait", "trait": "Hop" } }],
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "HOP",
+                        "guard": [">", "@payload.left", 0],
+                        "effects": [
+                            ["set", "@entity.hits", ["+", "@entity.hits", 1]],
+                            ["set", "@entity.tags", ["array/append", "@entity.tags", "b"]],
+                            ["render-ui", "main", { "type": "typography", "content": "@entity.title" }],
+                            ["emit", "HOP_NEXT", { "left": ["-", "@payload.left", 1] }]
+                        ] }]
+                }
+            }]
+        }]
+    }))
+    .unwrap();
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    kernel.register_schema(schema).unwrap();
+    let payload: Value = serde_json::from_value(json!({ "left": 2 })).unwrap();
+    let outcomes = kernel.dispatch("Hop", None, "HOP", payload).unwrap();
+    let response = EventResponse::from_process_results(&outcomes, "Hop", "HOP");
+    let bytes = serde_json::to_string(&response).unwrap();
+    println!("TWO_HOP_RESPONSE {bytes}");
+    assert_eq!(bytes, TWO_HOP_RESPONSE);
+}
+
+const TWO_HOP_RESPONSE: &str = r#"{"success":true,"transitioned":true,"states":{"Hop":"idle"},"emittedEvents":[{"event":"HOP_NEXT","payload":{"left":1.0},"source":{"trait":"Hop","dispatched":true}},{"event":"HOP_NEXT","payload":{"left":0.0},"source":{"trait":"Hop","dispatched":true}}],"entityByTrait":{"Hop":{"title":"t","tags":["a","b","b"],"hits":2.0}},"clientEffects":[["render-ui","main",{"type":"typography","content":"t"}],["render-ui","main",{"type":"typography","content":"t"}],["render-ui","main",{"type":"typography","content":"t"}]],"clientEffectsByTrait":[{"traitName":"Hop","effect":["render-ui","main",{"type":"typography","content":"t"}],"event":"HOP","fromState":"idle"},{"traitName":"Hop","effect":["render-ui","main",{"type":"typography","content":"t"}],"event":"HOP","fromState":"idle"},{"traitName":"Hop","effect":["render-ui","main",{"type":"typography","content":"t"}]}],"effectResults":[{"effect":"set","action":"@entity.hits","success":true},{"effect":"set","action":"@entity.tags","success":true},{"effect":"emit","success":true,"target":"HOP_NEXT"},{"effect":"set","action":"@entity.hits","success":true},{"effect":"set","action":"@entity.tags","success":true},{"effect":"emit","success":true,"target":"HOP_NEXT"}],"guardFailed":"Hop.HOP"}"#;

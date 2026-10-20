@@ -15,7 +15,7 @@ use rsa::sha2::{Digest, Sha256};
 use rsa::{Pkcs1v15Sign, RsaPrivateKey};
 use serde_json::Value;
 
-pub use orbital_core_base::jws::{is_unsigned, JwsRefusal, KeySet, VerifyKey};
+use crate::lenient::base64_decode_lenient;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JwtError {
@@ -51,8 +51,17 @@ impl ServiceAccountKey {
     }
 }
 
+/// `(label, DER)` of the first PEM block.
 fn pem_der(pem: &str) -> Result<(&str, Vec<u8>), JwtError> {
-    orbital_core_base::jws::pem_der(pem).ok_or(JwtError::InvalidKey)
+    let start = pem.find("-----BEGIN ").ok_or(JwtError::InvalidKey)?;
+    let label_end = pem[start + 11..].find("-----").ok_or(JwtError::InvalidKey)? + start + 11;
+    let label = &pem[start + 11..label_end];
+    let body_end = pem.find("-----END ").ok_or(JwtError::InvalidKey)?;
+    if body_end < label_end + 5 {
+        return Err(JwtError::InvalidKey);
+    }
+    let body: String = pem[label_end + 5..body_end].split_whitespace().collect();
+    Ok((label, base64_decode_lenient(&body)))
 }
 
 /// RS256 over `message`; `pem` is PKCS#1 (`RSA PRIVATE KEY`) or PKCS#8.
@@ -179,15 +188,144 @@ impl fmt::Display for JwtVerifyError {
     }
 }
 
-impl From<JwsRefusal> for JwtVerifyError {
-    fn from(refusal: JwsRefusal) -> Self {
-        match refusal {
-            JwsRefusal::Malformed(why) => Self::Malformed(why),
-            JwsRefusal::Algorithm(alg) => Self::Algorithm(alg),
-            JwsRefusal::UnknownKey(kid) => Self::UnknownKey(kid),
-            JwsRefusal::Signature => Self::Signature,
+pub enum VerifyKey {
+    Rsa(rsa::RsaPublicKey),
+    Ec(p256::ecdsa::VerifyingKey),
+}
+
+/// The public keys an issuer publishes, by `kid`.
+#[derive(Default)]
+pub struct KeySet {
+    keys: Vec<(Option<String>, VerifyKey)>,
+}
+
+fn b64url_decode(text: &str) -> Result<Vec<u8>, JwtVerifyError> {
+    URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|e| JwtVerifyError::Malformed(format!("not base64url: {e}")))
+}
+
+fn jwk_field(jwk: &Value, name: &str) -> Result<Vec<u8>, JwtVerifyError> {
+    let text = jwk
+        .get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| JwtVerifyError::Malformed(format!("a JWK has no `{name}`")))?;
+    b64url_decode(text.trim_end_matches('='))
+}
+
+impl KeySet {
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    pub fn push(&mut self, kid: Option<String>, key: VerifyKey) {
+        self.keys.push((kid, key));
+    }
+
+    /// A JWK Set document (`{"keys":[...]}`): RSA and P-256 signing keys; a key of another type or `use` is skipped.
+    pub fn from_jwks(json_text: &str) -> Result<Self, JwtVerifyError> {
+        let doc: Value =
+            serde_json::from_str(json_text).map_err(|e| JwtVerifyError::Malformed(format!("key set: {e}")))?;
+        let list = doc
+            .get("keys")
+            .and_then(Value::as_array)
+            .ok_or_else(|| JwtVerifyError::Malformed("a key set has no `keys`".to_string()))?;
+        let mut set = KeySet::default();
+        for jwk in list {
+            if jwk.get("use").and_then(Value::as_str).is_some_and(|u| u != "sig") {
+                continue;
+            }
+            let kid = jwk.get("kid").and_then(Value::as_str).map(str::to_string);
+            match jwk.get("kty").and_then(Value::as_str) {
+                Some("RSA") => {
+                    let n = rsa::BigUint::from_bytes_be(&jwk_field(jwk, "n")?);
+                    let e = rsa::BigUint::from_bytes_be(&jwk_field(jwk, "e")?);
+                    let key = rsa::RsaPublicKey::new(n, e)
+                        .map_err(|e| JwtVerifyError::Malformed(format!("RSA key: {e}")))?;
+                    set.push(kid, VerifyKey::Rsa(key));
+                }
+                Some("EC") if jwk.get("crv").and_then(Value::as_str) == Some("P-256") => {
+                    let mut point = vec![0x04];
+                    point.extend(jwk_field(jwk, "x")?);
+                    point.extend(jwk_field(jwk, "y")?);
+                    let key = p256::ecdsa::VerifyingKey::from_sec1_bytes(&point)
+                        .map_err(|e| JwtVerifyError::Malformed(format!("EC key: {e}")))?;
+                    set.push(kid, VerifyKey::Ec(key));
+                }
+                _ => {}
+            }
+        }
+        Ok(set)
+    }
+
+    /// The `{kid: certificate PEM}` document Firebase publishes for its ID-token signing keys.
+    pub fn from_x509_map(json_text: &str) -> Result<Self, JwtVerifyError> {
+        let doc: Value =
+            serde_json::from_str(json_text).map_err(|e| JwtVerifyError::Malformed(format!("certificates: {e}")))?;
+        let map = doc
+            .as_object()
+            .ok_or_else(|| JwtVerifyError::Malformed("certificates are not an object".to_string()))?;
+        let mut set = KeySet::default();
+        for (kid, pem) in map {
+            let pem = pem
+                .as_str()
+                .ok_or_else(|| JwtVerifyError::Malformed("a certificate is not text".to_string()))?;
+            set.push(Some(kid.clone()), key_of_certificate(pem)?);
+        }
+        Ok(set)
+    }
+}
+
+/// `(tag, content, rest)` of the DER value at the start of `bytes`.
+fn der_next(bytes: &[u8]) -> Result<(u8, &[u8], &[u8]), JwtVerifyError> {
+    let bad = || JwtVerifyError::Malformed("certificate is not DER".to_string());
+    let (&tag, rest) = bytes.split_first().ok_or_else(bad)?;
+    let (&first, rest) = rest.split_first().ok_or_else(bad)?;
+    let (length, rest) = if first < 0x80 {
+        (usize::from(first), rest)
+    } else {
+        let count = usize::from(first & 0x7f);
+        if count == 0 || count > 4 || rest.len() < count {
+            return Err(bad());
+        }
+        let length = rest[..count].iter().fold(0usize, |acc, b| (acc << 8) | usize::from(*b));
+        (length, &rest[count..])
+    };
+    if rest.len() < length {
+        return Err(bad());
+    }
+    Ok((tag, &rest[..length], &rest[length..]))
+}
+
+/// The public key of an X.509 certificate PEM: its `SubjectPublicKeyInfo`, read as RSA or P-256.
+fn key_of_certificate(pem: &str) -> Result<VerifyKey, JwtVerifyError> {
+    let (label, der) = pem_der(pem).map_err(|_| JwtVerifyError::Malformed("certificate PEM".to_string()))?;
+    if label != "CERTIFICATE" {
+        return Err(JwtVerifyError::Malformed(format!("expected a CERTIFICATE, found {label}")));
+    }
+    let (_, certificate, _) = der_next(&der)?;
+    let (_, tbs, _) = der_next(certificate)?;
+    let mut cursor = tbs;
+    let (tag, _, after_version) = der_next(cursor)?;
+    if tag == 0xA0 {
+        cursor = after_version;
+    }
+    // serial, signature algorithm, issuer, validity, subject; the key info follows
+    for _ in 0..5 {
+        cursor = der_next(cursor)?.2;
+    }
+    let after_spki = der_next(cursor)?.2;
+    let spki = &cursor[..cursor.len() - after_spki.len()];
+    {
+        use rsa::pkcs8::DecodePublicKey;
+        if let Ok(key) = rsa::RsaPublicKey::from_public_key_der(spki) {
+            return Ok(VerifyKey::Rsa(key));
         }
     }
+    use p256::pkcs8::DecodePublicKey as _;
+    p256::ecdsa::VerifyingKey::from_public_key_der(spki)
+        .map(VerifyKey::Ec)
+        .map_err(|_| JwtVerifyError::Malformed("the certificate key is neither RSA nor P-256".to_string()))
 }
 
 /// What a verified token has to satisfy beyond its signature.
@@ -206,8 +344,63 @@ fn claim_seconds(claims: &Value, name: &str) -> Option<f64> {
 /// as JSON. The algorithm comes from the header but must be one the selected key can verify, so `none` and the HMAC
 /// algorithms are refused and a public key is never an HMAC secret.
 pub fn verify_compact(token: &str, keys: &KeySet, policy: &VerifyPolicy<'_>) -> Result<Value, JwtVerifyError> {
-    let parts = orbital_core_base::jws::verify_signature(token, keys)?;
-    check_claims(parts.claims_json()?, policy)
+    let mut parts = token.split('.');
+    let (Some(header_text), Some(claims_text), Some(signature_text), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(JwtVerifyError::Malformed("a compact token has three parts".to_string()));
+    };
+    let header: Value = serde_json::from_slice(&b64url_decode(header_text)?)
+        .map_err(|e| JwtVerifyError::Malformed(format!("header: {e}")))?;
+    let alg = header.get("alg").and_then(Value::as_str).unwrap_or_default().to_string();
+    if alg != "RS256" && alg != "ES256" {
+        return Err(JwtVerifyError::Algorithm(alg));
+    }
+    let kid = header.get("kid").and_then(Value::as_str).map(str::to_string);
+    let wants_rsa = alg == "RS256";
+    let fits = |key: &VerifyKey| matches!((key, wants_rsa), (VerifyKey::Rsa(_), true) | (VerifyKey::Ec(_), false));
+    let chosen: Vec<&VerifyKey> = keys
+        .keys
+        .iter()
+        .filter(|(have, _)| kid.is_none() || *have == kid)
+        .map(|(_, key)| key)
+        .collect();
+    if chosen.is_empty() {
+        return Err(JwtVerifyError::UnknownKey(kid));
+    }
+    let Some(key) = chosen.iter().copied().find(|key| fits(key)) else {
+        return Err(JwtVerifyError::Algorithm(alg));
+    };
+    let signature = b64url_decode(signature_text)?;
+    let signing_input = &token[..header_text.len() + 1 + claims_text.len()];
+    let verified = match key {
+        VerifyKey::Rsa(public) => public
+            .verify(Pkcs1v15Sign::new::<Sha256>(), &Sha256::digest(signing_input.as_bytes()), &signature)
+            .is_ok(),
+        VerifyKey::Ec(public) => {
+            use p256::ecdsa::signature::Verifier;
+            Signature::from_slice(&signature)
+                .ok()
+                .is_some_and(|signature| public.verify(signing_input.as_bytes(), &signature).is_ok())
+        }
+    };
+    if !verified {
+        return Err(JwtVerifyError::Signature);
+    }
+    check_claims(claims_text, policy)
+}
+
+/// Whether a token is unsigned (`alg` is `none` and the signature part is empty): what the Firebase Auth emulator issues.
+pub fn is_unsigned(token: &str) -> bool {
+    let mut parts = token.split('.');
+    let (Some(header), Some(_), Some(signature), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    signature.is_empty()
+        && b64url_decode(header)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|header| header.get("alg").and_then(Value::as_str) == Some("none"))
 }
 
 /// The claims of an UNSIGNED token (`alg: none`) after the same claim checks as a signed one. Only a host that has been told
@@ -216,12 +409,14 @@ pub fn verify_unsigned(token: &str, policy: &VerifyPolicy<'_>) -> Result<Value, 
     if !is_unsigned(token) {
         return Err(JwtVerifyError::Algorithm("a signed token".to_string()));
     }
-    let parts = orbital_core_base::jws::split_compact(token)?;
-    check_claims(parts.claims_json()?, policy)
+    let claims_text = token.split('.').nth(1).unwrap_or_default();
+    check_claims(claims_text, policy)
 }
 
-/// `exp` (required), `nbf`, `iss`, `aud` and `sub` of `claims`.
-fn check_claims(claims: Value, policy: &VerifyPolicy<'_>) -> Result<Value, JwtVerifyError> {
+/// `exp` (required), `nbf`, `iss`, `aud` and `sub` of the claims segment `claims_text`.
+fn check_claims(claims_text: &str, policy: &VerifyPolicy<'_>) -> Result<Value, JwtVerifyError> {
+    let claims: Value = serde_json::from_slice(&b64url_decode(claims_text)?)
+        .map_err(|e| JwtVerifyError::Malformed(format!("claims: {e}")))?;
     let now = policy.now as f64;
     let exp = claim_seconds(&claims, "exp").ok_or_else(|| JwtVerifyError::Malformed("no `exp`".to_string()))?;
     if exp <= now {

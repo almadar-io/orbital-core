@@ -72,6 +72,7 @@ fn field(
         .unwrap_or_else(|| panic!("{trait_name} must execute"));
     result
         .entity_data
+        .to_value()
         .get_path(key)
         .and_then(Value::as_number)
         .unwrap_or_else(|| {

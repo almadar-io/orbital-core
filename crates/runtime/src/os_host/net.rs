@@ -1,7 +1,6 @@
 //! The `net` family: TCP, UDP and DNS. `os/tcp-listen` is a keyed stream: it answers the bound listener at once and
 //! hands each accepted connection to the completion sink as an event of the call's `onMessage` route, until the
-//! key is cancelled or the listener closed. `http/listen` is the same stream with an HTTP/1.1 reader on each
-//! connection (`super::http`). Port watching answers `unsupported`.
+//! key is cancelled or the listener closed. Port watching answers `unsupported`.
 //!
 //! Grant rules. Every target is checked with `net_allows(host, port, kind)` before any syscall, spelled exactly
 //! as the program wrote it. `os/dns-resolve` checks `net_allows(name, 0, tcp)` or `(name, 0, udp)`: a grant
@@ -38,8 +37,6 @@ pub(super) enum SockEntry {
     Stream(TcpStream),
     Listener(TcpListener),
     Datagram(UdpSocket),
-    /// An `http/listen` request delivered to the program and waiting for its one `http/respond`.
-    Request(TcpStream),
 }
 
 /// Open sockets; ids come from the counter shared with the fs table, so an id names one handle. Shared with the
@@ -363,7 +360,7 @@ fn deliver_connection(
     false
 }
 
-/// The keyed listening stream `os/tcp-listen` and `http/listen` share; `on_accept` takes each connection.
+/// The keyed listening stream of `os/tcp-listen`; `on_accept` takes each connection.
 pub(super) fn listen(
     op: OsOp,
     kind: NetKind,
@@ -534,8 +531,6 @@ pub(super) fn answer(
     Some(match op {
         OsOp::TcpConnect => tcp_connect(args, host),
         OsOp::TcpListen => tcp_listen(args, key, site, host),
-        OsOp::HttpListen => listen(op, NetKind::Listen, super::http::serve, args, key, site, host),
-        OsOp::HttpRespond => super::http::respond(args, host),
         OsOp::Send => send(args, host),
         OsOp::Recv => recv(args, host),
         OsOp::UdpBind => udp_bind(args, host),
@@ -798,7 +793,7 @@ mod tests {
         );
         let site = listen_site();
         let args = [s("127.0.0.1"), n(0)];
-        for (op, key) in [(OsOp::TcpListen, "g1"), (OsOp::HttpListen, "g2")] {
+        for (op, key) in [(OsOp::TcpListen, "g1")] {
             let handles = OsHandles::default();
             let _rx = collecting_sink(&handles);
             let on_event = |_: Option<&CallSite>, _: Value| {};
@@ -815,143 +810,6 @@ mod tests {
             assert_eq!(kind_of(denied), OsErrorKind::Denied, "control {}: a tcp grant does not listen", op.name());
             handles.close_all();
         }
-    }
-
-    fn http_site() -> CallSite {
-        let mut site = listen_site();
-        site.emit.on_message = Some("REQUEST".to_string());
-        site
-    }
-
-    fn http_listening(handles: &OsHandles, key: &str) -> (mpsc::Receiver<Fired>, i64, i64) {
-        let rx = collecting_sink(handles);
-        let on_event = |_: Option<&CallSite>, _: Value| {};
-        let listen_grants = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Listen])]);
-        let host = OsHost { grants: &listen_grants, handles, on_event: &on_event };
-        let bound = answer(OsOp::HttpListen, &[s("127.0.0.1"), n(0)], Some(key), Some(&http_site()), &host)
-            .expect("net answers http/listen")
-            .expect("listening");
-        (rx, id_of(&field(&bound, "sock")), id_of(&field(&bound, "port")))
-    }
-
-    /// Sends `raw` over `os/tcp-connect` and reads with `os/recv` until the server closes.
-    fn exchange<'a>(client: &'a OsHost<'a>, port: i64, raw: &[u8]) -> impl FnOnce() -> Vec<u8> + 'a {
-        let sock = field(&ask(client, OsOp::TcpConnect, &[s("127.0.0.1"), n(port)]).expect("connected"), "sock");
-        ask(client, OsOp::Send, &[sock.clone(), bytes_value(raw)]).expect("sent");
-        let read = move || {
-            let mut got = Vec::new();
-            loop {
-                let chunk = ask(client, OsOp::Recv, &[sock.clone(), n(4096)]).expect("recv");
-                if field(&chunk, "eof") == Value::Bool(true) {
-                    return got;
-                }
-                got.extend(arg_bytes(&[field(&chunk, "data")], 0, OsOp::Recv).expect("bytes"));
-            }
-        };
-        read
-    }
-
-    fn parse_reply(raw: &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>) {
-        let mut headers = [httparse::EMPTY_HEADER; 32];
-        let mut reply = httparse::Response::new(&mut headers);
-        let httparse::Status::Complete(head) = reply.parse(raw).expect("an HTTP reply") else { panic!("partial reply") };
-        let named = reply
-            .headers
-            .iter()
-            .map(|h| (h.name.to_ascii_lowercase(), String::from_utf8_lossy(h.value).into_owned()))
-            .collect();
-        (reply.code.expect("status"), named, raw[head..].to_vec())
-    }
-
-    #[test]
-    fn an_http_listen_delivers_each_request_as_a_typed_record_and_http_respond_answers_it_once() {
-        use crate::resumable::completion_event;
-        let handles = OsHandles::default();
-        let (rx, listener, port) = http_listening(&handles, "h1");
-        let on_event = |_: Option<&CallSite>, _: Value| {};
-        let connect_grants = tcp_grant(port as u16);
-        let client = OsHost { grants: &connect_grants, handles: &handles, on_event: &on_event };
-        let raw = b"POST /items/7?x=1&y=two HTTP/1.1\r\nHost: a\r\nX-Two: a\r\nx-two: b\r\nContent-Length: 5\r\n\r\nhello";
-        let read = exchange(&client, port, raw);
-        let (at, key, outcome) = rx.recv_timeout(Duration::from_secs(5)).expect("the request arrives");
-        let (event, request) = completion_event(&at, &key, outcome).expect("routed");
-        assert_eq!(event, "REQUEST", "a request fires the message route, never success");
-        assert_eq!(request.get_path("key"), Some(&s("h1")));
-        assert_eq!(request.get_path("method"), Some(&s("POST")));
-        assert_eq!(request.get_path("path"), Some(&s("/items/7")));
-        assert_eq!(request.get_path("query"), Some(&s("x=1&y=two")));
-        assert_eq!(request.get_path("headers.x-two"), Some(&s("a, b")), "names lower-cased, repeats joined");
-        assert_eq!(request.get_path("headers.host"), Some(&s("a")));
-        assert_eq!(request.get_path("body"), Some(&s("hello")));
-        assert!(matches!(request.get_path("peer"), Some(Value::String(p)) if p.starts_with("127.0.0.1:")));
-        let request_id = request.get_path("requestId").cloned().expect("a request id");
-        assert!(
-            ask(&client, OsOp::Send, &[request_id.clone(), bytes_value(b"raw")]).is_err(),
-            "control: a pending request is not a raw socket"
-        );
-        let mut reply_headers = ValueMap::new();
-        reply_headers.insert("Content-Type".to_string(), s("text/plain"));
-        let answered = ask(&client, OsOp::HttpRespond, &[request_id.clone(), n(201), Value::Object(reply_headers), s("made")])
-            .expect("answered");
-        assert!(id_of(&field(&answered, "bytes")) > 4);
-        let (status, headers, body) = parse_reply(&read());
-        assert_eq!(status, 201);
-        assert_eq!(body, b"made");
-        assert!(headers.contains(&("content-type".to_string(), "text/plain".to_string())));
-        assert!(headers.contains(&("content-length".to_string(), "4".to_string())));
-        assert!(headers.contains(&("connection".to_string(), "close".to_string())));
-        let again = ask(&client, OsOp::HttpRespond, &[request_id, n(200), Value::Object(ValueMap::new()), s("")]);
-        assert_eq!(kind_of(again), OsErrorKind::Closed, "control: a request is answered once");
-        let not_a_request = ask(&client, OsOp::HttpRespond, &[n(listener), n(200), Value::Object(ValueMap::new()), s("")]);
-        assert_eq!(kind_of(not_a_request), OsErrorKind::Invalid, "control: a listener is not a request");
-        assert!(handles.completions.is_live("h1"), "the stream stays open across requests");
-        handles.close_all();
-    }
-
-    #[test]
-    fn a_refused_answer_leaves_the_request_pending_and_a_bad_or_chunked_request_is_answered_by_the_host_unseen() {
-        use crate::resumable::completion_event;
-        let handles = OsHandles::default();
-        let (rx, _, port) = http_listening(&handles, "h2");
-        let on_event = |_: Option<&CallSite>, _: Value| {};
-        let connect_grants = tcp_grant(port as u16);
-        let client = OsHost { grants: &connect_grants, handles: &handles, on_event: &on_event };
-        for (raw, want) in [
-            (&b"NOT HTTP AT ALL\r\n\r\n"[..], 400u16),
-            (&b"POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n"[..], 411),
-        ] {
-            let read = exchange(&client, port, raw);
-            assert_eq!(parse_reply(&read()).0, want);
-        }
-        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "neither reached the program");
-        let read = exchange(&client, port, b"GET /ok HTTP/1.1\r\nHost: a\r\n\r\n");
-        let (at, key, outcome) = rx.recv_timeout(Duration::from_secs(5)).expect("a good request still arrives");
-        let request = completion_event(&at, &key, outcome).expect("routed").1;
-        assert_eq!(request.get_path("query"), Some(&s("")));
-        assert_eq!(request.get_path("body"), Some(&s("")));
-        let id = request.get_path("requestId").cloned().expect("id");
-        let mut injected = ValueMap::new();
-        injected.insert("x-a".to_string(), s("1\r\nx-b: 2"));
-        let mut framing = ValueMap::new();
-        framing.insert("content-length".to_string(), s("99"));
-        for (status, headers) in [(n(99), ValueMap::new()), (n(200), injected), (n(200), framing)] {
-            let refused = ask(&client, OsOp::HttpRespond, &[id.clone(), status, Value::Object(headers), s("x")]);
-            assert_eq!(kind_of(refused), OsErrorKind::Invalid);
-        }
-        ask(&client, OsOp::HttpRespond, &[id, n(404), Value::Object(ValueMap::new()), s("gone")])
-            .expect("still pending after the refused answers");
-        let (status, _, body) = parse_reply(&read());
-        assert_eq!((status, body.as_slice()), (404, &b"gone"[..]));
-        assert!(handles.cancel_completion("h2"));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut quiet = false;
-        while Instant::now() < deadline && !quiet {
-            let _ = TcpStream::connect(("127.0.0.1", port as u16))
-                .and_then(|mut c| c.write_all(b"GET / HTTP/1.1\r\nHost: a\r\n\r\n"));
-            quiet = rx.recv_timeout(Duration::from_millis(200)).is_err();
-        }
-        assert!(quiet, "control: a cancelled http stream delivers nothing");
-        handles.close_all();
     }
 
     #[test]

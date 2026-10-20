@@ -449,7 +449,12 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         _ if t.starts_with("Map<") && t.ends_with('>') => CompatType::MapTag,
         // `"a" | "b"`: a closed set of strings is an enum of strings.
         _ if is_string_literal_union(t) => CompatType::Ty(OirType::Enum { name: t.to_string() }),
-        _ if t.chars().next().is_some_and(char::is_uppercase) => CompatType::Named(t.to_string()),
+        _ if t.chars().next().is_some_and(char::is_uppercase) => {
+            match crate::language::program_types::program_type(t) {
+                Some(shape) => CompatType::Ty(shape.clone()),
+                None => CompatType::Named(t.to_string()),
+            }
+        }
         _ => CompatType::Unknown(t.to_string()),
     }
 }
@@ -715,6 +720,24 @@ pub fn compat_kind_oir(kind: &str) -> OirType {
 mod tests {
     use super::{enum_value_is_member, oir_type_satisfies_field};
     use crate::ir::types::OirType;
+
+    #[test]
+    fn a_program_type_name_is_its_record_shape() {
+        let viewer = crate::language::program_types::program_type("Viewer")
+            .expect("the installed language declares Viewer")
+            .clone();
+        assert!(super::oir_type_accepts_kind(&viewer, "Viewer"));
+        assert_eq!(super::parse_compat_type("Viewer"), super::CompatType::Ty(viewer.clone()));
+        assert!(
+            !super::oir_type_accepts_kind(&viewer, "NoSuchProgramType"),
+            "control: an unknown name is not a record"
+        );
+        assert_eq!(
+            super::parse_compat_type("Order"),
+            super::CompatType::Named("Order".into()),
+            "control: an entity name stays nominal"
+        );
+    }
 
     #[test]
     fn a_list_of_a_nominal_std_type_is_that_list() {

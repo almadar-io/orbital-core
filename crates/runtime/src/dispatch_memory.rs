@@ -47,7 +47,10 @@ impl DispatchMemory {
             .insert(trait_name.to_string(), Arc::new(log.prev_states.clone()));
     }
 
-    pub fn record_delivery(&mut self, trait_name: &str, delivery: &Value) {
+    /// Takes the step's view so its share of the log is released before the append; a live view would make
+    /// `make_mut` deep-copy the whole log on every step.
+    pub fn record_delivery(&mut self, trait_name: &str, delivery: &Value, view: DispatchView) {
+        drop(view);
         Arc::make_mut(self.deliveries.entry(trait_name.to_string()).or_default())
             .push(delivery.clone());
     }
@@ -57,5 +60,46 @@ impl DispatchMemory {
             Arc::make_mut(self.left.entry(trait_name.to_string()).or_default())
                 .push(from.to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orbital_core_base::schema::sexpr::SExpression;
+
+    #[test]
+    fn recording_a_delivery_never_deep_copies_the_log_a_view_shares() {
+        let body = Arc::new(SExpression::String("x".to_string()));
+        let held = Value::Lambda {
+            params: vec!["x".to_string()],
+            body: Arc::clone(&body),
+        };
+        let mut memory = DispatchMemory::default();
+        let first = memory.view("T", &held);
+        memory.record_delivery("T", &held, first);
+        assert_eq!(Arc::strong_count(&body), 3);
+        let view = memory.view("T", &Value::Null);
+        assert_eq!(view.prev_events.len(), 1);
+        memory.record_delivery("T", &Value::Null, view);
+        assert_eq!(Arc::strong_count(&body), 3);
+        assert_eq!(memory.view("T", &Value::Null).prev_events.len(), 2);
+    }
+
+    #[test]
+    fn control_a_view_kept_past_the_record_forces_a_copy_of_the_log() {
+        let body = Arc::new(SExpression::String("x".to_string()));
+        let held = Value::Lambda {
+            params: vec!["x".to_string()],
+            body: Arc::clone(&body),
+        };
+        let mut memory = DispatchMemory::default();
+        let first = memory.view("T", &held);
+        memory.record_delivery("T", &held, first);
+        let view = memory.view("T", &Value::Null);
+        let kept = view.clone();
+        memory.record_delivery("T", &Value::Null, view);
+        assert_eq!(Arc::strong_count(&body), 4);
+        assert_eq!(kept.prev_events.len(), 1);
     }
 }
