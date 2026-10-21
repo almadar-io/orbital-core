@@ -1427,6 +1427,8 @@ fn the_wire_round_trips_every_request_and_answer() {
         IoRequest::Substrate {
             op: "program/eval".into(),
             args: vec![Value::Null],
+            key: None,
+            site: None,
         },
         IoRequest::Deliver {
             envelope: sample_envelope(),

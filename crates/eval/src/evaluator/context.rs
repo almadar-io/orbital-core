@@ -839,6 +839,7 @@ impl BindingContext {
             secrets: Arc::clone(&self.secrets),
             prob: Arc::clone(&self.prob),
             prob_entropy: self.prob_entropy.clone(),
+            declared_types: self.declared_types.clone(),
         }
     }
 

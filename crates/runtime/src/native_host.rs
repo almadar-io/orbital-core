@@ -130,7 +130,7 @@ mod tests {
     }
 
     fn ask(host: &NativeHost) -> IoAnswer {
-        host.answer(&IoRequest::Substrate { op: "program/read".to_string(), args: vec![Value::Null] })
+        host.answer(&IoRequest::Substrate { op: "program/read".to_string(), args: vec![Value::Null], key: None, site: None })
     }
 
     #[test]

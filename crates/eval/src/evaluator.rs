@@ -764,6 +764,56 @@ mod tests {
         assert_eq!(parse_in_program(r#""abc""#, "Other"), Value::String("abc".to_string()));
     }
 
+    // G-ORB-452: each element of a list declared `[OrbValue]` matches the recursive union on its own.
+    fn map_len_of_orb_values(items: serde_json::Value) -> Result<Value, String> {
+        let aliases = serde_json::from_value(serde_json::json!({
+            "OrbValue": [{ "name": "", "type": "union", "properties": [
+                { "name": "string", "type": "string" },
+                { "name": "number", "type": "number" },
+                { "name": "boolean", "type": "boolean" },
+                { "name": "array", "type": "[OrbValue]" },
+                { "name": "object", "type": "Map<string,OrbValue>" }
+            ] }]
+        }))
+        .unwrap();
+        let ctx = crate::evaluator::context::BindingContextBuilder::new()
+            .payload(serde_json::from_value(serde_json::json!({ "items": items })).unwrap())
+            .declared_types(crate::evaluator::context::DeclaredTypes::of_aliases(aliases))
+            .build();
+        let declared = serde_json::json!({ "kind": "array", "inner": { "kind": "typeref", "name": "OrbValue" } }).to_string();
+        let expr: SExpression = serde_json::from_value(serde_json::json!(
+            ["array/len", ["array/map", ["typed", "@payload.items", declared], ["fn", "i", 1]]]
+        ))
+        .unwrap();
+        Evaluator::new().evaluate(&expr, &ctx).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn union_list_mixed_elements_each_match_a_member() {
+        for items in [
+            serde_json::json!(["a", {"k": 1}]),
+            serde_json::json!([{"k": 1}, "a"]),
+            serde_json::json!(["a", [1]]),
+            serde_json::json!([[1], "a"]),
+            serde_json::json!([1, "a"]),
+        ] {
+            assert_eq!(map_len_of_orb_values(items.clone()), Ok(Value::Number(2.0)), "{items}");
+        }
+    }
+
+    #[test]
+    fn control_union_list_homogeneous_elements_match() {
+        for items in [serde_json::json!(["a", "b"]), serde_json::json!([{"k": 1}, {"k": 2}]), serde_json::json!([[1], [2, [3]]])] {
+            assert_eq!(map_len_of_orb_values(items.clone()), Ok(Value::Number(2.0)), "{items}");
+        }
+    }
+
+    #[test]
+    fn edge_union_list_refuses_a_value_outside_the_union() {
+        assert!(map_len_of_orb_values(serde_json::json!("abc")).is_err(), "not a list");
+        assert!(map_len_of_orb_values(serde_json::json!([{"k": {"deep": [true, "x", {"no": null}]}}, 1])).is_ok());
+    }
+
     #[test]
     fn json_stringify_round_trip() {
         assert_eq!(

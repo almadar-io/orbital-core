@@ -3972,16 +3972,20 @@ impl RuntimeKernel {
                             .and_then(|k| k.as_str().map(str::to_string)),
                         _ => None,
                     };
+                    self.io.set_substrate_call(self.call_site_of(emit.as_ref()), key.clone());
                     let mut result = if self.effect_executor.environment().is_client() {
                         self.effect_executor.execute(&effect, ctx)
                     } else {
                         self.run_agent_port(&effect, ctx)
                     };
+                    let verdict = self.io.take_call_verdict();
+                    self.io.set_call_site(None);
                     if let Effect::Custom { emit: routes, .. } = &mut result.effect {
                         routes.clone_from(emit);
                     }
                     let completion = emit
                         .as_ref()
+                        .filter(|_| verdict != Some(CallVerdict::Deferred))
                         .and_then(|e| agent_ports::agent_port_completion_emit(e, &result, key.as_deref()));
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
@@ -3994,11 +3998,16 @@ impl RuntimeKernel {
                         return;
                     };
                     let key = custom_key(&resolved);
+                    self.io.set_substrate_call(self.call_site_of(Some(op_emit)), key.clone());
                     let mut result = self.effect_executor.execute(&resolved, ctx);
+                    let verdict = self.io.take_call_verdict();
+                    self.io.set_call_site(None);
                     if let Effect::Custom { emit: routes, .. } = &mut result.effect {
                         *routes = Some(op_emit.clone());
                     }
-                    let completion = substrate_completion_emit(op_emit, &result, key.as_deref());
+                    let completion = (verdict != Some(CallVerdict::Deferred))
+                        .then(|| substrate_completion_emit(op_emit, &result, key.as_deref()))
+                        .flatten();
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -6329,14 +6338,10 @@ fn with_key(payload: Value, key: Option<&str>) -> Value {
 /// op's `key` when it declares one.
 fn substrate_completion_emit(emit: &FetchEmit, result: &EffectResult, key: Option<&str>) -> Option<EffectResult> {
     let (event, payload) = match &result.outcome {
-        EffectOutcome::Executed => {
-            let mut payload = ValueMap::new();
-            payload.insert(
-                "result".to_string(),
-                result.return_value.clone().unwrap_or(Value::Null),
-            );
-            (emit.success.clone()?, Value::Object(payload))
-        }
+        EffectOutcome::Executed => (
+            emit.success.clone()?,
+            crate::agent_ports::completion_result("", result.return_value.clone().unwrap_or(Value::Null)),
+        ),
         EffectOutcome::Failed => (
             emit.failure.clone()?,
             error_payload(result, result.return_value.clone()),

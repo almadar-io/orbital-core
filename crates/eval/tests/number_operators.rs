@@ -56,3 +56,68 @@ fn every_shared_number_vector_matches() {
         }
     }
 }
+
+const ECMA_NUMBER_TEXT: [(f64, &str); 14] = [
+    (1e19, "10000000000000000000"),
+    (9.5e18, "9500000000000000000"),
+    (1e20, "100000000000000000000"),
+    (123456789012345680000.0, "123456789012345680000"),
+    (12345678901234567890.0, "12345678901234567000"),
+    (1e-6, "0.000001"),
+    (1.5e-6, "0.0000015"),
+    (1e21, "1e+21"),
+    (1e-7, "1e-7"),
+    (1e18, "1000000000000000000"),
+    (0.0001, "0.0001"),
+    (-0.0, "0"),
+    (9007199254740993.0, "9007199254740992"),
+    (-2.5e-10, "-2.5e-10"),
+];
+
+fn eval_text(expr: Json) -> String {
+    let ctx = BindingContextBuilder::new().build();
+    match Evaluator::new().evaluate(&serde_json::from_value(expr.clone()).unwrap(), &ctx) {
+        Ok(Value::String(s)) => s,
+        other => panic!("{expr}: {other:?}"),
+    }
+}
+
+fn ecma_cases() -> Vec<(Json, &'static str)> {
+    let mut cases: Vec<(Json, &str)> = ECMA_NUMBER_TEXT.iter().map(|(n, want)| (serde_json::json!(n), *want)).collect();
+    cases.push((serde_json::json!(["+", 0.1, 0.2]), "0.30000000000000004"));
+    cases
+}
+
+#[test]
+fn a_number_becomes_text_as_ecmascript_number_to_string() {
+    for (number, want) in ecma_cases() {
+        assert_eq!(eval_text(serde_json::json!(["str/concat", "", number])), want, "str/concat {number}");
+        assert_eq!(
+            eval_text(serde_json::json!(["str/concat", "", {"n": number}])),
+            format!("{{\"n\":{want}}}"),
+            "str/concat object {number}"
+        );
+    }
+}
+
+#[test]
+fn json_stringify_writes_a_number_as_ecmascript_number_to_string() {
+    for (number, want) in ecma_cases() {
+        assert_eq!(eval_text(serde_json::json!(["json/stringify", number])), want, "json/stringify {number}");
+        assert_eq!(
+            eval_text(serde_json::json!(["json/stringify", {"n": number}])),
+            format!("{{\"n\":{want}}}"),
+            "json/stringify object {number}"
+        );
+    }
+}
+
+#[test]
+fn control_a_non_finite_number_stringifies_as_json_null() {
+    let ctx = BindingContextBuilder::new().build();
+    for expr in [serde_json::json!(["/", 1, 0]), serde_json::json!(["/", 0, 0])] {
+        let stringified = serde_json::json!(["json/stringify", {"n": expr}]);
+        let result = Evaluator::new().evaluate(&serde_json::from_value(stringified).unwrap(), &ctx);
+        assert_eq!(result.unwrap(), Value::String("{\"n\":null}".to_string()));
+    }
+}

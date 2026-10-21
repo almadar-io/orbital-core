@@ -96,9 +96,13 @@ pub enum IoRequest {
     CancelCall {
         key: String,
     },
+    /// One substrate or program op. A keyed op with a declared route sets `key` and `site`: the host may then answer
+    /// [`IoAnswer::ServiceDeferred`] and deliver its outcome later as a dispatch of its own (R-a).
     Substrate {
         op: String,
         args: Vec<Value>,
+        key: Option<String>,
+        site: Option<CallSite>,
     },
     /// One request of the `http` effect.
     Http {
@@ -440,7 +444,13 @@ impl std::fmt::Debug for IoRequest {
                 .field("site", site)
                 .finish(),
             Self::CancelCall { key } => f.debug_struct("CancelCall").field("key", key).finish(),
-            Self::Substrate { op, args } => f.debug_struct("Substrate").field("op", op).field("args", args).finish(),
+            Self::Substrate { op, args, key, site } => f
+                .debug_struct("Substrate")
+                .field("op", op)
+                .field("args", args)
+                .field("key", key)
+                .field("site", site)
+                .finish(),
             Self::Http {
                 request,
                 key,
@@ -620,6 +630,9 @@ impl IoAnswer {
     fn answers(&self, request: &IoRequest) -> bool {
         if let (IoRequest::Os { op, key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
             return op.defers_completion() && key.is_some() && site.is_some();
+        }
+        if let (IoRequest::Substrate { key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
+            return key.is_some() && site.is_some();
         }
         matches!(
             (request, self),
@@ -984,6 +997,8 @@ pub(crate) struct IoPort {
     site: Mutex<Option<CallSite>>,
     /// How the host settled the last `call-service`, when not by a result or an error.
     verdict: Mutex<Option<CallVerdict>>,
+    /// The `key` of the substrate op being run, stamped on its ask with `site`.
+    substrate_key: Mutex<Option<String>>,
     /// What the host's query push-down honours, per entity type; an entity not listed is never sent a query.
     query_capabilities: RwLock<HashMap<String, QueryCapabilities>>,
     /// What the host's conditional writes honour, per entity type; an entity not listed is never sent `WriteRows`.
@@ -1026,6 +1041,7 @@ impl IoPort {
             gate: Mutex::new(()),
             site: Mutex::new(None),
             verdict: Mutex::new(None),
+            substrate_key: Mutex::new(None),
             query_capabilities: RwLock::new(HashMap::new()),
             write_capabilities: RwLock::new(HashMap::new()),
             noticed: Mutex::new(HashSet::new()),
@@ -1216,6 +1232,24 @@ impl IoPort {
     pub(crate) fn set_call_site(&self, site: Option<CallSite>) {
         *self.site.lock() = site;
         *self.verdict.lock() = None;
+        *self.substrate_key.lock() = None;
+    }
+
+    /// Stamp `site` and `key` on the substrate op run while they are set.
+    pub(crate) fn set_substrate_call(&self, site: Option<CallSite>, key: Option<String>) {
+        *self.site.lock() = site;
+        *self.verdict.lock() = None;
+        *self.substrate_key.lock() = key;
+    }
+
+    /// A keyed substrate op with a declared route: the key and site its ask carries, else neither.
+    fn substrate_site(&self) -> (Option<String>, Option<CallSite>) {
+        let key = self.substrate_key.lock().clone();
+        let site = self.site.lock().clone().filter(|site| site.emit.success.is_some() || site.emit.failure.is_some());
+        match (key, site) {
+            (Some(key), Some(site)) => (Some(key), Some(site)),
+            _ => (None, None),
+        }
     }
 
     /// How the host settled the last `call-service`, when not by a result or an error.
@@ -2186,9 +2220,12 @@ const NO_HTTP_HOST: &str = "no HTTP host is configured for this kernel";
 
 impl SubstrateHandler for IoPort {
     fn run(&self, op: &str, args: &[Value]) -> Result<Value, SubstrateFailure> {
+        let (key, site) = self.substrate_site();
         match self.ask(|| IoRequest::Substrate {
             op: op.to_string(),
             args: args.to_vec(),
+            key,
+            site,
         }) {
             Asked::Direct => match &self.substrate {
                 Some(handler) => handler.run(op, args),
@@ -2198,6 +2235,10 @@ impl SubstrateHandler for IoPort {
                 }),
             },
             Asked::Answer(IoAnswer::Substrate(out)) => out,
+            Asked::Answer(IoAnswer::ServiceDeferred) => {
+                *self.verdict.lock() = Some(CallVerdict::Deferred);
+                Ok(Value::Null)
+            }
             Asked::Answer(_) | Asked::Withheld => Err(SubstrateFailure {
                 message: AWAITING_HOST.to_string(),
                 errors: Vec::new(),
@@ -2327,7 +2368,7 @@ impl BlockingHost<'_> {
                 Some(handler) => handler.cancel(key),
                 None => Err("no service handler configured".to_string()),
             }),
-            IoRequest::Substrate { op, args } => IoAnswer::Substrate(match self.substrate {
+            IoRequest::Substrate { op, args, .. } => IoAnswer::Substrate(match self.substrate {
                 Some(handler) => handler.run(op, args),
                 None => Err(SubstrateFailure {
                     message: format!("no substrate host configured for {op}"),

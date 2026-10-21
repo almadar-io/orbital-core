@@ -224,14 +224,14 @@ pub(super) fn agent_port_completion_emit(
 ) -> Option<EffectResult> {
     match &result.outcome {
         EffectOutcome::Executed => {
+            let op = match &result.effect {
+                Effect::Custom { name, .. } => name.as_str(),
+                _ => "",
+            };
             let value = result.return_value.clone().unwrap_or(Value::Null);
-            let text = serde_json::to_string(&value_to_json(&value)).unwrap_or_default();
-            let mut payload = ValueMap::new();
-            payload.insert("result".to_string(), value);
-            payload.insert("text".to_string(), Value::String(text));
             Some(EffectResult::executed(Effect::Emit {
                 event: emit.success.clone()?,
-                payload: super::with_key(Value::Object(payload), key),
+                payload: super::with_key(crate::agent_ports::completion_result(op, value), key),
             }))
         }
         EffectOutcome::Failed => super::substrate_completion_emit(emit, result, key),

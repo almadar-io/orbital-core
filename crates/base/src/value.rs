@@ -256,7 +256,7 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::Number(n) => crate::str_utils::js_number_string(*n),
             Value::String(s) => s.clone(),
-            Value::Array(_) | Value::Object(_) => serde_json::to_string(self).unwrap_or_default(),
+            Value::Array(_) | Value::Object(_) => crate::json_value::js_json_string(self),
             Value::Lambda { params, .. } => format!("<fn({})>", params.join(", ")),
         }
     }

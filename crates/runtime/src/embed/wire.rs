@@ -313,7 +313,14 @@ pub enum IoRequestWire {
     #[serde(rename_all = "camelCase")]
     CancelCall { key: String },
     #[serde(rename_all = "camelCase")]
-    Substrate { op: String, args: Vec<Value> },
+    Substrate {
+        op: String,
+        args: Vec<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<CallSiteWire>,
+    },
     #[serde(rename_all = "camelCase")]
     Http {
         request: HttpRequestWire,
@@ -846,7 +853,12 @@ impl From<IoRequestWire> for IoRequest {
                 site: site.map(CallSite::from),
             },
             IoRequestWire::CancelCall { key } => Self::CancelCall { key },
-            IoRequestWire::Substrate { op, args } => Self::Substrate { op, args },
+            IoRequestWire::Substrate { op, args, key, site } => Self::Substrate {
+                op,
+                args,
+                key,
+                site: site.map(CallSite::from),
+            },
             IoRequestWire::Http {
                 request,
                 key,
@@ -985,9 +997,11 @@ impl From<&IoRequest> for IoRequestWire {
                 site: site.as_ref().map(CallSiteWire::from),
             },
             IoRequest::CancelCall { key } => Self::CancelCall { key: key.clone() },
-            IoRequest::Substrate { op, args } => Self::Substrate {
+            IoRequest::Substrate { op, args, key, site } => Self::Substrate {
                 op: op.clone(),
                 args: args.clone(),
+                key: key.clone(),
+                site: site.as_ref().map(CallSiteWire::from),
             },
             IoRequest::Http {
                 request,
