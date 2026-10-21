@@ -100,6 +100,13 @@ pub(crate) struct DispatchRun {
     provisional: Option<Box<ProvisionalCommit>>,
 }
 
+impl DispatchRun {
+    /// The event of the seed in flight, which names a dispatch parked on its ask.
+    fn parked_event(&self) -> String {
+        self.seed.as_ref().map(|seed| seed.event_name.clone()).unwrap_or_default()
+    }
+}
+
 enum Flow {
     More,
     Done,
@@ -139,7 +146,34 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        let _lane = self.lane.enter();
+        self.dispatch_entered(None, trait_name, entity_id, event_name, payload, delivery, log)
+    }
+
+    /// [`Self::dispatch`] on behalf of the dispatch holding `turn` (EXEC-CONC-0): it re-enters that dispatch while
+    /// it runs and is refused while it is parked on an ask.
+    pub fn dispatch_in_turn(
+        &self,
+        turn: super::LaneTurn,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event_name: &str,
+        payload: Value,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        self.dispatch_entered(Some(turn), trait_name, entity_id, event_name, payload, None, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_entered(
+        &self,
+        turn: Option<super::LaneTurn>,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event_name: &str,
+        payload: Value,
+        delivery: Option<&DeliveryRecord>,
+        log: Option<&DispatchLog>,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let _lane = self.lane.enter(turn)?;
         self.require_payload([(trait_name, event_name)], &payload)?;
         let run = self.run_of_dispatch(trait_name, entity_id, event_name, payload, delivery, log);
         self.run_straight_through(run)
@@ -183,7 +217,7 @@ impl RuntimeKernel {
         event_name: &str,
         payload: Value,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        let _lane = self.lane.enter();
+        let _lane = self.lane.enter(None)?;
         self.require_payload(traits.iter().map(|t| (t.as_str(), event_name)), &payload)?;
         let run = self.run_of_each(traits, entity_id, event_name, payload, None, None);
         self.run_straight_through(run)
@@ -199,7 +233,7 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
-        let lane = self.lane.enter();
+        let lane = self.lane.enter(None)?;
         self.require_payload(traits.iter().map(|t| (t.as_str(), event_name)), &payload)?;
         let run = self.run_of_each(traits, entity_id, event_name, payload, delivery, log);
         self.drive_entry(lane, Self::continuation_of(run))
@@ -216,7 +250,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        let _lane = self.lane.enter();
+        let _lane = self.lane.enter(None)?;
         self.require_payload(
             seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
             &payload,
@@ -236,7 +270,7 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
-        let lane = self.lane.enter();
+        let lane = self.lane.enter(None)?;
         self.require_payload([(trait_name, event_name)], &payload)?;
         let run = self.run_of_dispatch(trait_name, entity_id, event_name, payload, delivery, log);
         self.drive_entry(lane, Self::continuation_of(run))
@@ -249,7 +283,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
-        let lane = self.lane.enter();
+        let lane = self.lane.enter(None)?;
         self.require_payload(
             seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
             &payload,
@@ -266,7 +300,7 @@ impl RuntimeKernel {
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         let lane = match continuation.lane.take() {
             Some(hold) => hold.resume(),
-            None => self.lane.enter(),
+            None => self.lane.enter(None)?,
         };
         accept_into(&mut continuation, replies)?;
         self.drive_entry(lane, continuation)
@@ -280,7 +314,8 @@ impl RuntimeKernel {
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         match self.drive_resumable(continuation)? {
             Progress::Await { mut continuation, requests } => {
-                continuation.lane = lane.park();
+                let event = continuation.run.parked_event();
+                continuation.lane = lane.park(event);
                 Ok(Progress::Await { continuation, requests })
             }
             done => Ok(done),
@@ -334,7 +369,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         tick_name: &str,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
-        let lane = self.lane.enter();
+        let lane = self.lane.enter(None)?;
         let defs = self.trait_definitions.read();
         let declared = defs.get(trait_name).ok_or_else(|| {
             DispatchError::Kernel(KernelError::TraitNotFound(trait_name.to_string()))
@@ -1271,7 +1306,10 @@ impl RuntimeKernel {
     /// verdict is `Accepted` once the dispatch has run, `Duplicate` for an id already accepted from the sender,
     /// `Rejected` for `hop-cap`, `unknown-instance`, or `down` when the dispatch itself failed.
     pub fn dispatch_envelope(&self, envelope: Envelope) -> EnvelopeVerdict {
-        let _lane = self.lane.enter();
+        let _lane = match self.lane.enter(None) {
+            Ok(lane) => lane,
+            Err(error) => return Self::envelope_down(&envelope, &error),
+        };
         let admitted = match self.admit_envelope(&envelope) {
             Ok(admitted) => admitted,
             Err(verdict) => return verdict,
@@ -1279,25 +1317,30 @@ impl RuntimeKernel {
         let run = self.run_of_envelope(envelope.event.clone(), envelope.payload.clone(), admitted);
         match self.run_straight_through(run) {
             Ok(_) => EnvelopeVerdict::Accepted,
-            Err(error) => {
-                tracing::error!(
-                    target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
-                    envelope = %envelope.id,
-                    error = %error,
-                    "envelope:dispatch-failed",
-                );
-                EnvelopeVerdict::Rejected(DeliverRefusal {
-                    kind: DeliverRefusalKind::Down,
-                    id: envelope.id,
-                })
-            }
+            Err(error) => Self::envelope_down(&envelope, &error),
         }
+    }
+
+    fn envelope_down(envelope: &Envelope, error: &KernelError) -> EnvelopeVerdict {
+        tracing::error!(
+            target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
+            envelope = %envelope.id,
+            error = %error,
+            "envelope:dispatch-failed",
+        );
+        EnvelopeVerdict::Rejected(DeliverRefusal {
+            kind: DeliverRefusalKind::Down,
+            id: envelope.id.clone(),
+        })
     }
 
     /// [`Self::dispatch_envelope`] as a resumable dispatch: the host answers the dispatch's asks, and `Accepted`
     /// is its `Progress::Done`.
     pub fn start_dispatch_envelope(&self, envelope: Envelope) -> InboundStart {
-        let lane = self.lane.enter();
+        let lane = match self.lane.enter(None) {
+            Ok(lane) => lane,
+            Err(error) => return InboundStart::Admitted(Box::new(Err(error.into()))),
+        };
         let admitted = match self.admit_envelope(&envelope) {
             Ok(admitted) => admitted,
             Err(verdict) => return InboundStart::Declined(verdict),

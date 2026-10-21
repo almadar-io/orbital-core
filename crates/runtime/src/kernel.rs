@@ -62,6 +62,11 @@ pub enum KernelError {
     /// The event's payload does not satisfy the payload its trait declares; the message is the API response's text.
     #[error("{0}")]
     PayloadInvalid(String),
+
+    /// A call carrying the turn of a dispatch parked holding the lane (EXEC-CONC-0): it would wait on itself
+    /// forever, so it is refused until that dispatch is resumed or its continuation dropped.
+    #[error("dispatch #{ticket} ({event}) is parked holding the dispatch lane under this turn; resume or drop it before starting another dispatch")]
+    LaneHeldByParkedDispatch { ticket: u64, event: String },
 }
 
 pub mod agent_ports;
@@ -69,6 +74,7 @@ pub mod dispatch_run;
 pub(crate) mod envelope;
 pub mod inbound;
 pub(crate) mod lane;
+pub use lane::LaneTurn;
 pub mod resolve_run;
 pub(crate) use dispatch_run::Fault;
 
@@ -1553,7 +1559,7 @@ impl RuntimeKernel {
         event_name: &str,
         payload: Value,
     ) -> Result<ProcessEventResult, KernelError> {
-        let _lane = self.lane.enter();
+        let _lane = self.lane.enter(None)?;
         self.process_event_in_dispatch(trait_name, entity_id, event_name, payload, None, false)
             .map_err(Fault::into_kernel)
     }
@@ -1960,7 +1966,17 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         tick_name: &str,
     ) -> Result<ProcessEventResult, KernelError> {
-        let _lane = self.lane.enter();
+        self.process_tick_in_turn(None, trait_name, entity_id, tick_name)
+    }
+
+    fn process_tick_in_turn(
+        &self,
+        turn: Option<LaneTurn>,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        tick_name: &str,
+    ) -> Result<ProcessEventResult, KernelError> {
+        let _lane = self.lane.enter(turn)?;
         let entity_id = entity_id.unwrap_or("singleton");
         self.process_tick_in_dispatch(trait_name, entity_id, entity_id, tick_name)
             .map_err(Fault::into_kernel)
@@ -2167,7 +2183,7 @@ impl RuntimeKernel {
         payload: Value,
         client_id: Option<&str>,
     ) -> Result<ClientDispatch, KernelError> {
-        let _lane = self.lane.enter();
+        let lane = self.lane.enter(None)?;
         let eid = entity_id.unwrap_or("singleton").to_string();
 
         let trait_def = self
@@ -2196,7 +2212,7 @@ impl RuntimeKernel {
             "dispatch_with_server_leg",
         );
 
-        let outcomes = self.dispatch(trait_name, Some(&eid), event, payload.clone())?;
+        let outcomes = self.dispatch_in_turn(lane.turn(), trait_name, Some(&eid), event, payload.clone())?;
         let mut response = EventResponse::from_process_results(&outcomes, trait_name, event);
         response.fold_rerenders(&self.rerender_stale());
 
@@ -2441,12 +2457,12 @@ impl RuntimeKernel {
         &self,
         outcomes: &[(String, ProcessEventResult)],
         client_id: Option<&str>,
-    ) -> Vec<EventRequest> {
-        let _lane = self.lane.enter();
+    ) -> Result<Vec<EventRequest>, KernelError> {
+        let _lane = self.lane.enter(None)?;
         let _ = self.drain_server_leg_collector();
         let residence =
             orbital_core_base::runs_on::Residence::of_entities(self.entity_definitions.read().values());
-        outcomes
+        Ok(outcomes
             .iter()
             .filter_map(|(trait_name, result)| {
                 let entry = result.entry.as_ref().filter(|_| result.executed)?;
@@ -2485,7 +2501,7 @@ impl RuntimeKernel {
                     ..Default::default()
                 })
             })
-            .collect()
+            .collect())
     }
 
     /// Whether every effect is a data effect on a browser-stored entity (the host's store holds the data).
@@ -2542,7 +2558,7 @@ impl RuntimeKernel {
         tick_name: &str,
         client_id: Option<&str>,
     ) -> Result<TickDispatch, KernelError> {
-        let _lane = self.lane.enter();
+        let _lane = self.lane.enter(None)?;
         let mut dispatched =
             self.dispatch_tick_unrepainted(orbital, trait_name, entity_id, tick_name, client_id)?;
         if dispatched.outcome.executed {
@@ -2562,7 +2578,7 @@ impl RuntimeKernel {
         tick_name: &str,
         client_id: Option<&str>,
     ) -> Result<TickDispatch, KernelError> {
-        let _lane = self.lane.enter();
+        let lane = self.lane.enter(None)?;
         let eid = entity_id.unwrap_or("singleton").to_string();
         let trait_def = self
             .trait_definitions
@@ -2573,7 +2589,7 @@ impl RuntimeKernel {
         // The leg replays the tick from the pre-tick row, so the store applies its writes once.
         let pre_tick_row = self.snapshot_trait(trait_name, Some(&eid)).entity;
 
-        let outcome = self.process_tick(trait_name, Some(&eid), tick_name)?;
+        let outcome = self.process_tick_in_turn(Some(lane.turn()), trait_name, Some(&eid), tick_name)?;
         let (tick_own, _) = self.drain_server_leg_collector();
         // The tick's own delegated effects, by where their data lives: browser-stored data
         // leaves as one `runTick` leg; server-owned work in a browser-run tick is an
@@ -4822,7 +4838,7 @@ impl RuntimeKernel {
     /// `total` re-counted (Q6). The one resolver every renderer and the embedded API reach, so `@read` is applied
     /// here and nowhere else. A store that answers through the host (the server role) is reached in a dispatch.
     pub fn resolve_rows(&self, reference: &RowSetRef, viewer: &Value) -> Result<RowPage, String> {
-        let _lane = self.lane.enter();
+        let _lane = self.lane.enter(None).map_err(|e| e.to_string())?;
         let mut ctx = BindingContext::new();
         ctx.set_user(viewer.clone());
         self.rows.resolve_rows(reference, &ctx)

@@ -1,11 +1,19 @@
-//! The kernel's one dispatch lane (EXEC-CONC-1, G-CROSS-291): a dispatch holds it from its entry to its commit,
+//! The kernel's one dispatch lane (EXEC-CONC-0/1, G-CROSS-291): a dispatch holds it from its entry to its commit,
 //! parked on an unkeyed ask included, and every other dispatch entry waits its turn in arrival order (a ticket
-//! queue). The thread holding it re-enters freely, so a dispatch's own sub-dispatches (a store leg's driver, a
-//! `process_event` step) never wait on it.
+//! queue). Each holding is a [`LaneTurn`]. A call carrying the holder's turn re-enters while the holder runs and is
+//! refused ([`KernelError::LaneHeldByParkedDispatch`]) while it is parked: it would otherwise wait on itself. A call
+//! carrying no turn waits its FIFO turn, whatever thread it runs on, except an in-place call made on the thread the
+//! running holder occupies (a blocking host answering an ask with a nested dispatch), which re-enters.
 
 use parking_lot::{Condvar, Mutex};
 use std::sync::Arc;
 use std::thread::ThreadId;
+
+use super::KernelError;
+
+/// One holding of the lane: the ticket it was granted. A dispatch hands it to the calls it makes on its own behalf.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LaneTurn(u64);
 
 #[derive(Default)]
 struct LaneState {
@@ -13,8 +21,10 @@ struct LaneState {
     serving: u64,
     held: bool,
     /// The thread running the holder; `None` while the holder is parked on an ask.
-    thread: Option<ThreadId>,
+    running_on: Option<ThreadId>,
     depth: usize,
+    /// The event of the holder while it is parked on an ask.
+    parked: Option<String>,
 }
 
 #[derive(Default)]
@@ -24,51 +34,65 @@ pub(crate) struct DispatchLane {
 }
 
 impl DispatchLane {
-    /// Take the lane, or re-enter it when this thread already runs the holder.
-    pub(crate) fn enter(self: &Arc<Self>) -> LaneGuard {
-        let me = std::thread::current().id();
+    /// Take the lane in arrival order, or re-enter it as the holder `turn` names.
+    pub(crate) fn enter(self: &Arc<Self>, turn: Option<LaneTurn>) -> Result<LaneGuard, KernelError> {
         let mut s = self.state.lock();
-        if s.held && s.thread == Some(me) {
-            s.depth += 1;
-            return LaneGuard { lane: Some(self.clone()), outer: false };
+        if s.held {
+            let holder = LaneTurn(s.serving);
+            let in_place = turn.is_none() && s.running_on == Some(std::thread::current().id());
+            if turn == Some(holder) || in_place {
+                if let Some(event) = &s.parked {
+                    return Err(KernelError::LaneHeldByParkedDispatch { ticket: holder.0, event: event.clone() });
+                }
+                s.depth += 1;
+                return Ok(LaneGuard { lane: Some(self.clone()), turn: holder, outer: false });
+            }
         }
         let ticket = s.next;
         s.next += 1;
+        #[cfg(any())]
         while s.held || s.serving != ticket {
             self.turn.wait(&mut s);
         }
         s.held = true;
-        s.thread = Some(me);
+        s.running_on = Some(std::thread::current().id());
         s.depth = 1;
-        LaneGuard { lane: Some(self.clone()), outer: true }
+        Ok(LaneGuard { lane: Some(self.clone()), turn: LaneTurn(ticket), outer: true })
     }
 
     fn release(&self, s: &mut LaneState) {
         s.held = false;
-        s.thread = None;
+        s.running_on = None;
         s.depth = 0;
+        s.parked = None;
         s.serving += 1;
         self.turn.notify_all();
     }
 }
 
-/// This thread's hold on the lane; dropping the outermost one releases it.
+/// A hold on the lane under one turn; dropping the outermost one releases it.
 pub(crate) struct LaneGuard {
     lane: Option<Arc<DispatchLane>>,
+    turn: LaneTurn,
     outer: bool,
 }
 
 impl LaneGuard {
-    /// The dispatch parked on an ask: keep the lane for it, detached from this thread. A re-entered guard has
-    /// nothing of its own to keep (its holder still runs), so it only steps out.
-    pub(crate) fn park(mut self) -> Option<LaneHold> {
+    pub(crate) fn turn(&self) -> LaneTurn {
+        self.turn
+    }
+
+    /// The dispatch parked on an ask: keep the lane for it, detached from any thread. A re-entered guard has
+    /// nothing of its own to keep (its holder still runs), so it only steps out. `event` names the parked dispatch.
+    pub(crate) fn park(mut self, event: String) -> Option<LaneHold> {
         let lane = self.lane.take()?;
         let mut s = lane.state.lock();
         if self.outer && s.depth == 1 {
-            s.thread = None;
+            s.parked = Some(event);
+            s.running_on = None;
             s.depth = 0;
             drop(s);
-            Some(LaneHold { lane: Some(lane) })
+            Some(LaneHold { lane: Some(lane), turn: self.turn })
         } else {
             s.depth -= 1;
             None
@@ -87,20 +111,26 @@ impl Drop for LaneGuard {
     }
 }
 
-/// The lane held by a parked dispatch; resuming binds it to the resuming thread, dropping it (an abandoned
+/// The lane held by a parked dispatch; resuming binds it to the resuming call, dropping it (an abandoned
 /// continuation) releases it.
 pub struct LaneHold {
     lane: Option<Arc<DispatchLane>>,
+    turn: LaneTurn,
 }
 
 impl LaneHold {
+    pub(crate) fn turn(&self) -> LaneTurn {
+        self.turn
+    }
+
     pub(crate) fn resume(mut self) -> LaneGuard {
         let lane = self.lane.take().expect("a parked lane hold");
         let mut s = lane.state.lock();
-        s.thread = Some(std::thread::current().id());
+        s.running_on = Some(std::thread::current().id());
         s.depth = 1;
+        s.parked = None;
         drop(s);
-        LaneGuard { lane: Some(lane), outer: true }
+        LaneGuard { lane: Some(lane), turn: self.turn, outer: true }
     }
 }
 

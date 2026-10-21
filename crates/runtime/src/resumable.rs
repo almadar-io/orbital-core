@@ -770,6 +770,13 @@ pub struct DispatchContinuation {
     pub(crate) lane: Option<crate::kernel::lane::LaneHold>,
 }
 
+impl DispatchContinuation {
+    /// The lane turn this parked dispatch holds (EXEC-CONC-0): the token a call made on its behalf carries.
+    pub fn turn(&self) -> Option<crate::kernel::LaneTurn> {
+        self.lane.as_ref().map(|hold| hold.turn())
+    }
+}
+
 /// A parked row ask and the driver dispatch that answers it; the driver's own host asks are this dispatch's.
 pub(crate) struct StoreLeg {
     pub(crate) ask: StoreAsk,

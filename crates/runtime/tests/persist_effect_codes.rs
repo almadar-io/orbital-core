@@ -203,43 +203,56 @@ fn a_bound_entitys_instances_are_seeded_through_its_driver_never_dropped() {
     assert!(mirrored_batches(&unseeded).is_empty(), "{unseeded:?}");
 }
 
-// The seed batch is a barrier: a dispatch started while another's seed leg awaits the host seeds first too.
+// The seed batch is a barrier: under the one dispatch lane (EXEC-CONC-0) a dispatch started while another's seed
+// leg is parked on the host waits for that dispatch to commit, so it never steps before the seed landed.
 #[test]
 fn a_dispatch_started_while_the_seed_is_in_flight_writes_the_seed_before_its_first_step() {
     use orbital_core_runtime::resumable::Progress;
-    let kernel = RuntimeKernel::new(
+    let kernel = Arc::new(RuntimeKernel::new(
         RuntimeEnvironment::Server,
         Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
         Default::default(),
-    );
+    ));
     kernel.register_schema(store_program_seeded(true, true)).unwrap();
     let payload = || -> Value { serde_json::from_value(serde_json::json!({ "id": "t1" })).unwrap() };
-    let seed_ask = |progress: &Progress<_>| match progress {
+    let first = kernel.start_dispatch("Desk", None, "LOOK", payload(), None, None).unwrap();
+    let seed_asks = match &first {
         Progress::Await { requests, .. } => requests
             .iter()
             .filter(|r| matches!(&r.request, IoRequest::ReadRow { entity_type, .. } if entity_type == "Mirror"))
             .count(),
         Progress::Done(_) => 0,
     };
-    let first = kernel.start_dispatch("Desk", None, "LOOK", payload(), None, None).unwrap();
-    assert_eq!(seed_ask(&first), 1, "{first:?}");
-    let second = kernel.start_dispatch("Desk", None, "LOOK", payload(), None, None).unwrap();
-    assert_eq!(seed_ask(&second), 1, "the second dispatch stepped before the seed landed: {second:?}");
-    let host_rows = InMemoryEntityCache::new();
-    let host = |request: &IoRequest| BlockingHost { source: &host_rows, service: None, substrate: None }.answer(request);
-    for progress in [first, second] {
-        let outcomes = orbital_core_runtime::resumable::drive_blocking(&kernel, progress, &host).unwrap();
-        let results = EventResponse::from_process_results(&outcomes, "Desk", "LOOK").effect_results;
-        assert!(results.iter().flatten().any(|r| serde_json::to_value(r).unwrap()["target"] == "SEEN"), "{results:?}");
-    }
-    let asked = std::sync::Mutex::new(Vec::new());
-    let after = kernel.start_dispatch("Desk", None, "LOOK", payload(), None, None).unwrap();
-    orbital_core_runtime::resumable::drive_blocking(&kernel, after, &|request| {
-        asked.lock().unwrap().push(request.clone());
-        host(request)
-    })
-    .unwrap();
-    let asked = asked.into_inner().unwrap();
+    assert_eq!(seed_asks, 1, "{first:?}");
+    let host_rows = Arc::new(InMemoryEntityCache::new());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let second = std::thread::spawn({
+        let (kernel, host_rows) = (kernel.clone(), host_rows.clone());
+        move || {
+            let progress = kernel.start_dispatch("Desk", None, "LOOK", payload(), None, None).unwrap();
+            tx.send(()).unwrap();
+            let asked = std::sync::Mutex::new(Vec::new());
+            let outcomes = orbital_core_runtime::resumable::drive_blocking(&kernel, progress, &|request| {
+                asked.lock().unwrap().push(request.clone());
+                BlockingHost { source: host_rows.as_ref(), service: None, substrate: None }.answer(request)
+            })
+            .unwrap();
+            (outcomes, asked.into_inner().unwrap())
+        }
+    });
+    assert!(rx.recv_timeout(std::time::Duration::from_millis(250)).is_err(), "the second dispatch stepped while the seed was in flight");
+    let host = |request: &IoRequest| BlockingHost { source: host_rows.as_ref(), service: None, substrate: None }.answer(request);
+    let seen = |outcomes: &orbital_core_runtime::resumable::DispatchOutcomes| {
+        EventResponse::from_process_results(outcomes, "Desk", "LOOK")
+            .effect_results
+            .iter()
+            .flatten()
+            .any(|r| serde_json::to_value(r).unwrap()["target"] == "SEEN")
+    };
+    let outcomes = orbital_core_runtime::resumable::drive_blocking(&kernel, first, &host).unwrap();
+    assert!(seen(&outcomes));
+    let (outcomes, asked) = second.join().unwrap();
+    assert!(seen(&outcomes));
     assert!(mirrored_batches(&asked).is_empty(), "a landed seed is written once: {asked:?}");
 }
 

@@ -514,6 +514,7 @@ impl EmbeddedKernel {
         let server_legs = self
             .kernel
             .fold_follow_on_legs(&outcomes, Some(&self.client_id))
+            .map_err(|e| e.to_string())?
             .into_iter()
             .map(|leg| {
                 let target = leg.target_trait.as_deref().unwrap_or_default();

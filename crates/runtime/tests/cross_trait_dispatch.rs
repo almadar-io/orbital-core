@@ -265,7 +265,8 @@ fn with_listen_route_remaps_payload() {
 }
 
 // One dispatch lane per kernel (G-CROSS-291, EXEC-CONC-1): a dispatch holds the kernel from start to commit, so a
-// second dispatch or a completion arriving while it runs waits for it.
+// second dispatch or a completion arriving while it runs waits for it. `ADD` commits its write and then waits in its
+// `Echo` listener's step, so an overlap lands between a transition and its listener cascade.
 
 /// The first caller (`who: "a"`) waits up to 400 ms for a second caller; `overlapped` records that one arrived
 /// while the first was still inside its dispatch.
@@ -331,9 +332,9 @@ fn lane_kernel(gate: Arc<Gate>, host_answered: bool) -> (Arc<RuntimeKernel>, Arc
                     "states": [{ "name": "idle", "isInitial": true }],
                     "transitions": [
                         { "from": "idle", "to": "idle", "event": "ADD", "effects": [
-                            ["call-service", "gate", "wait", { "who": "@payload.who" }],
                             ["set", "@entity.n", ["+", "@entity.n", 1]],
-                            ["emit", "ADDED", { "n": "@entity.n" }]
+                            ["emit", "ADDED", { "n": "@entity.n" }],
+                            ["emit", "STEP", { "who": "@payload.who" }]
                         ] },
                         { "from": "idle", "to": "idle", "event": "DONE", "effects": [
                             ["call-service", "gate", "wait", { "who": "completion" }],
@@ -355,6 +356,15 @@ fn lane_kernel(gate: Arc<Gate>, host_answered: bool) -> (Arc<RuntimeKernel>, Arc
                             ["emit", "ADDED", { "n": "@entity.n" }]
                         ] }
                     ]
+                }
+            }, {
+                "name": "Echo",
+                "listens": [{ "event": "STEP", "triggers": "STEP", "source": { "kind": "trait", "trait": "Counter" } }],
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "STEP", "effects": [
+                        ["call-service", "gate", "wait", { "who": "@payload.who" }]
+                    ] }]
                 }
             }]
         }]
@@ -512,6 +522,50 @@ fn a_dispatch_parked_on_an_unkeyed_ask_keeps_the_lane_until_it_commits() {
     assert_eq!(first, vec![serde_json::json!(1.0)]);
     assert_eq!(rx.recv().unwrap(), vec![serde_json::json!(2.0)]);
     second.join().unwrap();
+}
+
+#[test]
+fn a_call_carrying_a_parked_dispatchs_turn_is_refused_not_hung() {
+    use orbital_core_runtime::kernel::KernelError;
+    use orbital_core_runtime::resumable::IoAnswer;
+    let (kernel, store) = lane_kernel(Gate::new(), true);
+    let first = parked(&kernel, "ASK");
+    let turn = first.0.turn().expect("a parked dispatch holds a lane turn");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn({
+        let kernel = kernel.clone();
+        move || tx.send(kernel.dispatch_in_turn(turn, "Counter", None, "BUMP", Value::Null).map(|o| added(&o))).unwrap()
+    });
+    let refused = rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("a call carrying the parked dispatch's turn hung on the lane");
+    assert!(
+        matches!(&refused, Err(KernelError::LaneHeldByParkedDispatch { event, .. }) if event == "ASK"),
+        "{refused:?}"
+    );
+    assert_eq!(finish(&kernel, &store, first, IoAnswer::Service(Ok(Value::Null))), vec![serde_json::json!(1.0)]);
+    assert_eq!(added(&kernel.dispatch_in_turn(turn, "Counter", None, "BUMP", Value::Null).unwrap()), vec![serde_json::json!(2.0)]);
+}
+
+#[test]
+fn control_an_untokened_call_on_the_thread_that_parked_a_dispatch_waits_its_turn() {
+    use orbital_core_runtime::resumable::IoAnswer;
+    let (kernel, store) = lane_kernel(Gate::new(), true);
+    let (handoff_tx, handoff_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let owner = std::thread::spawn({
+        let kernel = kernel.clone();
+        move || {
+            handoff_tx.send(parked(&kernel, "ASK")).unwrap();
+            let second = kernel.dispatch("Counter", None, "BUMP", Value::Null).map(|o| added(&o));
+            done_tx.send(()).unwrap();
+            second
+        }
+    });
+    let first = handoff_rx.recv().unwrap();
+    assert!(done_rx.recv_timeout(NOT_YET).is_err(), "the untokened call ran while the first was parked");
+    assert_eq!(finish(&kernel, &store, first, IoAnswer::Service(Ok(Value::Null))), vec![serde_json::json!(1.0)]);
+    assert_eq!(owner.join().unwrap().expect("the untokened call was refused"), vec![serde_json::json!(2.0)]);
 }
 
 #[test]

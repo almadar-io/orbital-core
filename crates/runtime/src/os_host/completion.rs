@@ -167,7 +167,8 @@ pub type CompletionDone =
 /// outcome dispatches nothing. A completion can end before the dispatch that started the call has committed, so
 /// the sink remembers which dispatch deferred which key: a host runs every dispatch that may defer a call
 /// inside a [`DispatchScope`] ([`Self::begin_dispatch`], or [`Self::drive`]), and a completion for key K waits
-/// for the dispatch that deferred K to end and for no other, so unrelated dispatches run side by side.
+/// for the dispatch that deferred K to end; the kernel's dispatch lane then orders it FIFO behind every other
+/// dispatch (EXEC-CONC-1).
 pub struct KernelCompletionSink {
     kernel: Arc<RuntimeKernel>,
     answer: Arc<CompletionAnswerer>,
