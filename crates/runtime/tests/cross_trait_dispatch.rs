@@ -265,33 +265,16 @@ fn with_listen_route_remaps_payload() {
 }
 
 // One dispatch lane per kernel (G-CROSS-291, EXEC-CONC-1): a dispatch holds the kernel from start to commit, so a
-// second dispatch or a completion arriving while it runs waits for it. `ADD` commits its write and then waits in its
-// `Echo` listener's step, so an overlap lands between a transition and its listener cascade.
+// second dispatch or a completion arriving while it runs waits for it. `ADD` commits its write and then parks on its
+// `Echo` listener's host ask, so an overlap lands between a transition and its listener cascade (between steps, where
+// the per-step I/O gate is open and only the lane keeps a second dispatch out).
 
-/// The first caller (`who: "a"`) waits up to 400 ms for a second caller; `overlapped` records that one arrived
-/// while the first was still inside its dispatch.
-struct Gate {
-    entered: std::sync::Mutex<(bool, bool)>,
-    signal: std::sync::Condvar,
-    overlapped: std::sync::atomic::AtomicBool,
-}
+/// The `gate` service the deferred completion's own dispatch calls: it answers at once.
+struct Gate;
 
 impl Gate {
     fn new() -> Arc<Self> {
-        Arc::new(Self {
-            entered: std::sync::Mutex::new((false, false)),
-            signal: std::sync::Condvar::new(),
-            overlapped: Default::default(),
-        })
-    }
-
-    fn wait_first(&self) {
-        let guard = self.entered.lock().unwrap();
-        let (state, _) = self
-            .signal
-            .wait_timeout_while(guard, std::time::Duration::from_secs(5), |(first, _)| !*first)
-            .unwrap();
-        assert!(state.0, "the first dispatch never reached its gate");
+        Arc::new(Self)
     }
 }
 
@@ -300,22 +283,10 @@ impl orbital_core_runtime::effects::ServiceHandler for Gate {
         &self,
         _s: &str,
         _m: &str,
-        args: &Value,
+        _args: &Value,
         _k: Option<&str>,
         _c: Option<&orbital_core_runtime::effects::ServiceCaller>,
     ) -> Result<Value, String> {
-        let who = serde_json::to_value(args).unwrap()["who"].clone();
-        let mut state = self.entered.lock().unwrap();
-        if who == "a" {
-            state.0 = true;
-            self.signal.notify_all();
-            let wait = std::time::Duration::from_millis(400);
-            let (state, _) = self.signal.wait_timeout_while(state, wait, |(_, second)| !*second).unwrap();
-            self.overlapped.store(state.1, std::sync::atomic::Ordering::SeqCst);
-        } else {
-            state.1 = true;
-            self.signal.notify_all();
-        }
         Ok(Value::Null)
     }
 
@@ -324,7 +295,7 @@ impl orbital_core_runtime::effects::ServiceHandler for Gate {
     }
 }
 
-fn lane_kernel(gate: Arc<Gate>, host_answered: bool) -> (Arc<RuntimeKernel>, Arc<dyn EntitySource>) {
+fn lane_kernel() -> (Arc<RuntimeKernel>, Arc<dyn EntitySource>) {
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "lane",
         "orbitals": [{
@@ -375,11 +346,7 @@ fn lane_kernel(gate: Arc<Gate>, host_answered: bool) -> (Arc<RuntimeKernel>, Arc
     }))
     .unwrap();
     let config = orbital_core_runtime::config::KernelConfig {
-        service_handler: Some(if host_answered {
-            Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::ServiceHandler>
-        } else {
-            gate as Arc<dyn orbital_core_runtime::effects::ServiceHandler>
-        }),
+        service_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::ServiceHandler>),
         ..Default::default()
     };
     let store = Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>;
@@ -401,41 +368,53 @@ fn added(outcomes: &orbital_core_runtime::resumable::DispatchOutcomes) -> Vec<se
         .collect()
 }
 
-fn add(kernel: &RuntimeKernel, who: &str) -> Vec<serde_json::Value> {
+
+/// `ADD` as `who`, parked where its `Echo` listener's step asks the host: `Counter`'s transition has committed, its
+/// listener cascade has not.
+fn parked_between_transition_and_listener(kernel: &RuntimeKernel, who: &str) -> (orbital_core_runtime::resumable::DispatchContinuation, Vec<orbital_core_runtime::resumable::PendingRequest>) {
     let payload: Value = serde_json::from_value(serde_json::json!({ "who": who })).unwrap();
-    added(&kernel.dispatch("Counter", None, "ADD", payload).unwrap())
+    match kernel.start_dispatch("Counter", None, "ADD", payload, None, None).unwrap() {
+        orbital_core_runtime::resumable::Progress::Await { continuation, requests } => (continuation, requests),
+        orbital_core_runtime::resumable::Progress::Done(_) => panic!("ADD did not park in its listener"),
+    }
 }
 
 #[test]
 fn two_overlapping_dispatches_writing_one_field_both_land_in_arrival_order() {
-    let gate = Gate::new();
-    let (kernel, _) = lane_kernel(gate.clone(), false);
-    let first = std::thread::spawn({
-        let kernel = kernel.clone();
-        move || add(&kernel, "a")
+    use orbital_core_runtime::resumable::IoAnswer;
+    let (kernel, store) = lane_kernel();
+    let first = parked_between_transition_and_listener(&kernel, "a");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let second = std::thread::spawn({
+        let (kernel, store) = (kernel.clone(), store.clone());
+        move || {
+            let parked = parked_between_transition_and_listener(&kernel, "b");
+            tx.send(()).unwrap();
+            finish(&kernel, &store, parked, IoAnswer::Service(Ok(Value::Null)))
+        }
     });
-    gate.wait_first();
-    let second = add(&kernel, "b");
-    assert!(!gate.overlapped.load(std::sync::atomic::Ordering::SeqCst), "the second dispatch ran inside the first");
-    assert_eq!(first.join().unwrap(), vec![serde_json::json!(1.0)]);
-    assert_eq!(second, vec![serde_json::json!(2.0)]);
+    assert!(rx.recv_timeout(NOT_YET).is_err(), "the second dispatch ran between the first's transition and its listener");
+    assert_eq!(finish(&kernel, &store, first, IoAnswer::Service(Ok(Value::Null))), vec![serde_json::json!(1.0)]);
+    assert_eq!(second.join().unwrap(), vec![serde_json::json!(2.0)]);
     assert_eq!(added(&kernel.dispatch("Counter", None, "READ", Value::Null).unwrap()), vec![serde_json::json!(2.0)]);
 }
 
 #[test]
 fn a_completion_arriving_mid_dispatch_is_applied_after_that_dispatch_commits() {
     use orbital_core_runtime::os_host::completion::OsCompletionSink;
+    use orbital_core_runtime::resumable::IoAnswer;
     let gate = Gate::new();
-    let (kernel, store) = lane_kernel(gate.clone(), false);
+    let (kernel, store) = lane_kernel();
     let (sink, seen) = completion_sink(&kernel, &store, &gate);
-    let first = std::thread::spawn({
-        let kernel = kernel.clone();
-        move || add(&kernel, "a")
+    let first = parked_between_transition_and_listener(&kernel, "a");
+    let completion = std::thread::spawn({
+        let sink = sink.clone();
+        move || sink.complete(&counter_site(), "k1", Ok(Value::Null))
     });
-    gate.wait_first();
-    sink.complete(&counter_site(), "k1", Ok(Value::Null));
-    assert!(!gate.overlapped.load(std::sync::atomic::Ordering::SeqCst), "the completion ran inside the open dispatch");
-    assert_eq!(first.join().unwrap(), vec![serde_json::json!(1.0)]);
+    std::thread::sleep(NOT_YET);
+    assert!(seen.lock().unwrap().is_empty(), "the completion ran between the open dispatch's transition and its listener");
+    assert_eq!(finish(&kernel, &store, first, IoAnswer::Service(Ok(Value::Null))), vec![serde_json::json!(1.0)]);
+    completion.join().unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![serde_json::json!(1.0)]);
 }
 
@@ -514,7 +493,7 @@ const NOT_YET: std::time::Duration = std::time::Duration::from_millis(250);
 #[test]
 fn a_dispatch_parked_on_an_unkeyed_ask_keeps_the_lane_until_it_commits() {
     use orbital_core_runtime::resumable::IoAnswer;
-    let (kernel, store) = lane_kernel(Gate::new(), true);
+    let (kernel, store) = lane_kernel();
     let first = parked(&kernel, "ASK");
     let (tx, rx) = std::sync::mpsc::channel();
     let second = std::thread::spawn({
@@ -532,7 +511,7 @@ fn a_dispatch_parked_on_an_unkeyed_ask_keeps_the_lane_until_it_commits() {
 fn a_call_carrying_a_parked_dispatchs_turn_is_refused_not_hung() {
     use orbital_core_runtime::kernel::KernelError;
     use orbital_core_runtime::resumable::IoAnswer;
-    let (kernel, store) = lane_kernel(Gate::new(), true);
+    let (kernel, store) = lane_kernel();
     let first = parked(&kernel, "ASK");
     let turn = first.0.turn().expect("a parked dispatch holds a lane turn");
     let (tx, rx) = std::sync::mpsc::channel();
@@ -554,7 +533,7 @@ fn a_call_carrying_a_parked_dispatchs_turn_is_refused_not_hung() {
 #[test]
 fn control_an_untokened_call_on_the_thread_that_parked_a_dispatch_waits_its_turn() {
     use orbital_core_runtime::resumable::IoAnswer;
-    let (kernel, store) = lane_kernel(Gate::new(), true);
+    let (kernel, store) = lane_kernel();
     let (handoff_tx, handoff_rx) = std::sync::mpsc::channel();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let owner = std::thread::spawn({
@@ -574,7 +553,7 @@ fn control_an_untokened_call_on_the_thread_that_parked_a_dispatch_waits_its_turn
 
 #[test]
 fn control_an_abandoned_parked_dispatch_releases_the_lane() {
-    let (kernel, _) = lane_kernel(Gate::new(), true);
+    let (kernel, _) = lane_kernel();
     drop(parked(&kernel, "ASK"));
     assert_eq!(added(&kernel.dispatch("Counter", None, "BUMP", Value::Null).unwrap()), vec![serde_json::json!(1.0)]);
 }
@@ -584,7 +563,7 @@ fn a_keyed_asks_completion_runs_as_its_own_dispatch_after_the_asking_dispatch_co
     use orbital_core_runtime::os_host::completion::OsCompletionSink;
     use orbital_core_runtime::resumable::IoAnswer;
     let gate = Gate::new();
-    let (kernel, store) = lane_kernel(gate.clone(), true);
+    let (kernel, store) = lane_kernel();
     let (sink, seen) = completion_sink(&kernel, &store, &gate);
     let asking = parked(&kernel, "ASK_KEYED");
     let completion = std::thread::spawn({
