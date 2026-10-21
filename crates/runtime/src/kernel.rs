@@ -6340,7 +6340,13 @@ fn substrate_completion_emit(emit: &FetchEmit, result: &EffectResult, key: Optio
     let (event, payload) = match &result.outcome {
         EffectOutcome::Executed => (
             emit.success.clone()?,
-            crate::agent_ports::completion_result("", result.return_value.clone().unwrap_or(Value::Null)),
+            crate::agent_ports::completion_result(
+                match &result.effect {
+                    Effect::Custom { name, .. } => name,
+                    _ => "",
+                },
+                result.return_value.clone().unwrap_or(Value::Null),
+            ),
         ),
         EffectOutcome::Failed => (
             emit.failure.clone()?,

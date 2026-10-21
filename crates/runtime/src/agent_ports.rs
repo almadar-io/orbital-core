@@ -82,6 +82,19 @@ pub fn dispatch_outcome(response: &EventResponse) -> Value {
     Value::Object(map)
 }
 
+/// The success payload of a substrate or program op's completion, in place or deferred: `{ result }`, plus `text` (the
+/// result as JSON text) for an agent-port op.
+pub fn completion_result(op: &str, value: Value) -> Value {
+    let text = orbital_core_base::agent_ports::is_agent_port_operator(op)
+        .then(|| serde_json::to_string(&orbital_core_base::json_value::value_to_json(&value)).unwrap_or_default());
+    let mut payload = ValueMap::new();
+    payload.insert("result".to_string(), value);
+    if let Some(text) = text {
+        payload.insert("text".to_string(), Value::String(text));
+    }
+    Value::Object(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,3 +144,4 @@ mod tests {
         assert_eq!(dispatch_failure(&response), None);
     }
 }
+
