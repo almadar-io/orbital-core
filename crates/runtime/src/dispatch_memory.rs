@@ -1,31 +1,33 @@
 //! The path memory of one dispatch (Runtime Spec Clause 5.5); twin of `almadar-runtime` `DispatchMemory`.
 
 use crate::effects::response::DispatchLog;
-use orbital_core_eval::evaluator::context::BindingContext;
 use orbital_core_base::value::Value;
+use orbital_core_eval::evaluator::context::BindingContext;
+use orbital_core_eval::util::SharedLog;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// What a guard or effect sees of the dispatch: the current delivery and this trait's log so far.
+/// What a guard or effect sees of the dispatch: the current delivery and this trait's log so far. The log is a prefix
+/// of the dispatch's one shared log, so every recorded step's view costs O(1) (G-CROSS-288).
 #[derive(Debug, Clone, Default)]
 pub struct DispatchView {
     pub event: Arc<Value>,
-    pub prev_events: Arc<Vec<Value>>,
-    pub prev_states: Arc<Vec<String>>,
+    pub prev_events: SharedLog<Value>,
+    pub prev_states: SharedLog<String>,
 }
 
 impl DispatchView {
     pub fn apply(&self, ctx: &mut BindingContext) {
         ctx.event = Arc::clone(&self.event);
-        ctx.prev_events = Arc::clone(&self.prev_events);
-        ctx.prev_states = Arc::clone(&self.prev_states);
+        ctx.prev_events = self.prev_events.clone();
+        ctx.prev_states = self.prev_states.clone();
     }
 }
 
 #[derive(Debug, Default)]
 pub struct DispatchMemory {
-    deliveries: HashMap<String, Arc<Vec<Value>>>,
-    left: HashMap<String, Arc<Vec<String>>>,
+    deliveries: HashMap<String, SharedLog<Value>>,
+    left: HashMap<String, SharedLog<String>>,
 }
 
 impl DispatchMemory {
@@ -41,23 +43,27 @@ impl DispatchMemory {
     pub fn seed(&mut self, trait_name: &str, log: &DispatchLog) {
         self.deliveries.insert(
             trait_name.to_string(),
-            Arc::new(log.prev_events.iter().map(|d| d.value()).collect()),
+            log.prev_events.iter().map(|d| d.value()).collect(),
         );
-        self.left
-            .insert(trait_name.to_string(), Arc::new(log.prev_states.clone()));
+        self.left.insert(
+            trait_name.to_string(),
+            log.prev_states.iter().cloned().collect(),
+        );
     }
 
-    /// Takes the step's view so its share of the log is released before the append; a live view would make
-    /// `make_mut` deep-copy the whole log on every step.
     pub fn record_delivery(&mut self, trait_name: &str, delivery: &Value, view: DispatchView) {
         drop(view);
-        Arc::make_mut(self.deliveries.entry(trait_name.to_string()).or_default())
+        self.deliveries
+            .entry(trait_name.to_string())
+            .or_default()
             .push(delivery.clone());
     }
 
     pub fn record_transition(&mut self, trait_name: &str, from: &str, to: &str) {
         if from != to {
-            Arc::make_mut(self.left.entry(trait_name.to_string()).or_default())
+            self.left
+                .entry(trait_name.to_string())
+                .or_default()
                 .push(from.to_string());
         }
     }
@@ -86,8 +92,10 @@ mod tests {
         assert_eq!(memory.view("T", &Value::Null).prev_events.len(), 2);
     }
 
+    /// A step's recorded view (`DeliveryEntry::view`) outlives the record: it keeps its own prefix and the append
+    /// still copies nothing.
     #[test]
-    fn control_a_view_kept_past_the_record_forces_a_copy_of_the_log() {
+    fn a_view_kept_past_the_record_keeps_its_prefix_without_a_copy() {
         let body = Arc::new(SExpression::String("x".to_string()));
         let held = Value::Lambda {
             params: vec!["x".to_string()],
@@ -99,7 +107,8 @@ mod tests {
         let view = memory.view("T", &Value::Null);
         let kept = view.clone();
         memory.record_delivery("T", &Value::Null, view);
-        assert_eq!(Arc::strong_count(&body), 4);
+        assert_eq!(Arc::strong_count(&body), 3);
         assert_eq!(kept.prev_events.len(), 1);
+        assert_eq!(memory.view("T", &Value::Null).prev_events.len(), 2);
     }
 }

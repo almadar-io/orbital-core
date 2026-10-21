@@ -86,7 +86,7 @@ pub use persona::{
     PERSONA_ENV,
 };
 pub use process_result::{
-    DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo, ProcessEventResult,
+    CascadeCut, DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo, ProcessEventResult,
     RuntimeStats,
 };
 pub use projected_payload::projected_payload;

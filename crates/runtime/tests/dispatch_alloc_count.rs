@@ -2,12 +2,19 @@
 //! 13 `set`, 2 `when`, 1 `render-ui`, over a 14-field entity). Speed pass 2, copies C1-C8: the
 //! pinned numbers only ever go down.
 
-use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::config::KernelConfig, orbital_core_runtime::kernel::RuntimeKernel};
-use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use serde_json::json;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use {
+    orbital_core_base::effect_types::RuntimeEnvironment,
+    orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value,
+};
+use {
+    orbital_core_runtime::config::KernelConfig,
+    orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache},
+    orbital_core_runtime::kernel::RuntimeKernel,
+};
 
 struct Counting;
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -25,7 +32,10 @@ unsafe impl GlobalAlloc for Counting {
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
-        LIVE.fetch_add(new_size as isize - layout.size() as isize, Ordering::Relaxed);
+        LIVE.fetch_add(
+            new_size as isize - layout.size() as isize,
+            Ordering::Relaxed,
+        );
         System.realloc(ptr, layout, new_size)
     }
 }
@@ -272,7 +282,9 @@ fn replay_schema() -> OrbitalSchema {
 
 #[test]
 fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
-    use orbital_core_runtime::resumable::{drive_blocking, DispatchOutcomes, HostAnswered, IoAnswer, IoRequest, Progress};
+    use orbital_core_runtime::resumable::{
+        drive_blocking, DispatchOutcomes, HostAnswered, IoAnswer, IoRequest, Progress,
+    };
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let k = RuntimeKernel::new(
         RuntimeEnvironment::Server,
@@ -386,5 +398,63 @@ fn an_unchanged_large_field_is_shared_across_the_recorded_steps() {
     assert!(
         extra < (4 * BLOB) as isize,
         "the {BLOB}-byte field is copied per step: {extra} extra bytes over {STEPS} steps"
+    );
+}
+
+fn counter_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "alloc-counter",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Count", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "count", "type": "number", "default": 0 }
+            ] },
+            "traits": [{
+                "name": "Counter", "linkedEntity": "Count",
+                "listens": [{ "event": "TICK_NEXT", "triggers": "TICK", "source": { "kind": "trait", "trait": "Counter" } }],
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "TICK",
+                        "guard": [">", "@payload.left", 0],
+                        "effects": [
+                            ["set", "@entity.count", ["+", "@entity.count", 1]],
+                            ["emit", "TICK_NEXT", { "left": ["-", "@payload.left", 1] }]
+                        ] }]
+                }
+            }]
+        }]
+    }))
+    .unwrap()
+}
+
+/// Bytes a self-emitting counter dispatch of `steps` steps still holds once it returns.
+fn retained_by_counter(steps: usize) -> isize {
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(counter_schema()).unwrap();
+    let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
+    let before = LIVE.load(Ordering::SeqCst);
+    let out = k.dispatch("Counter", None, "TICK", payload).unwrap();
+    let held = LIVE.load(Ordering::SeqCst) - before;
+    assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), steps);
+    held
+}
+
+/// G-CROSS-288: what a dispatch keeps per step is constant, so a cascade twice as long holds about twice as much
+/// (each step's recorded `@prevEvents` view is a prefix of one shared log, never its own copy of it).
+#[test]
+fn a_long_cascade_retains_linear_memory_per_step() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    retained_by_counter(1);
+    let short = retained_by_counter(300);
+    let long = retained_by_counter(600);
+    println!("RETAINED_CASCADE 300={short} 600={long}");
+    assert!(
+        long * 10 < short * 25,
+        "retention grows faster than the step count: {short} bytes at 300 steps, {long} at 600"
     );
 }

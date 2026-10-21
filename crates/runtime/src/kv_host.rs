@@ -387,7 +387,7 @@ pub fn answer(op: OsOp, args: &[Value], host: &OsHost<'_>) -> Result<Value, OsEr
             let value = args[2].clone();
             stores.with_table(op, store, |table| {
                 table.insert(key.clone(), value);
-                Ok((obj([("key", Value::String(key))]), true))
+                Ok((obj([("storedKey", Value::String(key))]), true))
             })
         }
         OsOp::KvDelete => {

@@ -92,6 +92,22 @@ pub fn dispatch_failed(message: &str) -> InboundAnswer {
     }
 }
 
+/// The answer for a delivery whose dispatch reached its step cap before the handler answered: the answer it owed
+/// never comes, so the cut is the answer, naming the cap and the trait and event it stopped at.
+pub fn cascade_capped(cap: usize, trait_name: &str, event: &str) -> InboundAnswer {
+    InboundAnswer {
+        status: 500,
+        body: serde_json::json!({
+            "error": format!("cascade-cap: the dispatch reached its {cap}-step cap before {trait_name} handled {event}, so the handler never answered"),
+            "code": "cascade-cap",
+            "cap": cap,
+            "trait": trait_name,
+            "event": event,
+        })
+        .to_string(),
+    }
+}
+
 /// Equality in time that depends on the length of the longer value only, never on where they differ.
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());

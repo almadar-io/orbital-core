@@ -136,9 +136,9 @@ pub struct BindingContext {
     /// `@event`: the delivery being processed (`delivery_record_value`, Runtime Spec Clause 5.5).
     pub event: Arc<Value>,
     /// `@prevEvents`: deliveries this trait already received this dispatch.
-    pub prev_events: Arc<Vec<Value>>,
+    pub prev_events: crate::util::SharedLog<Value>,
     /// `@prevStates`: states this trait left this dispatch.
-    pub prev_states: Arc<Vec<String>>,
+    pub prev_states: crate::util::SharedLog<String>,
     /// `@callsitePayload`: the payload of the transition that composed this trait into its embedder
     /// (`Value::Null` until composed).
     pub callsite_payload: Arc<Value>,

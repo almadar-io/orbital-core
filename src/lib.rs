@@ -122,6 +122,8 @@ pub mod runtime {
     #[cfg(not(target_arch = "wasm32"))]
     pub use orbital_core_runtime::os_host;
     #[cfg(not(target_arch = "wasm32"))]
+    pub use orbital_core_runtime::kv_host;
+    #[cfg(not(target_arch = "wasm32"))]
     pub use orbital_core_runtime::native_host;
     #[cfg(not(target_arch = "wasm32"))]
     pub use orbital_core_runtime::credentials;

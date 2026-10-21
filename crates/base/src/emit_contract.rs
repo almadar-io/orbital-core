@@ -478,7 +478,7 @@ const OS_SPAWNED: &[ShapeField] = &[
 ];
 const OS_EXIT: &[ShapeField] = &[field("code", "number"), field("signal", "string")];
 const OS_PID: &[ShapeField] = &[field("pid", "number")];
-const KV_KEY: &[ShapeField] = &[field("key", "string")];
+const KV_STORED_KEY: &[ShapeField] = &[field("storedKey", "string")];
 const KV_EXISTED: &[ShapeField] = &[field("existed", "boolean")];
 const KV_APPLIED: &[ShapeField] = &[field("applied", "number")];
 const OS_VALUE: &[ShapeField] = &[field("value", "string")];
@@ -580,7 +580,7 @@ fn os_contract(op: OsOp) -> OsContract {
         | OsOp::ThermalZones | OsOp::Notify | OsOp::Speak | OsOp::BrightnessGet | OsOp::BrightnessSet
         | OsOp::VolumeGet | OsOp::VolumeSet | OsOp::VolumeMute | OsOp::Suspend | OsOp::Hibernate => unstated(),
         OsOp::KvGet => unstated(),
-        OsOp::KvPut => single(KV_KEY),
+        OsOp::KvPut => single(KV_STORED_KEY),
         OsOp::KvDelete => single(KV_EXISTED),
         OsOp::KvScan => single(OS_ENTRIES),
         OsOp::KvBatch => single(KV_APPLIED),

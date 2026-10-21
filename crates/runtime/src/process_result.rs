@@ -55,6 +55,10 @@ pub struct ProcessEventResult {
     /// whole worklist ran.
     pub cascade_dropped: Vec<String>,
 
+    /// Where `CROSS_TRAIT_CASCADE_CAP` cut the dispatch, carried on the same outcome as `cascade_dropped`; `None` when the whole
+    /// worklist ran.
+    pub cascade_cut: Option<CascadeCut>,
+
     /// Positions in `effect_results` of the `emit`s this dispatch consumed itself: the emitter's own
     /// arm for the event, or a listener target. The response marks them `source.dispatched`.
     pub consumed_emits: Vec<usize>,
@@ -150,4 +154,12 @@ pub struct RuntimeStats {
 
     /// Number of cached/stored entities.
     pub cached_entities: usize,
+}
+
+/// The delivery a dispatch did not run because it reached its step cap: the cap and the trait and event it stopped at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CascadeCut {
+    pub cap: usize,
+    pub trait_name: String,
+    pub event: String,
 }

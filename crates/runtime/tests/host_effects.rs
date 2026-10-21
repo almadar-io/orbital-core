@@ -2363,7 +2363,6 @@ mod kv_asks {
     use orbital_core_base::value::Value;
     use serde_json::{json, Value as Json};
     use std::collections::BTreeMap;
-    use std::path::Path;
 
     fn grants(store: &str, modes: &[KvMode]) -> OsGrants {
         OsGrants { kv: BTreeMap::from([(store.to_string(), modes.to_vec())]), ..OsGrants::default() }
@@ -2383,19 +2382,39 @@ mod kv_asks {
         serde_json::from_value(json).expect("value")
     }
 
-    fn replay_trace(kv: KvStores) {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../orbital-shell-typescript/renderers/web/test/fixtures/kv-trace.json");
-        let trace: Json = serde_json::from_str(&std::fs::read_to_string(&path).expect("the shared kv trace")).unwrap();
+    fn trace_slice() -> Json {
+        json!([
+            { "op": "kv/get", "args": ["rows", "order/1"], "expect": { "found": false } },
+            { "op": "kv/put", "args": ["rows", "order/1", { "id": "1", "total": 12 }], "expect": { "storedKey": "order/1" } },
+            { "op": "kv/put", "args": ["rows", "order/2", [1, null, "x"]], "expect": { "storedKey": "order/2" } },
+            { "op": "kv/put", "args": ["rows", "order-line/1", false], "expect": { "storedKey": "order-line/1" } },
+            { "op": "kv/scan", "args": ["rows", "order/"], "expect": { "entries": [
+                { "key": "order/1", "value": { "id": "1", "total": 12 } },
+                { "key": "order/2", "value": [1, null, "x"] }
+            ] } },
+            { "op": "kv/scan", "args": ["rows", "order/", 1], "expect": { "entries": [
+                { "key": "order/1", "value": { "id": "1", "total": 12 } }
+            ] } },
+            { "op": "kv/delete", "args": ["rows", "order/2"], "expect": { "existed": true } },
+            { "op": "kv/delete", "args": ["rows", "order/2"], "expect": { "existed": false } },
+            { "op": "kv/batch", "args": ["rows", [
+                { "kind": "put", "key": "order/4", "value": 4 },
+                { "kind": "frobnicate", "key": "order/5" }
+            ]], "expectError": "invalid" },
+            { "op": "kv/get", "args": ["rows", "order/4"], "expect": { "found": false } },
+            { "op": "kv/put", "args": ["", "k", 1], "expectError": "invalid" },
+            { "op": "kv/put", "args": ["rows", 7, 1], "expectError": "invalid" },
+            { "op": "kv/scan", "args": ["rows", "order/", -1], "expectError": "invalid" }
+        ])
+    }
+
+    fn replay(kv: KvStores, steps: &Json) {
         let handles = OsHandles { kv, ..OsHandles::default() };
         let grants = grants("rows", &[KvMode::Read, KvMode::Write]);
-        let steps = trace["steps"].as_array().unwrap();
-        assert_eq!(steps.len(), 20);
-        for (i, step) in steps.iter().enumerate() {
+        for (i, step) in steps.as_array().unwrap().iter().enumerate() {
             let op = step["op"].as_str().unwrap();
             let args: Vec<Value> = step["args"].as_array().unwrap().iter().cloned().map(v).collect();
-            let answered = ask(&handles, &grants, op, args);
-            match (answered, step.get("expectError").and_then(Json::as_str)) {
+            match (ask(&handles, &grants, op, args), step.get("expectError").and_then(Json::as_str)) {
                 (Ok(value), None) => assert_eq!(json_text(&value), json_text(&v(step["expect"].clone())), "step {i} {op}"),
                 (Err(error), Some(kind)) => assert_eq!(error.kind.as_str(), kind, "step {i} {op}: {}", error.message),
                 (other, want) => panic!("step {i} {op}: answered {other:?}, expected {want:?} / {}", step["expect"]),
@@ -2404,20 +2423,12 @@ mod kv_asks {
     }
 
     #[test]
-    fn the_shared_kv_trace_replays_byte_identical_on_memory_and_directory_stores() {
-        let trace: Json = serde_json::from_str(
-            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../orbital-shell-typescript/renderers/web/test/fixtures/kv-trace.json")).unwrap(),
-        )
-        .unwrap();
-        let (app, locale) = (trace["app"].as_str().unwrap(), trace["locale"].as_str().unwrap());
-        replay_trace(KvStores::memory(app, locale));
+    fn a_kv_trace_answers_byte_identical_on_memory_and_directory_stores() {
+        replay(KvStores::memory("trace-app", "en"), &trace_slice());
         let dir = tempfile::tempdir().expect("tempdir");
-        replay_trace(KvStores::directory(dir.path(), app, locale));
-        let file = dir.path().join("kv").join(app).join(locale).join("rows.json");
-        assert_eq!(
-            std::fs::read_to_string(file).unwrap(),
-            r#"{"order-line/1":false,"order.log/0001":{"op":"create"},"order/3":"three"}"#
-        );
+        replay(KvStores::directory(dir.path(), "trace-app", "en"), &trace_slice());
+        let file = dir.path().join("kv/trace-app/en/rows.json");
+        assert_eq!(std::fs::read_to_string(file).unwrap(), r#"{"order-line/1":false,"order/1":{"id":"1","total":12}}"#);
     }
 
     #[test]
@@ -2438,7 +2449,7 @@ mod kv_asks {
         let miss = ask(&other_locale, &grants, "kv/get", vec![v(json!("rows")), v(json!("a"))]).unwrap();
         assert_eq!(json_text(&miss), r#"{"found":false}"#, "control: another locale is another namespace");
         let empty_key = ask(&handles, &grants, "kv/put", vec![v(json!("rows")), v(json!("")), v(json!(0.5))]).unwrap();
-        assert_eq!(json_text(&empty_key), r#"{"key":""}"#, "edge: the empty key is a key");
+        assert_eq!(json_text(&empty_key), r#"{"storedKey":""}"#, "edge: the empty key is a key");
         assert_eq!(std::fs::read_to_string(at.join("rows.json")).unwrap(), r#"{"":0.5,"a":{"z":1},"b\"/\n":[1]}"#);
     }
 

@@ -6,7 +6,7 @@
 use super::*;
 use crate::resumable::{DispatchError, DispatchOutcomes, Progress};
 use orbital_core_base::inbound::{
-    answer_of, dispatch_failed, find_inbound, inbound_payload, unknown_hook, InboundAnswer, InboundRoute,
+    answer_of, cascade_capped, dispatch_failed, find_inbound, inbound_payload, unknown_hook, InboundAnswer, InboundRoute,
 };
 
 impl RuntimeKernel {
@@ -87,9 +87,21 @@ impl RuntimeKernel {
 
     /// Whether a delivery's outcomes settle it: the handler trait emitted the answer event or one of its effects failed.
     /// A delivery that did neither waits for a later dispatch its keyed completions cause ([`Self::inbound_late_answer`]).
+    /// A dispatch the step cap cut also settles it: the answer it owed can no longer come ([`Self::inbound_cut`]).
     pub fn inbound_answered(route: &InboundRoute, outcomes: &DispatchOutcomes) -> bool {
         Self::inbound_late_answer(route, outcomes).is_some()
             || outcomes.iter().any(|(trait_name, result)| *trait_name == route.trait_name && result.failure.is_some())
+    }
+
+    /// The cap answer for a dispatch of the handler trait that `CROSS_TRAIT_CASCADE_CAP` cut before it answered.
+    fn inbound_cut(route: &InboundRoute, outcomes: &DispatchOutcomes) -> Option<InboundAnswer> {
+        if !outcomes.iter().any(|(trait_name, _)| *trait_name == route.trait_name) {
+            return None;
+        }
+        outcomes
+            .iter()
+            .find_map(|(_, result)| result.cascade_cut.as_ref())
+            .map(|cut| cascade_capped(cut.cap, &cut.trait_name, &cut.event))
     }
 
     /// The answer a later dispatch of the handler trait carries: present only when that dispatch emitted the route's
@@ -100,7 +112,10 @@ impl RuntimeKernel {
                 matches!((&run.effect, &run.outcome), (Effect::Emit { event, .. }, outcome) if *event == route.answer && !matches!(outcome, EffectOutcome::Failed))
             })
         });
-        emitted.then(|| Self::inbound_answer(route, outcomes))
+        if emitted {
+            return Some(Self::inbound_answer(route, outcomes));
+        }
+        Self::inbound_cut(route, outcomes)
     }
 
     /// The answer a finished delivery produced: the first emit (one that did not fail; a kernel with no event bus reports it `NoOp`) of the route's answer event
@@ -128,7 +143,7 @@ impl RuntimeKernel {
         }
         match own().find_map(|result| result.failure.as_deref()) {
             Some(message) => dispatch_failed(message),
-            None => answer,
+            None => Self::inbound_cut(route, outcomes).unwrap_or(answer),
         }
     }
 }
@@ -313,5 +328,76 @@ mod tests {
         let mut elsewhere = route.clone();
         elsewhere.trait_name = "Other".to_string();
         assert_eq!(RuntimeKernel::inbound_late_answer(&elsewhere, &answered), None, "control: another trait's emit answers nothing");
+    }
+
+    fn looping_kernel() -> RuntimeKernel {
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "LoopApp",
+            "inbound": ["cli-loop"],
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Loop",
+                    "linkedEntity": "Run",
+                    "emits": [{ "event": "STEP_NEXT" }, { "event": "LOOP_ANSWERED" }],
+                    "listens": [{ "event": "STEP_NEXT", "triggers": "STEP", "source": { "kind": "trait", "trait": "Loop" } }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [{ "key": "LOOP", "inbound": { "name": "cli-loop", "answers": "LOOP_ANSWERED" } }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "LOOP",
+                              "effects": [["emit", "STEP_NEXT", { "left": "@payload.body.n" }]] },
+                            { "from": "idle", "to": "idle", "event": "STEP",
+                              "guard": [">", "@payload.left", 0],
+                              "effects": [["emit", "STEP_NEXT", { "left": ["-", "@payload.left", 1] }]] },
+                            { "from": "idle", "to": "idle", "event": "STEP",
+                              "guard": ["<=", "@payload.left", 0],
+                              "effects": [["emit", "LOOP_ANSWERED", { "status": 200, "body": "{\"ok\":true}" }]] }
+                        ]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    /// G-ORBITAL-CORE-039: a handler whose answer lies past `CROSS_TRAIT_CASCADE_CAP` is answered with the cut, so a
+    /// waiting host (`orb <command>`) is released instead of parked forever.
+    #[test]
+    fn a_handler_cut_by_the_cascade_cap_answers_the_cut() {
+        let k = looping_kernel();
+        let steps = CROSS_TRAIT_CASCADE_CAP + 500;
+        let answer = k.deliver_inbound("cli-loop", [], &format!(r#"{{"n":{steps}}}"#), &Vault(None));
+        assert_eq!(answer.status, 500, "{}", answer.body);
+        let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+        assert_eq!(body["code"], "cascade-cap");
+        assert_eq!(body["cap"], CROSS_TRAIT_CASCADE_CAP);
+        assert_eq!(body["trait"], "Loop");
+        assert_eq!(body["event"], "STEP");
+        let route = k.inbound_route("cli-loop").unwrap();
+        let payload = serde_json::from_value(json!({ "body": { "n": steps } })).unwrap();
+        let outcomes = k.dispatch("Loop", None, "LOOP", payload).unwrap();
+        assert!(RuntimeKernel::inbound_answered(&route, &outcomes), "the cut settles the delivery");
+        assert_eq!(RuntimeKernel::inbound_late_answer(&route, &outcomes).map(|a| a.status), Some(500));
+    }
+
+    #[test]
+    fn control_a_handler_under_the_cascade_cap_answers_its_own_emit() {
+        let k = looping_kernel();
+        let answer = k.deliver_inbound("cli-loop", [], r#"{"n":10}"#, &Vault(None));
+        assert_eq!((answer.status, answer.body.as_str()), (200, r#"{"ok":true}"#));
+        let route = k.inbound_route("cli-loop").unwrap();
+        let payload = serde_json::from_value(json!({ "body": { "n": 10 } })).unwrap();
+        let outcomes = k.dispatch("Loop", None, "LOOP", payload).unwrap();
+        assert!(outcomes.iter().all(|(_, r)| r.cascade_cut.is_none()));
+        assert_eq!(RuntimeKernel::inbound_late_answer(&route, &outcomes).map(|a| a.status), Some(200));
     }
 }

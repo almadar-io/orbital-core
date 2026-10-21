@@ -1205,6 +1205,11 @@ impl RuntimeKernel {
                 item.payload.clone(),
                 frame,
             );
+            let cut = crate::process_result::CascadeCut {
+                cap: CROSS_TRAIT_CASCADE_CAP,
+                trait_name: item.trait_name.clone(),
+                event: item.event.clone(),
+            };
             let mut dropped: Vec<String> = Vec::new();
             for name in std::iter::once(item.trait_name).chain(
                 std::mem::take(&mut cascade.queue)
@@ -1223,6 +1228,7 @@ impl RuntimeKernel {
             );
             if let Some((_, last)) = outcomes.last_mut() {
                 last.cascade_dropped = dropped;
+                last.cascade_cut = Some(cut);
             }
             return Ok(false);
         }

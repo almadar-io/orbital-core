@@ -287,7 +287,11 @@ impl Gate {
 
     fn wait_first(&self) {
         let guard = self.entered.lock().unwrap();
-        drop(self.signal.wait_while(guard, |(first, _)| !*first).unwrap());
+        let (state, _) = self
+            .signal
+            .wait_timeout_while(guard, std::time::Duration::from_secs(5), |(first, _)| !*first)
+            .unwrap();
+        assert!(state.0, "the first dispatch never reached its gate");
     }
 }
 

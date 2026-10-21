@@ -17,14 +17,17 @@
 //! - **overlay_slots_render**: every modal/drawer open transition fills its slot
 //!   with real renderers.
 
-use orbital_core_base::value::ValueMap;
 use crate::client::bridge::{KernelBridge, ServerBridge};
 use crate::client::client_core::ClientCore;
 use crate::client::recurse::trait_ref_name;
-use orbital_core_base::drawable::{is_draw_host, is_drawable};
+use crate::program_machine::{
+    EntityBinding, EntityBindingKind, RenderedNode, RenderedSlot, TraitRef,
+};
 use crate::render_report::{RenderReport, RenderVerdict};
+use orbital_core_base::drawable::{is_draw_host, is_drawable};
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::Value;
+use orbital_core_base::value::ValueMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -48,7 +51,9 @@ pub trait RenderTarget {
     }
     /// Paint one game-canvas `pattern` headlessly.
     fn probe_game_canvas(&self, pattern: &str, _props: &Value) -> GameCanvasOutcome {
-        GameCanvasOutcome::Skip(format!("`{pattern}`: this renderer has no game-canvas probe"))
+        GameCanvasOutcome::Skip(format!(
+            "`{pattern}`: this renderer has no game-canvas probe"
+        ))
     }
 }
 
@@ -62,10 +67,13 @@ fn dedup_sorted(mut v: Vec<String>) -> Vec<String> {
 /// is: the default probe persona bound (so `@read` sees a viewer) and the
 /// identity roster seeded as it, else one sample row per entity.
 pub fn seeded_kernel(schema: &OrbitalSchema) -> Result<Arc<dyn ServerBridge>, String> {
-    let bridge = Arc::new(KernelBridge::new(schema.clone()).map_err(|e| format!("kernel bridge: {e}"))?);
+    let bridge =
+        Arc::new(KernelBridge::new(schema.clone()).map_err(|e| format!("kernel bridge: {e}"))?);
     match crate::persona::default_probe_persona(schema) {
         Some(user) => {
-            let id = user.get_path("id").and_then(|v| v.as_str().map(str::to_string));
+            let id = user
+                .get_path("id")
+                .and_then(|v| v.as_str().map(str::to_string));
             bridge.set_current_user(user);
             bridge.seed_sample_as(schema, crate::persona::DEFAULT_IDENTITY_ROSTER_COUNT, id);
         }
@@ -75,7 +83,12 @@ pub fn seeded_kernel(schema: &OrbitalSchema) -> Result<Arc<dyn ServerBridge>, St
 }
 
 /// Probe `schema` through the in-process kernel, restricted to `traits` when given.
-pub fn probe(item: &str, schema: OrbitalSchema, traits: Option<&[String]>, target: &dyn RenderTarget) -> Result<RenderReport, String> {
+pub fn probe(
+    item: &str,
+    schema: OrbitalSchema,
+    traits: Option<&[String]>,
+    target: &dyn RenderTarget,
+) -> Result<RenderReport, String> {
     probe_with(item, schema, traits, target, |s, _idx| seeded_kernel(s))
 }
 
@@ -111,58 +124,17 @@ where
     let orbital_count = schema.orbitals.len();
 
     let mut unreal_patterns: Vec<String> = Vec::new();
-    let mut stubbed: Vec<String> = Vec::new();
-    let mut unresolved_traits: Vec<String> = Vec::new();
-    let mut unbound_entities: Vec<String> = Vec::new();
+    let mut found = Findings::default();
     let mut game_canvas_failures: Vec<String> = Vec::new();
     let mut slots_rendered = 0usize;
-
-    // Entities whose author declared a real `@read` predicate (a `@read none`
-    // waiver lowers to no policy and is deliberately absent). An empty list on
-    // one of these is what a fail-closed viewer is SUPPOSED to see.
-    let gated: HashSet<String> = schema
-        .orbitals
-        .iter()
-        .flat_map(|o| std::iter::once(&o.entity).chain(o.auxiliary_entities.iter().flatten()))
-        .filter_map(|er| match er {
-            orbital_core_base::schema::types::EntityRef::Inline(e) => {
-                e.read_policy.as_ref().map(|_| e.name.clone())
-            }
-            _ => None,
-        })
-        .collect();
-    // `linkedEntity` per trait — an `entity` prop that resolved to an inline
-    // array carries no type name, so the rendering trait's bound entity is what
-    // attributes it.
-    let linked_entity: HashMap<String, String> = schema
-        .orbitals
-        .iter()
-        .flat_map(|o| o.traits.iter())
-        .filter_map(|t| match t {
-            orbital_core_base::schema::types::TraitReference::Inline(td) => td
-                .linked_entity
-                .as_ref()
-                .map(|e| (td.name.clone(), e.clone())),
-            _ => None,
-        })
-        .collect();
-    let mut access_scoped_empty: Vec<String> = Vec::new();
-
-    // Pass 1 — init every orbital and accumulate a UNION of trait_content. A `@trait.X`
-    // defined in orbital A but referenced in orbital B's render-ui (a valid cross-orbital
-    // composition) must still resolve. First write wins.
-    let mut trait_union: ValueMap = ValueMap::new();
-    for idx in 0..orbital_count {
-        let app = build_app(idx)?;
-        for (name, content) in &app.trait_content {
-            trait_union
-                .entry(name.clone())
-                .or_insert_with(|| content.clone());
-        }
-    }
-    // Traits that render nothing until an overlay-open transition fires — an unresolved
-    // `<trait.X/>` embed of one of these is not a Pass 2 miss, it's Pass 3's job below.
-    let overlay_only = orbital_core_base::slots::overlay_only_traits(&schema);
+    let facts = ProgramFacts::new(&schema);
+    let trait_union = facts.trait_union(orbital_count, &build_app)?;
+    let cx = FactCx {
+        trait_content: &trait_union,
+        target,
+        trait_scope: scope.as_ref(),
+        overlay_only: &facts.overlay_only,
+    };
 
     // Pass 2 — walk EVERY populated slot of each orbital (not just `main`), checking refs
     // against the union and entity bindings against this orbital's freshly-fetched cache.
@@ -173,41 +145,28 @@ where
 
         let entities_cache = &app.entities;
         for (slot_name, contents) in &app.ui_slots {
-            if orbital_core_base::slots::slot_role(slot_name) == orbital_core_base::slots::SlotRole::System {
+            if orbital_core_base::slots::slot_role(slot_name)
+                == orbital_core_base::slots::SlotRole::System
+            {
                 continue;
             }
             for slot in contents {
                 slots_rendered += 1;
-                let mut visited = HashSet::new();
-                let access = AccessScope {
-                    gated: &gated,
-                    linked: &linked_entity,
-                    owner: owner_entity(&slot.props, &linked_entity),
-                };
                 // Own: this slot's top-level content was produced by a selected trait's
-                // render-ui. An out-of-scope root still gets walked (below) so a `--trait`
-                // embedded ONLY inside another trait's tree is still found — see the
-                // sticky embed rule in `walk`.
+                // render-ui. An out-of-scope root still gets walked so a `--trait`
+                // embedded ONLY inside another trait's tree is still found (the sticky
+                // embed rule in `node_facts`).
                 let root_in_scope = scope
                     .as_ref()
                     .is_none_or(|s| slot.source_trait.as_deref().is_some_and(|t| s.contains(t)));
-                walk(
-                    &slot.props,
-                    &trait_union,
-                    target,
+                let nodes = facts.slot_nodes(
+                    &cx,
+                    slot,
                     entities_cache,
-                    &mut visited,
-                    &mut unreal_patterns,
-                    &mut stubbed,
-                    &mut unresolved_traits,
-                    &mut unbound_entities,
-                    &mut game_canvas_failures,
-                    access,
-                    &mut access_scoped_empty,
-                    scope.as_ref(),
                     root_in_scope,
-                    &overlay_only,
+                    &mut game_canvas_failures,
                 );
+                judge_nodes(&nodes, &mut unreal_patterns, &mut found);
             }
         }
     }
@@ -246,12 +205,15 @@ where
                 .iter()
                 .flat_map(|o| o.traits.iter())
                 .find_map(|t| match t {
-                    orbital_core_base::schema::types::TraitReference::Inline(td) if td.name == trait_name => td
-                        .state_machine
-                        .events
-                        .as_ref()
-                        .and_then(|events| events.iter().find(|e| e.key == event))
-                        .and_then(|e| e.payload_schema.clone()),
+                    orbital_core_base::schema::types::TraitReference::Inline(td)
+                        if td.name == trait_name =>
+                    {
+                        td.state_machine
+                            .events
+                            .as_ref()
+                            .and_then(|events| events.iter().find(|e| e.key == event))
+                            .and_then(|e| e.payload_schema.clone())
+                    }
                     _ => None,
                 })
         };
@@ -263,15 +225,13 @@ where
             rows_for,
         );
         if let Some(mapping) = &path.payload_mapping {
-            payload.extend(
-                crate::projected_payload::projected_through_mapping(
-                    payload_of(&path.modal_trait, &path.modal_event)
-                        .as_deref()
-                        .unwrap_or_default(),
-                    mapping,
-                    rows_for,
-                ),
-            );
+            payload.extend(crate::projected_payload::projected_through_mapping(
+                payload_of(&path.modal_trait, &path.modal_event)
+                    .as_deref()
+                    .unwrap_or_default(),
+                mapping,
+                rows_for,
+            ));
         }
         app.drive_blocking(
             &path.source_event,
@@ -297,38 +257,18 @@ where
         let entities_cache = app.entities.clone();
         let contents = app.ui_slots.get(&path.slot).cloned().unwrap_or_default();
         for slot in &contents {
-            let mut visited = HashSet::new();
-            let access = AccessScope {
-                gated: &gated,
-                linked: &linked_entity,
-                owner: owner_entity(&slot.props, &linked_entity),
-            };
-            walk(
-                &slot.props,
-                &trait_union,
-                target,
-                &entities_cache,
-                &mut visited,
-                &mut overlay_offenders,
-                &mut stubbed,
-                &mut unresolved_traits,
-                &mut unbound_entities,
-                &mut game_canvas_failures,
-                access,
-                &mut access_scoped_empty,
-                scope.as_ref(),
-                // `path.modal_trait` was already filtered against `scope` above, so this
-                // slot is owned by a selected trait — always in scope.
-                true,
-                &overlay_only,
-            );
+            // `path.modal_trait` was already filtered against `scope` above, so this
+            // slot is owned by a selected trait — always in scope.
+            let nodes =
+                facts.slot_nodes(&cx, slot, &entities_cache, true, &mut game_canvas_failures);
+            judge_nodes(&nodes, &mut overlay_offenders, &mut found);
         }
     }
 
     let verdicts = vec![
         RenderVerdict::new("renderer_coverage", unreal_patterns),
-        RenderVerdict::new("trait_bindings_resolved", unresolved_traits),
-        RenderVerdict::new("entity_data_bound", unbound_entities),
+        RenderVerdict::new("trait_bindings_resolved", found.unresolved),
+        RenderVerdict::new("entity_data_bound", found.unbound),
         RenderVerdict::new("game_canvas_renders", game_canvas_failures),
         RenderVerdict::new("overlay_slots_render", overlay_offenders),
     ];
@@ -337,10 +277,168 @@ where
         item: item.to_string(),
         verdicts,
         slots_rendered,
-        access_scoped_empty,
+        access_scoped_empty: found.access_scoped_empty,
         traits: resolved_traits,
-        stubbed: dedup_sorted(stubbed),
+        stubbed: dedup_sorted(found.stubbed),
     })
+}
+
+/// What the walks of one program share: the entities with a declared `@read`, each trait's `linkedEntity`, and the
+/// traits that render only once an overlay opens.
+struct ProgramFacts {
+    // Entities whose author declared a real `@read` predicate (a `@read none` waiver lowers to
+    // no policy and is deliberately absent). An empty list on one of these is what a
+    // fail-closed viewer is SUPPOSED to see.
+    gated: HashSet<String>,
+    // An `entity` prop that resolved to an inline array carries no type name, so the
+    // rendering trait's bound entity is what attributes it.
+    linked_entity: HashMap<String, String>,
+    overlay_only: HashSet<String>,
+}
+
+impl ProgramFacts {
+    fn new(schema: &OrbitalSchema) -> Self {
+        use orbital_core_base::schema::types::{EntityRef, TraitReference};
+        let gated = schema
+            .orbitals
+            .iter()
+            .flat_map(|o| std::iter::once(&o.entity).chain(o.auxiliary_entities.iter().flatten()))
+            .filter_map(|er| match er {
+                EntityRef::Inline(e) => e.read_policy.as_ref().map(|_| e.name.clone()),
+                _ => None,
+            })
+            .collect();
+        let linked_entity = schema
+            .orbitals
+            .iter()
+            .flat_map(|o| o.traits.iter())
+            .filter_map(|t| match t {
+                TraitReference::Inline(td) => td
+                    .linked_entity
+                    .as_ref()
+                    .map(|e| (td.name.clone(), e.clone())),
+                _ => None,
+            })
+            .collect();
+        Self {
+            gated,
+            linked_entity,
+            overlay_only: orbital_core_base::slots::overlay_only_traits(schema),
+        }
+    }
+
+    /// Init every orbital and take the UNION of their trait content: a `@trait.X` defined in orbital A
+    /// and embedded by orbital B's render-ui (a valid cross-orbital composition) still resolves. First write wins.
+    fn trait_union(
+        &self,
+        orbital_count: usize,
+        build_app: &dyn Fn(usize) -> Result<ClientCore, String>,
+    ) -> Result<ValueMap, String> {
+        let mut union = ValueMap::new();
+        for idx in 0..orbital_count {
+            let app = build_app(idx)?;
+            for (name, content) in &app.trait_content {
+                union.entry(name.clone()).or_insert_with(|| content.clone());
+            }
+        }
+        Ok(union)
+    }
+
+    fn slot_nodes(
+        &self,
+        cx: &FactCx<'_>,
+        slot: &crate::client::helpers::SlotContent,
+        entities_cache: &HashMap<String, Vec<Value>>,
+        in_scope: bool,
+        game_canvas_failures: &mut Vec<String>,
+    ) -> Vec<RenderedNode> {
+        let access = AccessScope {
+            gated: &self.gated,
+            linked: &self.linked_entity,
+            owner: owner_entity(&slot.props, &self.linked_entity),
+        };
+        let mut nodes = Vec::new();
+        node_facts(
+            &slot.props,
+            cx,
+            entities_cache,
+            &mut HashSet::new(),
+            access,
+            in_scope,
+            &mut nodes,
+            game_canvas_failures,
+        );
+        nodes
+    }
+}
+
+/// The render facts of one played request: the client circuit after a seeded INIT of the trait's orbital, then
+/// `event` driven from `trait_name` unless it is INIT, reporting each non-`system` slot that trait filled. The
+/// request's `from` state is not restored: a slot its event does not reach after INIT is simply not reported.
+pub fn played_render_facts<F>(
+    schema: &OrbitalSchema,
+    trait_name: &str,
+    event: &str,
+    payload: Value,
+    target: &dyn RenderTarget,
+    make_bridge: F,
+) -> Result<Vec<RenderedSlot>, String>
+where
+    F: Fn(&OrbitalSchema, usize) -> Result<Arc<dyn ServerBridge>, String>,
+{
+    use orbital_core_base::schema::types::TraitReference;
+    let idx = schema
+        .orbitals
+        .iter()
+        .position(|o| {
+            o.traits
+                .iter()
+                .any(|t| matches!(t, TraitReference::Inline(td) if td.name == trait_name))
+        })
+        .ok_or_else(|| format!("the program has no trait \"{trait_name}\""))?;
+    let build_app = |idx: usize| -> Result<ClientCore, String> {
+        let bridge = make_bridge(schema, idx)?;
+        let mut app = ClientCore::new(schema.clone(), Some(bridge));
+        app.set_orbital(idx);
+        app.init_all_traits_blocking();
+        app.settle(8);
+        Ok(app)
+    };
+    let facts = ProgramFacts::new(schema);
+    let trait_union = facts.trait_union(schema.orbitals.len(), &build_app)?;
+    let mut app = build_app(idx)?;
+    if event != "INIT" {
+        app.drive_blocking(event, Some(trait_name), payload);
+        app.settle(8);
+    }
+    let cx = FactCx {
+        trait_content: &trait_union,
+        target,
+        trait_scope: None,
+        overlay_only: &facts.overlay_only,
+    };
+    let mut canvas = Vec::new();
+    let mut slots: Vec<RenderedSlot> = app
+        .ui_slots
+        .iter()
+        .filter(|(name, _)| {
+            orbital_core_base::slots::slot_role(name) != orbital_core_base::slots::SlotRole::System
+        })
+        .flat_map(|(name, contents)| contents.iter().map(move |slot| (name, slot)))
+        .filter(|(_, slot)| slot.source_trait.as_deref() == Some(trait_name))
+        .map(|(name, slot)| RenderedSlot {
+            slot: name.clone(),
+            source_trait: trait_name.to_string(),
+            owner_entity: facts
+                .linked_entity
+                .get(trait_name)
+                .cloned()
+                .unwrap_or_default(),
+            nodes: facts.slot_nodes(&cx, slot, &app.entities, true, &mut canvas),
+        })
+        .collect();
+    slots.sort_by(|a, b| a.slot.cmp(&b.slot));
+    Ok(slots)
 }
 
 /// Patterns whose `props["entity"]` must map to a populated row set after a seeded INIT.
@@ -385,207 +483,257 @@ impl<'a> AccessScope<'a> {
     }
 }
 
-/// Walk a rendered pattern tree: flag patterns with no real renderer, `@trait.X` child
-/// references that don't resolve to indexed content, entity bindings with no rows, and
-/// game-canvas patterns that fail the headless pixel probe.
+/// What every node of one walk is read against.
+struct FactCx<'a> {
+    trait_content: &'a ValueMap,
+    target: &'a dyn RenderTarget,
+    // `--trait` scope: the resolved trait names the walk is restricted to (`None` = no filter).
+    trait_scope: Option<&'a HashSet<&'a str>>,
+    // Traits that render nothing until an overlay-open transition fires (`overlay_only_traits`).
+    overlay_only: &'a HashSet<String>,
+}
+
+/// The facts of a rendered tree, in pre-order: each node's pattern and renderer coverage, its entity binding and
+/// its `@trait.X` references, with each embedded trait's content walked once where it is embedded. A node is
+/// reported only while `in_scope`, which is STICKY: once true (the owning trait is selected, or an ancestor embed
+/// matched), every descendant stays true. Game canvases are painted by the target as they are met.
 #[allow(clippy::too_many_arguments)]
-fn walk(
+fn node_facts(
     content: &Value,
-    trait_content: &ValueMap,
-    target: &dyn RenderTarget,
+    cx: &FactCx<'_>,
     entities_cache: &HashMap<String, Vec<Value>>,
     visited_traits: &mut HashSet<String>,
-    unreal: &mut Vec<String>,
-    stubbed: &mut Vec<String>,
-    unresolved_traits: &mut Vec<String>,
-    unbound_entities: &mut Vec<String>,
-    game_canvas_failures: &mut Vec<String>,
     access: AccessScope<'_>,
-    access_scoped_empty: &mut Vec<String>,
-    // `--trait` scope: the resolved trait names the walk is restricted to (`None` = no
-    // filter, today's full walk). `in_scope` is STICKY — once true (this node's owning
-    // trait is selected, or an ancestor embed matched), every descendant stays true: the
-    // named trait's "own or embed" closure is checked whole, not re-tested per node.
-    trait_scope: Option<&HashSet<&str>>,
     in_scope: bool,
-    // Traits that legitimately render nothing until an overlay-open transition fires
-    // (`crate::overlay_only_traits`) — an unresolved embed of one of these is
-    // Pass 3's job, not a Pass 2 miss.
-    overlay_only: &HashSet<String>,
+    nodes: &mut Vec<RenderedNode>,
+    game_canvas_failures: &mut Vec<String>,
 ) {
     let Some(obj) = content.as_object() else {
         return;
     };
-    if in_scope {
-        if let Some(pattern) = obj.get("type").and_then(|v| v.as_str()) {
-            // A `type` that is itself a `@`-binding (`@config.layoutPattern`,
-            // `@config.viewPattern`, `@config.detailPattern`, …) is resolved to a concrete
-            // pattern at runtime from config the headless seed doesn't synthesize. It is a
-            // dynamic node, not a missing renderer — exempt it from coverage/entity/game
-            // classification (its concrete children are still walked below). This mirrors the
-            // draw-host exemption: the node delegates to runtime resolution.
-            let dynamic_type = pattern.starts_with('@');
-            // A draw-host renders by projecting + painting its authored drawable `children`
-            // (exempt below) via its painter — it has no independent per-pattern renderer of
-            // its own. The unified `canvas` host's native drawable painter lands in P7; until
-            // then coverage is satisfied by the host delegating to its (covered) children,
-            // mirroring the child exemption. Only bites a draw-host lacking a renderer
-            // (`canvas`); `canvas-2d`/`game-canvas-3d` keep their real renderers.
-            if !dynamic_type && !is_draw_host(pattern) && !target.supports(pattern) {
-                if target.is_stub(pattern) {
-                    stubbed.push(pattern.to_string());
-                } else {
-                    unreal.push(pattern.to_string());
-                }
-            }
-            if !dynamic_type && ENTITY_BOUND_PATTERNS.contains(&pattern) {
-                match obj.get("entity") {
-                    // `entity` resolved to its inline collection (a `@payload.data` / `@entity.X`
-                    // binding) — the rows travel with the content; assert it's non-empty.
-                    Some(Value::Array(rows)) => {
-                        let populated = !rows.is_empty();
-                        tracing::debug!(
-                            target: orbital_core_base::logging::ns::UI_DATA_GRID,
-                            pattern, entity = "<resolved-array>", populated, rows = rows.len(), "data-bound:check",
-                        );
-                        if !populated {
-                            if access.explains(access.owner) {
-                                access_scoped_empty.push(format!(
-                                    "{pattern}[{}: @read]",
-                                    access.owner.unwrap_or("?")
-                                ));
-                            } else {
-                                unbound_entities.push(format!("{pattern}[entity=<empty-array>]"));
-                            }
-                        }
-                    }
-                    // A concrete type-name string → check the fetch cache.
-                    Some(Value::String(entity_type)) if !entity_type.starts_with('@') => {
-                        let populated = entities_cache
-                            .get(entity_type)
-                            .map(|r| !r.is_empty())
-                            .unwrap_or(false);
-                        tracing::debug!(
-                            target: orbital_core_base::logging::ns::UI_DATA_GRID,
-                            pattern, entity = %entity_type, populated, "data-bound:check",
-                        );
-                        if !populated {
-                            if access.explains(Some(entity_type)) {
-                                access_scoped_empty
-                                    .push(format!("{pattern}[{entity_type}: @read]"));
-                            } else {
-                                unbound_entities.push(format!("{pattern}[entity={entity_type}]"));
-                            }
-                        }
-                    }
-                    // An unresolved `@payload.*` means the load event didn't carry the rows —
-                    // the table renders empty (the RS-G16 symptom). Flag it. Other contextual
-                    // bindings (`@entity.<subCollection>`, `@config.X`) legitimately depend on
-                    // data the headless seed doesn't fully synthesize (it seeds scalar fields,
-                    // not nested collections), so a literal `@entity.*`/`@config.*` is skipped.
-                    Some(Value::String(b)) if b.starts_with("@payload") => {
-                        unbound_entities.push(format!("{pattern}[unresolved={b}]"));
-                    }
-                    Some(Value::String(_)) => {}
-                    _ => {}
-                }
-            }
-            if GAME_CANVAS_PATTERNS.contains(&pattern) {
-                match target.probe_game_canvas(pattern, content) {
-                    GameCanvasOutcome::Pass => {}
-                    GameCanvasOutcome::Fail(msg) => {
-                        tracing::warn!(pattern, %msg, "game-canvas pixel probe: FAIL");
-                        game_canvas_failures.push(msg);
-                    }
-                    GameCanvasOutcome::Skip(reason) => {
-                        tracing::info!(pattern, %reason, "game-canvas pixel probe: SKIP (env gap)");
-                    }
-                }
-            }
+    let pattern = obj.get("type").and_then(|v| v.as_str());
+    let at = in_scope.then(|| {
+        nodes.push(node_fact(
+            pattern,
+            obj,
+            content,
+            cx.target,
+            entities_cache,
+            access,
+            game_canvas_failures,
+        ));
+        nodes.len() - 1
+    });
+    // A draw-host paints its authored `children` itself (routed to its `drawables` prop), so a neutral
+    // drawable child is not independently rendered and is not walked; a non-drawable child is
+    // (mirrors the validator's ORB_RUI_CHILD_NOT_DRAWABLE).
+    let host_paints = pattern.is_some_and(is_draw_host);
+    let Some(children) = obj.get("children").and_then(|v| v.as_array()) else {
+        return;
+    };
+    for child in children {
+        if host_paints
+            && child
+                .as_object()
+                .and_then(|o| o.get("type"))
+                .and_then(|v| v.as_str())
+                .is_some_and(is_drawable)
+        {
+            continue;
         }
-    } // in_scope
-      // A draw-host paints its authored `children` itself (they are routed to the host's
-      // `drawables` prop and drawn by its painter — the L2 twin of UISlotRenderer's runtime
-      // routing), so a neutral drawable child is NOT independently slot-rendered and needs no
-      // standalone renderer. Exempt such children from renderer-coverage; a NON-drawable child
-      // still falls through to the normal walk and is flagged (mirrors the validator's
-      // ORB_RUI_CHILD_NOT_DRAWABLE — defense-in-depth, not a name/heuristic check).
-    let host_paints = obj
-        .get("type")
-        .and_then(|v| v.as_str())
-        .map(is_draw_host)
-        .unwrap_or(false);
-    if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
-        for child in children {
-            if host_paints {
-                if let Some(ct) = child
-                    .as_object()
-                    .and_then(|o| o.get("type"))
-                    .and_then(|v| v.as_str())
-                {
-                    if is_drawable(ct) {
-                        continue;
-                    }
+        if let Some(s) = child.as_str() {
+            let Some(name) = trait_ref_name(s) else {
+                continue;
+            };
+            let resolved = cx.trait_content.get(&name);
+            if let Some(i) = at {
+                nodes[i].trait_refs.push(TraitRef {
+                    name: name.clone(),
+                    resolved: resolved.is_some(),
+                    overlay_only: cx.overlay_only.contains(&name),
+                });
+            }
+            if let Some(resolved) = resolved {
+                if visited_traits.insert(name.clone()) {
+                    let child_in_scope =
+                        in_scope || cx.trait_scope.is_none_or(|s| s.contains(name.as_str()));
+                    node_facts(
+                        resolved,
+                        cx,
+                        entities_cache,
+                        visited_traits,
+                        access.descend(resolved),
+                        child_in_scope,
+                        nodes,
+                        game_canvas_failures,
+                    );
                 }
             }
-            if let Some(s) = child.as_str() {
-                if let Some(name) = trait_ref_name(s) {
-                    match trait_content.get(&name) {
-                        Some(resolved) => {
-                            if visited_traits.insert(name.clone()) {
-                                // Sticky: already in scope, or this embed IS the named
-                                // trait — either way its own closure is checked from here.
-                                let child_in_scope = in_scope
-                                    || trait_scope.is_none_or(|s| s.contains(name.as_str()));
-                                walk(
-                                    resolved,
-                                    trait_content,
-                                    target,
-                                    entities_cache,
-                                    visited_traits,
-                                    unreal,
-                                    stubbed,
-                                    unresolved_traits,
-                                    unbound_entities,
-                                    game_canvas_failures,
-                                    access.descend(resolved),
-                                    access_scoped_empty,
-                                    trait_scope,
-                                    child_in_scope,
-                                    overlay_only,
-                                );
-                            }
-                        }
-                        None => {
-                            if in_scope && !overlay_only.contains(&name) {
-                                unresolved_traits.push(name);
-                            }
-                        }
-                    }
-                }
-            } else {
-                walk(
-                    child,
-                    trait_content,
-                    target,
-                    entities_cache,
-                    visited_traits,
-                    unreal,
-                    stubbed,
-                    unresolved_traits,
-                    unbound_entities,
-                    game_canvas_failures,
-                    access,
-                    access_scoped_empty,
-                    trait_scope,
-                    in_scope,
-                    overlay_only,
-                );
-            }
+        } else {
+            node_facts(
+                child,
+                cx,
+                entities_cache,
+                visited_traits,
+                access,
+                in_scope,
+                nodes,
+                game_canvas_failures,
+            );
         }
     }
 }
 
+/// One node's facts. A `type` that is itself a binding (`@config.viewPattern`) is resolved at run time from config
+/// the headless seed does not synthesize: a dynamic node, not a missing renderer, and not entity-bound.
+fn node_fact(
+    pattern: Option<&str>,
+    obj: &ValueMap,
+    content: &Value,
+    target: &dyn RenderTarget,
+    entities_cache: &HashMap<String, Vec<Value>>,
+    access: AccessScope<'_>,
+    game_canvas_failures: &mut Vec<String>,
+) -> RenderedNode {
+    let Some(pattern) = pattern else {
+        return RenderedNode {
+            pattern: String::new(),
+            dynamic: false,
+            supported: true,
+            stub: false,
+            binding: EntityBinding {
+                kind: EntityBindingKind::None,
+                entity: String::new(),
+                rows: 0,
+                read_gated: false,
+            },
+            trait_refs: Vec::new(),
+        };
+    };
+    let dynamic = pattern.starts_with('@');
+    let binding = |kind, entity: &str, rows: usize, read_gated| EntityBinding {
+        kind,
+        entity: entity.to_string(),
+        rows: u32::try_from(rows).unwrap_or(u32::MAX),
+        read_gated,
+    };
+    let binding = if dynamic || !ENTITY_BOUND_PATTERNS.contains(&pattern) {
+        binding(EntityBindingKind::None, "", 0, false)
+    } else {
+        match obj.get("entity") {
+            None | Some(Value::Null) => binding(EntityBindingKind::Absent, "", 0, false),
+            Some(Value::Array(rows)) => {
+                tracing::debug!(
+                    target: orbital_core_base::logging::ns::UI_DATA_GRID,
+                    pattern, entity = "<resolved-array>", rows = rows.len(), "data-bound:check",
+                );
+                binding(
+                    EntityBindingKind::Inline,
+                    access.owner.unwrap_or_default(),
+                    rows.len(),
+                    access.explains(access.owner),
+                )
+            }
+            Some(Value::String(b)) if b.starts_with("@payload") => {
+                binding(EntityBindingKind::PayloadUnresolved, b, 0, false)
+            }
+            Some(Value::String(b)) if b.starts_with('@') => {
+                binding(EntityBindingKind::ContextUnresolved, b, 0, false)
+            }
+            Some(Value::String(entity_type)) => {
+                let rows = entities_cache.get(entity_type).map_or(0, Vec::len);
+                tracing::debug!(
+                    target: orbital_core_base::logging::ns::UI_DATA_GRID,
+                    pattern, entity = %entity_type, rows, "data-bound:check",
+                );
+                binding(
+                    EntityBindingKind::Named,
+                    entity_type,
+                    rows,
+                    access.explains(Some(entity_type)),
+                )
+            }
+            Some(_) => binding(EntityBindingKind::Malformed, "", 0, false),
+        }
+    };
+    if GAME_CANVAS_PATTERNS.contains(&pattern) {
+        match target.probe_game_canvas(pattern, content) {
+            GameCanvasOutcome::Pass => {}
+            GameCanvasOutcome::Fail(msg) => {
+                tracing::warn!(pattern, %msg, "game-canvas pixel probe: FAIL");
+                game_canvas_failures.push(msg);
+            }
+            GameCanvasOutcome::Skip(reason) => {
+                tracing::info!(pattern, %reason, "game-canvas pixel probe: SKIP (env gap)");
+            }
+        }
+    }
+    RenderedNode {
+        pattern: pattern.to_string(),
+        dynamic,
+        supported: !dynamic && (is_draw_host(pattern) || target.supports(pattern)),
+        stub: !dynamic && target.is_stub(pattern),
+        binding,
+        trait_refs: Vec::new(),
+    }
+}
+
+/// The offenders and notes the render verdicts are built from.
+#[derive(Debug, Default)]
+struct Findings {
+    stubbed: Vec<String>,
+    unresolved: Vec<String>,
+    unbound: Vec<String>,
+    access_scoped_empty: Vec<String>,
+}
+
+/// Judge walked facts: a non-dynamic node the renderer lacks goes to `unreal` (or `stubbed`), an unresolved
+/// `@trait` reference that is not overlay-only is a miss, and an entity-bound pattern with no rows is unbound unless
+/// its entity's `@read` explains the empty list.
+fn judge_nodes(nodes: &[RenderedNode], unreal: &mut Vec<String>, found: &mut Findings) {
+    for node in nodes {
+        if !node.dynamic && !node.supported {
+            if node.stub {
+                found.stubbed.push(node.pattern.clone());
+            } else {
+                unreal.push(node.pattern.clone());
+            }
+        }
+        let (pattern, b) = (&node.pattern, &node.binding);
+        match b.kind {
+            EntityBindingKind::Inline | EntityBindingKind::Named if b.rows == 0 => {
+                if b.read_gated {
+                    found
+                        .access_scoped_empty
+                        .push(format!("{pattern}[{}: @read]", b.entity));
+                } else if b.kind == EntityBindingKind::Inline {
+                    found
+                        .unbound
+                        .push(format!("{pattern}[entity=<empty-array>]"));
+                } else {
+                    found
+                        .unbound
+                        .push(format!("{pattern}[entity={}]", b.entity));
+                }
+            }
+            EntityBindingKind::PayloadUnresolved => found
+                .unbound
+                .push(format!("{pattern}[unresolved={}]", b.entity)),
+            EntityBindingKind::None
+            | EntityBindingKind::Absent
+            | EntityBindingKind::Malformed
+            | EntityBindingKind::Inline
+            | EntityBindingKind::Named
+            | EntityBindingKind::ContextUnresolved => {}
+        }
+        found.unresolved.extend(
+            node.trait_refs
+                .iter()
+                .filter(|r| !r.resolved && !r.overlay_only)
+                .map(|r| r.name.clone()),
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -631,29 +779,312 @@ mod tests {
 
     #[test]
     fn a_supported_pattern_passes_coverage() {
-        let report = probe("t", program(serde_json::json!({ "type": "typography", "content": "x" })), None, &Target { supported: &["typography"], stubs: &[] }).unwrap();
+        let report = probe(
+            "t",
+            program(serde_json::json!({ "type": "typography", "content": "x" })),
+            None,
+            &Target {
+                supported: &["typography"],
+                stubs: &[],
+            },
+        )
+        .unwrap();
         assert!(report.ok(), "{:?}", report.verdicts);
         assert!(report.slots_rendered >= 1);
     }
 
     #[test]
     fn control_a_pattern_the_renderer_lacks_fails_coverage() {
-        let report = probe("t", program(serde_json::json!({ "type": "health-bar" })), None, &Target { supported: &["typography"], stubs: &[] }).unwrap();
+        let report = probe(
+            "t",
+            program(serde_json::json!({ "type": "health-bar" })),
+            None,
+            &Target {
+                supported: &["typography"],
+                stubs: &[],
+            },
+        )
+        .unwrap();
         let coverage = verdict(&report, "renderer_coverage");
-        assert!(!coverage.passed && coverage.detail.contains("health-bar"), "{}", coverage.detail);
+        assert!(
+            !coverage.passed && coverage.detail.contains("health-bar"),
+            "{}",
+            coverage.detail
+        );
     }
 
     #[test]
     fn a_stubbed_pattern_is_reported_not_failed() {
-        let report = probe("t", program(serde_json::json!({ "type": "health-bar" })), None, &Target { supported: &[], stubs: &["health-bar"] }).unwrap();
+        let report = probe(
+            "t",
+            program(serde_json::json!({ "type": "health-bar" })),
+            None,
+            &Target {
+                supported: &[],
+                stubs: &["health-bar"],
+            },
+        )
+        .unwrap();
         assert!(verdict(&report, "renderer_coverage").passed);
         assert_eq!(report.stubbed, vec!["health-bar".to_string()]);
-        assert!(report.headline().ends_with("1 stubbed"), "{}", report.headline());
+        assert!(
+            report.headline().ends_with("1 stubbed"),
+            "{}",
+            report.headline()
+        );
+    }
+
+    fn facts_of(
+        content: serde_json::Value,
+        entities: &[(&str, usize)],
+        gated: &[&str],
+    ) -> Vec<RenderedNode> {
+        let content: Value = serde_json::from_value(content).unwrap();
+        let mut trait_content = ValueMap::new();
+        trait_content.insert(
+            "Shown".to_string(),
+            serde_json::from_value(serde_json::json!({ "type": "typography" })).unwrap(),
+        );
+        let overlay_only: HashSet<String> = ["Drawer".to_string()].into_iter().collect();
+        let gated: HashSet<String> = gated.iter().map(|g| g.to_string()).collect();
+        let linked: HashMap<String, String> = [("NotesView".to_string(), "Note".to_string())]
+            .into_iter()
+            .collect();
+        let cache: HashMap<String, Vec<Value>> = entities
+            .iter()
+            .map(|(e, n)| (e.to_string(), vec![Value::Null; *n]))
+            .collect();
+        let target = Target {
+            supported: &[
+                "stack",
+                "typography",
+                "data-list",
+                "table-view",
+                "data-grid",
+            ],
+            stubs: &["health-bar"],
+        };
+        let cx = FactCx {
+            trait_content: &trait_content,
+            target: &target,
+            trait_scope: None,
+            overlay_only: &overlay_only,
+        };
+        let access = AccessScope {
+            gated: &gated,
+            linked: &linked,
+            owner: Some("Note"),
+        };
+        let mut nodes = Vec::new();
+        let mut canvas = Vec::new();
+        node_facts(
+            &content,
+            &cx,
+            &cache,
+            &mut HashSet::new(),
+            access,
+            true,
+            &mut nodes,
+            &mut canvas,
+        );
+        nodes
+    }
+
+    #[test]
+    fn every_entity_binding_is_a_named_kind() {
+        let nodes = facts_of(
+            serde_json::json!({ "type": "stack", "children": [
+                { "type": "data-list", "entity": "Note" },
+                { "type": "data-list", "entity": "Tag" },
+                { "type": "table-view", "entity": [] },
+                { "type": "data-grid", "entity": "@payload.rows" },
+                { "type": "data-list", "entity": "@entity.items" },
+                { "type": "data-grid" },
+                { "type": "data-list", "entity": 5 },
+                { "type": "typography" }
+            ] }),
+            &[("Note", 2)],
+            &["Note"],
+        );
+        let kinds: Vec<(EntityBindingKind, &str, u32, bool)> = nodes
+            .iter()
+            .map(|n| {
+                (
+                    n.binding.kind,
+                    n.binding.entity.as_str(),
+                    n.binding.rows,
+                    n.binding.read_gated,
+                )
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (EntityBindingKind::None, "", 0, false),
+                (EntityBindingKind::Named, "Note", 2, true),
+                (EntityBindingKind::Named, "Tag", 0, false),
+                (EntityBindingKind::Inline, "Note", 0, true),
+                (
+                    EntityBindingKind::PayloadUnresolved,
+                    "@payload.rows",
+                    0,
+                    false
+                ),
+                (
+                    EntityBindingKind::ContextUnresolved,
+                    "@entity.items",
+                    0,
+                    false
+                ),
+                (EntityBindingKind::Absent, "", 0, false),
+                (EntityBindingKind::Malformed, "", 0, false),
+                (EntityBindingKind::None, "", 0, false),
+            ]
+        );
+        let (mut unreal, mut found) = (Vec::new(), Findings::default());
+        judge_nodes(&nodes, &mut unreal, &mut found);
+        assert!(unreal.is_empty(), "{unreal:?}");
+        assert_eq!(
+            found.unbound,
+            vec![
+                "data-list[entity=Tag]",
+                "data-grid[unresolved=@payload.rows]"
+            ]
+        );
+        assert_eq!(found.access_scoped_empty, vec!["table-view[Note: @read]"]);
+    }
+
+    #[test]
+    fn nodes_carry_coverage_and_trait_reference_facts() {
+        let nodes = facts_of(
+            serde_json::json!({ "type": "stack", "children": [
+                { "type": "health-bar" },
+                { "type": "radar" },
+                { "type": "@config.viewPattern" },
+                { "children": ["@trait.Shown", "@trait.Missing", "@trait.Drawer"] }
+            ] }),
+            &[],
+            &[],
+        );
+        let facts: Vec<(&str, bool, bool, bool)> = nodes
+            .iter()
+            .map(|n| (n.pattern.as_str(), n.dynamic, n.supported, n.stub))
+            .collect();
+        assert_eq!(
+            facts,
+            vec![
+                ("stack", false, true, false),
+                ("health-bar", false, false, true),
+                ("radar", false, false, false),
+                ("@config.viewPattern", true, false, false),
+                ("", false, true, false),
+                ("typography", false, true, false),
+            ],
+            "a typeless node needs no renderer; @trait content is visited in place"
+        );
+        assert_eq!(
+            nodes[4].trait_refs,
+            vec![
+                TraitRef {
+                    name: "Shown".into(),
+                    resolved: true,
+                    overlay_only: false
+                },
+                TraitRef {
+                    name: "Missing".into(),
+                    resolved: false,
+                    overlay_only: false
+                },
+                TraitRef {
+                    name: "Drawer".into(),
+                    resolved: false,
+                    overlay_only: true
+                },
+            ]
+        );
+        let (mut unreal, mut found) = (Vec::new(), Findings::default());
+        judge_nodes(&nodes, &mut unreal, &mut found);
+        assert_eq!(unreal, vec!["radar"]);
+        assert_eq!(found.stubbed, vec!["health-bar"]);
+        assert_eq!(
+            found.unresolved,
+            vec!["Missing"],
+            "an overlay-only embed is Pass 3's, not a miss"
+        );
+    }
+
+    #[test]
+    fn a_played_step_renders_the_slots_its_trait_filled() {
+        let mut schema = serde_json::to_value(program(serde_json::json!({ "type": "stack", "children": [{ "type": "data-list", "entity": "Note" }, { "type": "radar" }] }))).unwrap();
+        let effects =
+            &mut schema["orbitals"][0]["traits"][0]["stateMachine"]["transitions"][0]["effects"];
+        effects
+            .as_array_mut()
+            .unwrap()
+            .insert(0, serde_json::json!(["fetch", "Note"]));
+        let schema: OrbitalSchema = serde_json::from_value(schema).unwrap();
+        let target = Target {
+            supported: &["stack", "data-list"],
+            stubs: &[],
+        };
+        let slots = played_render_facts(
+            &schema,
+            "NotesView",
+            "INIT",
+            Value::Null,
+            &target,
+            |s, _| seeded_kernel(s),
+        )
+        .unwrap();
+        assert_eq!(slots.len(), 1, "{slots:?}");
+        assert_eq!(
+            (
+                slots[0].slot.as_str(),
+                slots[0].source_trait.as_str(),
+                slots[0].owner_entity.as_str()
+            ),
+            ("main", "NotesView", "Note")
+        );
+        let list = slots[0]
+            .nodes
+            .iter()
+            .find(|n| n.pattern == "data-list")
+            .expect("the list node");
+        assert_eq!(list.binding.kind, EntityBindingKind::Named);
+        assert!(
+            list.binding.rows >= 1,
+            "the seeded INIT loaded rows: {list:?}"
+        );
+        assert!(slots[0]
+            .nodes
+            .iter()
+            .any(|n| n.pattern == "radar" && !n.supported));
+        let other = played_render_facts(
+            &schema,
+            "Elsewhere",
+            "INIT",
+            Value::Null,
+            &target,
+            |s, _| seeded_kernel(s),
+        );
+        assert!(
+            other.unwrap_err().contains("no trait \"Elsewhere\""),
+            "control: an unknown trait is refused"
+        );
     }
 
     #[test]
     fn edge_an_unknown_trait_scope_is_refused() {
-        let err = probe("t", program(serde_json::json!({ "type": "typography" })), Some(&["Nope".to_string()]), &Target { supported: &["typography"], stubs: &[] }).unwrap_err();
+        let err = probe(
+            "t",
+            program(serde_json::json!({ "type": "typography" })),
+            Some(&["Nope".to_string()]),
+            &Target {
+                supported: &["typography"],
+                stubs: &[],
+            },
+        )
+        .unwrap_err();
         assert!(err.contains("unknown --trait \"Nope\""), "{err}");
     }
 }

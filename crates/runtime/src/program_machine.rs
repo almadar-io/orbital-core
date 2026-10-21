@@ -166,6 +166,88 @@ pub struct PlayedResult {
     pub guards: Vec<PlayedGuard>,
     /// The fired arm's `@ensures`; when no arm fired, those of every `from --event-->` arm, each inconclusive.
     pub ensures: Vec<PlayedEnsures>,
+    /// The slots the played trait filled, walked by the kernel's render probe; present when `options.render` asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered: Option<Vec<RenderedSlot>>,
+}
+
+/// One non-`system` slot a played trait's `render-ui` filled, as the client circuit rendered it.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedSlot {
+    pub slot: String,
+    /// The trait whose `render-ui` wrote the slot.
+    pub source_trait: String,
+    /// The `linkedEntity` of `source_trait`; empty when it declares none.
+    pub owner_entity: String,
+    /// The rendered tree in pre-order, each `@trait` embed's content visited once where it is embedded.
+    pub nodes: Vec<RenderedNode>,
+}
+
+/// One node of a rendered tree.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedNode {
+    /// The node's `type`; empty for a node without one.
+    pub pattern: String,
+    /// `type` is a binding (`@config.viewPattern`) resolved at run time.
+    pub dynamic: bool,
+    /// The renderer draws it: a real renderer, a draw host painting its children, or a node without a `type`.
+    pub supported: bool,
+    /// The renderer declares a stub for it.
+    pub stub: bool,
+    pub binding: EntityBinding,
+    /// The `@trait.X` string children of this node.
+    pub trait_refs: Vec<TraitRef>,
+}
+
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EntityBindingKind {
+    /// Not an entity-bound pattern (`data-grid`, `table-view`, `data-list`), or a dynamic `type`.
+    None,
+    /// An entity-bound pattern with no `entity`, or a null one.
+    Absent,
+    /// `entity` is a number, boolean or object: neither rows nor a binding.
+    Malformed,
+    /// `entity` resolved to its rows, carried inline.
+    Inline,
+    /// `entity` names an entity type, read from the client's loaded rows.
+    Named,
+    /// `entity` is a `@payload` binding the event did not resolve.
+    PayloadUnresolved,
+    /// `entity` is another `@` binding (`@entity.items`, `@config.x`) the headless seed does not synthesize.
+    ContextUnresolved,
+}
+
+/// What an entity-bound pattern's `entity` resolved to.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityBinding {
+    pub kind: EntityBindingKind,
+    /// The entity type (`named`), the owner entity of the rendering trait (`inline`), the binding (`payload-unresolved`,
+    /// `context-unresolved`); otherwise empty.
+    pub entity: String,
+    /// The inline rows, or the loaded rows of a `named` entity; otherwise 0.
+    pub rows: u32,
+    /// `entity` declares a real `@read`, so an empty list may be what the viewer is meant to see (`inline`, `named`).
+    pub read_gated: bool,
+}
+
+/// A `@trait.X` reference in a rendered tree.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraitRef {
+    pub name: String,
+    /// `X` has rendered content in some orbital after a seeded INIT.
+    pub resolved: bool,
+    /// `X` renders only once an overlay-open transition fires.
+    pub overlay_only: bool,
 }
 
 /// A request `program/step` played: the request as asked, and the circuit it ran.
@@ -363,8 +445,12 @@ mod tests {
             .as_ref()
             .expect("a broken one carries its bindings");
         assert_eq!(
-            serde_json::to_value(counter).unwrap(),
-            json!({ "entity": { "count": 2 }, "fromEntity": { "count": 1 }, "payload": { "by": 1 } })
+            counter,
+            &PropositionBindings {
+                entity: value(json!({ "count": 2 })),
+                from_entity: value(json!({ "count": 1 })),
+                payload: value(json!({ "by": 1 })),
+            }
         );
 
         let unfired = PropositionObservation {

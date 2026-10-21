@@ -1207,6 +1207,7 @@ mod tests {
             guards: Vec::new(),
             effect_runs: Vec::new(),
             cascade_dropped: Vec::new(),
+            cascade_cut: None,
             consumed_emits: Vec::new(),
             failure: None,
             callsite_payload: None,
