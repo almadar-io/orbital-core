@@ -266,11 +266,11 @@ where
     }
 
     let verdicts = vec![
-        RenderVerdict::new("renderer_coverage", unreal_patterns),
-        RenderVerdict::new("trait_bindings_resolved", found.unresolved),
-        RenderVerdict::new("entity_data_bound", found.unbound),
-        RenderVerdict::new("game_canvas_renders", game_canvas_failures),
-        RenderVerdict::new("overlay_slots_render", overlay_offenders),
+        offenders("renderer_coverage", unreal_patterns),
+        offenders("trait_bindings_resolved", found.unresolved),
+        offenders("entity_data_bound", found.unbound),
+        offenders("game_canvas_renders", game_canvas_failures),
+        offenders("overlay_slots_render", overlay_offenders),
     ];
 
     Ok(RenderReport {
@@ -281,6 +281,16 @@ where
         traits: resolved_traits,
         stubbed: dedup_sorted(found.stubbed),
     })
+}
+
+/// A check's offenders, judged by `orb verify` through `std-render-report`.
+fn offenders(name: &str, offenders: Vec<String>) -> RenderVerdict {
+    RenderVerdict {
+        name: name.to_string(),
+        passed: false,
+        detail: String::new(),
+        offenders,
+    }
 }
 
 /// What the walks of one program share: the entities with a declared `@read`, each trait's `linkedEntity`, and the
@@ -789,7 +799,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(report.ok(), "{:?}", report.verdicts);
+        assert!(
+            report.verdicts.iter().all(|v| v.offenders.is_empty()),
+            "{:?}",
+            report.verdicts
+        );
         assert!(report.slots_rendered >= 1);
     }
 
@@ -807,9 +821,9 @@ mod tests {
         .unwrap();
         let coverage = verdict(&report, "renderer_coverage");
         assert!(
-            !coverage.passed && coverage.detail.contains("health-bar"),
-            "{}",
-            coverage.detail
+            coverage.offenders.iter().any(|o| o.contains("health-bar")),
+            "{:?}",
+            coverage.offenders
         );
     }
 
@@ -825,13 +839,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(verdict(&report, "renderer_coverage").passed);
+        assert!(verdict(&report, "renderer_coverage").offenders.is_empty());
         assert_eq!(report.stubbed, vec!["health-bar".to_string()]);
-        assert!(
-            report.headline().ends_with("1 stubbed"),
-            "{}",
-            report.headline()
-        );
     }
 
     fn facts_of(

@@ -6,8 +6,11 @@
 use super::*;
 use crate::resumable::{DispatchError, DispatchOutcomes, Progress};
 use orbital_core_base::inbound::{
-    answer_of, cascade_capped, dispatch_failed, find_inbound, inbound_payload, unknown_hook, InboundAnswer, InboundRoute,
+    answer_of, cascade_capped, dispatch_failed, find_inbound, inbound_payload, inbound_unanswered, unknown_hook, InboundAnswer, InboundRoute,
 };
+
+/// How long [`RuntimeKernel::await_inbound_answer`] waits for a late answer between checks that a call is still open.
+const INBOUND_OPEN_CHECK: std::time::Duration = std::time::Duration::from_millis(50);
 
 impl RuntimeKernel {
     /// The handler a registered program declares for `name`, or the answer for a hook it does not serve.
@@ -116,6 +119,42 @@ impl RuntimeKernel {
             return Some(Self::inbound_answer(route, outcomes));
         }
         Self::inbound_cut(route, outcomes)
+    }
+
+    /// The answer of a delivery its delivering dispatch left unanswered ([`Self::inbound_answered`] false), on a host
+    /// that waits: the first late answer `late` carries while `open_calls` reports a keyed call still open (a host
+    /// counts a completion open until its dispatch has run, so a late answer is sent before its call closes). With no
+    /// call left and no late answer, nothing can answer any more: `inbound-unanswered`, naming the handler. When
+    /// `timeout` elapses first, or `late` hangs up, the answer is [`Self::inbound_answer`] of `outcomes`.
+    pub fn await_inbound_answer(
+        route: &InboundRoute,
+        outcomes: &DispatchOutcomes,
+        late: &std::sync::mpsc::Receiver<InboundAnswer>,
+        open_calls: impl Fn() -> bool,
+        timeout: Option<std::time::Duration>,
+    ) -> InboundAnswer {
+        use std::sync::mpsc::RecvTimeoutError;
+        let deadline = timeout.map(|limit| std::time::Instant::now() + limit);
+        loop {
+            if !open_calls() {
+                return late.try_recv().unwrap_or_else(|_| inbound_unanswered(&route.trait_name, &route.event));
+            }
+            let wait = match deadline {
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(std::time::Instant::now());
+                    if left.is_zero() {
+                        return Self::inbound_answer(route, outcomes);
+                    }
+                    left.min(INBOUND_OPEN_CHECK)
+                }
+                None => INBOUND_OPEN_CHECK,
+            };
+            match late.recv_timeout(wait) {
+                Ok(answer) => return answer,
+                Err(RecvTimeoutError::Disconnected) => return Self::inbound_answer(route, outcomes),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
     }
 
     /// The answer a finished delivery produced: the first emit (one that did not fail; a kernel with no event bus reports it `NoOp`) of the route's answer event
@@ -328,6 +367,74 @@ mod tests {
         let mut elsewhere = route.clone();
         elsewhere.trait_name = "Other".to_string();
         assert_eq!(RuntimeKernel::inbound_late_answer(&elsewhere, &answered), None, "control: another trait's emit answers nothing");
+    }
+
+    fn unanswered_delivery() -> (InboundRoute, DispatchOutcomes) {
+        let kernel = kernel(json!(["google-calendar"]));
+        let route = kernel.inbound_route("google-calendar").unwrap();
+        let payload =
+            serde_json::from_value(json!({ "headers": { "x-goog-resource-state": "gone" }, "verified": true }))
+                .unwrap();
+        let outcomes = kernel.dispatch(&route.trait_name, None, "PUSH", payload).unwrap();
+        assert!(!RuntimeKernel::inbound_answered(&route, &outcomes));
+        (route, outcomes)
+    }
+
+    fn late_answer() -> InboundAnswer {
+        InboundAnswer { status: 200, body: "late".to_string(), stderr: None }
+    }
+
+    /// G-ORB-472: a delivery with no answer and no open call left is answered, instead of parking its host forever.
+    #[test]
+    fn a_delivery_with_no_open_call_left_answers_unanswered_naming_the_handler() {
+        let (route, outcomes) = unanswered_delivery();
+        let (_sender, late) = std::sync::mpsc::channel();
+        let answer = RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, None);
+        assert_eq!(answer.status, 500, "{}", answer.body);
+        let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+        assert_eq!(
+            (body["code"].as_str(), body["trait"].as_str(), body["event"].as_str()),
+            (Some("inbound-unanswered"), Some("Push"), Some("PUSH"))
+        );
+    }
+
+    #[test]
+    fn control_a_late_answer_sent_as_the_last_call_closed_is_still_the_answer() {
+        let (route, outcomes) = unanswered_delivery();
+        let (sender, late) = std::sync::mpsc::channel();
+        sender.send(late_answer()).unwrap();
+        assert_eq!(RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, None), late_answer());
+    }
+
+    #[test]
+    fn control_an_open_call_keeps_the_delivery_waiting_for_its_late_answer() {
+        let (route, outcomes) = unanswered_delivery();
+        let (sender, late) = std::sync::mpsc::channel();
+        let open = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let closer = open.clone();
+        let completion = std::thread::spawn(move || {
+            std::thread::sleep(INBOUND_OPEN_CHECK * 4);
+            sender.send(late_answer()).unwrap();
+            closer.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+        let answer = RuntimeKernel::await_inbound_answer(
+            &route,
+            &outcomes,
+            &late,
+            || open.load(std::sync::atomic::Ordering::SeqCst),
+            Some(std::time::Duration::from_secs(10)),
+        );
+        completion.join().unwrap();
+        assert_eq!(answer, late_answer());
+    }
+
+    #[test]
+    fn control_a_call_open_past_the_timeout_answers_the_delivering_dispatch() {
+        let (route, outcomes) = unanswered_delivery();
+        let (_sender, late) = std::sync::mpsc::channel();
+        let answer =
+            RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || true, Some(INBOUND_OPEN_CHECK * 2));
+        assert_eq!((answer.status, answer.body.as_str()), (500, r#"{"error":"inbound-unanswered"}"#));
     }
 
     fn looping_kernel() -> RuntimeKernel {

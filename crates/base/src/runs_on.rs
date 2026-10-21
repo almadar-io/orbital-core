@@ -31,6 +31,7 @@ impl RunsOn {
 
 /// Every effect operator whose site is not `any`, by registry name.
 pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
+    ("access-check", RunsOn::Server),
     ("atomic", RunsOn::Server),
     ("browser/beacon", RunsOn::Client),
     ("browser/clipboard-read", RunsOn::Client),

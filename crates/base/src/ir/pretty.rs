@@ -772,6 +772,11 @@ impl PrettyPrinter {
                 self.write_expr(request);
                 self.write(")");
             }
+            OirEffect::AccessCheck { request, .. } => {
+                self.write("access-check(");
+                self.write_expr(request);
+                self.write(")");
+            }
             OirEffect::OAuthAuthorize {
                 client, options, ..
             } => {

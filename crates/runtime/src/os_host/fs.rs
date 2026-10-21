@@ -71,8 +71,9 @@ pub(super) fn answer(
     }
 }
 
-/// `os/read` under a completion route: a pipe read runs on a thread of its own and the call returns at once, so
-/// two reads on two pipes can be outstanding together (EXEC-QUEUE-10). A file read does not block and is taken now.
+/// `os/read` under a completion route: the read runs on a thread of its own and the call returns at once, so two
+/// reads can be outstanding together (EXEC-QUEUE-10). A regular file's bytes are taken now but still answer through
+/// the completion, as a dispatch of their own carrying `{ data, eof, key }`.
 pub(super) fn read_later(
     args: &[Value],
     key: &str,

@@ -438,13 +438,7 @@ impl Value {
         match (self, other) {
             (Value::Null, Value::Null) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Number(a), Value::Number(b)) => {
-                // Handle NaN comparison
-                if a.is_nan() && b.is_nan() {
-                    return true;
-                }
-                (a - b).abs() < f64::EPSILON
-            }
+            (Value::Number(a), Value::Number(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.loose_eq(y))
@@ -457,10 +451,10 @@ impl Value {
             // Type coercion cases
             (Value::Number(n), Value::String(s)) | (Value::String(s), Value::Number(n)) => s
                 .parse::<f64>()
-                .is_ok_and(|sn| (n - sn).abs() < f64::EPSILON),
+                .is_ok_and(|sn| sn == *n),
             (Value::Bool(b), Value::Number(n)) | (Value::Number(n), Value::Bool(b)) => {
                 let bn = if *b { 1.0 } else { 0.0 };
-                (n - bn).abs() < f64::EPSILON
+                *n == bn
             }
             _ => false,
         }

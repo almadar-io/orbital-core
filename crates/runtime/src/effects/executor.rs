@@ -690,6 +690,7 @@ impl EffectExecutor {
             | Effect::CredentialStatus { .. }
             | Effect::CredentialForget { .. }
             | Effect::CredentialAdmin { .. }
+            | Effect::AccessCheck { .. }
             | Effect::OAuthAuthorize { .. }
             | Effect::OAuthConnectionStatus { .. }
             | Effect::OAuthConnectionForget { .. } => {

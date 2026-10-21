@@ -639,6 +639,94 @@ fn stdin_read(
     Ok(object(vec![("bytes", number(total as i64))]))
 }
 
+/// `os/stdin-read` keyed under a route when the host has a completion sink: the call is answered deferred and stdin
+/// is read on a thread of its own. Each chunk (at most `count` bytes) goes to the `onMessage` route as `{ data }`, one
+/// dispatch at a time, and the end of stdin to the success route as `{ eof: true }`. Cancelling the key ends the
+/// stream; a read already blocked drops the chunk it returns.
+pub(super) fn stdin_later(
+    args: &[Value],
+    key: &str,
+    site: &CallSite,
+    host: &OsHost<'_>,
+) -> Result<(), OsError> {
+    let op = OsOp::StdinRead;
+    let count = match arg_opt(args, 0) {
+        None => STDIN_CHUNK,
+        Some(_) => {
+            let n = arg_i64(args, 0, op)?;
+            usize::try_from(n)
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| invalid(op, "count must be a positive integer"))?
+        }
+    };
+    if !host.grants.stdio_allows(StdioKind::In) {
+        return Err(denied(op, "stdio in is not granted"));
+    }
+    if is_tty(0) {
+        return Err(err(
+            OsErrorKind::Unsupported,
+            op,
+            "stdin is an interactive terminal; a bounded read would block indefinitely",
+        ));
+    }
+    stream_stdin(
+        std::io::stdin(),
+        count,
+        key,
+        site,
+        &host.handles.completions,
+    )
+}
+
+fn stream_stdin<R: Read + Send + 'static>(
+    mut reader: R,
+    count: usize,
+    key: &str,
+    site: &CallSite,
+    completions: &Arc<super::completion::Completions>,
+) -> Result<(), OsError> {
+    let op = OsOp::StdinRead;
+    if !completions.begin(key) {
+        return Err(invalid(op, format!("key {key} already has a stream open")));
+    }
+    let (owned_key, owned_site) = (key.to_string(), site.clone());
+    let started = std::thread::Builder::new()
+        .name(format!("os-stdin-{key}"))
+        .spawn({
+            let completions = completions.clone();
+            move || {
+                let (key, site) = (owned_key, owned_site);
+                let mut buf = vec![0u8; count.min(STDIN_CAP)];
+                loop {
+                    if !completions.is_live(&key) {
+                        return;
+                    }
+                    let outcome = match reader.read(&mut buf) {
+                        Ok(0) => Ok(object(vec![("eof", Value::Bool(true))])),
+                        Ok(n) => {
+                            let chunk = object(vec![("data", bytes_value(&buf[..n]))]);
+                            if completions.message(&key, &site, chunk) {
+                                continue;
+                            }
+                            return;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) => Err(io_error(op, &e)),
+                    };
+                    if completions.claim(&key) {
+                        completions.deliver(&key, &site, outcome);
+                    }
+                    return;
+                }
+            }
+        });
+    started.map(drop).map_err(|e| {
+        completions.cancel(key);
+        io_error(op, &e)
+    })
+}
+
 fn current_exe() -> Result<Value, OsError> {
     let op = OsOp::CurrentExe;
     let path = std::env::current_exe().map_err(|e| io_error(op, &e))?;
@@ -1356,5 +1444,178 @@ mod tests {
         let done =
             call(&g, &h, OsOp::Wait, vec![pid]).expect("the child was not reaped by the watcher");
         assert_eq!(field(&done, "signal"), Value::Number(15.0));
+    }
+
+    struct Feed(std::sync::mpsc::Receiver<Vec<u8>>);
+
+    impl Read for Feed {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.0.recv() {
+                Ok(chunk) => {
+                    buf[..chunk.len()].copy_from_slice(&chunk);
+                    Ok(chunk.len())
+                }
+                Err(_) => Ok(0),
+            }
+        }
+    }
+
+    /// Records each routed event as (route, payload); a chunk's dispatch also writes a reply before it returns.
+    struct Replier(Mutex<std::sync::mpsc::Sender<(String, Value)>>);
+
+    impl OsCompletionSink for Replier {
+        fn complete(&self, site: &CallSite, _key: &str, outcome: Result<Value, OsError>) {
+            let route = site.emit.success.clone().unwrap_or_default();
+            let payload = outcome.expect("no failure");
+            let tx = self.0.lock().clone();
+            let _ = tx.send((route.clone(), payload.clone()));
+            if route == "CHUNK" {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let _ = tx.send(("REPLY".to_string(), field(&payload, "data")));
+            }
+        }
+    }
+
+    fn stdin_site() -> CallSite {
+        CallSite {
+            orbital: None,
+            trait_name: "Mcp".to_string(),
+            follow_on: false,
+            entity_id: "singleton".to_string(),
+            emit: CallRoutes {
+                success: Some("EOF".to_string()),
+                failure: Some("STDIN_FAILED".to_string()),
+                on_message: Some("CHUNK".to_string()),
+                ..CallRoutes::default()
+            },
+        }
+    }
+
+    type Fed = (
+        std::sync::mpsc::Sender<Vec<u8>>,
+        std::sync::mpsc::Receiver<(String, Value)>,
+        OsHandles,
+    );
+
+    fn fed_stream(key: &str) -> Fed {
+        let h = OsHandles::default();
+        let (events_tx, events) = std::sync::mpsc::channel();
+        h.completions
+            .set_sink(Arc::new(Replier(Mutex::new(events_tx))));
+        let (feed, rx) = std::sync::mpsc::channel();
+        stream_stdin(Feed(rx), STDIN_CHUNK, key, &stdin_site(), &h.completions)
+            .expect("stream opens");
+        (feed, events, h)
+    }
+
+    fn next(events: &std::sync::mpsc::Receiver<(String, Value)>) -> (String, Value) {
+        events
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("an event")
+    }
+
+    #[test]
+    fn stdin_chunks_arrive_as_separate_events_before_eof() {
+        let (feed, events, h) = fed_stream("stdin");
+        feed.send(b"one\n".to_vec()).unwrap();
+        assert_eq!(
+            next(&events),
+            (
+                "CHUNK".to_string(),
+                object(vec![("data", bytes_value(b"one\n"))])
+            )
+        );
+        assert_eq!(next(&events).0, "REPLY");
+        feed.send(b"two\n".to_vec()).unwrap();
+        assert_eq!(
+            next(&events).1,
+            object(vec![("data", bytes_value(b"two\n"))])
+        );
+        assert_eq!(next(&events).0, "REPLY");
+        drop(feed);
+        assert_eq!(
+            next(&events),
+            ("EOF".to_string(), object(vec![("eof", Value::Bool(true))]))
+        );
+        assert!(
+            events
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "eof is the last event"
+        );
+        assert!(h.completions.live_keys().is_empty());
+    }
+
+    #[test]
+    fn stdin_reply_written_during_a_chunk_is_ordered_before_the_next_chunk() {
+        let (feed, events, _h) = fed_stream("stdin");
+        for chunk in [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()] {
+            feed.send(chunk).unwrap();
+        }
+        drop(feed);
+        let order: Vec<(String, Value)> = (0..7).map(|_| next(&events)).collect();
+        let shape: Vec<String> = order
+            .iter()
+            .map(|(route, payload)| match route.as_str() {
+                "CHUNK" => format!("chunk:{:?}", field(payload, "data")),
+                "REPLY" => format!("reply:{payload:?}"),
+                other => other.to_string(),
+            })
+            .collect();
+        let want: Vec<String> = [b"a", b"b", b"c"]
+            .iter()
+            .flat_map(|c| {
+                let d = bytes_value(*c);
+                [format!("chunk:{d:?}"), format!("reply:{d:?}")]
+            })
+            .chain(["EOF".to_string()])
+            .collect();
+        assert_eq!(shape, want);
+    }
+
+    #[test]
+    fn stdin_cancel_call_on_the_key_stops_the_stream() {
+        let (feed, events, h) = fed_stream("stdin");
+        feed.send(b"first".to_vec()).unwrap();
+        assert_eq!(next(&events).0, "CHUNK");
+        assert_eq!(next(&events).0, "REPLY");
+        assert!(h.cancel_completion("stdin"));
+        let _ = feed.send(b"late".to_vec());
+        drop(feed);
+        assert!(
+            events
+                .recv_timeout(std::time::Duration::from_millis(400))
+                .is_err(),
+            "a cancelled stream delivered more"
+        );
+        assert!(h.completions.live_keys().is_empty());
+    }
+
+    #[test]
+    fn stdin_control_empty_gives_eof_only() {
+        let (feed, events, _h) = fed_stream("stdin");
+        drop(feed);
+        assert_eq!(
+            next(&events),
+            ("EOF".to_string(), object(vec![("eof", Value::Bool(true))]))
+        );
+        assert!(events
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .is_err());
+    }
+
+    #[test]
+    fn stdin_second_stream_on_an_open_key_is_refused() {
+        let (_feed, _events, h) = fed_stream("stdin");
+        let (_f2, rx2) = std::sync::mpsc::channel::<Vec<u8>>();
+        let e = stream_stdin(
+            Feed(rx2),
+            STDIN_CHUNK,
+            "stdin",
+            &stdin_site(),
+            &h.completions,
+        )
+        .expect_err("refused");
+        assert_eq!(e.kind, OsErrorKind::Invalid);
     }
 }

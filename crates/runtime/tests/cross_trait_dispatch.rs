@@ -577,3 +577,193 @@ fn a_keyed_asks_completion_runs_as_its_own_dispatch_after_the_asking_dispatch_co
     completion.join().unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![serde_json::json!(1.0)]);
 }
+
+// A keyed `program/dispatch` (EXEC-CONC-0, R-a): the asking dispatch commits, the input runs as a dispatch of its own
+// behind it, then the completion runs as a third dispatch to the asker. An unkeyed one made on behalf of the parked
+// asker carries its turn and is refused.
+
+struct Offline;
+
+impl orbital_core_runtime::http_service::Transport for Offline {
+    fn send(
+        &self,
+        _: &orbital_core_runtime::http_service::HttpRequest,
+    ) -> Result<orbital_core_runtime::http_service::HttpResponse, orbital_core_runtime::http_service::TransportError> {
+        Err(orbital_core_runtime::http_service::TransportError::Failed("offline".to_string()))
+    }
+}
+
+/// The host half of `program/dispatch`: dispatches the address on the same kernel. Answered in place it acts on
+/// behalf of the asking dispatch and carries its turn; deferred, it is a dispatch of its own and carries none.
+struct Nested {
+    kernel: Arc<RuntimeKernel>,
+    turn: std::sync::Mutex<Option<orbital_core_runtime::kernel::LaneTurn>>,
+}
+
+impl Nested {
+    fn dispatch(
+        kernel: &RuntimeKernel,
+        turn: Option<orbital_core_runtime::kernel::LaneTurn>,
+        args: &[Value],
+    ) -> Result<Value, orbital_core_runtime::effects::SubstrateFailure> {
+        let address = args[0].as_str().expect("a qualified address").to_string();
+        let event = address.rsplit('.').next().expect("an event").to_string();
+        let dispatched = match turn {
+            Some(turn) => kernel.dispatch_in_turn(turn, "Target", None, &event, args[1].clone()),
+            None => kernel.dispatch("Target", None, &event, args[1].clone()),
+        };
+        dispatched
+            .map(|_| Value::Object([("ok".to_string(), Value::Bool(true))].into_iter().collect()))
+            .map_err(|e| orbital_core_runtime::effects::SubstrateFailure { message: e.to_string(), errors: Vec::new() })
+    }
+}
+
+impl orbital_core_runtime::effects::SubstrateHandler for Nested {
+    fn run(&self, op: &str, args: &[Value]) -> Result<Value, orbital_core_runtime::effects::SubstrateFailure> {
+        assert_eq!(op, "program/dispatch");
+        let turn = self.turn.lock().unwrap().expect("the host knows the turn it answers for");
+        Self::dispatch(&self.kernel, Some(turn), args)
+    }
+}
+
+type Done = std::sync::Mutex<std::sync::mpsc::Sender<(String, Vec<String>)>>;
+
+struct Asking {
+    kernel: Arc<RuntimeKernel>,
+    nested: Arc<Nested>,
+    sink: Arc<orbital_core_runtime::os_host::completion::KernelCompletionSink>,
+    completions: std::sync::mpsc::Receiver<(String, Vec<String>)>,
+}
+
+fn asking_kernel(keyed: bool) -> Asking {
+    use orbital_core_runtime::os_host::completion::KernelCompletionSink;
+    let mut options = serde_json::json!({ "emit": { "success": "X_DONE", "failure": "X_FAILED" } });
+    if keyed {
+        options["key"] = serde_json::json!("k1");
+    }
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "asking",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Tally", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" }, { "name": "n", "type": "number", "default": 0 },
+                { "name": "got", "type": "string" }, { "name": "answered", "type": "boolean", "default": false }] },
+            "traits": [{
+                "name": "Asker", "linkedEntity": "Tally",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }, { "name": "failed" }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "GO", "effects": [["program/dispatch", "Main.Target.HIT", {}, options]] },
+                        { "from": "idle", "to": "done", "event": "X_DONE", "effects": [["set", "@entity.got", "@payload.key"], ["set", "@entity.answered", "@payload.result.ok"]] },
+                        { "from": "idle", "to": "failed", "event": "X_FAILED", "effects": [["set", "@entity.got", "@payload.error"]] }
+                    ]
+                }
+            }, {
+                "name": "Target", "linkedEntity": "Tally",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "events": [{ "key": "HIT", "name": "Hit", "external": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "HIT", "effects": [["set", "@entity.n", ["+", "@entity.n", 1]]] }]
+                }
+            }]
+        }]
+    }))
+    .unwrap();
+    let config = orbital_core_runtime::config::KernelConfig {
+        substrate_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::SubstrateHandler>),
+        ..Default::default()
+    };
+    let store = Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>;
+    let kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config));
+    kernel.register_schema(schema).unwrap();
+    let nested = Arc::new(Nested { kernel: kernel.clone(), turn: std::sync::Mutex::new(None) });
+    let handles = Arc::new(orbital_core_runtime::os_host::OsHandles::default());
+    let native = Arc::new(
+        orbital_core_runtime::native_host::NativeHost::new(
+            store,
+            Arc::new(Offline),
+            Arc::new(orbital_core_runtime::credentials::Credentials::from_env(Default::default())),
+            Vec::new(),
+            orbital_core_runtime::os_host::OsGrants::default(),
+            handles.clone(),
+            Arc::new(|_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {}),
+        )
+        .with_substrate(Some(nested.clone() as Arc<dyn orbital_core_runtime::effects::SubstrateHandler>))
+        .with_substrate_later(Some({
+            let kernel = kernel.clone();
+            Arc::new(move |_: &str, args: &[Value]| {
+                let (kernel, args) = (kernel.clone(), args.to_vec());
+                Box::new(move || Nested::dispatch(&kernel, None, &args)) as orbital_core_runtime::native_host::SubstrateWork
+            }) as Arc<orbital_core_runtime::native_host::SubstrateLater>
+        })),
+    );
+    let (tx, completions) = std::sync::mpsc::channel();
+    let done: Done = std::sync::Mutex::new(tx);
+    let sink = Arc::new(KernelCompletionSink::new(
+        kernel.clone(),
+        Arc::new(move |request: &orbital_core_runtime::resumable::IoRequest| native.answer(request)),
+        Arc::new(move |_: &orbital_core_runtime::resumable::CallSite, event: &str, result: Result<orbital_core_runtime::resumable::DispatchOutcomes, orbital_core_runtime::resumable::DispatchError>| {
+            let ran = result.unwrap().iter().filter(|(_, r)| r.executed).map(|(t, _)| t.clone()).collect();
+            done.lock().unwrap().send((event.to_string(), ran)).unwrap();
+        }),
+    ));
+    handles.completions.set_sink(sink.clone());
+    Asking { kernel, nested, sink, completions }
+}
+
+/// `GO` run to its end by the host, the host answering for `GO`'s turn: the traits and events it ran itself.
+fn go(asking: &Asking) -> Vec<(String, String)> {
+    use orbital_core_runtime::resumable::Progress;
+    let Progress::Await { continuation, requests } = asking.kernel.start_dispatch("Asker", None, "GO", Value::Null, None, None).unwrap() else {
+        panic!("GO did not ask its host");
+    };
+    *asking.nested.turn.lock().unwrap() = continuation.turn();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn({
+        let sink = asking.sink.clone();
+        move || {
+            let outcomes = sink.drive(Progress::Await { continuation, requests });
+            let ran: Vec<(String, String)> = outcomes
+                .unwrap()
+                .iter()
+                .filter(|(_, r)| r.executed)
+                .map(|(t, r)| (t.clone(), r.event.clone().unwrap_or_default()))
+                .collect();
+            tx.send(ran).unwrap();
+        }
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(5)).expect("GO's dispatch hung")
+}
+
+fn tally(kernel: &RuntimeKernel) -> (String, serde_json::Value, serde_json::Value) {
+    let snapshot = kernel.snapshot_trait("Asker", None);
+    let target = serde_json::to_value(&kernel.snapshot_trait("Target", None).entity).unwrap();
+    (snapshot.state, serde_json::to_value(&snapshot.entity).unwrap(), target["n"].clone())
+}
+
+#[test]
+fn a_keyed_program_dispatch_runs_after_the_asking_dispatch_commits_and_its_completion_after_it() {
+    let asking = asking_kernel(true);
+    let ran = go(&asking);
+    assert_eq!(ran, vec![("Asker".to_string(), "GO".to_string())], "GO committed alone: no nested input, no completion");
+    let (event, completion_ran) = asking.completions.recv_timeout(std::time::Duration::from_secs(5)).expect("the completion ran");
+    assert_eq!(event, "X_DONE");
+    assert_eq!(completion_ran, vec!["Asker".to_string()]);
+    let (state, entity, hits) = tally(&asking.kernel);
+    assert_eq!(state, "done");
+    assert_eq!(entity["got"], "k1", "the completion echoes the ask's key");
+    assert_eq!(entity["answered"], true, "the completion carries the input's own answer, so the input ran first");
+    assert_eq!(hits, 1.0, "the input ran once");
+}
+
+#[test]
+fn control_an_unkeyed_program_dispatch_on_behalf_of_a_parked_dispatch_is_refused_not_hung() {
+    let asking = asking_kernel(false);
+    let ran = go(&asking);
+    assert!(ran.contains(&("Asker".to_string(), "X_FAILED".to_string())), "the refusal is the ask's own failure, inside GO: {ran:?}");
+    let (state, entity, hits) = tally(&asking.kernel);
+    assert_eq!(state, "failed");
+    assert!(entity["got"].as_str().unwrap_or_default().contains("parked holding the dispatch lane"), "{entity}");
+    assert!(hits.as_f64().unwrap_or(0.0) == 0.0, "no input ran: {hits}");
+    assert!(asking.completions.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "nothing completes later");
+}

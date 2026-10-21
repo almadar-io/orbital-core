@@ -324,6 +324,9 @@ pub fn redis_reply_accepts(declared: &str) -> bool {
 /// `random-bytes` hands back the bytes as base64url without padding; a keyed call adds its `key`.
 pub const RANDOM_BYTES_SHAPE: &[ShapeField] = &[field("value", "string")];
 
+/// `access-check` hands back the kernel's verdict on one access policy.
+pub const ACCESS_CHECK_SHAPE: &[ShapeField] = &[field("allowed", "boolean")];
+
 /// `credential-status` and `credential-forget` hand back whether the credential is connected and the non-secret account
 /// label stored beside it (empty text when it has none, always empty after a forget).
 pub const CREDENTIAL_SHAPE: &[ShapeField] = &[field("connected", "boolean"), field("label", "string")];
@@ -635,6 +638,7 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
         "redis" => ProducedPayload::Shape(REDIS_REPLY_SHAPE),
         "postgres" => ProducedPayload::Shape(POSTGRES_RESULT_SHAPE),
         "credential-status" | "credential-forget" => ProducedPayload::Shape(CREDENTIAL_SHAPE),
+        "access-check" => ProducedPayload::Shape(ACCESS_CHECK_SHAPE),
         "credential-list" => ProducedPayload::Shape(CREDENTIAL_LIST_SHAPE),
         "credential-set" => ProducedPayload::Shape(CREDENTIAL_SET_SHAPE),
         "credential-remove" => ProducedPayload::Shape(CREDENTIAL_REMOVE_SHAPE),
@@ -664,7 +668,9 @@ pub fn failure_payload(operator: &str, variant: CallVariant, keyed: bool) -> Pro
         "postgres" => ProducedPayload::Shape(POSTGRES_FAILURE_SHAPE),
         "browser/prompt" | "browser/embed" => ProducedPayload::Shape(MODEL_FAILURE_SHAPE),
         "browser/page-facts" | "random-bytes" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
-        "random-bytes" | "credential-status" | "credential-forget" | "browser/page-facts" => ProducedPayload::Shape(HOST_FAILURE_SHAPE),
+        "random-bytes" | "credential-status" | "credential-forget" | "access-check" | "browser/page-facts" => {
+            ProducedPayload::Shape(HOST_FAILURE_SHAPE)
+        }
         "credential-list" | "credential-set" | "credential-remove" | "credential-test" | "credential-mode"
         | "credential-rotate" => ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE),
         "oauth-authorize" => ProducedPayload::Shape(OAUTH_AUTHORIZE_FAILURE_SHAPE),
@@ -820,6 +826,8 @@ mod tests {
             success_payload("random-bytes", CallVariant::Plain),
             ProducedPayload::Shape(RANDOM_BYTES_SHAPE)
         );
+        assert_eq!(success_payload("access-check", CallVariant::Plain), ProducedPayload::Shape(ACCESS_CHECK_SHAPE));
+        assert_eq!(failure_payload("access-check", CallVariant::Plain, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
         for op in ["credential-status", "credential-forget"] {
             assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(CREDENTIAL_SHAPE));
             assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));

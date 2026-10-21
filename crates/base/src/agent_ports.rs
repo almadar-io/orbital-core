@@ -106,6 +106,40 @@ pub fn reflect_input(input: &ExternalInput, payload: Option<&[PayloadField]>) ->
     Value::Object(map)
 }
 
+const INPUTS_OPTIONS: [&str; 4] = ["select", "state", "stats", "trace"];
+
+/// The runtime reads a `program/inputs` also asks for: the running trait states of one orbital with their entity
+/// (`state`), the dispatch counters (`stats`) and the host's last `trace` dispatch steps.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InputsReads {
+    pub state: Option<String>,
+    pub stats: bool,
+    pub trace: Option<usize>,
+}
+
+/// The [`InputsReads`] of a `program/inputs`'s options; the options were checked by [`plan_inputs`].
+pub fn inputs_reads(args: &[Value]) -> Result<InputsReads, String> {
+    let Some(Value::Object(options)) = args.first() else {
+        return Ok(InputsReads::default());
+    };
+    let state = match options.get("state") {
+        None => None,
+        Some(Value::String(orbital)) if !orbital.is_empty() => Some(orbital.clone()),
+        Some(_) => return Err("program/inputs: state must name an orbital".to_string()),
+    };
+    let stats = match options.get("stats") {
+        None => false,
+        Some(Value::Bool(on)) => *on,
+        Some(_) => return Err("program/inputs: stats must be true or false".to_string()),
+    };
+    let trace = match options.get("trace") {
+        None => None,
+        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Some(*n as usize),
+        Some(_) => return Err("program/inputs: trace must be a whole number of steps".to_string()),
+    };
+    Ok(InputsReads { state, stats, trace })
+}
+
 const SELECT_SHAPE: &str = "program/inputs: select must be a list of { event, payload? }";
 
 struct Selection {
@@ -119,7 +153,7 @@ fn select_option(raw: Option<&Value>) -> Result<Vec<Selection>, String> {
         Some(Value::Object(options)) => options,
         Some(_) => return Err("program/inputs: the options must be an object".to_string()),
     };
-    if let Some(key) = options.keys().find(|key| key.as_str() != "select") {
+    if let Some(key) = options.keys().find(|key| !INPUTS_OPTIONS.contains(&key.as_str())) {
         return Err(format!("program/inputs: unsupported option \"{key}\""));
     }
     let Some(select) = options.get("select") else {
@@ -175,6 +209,7 @@ pub fn plan_inputs(
         ));
     }
     let chosen = select_option(args.first()).map_err(AgentPortFailure::plain)?;
+    inputs_reads(args).map_err(AgentPortFailure::plain)?;
     let mut selected = Vec::with_capacity(chosen.len());
     for choice in &chosen {
         let Some(input) =
@@ -553,6 +588,42 @@ pub enum DispatchPlan {
         input: ExternalInput,
         payload: Value,
     },
+    /// Dispatch `payload` as the event request `options` describe (`DISPATCH_REQUEST_OPTIONS`, checked here): the host
+    /// routes each option onto its dispatch seam, and `wire: true` answers the whole `EventResponse`.
+    Request {
+        payload: Value,
+        options: ValueMap,
+    },
+    /// Deliver `body` and `headers` to the inbound handler `name` through the kernel's inbound route, credential
+    /// and answer path (EXEC-INBOUND-1); the host answers the handler's `{ status, body }`.
+    Inbound {
+        name: String,
+        body: String,
+        headers: ValueMap,
+    },
+}
+
+const INBOUND_SHAPE: &str =
+    "program/dispatch: an inbound delivery is { inbound: name, body?: text, headers?: { name: text } }";
+
+fn inbound_plan(options: &ValueMap) -> Result<DispatchPlan, String> {
+    if options.keys().any(|key| !["inbound", "body", "headers"].contains(&key.as_str())) {
+        return Err(INBOUND_SHAPE.to_string());
+    }
+    let Some(Value::String(name)) = options.get("inbound").filter(|v| v.as_str().is_some_and(|n| !n.is_empty())) else {
+        return Err(INBOUND_SHAPE.to_string());
+    };
+    let body = match options.get("body") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(body)) => body.clone(),
+        Some(_) => return Err(INBOUND_SHAPE.to_string()),
+    };
+    let headers = match options.get("headers") {
+        None | Some(Value::Null) => ValueMap::new(),
+        Some(Value::Object(headers)) if headers.values().all(|v| v.as_str().is_some()) => headers.clone(),
+        Some(_) => return Err(INBOUND_SHAPE.to_string()),
+    };
+    Ok(DispatchPlan::Inbound { name: name.clone(), body, headers })
 }
 
 enum Arguments {
@@ -581,25 +652,64 @@ fn arguments_of(raw: Option<&Value>) -> Result<Arguments, String> {
     }
 }
 
-fn schema_option(raw: Option<&Value>) -> Result<Option<Vec<PayloadField>>, String> {
-    let Some(raw) = raw else { return Ok(None) };
+/// The event-request options of a `program/dispatch` (owner, 2026-10-21): what the HTTP dispatch routes carry.
+pub const DISPATCH_REQUEST_OPTIONS: [&str; 13] = [
+    "wire", "input", "orbital", "targetTrait", "entityId", "event", "traits", "mount", "clientId", "locale",
+    "delivery", "dispatchLog", "viewer",
+];
+
+fn list_of_records(value: &Value, required: &[&str], optional: &[&str]) -> bool {
+    let Value::Array(items) = value else { return false };
+    items.iter().all(|item| {
+        let Value::Object(fields) = item else { return false };
+        required.iter().all(|key| fields.get(*key).and_then(Value::as_str).is_some())
+            && fields.iter().all(|(key, v)| {
+                required.contains(&key.as_str()) || (optional.contains(&key.as_str()) && v.as_str().is_some())
+            })
+    })
+}
+
+fn request_option_error(key: &str, value: &Value) -> Option<String> {
+    let ok = match key {
+        "wire" | "input" => matches!(value, Value::Bool(_)),
+        "orbital" | "event" => value.as_str().is_some_and(|s| !s.is_empty()),
+        "targetTrait" | "entityId" | "clientId" | "locale" => value.as_str().is_some(),
+        "traits" => value.is_null() || list_of_records(value, &["trait", "from"], &["event"]),
+        "mount" => list_of_records(value, &["trait", "event"], &[]),
+        "delivery" | "dispatchLog" | "viewer" => matches!(value, Value::Object(_) | Value::Null),
+        _ => return Some(format!("program/dispatch: unsupported option \"{key}\"")),
+    };
+    (!ok).then(|| format!("program/dispatch: option \"{key}\" has the wrong shape"))
+}
+
+type DispatchOptions = (Option<Vec<PayloadField>>, ValueMap);
+
+fn schema_option(raw: Option<&Value>) -> Result<DispatchOptions, String> {
+    let Some(raw) = raw else { return Ok((None, ValueMap::new())) };
     let Value::Object(options) = raw else {
         return if raw.is_null() {
-            Ok(None)
+            Ok((None, ValueMap::new()))
         } else {
             Err("program/dispatch: the options must be an object".to_string())
         };
     };
-    if let Some(key) = options.keys().find(|key| key.as_str() != "schema") {
-        return Err(format!("program/dispatch: unsupported option \"{key}\""));
+    let mut request = ValueMap::new();
+    for (key, value) in options.iter().filter(|(key, _)| key.as_str() != "schema") {
+        if let Some(error) = request_option_error(key, value) {
+            return Err(error);
+        }
+        request.insert(key.clone(), value.clone());
+    }
+    if !request.is_empty() && !(request.contains_key("orbital") && request.contains_key("event")) {
+        return Err("program/dispatch: an event request names its orbital and event".to_string());
     }
     let Some(schema) = options.get("schema") else {
-        return Ok(None);
+        return Ok((None, request));
     };
     serde_json::to_value(schema)
         .ok()
         .and_then(|json| serde_json::from_value::<Vec<PayloadField>>(json).ok())
-        .map(Some)
+        .map(|contract| (Some(contract), request))
         .ok_or_else(|| "program/dispatch: schema must be a list of payload fields".to_string())
 }
 
@@ -612,6 +722,11 @@ pub fn plan_dispatch(
     caller_trait: &str,
 ) -> DispatchPlan {
     let failed = |message: String| DispatchPlan::Failed(AgentPortFailure::plain(message));
+    if let [Value::Object(options)] = args {
+        if options.contains_key("inbound") {
+            return inbound_plan(options).unwrap_or_else(failed);
+        }
+    }
     if args.is_empty() || args.len() > 3 {
         return failed(
             "program/dispatch: expected an address, its arguments and optional options".to_string(),
@@ -620,14 +735,28 @@ pub fn plan_dispatch(
     let Value::String(address) = &args[0] else {
         return failed("program/dispatch: the address must be text".to_string());
     };
-    let contract = match schema_option(args.get(2)) {
-        Ok(contract) => contract,
+    let (contract, request) = match schema_option(args.get(2)) {
+        Ok(options) => options,
         Err(message) => return failed(message),
     };
     let parsed = match arguments_of(args.get(1)) {
         Ok(parsed) => parsed,
         Err(message) => return failed(message),
     };
+    if !request.is_empty() {
+        let text = |key: &str| request.get(key).and_then(Value::as_str).unwrap_or_default();
+        let named = format!("{}.{}.{}", text("orbital"), text("targetTrait"), text("event"));
+        if address != &named {
+            return failed(format!("program/dispatch: the address '{address}' is not the request's '{named}'"));
+        }
+        let Arguments::Payload(payload) = parsed else {
+            return DispatchPlan::Refused(refusal(REFUSED_ARGUMENTS, None));
+        };
+        if let Some(issues) = contract.map(|c| payload_issues(&c, &payload)).filter(|i| !i.is_empty()) {
+            return DispatchPlan::Refused(refusal(MISMATCHED_ARGUMENTS, Some(issues_value(&issues, &payload))));
+        }
+        return DispatchPlan::Request { payload, options: request };
+    }
     let Some(input) = find_input_by_address(inputs, address, caller_orbital, caller_trait) else {
         return DispatchPlan::Refused(refusal(
             &format!("'{address}' is not a declared external input"),
@@ -869,5 +998,123 @@ mod tests {
             .all(|op| is_agent_port_operator(op)));
         assert!(!is_agent_port_operator("program/eval"));
         assert!(!is_agent_port_operator("persist"));
+    }
+
+    fn value(json: Json) -> Value {
+        serde_json::from_value(json).expect("a value")
+    }
+
+    #[test]
+    fn program_inputs_reads_its_state_stats_and_trace_options() {
+        let reads = inputs_reads(&[value(serde_json::json!({ "state": "Desk", "stats": true, "trace": 3 }))]).unwrap();
+        assert_eq!(reads, InputsReads { state: Some("Desk".into()), stats: true, trace: Some(3) });
+        assert_eq!(inputs_reads(&[]).unwrap(), InputsReads::default(), "control: no options read nothing");
+        let f = fixture();
+        let inputs = external_inputs_of(&schema_of(&f));
+        assert!(plan_inputs(&[value(serde_json::json!({ "stats": true }))], &inputs, &[], None, "Chat").is_ok());
+        for (bad, why) in [
+            (serde_json::json!({ "stats": "yes" }), "stats must be true or false"),
+            (serde_json::json!({ "trace": -1 }), "trace must be a whole number"),
+            (serde_json::json!({ "trace": 1.5 }), "trace must be a whole number"),
+            (serde_json::json!({ "state": "" }), "state must name an orbital"),
+            (serde_json::json!({ "states": "Desk" }), "unsupported option \"states\""),
+        ] {
+            let failure = plan_inputs(&[value(bad.clone())], &inputs, &[], None, "Chat").unwrap_err();
+            assert!(failure.error.contains(why), "{bad}: {}", failure.error);
+        }
+    }
+
+    #[test]
+    fn program_dispatch_plans_an_inbound_delivery_from_its_options() {
+        let f = fixture();
+        let inputs = external_inputs_of(&schema_of(&f));
+        let plan = plan_dispatch(
+            &[value(serde_json::json!({ "inbound": "github", "body": "{}", "headers": { "x-sig": "s" } }))],
+            &inputs,
+            None,
+            "Chat",
+        );
+        let DispatchPlan::Inbound { name, body, headers } = plan else { panic!("{plan:?}") };
+        assert_eq!((name.as_str(), body.as_str()), ("github", "{}"));
+        assert_eq!(headers.get("x-sig").and_then(Value::as_str), Some("s"));
+        let bare = plan_dispatch(&[value(serde_json::json!({ "inbound": "github" }))], &inputs, None, "Chat");
+        assert!(matches!(&bare, DispatchPlan::Inbound { body, headers, .. } if body.is_empty() && headers.is_empty()), "{bare:?}");
+        let control = plan_dispatch(&[value(serde_json::json!({ "title": "x" }))], &inputs, None, "Chat");
+        assert!(matches!(control, DispatchPlan::Failed(_)), "control: an object without inbound is no address");
+        for bad in [
+            serde_json::json!({ "inbound": "" }),
+            serde_json::json!({ "inbound": "github", "body": 3 }),
+            serde_json::json!({ "inbound": "github", "headers": { "x": 1 } }),
+            serde_json::json!({ "inbound": "github", "verb": "POST" }),
+        ] {
+            let plan = plan_dispatch(&[value(bad.clone())], &inputs, None, "Chat");
+            assert!(matches!(&plan, DispatchPlan::Failed(f) if f.error == INBOUND_SHAPE), "{bad}: {plan:?}");
+        }
+    }
+
+    fn request(extra: Json) -> Json {
+        let mut options = serde_json::json!({ "orbital": "Desk", "targetTrait": "Chat", "event": "ADD_NOTE" });
+        for (k, v) in extra.as_object().unwrap() {
+            options[k] = v.clone();
+        }
+        options
+    }
+
+    fn plan_request(options: Json) -> DispatchPlan {
+        let f = fixture();
+        let inputs = external_inputs_of(&schema_of(&f));
+        plan_dispatch(&[text("Desk.Chat.ADD_NOTE"), value(serde_json::json!({ "title": "x" })), value(options)], &inputs, None, "Chat")
+    }
+
+    #[test]
+    fn program_dispatch_carries_each_request_option_to_the_host() {
+        for (key, given) in [
+            ("wire", serde_json::json!(true)),
+            ("input", serde_json::json!(false)),
+            ("entityId", serde_json::json!("n1")),
+            ("traits", serde_json::json!([{ "trait": "Chat", "from": "idle", "event": "ADD_NOTE" }])),
+            ("mount", serde_json::json!([{ "trait": "Chat", "event": "INIT" }])),
+            ("clientId", serde_json::json!("tab-1")),
+            ("locale", serde_json::json!("ar")),
+            ("delivery", serde_json::json!({ "event": "ADD_NOTE" })),
+            ("dispatchLog", serde_json::json!({ "prevEvents": [], "prevStates": [] })),
+            ("viewer", serde_json::json!({ "id": "u1" })),
+        ] {
+            let mut extra = serde_json::Map::new();
+            extra.insert(key.to_string(), given.clone());
+            let plan = plan_request(request(Json::Object(extra)));
+            let DispatchPlan::Request { payload, options } = &plan else { panic!("{key}: {plan:?}") };
+            assert_eq!(options.get(key).map(as_json), Some(norm(given)), "{key}");
+            assert_eq!(as_json(payload), serde_json::json!({ "title": "x" }), "{key}");
+            for named in ["orbital", "targetTrait", "event"] {
+                assert!(options.contains_key(named), "{key}: {named} travels");
+            }
+        }
+        let control = plan_dispatch(&[text("Desk.Chat.ADD_NOTE"), value(serde_json::json!({ "title": "x" }))], &external_inputs_of(&schema_of(&fixture())), None, "Chat");
+        assert!(matches!(control, DispatchPlan::Dispatch { .. }), "control: no request option is the declared-input dispatch: {control:?}");
+    }
+
+    #[test]
+    fn program_dispatch_refuses_a_malformed_or_unknown_request_option() {
+        for (bad, why) in [
+            (request(serde_json::json!({ "stream": true })), "unsupported option \"stream\""),
+            (request(serde_json::json!({ "wire": "yes" })), "option \"wire\" has the wrong shape"),
+            (request(serde_json::json!({ "input": 1 })), "option \"input\" has the wrong shape"),
+            (request(serde_json::json!({ "entityId": 3 })), "option \"entityId\" has the wrong shape"),
+            (request(serde_json::json!({ "traits": [{ "trait": "Chat" }] })), "option \"traits\" has the wrong shape"),
+            (request(serde_json::json!({ "mount": [{ "trait": "Chat", "event": "INIT", "extra": "x" }] })), "option \"mount\" has the wrong shape"),
+            (request(serde_json::json!({ "clientId": false })), "option \"clientId\" has the wrong shape"),
+            (request(serde_json::json!({ "locale": [] })), "option \"locale\" has the wrong shape"),
+            (request(serde_json::json!({ "delivery": "x" })), "option \"delivery\" has the wrong shape"),
+            (request(serde_json::json!({ "dispatchLog": 1 })), "option \"dispatchLog\" has the wrong shape"),
+            (request(serde_json::json!({ "viewer": "u1" })), "option \"viewer\" has the wrong shape"),
+            (serde_json::json!({ "wire": true, "event": "ADD_NOTE" }), "names its orbital and event"),
+            (request(serde_json::json!({ "orbital": "" })), "option \"orbital\" has the wrong shape"),
+            (request(serde_json::json!({ "targetTrait": "Other" })), "is not the request's 'Desk.Other.ADD_NOTE'"),
+        ] {
+            let plan = plan_request(bad.clone());
+            assert!(matches!(&plan, DispatchPlan::Failed(f) if f.error.contains(why)), "{bad}: {plan:?}");
+        }
+        assert!(matches!(plan_request(request(serde_json::json!({ "traits": null }))), DispatchPlan::Request { .. }), "control: null traits is discovery");
     }
 }

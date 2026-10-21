@@ -95,6 +95,16 @@ pub fn completion_result(op: &str, value: Value) -> Value {
     Value::Object(payload)
 }
 
+/// The failure payload of a substrate or program op's completion: `{ error }`, plus `errors` when the op gave any.
+pub fn failure_payload(failure: &crate::effects::executor::SubstrateFailure) -> Value {
+    let mut payload = ValueMap::new();
+    payload.insert("error".to_string(), Value::String(failure.message.clone()));
+    if !failure.errors.is_empty() {
+        payload.insert("errors".to_string(), Value::Array(failure.errors.clone()));
+    }
+    Value::Object(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

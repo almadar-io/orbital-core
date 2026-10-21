@@ -1,14 +1,14 @@
 //! JSON operators.
 //!
 //! `(json/parse s Shape)` — pure, deterministic: string → parsed `Value`; `Shape` names the type the value has (checked by `orb validate`,
-//! and at run time when the evaluator knows the type: see `run_time_shape`). Invalid JSON, a value not of its shape or
+//! and at run time against the shape `orb resolve` records or a built-in type: see `run_time_shape`). Invalid JSON, a value not of its shape or
 //! non-string input → `Value::Null` (JS `null`), never throws —
 //! guards can branch on null. No reviver, no prototype access, no side
 //! effects. `(json/stringify v)` is the inverse: any `Value` → JSON string.
 
 use super::macros::*;
 use super::*;
-use orbital_core_base::ir::types::OirType;
+use orbital_core_base::ir::types::{DeclaredShape, OirType};
 use orbital_core_base::type_compat::{parse_compat_type, CompatType};
 
 fn parse_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, serde_json::Error> {
@@ -46,7 +46,7 @@ impl Operator for JsonParseOp {
         let Some((shape, declared)) = run_time_shape(&args[1])? else {
             return Ok(parsed);
         };
-        match super::arg_types::misfit_of_declared(&parsed, &declared) {
+        match super::arg_types::misfit_of_declared(&parsed, &declared.ty, &declared.named) {
             None => Ok(parsed),
             Some((path, actual)) => {
                 tracing::warn!(
@@ -59,19 +59,23 @@ impl Operator for JsonParseOp {
     }
 }
 
-/// The shape a `json/parse` names, with the type a run-time check reads, when the evaluator knows it: a declared type
-/// recorded as JSON (as `typed` records one) or a built-in type name. A program's own alias is known only to `orb`.
-fn run_time_shape(arg: &SExpression) -> Result<Option<(String, OirType)>, OrbitalError> {
+/// The shape a `json/parse` names, with the type a run-time check reads, when the evaluator knows it: a declared shape
+/// recorded as JSON (`orb resolve` writes a program alias as its type with the types it names) or a built-in type name.
+fn run_time_shape(arg: &SExpression) -> Result<Option<(String, std::rc::Rc<DeclaredShape>)>, OrbitalError> {
     let SExpression::String(text) = arg else {
         return Ok(None);
     };
     if text.starts_with('{') {
-        let declared = super::arg_types::declared_type(arg)?;
-        return Ok(Some((super::arg_types::declared_text(&declared), declared)));
+        let declared = super::arg_types::declared_shape(arg)?;
+        let shown = declared.name.clone().unwrap_or_else(|| super::arg_types::declared_text(&declared.ty));
+        return Ok(Some((shown, declared)));
     }
     Ok(match parse_compat_type(text) {
         CompatType::Ty(OirType::Union { variants }) if variants.is_empty() => None,
-        CompatType::Ty(declared) => Some((text.clone(), declared)),
+        CompatType::Ty(declared) => Some((
+            text.clone(),
+            std::rc::Rc::new(DeclaredShape { name: None, ty: declared, named: Default::default() }),
+        )),
         _ => None,
     })
 }
@@ -123,9 +127,7 @@ impl Operator for JsonStringifyOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "json/stringify", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::String(
-            serde_json::to_string(&value_to_json(&val)).unwrap_or_default(),
-        ))
+        Ok(Value::String(orbital_core_base::json_value::js_json_string(&value_to_json(&val))))
     }
 }
 

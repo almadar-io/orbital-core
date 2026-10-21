@@ -2,7 +2,9 @@
 //! is written with. The kernel owns what each one means; the pure half (reflection, JSON Schema, argument
 //! checks, address resolution, the dispatch plan) is `orbital_core_base::agent_ports`, shared with the JS twin.
 //!
-//! - `program/inputs` reflects the registered programs' declared external inputs. No host ask.
+//! - `program/inputs` reflects the registered programs' declared external inputs, and on request the running states
+//!   of one orbital, the kernel's counters and the host's last trace steps. Only `trace` asks the host.
+//! - `program/dispatch { inbound, body, headers }` asks the host to deliver to an inbound handler (EXEC-INBOUND-1).
 //! - `persist/read-named` reads a persisted entity of the program by a name chosen at run time, through the
 //!   ordinary `fetch` (read policy for the dispatch's viewer, default row order).
 //! - `program/dispatch` asks the host, once and journaled, to dispatch a declared input AS THE DISPATCH'S
@@ -13,14 +15,14 @@
 use super::RuntimeKernel;
 use crate::effects::executor::SubstrateHandler;
 use orbital_core_base::agent_ports::{
-    plan_dispatch, plan_inputs, read_named_result, read_named_target, readable_entities_of,
-    AgentPortFailure, DispatchPlan,
+    inputs_reads, plan_dispatch, plan_inputs, read_named_result, read_named_target,
+    readable_entities_of, AgentPortFailure, DispatchPlan, InputsReads,
 };
 use orbital_core_base::effect_types::{
     Effect, EffectOutcome, EffectResult, FetchDeliver, FetchEmit,
 };
 use orbital_core_base::error::OrbitalError;
-use orbital_core_base::value::Value;
+use orbital_core_base::value::{Value, ValueMap};
 use orbital_core_eval::evaluator::context::BindingContext;
 
 /// Every string of `value` that is, whole, one binding token (`@payload.x`): what the program wrote.
@@ -124,7 +126,10 @@ impl RuntimeKernel {
                     caller_orbital.as_deref(),
                     &caller_trait,
                 ) {
-                    Ok(reflection) => EffectResult::executed_with_value(effect.clone(), reflection),
+                    Ok(reflection) => match self.with_runtime_reads(reflection, &resolved) {
+                        Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
+                        Err(failure) => failure_result(effect, failure),
+                    },
                     Err(failure) => failure_result(effect, failure),
                 }
             }
@@ -135,6 +140,77 @@ impl RuntimeKernel {
                 &format!("{other} is not an agent-port effect"),
             ),
         }
+    }
+
+    /// `reflection` with the runtime reads the options ask for: `state` (each running instance of the orbital's traits,
+    /// its state and entity), `stats` (the kernel's counters) and `trace` (the host's last n dispatch steps, asked of
+    /// the host, which keeps the trace).
+    fn with_runtime_reads(&self, reflection: Value, args: &[Value]) -> Result<Value, AgentPortFailure> {
+        let reads: InputsReads = inputs_reads(args).map_err(AgentPortFailure::plain)?;
+        let Value::Object(mut answer) = reflection else { return Ok(reflection) };
+        if let Some(orbital) = reads.state.as_deref().filter(|o| self.get_orbital(o).is_none()) {
+            return Err(AgentPortFailure::plain(format!("program/inputs: '{orbital}' is not a registered orbital")));
+        }
+        if reads.state.is_some() || reads.stats {
+            // The asking dispatch holds `state_manager` for writing across its effects (`process_event_composed`), so a
+            // blocking read here would wait on itself.
+            if self.state_manager.try_read().is_none() {
+                return Err(AgentPortFailure::plain(
+                    "program/inputs: state and stats cannot be read while the asking dispatch holds the trait states",
+                ));
+            }
+        }
+        if let Some(orbital) = &reads.state {
+            let detail = self.get_orbital(orbital).ok_or_else(|| {
+                AgentPortFailure::plain(format!("program/inputs: '{orbital}' is not a registered orbital"))
+            })?;
+            let mut traits = Vec::new();
+            for trait_name in &detail.traits {
+                let instances: Vec<(Option<String>, String)> = self
+                    .state_manager
+                    .read()
+                    .get_instances_for_trait(trait_name)
+                    .into_iter()
+                    .map(|s| (s.entity_id.clone(), s.current_state.clone()))
+                    .collect();
+                for (entity_id, state) in instances {
+                    let snapshot = self.snapshot_trait(trait_name, entity_id.as_deref());
+                    let mut row = ValueMap::new();
+                    row.insert("trait".to_string(), Value::String(trait_name.clone()));
+                    row.insert("entityId".to_string(), Value::String(entity_id.unwrap_or_else(|| "singleton".to_string())));
+                    row.insert("state".to_string(), Value::String(state));
+                    row.insert("entity".to_string(), snapshot.entity);
+                    traits.push(Value::Object(row));
+                }
+            }
+            let mut state = ValueMap::new();
+            state.insert("orbital".to_string(), Value::String(detail.name));
+            state.insert("traits".to_string(), Value::Array(traits));
+            answer.insert("state".to_string(), Value::Object(state));
+        }
+        if reads.stats {
+            let stats = self.stats();
+            let mut counters = ValueMap::new();
+            for (name, count) in [
+                ("registeredSchemas", stats.registered_schemas),
+                ("registeredTraits", stats.registered_traits),
+                ("activeInstances", stats.active_instances),
+                ("cachedEntities", stats.cached_entities),
+            ] {
+                counters.insert(name.to_string(), Value::Number(count as f64));
+            }
+            answer.insert("stats".to_string(), Value::Object(counters));
+        }
+        if let Some(steps) = reads.trace {
+            let mut ask = ValueMap::new();
+            ask.insert("trace".to_string(), Value::Number(steps as f64));
+            let trace = self
+                .io
+                .run("program/inputs", &[Value::Object(ask)])
+                .map_err(|failure| AgentPortFailure { error: failure.message, errors: failure.errors })?;
+            answer.insert("trace".to_string(), trace);
+        }
+        Ok(Value::Object(answer))
     }
 
     fn run_read_named(
@@ -198,6 +274,29 @@ impl RuntimeKernel {
                 return EffectResult::executed_with_value(effect.clone(), answer)
             }
             DispatchPlan::Dispatch { input, payload } => (input, payload),
+            DispatchPlan::Request { payload, options } => {
+                let address = args.first().cloned().unwrap_or(Value::Null);
+                return match self.io.run("program/dispatch", &[address, payload, Value::Object(options)]) {
+                    Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
+                    Err(failure) => failure_result(
+                        effect,
+                        AgentPortFailure { error: failure.message, errors: failure.errors },
+                    ),
+                };
+            }
+            DispatchPlan::Inbound { name, body, headers } => {
+                let mut ask = ValueMap::new();
+                ask.insert("inbound".to_string(), Value::String(name));
+                ask.insert("body".to_string(), Value::String(body));
+                ask.insert("headers".to_string(), Value::Object(headers));
+                return match self.io.run("program/dispatch", &[Value::Object(ask)]) {
+                    Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
+                    Err(failure) => failure_result(
+                        effect,
+                        AgentPortFailure { error: failure.message, errors: failure.errors },
+                    ),
+                };
+            }
         };
         let address = format!("{}.{}.{}", input.orbital, input.trait_name, input.event);
         let ask = [Value::String(address), payload];

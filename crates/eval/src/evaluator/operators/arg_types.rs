@@ -21,13 +21,14 @@ use std::sync::OnceLock;
 use super::get_operator;
 use crate::evaluator::operators::kind::OperatorKind;
 use orbital_core_base::error::{EvalError, OrbitalError};
-use orbital_core_base::ir::types::OirType;
+use orbital_core_base::ir::types::{DeclaredShape, OirType};
 use orbital_core_base::language::registry::{OperatorTypeRef, OperatorTypeRefKind};
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::signature::{
     absent_slot, Actual, CallBindings, Known, Mismatch, Mode, Signature,
 };
 use orbital_core_base::value::Value;
+use std::collections::BTreeMap;
 
 /// Hashes an operator's discriminant to itself: the table is read on every operator call, and a keyed hash of one
 /// small integer is most of what a lookup cost.
@@ -400,21 +401,35 @@ fn is_bare_variable(formal: Option<&OperatorTypeRef>) -> bool {
 }
 
 thread_local! {
-    static DECLARED: RefCell<HashMap<String, OirType>> = RefCell::new(HashMap::new());
+    static DECLARED: RefCell<HashMap<String, std::rc::Rc<DeclaredShape>>> = RefCell::new(HashMap::new());
 }
 
-/// The type a `typed` form records: its second argument, the declared `OirType` as JSON text.
-pub fn declared_type(arg: &SExpression) -> Result<OirType, OrbitalError> {
+/// The declared shape a `typed` form or a `json/parse` shape records as JSON text: a bare `OirType`, or the type with
+/// the definitions of the program types it names (`DeclaredShape`).
+pub fn declared_shape(arg: &SExpression) -> Result<std::rc::Rc<DeclaredShape>, OrbitalError> {
     let SExpression::String(text) = arg else {
         return Err(OrbitalError::Eval(EvalError::InvalidArgument("typed: the declared type must be JSON text".into())));
     };
     if let Some(known) = DECLARED.with(|d| d.borrow().get(text).cloned()) {
         return Ok(known);
     }
-    let ty: OirType = serde_json::from_str(text)
-        .map_err(|e| OrbitalError::Eval(EvalError::InvalidArgument(format!("typed: the declared type is not a type: {e}"))))?;
-    DECLARED.with(|d| d.borrow_mut().insert(text.clone(), ty.clone()));
-    Ok(ty)
+    let shape = match DeclaredShape::parse(text) {
+        Some(shape) => shape,
+        None => {
+            let ty: OirType = serde_json::from_str(text).map_err(|e| {
+                OrbitalError::Eval(EvalError::InvalidArgument(format!("typed: the declared type is not a type: {e}")))
+            })?;
+            DeclaredShape { name: None, ty, named: BTreeMap::new() }
+        }
+    };
+    let shape = std::rc::Rc::new(shape);
+    DECLARED.with(|d| d.borrow_mut().insert(text.clone(), std::rc::Rc::clone(&shape)));
+    Ok(shape)
+}
+
+/// The type a `typed` form records: its second argument's declared type.
+pub fn declared_type(arg: &SExpression) -> Result<OirType, OrbitalError> {
+    Ok(declared_shape(arg)?.ty.clone())
 }
 
 /// The declared type of `expr` when it is a `typed` form.
@@ -454,24 +469,51 @@ pub fn declared_text(ty: &OirType) -> String {
     }
 }
 
+/// The type a by-name reference resolves to: a `TypeRef` or `Reference` whose name the recorded shape's `named` table
+/// defines is that definition, through a chain of aliases; `None` when `ty` names no defined type (or a cycle of bare
+/// aliases).
+fn declared_alias(ty: &OirType, named: &BTreeMap<String, OirType>) -> Option<OirType> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut resolved: Option<OirType> = None;
+    loop {
+        let name = match resolved.as_ref().unwrap_or(ty) {
+            OirType::TypeRef { name } | OirType::Reference { entity: name } => name.clone(),
+            _ => return resolved,
+        };
+        if seen.contains(&name) {
+            return None;
+        }
+        match named.get(&name) {
+            Some(next) => resolved = Some(next.clone()),
+            None => return resolved,
+        }
+        seen.push(name);
+    }
+}
+
 /// The path to and the kind of the first part of `value` that is not of `ty` (null is an absent value and is of every
-/// type; a record's required field that is missing is `absent`).
-fn first_misfit(value: &Value, ty: &OirType) -> Option<(String, &'static str)> {
+/// type; a record's required field that is missing is `absent`). A name `named` defines is checked as its definition,
+/// so each item of a list of a recursive union matches a member of the union on its own; a closed string set
+/// (`"a" | "b"`) admits only its members.
+fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) -> Option<(String, &'static str)> {
     if value.is_null() {
         return None;
+    }
+    if let Some(declared) = declared_alias(ty, named) {
+        return first_misfit(value, &declared, named);
     }
     let misfit = || Some((String::new(), value.type_name()));
     let at = |prefix: String| move |(path, actual): (String, &'static str)| (format!("{prefix}{path}"), actual);
     let items = |items: &[Value], inner: &OirType| {
-        items.iter().enumerate().find_map(|(i, item)| first_misfit(item, inner).map(at(format!("[{i}]"))))
+        items.iter().enumerate().find_map(|(i, item)| first_misfit(item, inner, named).map(at(format!("[{i}]"))))
     };
     match ty {
         OirType::SExpr | OirType::Json | OirType::Node | OirType::Trait | OirType::Orbital | OirType::Behavior => None,
         // An unbound variable admits any value; a bound one was substituted before run time.
         OirType::Var { .. } => None,
-        OirType::Optional { inner } => first_misfit(value, inner),
+        OirType::Optional { inner } => first_misfit(value, inner, named),
         OirType::Union { variants } => {
-            if variants.iter().any(|v| first_misfit(value, &v.field_type).is_none()) {
+            if variants.iter().any(|v| first_misfit(value, &v.field_type, named).is_none()) {
                 None
             } else {
                 misfit()
@@ -486,17 +528,19 @@ fn first_misfit(value: &Value, ty: &OirType) -> Option<(String, &'static str)> {
                 .iter()
                 .zip(slots)
                 .enumerate()
-                .find_map(|(i, (item, slot))| first_misfit(item, slot).map(at(format!("[{i}]")))),
+                .find_map(|(i, (item, slot))| first_misfit(item, slot, named).map(at(format!("[{i}]")))),
             _ => misfit(),
         },
         OirType::Map { value: inner, .. } => match value {
-            Value::Object(map) => map.iter().find_map(|(k, item)| first_misfit(item, inner).map(at(format!(".{k}")))),
+            Value::Object(map) => {
+                map.iter().find_map(|(k, item)| first_misfit(item, inner, named).map(at(format!(".{k}"))))
+            }
             _ => misfit(),
         },
         OirType::Struct { fields } => match value {
             Value::Object(map) => fields.iter().find_map(|field| match map.get(&field.name) {
                 None => field.required.then(|| (format!(".{}", field.name), "absent")),
-                Some(item) => first_misfit(item, &field.field_type).map(at(format!(".{}", field.name))),
+                Some(item) => first_misfit(item, &field.field_type, named).map(at(format!(".{}", field.name))),
             }),
             _ => misfit(),
         },
@@ -513,19 +557,24 @@ fn first_misfit(value: &Value, ty: &OirType) -> Option<(String, &'static str)> {
         OirType::Date | OirType::DateTime => {
             (!matches!(value, Value::String(_) | Value::Number(_))).then(|| (String::new(), value.type_name()))
         }
+        OirType::Enum { name } => match (value, orbital_core_base::type_compat::literal_union_members(name)) {
+            (Value::String(text), Some(members)) => (!members.contains(&text.as_str())).then(|| (String::new(), "string")),
+            (Value::String(_), None) => None,
+            _ => misfit(),
+        },
         _ => (!matches!(value, Value::String(_))).then(|| (String::new(), value.type_name())),
     }
 }
 
 /// Where `value` departs from the declared `ty` (`""` for the value itself, `.rows[2].id` inside it) and what kind of
-/// value is there, when it does.
-pub fn misfit_of_declared(value: &Value, ty: &OirType) -> Option<(String, &'static str)> {
-    first_misfit(value, ty)
+/// value is there, when it does; a by-name reference reads its definition from `named`.
+pub fn misfit_of_declared(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) -> Option<(String, &'static str)> {
+    first_misfit(value, ty, named)
 }
 
 /// `value` is of the declared `ty`, kind by kind, and a record's declared fields field by field.
-pub fn value_of_declared(value: &Value, ty: &OirType) -> Result<(), OrbitalError> {
-    match first_misfit(value, ty) {
+pub fn value_of_declared(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) -> Result<(), OrbitalError> {
+    match first_misfit(value, ty, named) {
         None => Ok(()),
         Some((_, actual)) => Err(OrbitalError::Eval(EvalError::TypeMismatch {
             expected: declared_text(ty),

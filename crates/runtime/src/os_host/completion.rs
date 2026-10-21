@@ -4,6 +4,7 @@
 
 use crate::kernel::RuntimeKernel;
 pub use crate::resumable::completion_event;
+use crate::effects::executor::SubstrateFailure;
 use crate::resumable::{
     drive_blocking, CallRoutes, CallSite, DispatchError, DispatchOutcomes, IoAnswer, IoRequest, Progress,
 };
@@ -16,6 +17,10 @@ use std::sync::Arc;
 /// Receives the outcome of a deferred keyed `os/` call, on the host's watcher thread.
 pub trait OsCompletionSink: Send + Sync {
     fn complete(&self, site: &CallSite, key: &str, outcome: Result<Value, OsError>);
+
+    /// A deferred substrate op's completion, its payload already shaped: `Ok` takes `emit.success`, `Err`
+    /// `emit.failure`, each with `key` beside it. A sink that dispatches nothing ignores it.
+    fn settle(&self, _site: &CallSite, _key: &str, _outcome: Result<Value, Value>) {}
 
     /// One event of a keyed stream: the completion of the call's `onMessage` route, the call staying open.
     fn message(&self, site: &CallSite, key: &str, event: Value) {
@@ -101,8 +106,12 @@ impl Completions {
 
     /// Hand a claimed completion to the sink; the key stays open until the sink's dispatch has run.
     pub(super) fn deliver(&self, key: &str, site: &CallSite, outcome: Result<Value, OsError>) {
+        self.deliver_with(key, |sink| sink.complete(site, key, outcome));
+    }
+
+    fn deliver_with(&self, key: &str, hand: impl FnOnce(&dyn OsCompletionSink)) {
         if let Some(sink) = self.sink() {
-            sink.complete(site, key, outcome);
+            hand(sink.as_ref());
         }
         let mut delivering = self.delivering.lock();
         if let Some(count) = delivering.get_mut(key) {
@@ -121,6 +130,54 @@ impl Completions {
         site: &CallSite,
         work: impl FnOnce() -> Result<Value, OsError> + Send + 'static,
     ) -> Result<(), RunLaterError> {
+        Self::spawn_later(this, key, site, work, |completions, key, site, outcome| {
+            completions.deliver(key, site, outcome)
+        })
+    }
+
+    /// Answer a keyed substrate op (R-a) by running `work` on a thread of its own and settling its completion through
+    /// the sink, `op` shaping the success payload as an in-place completion would.
+    pub fn defer_substrate(
+        this: &Arc<Self>,
+        key: &str,
+        site: &CallSite,
+        op: &str,
+        work: impl FnOnce() -> Result<Value, SubstrateFailure> + Send + 'static,
+    ) -> IoAnswer {
+        let op = op.to_string();
+        let started = Self::spawn_later(
+            this,
+            key,
+            site,
+            move || {
+                work()
+                    .map(|value| crate::agent_ports::completion_result(&op, value))
+                    .map_err(|failure| crate::agent_ports::failure_payload(&failure))
+            },
+            |completions, key, site, outcome| {
+                completions.deliver_with(key, |sink| sink.settle(site, key, outcome))
+            },
+        );
+        match started {
+            Ok(()) => IoAnswer::ServiceDeferred,
+            Err(RunLaterError::KeyPending) => IoAnswer::Substrate(Err(SubstrateFailure {
+                message: format!("key {key} already has a completion pending"),
+                errors: Vec::new(),
+            })),
+            Err(RunLaterError::Spawn(error)) => IoAnswer::Substrate(Err(SubstrateFailure {
+                message: error.to_string(),
+                errors: Vec::new(),
+            })),
+        }
+    }
+
+    fn spawn_later<T: Send + 'static>(
+        this: &Arc<Self>,
+        key: &str,
+        site: &CallSite,
+        work: impl FnOnce() -> T + Send + 'static,
+        deliver: fn(&Completions, &str, &CallSite, T),
+    ) -> Result<(), RunLaterError> {
         if !this.begin(key) {
             return Err(RunLaterError::KeyPending);
         }
@@ -130,7 +187,7 @@ impl Completions {
             move || {
                 let outcome = work();
                 if completions.claim(&key) {
-                    completions.deliver(&key, &site, outcome);
+                    deliver(&completions, &key, &site, outcome);
                 }
             }
         });
@@ -196,16 +253,17 @@ impl DispatchScope {
     /// dispatch before it is answered (the watcher may deliver before the answer returns) and released again if the
     /// host neither deferred it nor opened the stream.
     pub fn answer(&self, inner: &dyn Fn(&IoRequest) -> IoAnswer, request: &IoRequest) -> IoAnswer {
-        let IoRequest::Os { op, key: Some(key), .. } = request else { return inner(request) };
-        if !op.defers_completion() && !op.is_stream() {
-            return inner(request);
-        }
+        let (key, stream) = match request {
+            IoRequest::Os { op, key: Some(key), .. } if op.defers_completion() || op.is_stream() => (key, op.is_stream()),
+            IoRequest::Substrate { key: Some(key), site: Some(_), .. } => (key, false),
+            _ => return inner(request),
+        };
         self.owners.lock().insert(key.clone(), self.ended.clone());
         self.ended.keys.lock().push(key.clone());
         let answered = inner(request);
         let open = match &answered {
             IoAnswer::ServiceDeferred => true,
-            IoAnswer::Os(Ok(_)) => op.is_stream(),
+            IoAnswer::Os(Ok(_)) => stream,
             _ => false,
         };
         if !open {
@@ -279,9 +337,30 @@ impl KernelCompletionSink {
 
 impl OsCompletionSink for KernelCompletionSink {
     fn complete(&self, site: &CallSite, key: &str, outcome: Result<Value, OsError>) {
-        let Some((event, payload)) = completion_event(site, key, outcome) else {
-            return;
+        if let Some((event, payload)) = completion_event(site, key, outcome) {
+            self.dispatch_completion(site, key, event, payload);
+        }
+    }
+
+    fn settle(&self, site: &CallSite, key: &str, outcome: Result<Value, Value>) {
+        let (route, payload) = match outcome {
+            Ok(payload) => (site.emit.success.clone(), payload),
+            Err(payload) => (site.emit.failure.clone(), payload),
         };
+        let Some(event) = route else { return };
+        let payload = match payload {
+            Value::Object(mut fields) => {
+                fields.insert("key".to_string(), Value::String(key.to_string()));
+                Value::Object(fields)
+            }
+            other => other,
+        };
+        self.dispatch_completion(site, key, event, payload);
+    }
+}
+
+impl KernelCompletionSink {
+    fn dispatch_completion(&self, site: &CallSite, key: &str, event: String, payload: Value) {
         self.wait_for_owner(key);
         let scope = self.begin_dispatch();
         let answer = |request: &IoRequest| scope.answer(&*self.answer, request);

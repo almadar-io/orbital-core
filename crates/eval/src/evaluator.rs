@@ -725,11 +725,21 @@ mod tests {
             ] }]
         }))
         .unwrap();
-        let ctx = crate::evaluator::context::BindingContextBuilder::new()
-            .declared_types(crate::evaluator::context::DeclaredTypes::of_aliases(aliases))
-            .build();
-        let expr: SExpression = serde_json::from_value(serde_json::json!(["json/parse", text, shape])).unwrap();
-        Evaluator::new().evaluate(&expr, &ctx).unwrap()
+        parse_as_resolved(text, shape, &aliases)
+    }
+
+    /// `json/parse` as `orb resolve` records it: a program alias shape is its type with the types it names.
+    fn parse_as_resolved(
+        text: &str,
+        shape: &str,
+        aliases: &std::collections::BTreeMap<String, Vec<orbital_core_base::schema::types::PayloadField>>,
+    ) -> Value {
+        let recorded = match orbital_core_base::ir::types::DeclaredShape::of_alias(shape, aliases) {
+            Some(declared) => serde_json::to_string(&declared).unwrap(),
+            None => shape.to_string(),
+        };
+        let expr: SExpression = serde_json::from_value(serde_json::json!(["json/parse", text, recorded])).unwrap();
+        Evaluator::new().evaluate(&expr, &BindingContext::new()).unwrap()
     }
 
     #[test]
@@ -753,9 +763,47 @@ mod tests {
     }
 
     #[test]
+    fn json_parse_recursive_alias_checks_every_level() {
+        assert_eq!(parse_in_program(r#"[1, ["x", true]]"#, "RowCell"), Value::Null);
+        assert_eq!(parse_in_program("true", "RowCell"), Value::Null);
+    }
+
+    #[test]
+    fn control_json_parse_recursive_alias_accepts_a_member_at_every_level() {
+        assert!(matches!(parse_in_program(r#"[1, ["x", [2]]]"#, "RowCell"), Value::Array(ref v) if v.len() == 2));
+        assert_eq!(parse_in_program(r#""x""#, "RowCell"), Value::String("x".to_string()));
+    }
+
+    #[test]
     fn json_parse_program_alias_matching_value_passes() {
         let text = r#"{"rows": [{"a": "x", "n": [1, ["y"]]}], "changes": [{"id": "c1", "row": {"a": 1}}, {"id": "c2"}]}"#;
         assert!(matches!(parse_in_program(text, "RowFile"), Value::Object(ref m) if m.contains_key("rows")));
+    }
+
+    fn parse_manifest(text: &str) -> Value {
+        let aliases = serde_json::from_value(serde_json::json!({
+            "Manifest": [
+                { "name": "pack", "type": "string", "required": true },
+                { "name": "assets", "type": "[object]", "properties": [
+                    { "name": "key", "type": "string", "required": true },
+                    { "name": "style", "type": "string", "values": ["pixel", "vector"] }
+                ] }
+            ]
+        }))
+        .unwrap();
+        parse_as_resolved(text, "Manifest", &aliases)
+    }
+
+    #[test]
+    fn json_parse_program_alias_refuses_a_value_outside_a_closed_string_set() {
+        assert_eq!(parse_manifest(r#"{"pack": "p", "assets": [{"key": "a", "style": "watercolor"}]}"#), Value::Null);
+        assert_eq!(parse_manifest(r#"{"pack": "p", "assets": [{"key": "a", "style": 3}]}"#), Value::Null);
+    }
+
+    #[test]
+    fn control_json_parse_program_alias_accepts_a_member_of_a_closed_string_set() {
+        let ok = parse_manifest(r#"{"pack": "p", "assets": [{"key": "a", "style": "vector"}, {"key": "b"}]}"#);
+        assert!(matches!(ok, Value::Object(_)), "{ok:?}");
     }
 
     #[test]
@@ -778,9 +826,12 @@ mod tests {
         .unwrap();
         let ctx = crate::evaluator::context::BindingContextBuilder::new()
             .payload(serde_json::from_value(serde_json::json!({ "items": items })).unwrap())
-            .declared_types(crate::evaluator::context::DeclaredTypes::of_aliases(aliases))
             .build();
-        let declared = serde_json::json!({ "kind": "array", "inner": { "kind": "typeref", "name": "OrbValue" } }).to_string();
+        let list = orbital_core_base::ir::types::OirType::array(orbital_core_base::ir::types::OirType::TypeRef {
+            name: "OrbValue".to_string(),
+        });
+        let declared =
+            serde_json::to_string(&orbital_core_base::ir::types::DeclaredShape::with_named(None, list, &aliases)).unwrap();
         let expr: SExpression = serde_json::from_value(serde_json::json!(
             ["array/len", ["array/map", ["typed", "@payload.items", declared], ["fn", "i", 1]]]
         ))
@@ -3049,6 +3100,116 @@ mod tests {
         let unbaked: SExpression = serde_json::from_value(serde_json::json!(["tree/fold", null, step, "RowPredicate"])).unwrap();
         let err = Evaluator::new().evaluate(&unbaked, &BindingContext::new()).unwrap_err().to_string();
         assert!(err.contains("was not written into the call"), "{err}");
+    }
+
+    /// `type IrExpr = string | number | boolean | [IrExpr] | Map string IrExpr`, as lowering writes it.
+    fn ir_expr_definition() -> String {
+        serde_json::json!({
+            "name": "IrExpr", "type": "union", "values": ["string", "number", "boolean", "array", "map"],
+            "properties": {
+                "string": { "name": "string", "type": "string" },
+                "number": { "name": "number", "type": "number" },
+                "boolean": { "name": "boolean", "type": "boolean" },
+                "array": { "name": "array", "type": "array", "items": by_name("IrExpr") },
+                "map": { "name": "map", "type": "object", "items": by_name("IrExpr") }
+            }
+        })
+        .to_string()
+    }
+
+    fn fold_kids(value: serde_json::Value) -> Result<Value, String> {
+        fold_with(value, serde_json::json!(["fn", ["n", "k"], "@k"]), "IrExpr", &ir_expr_definition())
+    }
+
+    #[test]
+    fn tree_fold_reads_an_object_leaf_through_the_unions_map_variant() {
+        assert_eq!(fold_kids(serde_json::json!({ "a": "x", "b": 1 })), Ok(json_value(serde_json::json!({ "a": {}, "b": {} }))));
+        assert_eq!(fold_kids(serde_json::json!({})), Ok(json_value(serde_json::json!({}))), "an empty map has no children");
+    }
+
+    #[test]
+    fn tree_fold_reads_an_object_holding_lists_through_the_map_variant() {
+        assert_eq!(
+            fold_kids(serde_json::json!({ "a": 1, "b": ["x", { "c": true }] })),
+            Ok(json_value(serde_json::json!({ "a": {}, "b": [{}, { "c": {} }] })))
+        );
+    }
+
+    #[test]
+    fn tree_fold_reads_a_mixed_list_holding_an_object() {
+        assert_eq!(
+            fold_kids(serde_json::json!(["emit", "X", { "id": "@entity.id", "n": [1, "b"] }])),
+            Ok(json_value(serde_json::json!([{}, {}, { "id": {}, "n": [{}, {}] }])))
+        );
+        assert_eq!(
+            fold_kids(serde_json::json!(["a", [1, "b"], true])),
+            Ok(json_value(serde_json::json!([{}, [{}, {}], {}])))
+        );
+    }
+
+    #[test]
+    fn tree_fold_folds_nested_maps_bottom_up_with_the_node_in_scope() {
+        let step = serde_json::json!(["fn", ["n", "k"],
+            ["if", ["validate/string", "@n"], "@n", ["if", ["validate/array", "@n"], ["str/join", "@k", ","],
+            ["str/join", ["array/map", ["object/entries", "@k"], ["fn", "e", ["str/concat", ["array/nth", "@e", 0], "=", ["array/nth", "@e", 1]]]], ";"]]]]);
+        let value = serde_json::json!({ "outer": { "inner": { "leaf": "v" } } });
+        assert_eq!(
+            fold_with(value, step, "IrExpr", &ir_expr_definition()),
+            Ok(Value::String("outer=inner=leaf=v".into()))
+        );
+    }
+
+    #[test]
+    fn control_tree_fold_a_closed_shape_still_claims_the_object_before_a_map_variant() {
+        let definition = serde_json::json!({
+            "name": "Node", "type": "union", "values": ["leaf", "open", "map"],
+            "properties": {
+                "leaf": { "type": "object", "properties": { "kind": tag("leaf") } },
+                "open": { "type": "object", "properties": { "only": { "type": "string" }, "next": by_name("Node") } },
+                "map": { "type": "object", "items": by_name("Node") }
+            }
+        })
+        .to_string();
+        let step = serde_json::json!(["fn", ["n", "k"], "@k"]);
+        let leaf = serde_json::json!({ "kind": "leaf" });
+        assert_eq!(fold_with(leaf.clone(), step.clone(), "Node", &definition), Ok(json_value(serde_json::json!({}))));
+        assert_eq!(
+            fold_with(serde_json::json!({ "only": "s", "next": leaf.clone() }), step.clone(), "Node", &definition),
+            Ok(json_value(serde_json::json!({ "next": {} }))),
+            "the closed shape reads `next` as a field child and `only` as data"
+        );
+        assert_eq!(
+            fold_with(serde_json::json!({ "x": leaf, "only": { "kind": "leaf" } }), step, "Node", &definition),
+            Ok(json_value(serde_json::json!({ "x": {}, "only": {} }))),
+            "a key no closed shape declares falls to the Map variant"
+        );
+    }
+
+    #[test]
+    fn control_tree_fold_a_value_matching_no_variant_still_errors() {
+        let no_boolean = serde_json::json!({
+            "name": "E", "type": "union", "values": ["string", "map"],
+            "properties": {
+                "string": { "type": "string" },
+                "map": { "type": "object", "items": by_name("E") }
+            }
+        })
+        .to_string();
+        let step = serde_json::json!(["fn", ["n", "k"], "@k"]);
+        let err = fold_with(serde_json::json!({ "a": true }), step.clone(), "E", &no_boolean).unwrap_err();
+        assert!(err.contains("E") && err.contains("bool"), "{err}");
+        let two_maps = serde_json::json!({
+            "name": "E", "type": "union", "values": ["m1", "m2"],
+            "properties": {
+                "m1": { "type": "object", "items": by_name("E") },
+                "m2": { "type": "object", "items": { "type": "string" } }
+            }
+        })
+        .to_string();
+        let err = fold_with(serde_json::json!({ "a": "x" }), step.clone(), "E", &two_maps).unwrap_err();
+        assert!(err.contains("several variants") && err.contains("m1") && err.contains("m2"), "{err}");
+        let err = fold_with(serde_json::json!({ "kind": "xor", "of": [] }), step, "RowPredicate", &predicate_definition()).unwrap_err();
+        assert!(err.contains("no variant"), "a union with no Map variant still rejects an unclaimed object: {err}");
     }
 
     fn row_matches(pred: &serde_json::Value, row: &serde_json::Value) -> Value {

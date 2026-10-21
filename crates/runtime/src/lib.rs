@@ -40,7 +40,6 @@ pub mod os_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod kv_host;
 pub mod kernel;
-pub mod key_chord;
 pub mod listener;
 pub mod mock_answer;
 pub mod mock_random;
@@ -106,7 +105,6 @@ pub mod webpush;
 pub mod effects;
 pub mod embed;
 pub mod oauth;
-pub mod renderer_coverage;
 pub mod client;
 pub mod desktop_protocol;
 pub mod planner;

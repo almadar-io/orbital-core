@@ -37,11 +37,12 @@ fn binding_member(text: &str) -> Option<(&str, &str)> {
 
 fn collect_sites(node: &SExpression, types: &DeclaredTypes, out: &mut Sites) {
     let SExpression::Array(items) = node else { return };
-    if let [SExpression::String(op), SExpression::String(path), SExpression::String(type_name)] = &items[..] {
-        if op == "json/parse" && types.contains_key(type_name) {
+    if let [SExpression::String(op), SExpression::String(path), SExpression::String(shape)] = &items[..] {
+        let type_name = orbital_core_base::ir::types::DeclaredShape::name_of(shape);
+        if op == "json/parse" && types.contains_key(type_name.as_ref()) {
             if let Some((name, member)) = binding_member(path) {
                 let target = if name == "payload" { &mut out.fields } else { &mut out.members };
-                target.insert(member.to_string(), type_name.clone());
+                target.insert(member.to_string(), type_name.into_owned());
             }
         }
     }

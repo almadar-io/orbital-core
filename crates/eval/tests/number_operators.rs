@@ -115,9 +115,48 @@ fn json_stringify_writes_a_number_as_ecmascript_number_to_string() {
 #[test]
 fn control_a_non_finite_number_stringifies_as_json_null() {
     let ctx = BindingContextBuilder::new().build();
-    for expr in [serde_json::json!(["/", 1, 0]), serde_json::json!(["/", 0, 0])] {
+    for expr in [serde_json::json!(["str/to-number", "Infinity"]), serde_json::json!(["str/to-number", "NaN"])] {
         let stringified = serde_json::json!(["json/stringify", {"n": expr}]);
         let result = Evaluator::new().evaluate(&serde_json::from_value(stringified).unwrap(), &ctx);
         assert_eq!(result.unwrap(), Value::String("{\"n\":null}".to_string()));
     }
+}
+
+fn eval_bool(expr: Json) -> bool {
+    let ctx = BindingContextBuilder::new().build();
+    match Evaluator::new().evaluate(&serde_json::from_value(expr.clone()).unwrap(), &ctx) {
+        Ok(Value::Bool(b)) => b,
+        other => panic!("{expr}: {other:?}"),
+    }
+}
+
+#[test]
+fn number_equality_is_exact_ieee() {
+    assert!(!eval_bool(serde_json::json!(["==", 1e-20, 0])));
+    assert!(eval_bool(serde_json::json!(["!=", 1e-20, 0])));
+    assert!(!eval_bool(serde_json::json!(["==", ["+", 0.1, 0.2], 0.3])));
+    assert!(!eval_bool(serde_json::json!(["==", 1.0000000000000002, 1])));
+    assert!(!eval_bool(serde_json::json!(["object/equals", {"n": 1e-20}, {"n": 0}])));
+    let nan = serde_json::json!(["str/to-number", "NaN"]);
+    assert!(!eval_bool(serde_json::json!(["==", nan, nan])));
+    assert!(eval_bool(serde_json::json!(["!=", nan, nan])));
+    assert!(!eval_bool(serde_json::json!(["==", nan, 0])));
+    assert!(!eval_bool(serde_json::json!(["object/equals", {"n": nan}, {"n": nan}])));
+}
+
+#[test]
+fn control_equal_numbers_stay_equal_and_ordering_is_unchanged() {
+    assert!(eval_bool(serde_json::json!(["==", 0.1, 0.1])));
+    assert!(eval_bool(serde_json::json!(["==", 1, 1.0])));
+    assert!(eval_bool(serde_json::json!(["==", 0, -0.0])));
+    assert!(!eval_bool(serde_json::json!(["!=", 0.1, 0.1])));
+    assert!(eval_bool(serde_json::json!(["==", ["*", 3, 0.5], 1.5])));
+    assert!(eval_bool(serde_json::json!(["object/equals", {"n": 0.1}, {"n": 0.1}])));
+    assert!(eval_bool(serde_json::json!([">", 1e-20, 0])));
+    assert!(eval_bool(serde_json::json!(["<=", 0, 1e-20])));
+    let inf = serde_json::json!(["str/to-number", "Infinity"]);
+    assert!(eval_bool(serde_json::json!(["==", inf, inf])));
+    assert!(!eval_bool(serde_json::json!(["!=", inf, inf])));
+    assert!(!eval_bool(serde_json::json!(["!=", 0, -0.0])));
+    assert!(eval_bool(serde_json::json!(["array/includes", [0.1, 0.5], 0.5])));
 }

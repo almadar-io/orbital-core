@@ -918,6 +918,10 @@ mod lowering {
             OirEffect::CredentialForget { emit: None, .. }
         ));
         assert_eq!(forget.kind(), "credential-forget");
+        let check = lower(json!(["access-check", { "entity": "Note", "action": "read", "row": {}, "viewer": "@payload.who" }, routes])).unwrap();
+        assert!(matches!(&*check, OirEffect::AccessCheck { emit: Some(_), .. }));
+        assert_eq!(check.kind(), "access-check");
+        assert!(!OirExpr::effect(*check).collect_bindings().is_empty(), "the request's bindings are collected");
     }
 
     #[test]
@@ -927,6 +931,8 @@ mod lowering {
             json!(["random-bytes", 1, {}, {}]),
             json!(["credential-status"]),
             json!(["credential-forget", "a", "not-an-object"]),
+            json!(["access-check"]),
+            json!(["access-check", {}, "not-an-object"]),
         ] {
             assert!(lower(form.clone()).is_err(), "{form}");
         }
@@ -1831,11 +1837,15 @@ mod os_completion {
     }
 
     fn wired_with(schema: OrbitalSchema) -> Wired {
+        wired_granted(schema, OsGrants { exec: vec!["/bin/sh".to_string()], ..OsGrants::default() })
+    }
+
+    fn wired_granted(schema: OrbitalSchema, grants: OsGrants) -> Wired {
         let store: Arc<dyn EntitySource> = Arc::new(InMemoryEntityCache::new());
         let kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), KernelConfig::default()));
         kernel.register_schema(schema).unwrap();
         let handles = Arc::new(OsHandles::default());
-        let grants = Arc::new(OsGrants { exec: vec!["/bin/sh".to_string()], ..OsGrants::default() });
+        let grants = Arc::new(grants);
         let answer: Arc<CompletionAnswerer> = {
             let (handles, grants) = (handles.clone(), grants.clone());
             Arc::new(move |request: &IoRequest| match request {
@@ -1996,6 +2006,99 @@ mod os_completion {
         assert!(matches!(answer_os(Some(&host), &read), IoAnswer::Os(Ok(_))));
     }
 
+    fn file_reader(path: &str) -> OrbitalSchema {
+        let routes = |ok: &str| json!({ "success": ok, "failure": "BAD" });
+        let keyed = |key: &str, ok: &str| json!({ "key": key, "emit": routes(ok) });
+        serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "data", "type": "string" },
+                    { "name": "eof", "type": "boolean" },
+                    { "name": "key", "type": "string" }
+                ] },
+                "traits": [{ "name": "Sup", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [
+                            { "name": "idle", "isInitial": true }, { "name": "opening" }, { "name": "reading" },
+                            { "name": "read" }, { "name": "slurping" }, { "name": "slurped" }, { "name": "bad" }
+                        ],
+                        "transitions": [
+                            { "from": "idle", "to": "opening", "event": "GO", "effects": [
+                                ["os/open", path, "r", { "emit": routes("OPENED") }]
+                            ] },
+                            { "from": "opening", "to": "reading", "event": "OPENED", "effects": [
+                                ["os/read", "@payload.fd", 64, keyed("f1", "READ_DONE")]
+                            ] },
+                            { "from": "reading", "to": "read", "event": "READ_DONE", "effects": [
+                                ["set", "@entity.data", "@payload.data"],
+                                ["set", "@entity.eof", "@payload.eof"],
+                                ["set", "@entity.key", "@payload.key"]
+                            ] },
+                            { "from": "idle", "to": "slurping", "event": "SLURP", "effects": [
+                                ["os/read-file", path, keyed("f2", "SLURPED")]
+                            ] },
+                            { "from": "slurping", "to": "slurped", "event": "SLURPED", "effects": [
+                                ["set", "@entity.data", "@payload.data"],
+                                ["set", "@entity.key", "@payload.key"]
+                            ] },
+                            { "from": "opening", "to": "bad", "event": "BAD" },
+                            { "from": "reading", "to": "bad", "event": "BAD" },
+                            { "from": "slurping", "to": "bad", "event": "BAD" }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn wired_file(dir: &std::path::Path) -> (Wired, String) {
+        let dir = dir.canonicalize().unwrap();
+        let path = dir.join("deferred.txt");
+        std::fs::write(&path, b"hello").unwrap();
+        let path = path.to_str().unwrap().to_string();
+        let grants = OsGrants {
+            fs: vec![orbital_core_base::os_grants::FsGrant {
+                glob: format!("{}/**", dir.to_str().unwrap()),
+                modes: vec![orbital_core_base::os_grants::FsMode::Read],
+            }],
+            ..OsGrants::default()
+        };
+        (wired_granted(file_reader(&path), grants), path)
+    }
+
+    #[test]
+    fn a_keyed_routed_read_of_a_regular_file_is_delivered_as_its_own_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (wired, _) = wired_file(dir.path());
+        go_sup(&wired);
+        assert_eq!(wired.kernel.snapshot_trait("Sup", None).state, "reading", "the GO dispatch does not take the read in place");
+        let (event, summary) = wired.done.recv_timeout(Duration::from_secs(10)).expect("one completion dispatch");
+        assert_eq!(event, "READ_DONE");
+        assert!(summary.is_ok(), "{summary:?}");
+        let held = wired.kernel.snapshot_trait("Sup", None);
+        assert_eq!(held.state, "read");
+        assert_eq!(held.entity.get_path("data"), Some(&Value::String("aGVsbG8=".to_string())));
+        assert_eq!(held.entity.get_path("eof"), Some(&Value::Bool(false)));
+        assert_eq!(held.entity.get_path("key"), Some(&Value::String("f1".to_string())));
+        assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "exactly one completion");
+    }
+
+    #[test]
+    fn control_a_keyed_read_file_stays_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (wired, _) = wired_file(dir.path());
+        let progress = wired.kernel.start_dispatch("Sup", None, "SLURP", Value::Null, None, None).unwrap();
+        wired.sink.drive(progress).unwrap();
+        let held = wired.kernel.snapshot_trait("Sup", None);
+        assert_eq!(held.state, "slurped", "answered within the SLURP dispatch");
+        assert_eq!(held.entity.get_path("data"), Some(&Value::String("aGVsbG8=".to_string())));
+        assert_eq!(held.entity.get_path("key"), Some(&Value::String("f2".to_string())));
+        assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "no completion dispatch for os/read-file");
+    }
+
     #[test]
     fn a_deferred_wait_dispatches_the_child_exit_through_the_kernel_sink_into_a_second_transition() {
         let wired = wired("exit 3");
@@ -2127,7 +2230,7 @@ mod os_twin {
     fn the_embed_exports_name_the_deferring_ops_and_shape_a_completion_event() {
         use orbital_core_runtime::embed::{os_completion_event_json, os_deferring_ops_json};
         let names: Vec<String> = serde_json::from_str(&os_deferring_ops_json().unwrap()).unwrap();
-        assert_eq!(names, ["os/read", "os/wait", "os/recv", "os/recvfrom"]);
+        assert_eq!(names, ["os/read", "os/wait", "os/stdin-read", "os/send", "os/recv", "os/recvfrom"]);
         let site = json!({ "trait": "Sup", "followOn": false, "emit": { "success": "DONE", "failure": "FAILED" } }).to_string();
         let ok = os_completion_event_json(&site, "k", &json!({ "ok": { "code": 3 } }).to_string()).unwrap();
         assert_eq!(serde_json::from_str::<Json>(&ok).unwrap(), json!({ "event": "DONE", "payload": { "code": 3.0, "key": "k" } }));
@@ -2496,5 +2599,92 @@ mod kv_asks {
         let unplaced = OsHandles::default();
         let none = ask(&unplaced, &globbed, "kv/get", vec![v(json!("rows")), v(json!("k"))]);
         assert_eq!(none.expect_err("no namespace").kind, OsErrorKind::Unsupported, "edge: a host with no app/locale");
+    }
+}
+
+mod access_check_effects {
+    use super::*;
+
+    fn owned() -> Json {
+        json!(["=", ["object/get", "@entity", "ownerId"], "@user.id"])
+    }
+
+    fn policed(effect: Json) -> EmbeddedServer {
+        let mut program = serde_json::to_value(schema(effect)).unwrap();
+        program["orbitals"][0]["entity"] = json!({
+            "name": "Note", "persistence": "runtime", "read_policy": owned(), "create_policy": owned(),
+            "fields": [{ "name": "id", "type": "string" }, { "name": "ownerId", "type": "string" }]
+        });
+        program["orbitals"][0]["traits"][0]["linkedEntity"] = json!("Note");
+        program["orbitals"][0]["auxiliaryEntities"] = json!([{
+            "name": "Open", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }]
+        }]);
+        EmbeddedServer::new(serde_json::from_value(program).unwrap()).unwrap()
+    }
+
+    fn check(entity: &str, action: &str, owner: &str, viewer: Json) -> Json {
+        json!(["access-check", { "entity": entity, "action": action, "row": { "ownerId": owner }, "viewer": viewer }, routes()])
+    }
+
+    fn verdict(effect: Json, user: Option<Json>) -> (EventResponse, Vec<IoRequest>) {
+        run_on(policed(effect), go(user), |request| panic!("an access check asks the host nothing, asked {request:?}"))
+    }
+
+    #[test]
+    fn create_is_allowed_for_the_owner_and_denied_to_anyone_else() {
+        let (allowed, seen) = verdict(check("Note", "create", "u1", json!({ "id": "u1" })), None);
+        assert!(seen.is_empty());
+        assert_eq!(payload_of(&allowed, "OK"), json!({ "allowed": true }));
+        let (denied, _) = verdict(check("Note", "create", "u2", json!({ "id": "u1" })), None);
+        assert_eq!(payload_of(&denied, "OK"), json!({ "allowed": false }), "control: a denial is a verdict, not a failure");
+        assert!(emitted(&denied).iter().all(|(event, _)| *event != "BAD"));
+    }
+
+    #[test]
+    fn read_applies_the_owner_filter_to_the_named_viewer_not_the_dispatch_user() {
+        let (own, _) = verdict(check("Note", "read", "u2", json!({ "id": "u2" })), signed_in());
+        assert_eq!(payload_of(&own, "OK"), json!({ "allowed": true }));
+        let (other, _) = verdict(check("Note", "read", "u1", json!({ "id": "u2" })), signed_in());
+        assert_eq!(payload_of(&other, "OK"), json!({ "allowed": false }), "control: the dispatch's u1 never stands in for the viewer");
+        let (anonymous, _) = verdict(check("Note", "read", "u1", Json::Null), signed_in());
+        assert_eq!(payload_of(&anonymous, "OK"), json!({ "allowed": false }), "edge: a null viewer is nobody");
+    }
+
+    #[test]
+    fn an_entity_with_no_policy_allows_every_viewer() {
+        let (open, _) = verdict(check("Open", "create", "u9", Json::Null), None);
+        assert_eq!(payload_of(&open, "OK"), json!({ "allowed": true }));
+    }
+
+    #[test]
+    fn an_unknown_entity_is_refused_through_the_failure_route() {
+        let (refused, seen) = verdict(check("Ghost", "create", "u1", json!({ "id": "u1" })), None);
+        assert!(seen.is_empty());
+        let error = payload_of(&refused, "BAD");
+        assert_eq!(error["error"], json!("access-check: `Ghost` is not an entity of this program"));
+        assert!(emitted(&refused).iter().all(|(event, _)| *event != "OK"));
+        let (known, _) = verdict(check("Note", "create", "u1", json!({ "id": "u1" })), None);
+        assert!(emitted(&known).iter().all(|(event, _)| *event != "BAD"), "control: a declared entity is answered");
+    }
+
+    #[test]
+    fn an_unknown_action_or_a_missing_key_is_refused() {
+        let (bad_action, _) = verdict(check("Note", "upsert", "u1", json!({ "id": "u1" })), None);
+        assert_eq!(
+            payload_of(&bad_action, "BAD")["error"],
+            json!("access-check: action must be create, read, update or delete, got `upsert`")
+        );
+        let (no_viewer, _) =
+            verdict(json!(["access-check", { "entity": "Note", "action": "read", "row": {} }, routes()]), None);
+        assert_eq!(payload_of(&no_viewer, "BAD")["error"], json!("access-check: the request needs `viewer` (null for nobody)"));
+    }
+
+    #[test]
+    fn the_request_bindings_resolve_before_the_check() {
+        let effect = json!(["access-check",
+            { "entity": "Note", "action": "create", "row": { "ownerId": "@payload.principal" }, "viewer": { "id": "@payload.principal" } },
+            routes()]);
+        let (response, _) = verdict(effect, None);
+        assert_eq!(payload_of(&response, "OK"), json!({ "allowed": true }));
     }
 }

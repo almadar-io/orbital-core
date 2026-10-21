@@ -629,7 +629,10 @@ impl std::fmt::Debug for IoAnswer {
 impl IoAnswer {
     fn answers(&self, request: &IoRequest) -> bool {
         if let (IoRequest::Os { op, key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
-            return op.defers_completion() && key.is_some() && site.is_some();
+            return key.is_some() && (site.is_some() || !op.defers_completion());
+        }
+        if let (IoRequest::Http { key, .. } | IoRequest::HttpStream { key, .. }, IoAnswer::ServiceDeferred) = (request, self) {
+            return key.is_some();
         }
         if let (IoRequest::Substrate { key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
             return key.is_some() && site.is_some();
@@ -2001,6 +2004,10 @@ impl IoPort {
     fn http_answer(&self, answer: IoAnswer) -> Result<HttpResponse, TransportError> {
         match answer {
             IoAnswer::Http(out) => out,
+            IoAnswer::ServiceDeferred => {
+                *self.verdict.lock() = Some(CallVerdict::Deferred);
+                Err(TransportError::Failed(AWAITING_HOST.to_string()))
+            }
             IoAnswer::ServiceCancelled => {
                 *self.verdict.lock() = Some(CallVerdict::Cancelled);
                 Err(TransportError::Failed(CALL_CANCELLED.to_string()))
@@ -3489,6 +3496,35 @@ mod http_replay_tests {
             matches!(accept_replies(&pending, vec![reply(0), reply(0), reply(1)]), Err(ResumeError::Duplicate(id)) if id.raw() == 0)
         );
         assert!(accept_replies(&pending, vec![reply(1), reply(0)]).is_ok());
+    }
+
+    #[test]
+    fn a_keyed_os_or_http_ask_may_be_left_pending_and_an_unkeyed_one_may_not() {
+        let deferred = |request: IoRequest| {
+            accept_replies(
+                &[PendingRequest { id: RequestId::from_raw(0), request }],
+                vec![IoReply { id: RequestId::from_raw(0), answer: IoAnswer::ServiceDeferred }],
+            )
+        };
+        let os = |key: Option<&str>| IoRequest::Os {
+            op: OsOp::Getenv,
+            args: vec![Value::String("HOME".into())],
+            key: key.map(str::to_string),
+            site: None,
+        };
+        let http = |key: Option<&str>| IoRequest::Http {
+            request: get("https://a.example.com/x"),
+            key: key.map(str::to_string),
+            delay_ms: None,
+            site: None,
+        };
+        assert!(deferred(os(Some("home"))).is_ok(), "a keyed os/getenv may stay pending");
+        assert!(deferred(http(Some("fetch"))).is_ok(), "a keyed http may stay pending");
+        assert!(
+            matches!(deferred(os(None)), Err(ResumeError::WrongKind(_))),
+            "control: an unkeyed os ask has nothing to answer it later"
+        );
+        assert!(matches!(deferred(http(None)), Err(ResumeError::WrongKind(_))), "control: nor an unkeyed http");
     }
 }
 

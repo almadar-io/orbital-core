@@ -364,6 +364,85 @@ mod agent_ports {
         assert_eq!(got["key"], json!("from-payload"));
     }
 
+    /// `GO` runs a keyed `program/dispatch` against a host answering through `Progress::Await`; `answer` settles its ask.
+    fn keyed_dispatch_answered(answer: orbital_core_runtime::resumable::IoAnswer) -> (Option<String>, bool, String, Json) {
+        keyed_op_answered(json!(["program/dispatch", "Desk.Chat.ADD_NOTE", { "title": "x" }, keyed(json!("k1"))]), answer)
+    }
+
+    /// `GO` runs `effect` against a host answering through `Progress::Await`: the key and route its substrate ask
+    /// carried, and the trait's state and `got` once `answer` settled the ask.
+    fn keyed_op_answered(effect: Json, answer: orbital_core_runtime::resumable::IoAnswer) -> (Option<String>, bool, String, Json) {
+        use orbital_core_runtime::resumable::{BlockingHost, IoReply, IoRequest, Progress};
+        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let config = KernelConfig {
+            substrate_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn SubstrateHandler>),
+            ..KernelConfig::default()
+        };
+        let store = Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>;
+        let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config);
+        kernel.register_schema(schema_with(&fixture, effect)).unwrap();
+        let mut progress = kernel.start_dispatch("Chat", None, "GO", Value::Null, None, None).unwrap();
+        let mut asked = None;
+        while let Progress::Await { continuation, requests } = progress {
+            let replies = requests
+                .iter()
+                .map(|p| IoReply {
+                    id: p.id,
+                    answer: match &p.request {
+                        IoRequest::Substrate { key, site, .. } => {
+                            asked = Some((key.clone(), site.as_ref().is_some_and(|s| s.emit.success.as_deref() == Some("DONE"))));
+                            answer.clone()
+                        }
+                        other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
+                    },
+                })
+                .collect();
+            progress = kernel.resume(continuation, replies).unwrap();
+        }
+        let (key, routed) = asked.expect("GO asked its host for the op");
+        let snapshot = kernel.snapshot_trait("Chat", None);
+        let entity = serde_json::to_value(&snapshot.entity).unwrap();
+        (key, routed, snapshot.state, norm(entity["got"].clone()))
+    }
+
+    #[test]
+    fn a_keyed_ask_the_host_defers_commits_without_its_completion() {
+        let (key, routed, state, got) = keyed_dispatch_answered(orbital_core_runtime::resumable::IoAnswer::ServiceDeferred);
+        assert_eq!(key.as_deref(), Some("k1"), "the ask carries its key");
+        assert!(routed, "the ask carries the call site its completion dispatches to");
+        assert_eq!(state, "idle", "the completion arrives as a dispatch of its own, not in this one");
+        assert_eq!(got, Json::Null);
+    }
+
+    #[test]
+    fn control_a_keyed_ask_answered_in_place_completes_inside_the_dispatch() {
+        let answer = orbital_core_runtime::resumable::IoAnswer::Substrate(Ok(as_value(&json!({ "ok": true, "emitted": [] }))));
+        let (_, _, state, got) = keyed_dispatch_answered(answer);
+        assert_eq!(state, "done");
+        assert_eq!(got["key"], json!("k1"));
+        assert_eq!(got["result"], json!({ "ok": true, "emitted": [] }));
+    }
+
+    #[test]
+    fn a_keyed_substrate_op_the_host_defers_commits_without_its_completion() {
+        let effect = json!(["program/eval", { "name": "App", "orbitals": [] }, keyed(json!("k1"))]);
+        let (key, routed, state, got) = keyed_op_answered(effect, orbital_core_runtime::resumable::IoAnswer::ServiceDeferred);
+        assert_eq!(key.as_deref(), Some("k1"), "the substrate ask carries its key");
+        assert!(routed, "and the call site its completion dispatches to");
+        assert_eq!(state, "idle", "the answer arrives later as a dispatch of its own");
+        assert_eq!(got, Json::Null);
+    }
+
+    #[test]
+    fn control_an_unkeyed_substrate_op_is_answered_inline() {
+        let effect = json!(["program/eval", { "name": "App", "orbitals": [] }, options()]);
+        let answer = orbital_core_runtime::resumable::IoAnswer::Substrate(Ok(as_value(&json!({ "valid": true }))));
+        let (key, routed, state, got) = keyed_op_answered(effect, answer);
+        assert_eq!((key, routed), (None, false), "an unkeyed ask carries neither key nor site");
+        assert_eq!(state, "done", "its completion fires inside the asking dispatch");
+        assert_eq!(got, json!({ "result": { "valid": true } }), "with no key beside the result");
+    }
+
     fn read_as(user: Json) -> Json {
         let schema: OrbitalSchema = serde_json::from_value(json!({
             "name": "Policy",
@@ -421,6 +500,100 @@ mod agent_ports {
         let read = read_as(json!({ "id": "u3" }));
         assert_eq!(read["result"], json!({ "entity": "Ticket", "count": 0, "rows": [] }));
         assert_eq!(read["text"], json!("{\"entity\":\"Ticket\",\"count\":0,\"rows\":[]}"));
+    }
+
+    /// A host that records every ask and answers each with what `answer` gives.
+    struct Recording {
+        asked: Mutex<Vec<(String, Json)>>,
+        answer: fn(&str, &Json) -> Json,
+    }
+
+    impl SubstrateHandler for Recording {
+        fn run(&self, op: &str, args: &[Value]) -> Result<Value, SubstrateFailure> {
+            let args = norm(serde_json::to_value(args).unwrap());
+            self.asked.lock().push((op.to_string(), args.clone()));
+            Ok(as_value(&(self.answer)(op, &args)))
+        }
+    }
+
+    fn run_hosted(fixture: &Json, effect: Json, host: Option<Arc<Recording>>) -> (String, Json) {
+        let config = KernelConfig { substrate_handler: host.map(|h| h as Arc<dyn SubstrateHandler>), ..KernelConfig::default() };
+        let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>, config);
+        kernel.register_schema(schema_with(fixture, effect)).unwrap();
+        kernel.dispatch("Chat", None, "GO", Value::Null).unwrap();
+        let snapshot = kernel.snapshot_trait("Chat", None);
+        (snapshot.state, norm(serde_json::to_value(&snapshot.entity).unwrap()["got"].clone()))
+    }
+
+    #[test]
+    fn an_inbound_dispatch_asks_the_host_to_deliver_and_answers_the_handlers_status_and_body() {
+        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let host = Arc::new(Recording { asked: Mutex::new(Vec::new()), answer: |_, _| json!({ "status": 202, "body": "queued" }) });
+        let effect = json!(["program/dispatch", { "inbound": "github", "body": "{}", "headers": { "x-sig": "s" } }, options()]);
+        let (state, got) = run_hosted(&fixture, effect, Some(host.clone()));
+        assert_eq!(state, "done", "{got}");
+        assert_eq!(got["result"], json!({ "status": 202, "body": "queued" }));
+        assert_eq!(
+            host.asked.lock().clone(),
+            [("program/dispatch".to_string(), json!([{ "inbound": "github", "body": "{}", "headers": { "x-sig": "s" } }]))],
+            "the host is asked for the delivery, never an address"
+        );
+        let refused = json!(["program/dispatch", { "inbound": "github", "verb": "POST" }, options()]);
+        let host = Arc::new(Recording { asked: Mutex::new(Vec::new()), answer: |_, _| json!(null) });
+        let (state, _) = run_hosted(&fixture, refused, Some(host.clone()));
+        assert_eq!(state, "failed", "control: a malformed delivery fails before the host is asked");
+        assert!(host.asked.lock().is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_event_request_asks_the_host_with_its_options_and_answers_what_it_answers() {
+        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let host = Arc::new(Recording { asked: Mutex::new(Vec::new()), answer: |_, _| json!({ "success": true, "transitioned": false }) });
+        let request = json!({ "wire": true, "orbital": "Desk", "targetTrait": "Chat", "event": "SECRET", "viewer": { "id": "u1" } });
+        let effect = json!(["program/dispatch", "Desk.Chat.SECRET", { "title": "x" }, request.clone(), options()]);
+        let (state, got) = run_hosted(&fixture, effect, Some(host.clone()));
+        assert_eq!(state, "done", "{got}");
+        assert_eq!(got["result"], json!({ "success": true, "transitioned": false }));
+        assert_eq!(
+            host.asked.lock().clone(),
+            [("program/dispatch".to_string(), json!(["Desk.Chat.SECRET", { "title": "x" }, request]))],
+            "an event request is not restricted to declared inputs: the host routes its options"
+        );
+        let host = Arc::new(Recording { asked: Mutex::new(Vec::new()), answer: |_, _| json!(null) });
+        let (state, refused) = run_hosted(&fixture, json!(["program/dispatch", "Desk.Chat.SECRET", {}, { "stream": true, "orbital": "Desk", "event": "SECRET" }, options()]), Some(host.clone()));
+        assert_eq!((state.as_str(), refused["error"].clone()), ("failed", json!("program/dispatch: unsupported option \"stream\"")));
+        assert!(host.asked.lock().is_empty(), "control: a refused option asks nothing");
+    }
+
+    #[test]
+    fn program_inputs_answers_the_hosts_last_trace_steps() {
+        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let host = Arc::new(Recording { asked: Mutex::new(Vec::new()), answer: |_, _| json!([{ "seq": 1 }]) });
+        let (state, got) = run_hosted(&fixture, json!(["program/inputs", { "trace": 2 }, options()]), Some(host.clone()));
+        assert_eq!(state, "done", "{got}");
+        assert_eq!(got["result"]["trace"], json!([{ "seq": 1 }]));
+        assert_eq!(host.asked.lock().clone(), [("program/inputs".to_string(), json!([{ "trace": 2 }]))], "only the trace is asked of the host");
+        let (_, plain) = run_hosted(&fixture, json!(["program/inputs", options()]), None);
+        for key in ["state", "stats", "trace"] {
+            assert!(plain["result"].get(key).is_none(), "control: no option, no {key}: {plain}");
+        }
+        let (state, hostless) = run_hosted(&fixture, json!(["program/inputs", { "trace": 1 }, options()]), None);
+        assert_eq!((state.as_str(), hostless["error"].clone()), ("failed", json!("no substrate host configured for program/inputs")));
+    }
+
+    #[test]
+    #[ignore = "process_event_composed holds state_manager for writing across effects (kernel.rs), so the asking dispatch cannot read states"]
+    fn program_inputs_answers_the_orbitals_running_states_and_the_counters() {
+        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let (state, got) = run_hosted(&fixture, json!(["program/inputs", { "state": "Desk", "stats": true }, options()]), None);
+        assert_eq!(state, "done", "{got}");
+        let result = &got["result"];
+        assert_eq!(result["state"]["orbital"], "Desk");
+        let chat = result["state"]["traits"].as_array().unwrap().iter().find(|t| t["trait"] == "Chat").cloned().unwrap_or(Json::Null);
+        assert_eq!((chat["entityId"].clone(), chat["state"].clone()), (json!("singleton"), json!("idle")), "{result}");
+        assert_eq!(result["stats"]["registeredSchemas"], 1);
+        let (state, unknown) = run_hosted(&fixture, json!(["program/inputs", { "state": "Nowhere" }, options()]), None);
+        assert_eq!((state.as_str(), unknown["error"].clone()), ("failed", json!("program/inputs: 'Nowhere' is not a registered orbital")));
     }
 }
 

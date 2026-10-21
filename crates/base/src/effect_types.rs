@@ -219,6 +219,14 @@ pub enum Effect {
         emit: Option<FetchEmit>,
     },
 
+    /// The kernel's verdict on one access policy (`crate::runtime::entity_access`): `request` is
+    /// `{ entity, action, row, viewer }`; success carries `{ allowed }`. Server-only, answered with no host ask.
+    AccessCheck {
+        request: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
     /// Start an OAuth authorization: success carries `{ authUrl, state }`.
     OAuthAuthorize {
         client: Value,
@@ -405,6 +413,7 @@ impl Effect {
             | Effect::CredentialStatus { emit, .. }
             | Effect::CredentialForget { emit, .. }
             | Effect::CredentialAdmin { emit, .. }
+            | Effect::AccessCheck { emit, .. }
             | Effect::OAuthAuthorize { emit, .. }
             | Effect::OAuthConnectionStatus { emit, .. }
             | Effect::OAuthConnectionForget { emit, .. }
@@ -441,6 +450,7 @@ impl Effect {
             | Effect::CredentialStatus { emit, .. }
             | Effect::CredentialForget { emit, .. }
             | Effect::CredentialAdmin { emit, .. }
+            | Effect::AccessCheck { emit, .. }
             | Effect::OAuthAuthorize { emit, .. }
             | Effect::OAuthConnectionStatus { emit, .. }
             | Effect::OAuthConnectionForget { emit, .. }
@@ -489,6 +499,7 @@ impl Effect {
             Effect::CredentialStatus { .. } => "credential-status",
             Effect::CredentialForget { .. } => "credential-forget",
             Effect::CredentialAdmin { op, .. } => op.name(),
+            Effect::AccessCheck { .. } => "access-check",
             Effect::OAuthAuthorize { .. } => "oauth-authorize",
             Effect::OAuthConnectionStatus { .. } => "oauth-connection-status",
             Effect::OAuthConnectionForget { .. } => "oauth-connection-forget",
@@ -865,6 +876,7 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
         admin if crate::credential_admin::CredentialAdminOp::from_name(admin).is_some() => {
             parse_credential_admin(admin, args)
         }
+        "access-check" => parse_access_check(args),
         "oauth-authorize" => parse_oauth_authorize(args),
         "oauth-connection-status" => parse_oauth_connection(args, true),
         "oauth-connection-forget" => parse_oauth_connection(args, false),
@@ -950,6 +962,7 @@ pub fn is_known_effect_name(op: &str) -> bool {
             | "random-bytes"
             | "credential-status"
             | "credential-forget"
+            | "access-check"
             | "oauth-authorize"
             | "oauth-connection-status"
             | "oauth-connection-forget"
@@ -1437,6 +1450,17 @@ fn parse_credential_admin(head: &str, args: &[SExpression]) -> Option<Effect> {
     Some(Effect::CredentialAdmin { op, request, emit })
 }
 
+/// `["access-check", request, { emit? }?]`.
+fn parse_access_check(args: &[SExpression]) -> Option<Effect> {
+    if !(1..=2).contains(&args.len()) {
+        return None;
+    }
+    let emit = args
+        .get(1)
+        .and_then(|options| parse_emit_config(&Value::from(options.clone())));
+    Some(Effect::AccessCheck { request: Value::from(args[0].clone()), emit })
+}
+
 /// `["oauth-authorize", client, options, { key?, emit? }?]`.
 fn parse_oauth_authorize(args: &[SExpression]) -> Option<Effect> {
     if !(2..=3).contains(&args.len()) {
@@ -1759,6 +1783,19 @@ mod tests {
             assert_eq!(parse_effect(&bare).is_none(), op.takes_request(), "{}: only an effect that takes a request needs one", op.name());
         }
         assert!(!is_known_effect_name("credential-purge"));
+        let check: SExpression = serde_json::from_str(
+            r#"["access-check", {"entity": "Note", "action": "read", "row": {}, "viewer": null}, {"emit": {"success": "S", "failure": "F"}}]"#,
+        )
+        .unwrap();
+        match parse_effect(&check).unwrap() {
+            Effect::AccessCheck { request, emit } => {
+                assert_eq!(request.get_path("entity"), Some(&Value::String("Note".into())));
+                assert_eq!(emit.and_then(|e| e.failure).as_deref(), Some("F"));
+            }
+            other => panic!("expected AccessCheck, got {other:?}"),
+        }
+        assert!(is_known_effect_name("access-check"));
+        assert!(parse_effect(&serde_json::from_str(r#"["access-check"]"#).unwrap()).is_none(), "control: the request is required");
     }
 
     #[test]

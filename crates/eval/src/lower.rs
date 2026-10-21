@@ -257,6 +257,7 @@ impl ExprLowerer {
             admin if orbital_core_base::credential_admin::CredentialAdminOp::from_name(admin).is_some() => {
                 self.resolve_credential_admin_effect(admin, args)
             }
+            "access-check" => self.resolve_access_check_effect(args),
             "oauth-authorize" => self.resolve_oauth_authorize_effect(args),
             "oauth-connection-status" => self.resolve_oauth_connection_effect(args, true),
             "oauth-connection-forget" => self.resolve_oauth_connection_effect(args, false),
@@ -1592,6 +1593,17 @@ impl ExprLowerer {
         let emit = self.resolve_emit_only_options(head, args.get(first))?;
         let request = if op.takes_request() { self.resolve_sexpr(&args[0])? } else { OirExpr::null() };
         Ok(OirExpr::effect(OirEffect::credential_admin(op, request, emit)))
+    }
+
+    fn resolve_access_check_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+        // Format: ["access-check", { entity, action, row, viewer }, { emit? }?]
+        if !(1..=2).contains(&args.len()) {
+            return Err(LowerError::InvalidSExpr(
+                "access-check takes a request object and optional options".to_string(),
+            ));
+        }
+        let emit = self.resolve_emit_only_options("access-check", args.get(1))?;
+        Ok(OirExpr::effect(OirEffect::access_check(self.resolve_sexpr(&args[0])?, emit)))
     }
 
     fn resolve_oauth_authorize_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {

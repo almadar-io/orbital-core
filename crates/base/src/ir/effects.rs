@@ -307,6 +307,14 @@ pub enum OirEffect {
         emit: Option<OirEmitConfig>,
     },
 
+    /// The kernel's verdict on one access policy; `request` is `{ entity, action, row, viewer }`, success carries
+    /// `{ allowed }`. Server-only.
+    AccessCheck {
+        request: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
     /// Start an OAuth authorization for `client`; success carries `{ authUrl, state }`. Server-only.
     OAuthAuthorize {
         client: OirExpr,
@@ -958,6 +966,11 @@ impl OirEffect {
         Self::CredentialAdmin { op, request, emit }
     }
 
+    /// Create an access-check effect
+    pub fn access_check(request: OirExpr, emit: Option<OirEmitConfig>) -> Self {
+        Self::AccessCheck { request, emit }
+    }
+
     /// Get the effect kind as a string
     pub fn kind(&self) -> &'static str {
         match self {
@@ -984,6 +997,7 @@ impl OirEffect {
             Self::CredentialStatus { .. } => "credential-status",
             Self::CredentialForget { .. } => "credential-forget",
             Self::CredentialAdmin { op, .. } => op.name(),
+            Self::AccessCheck { .. } => "access-check",
             Self::OAuthAuthorize { .. } => "oauth-authorize",
             Self::OAuthConnectionStatus { .. } => "oauth-connection-status",
             Self::OAuthConnectionForget { .. } => "oauth-connection-forget",
@@ -1234,6 +1248,7 @@ impl OirEffect {
                 credential: expr, ..
             }
             | Self::CredentialAdmin { request: expr, .. }
+            | Self::AccessCheck { request: expr, .. }
             | Self::OAuthConnectionStatus { provider: expr, .. }
             | Self::OAuthConnectionForget { provider: expr, .. } => {
                 expr.collect_bindings()
@@ -1546,6 +1561,7 @@ impl OirEffect {
                 credential: expr, ..
             }
             | Self::CredentialAdmin { request: expr, .. }
+            | Self::AccessCheck { request: expr, .. }
             | Self::OAuthConnectionStatus { provider: expr, .. }
             | Self::OAuthConnectionForget { provider: expr, .. } => out.push(expr),
             Self::OAuthAuthorize {

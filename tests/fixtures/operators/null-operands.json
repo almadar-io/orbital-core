@@ -272,6 +272,7 @@
 {"operator":"hash/pbkdf2","position":3,"expr":["hash/pbkdf2","cGFzc3dvcmQ=","c2FsdA==",1,32],"rejects":true},
 {"operator":"hash/sha256","position":0,"expr":["hash/sha256","abc","hex"],"rejects":true},
 {"operator":"hash/sha256","position":1,"expr":["hash/sha256","abc","hex"],"rejects":true},
+{"operator":"hash/sha256","position":2,"expr":["hash/sha256","abc","hex","text"],"rejects":true},
 {"operator":"hmac/sha256","position":0,"expr":["hmac/sha256","Jefe","what do ya want for nothing?","hex"],"rejects":true},
 {"operator":"hmac/sha256","position":1,"expr":["hmac/sha256","Jefe","what do ya want for nothing?","hex"],"rejects":true},
 {"operator":"hmac/sha256","position":2,"expr":["hmac/sha256","Jefe","what do ya want for nothing?","hex"],"rejects":true},

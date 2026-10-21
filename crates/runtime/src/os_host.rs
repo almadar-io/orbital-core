@@ -197,6 +197,7 @@ fn defer(
         OsOp::Send => net::send_later(args, key, site, host),
         OsOp::Recv => net::recv_later(args, key, site, host),
         OsOp::Recvfrom => net::recvfrom_later(args, key, site, host),
+        OsOp::StdinRead => process::stdin_later(args, key, site, host),
         _ => return None,
     })
 }

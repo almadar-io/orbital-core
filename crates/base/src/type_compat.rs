@@ -374,6 +374,17 @@ impl CompatType {
     }
 }
 
+/// The strings of a closed string set written as a literal union (`"a" | "b"`), when `t` is one.
+pub fn literal_union_members(t: &str) -> Option<Vec<&str>> {
+    is_string_literal_union(t).then(|| t.split(" | ").map(|arm| &arm[1..arm.len() - 1]).collect())
+}
+
+/// The literal union (`"a" | "b"`) that writes a closed string set, when every member can be written in one.
+pub fn literal_union_text(values: &[String]) -> Option<String> {
+    (!values.is_empty() && values.iter().all(|v| !v.contains(['"', '\\']) && !v.contains(" | ")))
+        .then(|| values.iter().map(|v| format!("\"{v}\"")).collect::<Vec<_>>().join(" | "))
+}
+
 fn is_string_literal_union(t: &str) -> bool {
     t.split(" | ").all(|arm| {
         arm.len() >= 2

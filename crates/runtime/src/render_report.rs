@@ -2,37 +2,16 @@
 //! program's render probe, read by `orb`.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 
+/// One Layer 2 check. The probe fills `name` and `offenders`; `orb verify` judges
+/// `passed` and `detail` through `std-render-report`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderVerdict {
     pub name: String,
     pub passed: bool,
     pub detail: String,
-}
-
-impl RenderVerdict {
-    /// Passed when there are no offenders; otherwise the count and the sorted distinct offenders.
-    pub fn new(name: &str, offenders: Vec<String>) -> Self {
-        let passed = offenders.is_empty();
-        let detail = if passed {
-            String::new()
-        } else {
-            let mut uniq: Vec<String> = offenders
-                .iter()
-                .cloned()
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect();
-            uniq.sort();
-            format!("{} offender(s): {}", offenders.len(), uniq.join(", "))
-        };
-        RenderVerdict {
-            name: name.to_string(),
-            passed,
-            detail,
-        }
-    }
+    #[serde(skip)]
+    pub offenders: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -58,58 +37,34 @@ pub struct RenderReport {
     pub stubbed: Vec<String>,
 }
 
-impl RenderReport {
-    pub fn ok(&self) -> bool {
-        self.verdicts.iter().all(|v| v.passed)
-    }
-    pub fn headline(&self) -> String {
-        let status = if self.ok() { "PASS" } else { "FAIL" };
-        let passed = self.verdicts.iter().filter(|v| v.passed).count();
-        let trait_tag = self
-            .traits
-            .as_ref()
-            .map(|t| format!("[trait {}] ", t.join(", ")))
-            .unwrap_or_default();
-        let stubs = if self.stubbed.is_empty() { String::new() } else { format!(", {} stubbed", self.stubbed.len()) };
-        format!(
-            "{trait_tag}[{status}] {} (client render) — {}/{} checks, {} slots{stubs}",
-            self.item,
-            passed,
-            self.verdicts.len(),
-            self.slots_rendered
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn offenders_are_counted_and_listed_once_sorted() {
-        let v = RenderVerdict::new("renderer_coverage", vec!["b".into(), "a".into(), "b".into()]);
-        assert!(!v.passed);
-        assert_eq!(v.detail, "3 offender(s): a, b");
-    }
-
-    #[test]
-    fn control_no_offenders_passes_with_no_detail() {
-        let v = RenderVerdict::new("renderer_coverage", vec![]);
-        assert!(v.passed && v.detail.is_empty());
-    }
-
-    #[test]
-    fn a_report_round_trips_as_json() {
+    fn a_report_round_trips_as_json_without_its_offenders() {
         let report = RenderReport {
             item: "x".into(),
-            verdicts: vec![RenderVerdict::new("a", vec![])],
+            verdicts: vec![RenderVerdict {
+                name: "a".into(),
+                passed: true,
+                detail: String::new(),
+                offenders: vec![],
+            }],
             slots_rendered: 2,
             access_scoped_empty: vec![],
             traits: None,
             stubbed: vec![],
         };
-        let back: RenderReport = serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+        let back: RenderReport =
+            serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
         assert_eq!(back, report);
-        assert_eq!(back.headline(), "[PASS] x (client render) — 1/1 checks, 2 slots");
+        let mut judged = report.clone();
+        judged.verdicts[0].offenders = vec!["o".into()];
+        assert_eq!(
+            serde_json::to_string(&judged).unwrap(),
+            serde_json::to_string(&report).unwrap(),
+            "offenders never reach verify-report.json"
+        );
     }
 }

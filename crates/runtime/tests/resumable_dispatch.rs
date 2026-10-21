@@ -1430,6 +1430,23 @@ fn the_wire_round_trips_every_request_and_answer() {
             key: None,
             site: None,
         },
+        IoRequest::Substrate {
+            op: "program/dispatch".into(),
+            args: vec![Value::Null],
+            key: Some("k".into()),
+            site: Some(CallSite {
+                orbital: Some("Desk".into()),
+                trait_name: "Agent".into(),
+                follow_on: false,
+                entity_id: "singleton".to_string(),
+                emit: CallRoutes {
+                    success: Some("DONE".into()),
+                    failure: Some("FAILED".into()),
+                    cancelled: None,
+                    on_message: None,
+                },
+            }),
+        },
         IoRequest::Deliver {
             envelope: sample_envelope(),
             key: Some("k".into()),

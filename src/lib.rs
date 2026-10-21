@@ -61,7 +61,6 @@ pub mod oauth {
 }
 pub use orbital_core_base::renderer_packs;
 pub use orbital_core_base::route;
-pub use orbital_core_runtime::renderer_coverage;
 pub mod runtime {
     pub use orbital_core_base::dispatch_mode;
     pub use orbital_core_runtime::agent_ports;
@@ -117,7 +116,6 @@ pub mod runtime {
     pub use orbital_core_runtime::http_service;
     pub use orbital_core_runtime::auth;
     pub use orbital_core_runtime::kernel;
-    pub use orbital_core_runtime::key_chord;
     pub use orbital_core_runtime::oauth_flow;
     #[cfg(not(target_arch = "wasm32"))]
     pub use orbital_core_runtime::os_host;

@@ -23,11 +23,14 @@ pub struct InboundRoute {
     pub verifies: Option<InboundVerification>,
 }
 
-/// The HTTP answer the host writes: the status and the JSON text of the body.
+/// The HTTP answer the host writes: the status and the JSON text of the body. `stderr`, when the answer carries one,
+/// is diagnostic text a terminal host (`orb <command>`) prints to its standard error; an HTTP host does not send it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboundAnswer {
     pub status: u16,
     pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
 }
 
 /// Every inbound handler the program declares, in schema order.
@@ -81,6 +84,7 @@ pub fn unknown_hook(name: &str) -> InboundAnswer {
     InboundAnswer {
         status: 404,
         body: error_body(&format!("Unknown hook provider: {name}")),
+        stderr: None,
     }
 }
 
@@ -89,6 +93,7 @@ pub fn dispatch_failed(message: &str) -> InboundAnswer {
     InboundAnswer {
         status: 500,
         body: error_body(message),
+        stderr: None,
     }
 }
 
@@ -105,6 +110,23 @@ pub fn cascade_capped(cap: usize, trait_name: &str, event: &str) -> InboundAnswe
             "event": event,
         })
         .to_string(),
+        stderr: None,
+    }
+}
+
+/// The answer for a delivery whose handler never emitted its answer event and has no open call left that could bring
+/// one: a waiting host would otherwise park forever, so the stall is the answer, naming the handler's trait and event.
+pub fn inbound_unanswered(trait_name: &str, event: &str) -> InboundAnswer {
+    InboundAnswer {
+        status: 500,
+        body: serde_json::json!({
+            "error": format!("inbound-unanswered: {trait_name} handled {event}, but it never emitted its answer event and no open call is left that could bring one"),
+            "code": "inbound-unanswered",
+            "trait": trait_name,
+            "event": event,
+        })
+        .to_string(),
+        stderr: None,
     }
 }
 
@@ -183,17 +205,24 @@ pub fn inbound_only_message(trait_name: &str, event: &str) -> String {
 }
 
 /// The answer a dispatch produced: the first emit of the route's answer event, whose payload is
-/// `{ status, body }`. A dispatch that emitted none, or one whose payload is not that shape, is a 500.
+/// `{ status, body, stderr? }` (`stderr` absent or null is none). A dispatch that emitted none, or one whose payload is
+/// not that shape, is a 500.
 pub fn answer_of<'a>(route: &InboundRoute, emits: impl IntoIterator<Item = (&'a str, &'a Value)>) -> InboundAnswer {
     let Some((_, payload)) = emits.into_iter().find(|(event, _)| *event == route.answer) else {
         return dispatch_failed("inbound-unanswered");
     };
     let status = payload.get_path("status").and_then(Value::as_number);
     let body = payload.get_path("body").and_then(Value::as_str);
-    match (status, body) {
-        (Some(s), Some(b)) if s.fract() == 0.0 && (100.0..=599.0).contains(&s) => InboundAnswer {
+    let stderr = match payload.get_path("stderr") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(_) => Err(()),
+    };
+    match (status, body, stderr) {
+        (Some(s), Some(b), Ok(stderr)) if s.fract() == 0.0 && (100.0..=599.0).contains(&s) => InboundAnswer {
             status: s as u16,
             body: b.to_string(),
+            stderr,
         },
         _ => dispatch_failed("inbound-answer-invalid"),
     }
@@ -407,7 +436,44 @@ mod tests {
             answer,
             InboundAnswer {
                 status: 400,
-                body: "{\"error\":\"bad-token\"}".into()
+                body: "{\"error\":\"bad-token\"}".into(),
+                stderr: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_stalled_delivery_answers_naming_the_handler() {
+        let answer = inbound_unanswered("VerifyWalkCli", "VERIFY_WALK_CALLED");
+        assert_eq!(answer.status, 500);
+        let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+        assert_eq!(body["code"], "inbound-unanswered");
+        assert_eq!(body["trait"], "VerifyWalkCli");
+        assert_eq!(body["event"], "VERIFY_WALK_CALLED");
+        assert!(body["error"].as_str().unwrap().starts_with("inbound-unanswered: VerifyWalkCli handled VERIFY_WALK_CALLED"));
+    }
+
+    #[test]
+    fn an_answer_carries_its_stderr_and_one_without_or_with_null_stderr_has_none() {
+        let with: Value = serde_json::from_value(json!({ "status": 500, "body": "", "stderr": "orb x: failed" })).unwrap();
+        let answer = answer_of(&route(), [("PUSH_ANSWERED", &with)]);
+        assert_eq!(
+            answer,
+            InboundAnswer {
+                status: 500,
+                body: String::new(),
+                stderr: Some("orb x: failed".into())
+            }
+        );
+        let null: Value = serde_json::from_value(json!({ "status": 200, "body": "ok", "stderr": null })).unwrap();
+        assert_eq!(answer_of(&route(), [("PUSH_ANSWERED", &null)]).stderr, None);
+        let without = emit(json!(200), json!("ok"));
+        assert_eq!(
+            answer_of(&route(), [("PUSH_ANSWERED", &without)]),
+            InboundAnswer {
+                status: 200,
+                body: "ok".into(),
+                stderr: None
             }
         );
     }
@@ -425,6 +491,7 @@ mod tests {
             emit(json!(99), json!("{}")),
             emit(json!(600), json!("{}")),
             emit(json!(200), json!(1)),
+            serde_json::from_value(json!({ "status": 200, "body": "", "stderr": 1 })).unwrap(),
         ] {
             let answer = answer_of(&route(), [("PUSH_ANSWERED", &bad)]);
             assert_eq!(
@@ -446,7 +513,7 @@ mod tests {
         let answer: Value = serde_json::from_value(answer).unwrap();
         let other: Value = serde_json::from_value(other).unwrap();
         let emitted = [("NOISE", &other), ("PUSH_ANSWERED", &answer)];
-        assert_eq!(answer_of_response(&calendar_route(), emitted, Some("ignored")), InboundAnswer { status: 202, body: "ok".into() });
+        assert_eq!(answer_of_response(&calendar_route(), emitted, Some("ignored")), InboundAnswer { status: 202, body: "ok".into(), stderr: None });
     }
 
     #[test]

@@ -1101,7 +1101,7 @@ fn bind_type(
             K::PickOf { .. } | K::OmitOf { .. } | K::MergeOf { .. } | K::ChildrenOf { .. } => Ok(()),
             K::Shape => match (&actual.text, mode) {
                 (Some(text), _) => {
-                    b.shape = Some(text.clone());
+                    b.shape = Some(crate::ir::types::DeclaredShape::name_of(text).into_owned());
                     Ok(())
                 }
                 (None, Mode::Runtime) => match known {
@@ -1194,7 +1194,7 @@ fn bind_unknown(
         }
         K::Shape => {
             if let Some(text) = &actual.text {
-                b.shape = Some(text.clone());
+                b.shape = Some(crate::ir::types::DeclaredShape::name_of(text).into_owned());
             }
             Ok(())
         }

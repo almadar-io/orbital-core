@@ -951,7 +951,97 @@ pub fn payload_field_shape(field: &crate::schema::types::PayloadField) -> OirTyp
                 record
             }
         }
-        None => payload_type_shape(&field.field_type),
+        None => match field.values.as_deref().and_then(crate::type_compat::literal_union_text) {
+            Some(members) if field.field_type == "string" || field.field_type == "enum" => {
+                OirType::Enum { name: members }
+            }
+            _ => payload_type_shape(&field.field_type),
+        },
+    }
+}
+
+/// A declared type as `orb resolve` records it where the kernel checks a value at run time (a `json/parse` shape, a
+/// `typed` declaration): the type, with the definition of every program type it names, transitively, so a recursive
+/// alias stays finite; `name` is the program's name for it, when it has one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeclaredShape {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "type")]
+    pub ty: OirType,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub named: std::collections::BTreeMap<String, OirType>,
+}
+
+impl DeclaredShape {
+    /// `ty` with the definitions, from the program's `aliases`, of every alias it names, transitively.
+    pub fn with_named(
+        name: Option<String>,
+        ty: OirType,
+        aliases: &std::collections::BTreeMap<String, Vec<crate::schema::types::PayloadField>>,
+    ) -> Self {
+        let mut named = std::collections::BTreeMap::new();
+        let mut pending: Vec<String> = Vec::new();
+        names_in(&ty, &mut pending);
+        while let Some(next) = pending.pop() {
+            if named.contains_key(&next) {
+                continue;
+            }
+            let Some(members) = aliases.get(&next) else {
+                continue;
+            };
+            let shape = declared_alias_shape(members);
+            names_in(&shape, &mut pending);
+            named.insert(next, shape);
+        }
+        Self { name, ty, named }
+    }
+
+    /// The program alias `name` as a declared shape, when `aliases` declares it.
+    pub fn of_alias(
+        name: &str,
+        aliases: &std::collections::BTreeMap<String, Vec<crate::schema::types::PayloadField>>,
+    ) -> Option<Self> {
+        let members = aliases.get(name)?;
+        Some(Self::with_named(Some(name.to_string()), declared_alias_shape(members), aliases))
+    }
+
+    /// The declared shape a recorded text writes: this form, or a bare `OirType` (no named types); `None` for text
+    /// that is neither (a type name).
+    pub fn parse(text: &str) -> Option<Self> {
+        if !text.starts_with('{') {
+            return None;
+        }
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        if value.get("type").is_some() && value.get("kind").is_none() {
+            return serde_json::from_value(value).ok();
+        }
+        let ty: OirType = serde_json::from_value(value).ok()?;
+        Some(Self { name: None, ty, named: Default::default() })
+    }
+
+    /// The program's name for the shape a recorded text writes: the shape's `name`, or the text itself (a type name).
+    pub fn name_of(text: &str) -> std::borrow::Cow<'_, str> {
+        match Self::parse(text).and_then(|shape| shape.name) {
+            Some(name) => std::borrow::Cow::Owned(name),
+            None => std::borrow::Cow::Borrowed(text),
+        }
+    }
+}
+
+/// Every name `ty` refers to by name (`TypeRef`, `Reference`).
+fn names_in(ty: &OirType, out: &mut Vec<String>) {
+    match ty {
+        OirType::TypeRef { name } | OirType::Reference { entity: name } => out.push(name.clone()),
+        OirType::Array { inner } | OirType::Optional { inner } => names_in(inner, out),
+        OirType::Map { key, value } => {
+            names_in(key, out);
+            names_in(value, out);
+        }
+        OirType::Tuple { items } => items.iter().for_each(|item| names_in(item, out)),
+        OirType::Struct { fields } => fields.iter().for_each(|f| names_in(&f.field_type, out)),
+        OirType::Union { variants } => variants.iter().for_each(|v| names_in(&v.field_type, out)),
+        _ => {}
     }
 }
 

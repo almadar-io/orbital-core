@@ -21,8 +21,11 @@
 use crate::identity::{
     derive_id, derive_node_id, IdKind, IdentityLedger, LedgerEntry, LedgerOwner,
 };
-use crate::schema::types::{ConfigField, EntityRef, FieldDefinition, ListenSource, Orbital, OrbitalSchema, PageRef, TraitDefinition, TraitReference};
 use crate::schema::sexpr::SExpression;
+use crate::schema::types::{
+    ConfigField, EntityRef, FieldDefinition, ListenSource, Orbital, OrbitalSchema, PageRef,
+    TraitDefinition, TraitReference,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The `.orb` identity schema version stamped once ids are minted.
@@ -65,44 +68,68 @@ pub fn ensure_stamped(schema: &mut OrbitalSchema) {
 }
 
 /// Id allocator: reuses prior ids by `(kind, bakedName, parentId)`, mints fresh
-/// otherwise, and accumulates the emitted ledger.
+/// otherwise, and accumulates the emitted ledger. Several nodes can share one
+/// key (a trait `A` in two orbitals), so each prior id is handed out once.
 struct Minter<'a> {
-    /// `(kind, bakedName, parentId) -> id`, built from the prior ledger.
-    prior_by_key: HashMap<(IdKind, String, Option<String>), String>,
+    /// `(kind, bakedName, parentId) -> ids`, built from the prior ledger, sorted.
+    prior_by_key: HashMap<(IdKind, String, Option<String>), Vec<String>>,
     prior_ledger: Option<&'a IdentityLedger>,
     /// The program's name — the scope every derived id is rooted in.
     scope: String,
-    /// How many nodes have been derived per `(kind, bakedName, parentId)`.
+    /// How many declaration nodes have been minted per `(kind, bakedName, parentId)`.
     derived: HashMap<(IdKind, String, Option<String>), usize>,
+    claimed: HashSet<String>,
     entries: BTreeMap<String, LedgerEntry>,
 }
 
 impl<'a> Minter<'a> {
     fn new(prior_ledger: Option<&'a IdentityLedger>, scope: &str) -> Self {
-        let mut prior_by_key = HashMap::new();
+        let mut prior_by_key: HashMap<(IdKind, String, Option<String>), Vec<String>> =
+            HashMap::new();
         if let Some(ledger) = prior_ledger {
             for entry in ledger.entries.values() {
-                prior_by_key.insert(
-                    (entry.kind, entry.baked_name.clone(), entry.parent.clone()),
-                    entry.id.clone(),
-                );
+                prior_by_key
+                    .entry((entry.kind, entry.baked_name.clone(), entry.parent.clone()))
+                    .or_default()
+                    .push(entry.id.clone());
             }
+        }
+        for ids in prior_by_key.values_mut() {
+            ids.sort();
         }
         Minter {
             prior_by_key,
             prior_ledger,
             scope: scope.to_string(),
             derived: HashMap::new(),
+            claimed: HashSet::new(),
             entries: BTreeMap::new(),
         }
     }
 
-    /// Reuse a prior id for `(kind, baked, parent)` if one exists, copying its
-    /// ledger row verbatim (preserving `curName`/`renames`). Returns `None` on
-    /// a genuinely new node.
-    fn reuse(&mut self, kind: IdKind, baked: &str, parent: Option<&str>) -> Option<String> {
+    /// Reuse an unclaimed prior id for `(kind, baked, parent)` — `preferred`
+    /// when the prior holds it, else the first — copying its ledger row
+    /// verbatim (preserving `curName`/`renames`). Returns `None` on a
+    /// genuinely new node.
+    fn reuse(
+        &mut self,
+        kind: IdKind,
+        baked: &str,
+        parent: Option<&str>,
+        preferred: Option<&str>,
+    ) -> Option<String> {
         let key = (kind, baked.to_string(), parent.map(str::to_string));
-        let id = self.prior_by_key.get(&key)?.clone();
+        let open: Vec<&String> = self
+            .prior_by_key
+            .get(&key)?
+            .iter()
+            .filter(|id| !self.claimed.contains(*id))
+            .collect();
+        let id = preferred
+            .and_then(|p| open.iter().find(|id| id.as_str() == p))
+            .or_else(|| open.first())
+            .map(|id| (*id).clone())?;
+        self.claimed.insert(id.clone());
         if let Some(entry) = self.prior_ledger.and_then(|l| l.entries.get(&id)) {
             self.entries.insert(id.clone(), entry.clone());
         }
@@ -110,6 +137,7 @@ impl<'a> Minter<'a> {
     }
 
     fn record(&mut self, id: String, kind: IdKind, baked: &str, parent: Option<&str>) {
+        self.claimed.insert(id.clone());
         self.entries.insert(
             id.clone(),
             LedgerEntry {
@@ -125,25 +153,31 @@ impl<'a> Minter<'a> {
     }
 
     /// Reuse a prior id for a declaration node, else derive it from the program
-    /// scope and the node's `(kind, bakedName, parentId)` — never entropy.
+    /// scope and the node's `(kind, bakedName, parentId)` and its ordinal among
+    /// same-keyed nodes — never entropy.
     fn mint(&mut self, kind: IdKind, baked: &str, parent: Option<&str>) -> String {
-        if let Some(id) = self.reuse(kind, baked, parent) {
-            return id;
-        }
         let seen = self
             .derived
             .entry((kind, baked.to_string(), parent.map(str::to_string)))
             .or_insert(0);
-        let ordinal = *seen;
+        let mut ordinal = *seen;
         *seen += 1;
-        let id = derive_node_id(kind, &self.scope, baked, parent, ordinal);
+        let derived = derive_node_id(kind, &self.scope, baked, parent, ordinal);
+        if let Some(id) = self.reuse(kind, baked, parent, Some(&derived)) {
+            return id;
+        }
+        let mut id = derived;
+        while self.claimed.contains(&id) {
+            ordinal += 1;
+            id = derive_node_id(kind, &self.scope, baked, parent, ordinal);
+        }
         self.record(id.clone(), kind, baked, parent);
         id
     }
 
     /// Derive (or reuse) a parent-rooted id for a hoisted synthetic node.
     fn derive(&mut self, kind: IdKind, baked: &str, parent_id: &str) -> String {
-        if let Some(id) = self.reuse(kind, baked, None) {
+        if let Some(id) = self.reuse(kind, baked, None, None) {
             return id;
         }
         let id = derive_id(parent_id, baked);
@@ -698,5 +732,79 @@ fn resolve_listen_source(source: &mut ListenSource, ids: &OrbitalIds) {
             *trait_id = ids.traits.get(trait_name).cloned();
         }
         ListenSource::Any => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stamp_schema_identity;
+    use crate::schema::types::{OrbitalSchema, TraitReference};
+    use std::collections::HashSet;
+
+    fn orbital(name: &str, entity: &str) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "entity": { "name": entity, "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "A", "linkedEntity": entity, "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "events": [{ "key": "INIT", "name": "INIT" }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }]
+            } }],
+            "pages": []
+        })
+    }
+
+    fn program(orbitals: Vec<serde_json::Value>) -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({ "name": "P", "orbitals": orbitals }))
+            .expect("schema")
+    }
+
+    fn stamped(orbitals: Vec<serde_json::Value>, prior: Option<&OrbitalSchema>) -> OrbitalSchema {
+        let mut schema = program(orbitals);
+        stamp_schema_identity(&mut schema, prior, &HashSet::new());
+        schema
+    }
+
+    fn trait_ids(schema: &OrbitalSchema) -> Vec<String> {
+        schema
+            .orbitals
+            .iter()
+            .flat_map(|o| o.traits.iter())
+            .filter_map(|tr| match tr {
+                TraitReference::Inline(td) => td.id.clone(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn restamp_keeps_same_named_traits_in_two_orbitals_distinct_and_stable() {
+        let two = || vec![orbital("O", "E"), orbital("O2", "E2")];
+        let first = stamped(two(), None);
+        let ids = trait_ids(&first);
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        let again = stamped(two(), Some(&first));
+        assert_eq!(trait_ids(&again), ids);
+        assert_eq!(
+            again.ledger.as_ref().map(|l| l.entries.len()),
+            first.ledger.as_ref().map(|l| l.entries.len())
+        );
+    }
+
+    #[test]
+    fn restamp_adding_a_same_named_trait_mints_a_fresh_id() {
+        let first = stamped(vec![orbital("O", "E")], None);
+        let again = stamped(vec![orbital("O", "E"), orbital("O2", "E2")], Some(&first));
+        let ids = trait_ids(&again);
+        assert_eq!(ids[0], trait_ids(&first)[0]);
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn control_single_trait_restamps_to_its_prior_id() {
+        let first = stamped(vec![orbital("O", "E")], None);
+        let again = stamped(vec![orbital("O", "E")], Some(&first));
+        assert_eq!(trait_ids(&again), trait_ids(&first));
     }
 }

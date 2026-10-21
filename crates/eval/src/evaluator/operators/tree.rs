@@ -8,8 +8,9 @@
 //! The children of a node are the fields whose DECLARED type is `Shape` (the child value), `[Shape]` (a list) or
 //! `Map K Shape` (a map), read from the definition and never from the value's shape or names. A union node is
 //! read through the one variant it belongs to: the variant whose single-valued tags it all carries, else the one
-//! untagged variant whose closed shape it fits (every key declared; on a tie, every required member present);
-//! none or several is an error, never a guess.
+//! untagged variant whose closed shape it fits (every key declared; on a tie, every required member present),
+//! else the one `Map K V` variant (`type IrExpr = … | Map string IrExpr`), whose values are the node's children
+//! when `V` is `Shape`; none or several is an error, never a guess.
 //!
 //! A node that is not an object (a list, a string, a number, a boolean) is read through the one variant of a union
 //! declared with that kind (`type Expr = string | number | boolean | [Expr]`), or through the definition itself when
@@ -17,8 +18,8 @@
 //!
 //! The fold is bottom-up: `step` is called with `(node childResults)`, where `childResults` holds one entry per
 //! child field present on the node, mirroring its position (field → the child's result, list → the list of
-//! results, map → the map of results); a list node's `childResults` is the list of its elements' results, and a
-//! node with no children gets `{}`. A null node folds to null without a step. Every call works on a strict subterm
+//! results, map → the map of results); a list node's `childResults` is the list of its elements' results, a map
+//! node's is the map of its values' results, and a node with no children gets `{}`. A null node folds to null without a step. Every call works on a strict subterm
 //! of a finite value, so it terminates, and the walk keeps its own stack so a deep value cannot overflow the
 //! thread's (G-ORB-433).
 
@@ -82,14 +83,36 @@ fn select_variant<'d>(
     });
     match choice {
         UnionVariantChoice::Matched(one) => Ok(one),
-        UnionVariantChoice::NoMatch | UnionVariantChoice::Deferred => {
-            Err(bad("the value belongs to no variant of its union"))
-        }
+        UnionVariantChoice::NoMatch | UnionVariantChoice::Deferred => map_variant(def),
         UnionVariantChoice::Ambiguous(names) => Err(bad(format!(
             "the value fits several variants equally: {}",
             names.join(", ")
         ))),
         UnionVariantChoice::Malformed(reason) => Err(bad(reason)),
+    }
+}
+
+fn is_map(def: &FieldDefinition) -> bool {
+    def.field_type == FieldType::Object && def.properties.is_none() && def.items.is_some()
+}
+
+/// The one `Map K V` variant of the union `def`: an object no tag or closed shape claims belongs to it.
+fn map_variant(def: &FieldDefinition) -> Result<&FieldDefinition, OrbitalError> {
+    let (Some(names), Some(variants)) = (&def.values, &def.properties) else {
+        return Err(bad("a union definition declares its variants (values + properties)"));
+    };
+    let maps: Vec<(&String, &FieldDefinition)> = names
+        .iter()
+        .filter_map(|name| variants.get(name).map(|v| (name, v)))
+        .filter(|(_, v)| is_map(v))
+        .collect();
+    match maps.as_slice() {
+        [(_, one)] => Ok(one),
+        [] => Err(bad("the value belongs to no variant of its union")),
+        several => Err(bad(format!(
+            "the value fits several variants equally: {}",
+            several.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+        ))),
     }
 }
 
@@ -132,6 +155,8 @@ enum Plan {
     Fields(Vec<(String, Slot)>),
     /// A list node whose elements are all children.
     List,
+    /// A map node whose values are all children, in key order.
+    Map(Vec<String>),
     Leaf,
 }
 
@@ -185,6 +210,14 @@ impl Fold<'_> {
                     Plan::Leaf
                 }
             }
+            Value::Object(node) if is_map(declared) => {
+                if declared.items.as_deref().and_then(|i| i.by_name_reference()) == Some(self.shape) {
+                    children.extend(node.values());
+                    Plan::Map(node.keys().cloned().collect())
+                } else {
+                    Plan::Leaf
+                }
+            }
             Value::Object(node) => {
                 let fields = declared
                     .properties
@@ -228,6 +261,7 @@ impl Fold<'_> {
         let child_results = match frame.plan {
             Plan::Leaf => Value::Object(ValueMap::new()),
             Plan::List => Value::Array(results.collect()),
+            Plan::Map(keys) => Value::Object(keys.into_iter().zip(results).collect()),
             Plan::Fields(slots) => {
                 let mut out = ValueMap::new();
                 for (key, slot) in slots {

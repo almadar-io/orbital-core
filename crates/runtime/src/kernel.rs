@@ -3811,7 +3811,7 @@ impl RuntimeKernel {
                         let mut result = self.run_http(&resolved, principal.as_deref(), ctx.now);
                         let verdict = self.io.take_call_verdict();
                         self.io.set_call_site(None);
-                        if verdict == Some(CallVerdict::Cancelled) {
+                        if matches!(verdict, Some(CallVerdict::Cancelled | CallVerdict::Deferred)) {
                             result = EffectResult::executed(resolved);
                         }
                         (result, verdict)
@@ -3948,6 +3948,21 @@ impl RuntimeKernel {
                     let completion = emit
                         .as_ref()
                         .and_then(|e| keyed_call_completion_emit(e, &result, verdict, key.as_deref()));
+                    effect_results.push(result);
+                    effect_results.extend(completion.map(EffectResult::as_completion));
+                }
+                Effect::AccessCheck { emit, .. } => {
+                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
+                        return;
+                    };
+                    let result = if self.effect_executor.environment().is_client() {
+                        self.effect_executor.execute(&resolved, ctx)
+                    } else {
+                        self.run_access_check(&resolved)
+                    };
+                    let completion = emit
+                        .as_ref()
+                        .and_then(|e| keyed_call_completion_emit(e, &result, None, None));
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -4107,6 +4122,69 @@ impl RuntimeKernel {
     /// (the dispatch's own draw state lives in its context), so a dispatch only clones it.
     fn prob_entropy(&self) -> EntropySource {
         self.prob_entropy.clone()
+    }
+
+    /// `access-check`: the registered access policy's verdict on `row` for `viewer`, through the one evaluator
+    /// fetch and persist enforce (`entity_access`); no host ask.
+    fn run_access_check(&self, effect: &Effect) -> EffectResult {
+        let Effect::AccessCheck { request, .. } = effect else {
+            return EffectResult::failed(effect.clone(), "access-check: not an access-check effect");
+        };
+        let field = |name: &str| request.as_object().and_then(|fields| fields.get(name));
+        let fail = |message: String| EffectResult::failed(effect.clone(), &format!("access-check: {message}"));
+        for name in ["entity", "action", "row", "viewer"] {
+            if field(name).is_none() {
+                let hint = if name == "viewer" { " (null for nobody)" } else { "" };
+                return fail(format!("the request needs `{name}`{hint}"));
+            }
+        }
+        let Some(entity) = field("entity").and_then(Value::as_str) else {
+            return fail("entity must be an entity name".to_string());
+        };
+        let action = match field("action").and_then(Value::as_str) {
+            Some("create") => PersistOperation::Create,
+            Some("read") => PersistOperation::Read,
+            Some("update") => PersistOperation::Update,
+            Some("delete") => PersistOperation::Delete,
+            other => {
+                let got = other.map_or_else(|| field("action").map(Value::to_string_value).unwrap_or_default(), str::to_string);
+                return fail(format!("action must be create, read, update or delete, got `{got}`"));
+            }
+        };
+        let row = field("row").cloned().unwrap_or(Value::Null);
+        if !matches!(row, Value::Object(_)) {
+            return fail("row must be an object".to_string());
+        }
+        let Some(policies) = self.entity_policies.read().get(entity).cloned() else {
+            return fail(format!("`{entity}` is not an entity of this program"));
+        };
+        let mut viewer_ctx = BindingContext::new();
+        match field("viewer") {
+            Some(Value::Null) | None => {}
+            Some(viewer @ Value::Object(_)) => {
+                viewer_ctx.set_user(viewer.clone());
+            }
+            Some(_) => return fail("viewer must be a user object or null".to_string()),
+        }
+        let allowed = match action {
+            PersistOperation::Read => {
+                let mut rows = vec![row];
+                apply_read_access(&mut rows, policies.read.as_ref(), None, &viewer_ctx, entity);
+                !rows.is_empty()
+            }
+            write => {
+                let policy = match write {
+                    PersistOperation::Create => policies.create.as_ref(),
+                    PersistOperation::Update => policies.update.as_ref(),
+                    _ => policies.delete.as_ref(),
+                };
+                super::entity_access::check_mutation_access(write, &row, policy, &viewer_ctx, entity).is_ok()
+            }
+        };
+        EffectResult::executed_with_value(
+            effect.clone(),
+            Value::Object(ValueMap::from([("allowed".to_string(), Value::Bool(allowed))])),
+        )
     }
 
     /// `random-bytes`: `count` bytes of host CSPRNG output as base64url, or the failure.
@@ -5025,8 +5103,9 @@ impl RuntimeKernel {
         ViewerGuard { slot: Arc::clone(&self.viewer_by_thread), thread }
     }
 
-    /// The viewer this thread entered, for a dispatch that starts now.
-    fn thread_viewer(&self) -> Option<Arc<Value>> {
+    /// The viewer this thread entered, for a dispatch that starts now; a host that answers a call later, on another
+    /// thread, re-enters it there.
+    pub fn thread_viewer(&self) -> Option<Arc<Value>> {
         self.viewer_by_thread.read().get(&std::thread::current().id()).cloned()
     }
 
@@ -5849,6 +5928,10 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             request: ctx.resolve_value_checked(&request)?.into_owned(),
             emit,
         },
+        Effect::AccessCheck { request, emit } => Effect::AccessCheck {
+            request: ctx.resolve_value_checked(&request)?.into_owned(),
+            emit,
+        },
         Effect::OAuthAuthorize { client, options, key, emit } => Effect::OAuthAuthorize {
             client: ctx.resolve_value_checked(&client)?.into_owned(),
             options: ctx.resolve_value_checked(&options)?.into_owned(),
@@ -5947,6 +6030,7 @@ fn resolved_when_run(effect: &Effect) -> bool {
             | Effect::BrowserPageFacts { .. }
             | Effect::CancelCall { .. }
             | Effect::CredentialAdmin { .. }
+            | Effect::AccessCheck { .. }
     )
 }
 
@@ -6257,6 +6341,7 @@ fn is_thrown_failure(result: &EffectResult) -> bool {
         | Effect::CredentialStatus { emit, .. }
         | Effect::CredentialForget { emit, .. }
         | Effect::CredentialAdmin { emit, .. }
+        | Effect::AccessCheck { emit, .. }
         | Effect::OAuthAuthorize { emit, .. }
         | Effect::OAuthConnectionStatus { emit, .. }
         | Effect::OAuthConnectionForget { emit, .. } => !routed(emit),
@@ -6342,7 +6427,7 @@ fn substrate_completion_emit(emit: &FetchEmit, result: &EffectResult, key: Optio
             emit.success.clone()?,
             crate::agent_ports::completion_result(
                 match &result.effect {
-                    Effect::Custom { name, .. } => name,
+                    Effect::Custom { name, .. } => name.as_str(),
                     _ => "",
                 },
                 result.return_value.clone().unwrap_or(Value::Null),
