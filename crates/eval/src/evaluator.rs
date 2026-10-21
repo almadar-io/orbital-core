@@ -707,6 +707,63 @@ mod tests {
         );
     }
 
+    // G-ORB-420: a shape naming the program's own alias checks against the declared type.
+    fn parse_in_program(text: &str, shape: &str) -> Value {
+        let aliases = serde_json::from_value(serde_json::json!({
+            "RowFile": [
+                { "name": "rows", "type": "[Row]", "required": true },
+                { "name": "changes", "type": "[object]", "required": true, "properties": [
+                    { "name": "id", "type": "string", "required": true },
+                    { "name": "row", "type": "Row" }
+                ] }
+            ],
+            "Row": [{ "name": "", "type": "Map<string,RowCell>" }],
+            "RowCell": [{ "name": "", "type": "union", "properties": [
+                { "name": "string", "type": "string" },
+                { "name": "number", "type": "number" },
+                { "name": "array", "type": "[RowCell]" }
+            ] }]
+        }))
+        .unwrap();
+        let ctx = crate::evaluator::context::BindingContextBuilder::new()
+            .declared_types(crate::evaluator::context::DeclaredTypes::of_aliases(aliases))
+            .build();
+        let expr: SExpression = serde_json::from_value(serde_json::json!(["json/parse", text, shape])).unwrap();
+        Evaluator::new().evaluate(&expr, &ctx).unwrap()
+    }
+
+    #[test]
+    fn json_parse_program_alias_record_missing_a_required_field_fails() {
+        assert_eq!(parse_in_program(r#"{"rows": []}"#, "RowFile"), Value::Null);
+    }
+
+    #[test]
+    fn json_parse_program_alias_record_given_a_bare_array_fails() {
+        assert_eq!(parse_in_program(r#"[{"a": "x"}]"#, "RowFile"), Value::Null);
+    }
+
+    #[test]
+    fn json_parse_program_alias_checks_through_nested_and_recursive_aliases() {
+        assert_eq!(parse_in_program(r#"{"rows": [{"a": true}], "changes": []}"#, "RowFile"), Value::Null);
+        assert_eq!(
+            parse_in_program(r#"{"rows": [], "changes": [{"id": "c", "row": {"a": [1, [false]]}}]}"#, "RowFile"),
+            Value::Null
+        );
+        assert_eq!(parse_in_program(r#"{"a": 1}"#, "Row"), Value::Object(ValueMap::from_iter([("a".to_string(), Value::Number(1.0))])));
+    }
+
+    #[test]
+    fn json_parse_program_alias_matching_value_passes() {
+        let text = r#"{"rows": [{"a": "x", "n": [1, ["y"]]}], "changes": [{"id": "c1", "row": {"a": 1}}, {"id": "c2"}]}"#;
+        assert!(matches!(parse_in_program(text, "RowFile"), Value::Object(ref m) if m.contains_key("rows")));
+    }
+
+    #[test]
+    fn control_json_parse_undeclared_alias_name_stays_unchecked() {
+        assert_eq!(parse_in_program("[1]", "Other"), Value::Array(vec![Value::Number(1.0)]));
+        assert_eq!(parse_in_program(r#""abc""#, "Other"), Value::String("abc".to_string()));
+    }
+
     #[test]
     fn json_stringify_round_trip() {
         assert_eq!(

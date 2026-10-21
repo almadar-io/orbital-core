@@ -11,9 +11,16 @@
 //! untagged variant whose closed shape it fits (every key declared; on a tie, every required member present);
 //! none or several is an error, never a guess.
 //!
+//! A node that is not an object (a list, a string, a number, a boolean) is read through the one variant of a union
+//! declared with that kind (`type Expr = string | number | boolean | [Expr]`), or through the definition itself when
+//! it is not a union. A list declared `[Shape]` has every element as a child.
+//!
 //! The fold is bottom-up: `step` is called with `(node childResults)`, where `childResults` holds one entry per
 //! child field present on the node, mirroring its position (field → the child's result, list → the list of
-//! results, map → the map of results). Every call works on a strict subterm of a finite value, so it terminates.
+//! results, map → the map of results); a list node's `childResults` is the list of its elements' results, and a
+//! node with no children gets `{}`. A null node folds to null without a step. Every call works on a strict subterm
+//! of a finite value, so it terminates, and the walk keeps its own stack so a deep value cannot overflow the
+//! thread's (G-ORB-433).
 
 use super::macros::*;
 use super::*;
@@ -86,20 +93,60 @@ fn select_variant<'d>(
     }
 }
 
-/// The declared fields of `node` under the root definition `def`.
-fn fields_of<'d>(
+/// The variant of the union `def` declared with the kind of the non-object `value`; exactly one, never a guess.
+fn kind_variant<'d>(
     def: &'d FieldDefinition,
-    node: &ValueMap,
-) -> Result<&'d HashMap<String, FieldDefinition>, OrbitalError> {
-    let declared = match def.field_type {
-        FieldType::Union => select_variant(def, node)?,
-        FieldType::Object => def,
-        _ => return Err(bad("the definition is not a struct or a tagged union")),
+    shape: &str,
+    value: &Value,
+) -> Result<&'d FieldDefinition, OrbitalError> {
+    let (Some(names), Some(variants)) = (&def.values, &def.properties) else {
+        return Err(bad("a union definition declares its variants (values + properties)"));
     };
-    declared
-        .properties
-        .as_ref()
-        .ok_or_else(|| bad("the definition declares no fields"))
+    let matching: Vec<(&String, &FieldDefinition)> = names
+        .iter()
+        .filter_map(|name| variants.get(name).map(|v| (name, v)))
+        .filter(|(_, v)| match (value, &v.field_type) {
+            (Value::Array(_), FieldType::Array) => true,
+            (Value::Number(_), FieldType::Number) => true,
+            (Value::Bool(_), FieldType::Boolean) => true,
+            (Value::String(s), FieldType::String) => v.values.as_ref().is_none_or(|allowed| allowed.contains(s)),
+            _ => false,
+        })
+        .collect();
+    match matching.as_slice() {
+        [(_, one)] => Ok(one),
+        [] => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: shape.to_string(),
+            actual: value.type_name().to_string(),
+        })),
+        several => Err(bad(format!(
+            "the value fits several variants equally: {}",
+            several.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+        ))),
+    }
+}
+
+/// How a node's children are laid out, in the order they are folded.
+enum Plan {
+    /// One entry per child field: the key and where it sits (`Map` carries the map's keys in order).
+    Fields(Vec<(String, Slot)>),
+    /// A list node whose elements are all children.
+    List,
+    Leaf,
+}
+
+enum Slot {
+    Field,
+    List(usize),
+    Map(Vec<String>),
+}
+
+/// A node being folded: its value, its plan, the children still to fold, and the results so far.
+struct Frame<'v> {
+    value: &'v Value,
+    plan: Plan,
+    children: Vec<&'v Value>,
+    results: Vec<Value>,
 }
 
 struct Fold<'a> {
@@ -111,57 +158,118 @@ struct Fold<'a> {
 }
 
 impl Fold<'_> {
-    fn node(&self, value: &Value) -> EvalResult {
-        let node = match value {
-            Value::Null => return Ok(Value::Null),
-            Value::Object(node) => node,
-            other => {
-                return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: self.shape.to_string(),
-                    actual: other.type_name().to_string(),
-                }))
+    fn mismatch(&self, expected: String, actual: &Value) -> OrbitalError {
+        OrbitalError::Eval(EvalError::TypeMismatch {
+            expected,
+            actual: actual.type_name().to_string(),
+        })
+    }
+
+    /// The node's plan and its children, read from its declaration, never from its shape or names.
+    fn expand<'v>(&self, value: &'v Value) -> Result<Frame<'v>, OrbitalError> {
+        let declared = match (value, &self.def.field_type) {
+            (Value::Object(node), FieldType::Union) => select_variant(self.def, node)?,
+            (Value::Object(_), FieldType::Object) => self.def,
+            (Value::Object(_), _) => return Err(bad("the definition is not a struct or a tagged union")),
+            (_, FieldType::Union) => kind_variant(self.def, self.shape, value)?,
+            (Value::Array(_), FieldType::Array) => self.def,
+            (other, _) => return Err(self.mismatch(self.shape.to_string(), other)),
+        };
+        let mut children = Vec::new();
+        let plan = match value {
+            Value::Array(items) => {
+                if declared.items.as_deref().and_then(|i| i.by_name_reference()) == Some(self.shape) {
+                    children.extend(items.iter());
+                    Plan::List
+                } else {
+                    Plan::Leaf
+                }
+            }
+            Value::Object(node) => {
+                let fields = declared
+                    .properties
+                    .as_ref()
+                    .ok_or_else(|| bad("the definition declares no fields"))?;
+                let mut slots = Vec::new();
+                for (key, child) in node {
+                    let Some(position) = fields.get(key).and_then(|d| child_position(d, self.shape)) else {
+                        continue;
+                    };
+                    let slot = match (position, child) {
+                        (_, Value::Null) => continue,
+                        (ChildPosition::Field, child) => {
+                            children.push(child);
+                            Slot::Field
+                        }
+                        (ChildPosition::List, Value::Array(items)) => {
+                            children.extend(items.iter());
+                            Slot::List(items.len())
+                        }
+                        (ChildPosition::Map, Value::Object(entries)) => {
+                            children.extend(entries.values());
+                            Slot::Map(entries.keys().cloned().collect())
+                        }
+                        (ChildPosition::List, other) => return Err(self.mismatch(format!("[{}]", self.shape), other)),
+                        (ChildPosition::Map, other) => {
+                            return Err(self.mismatch(format!("Map string {}", self.shape), other))
+                        }
+                    };
+                    slots.push((key.clone(), slot));
+                }
+                Plan::Fields(slots)
+            }
+            _ => Plan::Leaf,
+        };
+        Ok(Frame { value, plan, children, results: Vec::new() })
+    }
+
+    fn step(&self, frame: Frame<'_>) -> EvalResult {
+        let mut results = frame.results.into_iter();
+        let child_results = match frame.plan {
+            Plan::Leaf => Value::Object(ValueMap::new()),
+            Plan::List => Value::Array(results.collect()),
+            Plan::Fields(slots) => {
+                let mut out = ValueMap::new();
+                for (key, slot) in slots {
+                    let result = match slot {
+                        Slot::Field => results.next().unwrap_or(Value::Null),
+                        Slot::List(n) => Value::Array(results.by_ref().take(n).collect()),
+                        Slot::Map(keys) => Value::Object(keys.into_iter().zip(results.by_ref()).collect()),
+                    };
+                    out.insert(key, result);
+                }
+                Value::Object(out)
             }
         };
-        let fields = fields_of(self.def, node)?;
-        let mut children = ValueMap::new();
-        for (key, child) in node {
-            let Some(position) = fields.get(key).and_then(|d| child_position(d, self.shape)) else {
-                continue;
-            };
-            let result = match (position, child) {
-                (_, Value::Null) => continue,
-                (ChildPosition::Field, child) => self.node(child)?,
-                (ChildPosition::List, Value::Array(items)) => Value::Array(
-                    items
-                        .iter()
-                        .map(|item| self.node(item))
-                        .collect::<Result<_, _>>()?,
-                ),
-                (ChildPosition::Map, Value::Object(entries)) => Value::Object(
-                    entries
-                        .iter()
-                        .map(|(k, item)| Ok((k.clone(), self.node(item)?)))
-                        .collect::<Result<ValueMap, OrbitalError>>()?,
-                ),
-                (ChildPosition::List, other) => {
-                    return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                        expected: format!("[{}]", self.shape),
-                        actual: other.type_name().to_string(),
-                    }))
-                }
-                (ChildPosition::Map, other) => {
-                    return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                        expected: format!("Map string {}", self.shape),
-                        actual: other.type_name().to_string(),
-                    }))
-                }
-            };
-            children.insert(key.clone(), result);
-        }
         let mut step_ctx = self.ctx.child();
-        step_ctx.set_local(&self.params[0], value.clone());
-        step_ctx.set_local(&self.params[1], Value::Object(children));
+        step_ctx.set_local(&self.params[0], frame.value.clone());
+        step_ctx.set_local(&self.params[1], child_results);
         eval_expr(self.body, &step_ctx)
+    }
+
+    fn run(&self, root: &Value) -> EvalResult {
+        if root.is_null() {
+            return Ok(Value::Null);
+        }
+        let mut stack = vec![self.expand(root)?];
+        loop {
+            let top = stack.last_mut().expect("the walk holds the node in progress");
+            if let Some(&child) = top.children.get(top.results.len()) {
+                if child.is_null() {
+                    top.results.push(Value::Null);
+                } else {
+                    let frame = self.expand(child)?;
+                    stack.push(frame);
+                }
+                continue;
+            }
+            let done = stack.pop().expect("the walk holds the node in progress");
+            let result = self.step(done)?;
+            match stack.last_mut() {
+                Some(parent) => parent.results.push(result),
+                None => return Ok(result),
+            }
+        }
     }
 }
 
@@ -193,6 +301,6 @@ impl Operator for TreeFoldOp {
             body: &*body,
             ctx,
         }
-        .node(&value)
+        .run(&value)
     }
 }

@@ -1,0 +1,442 @@
+{
+  "name": "retry-guard",
+  "description": "Clause 5.3 + Phase 3: a guarded listens loop runs until its `when` fails, then stops, identically on both paths",
+  "schema": {
+    "ledger": {
+      "entries": {
+        "ent_01M39J2V6GYBB0S6PASQSRQBX6": {
+          "bakedName": "Job",
+          "curName": "Job",
+          "id": "ent_01M39J2V6GYBB0S6PASQSRQBX6",
+          "kind": "entity",
+          "owner": "workspace",
+          "renames": []
+        },
+        "evt_01M39J2V6G12HWBD5GE7596Z05": {
+          "bakedName": "ATTEMPT",
+          "curName": "ATTEMPT",
+          "id": "evt_01M39J2V6G12HWBD5GE7596Z05",
+          "kind": "event",
+          "owner": "workspace",
+          "parent": "trt_01M39J2V6G33MR0ZHCEAFW1QZV",
+          "renames": []
+        },
+        "evt_01M39J2V6G48R98ZR88MZFTVQN": {
+          "bakedName": "FAILED",
+          "curName": "FAILED",
+          "id": "evt_01M39J2V6G48R98ZR88MZFTVQN",
+          "kind": "event",
+          "owner": "workspace",
+          "parent": "trt_01M39J2V6GVRF614HNWKJ0T0VN",
+          "renames": []
+        },
+        "evt_01M39J2V6GDQWZGKGCY08HWC9G": {
+          "bakedName": "SEND",
+          "curName": "SEND",
+          "id": "evt_01M39J2V6GDQWZGKGCY08HWC9G",
+          "kind": "event",
+          "owner": "workspace",
+          "parent": "trt_01M39J2V6G33MR0ZHCEAFW1QZV",
+          "renames": []
+        },
+        "evt_01M39J2V6GV9W6XJN7PND2VCZ2": {
+          "bakedName": "WORK",
+          "curName": "WORK",
+          "id": "evt_01M39J2V6GV9W6XJN7PND2VCZ2",
+          "kind": "event",
+          "owner": "workspace",
+          "parent": "trt_01M39J2V6GVRF614HNWKJ0T0VN",
+          "renames": []
+        },
+        "evt_01M39J2V6GYVDSWAAG0SSNSD5H": {
+          "bakedName": "INIT",
+          "curName": "INIT",
+          "id": "evt_01M39J2V6GYVDSWAAG0SSNSD5H",
+          "kind": "event",
+          "owner": "workspace",
+          "parent": "trt_01M39J2V6GVRF614HNWKJ0T0VN",
+          "renames": []
+        },
+        "evt_01M39J2V6GZBT7PR6928ACMMJP": {
+          "bakedName": "RETRY",
+          "curName": "RETRY",
+          "id": "evt_01M39J2V6GZBT7PR6928ACMMJP",
+          "kind": "event",
+          "owner": "workspace",
+          "parent": "trt_01M39J2V6G33MR0ZHCEAFW1QZV",
+          "renames": []
+        },
+        "evt_01M39J2V6GZCDXSCD8A1ENT24G": {
+          "bakedName": "INIT",
+          "curName": "INIT",
+          "id": "evt_01M39J2V6GZCDXSCD8A1ENT24G",
+          "kind": "event",
+          "owner": "workspace",
+          "parent": "trt_01M39J2V6G33MR0ZHCEAFW1QZV",
+          "renames": []
+        },
+        "orb_01M39J2V6GM4VMY090XKQNKFB4": {
+          "bakedName": "Main",
+          "curName": "Main",
+          "id": "orb_01M39J2V6GM4VMY090XKQNKFB4",
+          "kind": "orbital",
+          "owner": "workspace",
+          "renames": []
+        },
+        "pag_01M39J2V6G8BVDQM5XXS4627X1": {
+          "bakedName": "Home",
+          "curName": "Home",
+          "id": "pag_01M39J2V6G8BVDQM5XXS4627X1",
+          "kind": "page",
+          "owner": "workspace",
+          "renames": []
+        },
+        "trt_01M39J2V6G33MR0ZHCEAFW1QZV": {
+          "bakedName": "Sender",
+          "curName": "Sender",
+          "id": "trt_01M39J2V6G33MR0ZHCEAFW1QZV",
+          "kind": "trait",
+          "owner": "workspace",
+          "renames": []
+        },
+        "trt_01M39J2V6GVRF614HNWKJ0T0VN": {
+          "bakedName": "Worker",
+          "curName": "Worker",
+          "id": "trt_01M39J2V6GVRF614HNWKJ0T0VN",
+          "kind": "trait",
+          "owner": "workspace",
+          "renames": []
+        }
+      },
+      "schemaVersion": 1
+    },
+    "name": "RetryParity",
+    "orbitals": [
+      {
+        "entity": {
+          "fields": [
+            {
+              "name": "id",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "id": "ent_01M39J2V6GYBB0S6PASQSRQBX6",
+          "name": "Job",
+          "persistence": "runtime"
+        },
+        "id": "orb_01M39J2V6GM4VMY090XKQNKFB4",
+        "name": "Main",
+        "pages": [
+          {
+            "id": "pag_01M39J2V6G8BVDQM5XXS4627X1",
+            "isInitial": true,
+            "name": "Home",
+            "path": "/",
+            "traits": [
+              {
+                "ref": "Sender",
+                "refId": "trt_01M39J2V6G33MR0ZHCEAFW1QZV"
+              },
+              {
+                "ref": "Worker",
+                "refId": "trt_01M39J2V6GVRF614HNWKJ0T0VN"
+              }
+            ]
+          }
+        ],
+        "traits": [
+          {
+            "effectRow": [
+              {
+                "kind": "emit",
+                "resource": "ATTEMPT"
+              },
+              {
+                "kind": "render-ui",
+                "resource": "main"
+              }
+            ],
+            "emits": [
+              {
+                "event": "ATTEMPT",
+                "eventId": "evt_01M39J2V6G12HWBD5GE7596Z05",
+                "payloadSchema": [
+                  {
+                    "name": "n",
+                    "type": "number"
+                  }
+                ]
+              }
+            ],
+            "entityRefIds": {
+              "Job": "ent_01M39J2V6GYBB0S6PASQSRQBX6"
+            },
+            "id": "trt_01M39J2V6G33MR0ZHCEAFW1QZV",
+            "linkedEntity": "Job",
+            "linkedEntityId": "ent_01M39J2V6GYBB0S6PASQSRQBX6",
+            "listens": [
+              {
+                "event": "FAILED",
+                "eventId": "evt_01M39J2V6G48R98ZR88MZFTVQN",
+                "guard": [
+                  "<",
+                  "@event.payload.n",
+                  3.0
+                ],
+                "source": {
+                  "kind": "trait",
+                  "trait": "Worker",
+                  "traitId": "trt_01M39J2V6GVRF614HNWKJ0T0VN"
+                },
+                "triggers": "RETRY",
+                "triggersId": "evt_01M39J2V6GZBT7PR6928ACMMJP"
+              }
+            ],
+            "name": "Sender",
+            "scope": "instance",
+            "stateMachine": {
+              "events": [
+                {
+                  "id": "evt_01M39J2V6GZCDXSCD8A1ENT24G",
+                  "key": "INIT",
+                  "name": "Initialize"
+                },
+                {
+                  "id": "evt_01M39J2V6GDQWZGKGCY08HWC9G",
+                  "key": "SEND",
+                  "name": "Send",
+                  "payloadSchema": [
+                    {
+                      "name": "n",
+                      "type": "number"
+                    }
+                  ]
+                },
+                {
+                  "id": "evt_01M39J2V6GZBT7PR6928ACMMJP",
+                  "key": "RETRY",
+                  "name": "Retry",
+                  "payloadSchema": [
+                    {
+                      "name": "n",
+                      "type": "number"
+                    }
+                  ]
+                },
+                {
+                  "id": "evt_01M39J2V6G12HWBD5GE7596Z05",
+                  "key": "ATTEMPT",
+                  "name": "Attempt",
+                  "payloadSchema": [
+                    {
+                      "name": "n",
+                      "type": "number"
+                    }
+                  ]
+                }
+              ],
+              "states": [
+                {
+                  "isInitial": true,
+                  "name": "idle"
+                }
+              ],
+              "transitions": [
+                {
+                  "effects": [
+                    [
+                      "render-ui",
+                      "main",
+                      {
+                        "action": "SEND",
+                        "label": "Send",
+                        "type": "button"
+                      }
+                    ]
+                  ],
+                  "event": "INIT",
+                  "eventId": "evt_01M39J2V6GZCDXSCD8A1ENT24G",
+                  "from": "idle",
+                  "to": "idle"
+                },
+                {
+                  "effects": [
+                    [
+                      "emit",
+                      "ATTEMPT",
+                      {
+                        "n": [
+                          "+",
+                          "@payload.n",
+                          1.0
+                        ]
+                      }
+                    ]
+                  ],
+                  "event": "SEND",
+                  "eventId": "evt_01M39J2V6GDQWZGKGCY08HWC9G",
+                  "from": "idle",
+                  "to": "idle"
+                },
+                {
+                  "effects": [
+                    [
+                      "emit",
+                      "ATTEMPT",
+                      {
+                        "n": [
+                          "+",
+                          "@payload.n",
+                          1.0
+                        ]
+                      }
+                    ]
+                  ],
+                  "event": "RETRY",
+                  "eventId": "evt_01M39J2V6GZBT7PR6928ACMMJP",
+                  "from": "idle",
+                  "to": "idle"
+                }
+              ]
+            }
+          },
+          {
+            "effectRow": [
+              {
+                "kind": "emit",
+                "resource": "FAILED"
+              },
+              {
+                "kind": "render-ui",
+                "resource": "main"
+              }
+            ],
+            "emits": [
+              {
+                "event": "FAILED",
+                "eventId": "evt_01M39J2V6G48R98ZR88MZFTVQN",
+                "payloadSchema": [
+                  {
+                    "name": "n",
+                    "type": "number"
+                  }
+                ]
+              }
+            ],
+            "entityRefIds": {
+              "Job": "ent_01M39J2V6GYBB0S6PASQSRQBX6"
+            },
+            "id": "trt_01M39J2V6GVRF614HNWKJ0T0VN",
+            "linkedEntity": "Job",
+            "linkedEntityId": "ent_01M39J2V6GYBB0S6PASQSRQBX6",
+            "listens": [
+              {
+                "event": "ATTEMPT",
+                "eventId": "evt_01M39J2V6G12HWBD5GE7596Z05",
+                "source": {
+                  "kind": "trait",
+                  "trait": "Sender",
+                  "traitId": "trt_01M39J2V6G33MR0ZHCEAFW1QZV"
+                },
+                "triggers": "WORK",
+                "triggersId": "evt_01M39J2V6GV9W6XJN7PND2VCZ2"
+              }
+            ],
+            "name": "Worker",
+            "scope": "instance",
+            "stateMachine": {
+              "events": [
+                {
+                  "id": "evt_01M39J2V6GYVDSWAAG0SSNSD5H",
+                  "key": "INIT",
+                  "name": "Initialize"
+                },
+                {
+                  "id": "evt_01M39J2V6GV9W6XJN7PND2VCZ2",
+                  "key": "WORK",
+                  "name": "Work",
+                  "payloadSchema": [
+                    {
+                      "name": "n",
+                      "type": "number"
+                    }
+                  ]
+                },
+                {
+                  "id": "evt_01M39J2V6G48R98ZR88MZFTVQN",
+                  "key": "FAILED",
+                  "name": "Failed",
+                  "payloadSchema": [
+                    {
+                      "name": "n",
+                      "type": "number"
+                    }
+                  ]
+                }
+              ],
+              "states": [
+                {
+                  "isInitial": true,
+                  "name": "idle"
+                }
+              ],
+              "transitions": [
+                {
+                  "effects": [
+                    [
+                      "render-ui",
+                      "main",
+                      {
+                        "content": "Worker",
+                        "type": "typography"
+                      }
+                    ]
+                  ],
+                  "event": "INIT",
+                  "eventId": "evt_01M39J2V6GYVDSWAAG0SSNSD5H",
+                  "from": "idle",
+                  "to": "idle"
+                },
+                {
+                  "effects": [
+                    [
+                      "emit",
+                      "FAILED",
+                      {
+                        "n": "@payload.n"
+                      }
+                    ]
+                  ],
+                  "event": "WORK",
+                  "eventId": "evt_01M39J2V6GV9W6XJN7PND2VCZ2",
+                  "from": "idle",
+                  "to": "idle"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "schemaVersion": 1
+  },
+  "scenarios": [
+    {
+      "orbital": "Main",
+      "trait": "Sender",
+      "event": "SEND",
+      "payload": {
+        "n": 0
+      }
+    },
+    {
+      "orbital": "Main",
+      "trait": "Sender",
+      "event": "SEND",
+      "payload": {
+        "n": 5
+      }
+    }
+  ]
+}

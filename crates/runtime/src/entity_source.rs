@@ -486,7 +486,7 @@ mod tests {
     }
 
     /// Rows list in insertion order, as the JS store's `Map` does: an update keeps
-    /// the row's place, a delete closes the gap (`tools/parity-cascade` `fetch-payload`).
+    /// the row's place, a delete closes the gap (parity fixture `fetch-payload`).
     #[test]
     fn list_keeps_insertion_order_through_update_and_delete() {
         let cache = InMemoryEntityCache::new();

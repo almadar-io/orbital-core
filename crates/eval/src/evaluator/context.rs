@@ -16,7 +16,9 @@
 use orbital_core_base::error::{EvalError, OrbitalError};
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
-use std::collections::HashMap;
+use orbital_core_base::ir::types::{declared_alias_shape, OirType};
+use orbital_core_base::schema::types::PayloadField;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -41,6 +43,33 @@ impl EntropySource {
 impl std::fmt::Debug for EntropySource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("EntropySource")
+    }
+}
+
+/// The program's own declared types (`type X = …`) in scope of an evaluation, by name: what a `json/parse` or `typed`
+/// naming an alias checks a value against. The kernel supplies the evaluating trait's orbital's `types`.
+#[derive(Clone, Default)]
+pub struct DeclaredTypes(Option<Arc<dyn Fn(&str) -> Option<OirType> + Send + Sync>>);
+
+impl DeclaredTypes {
+    pub fn new(lookup: impl Fn(&str) -> Option<OirType> + Send + Sync + 'static) -> Self {
+        Self(Some(Arc::new(lookup)))
+    }
+
+    /// The aliases of one orbital's `.orb` `types` table.
+    pub fn of_aliases(aliases: BTreeMap<String, Vec<PayloadField>>) -> Self {
+        Self::new(move |name| aliases.get(name).map(|members| declared_alias_shape(members)))
+    }
+
+    /// The type the program declares under `name`.
+    pub fn get(&self, name: &str) -> Option<OirType> {
+        self.0.as_ref().and_then(|lookup| lookup(name))
+    }
+}
+
+impl std::fmt::Debug for DeclaredTypes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DeclaredTypes")
     }
 }
 
@@ -163,6 +192,8 @@ pub struct BindingContext {
     prob: Arc<ProbState>,
     /// The dispatch's seed source for an unseeded `prob/*` stream; `None` in a pure evaluation.
     prob_entropy: Option<EntropySource>,
+    /// The program's declared types in scope; none in a pure evaluation.
+    declared_types: DeclaredTypes,
 }
 
 /// One scope's local bindings over its parent's. `None` marks a binding removed in this scope.
@@ -231,6 +262,16 @@ impl BindingContext {
     pub fn set_prob_entropy(&mut self, source: EntropySource) -> &mut Self {
         self.prob_entropy = Some(source);
         self
+    }
+
+    /// The type the program declares under `name` (`type X = …`), when the evaluation knows the program's types.
+    pub fn declared_type(&self, name: &str) -> Option<OirType> {
+        self.declared_types.get(name)
+    }
+
+    /// The declared types of the program this evaluation runs in.
+    pub fn declared_types(&self) -> &DeclaredTypes {
+        &self.declared_types
     }
 
     /// Restart the `prob/*` stream (`prob/seed`).
@@ -892,6 +933,11 @@ impl BindingContextBuilder {
 
     pub fn messages(mut self, messages: HashMap<String, String>) -> Self {
         self.context.messages = Arc::new(messages);
+        self
+    }
+
+    pub fn declared_types(mut self, types: DeclaredTypes) -> Self {
+        self.context.declared_types = types;
         self
     }
 

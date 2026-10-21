@@ -1,0 +1,259 @@
+{
+  "name": "mount-lifecycle",
+  "description": "Runtime Spec 7.1: a routed delivery waits for the receiver's own INIT on this mount; a server leg follows the client's mount through the `_awaitingInit` sidecar, which never reaches payload bindings",
+  "schema": {
+    "name": "mount-lifecycle",
+    "version": "1.0.0",
+    "orbitals": [
+      {
+        "name": "Level",
+        "pages": [],
+        "entity": {
+          "name": "World",
+          "persistence": "runtime",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            }
+          ]
+        },
+        "traits": [
+          {
+            "name": "Seeder",
+            "emits": [
+              {
+                "event": "SEED"
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "name": "INIT"
+                },
+                {
+                  "key": "PING",
+                  "name": "PING"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "INIT",
+                  "effects": [
+                    [
+                      "emit",
+                      "SEED",
+                      {
+                        "v": 1,
+                        "echo": "@payload"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "PING"
+                }
+              ]
+            }
+          },
+          {
+            "name": "Body",
+            "listens": [
+              {
+                "event": "SEED",
+                "triggers": "SET",
+                "source": {
+                  "kind": "trait",
+                  "trait": "Seeder"
+                }
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                },
+                {
+                  "name": "ready"
+                },
+                {
+                  "name": "seeded"
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "name": "INIT"
+                },
+                {
+                  "key": "SET",
+                  "name": "SET"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "ready",
+                  "event": "INIT"
+                },
+                {
+                  "from": "ready",
+                  "to": "seeded",
+                  "event": "SET"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "held until the receiver's own INIT",
+      "orbital": "Level",
+      "steps": [
+        {
+          "trait": "Seeder",
+          "event": "INIT",
+          "payload": {
+            "_awaitingInit": [
+              "Body"
+            ],
+            "x": 1
+          },
+          "expect": {
+            "states": {
+              "Body": "idle"
+            },
+            "emits": [
+              {
+                "event": "SEED",
+                "payload": {
+                  "v": 1,
+                  "echo": {
+                    "x": 1
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "trait": "Body",
+          "event": "INIT",
+          "payload": {
+            "_awaitingInit": []
+          },
+          "expect": {
+            "states": {
+              "Body": "seeded"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a later leg releases what the client has since initialized",
+      "orbital": "Level",
+      "steps": [
+        {
+          "trait": "Seeder",
+          "event": "INIT",
+          "payload": {
+            "_awaitingInit": [
+              "Body"
+            ],
+            "x": 1
+          },
+          "expect": {
+            "states": {
+              "Body": "idle"
+            },
+            "emits": [
+              {
+                "event": "SEED",
+                "payload": {
+                  "v": 1,
+                  "echo": {
+                    "x": 1
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "trait": "Body",
+          "event": "INIT",
+          "payload": {}
+        },
+        {
+          "trait": "Seeder",
+          "event": "PING",
+          "payload": {
+            "_awaitingInit": [],
+            "x": 1
+          },
+          "expect": {
+            "states": {
+              "Body": "seeded"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "control: no declared mount, nothing is held",
+      "orbital": "Level",
+      "steps": [
+        {
+          "trait": "Seeder",
+          "event": "INIT",
+          "payload": {
+            "x": 1
+          },
+          "expect": {
+            "states": {
+              "Body": "idle"
+            },
+            "emits": [
+              {
+                "event": "SEED",
+                "payload": {
+                  "v": 1,
+                  "echo": {
+                    "x": 1
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "trait": "Body",
+          "event": "INIT",
+          "payload": {},
+          "expect": {
+            "states": {
+              "Body": "ready"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

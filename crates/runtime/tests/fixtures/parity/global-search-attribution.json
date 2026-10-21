@@ -1,0 +1,3187 @@
+{
+  "name": "global-search-attribution",
+  "description": "std-global-search: a duplicate module answer counts once and a keyless answer is filed under its source (@event.source); completion fires once after every module answered, on both paths",
+  "schema": {
+    "name": "FederatedSearch",
+    "orbitals": [
+      {
+        "name": "Search",
+        "id": "orb_01M39WP8K0WCX5MW5EJSBNDJYB",
+        "uses": [
+          {
+            "from": "std/behaviors/std-global-search",
+            "as": "GlobalSearchAtom"
+          }
+        ],
+        "entity": {
+          "name": "Hit",
+          "id": "ent_01M39WP8K02V0NVDBCSYYN6ECK",
+          "persistence": "runtime",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            }
+          ]
+        },
+        "auxiliaryEntities": [
+          {
+            "name": "SearchQuery",
+            "id": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
+            "collection": "search_queries",
+            "persistence": "persistent",
+            "fields": [
+              {
+                "name": "id",
+                "type": "string",
+                "required": true
+              },
+              {
+                "name": "personId",
+                "type": "string",
+                "default": "",
+                "description": "Owner of this query \u2014 the user who ran it.",
+                "synonyms": "user, owner, searcher, account"
+              },
+              {
+                "name": "queryText",
+                "type": "string",
+                "default": "",
+                "description": "The search text the user typed.",
+                "synonyms": "query, search term, keywords, search string"
+              },
+              {
+                "name": "typeFilter",
+                "type": "string",
+                "default": "",
+                "description": "Record-type filter applied to the query; blank = all types.",
+                "synonyms": "type, kind, category filter, record type"
+              },
+              {
+                "name": "scopeJson",
+                "type": "string",
+                "default": "",
+                "description": "Serialized scope filters (client/person/date/type) passed through to modules uninterpreted.",
+                "synonyms": "filters, scope, search filters, filter json"
+              },
+              {
+                "name": "createdAt",
+                "type": "number",
+                "default": 0.0,
+                "description": "When the query was run.",
+                "synonyms": "timestamp, searched at, date"
+              },
+              {
+                "name": "pendingModules",
+                "type": "array",
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "description": "Scratch: configured module keys still awaiting a fan-out request.",
+                "synonyms": "remaining modules, queue"
+              },
+              {
+                "name": "requestedCount",
+                "type": "number",
+                "default": 0.0,
+                "description": "How many module requests have been emitted for the current query.",
+                "synonyms": "fanned out, requests sent"
+              },
+              {
+                "name": "respondedCount",
+                "type": "number",
+                "default": 0.0,
+                "description": "How many modules have answered the current query.",
+                "synonyms": "answers received, responses"
+              },
+              {
+                "name": "fanOutDone",
+                "type": "boolean",
+                "default": false,
+                "description": "Scratch: true once every configured module has been sent its request.",
+                "synonyms": "fan-out complete, all requested"
+              },
+              {
+                "name": "searching",
+                "type": "boolean",
+                "default": false,
+                "description": "True while a query is in flight.",
+                "synonyms": "loading, in progress, busy"
+              },
+              {
+                "name": "results",
+                "type": "array",
+                "default": [],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "moduleKey": {
+                      "name": "moduleKey",
+                      "type": "string",
+                      "required": false
+                    },
+                    "receivedAt": {
+                      "name": "receivedAt",
+                      "type": "number",
+                      "required": false
+                    },
+                    "resultsJson": {
+                      "name": "resultsJson",
+                      "type": "string",
+                      "required": false
+                    },
+                    "answeredBy": {
+                      "name": "answeredBy",
+                      "type": "string",
+                      "required": false
+                    }
+                  }
+                },
+                "description": "Merged answers, one entry per responding module, grouped by moduleKey.",
+                "synonyms": "grouped results, hits, matches, answers"
+              },
+              {
+                "name": "resultsSummary",
+                "type": "string",
+                "default": "",
+                "description": "Display rendering of the grouped results: one \"moduleKey: resultsJson\" line per answering module.",
+                "synonyms": "results text, summary, grouped display"
+              },
+              {
+                "name": "savedQueryId",
+                "type": "string",
+                "default": "",
+                "description": "Id of the persisted SearchQuery row for the current query; blank until saved.",
+                "synonyms": "query id, saved search id"
+              },
+              {
+                "name": "lastError",
+                "type": "string",
+                "default": "",
+                "description": "Scratch: last failure shown to the user; blank = none.",
+                "synonyms": "error, failure reason"
+              }
+            ]
+          }
+        ],
+        "traits": [
+          {
+            "name": "Finder",
+            "id": "trt_01M39WP8K0QMJ8QTRGE8FJ08B7",
+            "entityRebindable": true,
+            "entityContract": {
+              "requires": [],
+              "provides": [
+                "fanOutDone",
+                "lastError",
+                "pendingModules",
+                "personId",
+                "queryText",
+                "requestedCount",
+                "respondedCount",
+                "results",
+                "resultsSummary",
+                "savedQueryId",
+                "scopeJson",
+                "searching",
+                "typeFilter"
+              ]
+            },
+            "effectRow": [
+              {
+                "kind": "emit",
+                "resource": "FAN_OUT_STEP"
+              },
+              {
+                "kind": "emit",
+                "resource": "GLOBAL_SEARCH_COMPLETED"
+              },
+              {
+                "kind": "emit",
+                "resource": "MODULE_SEARCH_REQUESTED"
+              },
+              {
+                "kind": "fetch",
+                "resource": "SearchQuery"
+              },
+              {
+                "kind": "persist",
+                "resource": "SearchQuery"
+              },
+              {
+                "kind": "render-ui",
+                "resource": "main"
+              },
+              {
+                "kind": "render-ui",
+                "resource": "toast"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.createdAt"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.fanOutDone"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.lastError"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.pendingModules"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.personId"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.queryText"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.requestedCount"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.respondedCount"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.results"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.resultsSummary"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.savedQueryId"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.scopeJson"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.searching"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.typeFilter"
+              }
+            ],
+            "category": "lifecycle",
+            "capabilities": [
+              "discovery",
+              "search"
+            ],
+            "linkedEntity": "SearchQuery",
+            "linkedEntityId": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
+            "entityRefIds": {
+              "SearchQuery": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY"
+            },
+            "traitEmbedIds": {
+              "InlineTypographyRender4": "trt_01M2HF5GMNH5WR6RWC7C05RFQT",
+              "InlineTypographyRender3": "trt_01M2HF5GMN2FE93FP2KKCTC5FB",
+              "InlineSpinnerRender2": "trt_01M2HF5GMNQ98TN6V15AA4B52H",
+              "InlineTypographyRender1": "trt_01M2HF5GMNZQ67R15B1XS75064",
+              "InlineTypographyRender5": "trt_01M2RAZG5FVSE7MW01G6BQGQE1"
+            },
+            "emits": [
+              {
+                "event": "SEARCH",
+                "eventId": "evt_01M2HF5GMNSJYN4RP8WVXTB1ES",
+                "description": "The query as submitted \u2014 re-broadcast so downstream listeners (recent-searches trays, analytics) can react without intercepting the input",
+                "tier": "essential",
+                "scope": "external",
+                "payloadSchema": [
+                  {
+                    "name": "queryText",
+                    "type": "string"
+                  },
+                  {
+                    "name": "typeFilter",
+                    "type": "string"
+                  },
+                  {
+                    "name": "scopeJson",
+                    "type": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "string"
+                  },
+                  {
+                    "name": "searchTerm",
+                    "type": "string"
+                  }
+                ]
+              },
+              {
+                "event": "MODULE_SEARCH_REQUESTED",
+                "eventId": "evt_01M2HF5GMNGMY75CAME4DJCNH7",
+                "description": "One per configured module key \u2014 the module owning that key runs its own search and answers with SEARCH_RESULTS",
+                "tier": "essential",
+                "scope": "external",
+                "payloadSchema": [
+                  {
+                    "name": "moduleKey",
+                    "type": "string"
+                  },
+                  {
+                    "name": "queryText",
+                    "type": "string"
+                  },
+                  {
+                    "name": "typeFilter",
+                    "type": "string"
+                  },
+                  {
+                    "name": "scopeJson",
+                    "type": "string"
+                  }
+                ]
+              },
+              {
+                "event": "GLOBAL_SEARCH_COMPLETED",
+                "eventId": "evt_01M2HF5GMNP8V3F758G3B5HH7M",
+                "description": "Every requested module has answered; the grouped view is final",
+                "tier": "secondary",
+                "scope": "external",
+                "payloadSchema": [
+                  {
+                    "name": "queryText",
+                    "type": "string"
+                  },
+                  {
+                    "name": "moduleCount",
+                    "type": "number"
+                  },
+                  {
+                    "name": "respondedCount",
+                    "type": "number"
+                  }
+                ]
+              },
+              {
+                "event": "QUERY_SAVED",
+                "eventId": "evt_01M2HF5GMNZ50T4QQD0RMJC0S8",
+                "description": "The query persisted to search history",
+                "tier": "secondary",
+                "scope": "external",
+                "payloadSchema": [
+                  {
+                    "name": "id",
+                    "type": "string",
+                    "required": true
+                  }
+                ]
+              },
+              {
+                "event": "QUERY_SAVE_FAILED",
+                "eventId": "evt_01M2HF5GMNAKMT2RRYB0ZGZS6Z",
+                "description": "Persisting the query failed \u2014 the search itself is unaffected",
+                "tier": "secondary",
+                "scope": "external",
+                "payloadSchema": [
+                  {
+                    "name": "error",
+                    "type": "string",
+                    "required": true
+                  }
+                ]
+              },
+              {
+                "event": "FAN_OUT_STEP",
+                "eventId": "evt_01M2HF5GMNCGC1A1JPXVA31JJ1",
+                "description": "Internal sentinel draining the module queue, one MODULE_SEARCH_REQUESTED per pass; `remaining` is the queue length after the last seed/drop",
+                "tier": "internal",
+                "payloadSchema": [
+                  {
+                    "name": "remaining",
+                    "type": "number"
+                  }
+                ]
+              }
+            ],
+            "listens": [
+              {
+                "event": "SEARCH_RESULTS",
+                "eventId": "evt_01M2HF5GMNEB63359FQVKBKN3V",
+                "triggers": "SEARCH_RESULTS",
+                "triggersId": "evt_01M2HF5GMNEB63359FQVKBKN3V",
+                "source": {
+                  "kind": "any"
+                }
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                },
+                {
+                  "name": "searching"
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "id": "evt_01M2HF5GMN6JSD7G1NETHYTHQR",
+                  "name": "Initialize"
+                },
+                {
+                  "key": "SEARCH",
+                  "id": "evt_01M2HF5GMNSJYN4RP8WVXTB1ES",
+                  "name": "Search",
+                  "description": "The query as submitted \u2014 re-broadcast so downstream listeners (recent-searches trays, analytics) can react without intercepting the input",
+                  "tier": "essential",
+                  "payloadSchema": [
+                    {
+                      "name": "queryText",
+                      "type": "string"
+                    },
+                    {
+                      "name": "typeFilter",
+                      "type": "string"
+                    },
+                    {
+                      "name": "scopeJson",
+                      "type": "string"
+                    },
+                    {
+                      "name": "value",
+                      "type": "string"
+                    },
+                    {
+                      "name": "searchTerm",
+                      "type": "string"
+                    }
+                  ]
+                },
+                {
+                  "key": "FAN_OUT_STEP",
+                  "id": "evt_01M2HF5GMNCGC1A1JPXVA31JJ1",
+                  "name": "Fan Out Step",
+                  "description": "Internal sentinel draining the module queue, one MODULE_SEARCH_REQUESTED per pass; `remaining` is the queue length after the last seed/drop",
+                  "tier": "internal",
+                  "payloadSchema": [
+                    {
+                      "name": "remaining",
+                      "type": "number"
+                    }
+                  ]
+                },
+                {
+                  "key": "SEARCH_RESULTS",
+                  "id": "evt_01M2HF5GMNEB63359FQVKBKN3V",
+                  "name": "Search Results",
+                  "payloadSchema": [
+                    {
+                      "name": "moduleKey",
+                      "type": "string"
+                    },
+                    {
+                      "name": "resultsJson",
+                      "type": "string"
+                    }
+                  ]
+                },
+                {
+                  "key": "QUERY_SAVED",
+                  "id": "evt_01M2HF5GMNZ50T4QQD0RMJC0S8",
+                  "name": "Query Saved",
+                  "description": "The query persisted to search history",
+                  "tier": "secondary",
+                  "payloadSchema": [
+                    {
+                      "name": "id",
+                      "type": "string",
+                      "required": true
+                    }
+                  ]
+                },
+                {
+                  "key": "QUERY_SAVE_FAILED",
+                  "id": "evt_01M2HF5GMNAKMT2RRYB0ZGZS6Z",
+                  "name": "Query Save Failed",
+                  "description": "Persisting the query failed \u2014 the search itself is unaffected",
+                  "tier": "secondary",
+                  "payloadSchema": [
+                    {
+                      "name": "error",
+                      "type": "string",
+                      "required": true
+                    }
+                  ]
+                },
+                {
+                  "key": "MODULE_SEARCH_REQUESTED",
+                  "id": "evt_01M2HF5GMNGMY75CAME4DJCNH7",
+                  "name": "Module Search Requested",
+                  "description": "One per configured module key \u2014 the module owning that key runs its own search and answers with SEARCH_RESULTS",
+                  "tier": "essential",
+                  "payloadSchema": [
+                    {
+                      "name": "moduleKey",
+                      "type": "string"
+                    },
+                    {
+                      "name": "queryText",
+                      "type": "string"
+                    },
+                    {
+                      "name": "typeFilter",
+                      "type": "string"
+                    },
+                    {
+                      "name": "scopeJson",
+                      "type": "string"
+                    }
+                  ]
+                },
+                {
+                  "key": "GLOBAL_SEARCH_COMPLETED",
+                  "id": "evt_01M2HF5GMNP8V3F758G3B5HH7M",
+                  "name": "Global Search Completed",
+                  "description": "Every requested module has answered; the grouped view is final",
+                  "tier": "secondary",
+                  "payloadSchema": [
+                    {
+                      "name": "queryText",
+                      "type": "string"
+                    },
+                    {
+                      "name": "moduleCount",
+                      "type": "number"
+                    },
+                    {
+                      "name": "respondedCount",
+                      "type": "number"
+                    }
+                  ]
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "INIT",
+                  "eventId": "evt_01M2HF5GMN6JSD7G1NETHYTHQR",
+                  "effects": [
+                    [
+                      "fetch",
+                      "SearchQuery"
+                    ],
+                    [
+                      "render-ui",
+                      "main",
+                      {
+                        "children": [
+                          {
+                            "placeholder": "Search across modules\u2026",
+                            "event": "SEARCH",
+                            "type": "search-input"
+                          },
+                          "@trait.InlineTypographyRender1"
+                        ],
+                        "type": "stack",
+                        "gap": "md",
+                        "direction": "vertical"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "idle",
+                  "to": "searching",
+                  "event": "SEARCH",
+                  "eventId": "evt_01M2HF5GMNSJYN4RP8WVXTB1ES",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.queryText",
+                      [
+                        "str/default",
+                        "@payload.queryText",
+                        [
+                          "str/default",
+                          "@payload.value",
+                          "@payload.searchTerm"
+                        ]
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.typeFilter",
+                      [
+                        "str/default",
+                        "@payload.typeFilter",
+                        ""
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.scopeJson",
+                      [
+                        "str/default",
+                        "@payload.scopeJson",
+                        ""
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.personId",
+                      "@user.id"
+                    ],
+                    [
+                      "set",
+                      "@entity.createdAt",
+                      "@now"
+                    ],
+                    [
+                      "set",
+                      "@entity.pendingModules",
+                      [
+                        "array/filter",
+                        [
+                          "array/map",
+                          [
+                            "str/split",
+                            "contacts,Projects",
+                            ","
+                          ],
+                          [
+                            "fn",
+                            "m",
+                            [
+                              "str/trim",
+                              "@m"
+                            ]
+                          ]
+                        ],
+                        [
+                          "fn",
+                          "m",
+                          [
+                            "!=",
+                            "@m",
+                            ""
+                          ]
+                        ]
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.requestedCount",
+                      0.0
+                    ],
+                    [
+                      "set",
+                      "@entity.respondedCount",
+                      0.0
+                    ],
+                    [
+                      "set",
+                      "@entity.fanOutDone",
+                      false
+                    ],
+                    [
+                      "set",
+                      "@entity.searching",
+                      true
+                    ],
+                    [
+                      "set",
+                      "@entity.results",
+                      []
+                    ],
+                    [
+                      "set",
+                      "@entity.resultsSummary",
+                      ""
+                    ],
+                    [
+                      "set",
+                      "@entity.lastError",
+                      ""
+                    ],
+                    [
+                      "when",
+                      false,
+                      [
+                        "persist",
+                        "create",
+                        "SearchQuery",
+                        {
+                          "createdAt": "@entity.createdAt",
+                          "personId": "@entity.personId",
+                          "queryText": "@entity.queryText",
+                          "scopeJson": "@entity.scopeJson",
+                          "typeFilter": "@entity.typeFilter"
+                        },
+                        {
+                          "emit": {
+                            "failure": "QUERY_SAVE_FAILED",
+                            "success": "QUERY_SAVED"
+                          }
+                        }
+                      ]
+                    ],
+                    [
+                      "when",
+                      [
+                        ">",
+                        [
+                          "array/len",
+                          "@entity.pendingModules"
+                        ],
+                        0.0
+                      ],
+                      [
+                        "emit",
+                        "FAN_OUT_STEP",
+                        {
+                          "remaining": [
+                            "array/len",
+                            "@entity.pendingModules"
+                          ]
+                        }
+                      ]
+                    ],
+                    [
+                      "render-ui",
+                      "main",
+                      {
+                        "direction": "vertical",
+                        "type": "stack",
+                        "gap": "md",
+                        "children": [
+                          {
+                            "event": "SEARCH",
+                            "placeholder": "Search across modules\u2026",
+                            "type": "search-input"
+                          },
+                          {
+                            "children": [
+                              "@trait.InlineSpinnerRender2",
+                              "@trait.InlineTypographyRender3"
+                            ],
+                            "type": "stack",
+                            "direction": "horizontal",
+                            "align": "center",
+                            "gap": "sm"
+                          }
+                        ]
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "searching",
+                  "to": "searching",
+                  "event": "SEARCH",
+                  "eventId": "evt_01M2HF5GMNSJYN4RP8WVXTB1ES",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.queryText",
+                      [
+                        "str/default",
+                        "@payload.queryText",
+                        [
+                          "str/default",
+                          "@payload.value",
+                          "@payload.searchTerm"
+                        ]
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.typeFilter",
+                      [
+                        "str/default",
+                        "@payload.typeFilter",
+                        ""
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.scopeJson",
+                      [
+                        "str/default",
+                        "@payload.scopeJson",
+                        ""
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.personId",
+                      "@user.id"
+                    ],
+                    [
+                      "set",
+                      "@entity.createdAt",
+                      "@now"
+                    ],
+                    [
+                      "set",
+                      "@entity.pendingModules",
+                      [
+                        "array/filter",
+                        [
+                          "array/map",
+                          [
+                            "str/split",
+                            "contacts,Projects",
+                            ","
+                          ],
+                          [
+                            "fn",
+                            "m",
+                            [
+                              "str/trim",
+                              "@m"
+                            ]
+                          ]
+                        ],
+                        [
+                          "fn",
+                          "m",
+                          [
+                            "!=",
+                            "@m",
+                            ""
+                          ]
+                        ]
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.requestedCount",
+                      0.0
+                    ],
+                    [
+                      "set",
+                      "@entity.respondedCount",
+                      0.0
+                    ],
+                    [
+                      "set",
+                      "@entity.fanOutDone",
+                      false
+                    ],
+                    [
+                      "set",
+                      "@entity.searching",
+                      true
+                    ],
+                    [
+                      "set",
+                      "@entity.results",
+                      []
+                    ],
+                    [
+                      "set",
+                      "@entity.resultsSummary",
+                      ""
+                    ],
+                    [
+                      "set",
+                      "@entity.lastError",
+                      ""
+                    ],
+                    [
+                      "when",
+                      false,
+                      [
+                        "persist",
+                        "create",
+                        "SearchQuery",
+                        {
+                          "typeFilter": "@entity.typeFilter",
+                          "queryText": "@entity.queryText",
+                          "personId": "@entity.personId",
+                          "scopeJson": "@entity.scopeJson",
+                          "createdAt": "@entity.createdAt"
+                        },
+                        {
+                          "emit": {
+                            "success": "QUERY_SAVED",
+                            "failure": "QUERY_SAVE_FAILED"
+                          }
+                        }
+                      ]
+                    ],
+                    [
+                      "when",
+                      [
+                        ">",
+                        [
+                          "array/len",
+                          "@entity.pendingModules"
+                        ],
+                        0.0
+                      ],
+                      [
+                        "emit",
+                        "FAN_OUT_STEP",
+                        {
+                          "remaining": [
+                            "array/len",
+                            "@entity.pendingModules"
+                          ]
+                        }
+                      ]
+                    ]
+                  ]
+                },
+                {
+                  "from": "searching",
+                  "to": "searching",
+                  "event": "FAN_OUT_STEP",
+                  "eventId": "evt_01M2HF5GMNCGC1A1JPXVA31JJ1",
+                  "guard": [
+                    ">",
+                    "@payload.remaining",
+                    0.0
+                  ],
+                  "effects": [
+                    [
+                      "emit",
+                      "MODULE_SEARCH_REQUESTED",
+                      {
+                        "moduleKey": [
+                          "array/first",
+                          "@entity.pendingModules"
+                        ],
+                        "queryText": "@entity.queryText",
+                        "scopeJson": "@entity.scopeJson",
+                        "typeFilter": "@entity.typeFilter"
+                      }
+                    ],
+                    [
+                      "set",
+                      "@entity.requestedCount",
+                      [
+                        "+",
+                        "@entity.requestedCount",
+                        1.0
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.pendingModules",
+                      [
+                        "array/drop",
+                        "@entity.pendingModules",
+                        1.0
+                      ]
+                    ],
+                    [
+                      "when",
+                      [
+                        "=",
+                        [
+                          "array/len",
+                          "@entity.pendingModules"
+                        ],
+                        0.0
+                      ],
+                      [
+                        "set",
+                        "@entity.fanOutDone",
+                        true
+                      ]
+                    ],
+                    [
+                      "when",
+                      [
+                        ">",
+                        [
+                          "array/len",
+                          "@entity.pendingModules"
+                        ],
+                        0.0
+                      ],
+                      [
+                        "emit",
+                        "FAN_OUT_STEP",
+                        {
+                          "remaining": [
+                            "array/len",
+                            "@entity.pendingModules"
+                          ]
+                        }
+                      ]
+                    ]
+                  ]
+                },
+                {
+                  "from": "searching",
+                  "to": "searching",
+                  "event": "SEARCH_RESULTS",
+                  "eventId": "evt_01M2HF5GMNEB63359FQVKBKN3V",
+                  "guard": [
+                    "not",
+                    [
+                      "array/some",
+                      "@entity.results",
+                      [
+                        "fn",
+                        "g",
+                        [
+                          "=",
+                          "@g.moduleKey",
+                          [
+                            "str/default",
+                            "@payload.moduleKey",
+                            [
+                              "str/default",
+                              "@event.source.orbital",
+                              ""
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ],
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.respondedCount",
+                      [
+                        "+",
+                        "@entity.respondedCount",
+                        1.0
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.results",
+                      [
+                        "array/append",
+                        "@entity.results",
+                        {
+                          "receivedAt": "@now",
+                          "moduleKey": [
+                            "str/default",
+                            "@payload.moduleKey",
+                            [
+                              "str/default",
+                              "@event.source.orbital",
+                              ""
+                            ]
+                          ],
+                          "answeredBy": [
+                            "str/default",
+                            "@event.source.trait",
+                            ""
+                          ],
+                          "resultsJson": "@payload.resultsJson"
+                        }
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.resultsSummary",
+                      [
+                        "str/concat",
+                        "@entity.resultsSummary",
+                        [
+                          "str/concat",
+                          [
+                            "str/default",
+                            "@payload.moduleKey",
+                            [
+                              "str/default",
+                              "@event.source.orbital",
+                              ""
+                            ]
+                          ],
+                          [
+                            "str/concat",
+                            ": ",
+                            [
+                              "str/concat",
+                              "@payload.resultsJson",
+                              "\n"
+                            ]
+                          ]
+                        ]
+                      ]
+                    ],
+                    [
+                      "render-ui",
+                      "main",
+                      {
+                        "gap": "md",
+                        "type": "stack",
+                        "children": [
+                          {
+                            "event": "SEARCH",
+                            "type": "search-input",
+                            "placeholder": "Search across modules\u2026"
+                          },
+                          [
+                            "if",
+                            [
+                              ">",
+                              [
+                                "array/len",
+                                [
+                                  "array/filter",
+                                  "@entity.results",
+                                  [
+                                    "fn",
+                                    "g",
+                                    [
+                                      "!=",
+                                      "@g.resultsJson",
+                                      ""
+                                    ]
+                                  ]
+                                ]
+                              ],
+                              0.0
+                            ],
+                            {
+                              "type": "stack",
+                              "direction": "vertical",
+                              "gap": "sm",
+                              "children": [
+                                "array/map",
+                                [
+                                  "array/filter",
+                                  "@entity.results",
+                                  [
+                                    "fn",
+                                    "g",
+                                    [
+                                      "!=",
+                                      "@g.resultsJson",
+                                      ""
+                                    ]
+                                  ]
+                                ],
+                                [
+                                  "fn",
+                                  "g",
+                                  {
+                                    "children": [
+                                      {
+                                        "overflow": "visible",
+                                        "size": "none",
+                                        "variant": "h4",
+                                        "color": "primary",
+                                        "truncate": false,
+                                        "weight": "none",
+                                        "content": "@g.moduleKey",
+                                        "align": "left",
+                                        "className": "@config.className",
+                                        "type": "typography",
+                                        "level": "@config.level",
+                                        "style": {},
+                                        "children": "@config.children",
+                                        "format": "none"
+                                      },
+                                      {
+                                        "children": [
+                                          "array/map",
+                                          [
+                                            "array/filter",
+                                            [
+                                              "str/split",
+                                              "@g.resultsJson",
+                                              ", "
+                                            ],
+                                            [
+                                              "fn",
+                                              "item",
+                                              [
+                                                "!=",
+                                                "@item",
+                                                ""
+                                              ]
+                                            ]
+                                          ],
+                                          [
+                                            "fn",
+                                            "item",
+                                            {
+                                              "overflow": "visible",
+                                              "size": "none",
+                                              "variant": "body",
+                                              "color": "primary",
+                                              "truncate": false,
+                                              "weight": "none",
+                                              "content": "@item",
+                                              "align": "left",
+                                              "className": "@config.className",
+                                              "type": "typography",
+                                              "level": "@config.level",
+                                              "style": {},
+                                              "children": "@config.children",
+                                              "format": "none"
+                                            }
+                                          ]
+                                        ],
+                                        "direction": "vertical",
+                                        "type": "stack",
+                                        "gap": "xs"
+                                      }
+                                    ],
+                                    "gap": "sm",
+                                    "type": "stack",
+                                    "direction": "vertical"
+                                  }
+                                ]
+                              ]
+                            },
+                            {
+                              "description": [
+                                "if",
+                                [
+                                  "and",
+                                  "@entity.fanOutDone",
+                                  [
+                                    ">=",
+                                    "@entity.respondedCount",
+                                    "@entity.requestedCount"
+                                  ]
+                                ],
+                                "Try a different search term or module.",
+                                "Waiting for the rest of the results\u2026"
+                              ],
+                              "type": "empty-state",
+                              "icon": "search-x",
+                              "title": [
+                                "if",
+                                [
+                                  "and",
+                                  "@entity.fanOutDone",
+                                  [
+                                    ">=",
+                                    "@entity.respondedCount",
+                                    "@entity.requestedCount"
+                                  ]
+                                ],
+                                "No results found",
+                                "Searching\u2026"
+                              ]
+                            }
+                          ]
+                        ],
+                        "direction": "vertical"
+                      }
+                    ],
+                    [
+                      "when",
+                      [
+                        "and",
+                        "@entity.fanOutDone",
+                        [
+                          ">=",
+                          "@entity.respondedCount",
+                          "@entity.requestedCount"
+                        ]
+                      ],
+                      [
+                        "do",
+                        [
+                          "set",
+                          "@entity.searching",
+                          false
+                        ],
+                        [
+                          "emit",
+                          "GLOBAL_SEARCH_COMPLETED",
+                          {
+                            "moduleCount": "@entity.requestedCount",
+                            "queryText": "@entity.queryText",
+                            "respondedCount": "@entity.respondedCount"
+                          }
+                        ]
+                      ]
+                    ]
+                  ]
+                },
+                {
+                  "from": "searching",
+                  "to": "searching",
+                  "event": "QUERY_SAVED",
+                  "eventId": "evt_01M2HF5GMNZ50T4QQD0RMJC0S8",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.savedQueryId",
+                      "@payload.id"
+                    ]
+                  ]
+                },
+                {
+                  "from": "searching",
+                  "to": "searching",
+                  "event": "QUERY_SAVE_FAILED",
+                  "eventId": "evt_01M2HF5GMNAKMT2RRYB0ZGZS6Z",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.lastError",
+                      "@payload.error"
+                    ],
+                    [
+                      "render-ui",
+                      "toast",
+                      {
+                        "dismissible": true,
+                        "variant": "warning",
+                        "type": "alert",
+                        "message": "Could not save the search to history"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            },
+            "config": {
+              "saveHistory": {
+                "type": "boolean",
+                "default": false,
+                "label": "Keep recent searches",
+                "description": "Persist each query as a SearchQuery row so recent and saved searches survive reloads.",
+                "synonyms": "search history, recent searches, saved searches, remember searches, keep history",
+                "tier": "policy"
+              },
+              "modules": {
+                "type": "string",
+                "default": "contacts,Projects",
+                "label": "Modules to search",
+                "description": "Comma-separated module keys to fan each query out to (e.g. \"contacts,projects,invoices\"). Each key gets one scoped MODULE_SEARCH_REQUESTED; the module owning a key subscribes to it and answers with SEARCH_RESULTS. Empty = no fan-out (the query is still persisted to history).",
+                "synonyms": "search modules, search scope, sources, providers, search providers, indexes, search targets, modules",
+                "tier": "internal"
+              },
+              "placeholder": {
+                "type": "string",
+                "default": "Search across modules\u2026",
+                "label": "Search placeholder",
+                "description": "Hint text in the search input.",
+                "synonyms": "placeholder, hint text, input hint",
+                "tier": "presentation"
+              }
+            },
+            "scope": "instance",
+            "sourceBehavior": {
+              "behavior": "std/behaviors/std-global-search",
+              "alias": "GlobalSearchAtom",
+              "originalName": "GlobalSearch"
+            },
+            "sourceEntityDefinition": {
+              "name": "SearchQuery",
+              "id": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
+              "collection": "search_queries",
+              "persistence": "persistent",
+              "fields": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "required": true
+                },
+                {
+                  "name": "personId",
+                  "type": "string",
+                  "default": "",
+                  "description": "Owner of this query \u2014 the user who ran it.",
+                  "synonyms": "user, owner, searcher, account"
+                },
+                {
+                  "name": "queryText",
+                  "type": "string",
+                  "default": "",
+                  "description": "The search text the user typed.",
+                  "synonyms": "query, search term, keywords, search string"
+                },
+                {
+                  "name": "typeFilter",
+                  "type": "string",
+                  "default": "",
+                  "description": "Record-type filter applied to the query; blank = all types.",
+                  "synonyms": "type, kind, category filter, record type"
+                },
+                {
+                  "name": "scopeJson",
+                  "type": "string",
+                  "default": "",
+                  "description": "Serialized scope filters (client/person/date/type) passed through to modules uninterpreted.",
+                  "synonyms": "filters, scope, search filters, filter json"
+                },
+                {
+                  "name": "createdAt",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "When the query was run.",
+                  "synonyms": "timestamp, searched at, date"
+                },
+                {
+                  "name": "pendingModules",
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Scratch: configured module keys still awaiting a fan-out request.",
+                  "synonyms": "remaining modules, queue"
+                },
+                {
+                  "name": "requestedCount",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "How many module requests have been emitted for the current query.",
+                  "synonyms": "fanned out, requests sent"
+                },
+                {
+                  "name": "respondedCount",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "How many modules have answered the current query.",
+                  "synonyms": "answers received, responses"
+                },
+                {
+                  "name": "fanOutDone",
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Scratch: true once every configured module has been sent its request.",
+                  "synonyms": "fan-out complete, all requested"
+                },
+                {
+                  "name": "searching",
+                  "type": "boolean",
+                  "default": false,
+                  "description": "True while a query is in flight.",
+                  "synonyms": "loading, in progress, busy"
+                },
+                {
+                  "name": "results",
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "moduleKey": {
+                        "name": "moduleKey",
+                        "type": "string",
+                        "required": false
+                      },
+                      "receivedAt": {
+                        "name": "receivedAt",
+                        "type": "number",
+                        "required": false
+                      },
+                      "resultsJson": {
+                        "name": "resultsJson",
+                        "type": "string",
+                        "required": false
+                      },
+                      "answeredBy": {
+                        "name": "answeredBy",
+                        "type": "string",
+                        "required": false
+                      }
+                    }
+                  },
+                  "description": "Merged answers, one entry per responding module, grouped by moduleKey.",
+                  "synonyms": "grouped results, hits, matches, answers"
+                },
+                {
+                  "name": "resultsSummary",
+                  "type": "string",
+                  "default": "",
+                  "description": "Display rendering of the grouped results: one \"moduleKey: resultsJson\" line per answering module.",
+                  "synonyms": "results text, summary, grouped display"
+                },
+                {
+                  "name": "savedQueryId",
+                  "type": "string",
+                  "default": "",
+                  "description": "Id of the persisted SearchQuery row for the current query; blank until saved.",
+                  "synonyms": "query id, saved search id"
+                },
+                {
+                  "name": "lastError",
+                  "type": "string",
+                  "default": "",
+                  "description": "Scratch: last failure shown to the user; blank = none.",
+                  "synonyms": "error, failure reason"
+                }
+              ]
+            }
+          },
+          {
+            "name": "Contacts",
+            "id": "trt_01M39WP8K0TNMVW0022124MFK2",
+            "effectRow": [
+              {
+                "kind": "emit",
+                "resource": "SEARCH_RESULTS"
+              },
+              {
+                "kind": "render-ui",
+                "resource": "main"
+              }
+            ],
+            "linkedEntity": "Hit",
+            "linkedEntityId": "ent_01M39WP8K02V0NVDBCSYYN6ECK",
+            "entityRefIds": {
+              "Hit": "ent_01M39WP8K02V0NVDBCSYYN6ECK"
+            },
+            "emits": [
+              {
+                "event": "SEARCH_RESULTS",
+                "eventId": "evt_01M39WP8K0JNFFY33GHQZB5SJ8",
+                "scope": "external",
+                "payloadSchema": [
+                  {
+                    "name": "moduleKey",
+                    "type": "string"
+                  },
+                  {
+                    "name": "resultsJson",
+                    "type": "string"
+                  }
+                ]
+              }
+            ],
+            "listens": [
+              {
+                "event": "MODULE_SEARCH_REQUESTED",
+                "triggers": "LOOKUP",
+                "triggersId": "evt_01M39WP8K0QPMFP9Q5VVM50GKM",
+                "guard": [
+                  "=",
+                  "@event.payload.moduleKey",
+                  "contacts"
+                ],
+                "source": {
+                  "kind": "trait",
+                  "trait": "Finder",
+                  "traitId": "trt_01M39WP8K0QMJ8QTRGE8FJ08B7"
+                }
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "id": "evt_01M39WP8K0BNM1DK77FJ1XH0J9",
+                  "name": "Initialize"
+                },
+                {
+                  "key": "LOOKUP",
+                  "id": "evt_01M39WP8K0QPMFP9Q5VVM50GKM",
+                  "name": "Lookup"
+                },
+                {
+                  "key": "SEARCH_RESULTS",
+                  "id": "evt_01M39WP8K0JNFFY33GHQZB5SJ8",
+                  "name": "Search Results",
+                  "payloadSchema": [
+                    {
+                      "name": "moduleKey",
+                      "type": "string"
+                    },
+                    {
+                      "name": "resultsJson",
+                      "type": "string"
+                    }
+                  ]
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "INIT",
+                  "eventId": "evt_01M39WP8K0BNM1DK77FJ1XH0J9",
+                  "effects": [
+                    [
+                      "render-ui",
+                      "main",
+                      {
+                        "content": "contacts",
+                        "type": "typography"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "LOOKUP",
+                  "eventId": "evt_01M39WP8K0QPMFP9Q5VVM50GKM",
+                  "effects": [
+                    [
+                      "emit",
+                      "SEARCH_RESULTS",
+                      {
+                        "resultsJson": "Ann",
+                        "moduleKey": "contacts"
+                      }
+                    ],
+                    [
+                      "emit",
+                      "SEARCH_RESULTS",
+                      {
+                        "resultsJson": "Ann, Bob",
+                        "moduleKey": "contacts"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            },
+            "scope": "instance"
+          },
+          {
+            "name": "Projects",
+            "id": "trt_01M39WP8K0019N9RS0QPPYZCXW",
+            "effectRow": [
+              {
+                "kind": "emit",
+                "resource": "SEARCH_RESULTS"
+              },
+              {
+                "kind": "render-ui",
+                "resource": "sidebar"
+              }
+            ],
+            "linkedEntity": "Hit",
+            "linkedEntityId": "ent_01M39WP8K02V0NVDBCSYYN6ECK",
+            "entityRefIds": {
+              "Hit": "ent_01M39WP8K02V0NVDBCSYYN6ECK"
+            },
+            "emits": [
+              {
+                "event": "SEARCH_RESULTS",
+                "eventId": "evt_01M39WP8K0BAE16264S08KV06N",
+                "scope": "external",
+                "payloadSchema": [
+                  {
+                    "name": "moduleKey",
+                    "type": "string"
+                  },
+                  {
+                    "name": "resultsJson",
+                    "type": "string"
+                  }
+                ]
+              }
+            ],
+            "listens": [
+              {
+                "event": "MODULE_SEARCH_REQUESTED",
+                "triggers": "LOOKUP",
+                "triggersId": "evt_01M39WP8K0VWXF5QFE8EE8Q392",
+                "guard": [
+                  "=",
+                  "@event.payload.moduleKey",
+                  "Projects"
+                ],
+                "source": {
+                  "kind": "trait",
+                  "trait": "Finder",
+                  "traitId": "trt_01M39WP8K0QMJ8QTRGE8FJ08B7"
+                }
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "id": "evt_01M39WP8K0DCGKWJNEFYBAS4E7",
+                  "name": "Initialize"
+                },
+                {
+                  "key": "LOOKUP",
+                  "id": "evt_01M39WP8K0VWXF5QFE8EE8Q392",
+                  "name": "Lookup"
+                },
+                {
+                  "key": "SEARCH_RESULTS",
+                  "id": "evt_01M39WP8K0BAE16264S08KV06N",
+                  "name": "Search Results",
+                  "payloadSchema": [
+                    {
+                      "name": "moduleKey",
+                      "type": "string"
+                    },
+                    {
+                      "name": "resultsJson",
+                      "type": "string"
+                    }
+                  ]
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "INIT",
+                  "eventId": "evt_01M39WP8K0DCGKWJNEFYBAS4E7",
+                  "effects": [
+                    [
+                      "render-ui",
+                      "sidebar",
+                      {
+                        "type": "typography",
+                        "content": "projects"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "LOOKUP",
+                  "eventId": "evt_01M39WP8K0VWXF5QFE8EE8Q392",
+                  "effects": [
+                    [
+                      "emit",
+                      "SEARCH_RESULTS",
+                      {
+                        "resultsJson": "Apollo"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            },
+            "scope": "instance"
+          },
+          {
+            "name": "InlineTypographyRender3",
+            "id": "trt_01M2HF5GMN2FE93FP2KKCTC5FB",
+            "entityRebindable": true,
+            "entityContract": {
+              "requires": [],
+              "provides": []
+            },
+            "effectRow": [
+              {
+                "kind": "render-ui",
+                "resource": "main"
+              }
+            ],
+            "category": "interaction",
+            "linkedEntity": "SearchQuery",
+            "linkedEntityId": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
+            "entityRefIds": {
+              "SearchQuery": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY"
+            },
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "id": "evt_NQFABJ5RMVWADW6S3753J601F1",
+                  "name": "Initialize"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "INIT",
+                  "eventId": "evt_NQFABJ5RMVWADW6S3753J601F1",
+                  "effects": [
+                    [
+                      "render-ui",
+                      "main",
+                      {
+                        "overflow": "visible",
+                        "size": "none",
+                        "variant": "caption",
+                        "color": "muted",
+                        "truncate": false,
+                        "weight": "none",
+                        "content": "Searching\u2026",
+                        "align": "left",
+                        "className": "@config.className",
+                        "type": "typography",
+                        "level": "@config.level",
+                        "style": {},
+                        "children": "@config.children",
+                        "format": "none"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            },
+            "config": {
+              "content": {
+                "type": "node",
+                "default": "Searching\u2026",
+                "label": "Content",
+                "description": "Text content (alternative to children)",
+                "tier": "presentation"
+              },
+              "overflow": {
+                "type": "string",
+                "default": "visible",
+                "label": "Overflow",
+                "description": "Overflow handling mode",
+                "tier": "presentation",
+                "values": [
+                  "visible",
+                  "hidden",
+                  "wrap",
+                  "clamp-2",
+                  "clamp-3"
+                ]
+              },
+              "weight": {
+                "type": "string",
+                "default": "none",
+                "label": "Weight",
+                "description": "Font weight override \u2014 `none` = no override, the variant's baked weight applies",
+                "tier": "presentation",
+                "values": [
+                  "none",
+                  "light",
+                  "normal",
+                  "medium",
+                  "semibold",
+                  "bold"
+                ]
+              },
+              "children": {
+                "type": "node",
+                "label": "Children",
+                "description": "Children elements",
+                "tier": "presentation"
+              },
+              "size": {
+                "type": "string",
+                "default": "none",
+                "label": "Size",
+                "description": "Font size override",
+                "tier": "presentation",
+                "values": [
+                  "none",
+                  "xs",
+                  "sm",
+                  "md",
+                  "lg",
+                  "xl",
+                  "2xl",
+                  "3xl"
+                ]
+              },
+              "style": {
+                "type": "Map<string,string>",
+                "default": {},
+                "label": "Style",
+                "description": "Inline style",
+                "tier": "presentation",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "align": {
+                "type": "string",
+                "default": "left",
+                "label": "Align",
+                "description": "Text alignment",
+                "tier": "presentation",
+                "values": [
+                  "left",
+                  "center",
+                  "right"
+                ]
+              },
+              "level": {
+                "type": "number",
+                "label": "Level",
+                "description": "Heading level (1-6) - alternative to variant for headings",
+                "tier": "presentation"
+              },
+              "variant": {
+                "type": "string",
+                "default": "caption",
+                "label": "Variant",
+                "description": "Typography variant",
+                "tier": "presentation",
+                "values": [
+                  "h1",
+                  "h2",
+                  "h3",
+                  "h4",
+                  "h5",
+                  "h6",
+                  "heading",
+                  "subheading",
+                  "body1",
+                  "body2",
+                  "body",
+                  "caption",
+                  "overline",
+                  "small",
+                  "large",
+                  "label"
+                ]
+              },
+              "truncate": {
+                "type": "boolean",
+                "default": false,
+                "label": "Truncate",
+                "description": "Truncate with ellipsis (single line)",
+                "tier": "presentation"
+              },
+              "className": {
+                "type": "string",
+                "label": "Class Name",
+                "description": "Additional class names",
+                "tier": "presentation"
+              },
+              "color": {
+                "type": "string",
+                "default": "muted",
+                "label": "Color",
+                "description": "Text color",
+                "tier": "presentation",
+                "values": [
+                  "primary",
+                  "secondary",
+                  "muted",
+                  "error",
+                  "success",
+                  "warning",
+                  "inherit"
+                ]
+              },
+              "format": {
+                "type": "string",
+                "default": "none",
+                "label": "Format",
+                "description": "Value formatting applied to string/number/Date content \u2014 `none` (the default) renders content as-is. Covers the raw-ISO-date class: a bound datetime renders human-readable via `format='date'|'time'|'datetime'`.",
+                "tier": "presentation",
+                "values": [
+                  "none",
+                  "date",
+                  "time",
+                  "datetime",
+                  "number",
+                  "currency",
+                  "percent"
+                ]
+              }
+            },
+            "scope": "instance",
+            "sourceBehavior": {
+              "behavior": "std/behaviors/std-global-search",
+              "alias": "GlobalSearchAtom",
+              "originalName": "InlineTypographyRender3"
+            },
+            "sourceEntityDefinition": {
+              "name": "SearchQuery",
+              "id": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
+              "collection": "search_queries",
+              "persistence": "persistent",
+              "fields": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "required": true
+                },
+                {
+                  "name": "personId",
+                  "type": "string",
+                  "default": "",
+                  "description": "Owner of this query \u2014 the user who ran it.",
+                  "synonyms": "user, owner, searcher, account"
+                },
+                {
+                  "name": "queryText",
+                  "type": "string",
+                  "default": "",
+                  "description": "The search text the user typed.",
+                  "synonyms": "query, search term, keywords, search string"
+                },
+                {
+                  "name": "typeFilter",
+                  "type": "string",
+                  "default": "",
+                  "description": "Record-type filter applied to the query; blank = all types.",
+                  "synonyms": "type, kind, category filter, record type"
+                },
+                {
+                  "name": "scopeJson",
+                  "type": "string",
+                  "default": "",
+                  "description": "Serialized scope filters (client/person/date/type) passed through to modules uninterpreted.",
+                  "synonyms": "filters, scope, search filters, filter json"
+                },
+                {
+                  "name": "createdAt",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "When the query was run.",
+                  "synonyms": "timestamp, searched at, date"
+                },
+                {
+                  "name": "pendingModules",
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Scratch: configured module keys still awaiting a fan-out request.",
+                  "synonyms": "remaining modules, queue"
+                },
+                {
+                  "name": "requestedCount",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "How many module requests have been emitted for the current query.",
+                  "synonyms": "fanned out, requests sent"
+                },
+                {
+                  "name": "respondedCount",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "How many modules have answered the current query.",
+                  "synonyms": "answers received, responses"
+                },
+                {
+                  "name": "fanOutDone",
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Scratch: true once every configured module has been sent its request.",
+                  "synonyms": "fan-out complete, all requested"
+                },
+                {
+                  "name": "searching",
+                  "type": "boolean",
+                  "default": false,
+                  "description": "True while a query is in flight.",
+                  "synonyms": "loading, in progress, busy"
+                },
+                {
+                  "name": "results",
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "moduleKey": {
+                        "name": "moduleKey",
+                        "type": "string",
+                        "required": false
+                      },
+                      "receivedAt": {
+                        "name": "receivedAt",
+                        "type": "number",
+                        "required": false
+                      },
+                      "resultsJson": {
+                        "name": "resultsJson",
+                        "type": "string",
+                        "required": false
+                      },
+                      "answeredBy": {
+                        "name": "answeredBy",
+                        "type": "string",
+                        "required": false
+                      }
+                    }
+                  },
+                  "description": "Merged answers, one entry per responding module, grouped by moduleKey.",
+                  "synonyms": "grouped results, hits, matches, answers"
+                },
+                {
+                  "name": "resultsSummary",
+                  "type": "string",
+                  "default": "",
+                  "description": "Display rendering of the grouped results: one \"moduleKey: resultsJson\" line per answering module.",
+                  "synonyms": "results text, summary, grouped display"
+                },
+                {
+                  "name": "savedQueryId",
+                  "type": "string",
+                  "default": "",
+                  "description": "Id of the persisted SearchQuery row for the current query; blank until saved.",
+                  "synonyms": "query id, saved search id"
+                },
+                {
+                  "name": "lastError",
+                  "type": "string",
+                  "default": "",
+                  "description": "Scratch: last failure shown to the user; blank = none.",
+                  "synonyms": "error, failure reason"
+                }
+              ]
+            }
+          },
+          {
+            "name": "InlineTypographyRender1",
+            "id": "trt_01M2HF5GMNZQ67R15B1XS75064",
+            "entityRebindable": true,
+            "entityContract": {
+              "requires": [],
+              "provides": []
+            },
+            "effectRow": [
+              {
+                "kind": "render-ui",
+                "resource": "main"
+              }
+            ],
+            "category": "interaction",
+            "linkedEntity": "SearchQuery",
+            "linkedEntityId": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
+            "entityRefIds": {
+              "SearchQuery": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY"
+            },
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "id": "evt_AXA0GBGQVTBXXAKK688XBTB6G7",
+                  "name": "Initialize"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "INIT",
+                  "eventId": "evt_AXA0GBGQVTBXXAKK688XBTB6G7",
+                  "effects": [
+                    [
+                      "render-ui",
+                      "main",
+                      {
+                        "overflow": "visible",
+                        "size": "none",
+                        "variant": "caption",
+                        "color": "muted",
+                        "truncate": false,
+                        "weight": "none",
+                        "content": "Search across every connected module \u2014 results group by module.",
+                        "align": "left",
+                        "className": "@config.className",
+                        "type": "typography",
+                        "level": "@config.level",
+                        "style": {},
+                        "children": "@config.children",
+                        "format": "none"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            },
+            "config": {
+              "content": {
+                "type": "node",
+                "default": "Search across every connected module \u2014 results group by module.",
+                "label": "Content",
+                "description": "Text content (alternative to children)",
+                "tier": "presentation"
+              },
+              "overflow": {
+                "type": "string",
+                "default": "visible",
+                "label": "Overflow",
+                "description": "Overflow handling mode",
+                "tier": "presentation",
+                "values": [
+                  "visible",
+                  "hidden",
+                  "wrap",
+                  "clamp-2",
+                  "clamp-3"
+                ]
+              },
+              "weight": {
+                "type": "string",
+                "default": "none",
+                "label": "Weight",
+                "description": "Font weight override \u2014 `none` = no override, the variant's baked weight applies",
+                "tier": "presentation",
+                "values": [
+                  "none",
+                  "light",
+                  "normal",
+                  "medium",
+                  "semibold",
+                  "bold"
+                ]
+              },
+              "children": {
+                "type": "node",
+                "label": "Children",
+                "description": "Children elements",
+                "tier": "presentation"
+              },
+              "size": {
+                "type": "string",
+                "default": "none",
+                "label": "Size",
+                "description": "Font size override",
+                "tier": "presentation",
+                "values": [
+                  "none",
+                  "xs",
+                  "sm",
+                  "md",
+                  "lg",
+                  "xl",
+                  "2xl",
+                  "3xl"
+                ]
+              },
+              "style": {
+                "type": "Map<string,string>",
+                "default": {},
+                "label": "Style",
+                "description": "Inline style",
+                "tier": "presentation",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "align": {
+                "type": "string",
+                "default": "left",
+                "label": "Align",
+                "description": "Text alignment",
+                "tier": "presentation",
+                "values": [
+                  "left",
+                  "center",
+                  "right"
+                ]
+              },
+              "level": {
+                "type": "number",
+                "label": "Level",
+                "description": "Heading level (1-6) - alternative to variant for headings",
+                "tier": "presentation"
+              },
+              "variant": {
+                "type": "string",
+                "default": "caption",
+                "label": "Variant",
+                "description": "Typography variant",
+                "tier": "presentation",
+                "values": [
+                  "h1",
+                  "h2",
+                  "h3",
+                  "h4",
+                  "h5",
+                  "h6",
+                  "heading",
+                  "subheading",
+                  "body1",
+                  "body2",
+                  "body",
+                  "caption",
+                  "overline",
+                  "small",
+                  "large",
+                  "label"
+                ]
+              },
+              "truncate": {
+                "type": "boolean",
+                "default": false,
+                "label": "Truncate",
+                "description": "Truncate with ellipsis (single line)",
+                "tier": "presentation"
+              },
+              "className": {
+                "type": "string",
+                "label": "Class Name",
+                "description": "Additional class names",
+                "tier": "presentation"
+              },
+              "color": {
+                "type": "string",
+                "default": "muted",
+                "label": "Color",
+                "description": "Text color",
+                "tier": "presentation",
+                "values": [
+                  "primary",
+                  "secondary",
+                  "muted",
+                  "error",
+                  "success",
+                  "warning",
+                  "inherit"
+                ]
+              },
+              "format": {
+                "type": "string",
+                "default": "none",
+                "label": "Format",
+                "description": "Value formatting applied to string/number/Date content \u2014 `none` (the default) renders content as-is. Covers the raw-ISO-date class: a bound datetime renders human-readable via `format='date'|'time'|'datetime'`.",
+                "tier": "presentation",
+                "values": [
+                  "none",
+                  "date",
+                  "time",
+                  "datetime",
+                  "number",
+                  "currency",
+                  "percent"
+                ]
+              }
+            },
+            "scope": "instance",
+            "sourceBehavior": {
+              "behavior": "std/behaviors/std-global-search",
+              "alias": "GlobalSearchAtom",
+              "originalName": "InlineTypographyRender1"
+            },
+            "sourceEntityDefinition": {
+              "name": "SearchQuery",
+              "id": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
+              "collection": "search_queries",
+              "persistence": "persistent",
+              "fields": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "required": true
+                },
+                {
+                  "name": "personId",
+                  "type": "string",
+                  "default": "",
+                  "description": "Owner of this query \u2014 the user who ran it.",
+                  "synonyms": "user, owner, searcher, account"
+                },
+                {
+                  "name": "queryText",
+                  "type": "string",
+                  "default": "",
+                  "description": "The search text the user typed.",
+                  "synonyms": "query, search term, keywords, search string"
+                },
+                {
+                  "name": "typeFilter",
+                  "type": "string",
+                  "default": "",
+                  "description": "Record-type filter applied to the query; blank = all types.",
+                  "synonyms": "type, kind, category filter, record type"
+                },
+                {
+                  "name": "scopeJson",
+                  "type": "string",
+                  "default": "",
+                  "description": "Serialized scope filters (client/person/date/type) passed through to modules uninterpreted.",
+                  "synonyms": "filters, scope, search filters, filter json"
+                },
+                {
+                  "name": "createdAt",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "When the query was run.",
+                  "synonyms": "timestamp, searched at, date"
+                },
+                {
+                  "name": "pendingModules",
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Scratch: configured module keys still awaiting a fan-out request.",
+                  "synonyms": "remaining modules, queue"
+                },
+                {
+                  "name": "requestedCount",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "How many module requests have been emitted for the current query.",
+                  "synonyms": "fanned out, requests sent"
+                },
+                {
+                  "name": "respondedCount",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "How many modules have answered the current query.",
+                  "synonyms": "answers received, responses"
+                },
+                {
+                  "name": "fanOutDone",
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Scratch: true once every configured module has been sent its request.",
+                  "synonyms": "fan-out complete, all requested"
+                },
+                {
+                  "name": "searching",
+                  "type": "boolean",
+                  "default": false,
+                  "description": "True while a query is in flight.",
+                  "synonyms": "loading, in progress, busy"
+                },
+                {
+                  "name": "results",
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "moduleKey": {
+                        "name": "moduleKey",
+                        "type": "string",
+                        "required": false
+                      },
+                      "receivedAt": {
+                        "name": "receivedAt",
+                        "type": "number",
+                        "required": false
+                      },
+                      "resultsJson": {
+                        "name": "resultsJson",
+                        "type": "string",
+                        "required": false
+                      },
+                      "answeredBy": {
+                        "name": "answeredBy",
+                        "type": "string",
+                        "required": false
+                      }
+                    }
+                  },
+                  "description": "Merged answers, one entry per responding module, grouped by moduleKey.",
+                  "synonyms": "grouped results, hits, matches, answers"
+                },
+                {
+                  "name": "resultsSummary",
+                  "type": "string",
+                  "default": "",
+                  "description": "Display rendering of the grouped results: one \"moduleKey: resultsJson\" line per answering module.",
+                  "synonyms": "results text, summary, grouped display"
+                },
+                {
+                  "name": "savedQueryId",
+                  "type": "string",
+                  "default": "",
+                  "description": "Id of the persisted SearchQuery row for the current query; blank until saved.",
+                  "synonyms": "query id, saved search id"
+                },
+                {
+                  "name": "lastError",
+                  "type": "string",
+                  "default": "",
+                  "description": "Scratch: last failure shown to the user; blank = none.",
+                  "synonyms": "error, failure reason"
+                }
+              ]
+            }
+          },
+          {
+            "name": "InlineSpinnerRender2",
+            "id": "trt_01M2HF5GMNQ98TN6V15AA4B52H",
+            "entityRebindable": true,
+            "entityContract": {
+              "requires": [],
+              "provides": []
+            },
+            "effectRow": [
+              {
+                "kind": "render-ui",
+                "resource": "main"
+              }
+            ],
+            "category": "interaction",
+            "linkedEntity": "SearchQuery",
+            "linkedEntityId": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
+            "entityRefIds": {
+              "SearchQuery": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY"
+            },
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "id": "evt_01KXG04KQT817HHS06THABYV17",
+                  "name": "Initialize"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "INIT",
+                  "eventId": "evt_01KXG04KQT817HHS06THABYV17",
+                  "effects": [
+                    [
+                      "render-ui",
+                      "main",
+                      {
+                        "overlay": "@config.overlay",
+                        "className": "@config.className",
+                        "type": "spinner",
+                        "size": "md"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            },
+            "config": {
+              "className": {
+                "type": "string",
+                "label": "Class Name",
+                "description": "Additional CSS classes applied to the root element.",
+                "tier": "presentation"
+              },
+              "size": {
+                "type": "string",
+                "default": "md",
+                "label": "Size",
+                "description": "size prop",
+                "tier": "presentation",
+                "values": [
+                  "xs",
+                  "sm",
+                  "md",
+                  "lg"
+                ]
+              },
+              "overlay": {
+                "type": "boolean",
+                "label": "Overlay",
+                "description": "Renders a centered overlay backdrop instead of inline.",
+                "tier": "presentation"
+              }
+            },
+            "scope": "instance",
+            "sourceBehavior": {
+              "behavior": "std/behaviors/std-global-search",
+              "alias": "GlobalSearchAtom",
+              "originalName": "InlineSpinnerRender2"
+            },
+            "sourceEntityDefinition": {
+              "name": "SearchQuery",
+              "id": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
+              "collection": "search_queries",
+              "persistence": "persistent",
+              "fields": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "required": true
+                },
+                {
+                  "name": "personId",
+                  "type": "string",
+                  "default": "",
+                  "description": "Owner of this query \u2014 the user who ran it.",
+                  "synonyms": "user, owner, searcher, account"
+                },
+                {
+                  "name": "queryText",
+                  "type": "string",
+                  "default": "",
+                  "description": "The search text the user typed.",
+                  "synonyms": "query, search term, keywords, search string"
+                },
+                {
+                  "name": "typeFilter",
+                  "type": "string",
+                  "default": "",
+                  "description": "Record-type filter applied to the query; blank = all types.",
+                  "synonyms": "type, kind, category filter, record type"
+                },
+                {
+                  "name": "scopeJson",
+                  "type": "string",
+                  "default": "",
+                  "description": "Serialized scope filters (client/person/date/type) passed through to modules uninterpreted.",
+                  "synonyms": "filters, scope, search filters, filter json"
+                },
+                {
+                  "name": "createdAt",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "When the query was run.",
+                  "synonyms": "timestamp, searched at, date"
+                },
+                {
+                  "name": "pendingModules",
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Scratch: configured module keys still awaiting a fan-out request.",
+                  "synonyms": "remaining modules, queue"
+                },
+                {
+                  "name": "requestedCount",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "How many module requests have been emitted for the current query.",
+                  "synonyms": "fanned out, requests sent"
+                },
+                {
+                  "name": "respondedCount",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "How many modules have answered the current query.",
+                  "synonyms": "answers received, responses"
+                },
+                {
+                  "name": "fanOutDone",
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Scratch: true once every configured module has been sent its request.",
+                  "synonyms": "fan-out complete, all requested"
+                },
+                {
+                  "name": "searching",
+                  "type": "boolean",
+                  "default": false,
+                  "description": "True while a query is in flight.",
+                  "synonyms": "loading, in progress, busy"
+                },
+                {
+                  "name": "results",
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "moduleKey": {
+                        "name": "moduleKey",
+                        "type": "string",
+                        "required": false
+                      },
+                      "receivedAt": {
+                        "name": "receivedAt",
+                        "type": "number",
+                        "required": false
+                      },
+                      "resultsJson": {
+                        "name": "resultsJson",
+                        "type": "string",
+                        "required": false
+                      },
+                      "answeredBy": {
+                        "name": "answeredBy",
+                        "type": "string",
+                        "required": false
+                      }
+                    }
+                  },
+                  "description": "Merged answers, one entry per responding module, grouped by moduleKey.",
+                  "synonyms": "grouped results, hits, matches, answers"
+                },
+                {
+                  "name": "resultsSummary",
+                  "type": "string",
+                  "default": "",
+                  "description": "Display rendering of the grouped results: one \"moduleKey: resultsJson\" line per answering module.",
+                  "synonyms": "results text, summary, grouped display"
+                },
+                {
+                  "name": "savedQueryId",
+                  "type": "string",
+                  "default": "",
+                  "description": "Id of the persisted SearchQuery row for the current query; blank until saved.",
+                  "synonyms": "query id, saved search id"
+                },
+                {
+                  "name": "lastError",
+                  "type": "string",
+                  "default": "",
+                  "description": "Scratch: last failure shown to the user; blank = none.",
+                  "synonyms": "error, failure reason"
+                }
+              ]
+            }
+          }
+        ],
+        "pages": [
+          {
+            "name": "Home",
+            "id": "pag_01M39WP8K0YB1M42KB6JP243R9",
+            "path": "/",
+            "isInitial": true,
+            "traits": [
+              {
+                "ref": "Finder",
+                "refId": "trt_01M39WP8K0QMJ8QTRGE8FJ08B7"
+              },
+              {
+                "ref": "Contacts",
+                "refId": "trt_01M39WP8K0TNMVW0022124MFK2"
+              },
+              {
+                "ref": "Projects",
+                "refId": "trt_01M39WP8K0019N9RS0QPPYZCXW"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "_metadata": {
+      "configProvenance": {
+        "Search": [
+          {
+            "trait": "Finder",
+            "patternPath": "root.children.0",
+            "prop": "placeholder",
+            "knob": "placeholder"
+          },
+          {
+            "trait": "Finder",
+            "patternPath": "root.children.0",
+            "prop": "placeholder",
+            "knob": "placeholder"
+          },
+          {
+            "trait": "Finder",
+            "patternPath": "root.children.0",
+            "prop": "placeholder",
+            "knob": "placeholder"
+          },
+          {
+            "trait": "InlineSpinnerRender2",
+            "patternPath": "root",
+            "prop": "size",
+            "knob": "size"
+          },
+          {
+            "trait": "InlineTypographyRender1",
+            "patternPath": "root",
+            "prop": "align",
+            "knob": "align"
+          },
+          {
+            "trait": "InlineTypographyRender1",
+            "patternPath": "root",
+            "prop": "color",
+            "knob": "color"
+          },
+          {
+            "trait": "InlineTypographyRender1",
+            "patternPath": "root",
+            "prop": "content",
+            "knob": "content"
+          },
+          {
+            "trait": "InlineTypographyRender1",
+            "patternPath": "root",
+            "prop": "format",
+            "knob": "format"
+          },
+          {
+            "trait": "InlineTypographyRender1",
+            "patternPath": "root",
+            "prop": "overflow",
+            "knob": "overflow"
+          },
+          {
+            "trait": "InlineTypographyRender1",
+            "patternPath": "root",
+            "prop": "size",
+            "knob": "size"
+          },
+          {
+            "trait": "InlineTypographyRender1",
+            "patternPath": "root",
+            "prop": "style",
+            "knob": "style"
+          },
+          {
+            "trait": "InlineTypographyRender1",
+            "patternPath": "root",
+            "prop": "truncate",
+            "knob": "truncate"
+          },
+          {
+            "trait": "InlineTypographyRender1",
+            "patternPath": "root",
+            "prop": "variant",
+            "knob": "variant"
+          },
+          {
+            "trait": "InlineTypographyRender1",
+            "patternPath": "root",
+            "prop": "weight",
+            "knob": "weight"
+          },
+          {
+            "trait": "InlineTypographyRender3",
+            "patternPath": "root",
+            "prop": "align",
+            "knob": "align"
+          },
+          {
+            "trait": "InlineTypographyRender3",
+            "patternPath": "root",
+            "prop": "color",
+            "knob": "color"
+          },
+          {
+            "trait": "InlineTypographyRender3",
+            "patternPath": "root",
+            "prop": "content",
+            "knob": "content"
+          },
+          {
+            "trait": "InlineTypographyRender3",
+            "patternPath": "root",
+            "prop": "format",
+            "knob": "format"
+          },
+          {
+            "trait": "InlineTypographyRender3",
+            "patternPath": "root",
+            "prop": "overflow",
+            "knob": "overflow"
+          },
+          {
+            "trait": "InlineTypographyRender3",
+            "patternPath": "root",
+            "prop": "size",
+            "knob": "size"
+          },
+          {
+            "trait": "InlineTypographyRender3",
+            "patternPath": "root",
+            "prop": "style",
+            "knob": "style"
+          },
+          {
+            "trait": "InlineTypographyRender3",
+            "patternPath": "root",
+            "prop": "truncate",
+            "knob": "truncate"
+          },
+          {
+            "trait": "InlineTypographyRender3",
+            "patternPath": "root",
+            "prop": "variant",
+            "knob": "variant"
+          },
+          {
+            "trait": "InlineTypographyRender3",
+            "patternPath": "root",
+            "prop": "weight",
+            "knob": "weight"
+          },
+          {
+            "trait": "InlineTypographyRender4",
+            "patternPath": "root",
+            "prop": "align",
+            "knob": "align"
+          },
+          {
+            "trait": "InlineTypographyRender4",
+            "patternPath": "root",
+            "prop": "color",
+            "knob": "color"
+          },
+          {
+            "trait": "InlineTypographyRender4",
+            "patternPath": "root",
+            "prop": "content",
+            "knob": "content"
+          },
+          {
+            "trait": "InlineTypographyRender4",
+            "patternPath": "root",
+            "prop": "format",
+            "knob": "format"
+          },
+          {
+            "trait": "InlineTypographyRender4",
+            "patternPath": "root",
+            "prop": "overflow",
+            "knob": "overflow"
+          },
+          {
+            "trait": "InlineTypographyRender4",
+            "patternPath": "root",
+            "prop": "size",
+            "knob": "size"
+          },
+          {
+            "trait": "InlineTypographyRender4",
+            "patternPath": "root",
+            "prop": "style",
+            "knob": "style"
+          },
+          {
+            "trait": "InlineTypographyRender4",
+            "patternPath": "root",
+            "prop": "truncate",
+            "knob": "truncate"
+          },
+          {
+            "trait": "InlineTypographyRender4",
+            "patternPath": "root",
+            "prop": "variant",
+            "knob": "variant"
+          },
+          {
+            "trait": "InlineTypographyRender4",
+            "patternPath": "root",
+            "prop": "weight",
+            "knob": "weight"
+          },
+          {
+            "trait": "InlineTypographyRender5",
+            "patternPath": "root",
+            "prop": "align",
+            "knob": "align"
+          },
+          {
+            "trait": "InlineTypographyRender5",
+            "patternPath": "root",
+            "prop": "color",
+            "knob": "color"
+          },
+          {
+            "trait": "InlineTypographyRender5",
+            "patternPath": "root",
+            "prop": "content",
+            "knob": "content"
+          },
+          {
+            "trait": "InlineTypographyRender5",
+            "patternPath": "root",
+            "prop": "format",
+            "knob": "format"
+          },
+          {
+            "trait": "InlineTypographyRender5",
+            "patternPath": "root",
+            "prop": "overflow",
+            "knob": "overflow"
+          },
+          {
+            "trait": "InlineTypographyRender5",
+            "patternPath": "root",
+            "prop": "size",
+            "knob": "size"
+          },
+          {
+            "trait": "InlineTypographyRender5",
+            "patternPath": "root",
+            "prop": "style",
+            "knob": "style"
+          },
+          {
+            "trait": "InlineTypographyRender5",
+            "patternPath": "root",
+            "prop": "truncate",
+            "knob": "truncate"
+          },
+          {
+            "trait": "InlineTypographyRender5",
+            "patternPath": "root",
+            "prop": "variant",
+            "knob": "variant"
+          },
+          {
+            "trait": "InlineTypographyRender5",
+            "patternPath": "root",
+            "prop": "weight",
+            "knob": "weight"
+          }
+        ]
+      }
+    },
+    "schemaVersion": 1,
+    "ledger": {
+      "schemaVersion": 1,
+      "entries": {
+        "evt_01M39WP8K0BNM1DK77FJ1XH0J9": {
+          "id": "evt_01M39WP8K0BNM1DK77FJ1XH0J9",
+          "kind": "event",
+          "bakedName": "INIT",
+          "curName": "INIT",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39WP8K0TNMVW0022124MFK2"
+        },
+        "trt_01M39WP8K0TNMVW0022124MFK2": {
+          "id": "trt_01M39WP8K0TNMVW0022124MFK2",
+          "kind": "trait",
+          "bakedName": "Contacts",
+          "curName": "Contacts",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "pag_01M39WP8K0YB1M42KB6JP243R9": {
+          "id": "pag_01M39WP8K0YB1M42KB6JP243R9",
+          "kind": "page",
+          "bakedName": "Home",
+          "curName": "Home",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "ent_01M39WP8K02V0NVDBCSYYN6ECK": {
+          "id": "ent_01M39WP8K02V0NVDBCSYYN6ECK",
+          "kind": "entity",
+          "bakedName": "Hit",
+          "curName": "Hit",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "trt_01M39WP8K0019N9RS0QPPYZCXW": {
+          "id": "trt_01M39WP8K0019N9RS0QPPYZCXW",
+          "kind": "trait",
+          "bakedName": "Projects",
+          "curName": "Projects",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "evt_01M2HF5GMNEB63359FQVKBKN3V": {
+          "id": "evt_01M2HF5GMNEB63359FQVKBKN3V",
+          "kind": "event",
+          "bakedName": "SEARCH_RESULTS",
+          "curName": "SEARCH_RESULTS",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M2HF5GMNYZN83ARCEMGT2H32"
+        },
+        "evt_01M39WP8K0BAE16264S08KV06N": {
+          "id": "evt_01M39WP8K0BAE16264S08KV06N",
+          "kind": "event",
+          "bakedName": "SEARCH_RESULTS",
+          "curName": "SEARCH_RESULTS",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39WP8K0019N9RS0QPPYZCXW"
+        },
+        "evt_01M39WP8K0VWXF5QFE8EE8Q392": {
+          "id": "evt_01M39WP8K0VWXF5QFE8EE8Q392",
+          "kind": "event",
+          "bakedName": "LOOKUP",
+          "curName": "LOOKUP",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39WP8K0019N9RS0QPPYZCXW"
+        },
+        "evt_01M39WP8K0QPMFP9Q5VVM50GKM": {
+          "id": "evt_01M39WP8K0QPMFP9Q5VVM50GKM",
+          "kind": "event",
+          "bakedName": "LOOKUP",
+          "curName": "LOOKUP",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39WP8K0TNMVW0022124MFK2"
+        },
+        "evt_AXA0GBGQVTBXXAKK688XBTB6G7": {
+          "id": "evt_AXA0GBGQVTBXXAKK688XBTB6G7",
+          "kind": "event",
+          "bakedName": "INIT",
+          "curName": "INIT",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M2HF5GMNZQ67R15B1XS75064"
+        },
+        "evt_01M39WP8K0JNFFY33GHQZB5SJ8": {
+          "id": "evt_01M39WP8K0JNFFY33GHQZB5SJ8",
+          "kind": "event",
+          "bakedName": "SEARCH_RESULTS",
+          "curName": "SEARCH_RESULTS",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39WP8K0TNMVW0022124MFK2"
+        },
+        "evt_NQFABJ5RMVWADW6S3753J601F1": {
+          "id": "evt_NQFABJ5RMVWADW6S3753J601F1",
+          "kind": "event",
+          "bakedName": "INIT",
+          "curName": "INIT",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M2HF5GMN2FE93FP2KKCTC5FB"
+        },
+        "trt_01M39WP8K0QMJ8QTRGE8FJ08B7": {
+          "id": "trt_01M39WP8K0QMJ8QTRGE8FJ08B7",
+          "kind": "trait",
+          "bakedName": "Finder",
+          "curName": "Finder",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "evt_01M39WP8K0DCGKWJNEFYBAS4E7": {
+          "id": "evt_01M39WP8K0DCGKWJNEFYBAS4E7",
+          "kind": "event",
+          "bakedName": "INIT",
+          "curName": "INIT",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39WP8K0019N9RS0QPPYZCXW"
+        },
+        "orb_01M39WP8K0WCX5MW5EJSBNDJYB": {
+          "id": "orb_01M39WP8K0WCX5MW5EJSBNDJYB",
+          "kind": "orbital",
+          "bakedName": "Search",
+          "curName": "Search",
+          "renames": [],
+          "owner": "workspace"
+        }
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "orbital": "Search",
+      "trait": "Finder",
+      "event": "SEARCH",
+      "payload": {
+        "queryText": "a"
+      }
+    }
+  ]
+}

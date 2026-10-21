@@ -1,0 +1,103 @@
+{
+  "name": "visit-key",
+  "description": "Clause 5.3: a decrementing fan-out delivers every step; an exact repeat stops",
+  "schema": {
+    "name": "visit-key",
+    "version": "1.0.0",
+    "orbitals": [
+      {
+        "name": "Main",
+        "pages": [],
+        "entity": {
+          "name": "Item",
+          "persistence": "runtime",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            }
+          ]
+        },
+        "traits": [
+          {
+            "name": "Fanner",
+            "scope": "instance",
+            "emits": [
+              {
+                "event": "STEP_NEXT"
+              }
+            ],
+            "listens": [
+              {
+                "event": "STEP_NEXT",
+                "triggers": "STEP",
+                "source": {
+                  "kind": "trait",
+                  "trait": "Fanner"
+                }
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "searching",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "STEP",
+                  "name": "STEP"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "searching",
+                  "to": "searching",
+                  "event": "STEP",
+                  "guard": [
+                    ">",
+                    "@payload.remaining",
+                    0
+                  ],
+                  "effects": [
+                    [
+                      "emit",
+                      "STEP_NEXT",
+                      {
+                        "remaining": [
+                          "-",
+                          "@payload.remaining",
+                          1
+                        ]
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "orbital": "Main",
+      "trait": "Fanner",
+      "event": "STEP",
+      "payload": {
+        "remaining": 3
+      }
+    },
+    {
+      "orbital": "Main",
+      "trait": "Fanner",
+      "event": "STEP",
+      "payload": {
+        "remaining": 0
+      }
+    }
+  ]
+}

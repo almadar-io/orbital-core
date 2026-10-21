@@ -1,0 +1,390 @@
+{
+  "name": "fetch-payload",
+  "description": "fetch emit.success carries the TS wire's { data, totalCount }: totalCount after @read + filter and before offset/limit; a by-id hit's data is the row itself",
+  "schema": {
+    "name": "fetch-payload",
+    "version": "1.0.0",
+    "orbitals": [
+      {
+        "name": "Items",
+        "pages": [],
+        "entity": {
+          "name": "Item",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "kind",
+              "type": "string"
+            }
+          ],
+          "instances": [
+            {
+              "id": "a",
+              "kind": "x"
+            },
+            {
+              "id": "b",
+              "kind": "y"
+            },
+            {
+              "id": "c",
+              "kind": "x"
+            }
+          ]
+        },
+        "traits": [
+          {
+            "name": "Page",
+            "linkedEntity": "Item",
+            "emits": [
+              {
+                "event": "LOADED"
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "fetch",
+                      "Item",
+                      {
+                        "limit": 2,
+                        "emit": {
+                          "success": "LOADED"
+                        }
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "Filtered",
+            "linkedEntity": "Item",
+            "emits": [
+              {
+                "event": "LOADED"
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "fetch",
+                      "Item",
+                      {
+                        "filter": [
+                          "=",
+                          [
+                            "object/get",
+                            "@entity",
+                            "kind"
+                          ],
+                          "x"
+                        ],
+                        "emit": {
+                          "success": "LOADED"
+                        }
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "PastEnd",
+            "linkedEntity": "Item",
+            "emits": [
+              {
+                "event": "LOADED"
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "fetch",
+                      "Item",
+                      {
+                        "offset": 5,
+                        "emit": {
+                          "success": "LOADED"
+                        }
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "ById",
+            "linkedEntity": "Item",
+            "emits": [
+              {
+                "event": "LOADED"
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "fetch",
+                      "Item",
+                      {
+                        "id": "b",
+                        "emit": {
+                          "success": "LOADED"
+                        }
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "Empty",
+            "linkedEntity": "Item",
+            "emits": [
+              {
+                "event": "LOADED"
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "fetch",
+                      "Nothing",
+                      {
+                        "emit": {
+                          "success": "LOADED"
+                        }
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "Nothings",
+        "pages": [],
+        "entity": {
+          "name": "Nothing",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            }
+          ]
+        },
+        "traits": []
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "Page",
+      "orbital": "Items",
+      "steps": [
+        {
+          "trait": "Page",
+          "event": "GO",
+          "payload": {},
+          "expect": {
+            "emits": [
+              {
+                "event": "LOADED",
+                "payload": {
+                  "data": [
+                    {
+                      "id": "a",
+                      "kind": "x",
+                      "createdAt": "<clock>",
+                      "updatedAt": "<clock>"
+                    },
+                    {
+                      "id": "b",
+                      "kind": "y",
+                      "createdAt": "<clock>",
+                      "updatedAt": "<clock>"
+                    }
+                  ],
+                  "totalCount": 3
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Filtered",
+      "orbital": "Items",
+      "steps": [
+        {
+          "trait": "Filtered",
+          "event": "GO",
+          "payload": {}
+        }
+      ]
+    },
+    {
+      "name": "PastEnd",
+      "orbital": "Items",
+      "steps": [
+        {
+          "trait": "PastEnd",
+          "event": "GO",
+          "payload": {}
+        }
+      ]
+    },
+    {
+      "name": "ById",
+      "orbital": "Items",
+      "steps": [
+        {
+          "trait": "ById",
+          "event": "GO",
+          "payload": {},
+          "expect": {
+            "emits": [
+              {
+                "event": "LOADED",
+                "payload": {
+                  "data": {
+                    "id": "b",
+                    "kind": "y",
+                    "createdAt": "<clock>",
+                    "updatedAt": "<clock>"
+                  },
+                  "totalCount": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Empty",
+      "orbital": "Items",
+      "steps": [
+        {
+          "trait": "Empty",
+          "event": "GO",
+          "payload": {},
+          "expect": {
+            "emits": [
+              {
+                "event": "LOADED",
+                "payload": {
+                  "data": [],
+                  "totalCount": 0
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "clockFields": [
+    "LOADED.data.*.createdAt",
+    "LOADED.data.*.updatedAt",
+    "LOADED.data.createdAt",
+    "LOADED.data.updatedAt"
+  ]
+}

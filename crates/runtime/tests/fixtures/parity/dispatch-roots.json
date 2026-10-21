@@ -1,0 +1,451 @@
+{
+  "name": "dispatch-roots",
+  "description": "Clause 5.5: once/twin/all listens, provenance + commit point, re-entry via @prevStates",
+  "schema": {
+    "name": "dispatch-roots",
+    "version": "1.0.0",
+    "orbitals": [
+      {
+        "name": "Main",
+        "pages": [],
+        "entity": {
+          "name": "Item",
+          "persistence": "runtime",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            }
+          ]
+        },
+        "traits": [
+          {
+            "name": "Src",
+            "scope": "instance",
+            "emits": [
+              {
+                "event": "X"
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "emit",
+                      "X",
+                      {
+                        "n": 1
+                      }
+                    ],
+                    [
+                      "emit",
+                      "X",
+                      {
+                        "n": 2
+                      }
+                    ],
+                    [
+                      "emit",
+                      "X",
+                      {
+                        "n": 3
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "Once",
+            "scope": "instance",
+            "emits": [
+              {
+                "event": "ACK_ONCE"
+              }
+            ],
+            "listens": [
+              {
+                "event": "X",
+                "triggers": "GOT",
+                "source": {
+                  "kind": "trait",
+                  "trait": "Src"
+                },
+                "guard": [
+                  "not",
+                  [
+                    "array/includes",
+                    [
+                      "array/map",
+                      "@prevEvents",
+                      [
+                        "fn",
+                        "e",
+                        [
+                          "object/get",
+                          "@e",
+                          "event"
+                        ]
+                      ]
+                    ],
+                    "X"
+                  ]
+                ]
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GOT",
+                  "name": "GOT"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GOT",
+                  "effects": [
+                    [
+                      "emit",
+                      "ACK_ONCE",
+                      {
+                        "n": "@payload.n"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "Twin",
+            "scope": "instance",
+            "emits": [
+              {
+                "event": "ACK_TWIN"
+              }
+            ],
+            "listens": [
+              {
+                "event": "X",
+                "triggers": "GOT",
+                "source": {
+                  "kind": "trait",
+                  "trait": "Src"
+                },
+                "guard": [
+                  "not",
+                  [
+                    "array/includes",
+                    [
+                      "array/map",
+                      "@prevEvents",
+                      [
+                        "fn",
+                        "e",
+                        [
+                          "object/get",
+                          "@e",
+                          "event"
+                        ]
+                      ]
+                    ],
+                    "X"
+                  ]
+                ]
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GOT",
+                  "name": "GOT"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GOT",
+                  "effects": [
+                    [
+                      "emit",
+                      "ACK_TWIN",
+                      {
+                        "n": "@payload.n"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "All",
+            "scope": "instance",
+            "emits": [
+              {
+                "event": "ACK_ALL"
+              }
+            ],
+            "listens": [
+              {
+                "event": "X",
+                "triggers": "GOT",
+                "source": {
+                  "kind": "trait",
+                  "trait": "Src"
+                }
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GOT",
+                  "name": "GOT"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GOT",
+                  "effects": [
+                    [
+                      "emit",
+                      "ACK_ALL",
+                      {
+                        "n": "@payload.n"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "Prov",
+            "scope": "instance",
+            "emits": [
+              {
+                "event": "ACK_PROV"
+              }
+            ],
+            "listens": [
+              {
+                "event": "X",
+                "triggers": "GOT",
+                "source": {
+                  "kind": "trait",
+                  "trait": "Src"
+                }
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                },
+                {
+                  "name": "seen"
+                }
+              ],
+              "events": [
+                {
+                  "key": "GOT",
+                  "name": "GOT"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "seen",
+                  "event": "GOT",
+                  "guard": [
+                    "and",
+                    [
+                      "=",
+                      "@fromState",
+                      "idle"
+                    ],
+                    [
+                      "=",
+                      "@toState",
+                      "seen"
+                    ],
+                    [
+                      "=",
+                      "@state",
+                      "idle"
+                    ]
+                  ],
+                  "effects": [
+                    [
+                      "emit",
+                      "ACK_PROV",
+                      {
+                        "srcTrait": "@event.source.trait",
+                        "srcEvent": "@event.event",
+                        "srcN": "@event.payload.n",
+                        "from": "@fromState",
+                        "to": "@toState",
+                        "state": "@state",
+                        "seen": [
+                          "array/len",
+                          "@prevEvents"
+                        ]
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "seen",
+                  "to": "seen",
+                  "event": "GOT",
+                  "effects": [
+                    [
+                      "emit",
+                      "ACK_PROV",
+                      {
+                        "srcTrait": "@event.source.trait",
+                        "srcEvent": "@event.event",
+                        "srcN": "@event.payload.n",
+                        "from": "@fromState",
+                        "to": "@toState",
+                        "state": "@state",
+                        "seen": [
+                          "array/len",
+                          "@prevEvents"
+                        ]
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "Reenter",
+            "scope": "instance",
+            "emits": [
+              {
+                "event": "ACK_R"
+              }
+            ],
+            "listens": [
+              {
+                "event": "X",
+                "triggers": "STEP",
+                "source": {
+                  "kind": "trait",
+                  "trait": "Src"
+                }
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                },
+                {
+                  "name": "processing"
+                }
+              ],
+              "events": [
+                {
+                  "key": "STEP",
+                  "name": "STEP"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "processing",
+                  "event": "STEP",
+                  "guard": [
+                    "not",
+                    [
+                      "array/includes",
+                      "@prevStates",
+                      "processing"
+                    ]
+                  ],
+                  "effects": [
+                    [
+                      "emit",
+                      "ACK_R",
+                      {
+                        "to": "@toState"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "processing",
+                  "to": "idle",
+                  "event": "STEP",
+                  "effects": [
+                    [
+                      "emit",
+                      "ACK_R",
+                      {
+                        "to": "@toState"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "orbital": "Main",
+      "trait": "Src",
+      "event": "GO",
+      "payload": {}
+    }
+  ]
+}

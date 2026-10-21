@@ -1,0 +1,1196 @@
+{
+  "name": "review-cycle-lax",
+  "description": "control: with requireSeparateApproval off, the bot's same-action approval is accepted ReviewLogged.id is minted by the store, whose format is its own, so it compares as 'a minted id'.",
+  "schema": {
+    "name": "ReviewDemo",
+    "orbitals": [
+      {
+        "name": "Docs",
+        "id": "orb_01M39YNKHXGQZ90F2QE58APAH2",
+        "uses": [
+          {
+            "from": "std/behaviors/std-review-cycle",
+            "as": "Review"
+          }
+        ],
+        "entity": {
+          "name": "Doc",
+          "id": "ent_01M39YNKHXB9YB2NW44GPQKP1D",
+          "persistence": "runtime",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            }
+          ]
+        },
+        "auxiliaryEntities": [
+          {
+            "name": "ReviewEvent",
+            "id": "ent_01M39WRANGBCZWFD7WRZ0QW2BD",
+            "collection": "review_events",
+            "persistence": "persistent",
+            "fields": [
+              {
+                "name": "id",
+                "type": "string",
+                "required": true
+              },
+              {
+                "name": "itemId",
+                "type": "string",
+                "default": "",
+                "description": "The record this history entry belongs to.",
+                "synonyms": "record id, document id, item"
+              },
+              {
+                "name": "fromState",
+                "type": "string",
+                "default": "",
+                "description": "The review state the record left.",
+                "synonyms": "previous state, was"
+              },
+              {
+                "name": "toState",
+                "type": "string",
+                "default": "",
+                "description": "The review state the record entered.",
+                "synonyms": "new state, became"
+              },
+              {
+                "name": "round",
+                "type": "number",
+                "default": 0.0,
+                "description": "Review round at the time of the move.",
+                "synonyms": "iteration"
+              },
+              {
+                "name": "actor",
+                "type": "string",
+                "default": "",
+                "description": "Who made the move.",
+                "synonyms": "user, reviewer, author"
+              },
+              {
+                "name": "note",
+                "type": "string",
+                "default": "",
+                "description": "Note left with the move.",
+                "synonyms": "comment, feedback, reason"
+              },
+              {
+                "name": "at",
+                "type": "number",
+                "default": 0.0,
+                "description": "When the move happened.",
+                "synonyms": "timestamp, date, time"
+              }
+            ]
+          },
+          {
+            "name": "ReviewItem",
+            "id": "ent_01M39WRANGPFG36CFHBFB0ZDBQ",
+            "collection": "review_items",
+            "persistence": "persistent",
+            "fields": [
+              {
+                "name": "id",
+                "type": "string",
+                "required": true
+              },
+              {
+                "name": "round",
+                "type": "number",
+                "default": 0.0,
+                "description": "Review round the record is on; 1 for the first review, incremented on each resubmission.",
+                "synonyms": "iteration, revision round, review count"
+              },
+              {
+                "name": "lastNote",
+                "type": "string",
+                "default": "",
+                "description": "Note left with the most recent move.",
+                "synonyms": "comment, reason, feedback"
+              },
+              {
+                "name": "lastLogId",
+                "type": "string",
+                "default": "",
+                "description": "Id of the most recent ReviewEvent history row.",
+                "synonyms": "history id, log entry"
+              }
+            ]
+          }
+        ],
+        "traits": [
+          {
+            "name": "DocReview",
+            "id": "trt_01M39YNKHX9401S2CMDYXDY0EF",
+            "entityRebindable": true,
+            "entityContract": {
+              "requires": [],
+              "provides": [
+                "lastLogId",
+                "lastNote",
+                "round"
+              ]
+            },
+            "effectRow": [
+              {
+                "kind": "emit",
+                "resource": "ReviewDecided"
+              },
+              {
+                "kind": "emit",
+                "resource": "ReviewRequested"
+              },
+              {
+                "kind": "persist",
+                "resource": "ReviewEvent"
+              },
+              {
+                "kind": "render-ui",
+                "resource": "toast"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.lastLogId"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.lastNote"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.round"
+              }
+            ],
+            "category": "lifecycle",
+            "linkedEntity": "ReviewItem",
+            "linkedEntityId": "ent_01M39WRANGPFG36CFHBFB0ZDBQ",
+            "entityRefIds": {
+              "ReviewEvent": "ent_01M39WRANGBCZWFD7WRZ0QW2BD",
+              "ReviewItem": "ent_01M39WRANGPFG36CFHBFB0ZDBQ"
+            },
+            "emits": [
+              {
+                "event": "ReviewLogged",
+                "eventId": "evt_01M39Y37VPP1ETDZJ3CJB6V5KH",
+                "description": "Internal: a history row landed.",
+                "scope": "internal",
+                "payloadSchema": [
+                  {
+                    "name": "id",
+                    "type": "string",
+                    "required": true
+                  },
+                  {
+                    "name": "itemId",
+                    "type": "string"
+                  },
+                  {
+                    "name": "fromState",
+                    "type": "string"
+                  },
+                  {
+                    "name": "toState",
+                    "type": "string"
+                  },
+                  {
+                    "name": "round",
+                    "type": "number"
+                  },
+                  {
+                    "name": "actor",
+                    "type": "string"
+                  },
+                  {
+                    "name": "note",
+                    "type": "string"
+                  },
+                  {
+                    "name": "at",
+                    "type": "number"
+                  }
+                ],
+                "payloadEntity": "ReviewEvent"
+              },
+              {
+                "event": "ReviewLogFailed",
+                "eventId": "evt_01M39Y37VPBZ1116HCCGWPT8JT",
+                "description": "Internal: writing a history row failed.",
+                "scope": "internal",
+                "payloadSchema": [
+                  {
+                    "name": "error",
+                    "type": "string"
+                  },
+                  {
+                    "name": "code",
+                    "type": "string"
+                  }
+                ]
+              },
+              {
+                "event": "ReviewRequested",
+                "eventId": "evt_01M39WRANG2ET9FDEKW4XEJN4V",
+                "scope": "external",
+                "payloadSchema": [
+                  {
+                    "name": "itemId",
+                    "type": "string"
+                  },
+                  {
+                    "name": "round",
+                    "type": "number"
+                  },
+                  {
+                    "name": "resubmission",
+                    "type": "boolean"
+                  }
+                ]
+              },
+              {
+                "event": "ReviewDecided",
+                "eventId": "evt_01M39WRANGPPFET2KZHYESZ38J",
+                "scope": "external",
+                "payloadSchema": [
+                  {
+                    "name": "itemId",
+                    "type": "string"
+                  },
+                  {
+                    "name": "decision",
+                    "type": "string"
+                  },
+                  {
+                    "name": "round",
+                    "type": "number"
+                  }
+                ]
+              }
+            ],
+            "listens": [
+              {
+                "event": "BOT_APPROVE",
+                "triggers": "ReviewApproved",
+                "source": {
+                  "kind": "trait",
+                  "trait": "ApproveBot",
+                  "traitId": "trt_01M39YNKHXBMAPDT48ARYDXES9"
+                }
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "draft",
+                  "isInitial": true
+                },
+                {
+                  "name": "in_review"
+                },
+                {
+                  "name": "changes_requested"
+                },
+                {
+                  "name": "approved"
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "id": "evt_01M39WRANG7KX7NESHZFV02M9S",
+                  "name": "Initialize"
+                },
+                {
+                  "key": "ReviewSubmitted",
+                  "id": "evt_01M39WRANG8WT2M5ZBD3K2352Z",
+                  "name": "Review submitted",
+                  "payloadSchema": [
+                    {
+                      "name": "id",
+                      "type": "string"
+                    },
+                    {
+                      "name": "note",
+                      "type": "string"
+                    }
+                  ]
+                },
+                {
+                  "key": "ReviewLogged",
+                  "id": "evt_01M39Y37VPP1ETDZJ3CJB6V5KH",
+                  "name": "Review logged",
+                  "payloadSchema": [
+                    {
+                      "name": "id",
+                      "type": "string",
+                      "required": true
+                    },
+                    {
+                      "name": "itemId",
+                      "type": "string"
+                    },
+                    {
+                      "name": "fromState",
+                      "type": "string"
+                    },
+                    {
+                      "name": "toState",
+                      "type": "string"
+                    },
+                    {
+                      "name": "round",
+                      "type": "number"
+                    },
+                    {
+                      "name": "actor",
+                      "type": "string"
+                    },
+                    {
+                      "name": "note",
+                      "type": "string"
+                    },
+                    {
+                      "name": "at",
+                      "type": "number"
+                    }
+                  ],
+                  "payloadEntity": "ReviewEvent"
+                },
+                {
+                  "key": "ReviewLogFailed",
+                  "id": "evt_01M39Y37VPBZ1116HCCGWPT8JT",
+                  "name": "Review log failed",
+                  "payloadSchema": [
+                    {
+                      "name": "error",
+                      "type": "string"
+                    },
+                    {
+                      "name": "code",
+                      "type": "string"
+                    }
+                  ]
+                },
+                {
+                  "key": "ReviewChangesRequested",
+                  "id": "evt_01M39WRANG7TQKH4817X4ZGC32",
+                  "name": "Review changes requested",
+                  "payloadSchema": [
+                    {
+                      "name": "id",
+                      "type": "string"
+                    },
+                    {
+                      "name": "note",
+                      "type": "string"
+                    }
+                  ]
+                },
+                {
+                  "key": "ReviewApproved",
+                  "id": "evt_01M39WRANGBMKWASDMRMYD1MK0",
+                  "name": "Review approved",
+                  "payloadSchema": [
+                    {
+                      "name": "id",
+                      "type": "string"
+                    },
+                    {
+                      "name": "note",
+                      "type": "string"
+                    }
+                  ]
+                },
+                {
+                  "key": "ReviewRequested",
+                  "id": "evt_01M39WRANG2ET9FDEKW4XEJN4V",
+                  "name": "Review requested",
+                  "payloadSchema": [
+                    {
+                      "name": "itemId",
+                      "type": "string"
+                    },
+                    {
+                      "name": "round",
+                      "type": "number"
+                    },
+                    {
+                      "name": "resubmission",
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                {
+                  "key": "ReviewDecided",
+                  "id": "evt_01M39WRANGPPFET2KZHYESZ38J",
+                  "name": "Review decided",
+                  "payloadSchema": [
+                    {
+                      "name": "itemId",
+                      "type": "string"
+                    },
+                    {
+                      "name": "decision",
+                      "type": "string"
+                    },
+                    {
+                      "name": "round",
+                      "type": "number"
+                    }
+                  ]
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "draft",
+                  "to": "draft",
+                  "event": "INIT",
+                  "eventId": "evt_01M39WRANG7KX7NESHZFV02M9S"
+                },
+                {
+                  "from": "draft",
+                  "to": "in_review",
+                  "event": "ReviewSubmitted",
+                  "eventId": "evt_01M39WRANG8WT2M5ZBD3K2352Z",
+                  "guard": true,
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.round",
+                      1.0
+                    ],
+                    [
+                      "set",
+                      "@entity.lastNote",
+                      [
+                        "str/default",
+                        "@payload.note",
+                        ""
+                      ]
+                    ],
+                    [
+                      "emit",
+                      "ReviewRequested",
+                      {
+                        "itemId": [
+                          "str/default",
+                          "@payload.id",
+                          ""
+                        ],
+                        "round": 1.0,
+                        "resubmission": false
+                      }
+                    ],
+                    [
+                      "persist",
+                      "create",
+                      "ReviewEvent",
+                      {
+                        "note": [
+                          "str/default",
+                          "@payload.note",
+                          ""
+                        ],
+                        "round": 1.0,
+                        "toState": "@toState",
+                        "fromState": "@fromState",
+                        "actor": [
+                          "str/default",
+                          "@user.id",
+                          ""
+                        ],
+                        "itemId": [
+                          "str/default",
+                          "@payload.id",
+                          ""
+                        ],
+                        "at": "@now"
+                      },
+                      {
+                        "emit": {
+                          "failure": "ReviewLogFailed",
+                          "success": "ReviewLogged"
+                        }
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "in_review",
+                  "to": "in_review",
+                  "event": "INIT",
+                  "eventId": "evt_01M39WRANG7KX7NESHZFV02M9S"
+                },
+                {
+                  "from": "in_review",
+                  "to": "in_review",
+                  "event": "ReviewLogged",
+                  "eventId": "evt_01M39Y37VPP1ETDZJ3CJB6V5KH",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.lastLogId",
+                      [
+                        "str/default",
+                        "@payload.id",
+                        ""
+                      ]
+                    ]
+                  ]
+                },
+                {
+                  "from": "in_review",
+                  "to": "in_review",
+                  "event": "ReviewLogFailed",
+                  "eventId": "evt_01M39Y37VPBZ1116HCCGWPT8JT",
+                  "effects": [
+                    [
+                      "render-ui",
+                      "toast",
+                      {
+                        "type": "alert",
+                        "variant": "error",
+                        "message": [
+                          "str/concat",
+                          "Couldn't record the review history — ",
+                          "@payload.error"
+                        ],
+                        "dismissible": true
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "in_review",
+                  "to": "changes_requested",
+                  "event": "ReviewChangesRequested",
+                  "eventId": "evt_01M39WRANG7TQKH4817X4ZGC32",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.lastNote",
+                      [
+                        "str/default",
+                        "@payload.note",
+                        ""
+                      ]
+                    ],
+                    [
+                      "emit",
+                      "ReviewDecided",
+                      {
+                        "round": "@entity.round",
+                        "decision": "@toState",
+                        "itemId": [
+                          "str/default",
+                          "@payload.id",
+                          ""
+                        ]
+                      }
+                    ],
+                    [
+                      "persist",
+                      "create",
+                      "ReviewEvent",
+                      {
+                        "at": "@now",
+                        "note": [
+                          "str/default",
+                          "@payload.note",
+                          ""
+                        ],
+                        "toState": "@toState",
+                        "actor": [
+                          "str/default",
+                          "@user.id",
+                          ""
+                        ],
+                        "fromState": "@fromState",
+                        "itemId": [
+                          "str/default",
+                          "@payload.id",
+                          ""
+                        ],
+                        "round": "@entity.round"
+                      },
+                      {
+                        "emit": {
+                          "success": "ReviewLogged",
+                          "failure": "ReviewLogFailed"
+                        }
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "in_review",
+                  "to": "approved",
+                  "event": "ReviewApproved",
+                  "eventId": "evt_01M39WRANGBMKWASDMRMYD1MK0",
+                  "guard": [
+                    "or",
+                    [
+                      "not",
+                      false
+                    ],
+                    [
+                      "not",
+                      [
+                        "array/some",
+                        "@prevStates",
+                        [
+                          "fn",
+                          "s",
+                          [
+                            "or",
+                            [
+                              "=",
+                              "@s",
+                              "draft"
+                            ],
+                            [
+                              "=",
+                              "@s",
+                              "changes_requested"
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ],
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.lastNote",
+                      [
+                        "str/default",
+                        "@payload.note",
+                        ""
+                      ]
+                    ],
+                    [
+                      "emit",
+                      "ReviewDecided",
+                      {
+                        "decision": "@toState",
+                        "itemId": [
+                          "str/default",
+                          "@payload.id",
+                          ""
+                        ],
+                        "round": "@entity.round"
+                      }
+                    ],
+                    [
+                      "persist",
+                      "create",
+                      "ReviewEvent",
+                      {
+                        "itemId": [
+                          "str/default",
+                          "@payload.id",
+                          ""
+                        ],
+                        "round": "@entity.round",
+                        "at": "@now",
+                        "fromState": "@fromState",
+                        "note": [
+                          "str/default",
+                          "@payload.note",
+                          ""
+                        ],
+                        "actor": [
+                          "str/default",
+                          "@user.id",
+                          ""
+                        ],
+                        "toState": "@toState"
+                      },
+                      {
+                        "emit": {
+                          "success": "ReviewLogged",
+                          "failure": "ReviewLogFailed"
+                        }
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "changes_requested",
+                  "to": "changes_requested",
+                  "event": "INIT",
+                  "eventId": "evt_01M39WRANG7KX7NESHZFV02M9S"
+                },
+                {
+                  "from": "changes_requested",
+                  "to": "changes_requested",
+                  "event": "ReviewLogged",
+                  "eventId": "evt_01M39Y37VPP1ETDZJ3CJB6V5KH",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.lastLogId",
+                      [
+                        "str/default",
+                        "@payload.id",
+                        ""
+                      ]
+                    ]
+                  ]
+                },
+                {
+                  "from": "changes_requested",
+                  "to": "changes_requested",
+                  "event": "ReviewLogFailed",
+                  "eventId": "evt_01M39Y37VPBZ1116HCCGWPT8JT",
+                  "effects": [
+                    [
+                      "render-ui",
+                      "toast",
+                      {
+                        "variant": "error",
+                        "dismissible": true,
+                        "type": "alert",
+                        "message": [
+                          "str/concat",
+                          "Couldn't record the review history — ",
+                          "@payload.error"
+                        ]
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "changes_requested",
+                  "to": "in_review",
+                  "event": "ReviewSubmitted",
+                  "eventId": "evt_01M39WRANG8WT2M5ZBD3K2352Z",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.round",
+                      [
+                        "+",
+                        "@entity.round",
+                        1.0
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.lastNote",
+                      [
+                        "str/default",
+                        "@payload.note",
+                        ""
+                      ]
+                    ],
+                    [
+                      "emit",
+                      "ReviewRequested",
+                      {
+                        "resubmission": true,
+                        "round": "@entity.round",
+                        "itemId": [
+                          "str/default",
+                          "@payload.id",
+                          ""
+                        ]
+                      }
+                    ],
+                    [
+                      "persist",
+                      "create",
+                      "ReviewEvent",
+                      {
+                        "actor": [
+                          "str/default",
+                          "@user.id",
+                          ""
+                        ],
+                        "at": "@now",
+                        "fromState": "@fromState",
+                        "itemId": [
+                          "str/default",
+                          "@payload.id",
+                          ""
+                        ],
+                        "note": [
+                          "str/default",
+                          "@payload.note",
+                          ""
+                        ],
+                        "round": "@entity.round",
+                        "toState": "@toState"
+                      },
+                      {
+                        "emit": {
+                          "success": "ReviewLogged",
+                          "failure": "ReviewLogFailed"
+                        }
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "approved",
+                  "to": "approved",
+                  "event": "INIT",
+                  "eventId": "evt_01M39WRANG7KX7NESHZFV02M9S"
+                },
+                {
+                  "from": "approved",
+                  "to": "approved",
+                  "event": "ReviewLogged",
+                  "eventId": "evt_01M39Y37VPP1ETDZJ3CJB6V5KH",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.lastLogId",
+                      [
+                        "str/default",
+                        "@payload.id",
+                        ""
+                      ]
+                    ]
+                  ]
+                },
+                {
+                  "from": "approved",
+                  "to": "approved",
+                  "event": "ReviewLogFailed",
+                  "eventId": "evt_01M39Y37VPBZ1116HCCGWPT8JT",
+                  "effects": [
+                    [
+                      "render-ui",
+                      "toast",
+                      {
+                        "type": "alert",
+                        "message": [
+                          "str/concat",
+                          "Couldn't record the review history — ",
+                          "@payload.error"
+                        ],
+                        "dismissible": true,
+                        "variant": "error"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            },
+            "config": {
+              "requireSeparateApproval": {
+                "type": "boolean",
+                "default": false,
+                "label": "Require approval to be a separate action?",
+                "description": "Four-eyes review: reject an approval raised by the same action that submitted the record, such as an automatic rule or bot that approves instantly. Approvals made as their own action are unaffected.",
+                "synonyms": "four eyes, two person rule, no self approval, separate reviewer, independent approval, no auto approve",
+                "tier": "policy"
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "label": "Run the review workflow?",
+                "description": "Accept submissions into review. Off = submissions are ignored.",
+                "synonyms": "enable, turn on, review, require review, review workflow",
+                "tier": "policy"
+              }
+            },
+            "scope": "instance",
+            "sourceBehavior": {
+              "behavior": "std/behaviors/std-review-cycle",
+              "alias": "Review",
+              "originalName": "ReviewCycle"
+            },
+            "sourceEntityDefinition": {
+              "name": "ReviewItem",
+              "id": "ent_01M39WRANGPFG36CFHBFB0ZDBQ",
+              "collection": "review_items",
+              "persistence": "persistent",
+              "fields": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "required": true
+                },
+                {
+                  "name": "round",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "Review round the record is on; 1 for the first review, incremented on each resubmission.",
+                  "synonyms": "iteration, revision round, review count"
+                },
+                {
+                  "name": "lastNote",
+                  "type": "string",
+                  "default": "",
+                  "description": "Note left with the most recent move.",
+                  "synonyms": "comment, reason, feedback"
+                },
+                {
+                  "name": "lastLogId",
+                  "type": "string",
+                  "default": "",
+                  "description": "Id of the most recent ReviewEvent history row.",
+                  "synonyms": "history id, log entry"
+                }
+              ]
+            }
+          },
+          {
+            "name": "ApproveBot",
+            "id": "trt_01M39YNKHXBMAPDT48ARYDXES9",
+            "effectRow": [
+              {
+                "kind": "emit",
+                "resource": "BOT_APPROVE"
+              },
+              {
+                "kind": "render-ui",
+                "resource": "main"
+              }
+            ],
+            "linkedEntity": "Doc",
+            "linkedEntityId": "ent_01M39YNKHXB9YB2NW44GPQKP1D",
+            "entityRefIds": {
+              "Doc": "ent_01M39YNKHXB9YB2NW44GPQKP1D"
+            },
+            "emits": [
+              {
+                "event": "BOT_APPROVE",
+                "eventId": "evt_01M39YNKHXEXX85ADVA6KX1B4V",
+                "payloadSchema": [
+                  {
+                    "name": "id",
+                    "type": "string"
+                  },
+                  {
+                    "name": "note",
+                    "type": "string"
+                  }
+                ]
+              }
+            ],
+            "listens": [
+              {
+                "event": "ReviewRequested",
+                "triggers": "REVIEW_OPENED",
+                "triggersId": "evt_01M39YNKHXATCQ4EVSHCZVGP8Q",
+                "source": {
+                  "kind": "trait",
+                  "trait": "DocReview",
+                  "traitId": "trt_01M39YNKHX9401S2CMDYXDY0EF"
+                }
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "id": "evt_01M39YNKHXSDF6NX8Z9VGJAE1R",
+                  "name": "Initialize"
+                },
+                {
+                  "key": "REVIEW_OPENED",
+                  "id": "evt_01M39YNKHXATCQ4EVSHCZVGP8Q",
+                  "name": "Review Opened",
+                  "payloadSchema": [
+                    {
+                      "name": "itemId",
+                      "type": "string"
+                    }
+                  ]
+                },
+                {
+                  "key": "BOT_APPROVE",
+                  "id": "evt_01M39YNKHXEXX85ADVA6KX1B4V",
+                  "name": "Bot Approve",
+                  "payloadSchema": [
+                    {
+                      "name": "id",
+                      "type": "string"
+                    },
+                    {
+                      "name": "note",
+                      "type": "string"
+                    }
+                  ]
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "INIT",
+                  "eventId": "evt_01M39YNKHXSDF6NX8Z9VGJAE1R",
+                  "effects": [
+                    [
+                      "render-ui",
+                      "main",
+                      {
+                        "content": "bot",
+                        "type": "typography"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "REVIEW_OPENED",
+                  "eventId": "evt_01M39YNKHXATCQ4EVSHCZVGP8Q",
+                  "guard": true,
+                  "effects": [
+                    [
+                      "emit",
+                      "BOT_APPROVE",
+                      {
+                        "note": "auto",
+                        "id": "@payload.itemId"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            },
+            "config": {
+              "active": {
+                "type": "boolean",
+                "default": true
+              }
+            },
+            "scope": "instance"
+          }
+        ],
+        "pages": [
+          {
+            "name": "Home",
+            "id": "pag_01M39YNKHXTJEQ9H6HJEAT4KZW",
+            "path": "/",
+            "isInitial": true,
+            "traits": [
+              {
+                "ref": "DocReview",
+                "refId": "trt_01M39YNKHX9401S2CMDYXDY0EF"
+              },
+              {
+                "ref": "ApproveBot",
+                "refId": "trt_01M39YNKHXBMAPDT48ARYDXES9"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "schemaVersion": 1,
+    "ledger": {
+      "schemaVersion": 1,
+      "entries": {
+        "ent_01M39YNKHXB9YB2NW44GPQKP1D": {
+          "id": "ent_01M39YNKHXB9YB2NW44GPQKP1D",
+          "kind": "entity",
+          "bakedName": "Doc",
+          "curName": "Doc",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "evt_01M39YNKHXSDF6NX8Z9VGJAE1R": {
+          "id": "evt_01M39YNKHXSDF6NX8Z9VGJAE1R",
+          "kind": "event",
+          "bakedName": "INIT",
+          "curName": "INIT",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39YNKHXBMAPDT48ARYDXES9"
+        },
+        "orb_01M39YNKHXGQZ90F2QE58APAH2": {
+          "id": "orb_01M39YNKHXGQZ90F2QE58APAH2",
+          "kind": "orbital",
+          "bakedName": "Docs",
+          "curName": "Docs",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "evt_01M39YNKHXATCQ4EVSHCZVGP8Q": {
+          "id": "evt_01M39YNKHXATCQ4EVSHCZVGP8Q",
+          "kind": "event",
+          "bakedName": "REVIEW_OPENED",
+          "curName": "REVIEW_OPENED",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39YNKHXBMAPDT48ARYDXES9"
+        },
+        "trt_01M39YNKHXBMAPDT48ARYDXES9": {
+          "id": "trt_01M39YNKHXBMAPDT48ARYDXES9",
+          "kind": "trait",
+          "bakedName": "ApproveBot",
+          "curName": "ApproveBot",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "trt_01M39YNKHX9401S2CMDYXDY0EF": {
+          "id": "trt_01M39YNKHX9401S2CMDYXDY0EF",
+          "kind": "trait",
+          "bakedName": "DocReview",
+          "curName": "DocReview",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "pag_01M39YNKHXTJEQ9H6HJEAT4KZW": {
+          "id": "pag_01M39YNKHXTJEQ9H6HJEAT4KZW",
+          "kind": "page",
+          "bakedName": "Home",
+          "curName": "Home",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "evt_01M39YNKHXEXX85ADVA6KX1B4V": {
+          "id": "evt_01M39YNKHXEXX85ADVA6KX1B4V",
+          "kind": "event",
+          "bakedName": "BOT_APPROVE",
+          "curName": "BOT_APPROVE",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39YNKHXBMAPDT48ARYDXES9"
+        }
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "name": "bot approval accepted when four-eyes is off",
+      "orbital": "Docs",
+      "steps": [
+        {
+          "trait": "DocReview",
+          "event": "ReviewSubmitted",
+          "payload": {
+            "id": "d1",
+            "note": "v1"
+          },
+          "expect": {
+            "states": {
+              "DocReview": "approved"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "clockFields": [
+    "ReviewLogged.at"
+  ],
+  "mintedIdFields": [
+    "ReviewLogged.id"
+  ]
+}

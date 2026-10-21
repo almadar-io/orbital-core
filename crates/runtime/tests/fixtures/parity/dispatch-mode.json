@@ -1,0 +1,417 @@
+{
+  "name": "dispatch-mode",
+  "description": "LOLO 7 dispatch rule: `local` is client-only; a [runtime] entity is client-only unless its fold-aware effect row reaches the server (then runtimeOptimistic); anything else awaits the server",
+  "schema": {
+    "name": "dispatch-mode",
+    "version": "1.0.0",
+    "orbitals": [
+      {
+        "name": "Frames",
+        "pages": [],
+        "entity": {
+          "name": "Frame",
+          "persistence": "runtime",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "n",
+              "type": "number"
+            }
+          ]
+        },
+        "traits": [
+          {
+            "name": "PureRuntime",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.n",
+                      1
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "RuntimeSaves",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "persist",
+                      "update",
+                      "Frame",
+                      "@entity"
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "RuntimeFoldedIf",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "if",
+                      true,
+                      [
+                        "set",
+                        "@entity.n",
+                        1
+                      ],
+                      [
+                        "persist",
+                        "update",
+                        "Frame",
+                        "@entity"
+                      ]
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "RuntimeDeadThen",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "if",
+                      false,
+                      [
+                        "persist",
+                        "update",
+                        "Frame",
+                        "@entity"
+                      ],
+                      [
+                        "set",
+                        "@entity.n",
+                        2
+                      ]
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "RuntimeDeadWhen",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "when",
+                      false,
+                      [
+                        "persist",
+                        "update",
+                        "Frame",
+                        "@entity"
+                      ]
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "RuntimeDeadGuard",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "persist",
+                      "update",
+                      "Frame",
+                      "@entity"
+                    ]
+                  ],
+                  "guard": false
+                }
+              ]
+            }
+          },
+          {
+            "name": "RuntimeConfigOff",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "when",
+                      "@config.sync",
+                      [
+                        "persist",
+                        "update",
+                        "Frame",
+                        "@entity"
+                      ]
+                    ]
+                  ]
+                }
+              ]
+            },
+            "config": {
+              "sync": {
+                "type": "boolean",
+                "default": false
+              }
+            }
+          },
+          {
+            "name": "LocalSaves",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "persist",
+                      "update",
+                      "Frame",
+                      "@entity"
+                    ]
+                  ]
+                }
+              ]
+            },
+            "local": true
+          }
+        ]
+      },
+      {
+        "name": "Rows",
+        "pages": [],
+        "entity": {
+          "name": "Row",
+          "persistence": "persistent",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "n",
+              "type": "number"
+            }
+          ]
+        },
+        "traits": [
+          {
+            "name": "PersistedPure",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.n",
+                      1
+                    ]
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "PersistedLocal",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.n",
+                      1
+                    ]
+                  ]
+                }
+              ]
+            },
+            "local": true
+          }
+        ]
+      }
+    ]
+  },
+  "dispatchModes": {
+    "PureRuntime": "hybridClientOnly",
+    "RuntimeSaves": "runtimeOptimistic",
+    "RuntimeFoldedIf": "runtimeOptimistic",
+    "RuntimeDeadThen": "hybridClientOnly",
+    "RuntimeDeadWhen": "hybridClientOnly",
+    "RuntimeDeadGuard": "hybridClientOnly",
+    "RuntimeConfigOff": "hybridClientOnly",
+    "LocalSaves": "hybridClientOnly",
+    "PersistedPure": "persistedAwaited",
+    "PersistedLocal": "hybridClientOnly"
+  },
+  "scenarios": []
+}

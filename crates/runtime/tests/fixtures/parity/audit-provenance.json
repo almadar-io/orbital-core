@@ -1,0 +1,840 @@
+{
+  "name": "audit-provenance",
+  "description": "std-audit-capture records the delivering event and its source (@event) with no upstream kind; same on both paths",
+  "schema": {
+    "name": "AuditProvenance",
+    "orbitals": [
+      {
+        "name": "Crm",
+        "id": "orb_01M39V1PJW0NJ558Y0FYHXFPFN",
+        "uses": [
+          {
+            "from": "std/behaviors/std-audit-capture",
+            "as": "AuditCapture"
+          }
+        ],
+        "entity": {
+          "name": "Contact",
+          "id": "ent_01M39V1PJWXNWQ835GDH0WH06P",
+          "persistence": "runtime",
+          "fields": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "name",
+              "type": "string"
+            }
+          ]
+        },
+        "auxiliaryEntities": [
+          {
+            "name": "AuditEntry",
+            "id": "ent_01KXG04F0MSA7QDPSYJHC2YPRH",
+            "collection": "audit_entries",
+            "persistence": "persistent",
+            "fields": [
+              {
+                "name": "id",
+                "type": "string",
+                "required": true
+              },
+              {
+                "name": "actor",
+                "type": "string",
+                "default": "",
+                "description": "The user or system performing the action.",
+                "synonyms": "user, source, originator"
+              },
+              {
+                "name": "action",
+                "type": "string",
+                "default": "",
+                "description": "The specific operation performed on the entity.",
+                "synonyms": "operation, event, activity, change"
+              },
+              {
+                "name": "entityType",
+                "type": "string",
+                "default": "",
+                "description": "The type of entity that was modified.",
+                "synonyms": "type, kind, class"
+              },
+              {
+                "name": "entityId",
+                "type": "string",
+                "default": "",
+                "description": "Unique identifier for the entity being audited.",
+                "synonyms": "entity identifier, record id, item id"
+              },
+              {
+                "name": "before",
+                "type": "object",
+                "default": {},
+                "description": "The state of the entity prior to the modification.",
+                "synonyms": "previous, original, old value"
+              },
+              {
+                "name": "after",
+                "type": "object",
+                "default": {},
+                "description": "The state of the entity after a modification.",
+                "synonyms": "new, updated, post, subsequent"
+              },
+              {
+                "name": "recordedAt",
+                "type": "number",
+                "default": 0.0,
+                "description": "Timestamp indicating when the audit event was recorded.",
+                "synonyms": "timestamp, date, time"
+              },
+              {
+                "name": "sourceEvent",
+                "type": "string",
+                "default": "",
+                "description": "The event that delivered the change to the audit trail, e.g. ContactSaved.",
+                "synonyms": "triggering event, cause, origin event"
+              },
+              {
+                "name": "sourceTrait",
+                "type": "string",
+                "default": "",
+                "description": "The behavior that emitted the change.",
+                "synonyms": "emitter, origin, raised by"
+              },
+              {
+                "name": "sourceOrbital",
+                "type": "string",
+                "default": "",
+                "description": "The module the change came from.",
+                "synonyms": "origin module, source module"
+              },
+              {
+                "name": "sourceTick",
+                "type": "string",
+                "default": "",
+                "description": "The scheduled job that caused the change; blank when a person or an event did.",
+                "synonyms": "scheduled job, background job, timer"
+              }
+            ]
+          }
+        ],
+        "traits": [
+          {
+            "name": "ContactForm",
+            "id": "trt_01M39V1PJW70ZRABHP7BB82JDX",
+            "effectRow": [
+              {
+                "kind": "emit",
+                "resource": "ContactSaved"
+              },
+              {
+                "kind": "render-ui",
+                "resource": "main"
+              }
+            ],
+            "linkedEntity": "Contact",
+            "linkedEntityId": "ent_01M39V1PJWXNWQ835GDH0WH06P",
+            "entityRefIds": {
+              "Contact": "ent_01M39V1PJWXNWQ835GDH0WH06P"
+            },
+            "emits": [
+              {
+                "event": "ContactSaved",
+                "eventId": "evt_01M39V1PJWX325F781M2GC26JH",
+                "payloadSchema": [
+                  {
+                    "name": "id",
+                    "type": "string"
+                  }
+                ]
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "id": "evt_01M39V1PJW1SVXQV3AB8XW1KD3",
+                  "name": "Initialize"
+                },
+                {
+                  "key": "SAVE",
+                  "id": "evt_01M39V1PJW0CRBZ4TPD5QWQ8HT",
+                  "name": "Save",
+                  "payloadSchema": [
+                    {
+                      "name": "id",
+                      "type": "string"
+                    }
+                  ]
+                },
+                {
+                  "key": "ContactSaved",
+                  "id": "evt_01M39V1PJWX325F781M2GC26JH",
+                  "name": "Contact saved",
+                  "payloadSchema": [
+                    {
+                      "name": "id",
+                      "type": "string"
+                    }
+                  ]
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "INIT",
+                  "eventId": "evt_01M39V1PJW1SVXQV3AB8XW1KD3",
+                  "effects": [
+                    [
+                      "render-ui",
+                      "main",
+                      {
+                        "label": "Save",
+                        "action": "SAVE",
+                        "type": "button"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "SAVE",
+                  "eventId": "evt_01M39V1PJW0CRBZ4TPD5QWQ8HT",
+                  "effects": [
+                    [
+                      "emit",
+                      "ContactSaved",
+                      {
+                        "id": "@payload.id"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            },
+            "scope": "instance"
+          },
+          {
+            "name": "ContactAudit",
+            "id": "trt_01M39V1PJW6JAMKKZG87J0FM8H",
+            "entityRebindable": true,
+            "entityContract": {
+              "requires": [],
+              "provides": [
+                "action",
+                "actor",
+                "after",
+                "before",
+                "entityId",
+                "entityType",
+                "recordedAt"
+              ]
+            },
+            "effectRow": [
+              {
+                "kind": "emit",
+                "resource": "AuditRecorded"
+              },
+              {
+                "kind": "persist",
+                "resource": "AuditEntry"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.action"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.actor"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.after"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.before"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.entityId"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.entityType"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.recordedAt"
+              }
+            ],
+            "category": "lifecycle",
+            "capabilities": [
+              "audit",
+              "compliance"
+            ],
+            "linkedEntity": "AuditEntry",
+            "linkedEntityId": "ent_01KXG04F0MSA7QDPSYJHC2YPRH",
+            "entityRefIds": {
+              "AuditEntry": "ent_01KXG04F0MSA7QDPSYJHC2YPRH"
+            },
+            "emits": [
+              {
+                "event": "AuditRecorded",
+                "eventId": "evt_01KXG04F0MKZ1KFSFC7YB502A3",
+                "scope": "external",
+                "payloadSchema": [
+                  {
+                    "name": "actor",
+                    "type": "string"
+                  },
+                  {
+                    "name": "action",
+                    "type": "string"
+                  },
+                  {
+                    "name": "entityType",
+                    "type": "string"
+                  },
+                  {
+                    "name": "entityId",
+                    "type": "string"
+                  },
+                  {
+                    "name": "recordedAt",
+                    "type": "number"
+                  },
+                  {
+                    "name": "sourceEvent",
+                    "type": "string"
+                  },
+                  {
+                    "name": "sourceTrait",
+                    "type": "string"
+                  },
+                  {
+                    "name": "sourceOrbital",
+                    "type": "string"
+                  },
+                  {
+                    "name": "sourceTick",
+                    "type": "string"
+                  }
+                ]
+              }
+            ],
+            "listens": [
+              {
+                "event": "ContactSaved",
+                "triggers": "EntityMutated",
+                "payloadMapping": {
+                  "data": {
+                    "id": "@payload.id"
+                  }
+                },
+                "source": {
+                  "kind": "trait",
+                  "trait": "ContactForm",
+                  "traitId": "trt_01M39V1PJW70ZRABHP7BB82JDX"
+                }
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "EntityMutated",
+                  "id": "evt_01KXG04F0MQFWXG23FP2SQKXXG",
+                  "name": "Entity mutated",
+                  "payloadSchema": [
+                    {
+                      "name": "data",
+                      "type": "@entity(captureEntity)"
+                    }
+                  ]
+                },
+                {
+                  "key": "AuditRecorded",
+                  "id": "evt_01KXG04F0MKZ1KFSFC7YB502A3",
+                  "name": "Audit recorded",
+                  "payloadSchema": [
+                    {
+                      "name": "actor",
+                      "type": "string"
+                    },
+                    {
+                      "name": "action",
+                      "type": "string"
+                    },
+                    {
+                      "name": "entityType",
+                      "type": "string"
+                    },
+                    {
+                      "name": "entityId",
+                      "type": "string"
+                    },
+                    {
+                      "name": "recordedAt",
+                      "type": "number"
+                    },
+                    {
+                      "name": "sourceEvent",
+                      "type": "string"
+                    },
+                    {
+                      "name": "sourceTrait",
+                      "type": "string"
+                    },
+                    {
+                      "name": "sourceOrbital",
+                      "type": "string"
+                    },
+                    {
+                      "name": "sourceTick",
+                      "type": "string"
+                    }
+                  ]
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "EntityMutated",
+                  "eventId": "evt_01KXG04F0MQFWXG23FP2SQKXXG",
+                  "guard": true,
+                  "effects": [
+                    [
+                      "when",
+                      [
+                        "or",
+                        [
+                          "=",
+                          [
+                            "array/len",
+                            []
+                          ],
+                          0.0
+                        ],
+                        [
+                          "array/includes",
+                          [],
+                          [
+                            "object/get",
+                            "@payload.data",
+                            "kind",
+                            "@event.event"
+                          ]
+                        ]
+                      ],
+                      [
+                        "do",
+                        [
+                          "set",
+                          "@entity.actor",
+                          "@user.id"
+                        ],
+                        [
+                          "set",
+                          "@entity.action",
+                          [
+                            "object/get",
+                            "@payload.data",
+                            "kind",
+                            "@event.event"
+                          ]
+                        ],
+                        [
+                          "set",
+                          "@entity.entityType",
+                          "Contact"
+                        ],
+                        [
+                          "set",
+                          "@entity.entityId",
+                          [
+                            "object/get",
+                            "@payload.data",
+                            "id",
+                            ""
+                          ]
+                        ],
+                        [
+                          "set",
+                          "@entity.before",
+                          [
+                            "if",
+                            false,
+                            [
+                              "object/omit",
+                              [
+                                "object/get",
+                                "@payload.data",
+                                "before",
+                                {}
+                              ],
+                              []
+                            ],
+                            {}
+                          ]
+                        ],
+                        [
+                          "set",
+                          "@entity.after",
+                          [
+                            "if",
+                            false,
+                            [
+                              "object/omit",
+                              [
+                                "object/get",
+                                "@payload.data",
+                                "after",
+                                {}
+                              ],
+                              []
+                            ],
+                            {}
+                          ]
+                        ],
+                        [
+                          "set",
+                          "@entity.recordedAt",
+                          0.0
+                        ],
+                        [
+                          "persist",
+                          "create",
+                          "AuditEntry",
+                          {
+                            "sourceTick": [
+                              "str/default",
+                              "@event.source.tick",
+                              ""
+                            ],
+                            "entityId": "@entity.entityId",
+                            "entityType": "Contact",
+                            "after": "@entity.after",
+                            "sourceOrbital": [
+                              "str/default",
+                              "@event.source.orbital",
+                              ""
+                            ],
+                            "sourceEvent": "@event.event",
+                            "sourceTrait": [
+                              "str/default",
+                              "@event.source.trait",
+                              ""
+                            ],
+                            "recordedAt": 0.0,
+                            "action": "@entity.action",
+                            "before": "@entity.before",
+                            "actor": "@user.id"
+                          }
+                        ],
+                        [
+                          "emit",
+                          "AuditRecorded",
+                          {
+                            "action": "@entity.action",
+                            "entityId": "@entity.entityId",
+                            "sourceTrait": [
+                              "str/default",
+                              "@event.source.trait",
+                              ""
+                            ],
+                            "sourceTick": [
+                              "str/default",
+                              "@event.source.tick",
+                              ""
+                            ],
+                            "actor": "@user.id",
+                            "sourceOrbital": [
+                              "str/default",
+                              "@event.source.orbital",
+                              ""
+                            ],
+                            "recordedAt": 0.0,
+                            "entityType": "Contact",
+                            "sourceEvent": "@event.event"
+                          }
+                        ]
+                      ]
+                    ]
+                  ]
+                }
+              ]
+            },
+            "config": {
+              "captureEntity": {
+                "type": "entity",
+                "default": "Contact",
+                "label": "Entity to audit",
+                "description": "Type name of the entity whose mutations get logged",
+                "tier": "internal"
+              },
+              "excludeFields": {
+                "type": "[string]",
+                "default": [],
+                "label": "Skip fields",
+                "description": "Entity fields to omit from the before/after snapshots \u2014 e.g. passwords or other sensitive fields you do not want copied into the audit trail.",
+                "tier": "internal",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "retentionDays": {
+                "type": "number",
+                "default": 2555.0,
+                "label": "How long should the audit log be kept (days)?",
+                "description": "Number of days to retain audit entries. Default 2555 \u2248 7 years, typical for compliance.",
+                "synonyms": "log retention, keep for, audit expiry, retention period, log lifetime",
+                "tier": "policy"
+              },
+              "captureBeforeAfter": {
+                "type": "boolean",
+                "default": false,
+                "label": "Store before-and-after snapshots?",
+                "description": "Store a full before-and-after snapshot of each change. More detail, but a larger audit log.",
+                "synonyms": "before after, snapshot, diff, change snapshot, field diff",
+                "tier": "policy"
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "label": "Track every change",
+                "description": "Keep an audit trail of every change to records \u2014 who changed what, and when. Off by default.",
+                "synonyms": "enable, turn on, enforce, require, activate, apply, switch on, audit, audit trail, log changes, track changes, who edited what, mutation log, change history, edit history, modification log, accountability log, record changes, log every edit, compliance log",
+                "tier": "policy"
+              },
+              "captureEventTypes": {
+                "type": "[string]",
+                "default": [],
+                "label": "Event-kind filter",
+                "description": "When set, only these kinds are audited: the payload's `kind` field, or the delivering event's name when there is no kind. Empty list = capture every event.",
+                "tier": "internal",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "scope": "instance",
+            "sourceBehavior": {
+              "behavior": "std/behaviors/std-audit-capture",
+              "alias": "AuditCapture",
+              "originalName": "AuditCaptureListener"
+            },
+            "sourceEntityDefinition": {
+              "name": "AuditEntry",
+              "id": "ent_01KXG04F0MSA7QDPSYJHC2YPRH",
+              "collection": "audit_entries",
+              "persistence": "persistent",
+              "fields": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "required": true
+                },
+                {
+                  "name": "actor",
+                  "type": "string",
+                  "default": "",
+                  "description": "The user or system performing the action.",
+                  "synonyms": "user, source, originator"
+                },
+                {
+                  "name": "action",
+                  "type": "string",
+                  "default": "",
+                  "description": "The specific operation performed on the entity.",
+                  "synonyms": "operation, event, activity, change"
+                },
+                {
+                  "name": "entityType",
+                  "type": "string",
+                  "default": "",
+                  "description": "The type of entity that was modified.",
+                  "synonyms": "type, kind, class"
+                },
+                {
+                  "name": "entityId",
+                  "type": "string",
+                  "default": "",
+                  "description": "Unique identifier for the entity being audited.",
+                  "synonyms": "entity identifier, record id, item id"
+                },
+                {
+                  "name": "before",
+                  "type": "object",
+                  "default": {},
+                  "description": "The state of the entity prior to the modification.",
+                  "synonyms": "previous, original, old value"
+                },
+                {
+                  "name": "after",
+                  "type": "object",
+                  "default": {},
+                  "description": "The state of the entity after a modification.",
+                  "synonyms": "new, updated, post, subsequent"
+                },
+                {
+                  "name": "recordedAt",
+                  "type": "number",
+                  "default": 0.0,
+                  "description": "Timestamp indicating when the audit event was recorded.",
+                  "synonyms": "timestamp, date, time"
+                },
+                {
+                  "name": "sourceEvent",
+                  "type": "string",
+                  "default": "",
+                  "description": "The event that delivered the change to the audit trail, e.g. ContactSaved.",
+                  "synonyms": "triggering event, cause, origin event"
+                },
+                {
+                  "name": "sourceTrait",
+                  "type": "string",
+                  "default": "",
+                  "description": "The behavior that emitted the change.",
+                  "synonyms": "emitter, origin, raised by"
+                },
+                {
+                  "name": "sourceOrbital",
+                  "type": "string",
+                  "default": "",
+                  "description": "The module the change came from.",
+                  "synonyms": "origin module, source module"
+                },
+                {
+                  "name": "sourceTick",
+                  "type": "string",
+                  "default": "",
+                  "description": "The scheduled job that caused the change; blank when a person or an event did.",
+                  "synonyms": "scheduled job, background job, timer"
+                }
+              ]
+            }
+          }
+        ],
+        "pages": [
+          {
+            "name": "Home",
+            "id": "pag_01M39V1PJWA5XSK3AQZRBP760B",
+            "path": "/",
+            "isInitial": true,
+            "traits": [
+              {
+                "ref": "ContactForm",
+                "refId": "trt_01M39V1PJW70ZRABHP7BB82JDX"
+              },
+              {
+                "ref": "ContactAudit",
+                "refId": "trt_01M39V1PJW6JAMKKZG87J0FM8H"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "schemaVersion": 1,
+    "ledger": {
+      "schemaVersion": 1,
+      "entries": {
+        "ent_01M39V1PJWXNWQ835GDH0WH06P": {
+          "id": "ent_01M39V1PJWXNWQ835GDH0WH06P",
+          "kind": "entity",
+          "bakedName": "Contact",
+          "curName": "Contact",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "trt_01M39V1PJW70ZRABHP7BB82JDX": {
+          "id": "trt_01M39V1PJW70ZRABHP7BB82JDX",
+          "kind": "trait",
+          "bakedName": "ContactForm",
+          "curName": "ContactForm",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "orb_01M39V1PJW0NJ558Y0FYHXFPFN": {
+          "id": "orb_01M39V1PJW0NJ558Y0FYHXFPFN",
+          "kind": "orbital",
+          "bakedName": "Crm",
+          "curName": "Crm",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "pag_01M39V1PJWA5XSK3AQZRBP760B": {
+          "id": "pag_01M39V1PJWA5XSK3AQZRBP760B",
+          "kind": "page",
+          "bakedName": "Home",
+          "curName": "Home",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "evt_01M39V1PJW0CRBZ4TPD5QWQ8HT": {
+          "id": "evt_01M39V1PJW0CRBZ4TPD5QWQ8HT",
+          "kind": "event",
+          "bakedName": "SAVE",
+          "curName": "SAVE",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39V1PJW70ZRABHP7BB82JDX"
+        },
+        "evt_01M39V1PJWX325F781M2GC26JH": {
+          "id": "evt_01M39V1PJWX325F781M2GC26JH",
+          "kind": "event",
+          "bakedName": "ContactSaved",
+          "curName": "ContactSaved",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39V1PJW70ZRABHP7BB82JDX"
+        },
+        "trt_01M39V1PJW6JAMKKZG87J0FM8H": {
+          "id": "trt_01M39V1PJW6JAMKKZG87J0FM8H",
+          "kind": "trait",
+          "bakedName": "ContactAudit",
+          "curName": "ContactAudit",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "evt_01M39V1PJW1SVXQV3AB8XW1KD3": {
+          "id": "evt_01M39V1PJW1SVXQV3AB8XW1KD3",
+          "kind": "event",
+          "bakedName": "INIT",
+          "curName": "INIT",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_01M39V1PJW70ZRABHP7BB82JDX"
+        }
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "orbital": "Crm",
+      "trait": "ContactForm",
+      "event": "SAVE",
+      "payload": {
+        "id": "c-1"
+      }
+    }
+  ]
+}

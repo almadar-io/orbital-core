@@ -851,6 +851,128 @@ pub fn field_shape(field: &FieldDefinition) -> OirType {
     }
 }
 
+/// The type a `.orb` payload type text names: `[X]`, `Map<K,V>`, a tuple, a primitive or semantic keyword, a
+/// `$var`; any other identifier is the entity (or alias) of that name, as a `Reference`.
+pub fn payload_type_shape(field_type: &str) -> OirType {
+    let trimmed = field_type.trim();
+    if let Some(slots) = crate::type_compat::tuple_type_slots(trimmed) {
+        return OirType::Tuple {
+            items: slots.into_iter().map(payload_type_shape).collect(),
+        };
+    }
+    if let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        return OirType::array(payload_type_shape(inner));
+    }
+    // The key is a comma-free atom, so split on the FIRST comma (the value may itself be `Map<…>`/`[…]`).
+    if let Some(inner) = trimmed.strip_prefix("Map<").and_then(|s| s.strip_suffix('>')) {
+        if let Some(comma) = inner.find(',') {
+            return OirType::map(payload_type_shape(&inner[..comma]), payload_type_shape(&inner[comma + 1..]));
+        }
+    }
+    match trimmed.to_lowercase().as_str() {
+        "string" => return OirType::String,
+        "number" | "float" | "double" => return OirType::Number,
+        "integer" | "int" => return OirType::Integer,
+        "boolean" | "bool" => return OirType::Boolean,
+        "date" => return OirType::Date,
+        "datetime" | "timestamp" => return OirType::DateTime,
+        "email" => return OirType::Email,
+        "url" => return OirType::Url,
+        "phone" => return OirType::Phone,
+        "uuid" => return OirType::Uuid,
+        "image" => return OirType::Image,
+        "money" => return OirType::Money,
+        "file" => return OirType::File,
+        "bytes" => return OirType::Bytes,
+        "callkey" => return OirType::CallKey,
+        // In a payload position a relation travels as the related row's id and an enum as its literal value.
+        "relation" | "enum" => return OirType::String,
+        "array" | "list" => return OirType::array(OirType::Json),
+        "object" | "json" | "tensor" => return OirType::Json,
+        "sexpr" => return OirType::SExpr,
+        "node" => return OirType::Node,
+        // UI scalar and name-reference brands travel as strings.
+        "slot" | "icon" | "asset" | "component" | "pattern" | "event" => return OirType::String,
+        _ => {}
+    }
+    // `@entity(<knob>)`: a row of the entity a knob names, and nothing names it here: an empty record.
+    if trimmed.starts_with("@entity(") && trimmed.ends_with(')') {
+        return OirType::Struct { fields: Vec::new() };
+    }
+    if let Some(name) = trimmed.strip_prefix('$').filter(|n| !n.is_empty()) {
+        return OirType::Var { name: name.to_string() };
+    }
+    if trimmed.is_empty() {
+        return OirType::Json;
+    }
+    OirType::Reference {
+        entity: trimmed.to_string(),
+    }
+}
+
+/// The type a `.orb` payload field declares, read structurally: a by-name back-reference (`properties: []`) is the
+/// `TypeRef` it names, `properties` are a union's variants or a record's members (`[object]` a list of it), `items`
+/// a list's or map's element; an alias or entity name stays the `Reference` [`payload_type_shape`] makes of it.
+pub fn payload_field_shape(field: &crate::schema::types::PayloadField) -> OirType {
+    if let (true, Some(item)) = (field.field_type == "array", field.items.as_deref()) {
+        return OirType::array(payload_field_shape(item));
+    }
+    if let (true, None, Some(item)) = (field.field_type == "object", &field.properties, field.items.as_deref()) {
+        return OirType::map(OirType::String, payload_field_shape(item));
+    }
+    let list = field.field_type.trim_start().starts_with('[');
+    match &field.properties {
+        Some(props) if props.is_empty() => {
+            let trimmed = field.field_type.trim();
+            let name = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(trimmed);
+            let named = OirType::TypeRef { name: name.to_string() };
+            if list {
+                OirType::array(named)
+            } else {
+                named
+            }
+        }
+        Some(props) => {
+            let fields: Vec<OirField> = props
+                .iter()
+                .map(|p| {
+                    let mut f = OirField::new(p.name.clone(), payload_field_shape(p));
+                    f.required = p.required.unwrap_or(false);
+                    f
+                })
+                .collect();
+            if field.field_type == "union" {
+                return OirType::Union { variants: fields };
+            }
+            let record = OirType::Struct { fields };
+            if list {
+                OirType::array(record)
+            } else {
+                record
+            }
+        }
+        None => payload_type_shape(&field.field_type),
+    }
+}
+
+/// The type a program's `type X = …` alias is, from its `.orb` entry (`orbital.types[X]`): one nameless member is
+/// the aliased type itself, any other member list is a record.
+pub fn declared_alias_shape(members: &[crate::schema::types::PayloadField]) -> OirType {
+    match members {
+        [only] if only.name.is_empty() => payload_field_shape(only),
+        _ => OirType::Struct {
+            fields: members
+                .iter()
+                .map(|p| {
+                    let mut f = OirField::new(p.name.clone(), payload_field_shape(p));
+                    f.required = p.required.unwrap_or(false);
+                    f
+                })
+                .collect(),
+        },
+    }
+}
+
 /// Validation constraint
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
