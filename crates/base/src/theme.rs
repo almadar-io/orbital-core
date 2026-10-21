@@ -982,6 +982,7 @@ mod tests {
 
     fn minimal_schema(app_theme: Option<ThemeRef>, orbitals: Vec<Orbital>) -> OrbitalSchema {
         OrbitalSchema {
+            store: None,
             theme_definitions: None,
             themes: None,
             site: None,

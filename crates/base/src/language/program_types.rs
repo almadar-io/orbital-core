@@ -74,14 +74,17 @@ pub fn program_type(name: &str) -> Option<&'static OirType> {
 
 static FIELDS: OnceLock<BTreeMap<String, FieldDefinition>> = OnceLock::new();
 
+/// The installed language's program types as `.orb` field definitions, by name.
+pub fn program_type_fields() -> &'static BTreeMap<String, FieldDefinition> {
+    FIELDS.get_or_init(|| {
+        let data = crate::language_data::language_data_after_preflight();
+        definitions(&data.program_types).unwrap_or_default()
+    })
+}
+
 /// The installed language's `.orb` field definition of the program type `name`, when it declares one.
 pub fn program_type_field(name: &str) -> Option<&'static FieldDefinition> {
-    FIELDS
-        .get_or_init(|| {
-            let data = crate::language_data::language_data_after_preflight();
-            definitions(&data.program_types).unwrap_or_default()
-        })
-        .get(name)
+    program_type_fields().get(name)
 }
 
 static VIEWER: OnceLock<Vec<FieldDefinition>> = OnceLock::new();

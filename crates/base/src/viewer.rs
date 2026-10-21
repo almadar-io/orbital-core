@@ -1,59 +1,19 @@
 //! The viewer: who `@user` is, as one typed record. `@almadar/core`'s `Viewer` is generated from this type, and a
 //! provider's claims are a typed list rather than open keys. The `@user` binding holds the same viewer flat (claims as
-//! keys, a record claim as a nested object); [`Viewer::from_user`] and [`Viewer::to_user`] convert between the two.
+//! keys); [`Viewer::from_user`] and [`Viewer::to_user`] convert between the two.
 
 use serde::{Deserialize, Serialize};
 
 use crate::value::{Value, ValueMap};
-
-/// One claim's value. A date travels as its ISO text.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum ClaimValue {
-    Text {
-        text: String,
-    },
-    Number {
-        number: f64,
-    },
-    Flag {
-        flag: bool,
-    },
-    Texts {
-        texts: Vec<String>,
-    },
-    /// A claim that is an object (Firebase's `firebase`, an OIDC `address`): its scalar leaves, each at its path.
-    Record {
-        entries: Vec<ClaimEntry>,
-    },
-}
-
-/// A scalar leaf of a record claim.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum ClaimLeaf {
-    Text { text: String },
-    Number { number: f64 },
-    Flag { flag: bool },
-    Texts { texts: Vec<String> },
-}
-
-/// One leaf of a record claim; `path` is the keys below the claim, outermost first.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClaimEntry {
-    pub path: Vec<String>,
-    pub value: ClaimLeaf,
-}
 
 /// One provider or identity claim beyond the named viewer fields.
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Claim {
     pub name: String,
-    pub value: ClaimValue,
+    /// The claim as JSON, exactly as the token carried it (a date as its ISO text).
+    #[cfg_attr(feature = "ts-export", ts(type = "JsonValue"))]
+    pub value: serde_json::Value,
 }
 
 /// Who `@user` is.
@@ -85,99 +45,34 @@ fn texts_of(items: &[Value], at: &str) -> Result<Vec<String>, String> {
         .collect()
 }
 
-fn leaf_of(value: &Value, at: &str) -> Result<Option<ClaimLeaf>, String> {
-    Ok(Some(match value {
-        Value::Null => return Ok(None),
-        Value::String(text) => ClaimLeaf::Text { text: text.clone() },
-        Value::Number(number) => ClaimLeaf::Number { number: *number },
-        Value::Bool(flag) => ClaimLeaf::Flag { flag: *flag },
-        Value::Array(items) => ClaimLeaf::Texts {
-            texts: texts_of(items, at)?,
-        },
-        Value::Object(_) | Value::Lambda { .. } => {
-            return Err(format!("viewer claim {at}: not a scalar"))
+fn json_of(value: &Value, at: &str) -> Result<serde_json::Value, String> {
+    Ok(match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(flag) => serde_json::Value::Bool(*flag),
+        Value::String(text) => serde_json::Value::String(text.clone()),
+        Value::Number(number) if number.fract() == 0.0 && number.abs() < 9_007_199_254_740_992.0 => {
+            serde_json::Value::from(*number as i64)
         }
-    }))
-}
-
-fn entries_of(
-    map: &ValueMap,
-    path: &mut Vec<String>,
-    out: &mut Vec<ClaimEntry>,
-    at: &str,
-) -> Result<(), String> {
-    for (key, value) in map {
-        path.push(key.clone());
-        if let Value::Object(inner) = value {
-            entries_of(inner, path, out, at)?;
-        } else if let Some(leaf) = leaf_of(value, &format!("{at}.{}", path.join(".")))? {
-            out.push(ClaimEntry {
-                path: path.clone(),
-                value: leaf,
-            });
-        }
-        path.pop();
-    }
-    Ok(())
-}
-
-fn claim_of(name: &str, value: &Value) -> Result<Option<ClaimValue>, String> {
-    if let Value::Object(map) = value {
-        let mut entries = Vec::new();
-        entries_of(map, &mut Vec::new(), &mut entries, name)?;
-        return Ok(Some(ClaimValue::Record { entries }));
-    }
-    Ok(leaf_of(value, name)?.map(|leaf| match leaf {
-        ClaimLeaf::Text { text } => ClaimValue::Text { text },
-        ClaimLeaf::Number { number } => ClaimValue::Number { number },
-        ClaimLeaf::Flag { flag } => ClaimValue::Flag { flag },
-        ClaimLeaf::Texts { texts } => ClaimValue::Texts { texts },
-    }))
-}
-
-fn leaf_value(leaf: &ClaimLeaf) -> Value {
-    match leaf {
-        ClaimLeaf::Text { text } => Value::String(text.clone()),
-        ClaimLeaf::Number { number } => Value::Number(*number),
-        ClaimLeaf::Flag { flag } => Value::Bool(*flag),
-        ClaimLeaf::Texts { texts } => {
-            Value::Array(texts.iter().cloned().map(Value::String).collect())
-        }
-    }
-}
-
-fn place(map: &mut ValueMap, path: &[String], leaf: Value, at: &str) -> Result<(), String> {
-    let Some((last, outer)) = path.split_last() else {
-        return Err(format!(
-            "viewer claim {at}: a record entry has an empty path"
-        ));
-    };
-    let mut here = map;
-    for key in outer {
-        let slot = here
-            .entry(key.clone())
-            .or_insert_with(|| Value::Object(ValueMap::new()));
-        let Value::Object(inner) = slot else {
-            return Err(format!(
-                "viewer claim {at}: {key} is both a leaf and a record"
-            ));
-        };
-        here = inner;
-    }
-    if here.insert(last.clone(), leaf).is_some() {
-        return Err(format!(
-            "viewer claim {at}: {} appears twice",
-            path.join(".")
-        ));
-    }
-    Ok(())
+        Value::Number(number) => serde_json::Number::from_f64(*number)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| format!("viewer claim {at}: {number} is not a JSON number"))?,
+        Value::Array(items) => serde_json::Value::Array(
+            items.iter().map(|item| json_of(item, at)).collect::<Result<_, _>>()?,
+        ),
+        Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(key, item)| Ok((key.clone(), json_of(item, &format!("{at}.{key}"))?)))
+                .collect::<Result<_, String>>()?,
+        ),
+        Value::Lambda { .. } => return Err(format!("viewer claim {at}: a function is not a claim")),
+    })
 }
 
 const NAMED: [&str; 5] = ["id", "email", "name", "role", "permissions"];
 
 impl Viewer {
     /// The viewer the flat `@user` value names. `Err` when it has no text `id`, a named field of the wrong kind, or a
-    /// claim no claim value holds (a list of non-text, a list or record inside a list). A null claim is an absent one.
+    /// claim that is not JSON (a function, a non-finite number). A null claim is an absent one.
     pub fn from_user(user: &Value) -> Result<Viewer, String> {
         let Value::Object(map) = user else {
             return Err("viewer: @user is not a record".to_string());
@@ -199,10 +94,10 @@ impl Viewer {
         };
         let mut claims = Vec::new();
         for (name, value) in map.iter().filter(|(key, _)| !NAMED.contains(&key.as_str())) {
-            if let Some(value) = claim_of(name, value)? {
+            if !matches!(value, Value::Null) {
                 claims.push(Claim {
                     name: name.clone(),
-                    value,
+                    value: json_of(value, name)?,
                 });
             }
         }
@@ -239,26 +134,8 @@ impl Viewer {
             if map.contains_key(&claim.name) {
                 return Err(format!("viewer claim {}: appears twice", claim.name));
             }
-            let value = match &claim.value {
-                ClaimValue::Text { text } => Value::String(text.clone()),
-                ClaimValue::Number { number } => Value::Number(*number),
-                ClaimValue::Flag { flag } => Value::Bool(*flag),
-                ClaimValue::Texts { texts } => {
-                    Value::Array(texts.iter().cloned().map(Value::String).collect())
-                }
-                ClaimValue::Record { entries } => {
-                    let mut record = ValueMap::new();
-                    for entry in entries {
-                        place(
-                            &mut record,
-                            &entry.path,
-                            leaf_value(&entry.value),
-                            &claim.name,
-                        )?;
-                    }
-                    Value::Object(record)
-                }
-            };
+            let value: Value = serde_json::from_value(claim.value.clone())
+                .map_err(|e| format!("viewer claim {}: {e}", claim.name))?;
             map.insert(claim.name.clone(), value);
         }
         Ok(Value::Object(map))
@@ -291,6 +168,22 @@ mod tests {
     }
 
     #[test]
+    fn claim_values_are_lossless() {
+        let source = user(json!({
+            "id": "u1",
+            "org": { "team": { "unit": { "code": "x7", "size": 3, "tags": ["a", 1, true, null] } } },
+            "scores": [1, 2],
+            "grid": [[1, 2], [{ "k": "v" }]]
+        }));
+        let viewer = Viewer::from_user(&source).unwrap();
+        assert_eq!(viewer.to_user().unwrap(), source);
+        let wire = serde_json::to_value(&viewer).unwrap();
+        assert!(wire["claims"].as_array().unwrap().contains(&json!({ "name": "scores", "value": [1, 2] })));
+        let back: Viewer = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.to_user().unwrap(), source);
+    }
+
+    #[test]
     fn viewer_serde_round_trips_with_claims() {
         let viewer = Viewer::from_user(&firebase_user()).unwrap();
         let wire = serde_json::to_value(&viewer).unwrap();
@@ -303,22 +196,14 @@ mod tests {
                 .unwrap()["value"]
                 .clone()
         };
-        assert_eq!(claim("teamId"), json!({ "kind": "text", "text": "t9" }));
+        assert_eq!(claim("teamId"), json!("t9"));
+        assert_eq!(claim("approvalLimit"), json!(5000));
+        assert_eq!(claim("email_verified"), json!(true));
+        assert_eq!(claim("amr"), json!(["pwd"]));
         assert_eq!(
-            claim("approvalLimit"),
-            json!({ "kind": "number", "number": 5000.0 })
+            claim("firebase"),
+            json!({ "sign_in_provider": "password", "identities": { "email": ["a@b.co"] } })
         );
-        assert_eq!(
-            claim("email_verified"),
-            json!({ "kind": "flag", "flag": true })
-        );
-        assert_eq!(claim("amr"), json!({ "kind": "texts", "texts": ["pwd"] }));
-        let firebase = claim("firebase");
-        assert_eq!(firebase["kind"], "record");
-        let entries = firebase["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 2);
-        assert!(entries.contains(&json!({ "path": ["sign_in_provider"], "value": { "kind": "text", "text": "password" } })));
-        assert!(entries.contains(&json!({ "path": ["identities", "email"], "value": { "kind": "texts", "texts": ["a@b.co"] } })));
         let back: Viewer = serde_json::from_value(wire).unwrap();
         assert_eq!(back, viewer);
     }
@@ -362,12 +247,11 @@ mod tests {
             .unwrap_err()
             .contains("@user.role"));
         assert!(Viewer::from_user(&user(json!({ "id": "u", "permissions": "all" }))).is_err());
-        assert!(
-            Viewer::from_user(&user(json!({ "id": "u", "scores": [1, 2] })))
-                .unwrap_err()
-                .contains("scores")
-        );
-        assert!(Viewer::from_user(&user(json!({ "id": "u", "orgs": [{ "id": "o" }] }))).is_err());
+        let mut nan = user(json!({ "id": "u" }));
+        if let Value::Object(map) = &mut nan {
+            map.insert("score".to_string(), Value::Array(vec![Value::Number(f64::NAN)]));
+        }
+        assert!(Viewer::from_user(&nan).unwrap_err().contains("score"));
         assert!(Viewer::from_user(&user(json!([]))).is_err());
     }
 
@@ -381,34 +265,9 @@ mod tests {
             permissions: None,
             claims: vec![Claim {
                 name: "role".to_string(),
-                value: ClaimValue::Text {
-                    text: "owner".to_string(),
-                },
+                value: json!("owner"),
             }],
         };
         assert!(viewer.to_user().unwrap_err().contains("role"));
-        let clash = Viewer {
-            claims: vec![Claim {
-                name: "x".to_string(),
-                value: ClaimValue::Record {
-                    entries: vec![
-                        ClaimEntry {
-                            path: vec!["a".to_string()],
-                            value: ClaimLeaf::Flag { flag: true },
-                        },
-                        ClaimEntry {
-                            path: vec!["a".to_string(), "b".to_string()],
-                            value: ClaimLeaf::Flag { flag: true },
-                        },
-                    ],
-                },
-            }],
-            role: None,
-            ..viewer
-        };
-        assert!(clash
-            .to_user()
-            .unwrap_err()
-            .contains("both a leaf and a record"));
     }
 }

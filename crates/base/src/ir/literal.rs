@@ -94,6 +94,7 @@ fn type_tag(ty: &OirType) -> String {
         OirType::Behavior => "behavior".to_string(),
         OirType::SExpr => "sexpr".to_string(),
         OirType::TypeRef { name } => format!("typeref({name})"),
+        OirType::Var { name } => format!("${name}"),
     }
 }
 

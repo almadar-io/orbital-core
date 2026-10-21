@@ -51,6 +51,7 @@
     "lazy": "lazy",
     "locales": "locales",
     "egress": "egress",
+    "store": "store",
     "themes": "themes",
     "public": "public",
     "instances": "instances",
@@ -97,7 +98,8 @@
     "collection": "collection",
     "background": "background",
     "visible": "visible",
-    "mock": "mock"
+    "mock": "mock",
+    "store": "store"
   },
   "categories": {
     "interaction": "interaction",
@@ -547,6 +549,7 @@
     "header": "header",
     "credential": "credential",
     "egress": "egress",
+    "store": "store",
     "themes": "themes",
     "osGrants": "osGrants",
     "deployment": "deployment"

@@ -110,6 +110,9 @@ pub enum Effect {
         /// today (denial / required-column-missing); see `kernel.rs`'s
         /// `persist_failure_emit`.
         emit: Option<FetchEmit>,
+        /// `where: (fn row …)` on a single `delete`/`update`: the row guard the store checks in the same
+        /// atomic step as the write; a row it rejects is `not-found` (EXEC-STEP-8).
+        guard: Option<Value>,
     },
 
     /// `["persist", "batch", <ops>, { emit }?]` — many rows in one effect. `ops`
@@ -984,7 +987,7 @@ fn parse_set(args: &[SExpression]) -> Option<Effect> {
 /// literal data token as `id` (C-PERSIST-UPDATE-TRAILING-EMIT-MISPARSED).
 pub fn strip_trailing_emit_options(args: &[SExpression]) -> &[SExpression] {
     match args.last().and_then(|a| a.as_object()) {
-        Some(obj) if obj.contains_key("emit") => &args[..args.len() - 1],
+        Some(obj) if obj.contains_key("emit") || obj.contains_key("where") => &args[..args.len() - 1],
         _ => args,
     }
 }
@@ -1056,12 +1059,18 @@ fn parse_persist(args: &[SExpression]) -> Option<Effect> {
         _ => (None, Value::from(positional.get(2)?.clone())),
     };
 
+    let guard = args
+        .last()
+        .and_then(|a| a.as_object())
+        .and_then(|o| o.get("where"))
+        .map(|w| Value::from(w.clone()));
     Some(Effect::Persist {
         operation,
         entity_type,
         data,
         id,
         emit,
+        guard,
     })
 }
 
@@ -2001,6 +2010,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_trailing_where_is_the_persist_guard_never_positional() {
+        let parse = |src: &str| parse_effect(&serde_json::from_str::<SExpression>(src).unwrap()).unwrap();
+        let guard = |e: &Effect| match e {
+            Effect::Persist { guard, id, data, .. } => (guard.clone(), id.clone(), data.clone()),
+            _ => panic!("Expected Persist effect"),
+        };
+        let lambda: Value = serde_json::from_str(r#"["fn", "row", ["=", "@row.used", false]]"#).unwrap();
+        let (g, id, _) = guard(&parse(r#"["persist", "delete", "T", "@payload.id", {"where": ["fn", "row", ["=", "@row.used", false]]}]"#));
+        assert_eq!((g, id.as_deref()), (Some(lambda.clone()), Some("@payload.id")));
+        let (g, id, data) = guard(&parse(r#"["persist", "update", "T", "@payload.data", {"where": ["fn", "row", ["=", "@row.used", false]], "emit": {"success": "OK"}}]"#));
+        assert_eq!((g, id), (Some(lambda), None));
+        assert_eq!(data, Value::String("@payload.data".to_string()));
+        let (g, _, _) = guard(&parse(r#"["persist", "delete", "T", "@payload.id"]"#));
+        assert_eq!(g, None);
+    }
+
     /// C-PERSIST-UPDATE-TRAILING-EMIT-MISPARSED: `(persist update Entity ?data
     /// {emit:{...}})` — no separate id, data carries its own id, emit is a
     /// TRAILING OPTIONS object — must not be read as (id, data).
@@ -2019,6 +2045,7 @@ mod tests {
                 id,
                 data,
                 emit,
+                guard: _,
             } => {
                 assert_eq!(operation, PersistOperation::Update);
                 assert_eq!(entity_type, "Ticket");

@@ -1301,6 +1301,7 @@ mod tests {
             data: Value::Null,
             id: Some("c1".to_string()),
             emit: None,
+            guard: None,
         }
     }
 

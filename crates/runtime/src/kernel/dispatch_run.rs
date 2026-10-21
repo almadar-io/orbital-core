@@ -7,9 +7,10 @@
 use super::envelope::Origin;
 use super::*;
 use crate::effects::response::MountSeed;
+use crate::row_query::RowWriteOutcome;
 use crate::resumable::{
-    accept_replies, number_requests, DispatchContinuation, DispatchError, DispatchOutcomes,
-    IoReply, Progress,
+    accept_into, number_requests, DispatchContinuation, DispatchError, DispatchOutcomes, Exchange,
+    IoAnswer, IoReply, Progress, StoreAsk, StoreLeg,
 };
 use orbital_core_base::envelope::{DeliverRefusal, DeliverRefusalKind, Envelope, EnvelopeVerdict};
 use orbital_core_base::value::ValueMap;
@@ -138,6 +139,7 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let _lane = self.lane.enter();
         self.require_payload([(trait_name, event_name)], &payload)?;
         let run = self.run_of_dispatch(trait_name, entity_id, event_name, payload, delivery, log);
         self.run_straight_through(run)
@@ -181,6 +183,7 @@ impl RuntimeKernel {
         event_name: &str,
         payload: Value,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let _lane = self.lane.enter();
         self.require_payload(traits.iter().map(|t| (t.as_str(), event_name)), &payload)?;
         let run = self.run_of_each(traits, entity_id, event_name, payload, None, None);
         self.run_straight_through(run)
@@ -196,9 +199,10 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        let lane = self.lane.enter();
         self.require_payload(traits.iter().map(|t| (t.as_str(), event_name)), &payload)?;
         let run = self.run_of_each(traits, entity_id, event_name, payload, delivery, log);
-        self.drive_resumable(Self::continuation_of(run))
+        self.drive_entry(lane, Self::continuation_of(run))
     }
 
     /// A mount batch (`EventRequest.mount`): each seed runs its own lifecycle event, in
@@ -212,6 +216,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let _lane = self.lane.enter();
         self.require_payload(
             seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
             &payload,
@@ -231,9 +236,10 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        let lane = self.lane.enter();
         self.require_payload([(trait_name, event_name)], &payload)?;
         let run = self.run_of_dispatch(trait_name, entity_id, event_name, payload, delivery, log);
-        self.drive_resumable(Self::continuation_of(run))
+        self.drive_entry(lane, Self::continuation_of(run))
     }
 
     /// [`Self::dispatch_mount`] as a resumable dispatch.
@@ -243,12 +249,13 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        let lane = self.lane.enter();
         self.require_payload(
             seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
             &payload,
         )?;
         let run = self.run_of_mount(seeds, entity_id, payload);
-        self.drive_resumable(Self::continuation_of(run))
+        self.drive_entry(lane, Self::continuation_of(run))
     }
 
     /// Go on with a dispatch that returned [`Progress::Await`], given an answer to each of its requests.
@@ -257,10 +264,27 @@ impl RuntimeKernel {
         mut continuation: DispatchContinuation,
         replies: Vec<IoReply>,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
-        let answered = accept_replies(&continuation.pending, replies)?;
-        continuation.journal.extend(answered);
-        continuation.pending.clear();
-        self.drive_resumable(continuation)
+        let lane = match continuation.lane.take() {
+            Some(hold) => hold.resume(),
+            None => self.lane.enter(),
+        };
+        accept_into(&mut continuation, replies)?;
+        self.drive_entry(lane, continuation)
+    }
+
+    /// Drive a dispatch entered on `lane`: a dispatch parked on an ask keeps the lane until it commits.
+    fn drive_entry(
+        &self,
+        lane: super::lane::LaneGuard,
+        continuation: DispatchContinuation,
+    ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        match self.drive_resumable(continuation)? {
+            Progress::Await { mut continuation, requests } => {
+                continuation.lane = lane.park();
+                Ok(Progress::Await { continuation, requests })
+            }
+            done => Ok(done),
+        }
     }
 
     fn continuation_of(run: DispatchRun) -> DispatchContinuation {
@@ -270,6 +294,9 @@ impl RuntimeKernel {
             pending: Vec::new(),
             next_id: 0,
             reads: Default::default(),
+            store: None,
+            seeds: None,
+            lane: None,
         }
     }
 
@@ -307,6 +334,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         tick_name: &str,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        let lane = self.lane.enter();
         let defs = self.trait_definitions.read();
         let declared = defs.get(trait_name).ok_or_else(|| {
             DispatchError::Kernel(KernelError::TraitNotFound(trait_name.to_string()))
@@ -337,7 +365,7 @@ impl RuntimeKernel {
             }),
         };
         let run = self.run_of(vec![plan]);
-        self.drive_resumable(Self::continuation_of(run))
+        self.drive_entry(lane, Self::continuation_of(run))
     }
 
     fn run_of_each(
@@ -434,11 +462,36 @@ impl RuntimeKernel {
     }
 
     /// Run units until the dispatch is done or one needs an answer the journal lacks.
-    fn drive_resumable(
+    pub(crate) fn drive_resumable(
         &self,
         mut c: DispatchContinuation,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         loop {
+            let seeds = c.seeds.get_or_insert_with(|| self.pending_store_seeds());
+            if c.store.is_none() {
+                if let Some((origin, ask)) = seeds.pop_front() {
+                    c.store = self.seed_leg_for(origin, ask);
+                    continue;
+                }
+            }
+            if let Some(leg) = c.store.take() {
+                let StoreLeg { ask, driver, seed } = *leg;
+                match self.drive_resumable(driver)? {
+                    Progress::Await { continuation, requests } => {
+                        c.pending = requests.clone();
+                        c.store = Some(Box::new(StoreLeg { ask, driver: continuation, seed }));
+                        return Ok(Progress::Await { continuation: c, requests });
+                    }
+                    Progress::Done(outcomes) => {
+                        let answer = self.store_reply(&ask, &outcomes);
+                        if let Some(origin) = seed {
+                            self.seed_landed(&ask, &answer, &origin);
+                            continue;
+                        }
+                        c.journal.push(Exchange::new(ask.request, answer));
+                    }
+                }
+            }
             *self.suspended_commit.write() = None;
             // The step committed its transition when it suspended: it replays from the state it left, and a state
             // another dispatch moved the trait to meanwhile stands once the replay is done.
@@ -449,14 +502,15 @@ impl RuntimeKernel {
             let journal = std::mem::take(&mut c.journal);
             let (result, end) = self.io.run_step_reading(journal, std::mem::take(&mut c.reads), || self.unit(&mut c.run));
             let committed = self.suspended_commit.write().take();
+            let suspended = !end.pending.is_empty() || !end.store_asks.is_empty();
             match replay {
                 Some((p, Some(moved))) => {
                     self.set_held_state(&p.trait_name, &p.entity_id, moved);
-                    if !end.pending.is_empty() {
+                    if suspended {
                         c.run.provisional = Some(committed.map(Box::new).unwrap_or(p));
                     }
                 }
-                Some((p, None)) if !end.pending.is_empty() => match committed {
+                Some((p, None)) if suspended => match committed {
                     Some(again) => c.run.provisional = Some(Box::new(again)),
                     None => {
                         // Suspended before reaching its transition again: hold the state it had entered.
@@ -466,20 +520,30 @@ impl RuntimeKernel {
                         c.run.provisional = Some(p);
                     }
                 },
-                _ if !end.pending.is_empty() => c.run.provisional = committed.map(Box::new),
+                _ if suspended => c.run.provisional = committed.map(Box::new),
                 _ => {}
             }
             c.reads = end.reads;
             if let Some(diverged) = end.diverged {
                 return Err(DispatchError::Resume(diverged));
             }
-            if !end.pending.is_empty() {
+            if suspended {
                 if result.is_ok() {
                     return Err(DispatchError::Kernel(KernelError::Internal(
                         "a dispatch step committed while it awaited host I/O".to_string(),
                     )));
                 }
                 c.journal = end.journal;
+                if let Some(ask) = end.store_asks.into_iter().next() {
+                    match self.store_driver_run(&ask) {
+                        Ok(driver) => c.store = Some(Box::new(StoreLeg { ask, driver, seed: None })),
+                        Err(message) => {
+                            let answer = Self::store_failed(&ask, message);
+                            c.journal.push(Exchange::new(ask.request, answer));
+                        }
+                    }
+                    continue;
+                }
                 c.pending = number_requests(&mut c.next_id, end.pending);
                 let requests = c.pending.clone();
                 return Ok(Progress::Await {
@@ -492,6 +556,98 @@ impl RuntimeKernel {
                 Ok(Flow::Done) => return Ok(Progress::Done(std::mem::take(&mut c.run.outcomes))),
                 Err(fault) => return Err(DispatchError::Kernel(fault.into_kernel())),
             }
+        }
+    }
+
+    /// Every registered seed not yet landed, each under a fresh ask key: a run writes them before its first step,
+    /// even while another run's leg for one awaits the host (seeds are creates; `duplicate-id` is their no-op).
+    pub(crate) fn pending_store_seeds(&self) -> std::collections::VecDeque<(String, StoreAsk)> {
+        self.store_seeds
+            .lock()
+            .iter()
+            .map(|ask| (ask.key.clone(), StoreAsk { key: self.io.next_store_key(), ..ask.clone() }))
+            .collect()
+    }
+
+    pub(crate) fn seed_leg_for(&self, origin: String, ask: StoreAsk) -> Option<Box<StoreLeg>> {
+        match self.store_driver_run(&ask) {
+            Ok(driver) => Some(Box::new(StoreLeg { ask, driver, seed: Some(origin) })),
+            Err(message) => {
+                tracing::warn!(driver = %ask.driver, %message, "kernel: store seed not sent");
+                None
+            }
+        }
+    }
+
+    pub(crate) fn seed_landed(&self, ask: &StoreAsk, answer: &IoAnswer, origin: &str) {
+        Self::report_seed(ask, answer);
+        self.store_seeds.lock().retain(|registered| registered.key != origin);
+    }
+
+    /// The driver orbital's dispatch of the verb `ask` maps to, in a frame of its own keyed by the ask.
+    pub(crate) fn store_driver_run(&self, ask: &StoreAsk) -> Result<DispatchContinuation, String> {
+        let verb = crate::store_driver::verb_for(&ask.request, &ask.key)
+            .ok_or_else(|| format!("store driver {}: {:?} is not a row ask a driver answers", ask.driver, ask.request))?;
+        let candidates: Vec<String> = {
+            let schemas = self.schemas.read();
+            self.trait_homes
+                .read()
+                .iter()
+                .filter(|(_, (schema, at))| {
+                    schemas.get(schema).and_then(|s| s.orbitals.get(*at)).is_some_and(|o| o.name == ask.driver)
+                })
+                .map(|(name, _)| name.clone())
+                .collect()
+        };
+        let handlers = self.discover_handlers(&candidates, Some(&ask.key), verb.event);
+        let [target] = handlers.as_slice() else {
+            return Err(format!(
+                "store driver {} must have exactly one trait handling {}, has {:?}",
+                ask.driver, verb.event, handlers
+            ));
+        };
+        let mut driver = Self::continuation_of(self.run_of_dispatch(target, Some(&ask.key), verb.event, verb.payload, None, None));
+        driver.seeds = Some(Default::default());
+        Ok(driver)
+    }
+
+    /// A seed row the driver did not create is logged; a row already present (`duplicate-id`) is the seed's no-op.
+    fn report_seed(ask: &StoreAsk, answer: &IoAnswer) {
+        match answer {
+            IoAnswer::Wrote(Ok(outcomes)) => {
+                for outcome in outcomes {
+                    if !matches!(outcome, RowWriteOutcome::Created { .. } | RowWriteOutcome::DuplicateId) {
+                        tracing::warn!(driver = %ask.driver, key = %ask.key, ?outcome, "kernel: store seed row not created");
+                    }
+                }
+            }
+            other => tracing::warn!(driver = %ask.driver, key = %ask.key, answer = ?other, "kernel: store seed failed"),
+        }
+    }
+
+    pub(crate) fn store_failed(ask: &StoreAsk, message: String) -> IoAnswer {
+        crate::store_driver::failed_answer(&ask.request, message)
+            .unwrap_or_else(|| IoAnswer::Wrote(Err(format!("store driver {}: not a row ask", ask.driver))))
+    }
+
+    /// The answer the driver's keyed reply gives `ask`: a driver that sent none, or a malformed one, failed it.
+    pub(crate) fn store_reply(&self, ask: &StoreAsk, outcomes: &DispatchOutcomes) -> IoAnswer {
+        use crate::store_driver::*;
+        const REPLIES: [&str; 7] =
+            [ROW_FOUND, ROWS_LISTED, ROWS_PAGE, ROWS_IDS, ROWS_WRITTEN, STORE_UNSUPPORTED, STORE_FAILED];
+        let reply = outcomes.iter().flat_map(|(_, r)| r.effect_results.iter()).find_map(|er| match &er.effect {
+            Effect::Emit { event, payload }
+                if REPLIES.contains(&event.as_str()) && reply_key(payload) == Some(ask.key.as_str()) =>
+            {
+                Some((event.as_str(), payload))
+            }
+            _ => None,
+        });
+        let failed = |message: String| Self::store_failed(ask, message);
+        match reply {
+            Some((event, payload)) => answer_for(&ask.request, event, payload)
+                .unwrap_or_else(|e| failed(format!("store driver {}: {e}", ask.driver))),
+            None => failed(format!("store driver {} sent no reply for ask {}", ask.driver, ask.key)),
         }
     }
 
@@ -1115,6 +1271,7 @@ impl RuntimeKernel {
     /// verdict is `Accepted` once the dispatch has run, `Duplicate` for an id already accepted from the sender,
     /// `Rejected` for `hop-cap`, `unknown-instance`, or `down` when the dispatch itself failed.
     pub fn dispatch_envelope(&self, envelope: Envelope) -> EnvelopeVerdict {
+        let _lane = self.lane.enter();
         let admitted = match self.admit_envelope(&envelope) {
             Ok(admitted) => admitted,
             Err(verdict) => return verdict,
@@ -1140,12 +1297,13 @@ impl RuntimeKernel {
     /// [`Self::dispatch_envelope`] as a resumable dispatch: the host answers the dispatch's asks, and `Accepted`
     /// is its `Progress::Done`.
     pub fn start_dispatch_envelope(&self, envelope: Envelope) -> InboundStart {
+        let lane = self.lane.enter();
         let admitted = match self.admit_envelope(&envelope) {
             Ok(admitted) => admitted,
             Err(verdict) => return InboundStart::Declined(verdict),
         };
         let run = self.run_of_envelope(envelope.event, envelope.payload, admitted);
-        InboundStart::Admitted(Box::new(self.drive_resumable(Self::continuation_of(run))))
+        InboundStart::Admitted(Box::new(self.drive_entry(lane, Self::continuation_of(run))))
     }
 
     fn run_of_envelope(

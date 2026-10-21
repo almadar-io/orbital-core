@@ -263,3 +263,280 @@ fn with_listen_route_remaps_payload() {
         "a with-mapping route must still resolve the mapped field"
     );
 }
+
+// One dispatch lane per kernel (G-CROSS-291, EXEC-CONC-1): a dispatch holds the kernel from start to commit, so a
+// second dispatch or a completion arriving while it runs waits for it.
+
+/// The first caller (`who: "a"`) waits up to 400 ms for a second caller; `overlapped` records that one arrived
+/// while the first was still inside its dispatch.
+struct Gate {
+    entered: std::sync::Mutex<(bool, bool)>,
+    signal: std::sync::Condvar,
+    overlapped: std::sync::atomic::AtomicBool,
+}
+
+impl Gate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            entered: std::sync::Mutex::new((false, false)),
+            signal: std::sync::Condvar::new(),
+            overlapped: Default::default(),
+        })
+    }
+
+    fn wait_first(&self) {
+        let guard = self.entered.lock().unwrap();
+        drop(self.signal.wait_while(guard, |(first, _)| !*first).unwrap());
+    }
+}
+
+impl orbital_core_runtime::effects::ServiceHandler for Gate {
+    fn call(
+        &self,
+        _s: &str,
+        _m: &str,
+        args: &Value,
+        _k: Option<&str>,
+        _c: Option<&orbital_core_runtime::effects::ServiceCaller>,
+    ) -> Result<Value, String> {
+        let who = serde_json::to_value(args).unwrap()["who"].clone();
+        let mut state = self.entered.lock().unwrap();
+        if who == "a" {
+            state.0 = true;
+            self.signal.notify_all();
+            let wait = std::time::Duration::from_millis(400);
+            let (state, _) = self.signal.wait_timeout_while(state, wait, |(_, second)| !*second).unwrap();
+            self.overlapped.store(state.1, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            state.1 = true;
+            self.signal.notify_all();
+        }
+        Ok(Value::Null)
+    }
+
+    fn cancel(&self, _key: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn lane_kernel(gate: Arc<Gate>, host_answered: bool) -> (Arc<RuntimeKernel>, Arc<dyn EntitySource>) {
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "lane",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Tally", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number", "default": 0 }] },
+            "traits": [{
+                "name": "Counter", "linkedEntity": "Tally",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "ADD", "effects": [
+                            ["call-service", "gate", "wait", { "who": "@payload.who" }],
+                            ["set", "@entity.n", ["+", "@entity.n", 1]],
+                            ["emit", "ADDED", { "n": "@entity.n" }]
+                        ] },
+                        { "from": "idle", "to": "idle", "event": "DONE", "effects": [
+                            ["call-service", "gate", "wait", { "who": "completion" }],
+                            ["emit", "ADDED", { "n": "@entity.n" }]
+                        ] },
+                        { "from": "idle", "to": "idle", "event": "READ", "effects": [["emit", "ADDED", { "n": "@entity.n" }]] },
+                        { "from": "idle", "to": "idle", "event": "ASK", "effects": [
+                            ["call-service", "gate", "wait", {}],
+                            ["set", "@entity.n", ["+", "@entity.n", 1]],
+                            ["emit", "ADDED", { "n": "@entity.n" }]
+                        ] },
+                        { "from": "idle", "to": "idle", "event": "ASK_KEYED", "effects": [
+                            ["call-service", "gate", "wait", {}, { "key": "k1", "emit": { "success": "DONE" } }],
+                            ["set", "@entity.n", ["+", "@entity.n", 1]],
+                            ["emit", "ADDED", { "n": "@entity.n" }]
+                        ] },
+                        { "from": "idle", "to": "idle", "event": "BUMP", "effects": [
+                            ["set", "@entity.n", ["+", "@entity.n", 1]],
+                            ["emit", "ADDED", { "n": "@entity.n" }]
+                        ] }
+                    ]
+                }
+            }]
+        }]
+    }))
+    .unwrap();
+    let config = orbital_core_runtime::config::KernelConfig {
+        service_handler: Some(if host_answered {
+            Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::ServiceHandler>
+        } else {
+            gate as Arc<dyn orbital_core_runtime::effects::ServiceHandler>
+        }),
+        ..Default::default()
+    };
+    let store = Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>;
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config);
+    kernel.register_schema(schema).unwrap();
+    (Arc::new(kernel), store)
+}
+
+fn added(outcomes: &orbital_core_runtime::resumable::DispatchOutcomes) -> Vec<serde_json::Value> {
+    outcomes
+        .iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .filter_map(|er| match &er.effect {
+            orbital_core_base::effect_types::Effect::Emit { event, payload } if event == "ADDED" => {
+                Some(serde_json::to_value(payload).unwrap()["n"].clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn add(kernel: &RuntimeKernel, who: &str) -> Vec<serde_json::Value> {
+    let payload: Value = serde_json::from_value(serde_json::json!({ "who": who })).unwrap();
+    added(&kernel.dispatch("Counter", None, "ADD", payload).unwrap())
+}
+
+#[test]
+fn two_overlapping_dispatches_writing_one_field_both_land_in_arrival_order() {
+    let gate = Gate::new();
+    let (kernel, _) = lane_kernel(gate.clone(), false);
+    let first = std::thread::spawn({
+        let kernel = kernel.clone();
+        move || add(&kernel, "a")
+    });
+    gate.wait_first();
+    let second = add(&kernel, "b");
+    assert!(!gate.overlapped.load(std::sync::atomic::Ordering::SeqCst), "the second dispatch ran inside the first");
+    assert_eq!(first.join().unwrap(), vec![serde_json::json!(1.0)]);
+    assert_eq!(second, vec![serde_json::json!(2.0)]);
+    assert_eq!(added(&kernel.dispatch("Counter", None, "READ", Value::Null).unwrap()), vec![serde_json::json!(2.0)]);
+}
+
+#[test]
+fn a_completion_arriving_mid_dispatch_is_applied_after_that_dispatch_commits() {
+    use orbital_core_runtime::os_host::completion::OsCompletionSink;
+    let gate = Gate::new();
+    let (kernel, store) = lane_kernel(gate.clone(), false);
+    let (sink, seen) = completion_sink(&kernel, &store, &gate);
+    let first = std::thread::spawn({
+        let kernel = kernel.clone();
+        move || add(&kernel, "a")
+    });
+    gate.wait_first();
+    sink.complete(&counter_site(), "k1", Ok(Value::Null));
+    assert!(!gate.overlapped.load(std::sync::atomic::Ordering::SeqCst), "the completion ran inside the open dispatch");
+    assert_eq!(first.join().unwrap(), vec![serde_json::json!(1.0)]);
+    assert_eq!(*seen.lock().unwrap(), vec![serde_json::json!(1.0)]);
+}
+
+type Seen = Arc<std::sync::Mutex<Vec<serde_json::Value>>>;
+
+fn counter_site() -> orbital_core_runtime::resumable::CallSite {
+    orbital_core_runtime::resumable::CallSite {
+        orbital: None,
+        trait_name: "Counter".to_string(),
+        follow_on: false,
+        entity_id: "singleton".to_string(),
+        emit: orbital_core_runtime::resumable::CallRoutes { success: Some("DONE".to_string()), ..Default::default() },
+    }
+}
+
+fn completion_sink(
+    kernel: &Arc<RuntimeKernel>,
+    store: &Arc<dyn EntitySource>,
+    gate: &Arc<Gate>,
+) -> (Arc<orbital_core_runtime::os_host::completion::KernelCompletionSink>, Seen) {
+    use orbital_core_runtime::resumable::CallSite;
+    let (store, gate_host) = (store.clone(), gate.clone());
+    let seen: Seen = Arc::default();
+    let sink = orbital_core_runtime::os_host::completion::KernelCompletionSink::new(
+        kernel.clone(),
+        Arc::new(move |request: &orbital_core_runtime::resumable::IoRequest| {
+            orbital_core_runtime::resumable::BlockingHost { source: store.as_ref(), service: Some(gate_host.as_ref()), substrate: None }
+                .answer(request)
+        }),
+        Arc::new({
+            let seen = seen.clone();
+            move |_: &CallSite, _: &str, result: Result<orbital_core_runtime::resumable::DispatchOutcomes, orbital_core_runtime::resumable::DispatchError>| {
+                seen.lock().unwrap().extend(added(&result.unwrap()));
+            }
+        }),
+    );
+    (Arc::new(sink), seen)
+}
+
+/// Resume a parked dispatch to its end: its service ask answered `service`, its row asks by `store`.
+fn finish(
+    kernel: &RuntimeKernel,
+    store: &Arc<dyn EntitySource>,
+    parked: (orbital_core_runtime::resumable::DispatchContinuation, Vec<orbital_core_runtime::resumable::PendingRequest>),
+    service: orbital_core_runtime::resumable::IoAnswer,
+) -> Vec<serde_json::Value> {
+    use orbital_core_runtime::resumable::{BlockingHost, IoReply, IoRequest, Progress};
+    let (mut continuation, mut requests) = parked;
+    loop {
+        let replies = requests
+            .iter()
+            .map(|p| IoReply {
+                id: p.id,
+                answer: match &p.request {
+                    IoRequest::CallService { .. } => service.clone(),
+                    other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
+                },
+            })
+            .collect();
+        match kernel.resume(continuation, replies).unwrap() {
+            Progress::Done(outcomes) => return added(&outcomes),
+            Progress::Await { continuation: c, requests: r } => (continuation, requests) = (c, r),
+        }
+    }
+}
+
+fn parked(kernel: &RuntimeKernel, event: &str) -> (orbital_core_runtime::resumable::DispatchContinuation, Vec<orbital_core_runtime::resumable::PendingRequest>) {
+    match kernel.start_dispatch("Counter", None, event, Value::Null, None, None).unwrap() {
+        orbital_core_runtime::resumable::Progress::Await { continuation, requests } => (continuation, requests),
+        orbital_core_runtime::resumable::Progress::Done(_) => panic!("{event} did not park on its ask"),
+    }
+}
+
+const NOT_YET: std::time::Duration = std::time::Duration::from_millis(250);
+
+#[test]
+fn a_dispatch_parked_on_an_unkeyed_ask_keeps_the_lane_until_it_commits() {
+    use orbital_core_runtime::resumable::IoAnswer;
+    let (kernel, store) = lane_kernel(Gate::new(), true);
+    let first = parked(&kernel, "ASK");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let second = std::thread::spawn({
+        let kernel = kernel.clone();
+        move || tx.send(added(&kernel.dispatch("Counter", None, "BUMP", Value::Null).unwrap())).unwrap()
+    });
+    assert!(rx.recv_timeout(NOT_YET).is_err(), "the second dispatch ran while the first was parked");
+    let first = finish(&kernel, &store, first, IoAnswer::Service(Ok(Value::Null)));
+    assert_eq!(first, vec![serde_json::json!(1.0)]);
+    assert_eq!(rx.recv().unwrap(), vec![serde_json::json!(2.0)]);
+    second.join().unwrap();
+}
+
+#[test]
+fn control_an_abandoned_parked_dispatch_releases_the_lane() {
+    let (kernel, _) = lane_kernel(Gate::new(), true);
+    drop(parked(&kernel, "ASK"));
+    assert_eq!(added(&kernel.dispatch("Counter", None, "BUMP", Value::Null).unwrap()), vec![serde_json::json!(1.0)]);
+}
+
+#[test]
+fn a_keyed_asks_completion_runs_as_its_own_dispatch_after_the_asking_dispatch_commits() {
+    use orbital_core_runtime::os_host::completion::OsCompletionSink;
+    use orbital_core_runtime::resumable::IoAnswer;
+    let gate = Gate::new();
+    let (kernel, store) = lane_kernel(gate.clone(), true);
+    let (sink, seen) = completion_sink(&kernel, &store, &gate);
+    let asking = parked(&kernel, "ASK_KEYED");
+    let completion = std::thread::spawn({
+        let sink = sink.clone();
+        move || sink.complete(&counter_site(), "k1", Ok(Value::Null))
+    });
+    std::thread::sleep(NOT_YET);
+    assert!(seen.lock().unwrap().is_empty(), "the completion ran while its asking dispatch was parked");
+    let first = finish(&kernel, &store, asking, IoAnswer::ServiceDeferred);
+    assert_eq!(first, vec![serde_json::json!(1.0)]);
+    completion.join().unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![serde_json::json!(1.0)]);
+}

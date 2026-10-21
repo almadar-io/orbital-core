@@ -114,6 +114,7 @@ mod tests {
             data: Value::Null,
             id: None,
             emit: None,
+            guard: None,
         }
     }
 

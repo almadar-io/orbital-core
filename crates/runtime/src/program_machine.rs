@@ -1,12 +1,7 @@
-//! A program's state machine as values (`program/machine`) and the record `program/step` answers with
-//! (`PlayedStep`). The rows are the planner's own transition groups ([`planner::plan_trait`]), so the machine a
-//! `.lolo` program reads is the one the walkers drive; `@almadar/core` names both as program types.
+//! A program's state machine as values (`MachineRow`, read by the `std-machine` atom) and the record `program/step`
+//! answers with (`PlayedStep`); `@almadar/core` names both as program types.
 
 use crate::embed::eval_wire::EvalStepWire;
-use crate::planner;
-use orbital_core_base::schema::types::{
-    OrbitalSchema, PayloadField, TraitDefinition, TraitReference, TransitionDefinition,
-};
 use orbital_core_base::value::Value;
 use serde::{Deserialize, Serialize};
 
@@ -39,81 +34,6 @@ pub struct MachineRow {
     /// The transition carries a guard of its own.
     pub guarded: bool,
     pub payload: Vec<PayloadSlot>,
-}
-
-fn payload_slots(td: &TraitDefinition, event: &str) -> Vec<PayloadSlot> {
-    let declared: &[PayloadField] = td
-        .state_machine
-        .events
-        .as_deref()
-        .and_then(|events| events.iter().find(|e| e.key == event))
-        .and_then(|e| e.payload_schema.as_deref())
-        .unwrap_or(&[]);
-    declared
-        .iter()
-        .map(|f| PayloadSlot {
-            name: f.name.clone(),
-            field_type: f.field_type.clone(),
-            required: f.required.unwrap_or(false),
-            values: f.values.clone(),
-            entity: f.entity.clone(),
-        })
-        .collect()
-}
-
-/// The `position`-th `from --event-->` arm in declaration order, the index the planner and the kernel's
-/// `fired_arm` count.
-fn arm_at<'a>(
-    td: &'a TraitDefinition,
-    from: &str,
-    event: &str,
-    position: usize,
-) -> Option<&'a TransitionDefinition> {
-    td.state_machine
-        .transitions
-        .iter()
-        .filter(|t| t.event == event && t.from.matches(from))
-        .nth(position)
-}
-
-/// Every transition of every inline trait of a resolved program, orbital by orbital, in the planner's group
-/// order. Sibling unguarded transitions sharing `(from, event)` are one planner step and one row per target.
-pub fn machine_rows(schema: &OrbitalSchema) -> Vec<MachineRow> {
-    let owner_fields = orbital_core_base::policy::owner_fields_from_schema(schema);
-    let ctx = planner::EntityCtx {
-        schema,
-        owner_fields: &owner_fields,
-        viewer_id: None,
-    };
-    let mut rows = Vec::new();
-    for orbital in &schema.orbitals {
-        for reference in &orbital.traits {
-            let TraitReference::Inline(td) = reference else {
-                continue;
-            };
-            let seed_id = td.linked_entity.as_deref().map(planner::seed_row_id);
-            for step in planner::plan_trait(td, &ctx, seed_id.as_deref()) {
-                let row = |to: &str, guarded: bool| MachineRow {
-                    orbital: orbital.name.clone(),
-                    trait_name: step.trait_name.clone(),
-                    from: step.from.clone(),
-                    event: step.event.clone(),
-                    to: to.to_string(),
-                    guarded,
-                    payload: payload_slots(td, &step.event),
-                };
-                match step.arm {
-                    Some(position) => {
-                        let guarded = arm_at(td, &step.from, &step.event, position)
-                            .is_some_and(|t| t.guard.is_some());
-                        rows.push(row(&step.to, guarded));
-                    }
-                    None => rows.extend(step.to_states.iter().map(|to| row(to, false))),
-                }
-            }
-        }
-    }
-    rows
 }
 
 /// What chose the transition: its guard passed, every guard failed, or no guard was tried.
@@ -221,113 +141,6 @@ pub struct PlayedStep {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    fn program() -> OrbitalSchema {
-        serde_json::from_value(json!({
-            "name": "machine-fixture",
-            "orbitals": [{
-                "name": "DoorOrbital",
-                "entity": { "name": "Door", "fields": [{ "name": "id", "type": "string", "required": true }] },
-                "traits": [
-                    {
-                        "name": "Lock",
-                        "linkedEntity": "Door",
-                        "stateMachine": {
-                            "states": [{ "name": "locked", "isInitial": true }, { "name": "open" }],
-                            "events": [
-                                { "key": "UNLOCK", "name": "Unlock", "payloadSchema": [
-                                    { "name": "code", "type": "string", "required": true },
-                                    { "name": "mode", "type": "string", "values": ["once", "hold"] }
-                                ] },
-                                { "key": "SHUT", "name": "Shut" }
-                            ],
-                            "transitions": [
-                                { "from": "locked", "to": "open", "event": "UNLOCK", "guard": ["=", "@payload.code", "1234"] },
-                                { "from": "locked", "to": "locked", "event": "UNLOCK" },
-                                { "from": "open", "to": "locked", "event": "SHUT" }
-                            ]
-                        }
-                    },
-                    {
-                        "name": "Bell",
-                        "linkedEntity": "Door",
-                        "stateMachine": {
-                            "states": [{ "name": "quiet", "isInitial": true }],
-                            "events": [],
-                            "transitions": []
-                        }
-                    }
-                ]
-            }]
-        }))
-        .expect("fixture program")
-    }
-
-    #[test]
-    fn machine_rows_are_every_transition_with_its_guard_and_typed_payload() {
-        let rows = machine_rows(&program());
-        let edges: Vec<(&str, &str, &str, &str, bool)> = rows
-            .iter()
-            .map(|r| {
-                (
-                    r.trait_name.as_str(),
-                    r.from.as_str(),
-                    r.event.as_str(),
-                    r.to.as_str(),
-                    r.guarded,
-                )
-            })
-            .collect();
-        assert_eq!(
-            edges,
-            vec![
-                ("Lock", "locked", "UNLOCK", "open", true),
-                ("Lock", "locked", "UNLOCK", "locked", false),
-                ("Lock", "open", "SHUT", "locked", false)
-            ]
-        );
-        assert!(rows.iter().all(|r| r.orbital == "DoorOrbital"));
-        let unlock = &rows[0].payload;
-        assert_eq!(
-            unlock,
-            &vec![
-                PayloadSlot {
-                    name: "code".into(),
-                    field_type: "string".into(),
-                    required: true,
-                    values: None,
-                    entity: None
-                },
-                PayloadSlot {
-                    name: "mode".into(),
-                    field_type: "string".into(),
-                    required: false,
-                    values: Some(vec!["once".into(), "hold".into()]),
-                    entity: None
-                },
-            ]
-        );
-        assert!(
-            rows[2].payload.is_empty(),
-            "an event declaring no payload has no slots"
-        );
-        let wire = serde_json::to_value(&rows[0]).unwrap();
-        assert_eq!(wire["trait"], "Lock");
-        assert_eq!(wire["payload"][0]["type"], "string");
-        assert!(wire["payload"][0].get("values").is_none());
-    }
-
-    #[test]
-    fn a_trait_with_no_transitions_has_no_rows() {
-        let rows = machine_rows(&program());
-        assert!(
-            rows.iter().all(|r| r.trait_name != "Bell"),
-            "control: Bell declares no transitions"
-        );
-        let mut empty = program();
-        empty.orbitals[0].traits.truncate(0);
-        assert!(machine_rows(&empty).is_empty());
-    }
 
     #[test]
     fn a_played_step_round_trips_through_its_wire() {

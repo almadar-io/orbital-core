@@ -161,6 +161,11 @@ pub trait TargetTypeRenderer {
     fn type_ref(&self, _name: &str) -> Self::Out {
         self.json()
     }
+    /// An unbound type variable survives only in a generic atom compiled on its
+    /// own (compose binds or refuses it); it renders as the target's `json`.
+    fn type_var(&self, _name: &str) -> Self::Out {
+        self.json()
+    }
 
     // --- combine already-rendered children ---
     // The raw child `&OirType` is passed alongside its rendered form so a
@@ -336,6 +341,9 @@ pub trait TargetTypeRenderer {
     fn classify_type_ref(&self, _name: &str) -> TypeMappingClass {
         self.classify_json()
     }
+    fn classify_type_var(&self, _name: &str) -> TypeMappingClass {
+        self.classify_json()
+    }
     /// Class of [`TargetTypeRenderer::array`]. `inner` is the classification
     /// the walker computed for the element type — a container carries its
     /// element's fidelity.
@@ -412,6 +420,7 @@ pub fn render_type<R: TargetTypeRenderer + ?Sized>(
         OirType::Behavior => r.behavior_value(),
         OirType::SExpr => r.sexpr(),
         OirType::TypeRef { name } => r.type_ref(name),
+        OirType::Var { name } => r.type_var(name),
         OirType::Array { inner } => {
             let inner_out = render_type(r, inner, None);
             r.array(inner, inner_out)
@@ -469,6 +478,7 @@ pub fn classify_type<R: TargetTypeRenderer + ?Sized>(
         OirType::Behavior => r.classify_behavior_value(),
         OirType::SExpr => r.classify_sexpr(),
         OirType::TypeRef { name } => r.classify_type_ref(name),
+        OirType::Var { name } => r.classify_type_var(name),
         OirType::Array { inner } => {
             let inner_cls = classify_type(r, inner, None);
             r.classify_array(inner, inner_cls)

@@ -445,7 +445,7 @@ pub fn declared_text(ty: &OirType) -> String {
         OirType::SExpr => "SExpr".to_string(),
         OirType::Struct { .. } | OirType::File => "object".to_string(),
         OirType::Row { entity } | OirType::Reference { entity } => entity.clone(),
-        OirType::TypeRef { name } | OirType::Enum { name } => name.clone(),
+        OirType::TypeRef { name } | OirType::Enum { name } | OirType::Var { name } => name.clone(),
         OirType::Integer | OirType::Money => "number".to_string(),
         other => serde_json::to_value(other)
             .ok()
@@ -462,6 +462,8 @@ fn first_misfit(value: &Value, ty: &OirType) -> Option<&'static str> {
     let misfit = || Some(value.type_name());
     match ty {
         OirType::SExpr | OirType::Json | OirType::Node | OirType::Trait | OirType::Orbital | OirType::Behavior => None,
+        // An unbound variable admits any value; a bound one was substituted before run time.
+        OirType::Var { .. } => None,
         OirType::Optional { inner } => first_misfit(value, inner),
         OirType::Union { variants } => {
             if variants.iter().any(|v| first_misfit(value, &v.field_type).is_none()) {

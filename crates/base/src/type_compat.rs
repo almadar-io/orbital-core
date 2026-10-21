@@ -262,6 +262,9 @@ pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
             _ if is_object_family(src) || is_json_family(src) => {
                 Some(Coercion::Erase { from: src.clone() })
             }
+            OirType::Var { .. } if matches!(dst, OirType::Json) => {
+                Some(Coercion::Erase { from: src.clone() })
+            }
             _ if matches!(dst, OirType::SExpr) && is_program_data(src) => {
                 Some(Coercion::Erase { from: src.clone() })
             }
@@ -318,6 +321,11 @@ pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
         OirType::Reference { .. } => match src {
             _ if is_object_family(src) => Some(Coercion::Row { from_id: false }),
             _ if is_string_kind(src) => Some(Coercion::Row { from_id: true }),
+            _ => None,
+        },
+        // Opaque: only the same variable (identity, caught above) or an unknowable value.
+        OirType::Var { .. } => match src {
+            OirType::Json => Some(Coercion::Erase { from: src.clone() }),
             _ => None,
         },
     }
@@ -447,6 +455,7 @@ pub fn parse_compat_type(s: &str) -> CompatType {
             CompatType::Ty(OirType::Array { inner: Box::new(inner) })
         }
         _ if t.starts_with("Map<") && t.ends_with('>') => CompatType::MapTag,
+        _ if t.len() > 1 && t.starts_with('$') => CompatType::Ty(OirType::Var { name: t[1..].to_string() }),
         // `"a" | "b"`: a closed set of strings is an enum of strings.
         _ if is_string_literal_union(t) => CompatType::Ty(OirType::Enum { name: t.to_string() }),
         _ if t.chars().next().is_some_and(char::is_uppercase) => {
@@ -644,6 +653,7 @@ pub fn oir_type_kind(t: &crate::ir::types::OirType) -> String {
         // A by-name reference to a named struct type — same wire shape as the
         // struct it names, so it reports the same KIND as `Struct`/`Union`.
         OirType::TypeRef { .. } => "object".to_string(),
+        OirType::Var { name } => format!("${name}"),
     }
 }
 
@@ -720,6 +730,24 @@ pub fn compat_kind_oir(kind: &str) -> OirType {
 mod tests {
     use super::{enum_value_is_member, oir_type_satisfies_field};
     use crate::ir::types::OirType;
+
+    #[test]
+    fn a_type_variable_is_opaque() {
+        let t = OirType::Var { name: "t".into() };
+        let u = OirType::Var { name: "u".into() };
+        assert!(super::assignable(&t, &t));
+        assert!(super::assignable(&t, &OirType::Json), "a variable erases to json");
+        assert!(super::assignable(&OirType::Json, &t), "an unknowable value may be a t");
+        assert!(super::assignable(&OirType::optional(t.clone()), &t));
+        assert!(super::assignable(&OirType::array(t.clone()), &OirType::array(t.clone())));
+        for concrete in [OirType::String, OirType::Number, OirType::Struct { fields: vec![] }, OirType::Node] {
+            assert!(!super::castable(&t, &concrete), "control: a t is no {concrete:?}");
+            assert!(!super::castable(&concrete, &t), "control: a {concrete:?} is no t");
+        }
+        assert!(!super::castable(&t, &u), "control: two variables are distinct");
+        assert_eq!(super::parse_compat_type(&super::oir_type_kind(&t)), super::CompatType::Ty(t.clone()));
+        assert_eq!(super::parse_compat_type("$"), super::CompatType::Unknown("$".into()));
+    }
 
     #[test]
     fn a_program_type_name_is_its_record_shape() {

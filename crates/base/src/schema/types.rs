@@ -91,6 +91,10 @@ pub struct OrbitalSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<SiteMeta>,
 
+    /// `app … [store: Driver]` — the default store-driver orbital for persistent entities that name none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<String>,
+
     /// `egress: [...]` — the exact `scheme://host[:port]` origins the `http` effect may reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress: Option<Vec<String>>,
@@ -2231,6 +2235,11 @@ pub struct EntityDefinition {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub persistence: Option<Persistence>,
 
+    /// `[store: Driver]` — the store-driver orbital that answers this entity's row asks (EXEC-STORE-4);
+    /// wins over the app's `store`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<String>,
+
     /// Field definitions
     pub fields: Vec<FieldDefinition>,
 
@@ -2717,6 +2726,112 @@ pub enum FieldType {
     /// no `properties`, so the shape is a reference rather than an infinite
     /// inline expansion.
     Union,
+    /// A type variable (`t` in `type Page t = { items : [t]! }` or a trait's
+    /// `(t : Type)`), written `"$t"` on the wire, the same spelling as a payload
+    /// field's sentinel. Bound by [`FieldDefinition::substitute_type_vars`].
+    #[serde(untagged)]
+    TypeVar(TypeVarName),
+}
+
+/// A type variable's name; serializes as `"$<name>"`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypeVarName(pub String);
+
+impl Serialize for TypeVarName {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format!("${}", self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for TypeVarName {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        match raw.strip_prefix('$') {
+            Some(name) if !name.is_empty() => Ok(TypeVarName(name.to_string())),
+            _ => Err(serde::de::Error::custom(format!("unknown field type `{raw}`"))),
+        }
+    }
+}
+
+impl FieldType {
+    pub fn type_var(name: &str) -> Self {
+        FieldType::TypeVar(TypeVarName(name.to_string()))
+    }
+
+    /// The `.lolo` primitive type names and their tags; `None` for a non-primitive
+    /// (an alias, entity or typo). One table for lowering, checking and the
+    /// compiler's type-argument binding.
+    pub fn from_primitive_name(name: &str) -> Option<Self> {
+        Some(match name {
+            // `icon`/`component` are refinement types over string (validity enforced
+            // at the render-ui layer); they lower to a plain string field.
+            "string" | "any" | "icon" | "component" => FieldType::String,
+            // Promoted 2026-08-20 (was collapsed to String — the schema lied about
+            // the value's shape): money is numeric at rest; file is the canonical
+            // {name, url, mimeType, sizeBytes} struct. The declared type — never a
+            // field-name heuristic — drives currency inputs/formatting and the
+            // upload dropzone + download-chip rendering on both paths.
+            "money" => FieldType::Money,
+            "file" => FieldType::File,
+            "bytes" => FieldType::Bytes,
+            "CallKey" => FieldType::CallKey,
+            // Semantic string domains, now first-class field types rather than
+            // subtypes that erased to `string`. Closes the "no format validation yet"
+            // half of Gap G-LOLO-TYPENAME-SILENT-FALLBACK: the declared domain
+            // survives lowering, so the validator can check a literal default and
+            // codegen can emit the matching zod refinement.
+            "email" => FieldType::Email,
+            "url" => FieldType::Url,
+            "phone" => FieldType::Phone,
+            "uuid" => FieldType::Uuid,
+            "image" => FieldType::Image,
+            // Renderable content is first-class (type-integrity campaign): the
+            // `.orb` carries the honest `node` tag instead of lying `string`.
+            "node" => FieldType::Node,
+            // De-facto accepted config/field types in the std corpus — `json` (free
+            // value), `render-ui` (a render-ui pattern object config), `relation`
+            // (a foreign-key reference). They lowered to a string field via the old
+            // unknown-name fallback; recognized here to preserve that (`json` and
+            // `render-ui` are being ELIMINATED, not re-typed — Gate C tracks them)
+            // while still rejecting genuine typos.
+            "json" | "render-ui" | "relation" => FieldType::String,
+            "int" | "float" | "number" | "duration" => FieldType::Number,
+            "bool" | "boolean" => FieldType::Boolean,
+            "date" => FieldType::Date,
+            "datetime" => FieldType::Datetime,
+            "timestamp" => FieldType::Timestamp,
+            "object" => FieldType::Object,
+            _ => return None,
+        })
+    }
+}
+
+impl FieldDefinition {
+    /// Replaces every type variable in this shape (items, properties, map
+    /// values) by its binding, keeping the occurrence's own name, `required`
+    /// and description. An unbound variable stays a variable.
+    pub fn substitute_type_vars(&mut self, bindings: &HashMap<String, FieldDefinition>) {
+        if let FieldType::TypeVar(TypeVarName(var)) = &self.field_type {
+            if let Some(bound) = bindings.get(var) {
+                let name = self.name.take();
+                let required = self.required;
+                let description = self.description.take();
+                *self = bound.clone();
+                self.name = name;
+                self.required = required.or(self.required);
+                self.description = description.or(self.description.take());
+            }
+            return;
+        }
+        if let Some(items) = self.items.as_deref_mut() {
+            items.substitute_type_vars(bindings);
+        }
+        if let Some(props) = self.properties.as_mut() {
+            for prop in props.values_mut() {
+                prop.substitute_type_vars(bindings);
+            }
+        }
+    }
 }
 
 /// What deleting a row does to the rows that reference it (`@almadar/core` `RelationConfig.onDelete`).
@@ -4650,6 +4765,38 @@ pub struct DesignHints {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_type_variable_is_dollar_named_on_the_wire_and_binds_by_substitution() {
+        use serde_json::json;
+        let page = json!({ "type": "object", "properties": {
+            "items": { "name": "items", "type": "array", "required": true, "items": { "type": "$t" } },
+            "cursor": { "name": "cursor", "type": "string", "required": false }
+        }});
+        let mut def: super::FieldDefinition = serde_json::from_value(page.clone()).unwrap();
+        let items = &def.properties.as_ref().unwrap()["items"];
+        assert_eq!(items.items.as_ref().unwrap().field_type, super::FieldType::type_var("t"));
+        assert_eq!(serde_json::to_value(&def).unwrap(), page, "round-trips as `$t`");
+        let plain: super::FieldType = serde_json::from_value(json!("string")).unwrap();
+        assert_eq!(plain, super::FieldType::String, "control: a tag is not a variable");
+        assert!(serde_json::from_value::<super::FieldType>(json!("strnig")).is_err());
+        assert!(serde_json::from_value::<super::FieldType>(json!("$")).is_err());
+
+        let order: super::FieldDefinition =
+            serde_json::from_value(json!({ "type": "relation", "relation": { "entity": "Order" } })).unwrap();
+        let other: super::FieldDefinition = serde_json::from_value(json!({ "type": "number" })).unwrap();
+        let bindings = std::collections::HashMap::from([("u".to_string(), other)]);
+        def.substitute_type_vars(&bindings);
+        let unbound = &def.properties.as_ref().unwrap()["items"];
+        assert_eq!(unbound.items.as_ref().unwrap().field_type, super::FieldType::type_var("t"), "control: another binding leaves `t`");
+        def.substitute_type_vars(&std::collections::HashMap::from([("t".to_string(), order)]));
+        let bound = &def.properties.as_ref().unwrap()["items"];
+        assert_eq!(bound.required, Some(true));
+        let elem = bound.items.as_ref().unwrap();
+        assert_eq!(elem.field_type, super::FieldType::Relation);
+        assert_eq!(elem.relation.as_ref().unwrap().entity, "Order");
+        assert_eq!(def.properties.as_ref().unwrap()["cursor"].field_type, super::FieldType::String);
+    }
+
+    #[test]
     fn propositions_on_real_declarations_and_on_the_transition_expectation_round_trip() {
         use serde_json::json;
         let ensures = json!([["=", "@entity.balance", ["-", "@fromEntity.balance", "@payload.amount"]]]);
@@ -5148,6 +5295,21 @@ mod tests {
     }
 
     #[test]
+    fn test_store_binding_round_trips_on_entity_and_app_and_is_omitted_when_absent() {
+        let entity: EntityDefinition =
+            serde_json::from_str(r#"{ "name": "Ticket", "persistence": "persistent", "store": "Rows", "fields": [] }"#).unwrap();
+        assert_eq!(entity.store.as_deref(), Some("Rows"));
+        assert_eq!(serde_json::to_value(&entity).unwrap()["store"], "Rows");
+        let plain: EntityDefinition = serde_json::from_str(r#"{ "name": "Note", "fields": [] }"#).unwrap();
+        assert_eq!(plain.store, None);
+        assert!(serde_json::to_value(&plain).unwrap().get("store").is_none());
+        let app: OrbitalSchema = serde_json::from_str(r#"{ "name": "shop", "store": "Rows", "orbitals": [] }"#).unwrap();
+        assert_eq!(app.store.as_deref(), Some("Rows"));
+        let bare: OrbitalSchema = serde_json::from_str(r#"{ "name": "shop", "orbitals": [] }"#).unwrap();
+        assert!(serde_json::to_value(&bare).unwrap().get("store").is_none());
+    }
+
+    #[test]
     fn test_entity_shared_defaults_false_when_absent() {
         let json = r#"{ "name": "Task", "fields": [] }"#;
         let entity: EntityDefinition = serde_json::from_str(json).unwrap();
@@ -5157,6 +5319,7 @@ mod tests {
     #[test]
     fn test_entity_shared_false_omitted_from_serialization() {
         let entity = EntityDefinition {
+            store: None,
             name: "Task".to_string(),
             id: None,
             collection: None,

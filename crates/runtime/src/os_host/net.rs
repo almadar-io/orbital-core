@@ -12,6 +12,9 @@
 //!
 //! Bounded I/O. Every socket carries a read and write timeout of [`IO_TIMEOUT`] (5 s); a read that waits longer
 //! answers `timeout`. `recv` returns at most `count` bytes (at most [`MAX_RECV`]) from one read.
+//!
+//! Ordered writes. Every `send` on a socket takes a turn in call order and writes only after the turn before it has
+//! ended, so a keyed `send` (written on a thread of its own) and an unkeyed one never interleave their bytes.
 
 use super::completion::{Completions, RunLaterError};
 use super::args::{arg_bytes, arg_i64, arg_opt, arg_str, bytes_value, denied};
@@ -23,6 +26,8 @@ use orbital_core_base::os_grants::NetKind;
 use orbital_core_base::value::{Value, ValueMap};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use parking_lot::{Condvar, Mutex};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,17 +48,92 @@ pub(super) enum SockEntry {
 /// accept loops, which add each accepted connection.
 pub struct NetTable {
     pub(super) socks: Arc<HandleSlab<SockEntry>>,
+    /// The last write turn taken on each stream socket.
+    writes: Mutex<HashMap<i64, Arc<Turn>>>,
 }
 
 impl NetTable {
     pub(super) fn new(ids: IdCounter) -> Self {
         Self {
             socks: Arc::new(HandleSlab::new(ids)),
+            writes: Mutex::new(HashMap::new()),
         }
     }
 
     pub(super) fn clear(&self) {
         self.socks.clear();
+        self.writes.lock().clear();
+    }
+
+    /// The next write turn on socket `id`, after every turn taken on it before.
+    fn take_turn(&self, id: i64) -> WriteTurn {
+        let mine = Arc::new(Turn::default());
+        let prior = self.writes.lock().insert(id, mine.clone());
+        WriteTurn { prior, mine, ran: false }
+    }
+}
+
+#[derive(Default)]
+enum TurnState {
+    #[default]
+    Pending,
+    Done,
+    /// The write never ran; whoever waits on it waits on the turn before it instead.
+    Skipped(Option<Arc<Turn>>),
+}
+
+#[derive(Default)]
+struct Turn {
+    state: Mutex<TurnState>,
+    ended: Condvar,
+}
+
+impl Turn {
+    fn wait(&self) {
+        let mut state = self.state.lock();
+        loop {
+            match &*state {
+                TurnState::Done => return,
+                TurnState::Skipped(prior) => {
+                    let prior = prior.clone();
+                    drop(state);
+                    if let Some(prior) = prior {
+                        prior.wait();
+                    }
+                    return;
+                }
+                TurnState::Pending => self.ended.wait(&mut state),
+            }
+        }
+    }
+
+    fn end(&self, state: TurnState) {
+        *self.state.lock() = state;
+        self.ended.notify_all();
+    }
+}
+
+/// One `send`'s place in its socket's write order; dropped without running, it hands its place to the turn before.
+struct WriteTurn {
+    prior: Option<Arc<Turn>>,
+    mine: Arc<Turn>,
+    ran: bool,
+}
+
+impl WriteTurn {
+    fn run<R>(mut self, write: impl FnOnce() -> R) -> R {
+        if let Some(prior) = &self.prior {
+            prior.wait();
+        }
+        let outcome = write();
+        self.ran = true;
+        outcome
+    }
+}
+
+impl Drop for WriteTurn {
+    fn drop(&mut self) {
+        self.mine.end(if self.ran { TurnState::Done } else { TurnState::Skipped(self.prior.take()) });
     }
 }
 
@@ -219,13 +299,29 @@ fn tcp_connect(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     ))
 }
 
+fn send_on(mut stream: TcpStream, data: &[u8], turn: WriteTurn) -> Result<Value, OsError> {
+    turn.run(|| stream.write_all(data)).map_err(|e| io_error(OsOp::Send, &e))?;
+    Ok(object([("bytes", count(data.len()))]))
+}
+
 fn send(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     let op = OsOp::Send;
     let id = arg_i64(args, 0, op)?;
     let data = arg_bytes(args, 1, op)?;
-    let mut stream = stream_of(&host.handles.net.socks, id, op)?;
-    stream.write_all(&data).map_err(|e| io_error(op, &e))?;
-    Ok(object([("bytes", count(data.len()))]))
+    let stream = stream_of(&host.handles.net.socks, id, op)?;
+    send_on(stream, &data, host.handles.net.take_turn(id))
+}
+
+/// `os/send` under a completion route: the write runs on a thread of its own, after every earlier send on the socket,
+/// and the call returns at once, so a peer that stops reading holds the write, not the dispatch.
+pub(super) fn send_later(args: &[Value], key: &str, site: &CallSite, host: &OsHost<'_>) -> Result<(), OsError> {
+    let op = OsOp::Send;
+    let id = arg_i64(args, 0, op)?;
+    let data = arg_bytes(args, 1, op)?;
+    let stream = stream_of(&host.handles.net.socks, id, op)?;
+    let turn = host.handles.net.take_turn(id);
+    Completions::run_later(&host.handles.completions, key, site, move || send_on(stream, &data, turn))
+        .map_err(|e| later_error(op, e, key))
 }
 
 fn recv_on(mut stream: TcpStream, want: usize) -> Result<Value, OsError> {
@@ -518,7 +614,14 @@ fn close(args: &[Value], host: &OsHost<'_>) -> Option<Result<Value, OsError>> {
         Ok(id) => id,
         Err(e) => return Some(Err(e)),
     };
-    host.handles.net.socks.remove(id).map(|_| Ok(object([])))
+    host.handles.net.writes.lock().remove(&id);
+    host.handles.net.socks.remove(id).map(|entry| {
+        // A keyed read pending on this socket holds a duplicate of it; shutting down ends the connection for both.
+        if let SockEntry::Stream(stream) = entry {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+        Ok(object([]))
+    })
 }
 
 pub(super) fn answer(
@@ -741,6 +844,142 @@ mod tests {
             "control: nothing listens after close"
         );
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "no event after close");
+        handles.close_all();
+    }
+
+    fn accept_one(handles: &OsHandles, rx: &mpsc::Receiver<Fired>) -> (i64, TcpStream) {
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let listen_grants = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Listen])]);
+        let host = OsHost { grants: &listen_grants, handles, on_event: &on_event };
+        let bound = answer(OsOp::TcpListen, &[s("127.0.0.1"), n(0)], Some("lc"), Some(&listen_site()), &host)
+            .expect("answered")
+            .expect("listening");
+        let client = TcpStream::connect(("127.0.0.1", id_of(&field(&bound, "port")) as u16)).expect("connect");
+        client.set_read_timeout(Some(Duration::from_secs(2))).expect("timeout");
+        let (_, _, outcome) = rx.recv_timeout(Duration::from_secs(5)).expect("accepted");
+        (id_of(&field(&outcome.expect("a connection"), "sock")), client)
+    }
+
+    fn outcome_of(rx: &mpsc::Receiver<Fired>, key: &str) -> Result<Value, OsError> {
+        loop {
+            let (_, got, outcome) = rx.recv_timeout(Duration::from_secs(5)).expect("a completion");
+            if got == key {
+                return outcome;
+            }
+        }
+    }
+
+    #[test]
+    fn an_accepted_connection_takes_sends_over_time_reads_a_second_request_and_reports_a_client_abort() {
+        let handles = OsHandles::default();
+        let rx = collecting_sink(&handles);
+        let (conn, mut client) = accept_one(&handles, &rx);
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let none = OsGrants::default();
+        let host = OsHost { grants: &none, handles: &handles, on_event: &on_event };
+        client.write_all(b"req1").expect("write");
+        assert_eq!(field(&ask(&host, OsOp::Recv, &[n(conn), n(16)]).expect("read"), "data"), bytes_value(b"req1"));
+        for chunk in [b"a", b"b"] {
+            ask(&host, OsOp::Send, &[n(conn), bytes_value(chunk)]).expect("a chunk is written");
+            let mut got = [0u8; 1];
+            client.read_exact(&mut got).expect("the chunk arrives before the stream ends");
+            assert_eq!(&got, chunk);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        client.write_all(b"req2").expect("write");
+        assert_eq!(
+            field(&ask(&host, OsOp::Recv, &[n(conn), n(16)]).expect("read"), "data"),
+            bytes_value(b"req2"),
+            "the read side stays open after a reply"
+        );
+        assert!(recv_later(&[n(conn), n(16)], "watch", &listen_site(), &host).is_ok());
+        drop(client);
+        let ended = outcome_of(&rx, "watch");
+        assert!(
+            matches!(&ended, Ok(v) if field(v, "eof") == Value::Bool(true))
+                || matches!(&ended, Err(e) if e.kind == OsErrorKind::Closed),
+            "a client abort reaches the program on the watching read: {ended:?}"
+        );
+        handles.close_all();
+    }
+
+    fn recv_fired(rx: &mpsc::Receiver<Fired>, within: Duration) -> (String, Result<Value, OsError>) {
+        let (_, key, outcome) = rx.recv_timeout(within).expect("a completion");
+        (key, outcome)
+    }
+
+    #[test]
+    fn a_keyed_send_to_a_peer_that_never_reads_returns_at_once_and_completes_later() {
+        let handles = OsHandles::default();
+        let rx = collecting_sink(&handles);
+        let (conn, client) = accept_one(&handles, &rx);
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let none = OsGrants::default();
+        let host = OsHost { grants: &none, handles: &handles, on_event: &on_event };
+        let big = vec![b'a'; 16 * 1024 * 1024];
+        let started = Instant::now();
+        assert!(send_later(&[n(conn), bytes_value(&big)], "s1", &listen_site(), &host).is_ok());
+        assert!(started.elapsed() < Duration::from_millis(500), "the dispatch is not held by the write: {:?}", started.elapsed());
+        // The 5 s bound is per write call: a stalled peer that took part of the payload ends it after a few bounds.
+        let (key, outcome) = recv_fired(&rx, Duration::from_secs(30));
+        assert_eq!(key, "s1");
+        assert!(
+            matches!(&outcome, Err(e) if e.kind == OsErrorKind::Timeout)
+                || matches!(&outcome, Ok(v) if field(v, "bytes") == Value::Number(big.len() as f64)),
+            "the write ends in its own completion: {outcome:?}"
+        );
+        drop(client);
+        handles.close_all();
+    }
+
+    #[test]
+    fn keyed_sends_on_one_socket_are_written_in_call_order_and_never_interleave() {
+        let handles = OsHandles::default();
+        let rx = collecting_sink(&handles);
+        let (conn, mut client) = accept_one(&handles, &rx);
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let none = OsGrants::default();
+        let host = OsHost { grants: &none, handles: &handles, on_event: &on_event };
+        let first = vec![b'a'; 2 * 1024 * 1024];
+        let total = first.len() + 6;
+        assert!(send_later(&[n(conn), bytes_value(&first)], "s1", &listen_site(), &host).is_ok());
+        assert!(send_later(&[n(conn), bytes_value(b"bbbb")], "s2", &listen_site(), &host).is_ok());
+        let reader = std::thread::spawn(move || {
+            let mut got = vec![0u8; total];
+            client.read_exact(&mut got).expect("every byte arrives");
+            got
+        });
+        let sent = ask(&host, OsOp::Send, &[n(conn), bytes_value(b"cc")]).expect("control: an unkeyed send answers in place");
+        assert_eq!(field(&sent, "bytes"), Value::Number(2.0), "after the keyed sends before it");
+        let got = reader.join().expect("reader");
+        assert!(got[..first.len()].iter().all(|b| *b == b'a'), "the first send is written whole before the second");
+        assert_eq!(&got[first.len()..], b"bbbbcc");
+        let order: Vec<String> = (0..2).map(|_| recv_fired(&rx, Duration::from_secs(5)).0).collect();
+        assert_eq!(order, vec!["s1", "s2"], "completions follow the write order");
+        handles.close_all();
+    }
+
+    #[test]
+    fn closing_a_connection_with_a_pending_keyed_recv_ends_it_at_once() {
+        let handles = OsHandles::default();
+        let rx = collecting_sink(&handles);
+        let (conn, mut client) = accept_one(&handles, &rx);
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let none = OsGrants::default();
+        let host = OsHost { grants: &none, handles: &handles, on_event: &on_event };
+        assert!(recv_later(&[n(conn), n(16)], "watch", &listen_site(), &host).is_ok());
+        std::thread::sleep(Duration::from_millis(50));
+        answer(OsOp::Close, &[n(conn)], None, None, &host).expect("a socket").expect("closed");
+        let started = Instant::now();
+        let mut buf = [0u8; 4];
+        let read = client.read(&mut buf);
+        assert!(
+            matches!(read, Ok(0)) && started.elapsed() < Duration::from_secs(1),
+            "the client sees the end at once, not when the pending read gives up: {read:?} after {:?}",
+            started.elapsed()
+        );
+        let woke = outcome_of(&rx, "watch");
+        assert!(woke.is_ok_and(|v| field(&v, "eof") == Value::Bool(true)), "the pending read ends with eof");
         handles.close_all();
     }
 

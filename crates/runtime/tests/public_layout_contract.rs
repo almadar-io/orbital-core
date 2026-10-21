@@ -539,12 +539,14 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     assert_eq!(size_of::<ServerProgressWire>(), 440, "ServerProgressWire");
     // 704: a dispatch continuation keeps the rows the host has answered for it (`ReadCache`, one `Arc`: a row is asked
     // once) and the viewer it was started as (one `Arc`: concurrent requests keep their own `@user`). 712: plus the
-    // transition its suspended step committed (one `Box`, G-CROSS-259).
-    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 712, "Progress");
+    // transition its suspended step committed (one `Box`, G-CROSS-259). 720: plus the store ask it is parked on and its
+    // driver's dispatch (one `Box`, EXEC-STORE-4).
+    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 720, "Progress");
     // 496: a `RowQuery` carries its `nearest` selection (EXEC-FETCH-2) behind a box, 8 bytes; inline it was 56 (544).
     assert_eq!(size_of::<ResolveProgress>(), 496, "ResolveProgress");
     // 568: plus the entity's `@invariant` propositions (`Option<Vec<SExpression>>`, 24 bytes, G-ORB-384).
-    assert_eq!(size_of::<EntityRef>(), 568, "EntityRef");
+    // 592: plus the entity's `store` driver binding (`Option<String>`, 24 bytes, EXEC-STORE-4).
+    assert_eq!(size_of::<EntityRef>(), 592, "EntityRef");
     assert_eq!(size_of::<SidecarError>(), 144, "SidecarError");
     assert_eq!(size_of::<LanguageData>(), 216, "LanguageData");
 }

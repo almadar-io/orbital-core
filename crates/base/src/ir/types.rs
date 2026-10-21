@@ -691,6 +691,11 @@ pub enum OirType {
     TypeRef {
         name: String,
     },
+    /// An unbound type variable (`t` of `type Page t` or a trait's `(t : Type)`):
+    /// opaque, so it accepts only itself, or `Json` by erasure.
+    Var {
+        name: String,
+    },
 }
 
 impl OirType {
@@ -842,6 +847,7 @@ pub fn field_shape(field: &FieldDefinition) -> OirType {
             }
             (None, _) => OirType::Json,
         },
+        FieldType::TypeVar(v) => OirType::Var { name: v.0.clone() },
     }
 }
 

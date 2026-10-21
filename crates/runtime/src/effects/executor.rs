@@ -637,7 +637,8 @@ impl EffectExecutor {
                 data,
                 id,
                 emit: _,
-            } => self.do_persist(*operation, entity_type, data, id.as_deref(), ctx),
+                guard,
+            } => self.do_persist(*operation, entity_type, data, id.as_deref(), guard.as_ref(), ctx),
             Effect::PersistBatch { ops, emit: _ } => self.do_persist_batch(ops, ctx),
             Effect::Fetch {
                 entity_type,
@@ -1011,6 +1012,7 @@ impl EffectExecutor {
         entity_type: &str,
         data: &Value,
         id: Option<&str>,
+        guard: Option<&Value>,
         ctx: &BindingContext,
     ) -> EffectResult {
         let effect = Effect::Persist {
@@ -1019,6 +1021,7 @@ impl EffectExecutor {
             data: data.clone(),
             id: id.map(|s| s.to_string()),
             emit: None,
+            guard: guard.cloned(),
         };
 
         if self.persistence.is_some() {
@@ -1034,6 +1037,49 @@ impl EffectExecutor {
             )
         } else {
             EffectResult::noop(effect, "no persistence handler configured")
+        }
+    }
+
+    /// The `where: (fn row body)` guard of a single persist as a predicate over the row: the lambda's parameter
+    /// names the row, so `@row.f` reads field `f` (compiled by the one `compile_predicate`).
+    fn row_where(effect: &Effect, ctx: &BindingContext, declared_required: &[String]) -> Result<Option<RowPredicate>, String> {
+        let Effect::Persist { guard: Some(guard), .. } = effect else {
+            return Ok(None);
+        };
+        let lambda = guard.as_array().filter(|items| items.len() == 3 && items[0].as_str() == Some("fn"));
+        let (param, body) = match lambda {
+            Some(items) => match (&items[1], &items[2]) {
+                (Value::String(param), body) => (param.clone(), body),
+                (Value::Array(params), body) if params.len() == 1 && params[0].as_str().is_some() => {
+                    (params[0].as_str().unwrap_or_default().to_string(), body)
+                }
+                _ => return Err("persist `where:` must be a one-parameter (fn row …)".to_string()),
+            },
+            None => return Err("persist `where:` must be a one-parameter (fn row …)".to_string()),
+        };
+        if reads_entity(body) {
+            return Err("persist `where:` reads the row through its parameter, never `@entity`".to_string());
+        }
+        let body = bind_row_param(body, &format!("@{param}"));
+        compile_predicate(&body, ctx, PredicateRole::Filter, &|f| f == "id" || declared_required.iter().any(|r| r == f))
+            .map(Some)
+            .map_err(|why| format!("persist `where:` is not a row predicate: {why:?}"))
+    }
+
+    /// A row the `where:` guard rejects is `not-found`, the same as an absent row.
+    fn where_holds(
+        row_where: Option<&RowPredicate>,
+        existing: Value,
+        entity_type: &str,
+        entity_id: &str,
+        code: &mut Option<ServerEffectCode>,
+    ) -> Result<Value, String> {
+        match row_where {
+            Some(guard) if !guard.matches(&existing) => {
+                *code = Some(ServerEffectCode::NotFound);
+                Err(format!("{entity_type} {entity_id} not found"))
+            }
+            _ => Ok(existing),
         }
     }
 
@@ -1205,10 +1251,18 @@ impl EffectExecutor {
         data: &Value,
         policy: Option<&Value>,
         declared_required: &[String],
+        row_where: Option<&RowPredicate>,
         ctx: &BindingContext,
         code: &mut Option<ServerEffectCode>,
     ) -> Option<Result<Value, String>> {
-        let guard = Self::write_guard(policy, ctx, declared_required).ok()?;
+        let policy_guard = Self::write_guard(policy, ctx, declared_required).ok()?;
+        let has_policy_guard = policy_guard.is_some();
+        let guard = match (policy_guard, row_where) {
+            (None, None) => None,
+            (Some(g), None) => Some(g),
+            (None, Some(w)) => Some(w.clone()),
+            (Some(g), Some(w)) => Some(RowPredicate::All { of: vec![g, w.clone()] }),
+        };
         let op = match operation {
             PersistOperation::Create | PersistOperation::Upsert | PersistOperation::Read => {
                 return None
@@ -1225,10 +1279,21 @@ impl EffectExecutor {
                 guard: guard.clone(),
             },
         };
-        let outcome = match persistence.write_where(&op)? {
+        let mut outcome = match persistence.write_where(&op)? {
             Ok(outcome) => outcome,
             Err(e) => return Some(Err(e)),
         };
+        if let (RowWriteOutcome::Refused, Some(row_where)) = (&outcome, row_where) {
+            let rejected_by_where = !has_policy_guard
+                || match persistence.find(entity_type, entity_id) {
+                    Ok(Some(row)) => !row_where.matches(&row),
+                    Ok(None) => true,
+                    Err(e) => return Some(Err(e)),
+                };
+            if rejected_by_where {
+                outcome = RowWriteOutcome::NotFound;
+            }
+        }
         Some(Self::outcome_value(
             outcome,
             operation,
@@ -1356,6 +1421,10 @@ impl EffectExecutor {
             let policy = scope.policy.as_ref();
 
             let mut code: Option<ServerEffectCode> = None;
+            let row_where = match Self::row_where(&effect, ctx, &scope.declared_required) {
+                Ok(row_where) => row_where,
+                Err(message) => return EffectResult::failed(effect, &message),
+            };
             let result = match operation {
                 PersistOperation::Create => {
                     match Self::check_create(entity_type, resolved_data, &scope, ctx, &mut code) {
@@ -1397,6 +1466,7 @@ impl EffectExecutor {
                         resolved_data,
                         policy,
                         &scope.declared_required,
+                        row_where.as_ref(),
                         ctx,
                         &mut code,
                     ) {
@@ -1407,6 +1477,7 @@ impl EffectExecutor {
                             &entity_id,
                             &mut code,
                         )
+                        .and_then(|existing| Self::where_holds(row_where.as_ref(), existing, entity_type, &entity_id, &mut code))
                         .and_then(|existing| {
                             if policy.is_some() {
                                 check_mutation_access(
@@ -1439,6 +1510,7 @@ impl EffectExecutor {
                         resolved_data,
                         policy,
                         &scope.declared_required,
+                        row_where.as_ref(),
                         ctx,
                         &mut code,
                     ) {
@@ -1449,6 +1521,7 @@ impl EffectExecutor {
                             &entity_id,
                             &mut code,
                         )
+                        .and_then(|existing| Self::where_holds(row_where.as_ref(), existing, entity_type, &entity_id, &mut code))
                         .and_then(|existing| {
                             if policy.is_some() {
                                 check_mutation_access(
@@ -1826,6 +1899,7 @@ impl EffectExecutor {
             data: b.data.clone(),
             id: b.row_id.clone(),
             emit: None,
+            guard: None,
         };
         let batch_failure = |k: usize, b: &BatchOp, detail: &str, code: Option<ServerEffectCode>| {
             let failed = EffectResult::failed(
@@ -2596,6 +2670,7 @@ mod tests {
             }),
             id: None,
             emit: None,
+            guard: None,
         };
 
         // Server executes
@@ -2624,6 +2699,7 @@ mod tests {
             data,
             id: None,
             emit: None,
+            guard: None,
         }
     }
 
@@ -2726,6 +2802,7 @@ mod tests {
             }),
             id: None,
             emit: None,
+            guard: None,
         };
 
         let result = executor.execute(&effect, &BindingContext::new());
@@ -2881,6 +2958,7 @@ mod tests {
             data: Value::Null,
             id: Some("note-1".to_string()),
             emit: None,
+            guard: None,
         };
 
         let result = executor.execute(&effect, &ctx);
@@ -3859,5 +3937,26 @@ mod tests {
             let r = run(json!({ "id": "@payload.nope" }), json!({}), json!({}));
             assert!(!r.is_executed());
         }
+    }
+}
+
+/// `body` with the lambda's row parameter (`@row`, `@row.f`) read as the row (`@entity`, `@entity.f`).
+fn bind_row_param(body: &Value, param: &str) -> Value {
+    match body {
+        Value::String(s) if s == param => Value::String("@entity".to_string()),
+        Value::String(s) => match s.strip_prefix(param).and_then(|rest| rest.strip_prefix('.')) {
+            Some(path) => Value::String(format!("@entity.{path}")),
+            None => body.clone(),
+        },
+        Value::Array(items) => Value::Array(items.iter().map(|item| bind_row_param(item, param)).collect()),
+        other => other.clone(),
+    }
+}
+
+fn reads_entity(body: &Value) -> bool {
+    match body {
+        Value::String(s) => s == "@entity" || s.starts_with("@entity."),
+        Value::Array(items) => items.iter().any(reads_entity),
+        _ => false,
     }
 }

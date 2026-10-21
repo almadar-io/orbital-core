@@ -188,6 +188,7 @@ fn defer(
     Some(match op {
         OsOp::Wait => process::wait_later(args, key, site, host),
         OsOp::Read => fs::read_later(args, key, site, host),
+        OsOp::Send => net::send_later(args, key, site, host),
         OsOp::Recv => net::recv_later(args, key, site, host),
         OsOp::Recvfrom => net::recvfrom_later(args, key, site, host),
         _ => return None,
@@ -383,6 +384,45 @@ mod tests {
         let wide_read = |path: &str| os_answer(OsOp::ReadFile, vec![anchored_value(serde_json::json!({"anchor": "cwd", "path": path}))], &wide_grants, &wide);
         assert!(wide_read("src/app.lolo").is_ok());
         assert_eq!(wide_read("notes.txt").expect_err("not lolo").kind, OsErrorKind::Denied, "control: outside the glob");
+    }
+
+    #[test]
+    fn an_anchored_glob_answers_anchor_relative_paths_the_narrow_grant_covers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("real");
+        let work = root.join("work");
+        for d in ["a", "b/c", "node_modules/x"] {
+            std::fs::create_dir_all(work.join(d)).unwrap();
+        }
+        for f in ["package.json", "a/package.json", "b/c/package.json", "a/notes.txt"] {
+            std::fs::write(work.join(f), "{}").unwrap();
+        }
+        std::fs::write(root.join("package.json"), "{}").unwrap();
+        let handles = OsHandles { anchors: OsAnchors { start: Some(work.clone()), ..OsAnchors::default() }, ..OsHandles::default() };
+        let declared = OsGrants {
+            anchored: AnchoredGrants {
+                fs: vec![AnchoredFsGrant { anchor: GrantAnchor::Cwd, glob: "**/package.json".into(), modes: vec![FsMode::Read] }],
+                ..AnchoredGrants::default()
+            },
+            ..OsGrants::default()
+        };
+        let (grants, problems) = declared.resolve_anchors(&handles.anchors);
+        assert!(problems.is_empty());
+        let glob = |pattern: &str| os_answer(OsOp::Glob, vec![anchored_value(serde_json::json!({"anchor": "cwd", "path": pattern}))], &grants, &handles);
+        let paths = |answer: Value| -> Vec<String> {
+            let Value::Object(map) = answer else { panic!("{answer:?}") };
+            let Some(Value::Array(items)) = map.get("paths") else { panic!("{map:?}") };
+            items.iter().map(|v| match v { Value::String(s) => s.clone(), other => panic!("{other:?}") }).collect()
+        };
+        assert_eq!(paths(glob("*/package.json").expect("depth 1")), ["a/package.json"]);
+        assert_eq!(paths(glob("**/*").expect("deep")), ["a/package.json", "b/c/package.json", "package.json"], "control: matches the grant does not cover are dropped");
+        assert_eq!(paths(glob("*/*.txt").expect("ungranted")), Vec::<String>::new(), "control: nothing granted matches");
+        assert_eq!(glob("../*").expect_err("climbs").kind, OsErrorKind::Denied, "edge: a glob climbing above the anchor");
+        assert_eq!(glob("a/../../*").expect_err("climbs").kind, OsErrorKind::Denied, "edge: a `..` escape inside the pattern");
+        let plain = os_answer(OsOp::Glob, vec![Value::String(format!("{}/*/package.json", work.display()))], &grants, &handles);
+        assert_eq!(plain.expect_err("plain").kind, OsErrorKind::Denied, "control: a plain pattern still needs read on its prefix");
+        let unset = os_answer(OsOp::Glob, vec![anchored_value(serde_json::json!({"anchor": {"env": "ORB_L2_NEVER_SET"}, "path": "*"}))], &grants, &OsHandles::default());
+        assert_eq!(unset.expect_err("unset").kind, OsErrorKind::NotFound, "edge: an unset env anchor names nothing");
     }
 
     #[test]

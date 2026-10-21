@@ -530,7 +530,8 @@ fn sample_value(
         | FieldType::SExpr
         | FieldType::Event
         | FieldType::EventAddress
-        | FieldType::CallKey => None,
+        | FieldType::CallKey
+        | FieldType::TypeVar(_) => None,
     }
 }
 

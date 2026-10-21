@@ -101,7 +101,7 @@ mod ops {
     use super::super::{OsHost, FIRST_HANDLE_ID};
     use super::{FdEntry, PipeEnd};
     use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
-    use orbital_core_base::os_grants::{FsMode, OsGrants};
+    use orbital_core_base::os_grants::{AnchoredPath, FsMode, GrantAnchor, OsGrants};
     use orbital_core_base::value::{Value, ValueMap};
     use std::collections::VecDeque;
     use std::ffi::{CString, OsString};
@@ -877,6 +877,9 @@ mod ops {
         }
 
         fn glob(&self, args: &[Value]) -> Result<Value, OsError> {
+            if let Some(anchored) = args.first().and_then(AnchoredPath::from_value) {
+                return self.anchored_glob(&anchored);
+            }
             let raw = arg_str(args, 0, self.op)?;
             if raw.is_empty() {
                 return Err(self.err(OsErrorKind::Invalid, "empty pattern"));
@@ -885,6 +888,43 @@ mod ops {
             let pattern = lexical(&absolute).ok_or_else(|| {
                 self.err(OsErrorKind::Denied, format!("{raw} climbs above the root"))
             })?;
+            let found = self.expand(&pattern, true)?;
+            Ok(obj([(
+                "paths",
+                Value::Array(found.into_iter().map(Value::String).collect()),
+            )]))
+        }
+
+        /// An anchored pattern matches under the boot-resolved anchor and answers anchor-relative paths. Its prefix
+        /// need not be granted: a narrow anchored grant covers it, and every match is checked against the grants.
+        fn anchored_glob(&self, anchored: &AnchoredPath) -> Result<Value, OsError> {
+            let anchors = &self.host.handles.anchors;
+            if anchored.path.as_deref().is_none_or(str::is_empty) {
+                return Err(self.err(OsErrorKind::Invalid, "empty pattern"));
+            }
+            if let GrantAnchor::Env(name) = &anchored.anchor {
+                if anchors.env.get(name).is_none_or(str::is_empty) {
+                    return Err(self.err(OsErrorKind::NotFound, format!("env {name} is unset")));
+                }
+            }
+            let denied = |why: String| self.err(OsErrorKind::Denied, why);
+            let root = anchors
+                .resolve_path(&AnchoredPath { anchor: anchored.anchor.clone(), path: None })
+                .map_err(denied)?;
+            let pattern = anchors.resolve_path(anchored).map_err(denied)?;
+            let root = PathBuf::from(root);
+            let found = self.expand(Path::new(&pattern), false)?;
+            let relative = found
+                .into_iter()
+                .filter_map(|p| {
+                    let rel = Path::new(&p).strip_prefix(&root).ok()?.to_string_lossy().into_owned();
+                    Some(Value::String(if rel.is_empty() { ".".to_string() } else { rel }))
+                })
+                .collect();
+            Ok(obj([("paths", Value::Array(relative))]))
+        }
+
+        fn expand(&self, pattern: &Path, check_prefix: bool) -> Result<Vec<String>, OsError> {
             let mut prefix = PathBuf::from("/");
             let mut rest = 0usize;
             let mut wild = false;
@@ -901,7 +941,9 @@ mod ops {
                     }
                 }
             }
-            self.allow(&prefix, FsMode::Read)?;
+            if check_prefix {
+                self.allow(&prefix, FsMode::Read)?;
+            }
             let matcher = OsGrants::read_matcher(&pattern.to_string_lossy());
             let mut found: Vec<String> = Vec::new();
             self.consider(&prefix, &matcher, &mut found);
@@ -916,10 +958,7 @@ mod ops {
             }
             found.sort();
             found.dedup();
-            Ok(obj([(
-                "paths",
-                Value::Array(found.into_iter().map(Value::String).collect()),
-            )]))
+            Ok(found)
         }
 
         fn consider(&self, path: &Path, matcher: &OsGrants, out: &mut Vec<String>) {

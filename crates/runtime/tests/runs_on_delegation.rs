@@ -43,6 +43,7 @@ fn server_ops() -> Vec<Effect> {
             data: Value::Null,
             id: None,
             emit: None,
+            guard: None,
         },
         Effect::Fetch {
             entity_type: "T".into(),

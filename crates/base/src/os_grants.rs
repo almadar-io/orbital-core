@@ -1253,6 +1253,27 @@ fn glob_prefix(glob: &str) -> String {
     format!("/{}", fixed.join("/"))
 }
 
+/// An anchored glob reads the tree its literal directory prefix reaches (the segments before the first wildcard,
+/// never the last one): a narrow anchored grant that can match under it covers it, and the host checks every match.
+fn anchored_glob_need(anchor: GrantAnchor, pattern: Option<&SExpression>, deferred: Deferred) -> OsRequirement {
+    let written = match pattern {
+        Some(SExpression::String(p)) if !p.starts_with('@') => p.clone(),
+        Some(expr) => match anchored_target(anchor.clone(), Some(expr), deferred) {
+            FsTarget::AnchoredTree(_, root) => format!("{root}*"),
+            _ => String::new(),
+        },
+        None => String::new(),
+    };
+    let mut segments: Vec<&str> = written.split('/').collect();
+    segments.pop();
+    let root: String = segments
+        .into_iter()
+        .take_while(|s| !s.contains(['*', '?']))
+        .map(|s| format!("{s}/"))
+        .collect();
+    OsRequirement::FsAnchoredTree { anchor, root, mode: FsMode::Read }
+}
+
 fn open_modes(flags: &str) -> Vec<FsMode> {
     let mut modes = Vec::new();
     let writes = flags.starts_with(['w', 'a']);
@@ -1461,10 +1482,13 @@ fn requirements_of(
         Remove | Rmdir => fs_need(args, 0, FsMode::Remove, deferred),
         Mkdir | Mktemp => fs_need(args, 0, FsMode::Create, deferred),
         Chmod | Chown | Utimes => fs_need(args, 0, FsMode::Meta, deferred),
-        Glob => Ok(literal(args, 0, deferred)?
-            .map(|glob| OsRequirement::Fs { path: glob_prefix(glob), mode: FsMode::Read })
-            .into_iter()
-            .collect()),
+        Glob => match args.first().map(anchored_sexpr).transpose().map_err(|()| 0usize)?.flatten() {
+            Some((anchor, pattern)) => Ok(vec![anchored_glob_need(anchor, pattern, deferred)]),
+            None => Ok(literal(args, 0, deferred)?
+                .map(|glob| OsRequirement::Fs { path: glob_prefix(glob), mode: FsMode::Read })
+                .into_iter()
+                .collect()),
+        },
         Spawn => spawn_needs(args, deferred),
         Getenv | Setenv | Unsetenv | WatchEnv => Ok(literal(args, 0, deferred)?
             .map(|name| OsRequirement::Env { name: name.to_string() })
@@ -2367,6 +2391,24 @@ mod tests {
             Err(0),
             "control: an object of another shape is not an anchored path"
         );
+    }
+
+    #[test]
+    fn an_anchored_glob_needs_read_on_the_tree_its_literal_prefix_reaches() {
+        let tree = |root: &str| vec![OsRequirement::FsAnchoredTree { anchor: GrantAnchor::Cwd, root: root.into(), mode: FsMode::Read }];
+        assert_eq!(call(OsOp::Glob, json!([{"anchor": "cwd", "path": "docs/**/*.md"}])), Ok(tree("docs/")));
+        assert_eq!(call(OsOp::Glob, json!([{"anchor": "cwd", "path": "*/package.json"}])), Ok(tree("")));
+        assert_eq!(call(OsOp::Glob, json!([{"anchor": "cwd", "path": "docs/a.md"}])), Ok(tree("docs/")), "edge: no wildcard reaches its directory");
+        let computed = call(OsOp::Glob, json!([{"anchor": "cwd", "path": "@entity.pattern"}])).unwrap();
+        assert_eq!(computed, tree(""));
+        assert_eq!(call(OsOp::Glob, json!([{"anchor": "cwd", "path": ["str/concat", "src/", "@entity.p"]}])), Ok(tree("src/")));
+        let manifests = anchored(vec![afs(GrantAnchor::Cwd, "**/package.json")], Vec::new());
+        assert!(manifests.allows(&computed[0]), "a narrow anchored glob covers it; the host checks every result");
+        assert!(!anchored(vec![afs(GrantAnchor::ExeDir, "**/package.json")], Vec::new()).allows(&computed[0]), "control: another anchor");
+        let escape = call(OsOp::Glob, json!([{"anchor": "cwd", "path": "../**"}])).unwrap();
+        assert!(!anchored(vec![afs(GrantAnchor::Cwd, "**")], Vec::new()).allows(&escape[0]), "edge: a glob climbing above the anchor is never covered");
+        assert_eq!(call(OsOp::Glob, json!(["@entity.pattern"])), Err(0), "control: an unanchored computed glob stays a static error");
+        assert_eq!(call(OsOp::Glob, json!([{"anchor": "@entity.where", "path": "*"}])), Err(0), "the anchor itself must be a literal");
     }
 
     #[test]

@@ -762,6 +762,33 @@ pub struct DispatchContinuation {
     pub(crate) next_id: u64,
     /// The rows the host has answered for this dispatch, kept across its steps (see [`ReadCache`]).
     pub(crate) reads: Arc<ReadCache>,
+    /// The store ask this dispatch is parked on and the driver orbital's dispatch answering it (EXEC-STORE-4).
+    pub(crate) store: Option<Box<StoreLeg>>,
+    /// The boot seeds still to write before this dispatch's first step; `None` until taken (the seed barrier).
+    pub(crate) seeds: Option<std::collections::VecDeque<(String, StoreAsk)>>,
+    /// The kernel's dispatch lane, held while this dispatch is parked (EXEC-CONC-1).
+    pub(crate) lane: Option<crate::kernel::lane::LaneHold>,
+}
+
+/// A parked row ask and the driver dispatch that answers it; the driver's own host asks are this dispatch's.
+pub(crate) struct StoreLeg {
+    pub(crate) ask: StoreAsk,
+    pub(crate) driver: DispatchContinuation,
+    /// A boot seed of declared `instances` (its registered key): no step asked it, so its answer is checked,
+    /// never journaled.
+    pub(crate) seed: Option<String>,
+}
+
+/// Accept `replies` into `c`, or into the driver dispatch it is parked on.
+pub(crate) fn accept_into(c: &mut DispatchContinuation, replies: Vec<IoReply>) -> Result<(), ResumeError> {
+    if let Some(leg) = c.store.as_mut() {
+        accept_into(&mut leg.driver, replies)?;
+    } else {
+        let answered = accept_replies(&c.pending, replies)?;
+        c.journal.extend(answered);
+    }
+    c.pending.clear();
+    Ok(())
 }
 
 impl std::fmt::Debug for DispatchContinuation {
@@ -769,6 +796,7 @@ impl std::fmt::Debug for DispatchContinuation {
         f.debug_struct("DispatchContinuation")
             .field("pending", &self.pending)
             .field("answered", &self.journal.len())
+            .field("store", &self.store.as_ref().map(|leg| &leg.ask))
             .finish()
     }
 }
@@ -781,6 +809,10 @@ pub struct ResolveContinuation {
     pub(crate) journal: Vec<Exchange>,
     pub(crate) pending: Vec<PendingRequest>,
     pub(crate) next_id: u64,
+    /// The store ask this resolve is parked on and its driver's dispatch (EXEC-STORE-4).
+    pub(crate) store: Option<Box<StoreLeg>>,
+    /// The boot seeds still to write before the resolve reads; `None` until taken (the seed barrier).
+    pub(crate) seeds: Option<std::collections::VecDeque<(String, StoreAsk)>>,
 }
 
 impl std::fmt::Debug for ResolveContinuation {
@@ -829,7 +861,18 @@ pub(crate) struct StepEnd {
     pub(crate) reads: Arc<ReadCache>,
     pub(crate) journal: Vec<Exchange>,
     pub(crate) pending: Asks,
+    /// Row asks on store-bound entities, answered by their driver orbital in-kernel (EXEC-STORE-4).
+    pub(crate) store_asks: Vec<StoreAsk>,
     pub(crate) diverged: Option<ResumeError>,
+}
+
+/// A row ask on an entity bound to a store-driver orbital: never sent to the host, answered by the driver's
+/// keyed reply (`store_driver::answer_for`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StoreAsk {
+    pub(crate) driver: String,
+    pub(crate) key: String,
+    pub(crate) request: IoRequest,
 }
 
 /// Which journal entries a step has claimed: a prefix counter while answers are claimed in order (no
@@ -869,6 +912,7 @@ struct StepLedger {
     journal: Vec<Exchange>,
     claimed: Claimed,
     pending: Asks,
+    store_asks: Vec<StoreAsk>,
     keys: HashSet<String>,
     blocked: bool,
     diverged: Option<ResumeError>,
@@ -877,6 +921,20 @@ struct StepLedger {
 /// The requests one step leaves outstanding: inline for the common single ask, so a step allocates only once
 /// it has more than one.
 pub(crate) type Asks = smallvec::SmallVec<[IoRequest; 1]>;
+
+/// The entity a row ask addresses (a batch: its first op's).
+fn request_entity(request: &IoRequest) -> Option<&str> {
+    match request {
+        IoRequest::ReadRow { entity_type, .. }
+        | IoRequest::ListRows { entity_type }
+        | IoRequest::QueryRows { entity_type, .. }
+        | IoRequest::CreateRow { entity_type, .. }
+        | IoRequest::WriteRow { entity_type, .. }
+        | IoRequest::DeleteRow { entity_type, .. } => Some(entity_type),
+        IoRequest::WriteRows { batch } => batch.ops.first().map(RowWriteOp::entity_type),
+        _ => None,
+    }
+}
 
 /// Give each of `requests` the next id of its dispatch, in issue order.
 pub(crate) fn number_requests(next_id: &mut u64, requests: Asks) -> Vec<PendingRequest> {
@@ -931,6 +989,9 @@ pub(crate) struct IoPort {
     runtime_in_kernel: bool,
     runtime_types: RwLock<HashSet<String>>,
     memory: crate::entity_source::InMemoryEntityCache,
+    /// `[store: Driver]` bindings: entity type -> the driver orbital that answers its row asks.
+    store_drivers: RwLock<HashMap<String, String>>,
+    store_seq: std::sync::atomic::AtomicU64,
 }
 
 struct Installed<'a> {
@@ -965,7 +1026,81 @@ impl IoPort {
             runtime_in_kernel: false,
             runtime_types: RwLock::new(HashSet::new()),
             memory: crate::entity_source::InMemoryEntityCache::new(),
+            store_drivers: RwLock::new(HashMap::new()),
+            store_seq: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// The create batch that writes `rows` of a store-bound `entity_type` through its driver; `None` when unbound.
+    pub(crate) fn store_seed(&self, entity_type: &str, rows: Vec<Value>) -> Option<StoreAsk> {
+        let driver = self.store_drivers.read().get(entity_type).cloned()?;
+        let ops = rows
+            .into_iter()
+            .map(|data| RowWriteOp::Create { entity_type: entity_type.to_string(), data })
+            .collect();
+        Some(StoreAsk {
+            driver,
+            key: self.next_store_key(),
+            request: IoRequest::WriteRows { batch: RowWriteBatch { ops, on_failure: RowWriteFailureMode::Stop } },
+        })
+    }
+
+    pub(crate) fn next_store_key(&self) -> String {
+        format!("store-{}", self.store_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// `entity_type` declares `store: <driver>`: its row asks are answered by that driver orbital.
+    pub(crate) fn bind_store(&self, entity_type: &str, driver: &str) {
+        self.store_drivers.write().insert(entity_type.to_string(), driver.to_string());
+    }
+
+    /// A store-bound entity's rows exist only in its driver, reached on the resumable path.
+    fn store_off_path(&self, entity_type: &str) -> String {
+        let driver = self.store_drivers.read().get(entity_type).cloned().unwrap_or_default();
+        format!("entity {entity_type} is bound to store driver {driver}: its rows are answered only on the resumable path (EXEC-STORE-4)")
+    }
+
+    fn store_bound(&self, entity_type: &str) -> bool {
+        self.store_drivers.read().contains_key(entity_type)
+    }
+
+    /// The driver orbital that answers `request`; a batch is answered by one only when every op is bound to it.
+    fn store_driver_for(&self, request: &IoRequest) -> Option<String> {
+        let drivers = self.store_drivers.read();
+        match request {
+            IoRequest::ReadRow { entity_type, .. }
+            | IoRequest::ListRows { entity_type }
+            | IoRequest::QueryRows { entity_type, .. } => drivers.get(entity_type).cloned(),
+            IoRequest::WriteRows { batch } => {
+                let mut ops = batch.ops.iter().map(|op| drivers.get(op.entity_type()));
+                let first = ops.next()??;
+                ops.all(|d| d == Some(first)).then(|| first.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// A single delete or update on a store-bound entity: ONE conditional op, so a missing row fails on every
+    /// store (EXEC-STEP-8). `None` when the entity is not bound or no step is in flight.
+    fn bound_single_write(
+        &self,
+        entity_type: &str,
+        op: impl FnOnce() -> RowWriteOp,
+    ) -> Option<Result<RowWriteOutcome, String>> {
+        if !self.store_bound(entity_type) {
+            return None;
+        }
+        if self.direct() {
+            return Some(Err(self.store_off_path(entity_type)));
+        }
+        let batch = RowWriteBatch { ops: vec![op()], on_failure: RowWriteFailureMode::Stop };
+        Some(match self.ask(|| IoRequest::WriteRows { batch }) {
+            Asked::Answer(IoAnswer::Wrote(outcomes)) => {
+                self.forget_reads(entity_type);
+                outcomes.and_then(|mut o| o.pop().ok_or_else(|| "the store driver answered a write with no outcome".to_string()))
+            }
+            Asked::Direct | Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        })
     }
 
     /// Serve the rows of `[runtime]` entities from the kernel's own memory instead of asking the host.
@@ -1094,7 +1229,7 @@ impl IoPort {
     pub(crate) fn suspended(&self) -> bool {
         self.ledger.lock().as_ref().is_some_and(|l| {
             l.thread == std::thread::current().id()
-                && (!l.pending.is_empty() || l.diverged.is_some())
+                && (!l.pending.is_empty() || !l.store_asks.is_empty() || l.diverged.is_some())
         })
     }
 
@@ -1123,6 +1258,7 @@ impl IoPort {
             reads,
             journal,
             pending: Asks::new(),
+            store_asks: Vec::new(),
             keys: HashSet::new(),
             blocked: false,
             diverged: None,
@@ -1136,15 +1272,21 @@ impl IoPort {
         drop(installed);
         let end = match ledger {
             Some(l) => StepEnd {
-                reads: if l.pending.is_empty() && l.diverged.is_none() { l.reads } else { l.reads_at_start },
+                reads: if l.pending.is_empty() && l.store_asks.is_empty() && l.diverged.is_none() {
+                    l.reads
+                } else {
+                    l.reads_at_start
+                },
                 journal: l.journal,
                 pending: l.pending,
+                store_asks: l.store_asks,
                 diverged: l.diverged,
             },
             None => StepEnd {
                 reads: Arc::default(),
                 journal: Vec::new(),
                 pending: Asks::new(),
+                store_asks: Vec::new(),
                 diverged: None,
             },
         };
@@ -1188,12 +1330,17 @@ impl IoPort {
     /// step's one pending request; any further ask of that kind is withheld unrecorded.
     fn ask(&self, request: impl FnOnce() -> IoRequest) -> Asked {
         let mut slot = self.ledger.lock();
+        let direct = match slot.as_ref() {
+            None => true,
+            Some(ledger) => ledger.thread != std::thread::current().id(),
+        };
+        if direct {
+            drop(slot);
+            return self.direct_ask(request);
+        }
         let Some(ledger) = slot.as_mut() else {
             return Asked::Direct;
         };
-        if ledger.thread != std::thread::current().id() {
-            return Asked::Direct;
-        }
         if ledger.diverged.is_some() || (ledger.blocked && ledger.claimed.covers(ledger.journal.len())) {
             return Asked::Withheld;
         }
@@ -1209,6 +1356,7 @@ impl IoPort {
                 ))));
             }
         }
+        let store_driver = self.store_driver_for(&request);
         let claimed = &ledger.claimed;
         let at = ledger.journal.iter().enumerate().position(|(i, recorded)| {
             !claimed.has(i)
@@ -1220,6 +1368,11 @@ impl IoPort {
                     None => true,
                 }
         });
+        if let Some(driver) = store_driver.filter(|_| at.is_none() && !ledger.blocked) {
+            ledger.store_asks.push(StoreAsk { driver, key: self.next_store_key(), request });
+            ledger.blocked = true;
+            return Asked::Withheld;
+        }
         match at {
             Some(i) => {
                 let recorded = &ledger.journal[i];
@@ -1253,6 +1406,25 @@ impl IoPort {
                 ledger.blocked = true;
                 Asked::Withheld
             }
+        }
+    }
+
+    /// An ask with no step in flight runs in place, except a row ask on a store-bound entity, which fails.
+    fn direct_ask(&self, request: impl FnOnce() -> IoRequest) -> Asked {
+        if self.store_drivers.read().is_empty() {
+            return Asked::Direct;
+        }
+        let request = request();
+        let Some(entity) = request_entity(&request) else {
+            return Asked::Direct;
+        };
+        if !self.store_bound(entity) {
+            return Asked::Direct;
+        }
+        let message = self.store_off_path(entity);
+        match crate::store_driver::failed_answer(&request, message) {
+            Some(answer) => Asked::Answer(answer),
+            None => Asked::Direct,
         }
     }
 
@@ -1311,6 +1483,19 @@ impl EntitySource for IoPort {
     }
 
     fn write(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String> {
+        let update = || RowWriteOp::Update {
+            entity_type: entity_type.to_string(),
+            id: id.to_string(),
+            data: data.clone(),
+            guard: None,
+        };
+        if let Some(outcome) = self.bound_single_write(entity_type, update) {
+            return match outcome? {
+                RowWriteOutcome::Updated { row, .. } => Ok(row),
+                RowWriteOutcome::NotFound => Err(format!("Entity not found: {entity_type}:{id}")),
+                other => Err(format!("the store driver answered an update with {other:?}")),
+            };
+        }
         match self.ask(|| IoRequest::WriteRow {
             entity_type: entity_type.to_string(),
             id: id.to_string(),
@@ -1326,6 +1511,14 @@ impl EntitySource for IoPort {
     }
 
     fn create(&self, entity_type: &str, data: &Value) -> Result<Value, String> {
+        let create = || RowWriteOp::Create { entity_type: entity_type.to_string(), data: data.clone() };
+        if let Some(outcome) = self.bound_single_write(entity_type, create) {
+            return match outcome? {
+                RowWriteOutcome::Created { row } => Ok(row),
+                RowWriteOutcome::DuplicateId => Err(format!("Entity already exists: {entity_type}")),
+                other => Err(format!("the store driver answered a create with {other:?}")),
+            };
+        }
         match self.ask(|| IoRequest::CreateRow {
             entity_type: entity_type.to_string(),
             data: data.clone(),
@@ -1340,6 +1533,14 @@ impl EntitySource for IoPort {
     }
 
     fn delete(&self, entity_type: &str, id: &str) -> Result<(), String> {
+        let delete = || RowWriteOp::Delete { entity_type: entity_type.to_string(), id: id.to_string(), guard: None };
+        if let Some(outcome) = self.bound_single_write(entity_type, delete) {
+            return match outcome? {
+                RowWriteOutcome::Deleted { .. } => Ok(()),
+                RowWriteOutcome::NotFound => Err(format!("Entity not found: {entity_type}:{id}")),
+                other => Err(format!("the store driver answered a delete with {other:?}")),
+            };
+        }
         match self.ask(|| IoRequest::DeleteRow {
             entity_type: entity_type.to_string(),
             id: id.to_string(),
@@ -1378,6 +1579,9 @@ impl EntitySource for IoPort {
         visit: &mut dyn FnMut(&Arc<Value>) -> ScanControl,
     ) -> Result<(), String> {
         if self.direct() {
+            if self.store_bound(entity_type) {
+                return Err(self.store_off_path(entity_type));
+            }
             return self.source_for(entity_type).scan(entity_type, visit);
         }
         for row in self.list(entity_type)? {
@@ -1390,6 +1594,9 @@ impl EntitySource for IoPort {
 
     fn query_page(&self, entity_type: &str, query: &RowQuery) -> Option<Result<RowPage, String>> {
         if self.direct() {
+            if self.store_bound(entity_type) {
+                return Some(Err(self.store_off_path(entity_type)));
+            }
             return self.source_for(entity_type).query_page(entity_type, query);
         }
         let capabilities = self.query_capabilities.read().get(entity_type).cloned();
@@ -1434,6 +1641,9 @@ impl EntitySource for IoPort {
 
     fn query_ids(&self, entity_type: &str, query: &RowQuery) -> Option<Result<RowIdPage, String>> {
         if self.direct() {
+            if self.store_bound(entity_type) {
+                return Some(Err(self.store_off_path(entity_type)));
+            }
             return self.source_for(entity_type).query_ids(entity_type, query);
         }
         let capabilities = self.query_capabilities.read().get(entity_type).cloned();
@@ -1474,7 +1684,13 @@ impl EntitySource for IoPort {
     }
 
     fn write_where(&self, op: &RowWriteOp) -> Option<Result<RowWriteOutcome, String>> {
+        if let Some(outcome) = self.bound_single_write(op.entity_type(), || op.clone()) {
+            return Some(outcome);
+        }
         if self.direct() {
+            if self.store_bound(op.entity_type()) {
+                return Some(Err(self.store_off_path(op.entity_type())));
+            }
             return self.source.write_where(op);
         }
         let batch = RowWriteBatch {
@@ -1492,6 +1708,9 @@ impl EntitySource for IoPort {
 
     fn write_batch(&self, batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
         if self.direct() {
+            if let Some(op) = batch.ops.iter().find(|op| self.store_bound(op.entity_type())) {
+                return Some(Err(self.store_off_path(op.entity_type())));
+            }
             return self.source.write_batch(batch);
         }
         self.push_writes(batch)
@@ -3282,5 +3501,84 @@ mod read_cache_tests {
         let (_, end) = port.run_step(vec![read_answer("1")], || (port.find("T", "1"), port.find("T", "2")));
         assert_eq!(end.pending.as_slice(), &[read("2")]);
         assert!(end.reads.is_empty(), "{:?}", end.reads.keys().collect::<Vec<_>>());
+    }
+}
+
+#[cfg(test)]
+mod store_ask_tests {
+    use super::*;
+
+    fn bound_port() -> IoPort {
+        let port = IoPort::new(Arc::new(HostAnswered), None, None);
+        port.bind_store("Ticket", "Rows");
+        port
+    }
+
+    fn take(guard: Option<crate::row_query::RowPredicate>) -> IoRequest {
+        IoRequest::WriteRows {
+            batch: RowWriteBatch {
+                ops: vec![RowWriteOp::Delete { entity_type: "Ticket".into(), id: "t1".into(), guard }],
+                on_failure: RowWriteFailureMode::Stop,
+            },
+        }
+    }
+
+    #[test]
+    fn a_row_ask_on_a_store_bound_entity_is_a_store_ask_never_a_host_request() {
+        let port = bound_port();
+        let (found, end) = port.run_step(Vec::new(), || port.find("Ticket", "t1"));
+        assert_eq!(found, Err(AWAITING_HOST.to_string()));
+        assert!(end.pending.is_empty(), "{:?}", end.pending);
+        assert_eq!(end.store_asks.len(), 1);
+        assert_eq!(end.store_asks[0].driver, "Rows");
+        assert_eq!(end.store_asks[0].request, IoRequest::ReadRow { entity_type: "Ticket".into(), id: "t1".into() });
+        assert!(crate::store_driver::verb_for(&end.store_asks[0].request, &end.store_asks[0].key).is_some());
+    }
+
+    #[test]
+    fn control_an_unbound_entity_still_asks_the_host() {
+        let port = bound_port();
+        let (_, end) = port.run_step(Vec::new(), || port.find("Note", "n1"));
+        assert!(end.store_asks.is_empty());
+        assert_eq!(end.pending.as_slice(), &[IoRequest::ReadRow { entity_type: "Note".into(), id: "n1".into() }]);
+        let (_, end) = port.run_step(Vec::new(), || port.delete("Note", "n1"));
+        assert_eq!(end.pending.as_slice(), &[IoRequest::DeleteRow { entity_type: "Note".into(), id: "n1".into() }]);
+    }
+
+    #[test]
+    fn a_single_delete_on_a_bound_entity_is_one_conditional_write_op() {
+        let port = bound_port();
+        let (_, end) = port.run_step(Vec::new(), || port.delete("Ticket", "t1"));
+        assert_eq!(end.store_asks.len(), 1);
+        assert_eq!(end.store_asks[0].request, take(None));
+    }
+
+    #[test]
+    fn a_replayed_take_succeeds_once_and_a_missing_row_fails() {
+        let port = bound_port();
+        let deleted = Exchange::new(take(None), IoAnswer::Wrote(Ok(vec![RowWriteOutcome::Deleted { before: None }])));
+        let (done, end) = port.run_step(vec![deleted], || port.delete("Ticket", "t1"));
+        assert_eq!(done, Ok(()));
+        assert!(end.store_asks.is_empty() && end.pending.is_empty());
+        let gone = Exchange::new(take(None), IoAnswer::Wrote(Ok(vec![RowWriteOutcome::NotFound])));
+        let (done, _) = port.run_step(vec![gone], || port.delete("Ticket", "t1"));
+        assert_eq!(done, Err("Entity not found: Ticket:t1".to_string()));
+    }
+
+    #[test]
+    fn a_single_update_on_a_bound_entity_is_one_update_op_and_a_missing_row_fails() {
+        let port = bound_port();
+        let data: Value = serde_json::from_value(serde_json::json!({"used": true})).unwrap();
+        let (_, end) = port.run_step(Vec::new(), || port.write("Ticket", "t1", &data));
+        let update = IoRequest::WriteRows {
+            batch: RowWriteBatch {
+                ops: vec![RowWriteOp::Update { entity_type: "Ticket".into(), id: "t1".into(), data: data.clone(), guard: None }],
+                on_failure: RowWriteFailureMode::Stop,
+            },
+        };
+        assert_eq!(end.store_asks[0].request, update);
+        let gone = Exchange::new(update, IoAnswer::Wrote(Ok(vec![RowWriteOutcome::NotFound])));
+        let (done, _) = port.run_step(vec![gone], || port.write("Ticket", "t1", &data));
+        assert_eq!(done, Err("Entity not found: Ticket:t1".to_string()));
     }
 }

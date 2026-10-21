@@ -157,7 +157,7 @@ impl OsOp {
     /// Whether a keyed call of the operation that declares a completion route may end after the dispatch that
     /// asked it, its outcome arriving later as an event of the route (EXEC-QUEUE-10).
     pub fn defers_completion(self) -> bool {
-        matches!(self, OsOp::Wait | OsOp::Read | OsOp::Recv | OsOp::Recvfrom)
+        matches!(self, OsOp::Wait | OsOp::Read | OsOp::Send | OsOp::Recv | OsOp::Recvfrom)
     }
 }
 
@@ -280,15 +280,15 @@ mod tests {
     }
 
     #[test]
-    fn only_the_blocking_waits_reads_and_receives_defer_their_completion() {
+    fn only_the_blocking_waits_reads_stream_sends_and_receives_defer_their_completion() {
         let deferring: Vec<&str> = OsOp::ALL
             .iter()
             .filter(|op| op.defers_completion())
             .map(|op| op.name())
             .collect();
-        assert_eq!(deferring, vec!["os/read", "os/wait", "os/recv", "os/recvfrom"]);
+        assert_eq!(deferring, vec!["os/read", "os/wait", "os/send", "os/recv", "os/recvfrom"]);
         assert!(!OsOp::Wait.is_stream() && !OsOp::Recv.is_stream());
-        assert!(!OsOp::Spawn.defers_completion() && !OsOp::Send.defers_completion());
+        assert!(!OsOp::Spawn.defers_completion() && !OsOp::Sendto.defers_completion());
     }
 
     #[test]

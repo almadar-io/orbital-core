@@ -249,6 +249,7 @@ impl PrettyPrinter {
             OirType::Behavior => "Behavior".to_string(),
             OirType::SExpr => "SExpr".to_string(),
             OirType::TypeRef { name } => format!("&{}", name),
+            OirType::Var { name } => name.clone(),
         }
     }
 

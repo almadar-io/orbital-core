@@ -68,6 +68,7 @@ pub mod agent_ports;
 pub mod dispatch_run;
 pub(crate) mod envelope;
 pub mod inbound;
+pub(crate) mod lane;
 pub mod resolve_run;
 pub(crate) use dispatch_run::Fault;
 
@@ -287,6 +288,9 @@ pub struct RuntimeKernel {
     frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
     /// The state a step committed as it suspended on I/O (G-CROSS-259), for the resumable run to carry.
     pub(crate) suspended_commit: Arc<RwLock<Option<ProvisionalCommit>>>,
+    /// A store-bound entity's declared `instances`, written through its driver by the next resumable dispatch
+    /// before its first step (EXEC-STORE-4): one create batch per entity.
+    pub(crate) store_seeds: Arc<parking_lot::Mutex<std::collections::VecDeque<crate::resumable::StoreAsk>>>,
     /// Frame slot -> the id of the row a carried row named: that trait reads that row under its frame,
     /// not the dispatch's address (G-CROSS-256).
     carried_rows: Arc<RwLock<HashMap<(String, String), String>>>,
@@ -313,6 +317,8 @@ pub struct RuntimeKernel {
     /// kernel's own writes are noted for EXEC-RENDER-3.
     rows: Arc<EntitySourceHandler>,
     prob_entropy: EntropySource,
+    /// The one dispatch lane (EXEC-CONC-1): a dispatch holds it from entry to commit.
+    lane: Arc<lane::DispatchLane>,
 }
 
 impl std::fmt::Debug for RuntimeKernel {
@@ -1055,6 +1061,7 @@ impl RuntimeKernel {
             prob_entropy,
             current_user: Arc::new(RwLock::new(current_user)),
             viewer_by_thread: Arc::default(),
+            lane: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
             record_entity_after: std::sync::atomic::AtomicBool::new(false),
             dispatch_now: Arc::new(RwLock::new(None)),
@@ -1075,6 +1082,7 @@ impl RuntimeKernel {
             frames: Arc::new(RwLock::new(HashMap::new())),
             carried_rows: Arc::new(RwLock::new(HashMap::new())),
             suspended_commit: Arc::new(RwLock::new(None)),
+            store_seeds: Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new())),
             theme_presets: Arc::new(RwLock::new(ThemePresets::new())),
             theme_mode: Arc::new(RwLock::new(None)),
             nav_pages: Arc::new(RwLock::new(Value::Array(Vec::new()))),
@@ -1373,6 +1381,31 @@ impl RuntimeKernel {
     /// What a program asks of the session's row store: one table per `persistent:` collection (every entity bound
     /// to it reads and writes the same rows, as `MockPersistenceAdapter` and the TS shell do), the `[runtime]`
     /// entities held in the kernel, and each inline entity's declared instances seeded.
+    /// The driver orbital's declared `queryCapabilities`/`writeCapabilities` config (EXEC-STORE-4) are what its
+    /// bound entity's push-down honours, the same declaration a host store makes.
+    fn declare_store_capabilities(&self, schema: &OrbitalSchema, entity_type: &str, driver: &str) {
+        let Some(config) = schema.orbitals.iter().find(|o| o.name == driver).and_then(|o| o.config.as_ref()) else {
+            return;
+        };
+        let declared = |key: &str| {
+            config.get(key).and_then(|field| field.default.as_ref()).map(|value| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            })
+        };
+        if let Some(value) = declared("queryCapabilities") {
+            match value.and_then(|v| serde_json::from_value::<QueryCapabilities>(v).map_err(|e| e.to_string())) {
+                Ok(capabilities) => self.io.set_query_capabilities(entity_type, capabilities),
+                Err(e) => tracing::error!(driver, entity = entity_type, error = %e, "kernel: store driver queryCapabilities malformed"),
+            }
+        }
+        if let Some(value) = declared("writeCapabilities") {
+            match value.and_then(|v| serde_json::from_value::<WriteCapabilities>(v).map_err(|e| e.to_string())) {
+                Ok(capabilities) => self.io.set_write_capabilities(entity_type, capabilities),
+                Err(e) => tracing::error!(driver, entity = entity_type, error = %e, "kernel: store driver writeCapabilities malformed"),
+            }
+        }
+    }
+
     fn bind_program_rows(&self, schema: &OrbitalSchema) {
         for orbital in &schema.orbitals {
             for entity_ref in
@@ -1385,6 +1418,12 @@ impl RuntimeKernel {
                     if def.persistence == Some(Persistence::Runtime) {
                         self.io.claim_runtime(&def.name);
                     }
+                    if def.persistence != Some(Persistence::Runtime) && !def.local {
+                        if let Some(driver) = def.store.as_ref().or(schema.store.as_ref()) {
+                            self.io.bind_store(&def.name, driver);
+                            self.declare_store_capabilities(schema, &def.name, driver);
+                        }
+                    }
                 }
             }
         }
@@ -1392,7 +1431,12 @@ impl RuntimeKernel {
             if let EntityRef::Inline(entity_def) = &orbital.entity {
                 if let Some(instances) = &entity_def.instances {
                     let now = crate::mock_random::iso_from_ms(self.clock_now());
-                    for entity in crate::seed::instance_rows(&entity_def.name, instances, &now) {
+                    let rows = crate::seed::instance_rows(&entity_def.name, instances, &now);
+                    if let Some(seed) = self.io.store_seed(&entity_def.name, rows.clone()) {
+                        self.store_seeds.lock().push_back(seed);
+                        continue;
+                    }
+                    for entity in rows {
                         let _ = self.entity_source.create(&entity_def.name, &entity);
                     }
                 }
@@ -1509,6 +1553,7 @@ impl RuntimeKernel {
         event_name: &str,
         payload: Value,
     ) -> Result<ProcessEventResult, KernelError> {
+        let _lane = self.lane.enter();
         self.process_event_in_dispatch(trait_name, entity_id, event_name, payload, None, false)
             .map_err(Fault::into_kernel)
     }
@@ -1915,6 +1960,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         tick_name: &str,
     ) -> Result<ProcessEventResult, KernelError> {
+        let _lane = self.lane.enter();
         let entity_id = entity_id.unwrap_or("singleton");
         self.process_tick_in_dispatch(trait_name, entity_id, entity_id, tick_name)
             .map_err(Fault::into_kernel)
@@ -2121,6 +2167,7 @@ impl RuntimeKernel {
         payload: Value,
         client_id: Option<&str>,
     ) -> Result<ClientDispatch, KernelError> {
+        let _lane = self.lane.enter();
         let eid = entity_id.unwrap_or("singleton").to_string();
 
         let trait_def = self
@@ -2395,6 +2442,7 @@ impl RuntimeKernel {
         outcomes: &[(String, ProcessEventResult)],
         client_id: Option<&str>,
     ) -> Vec<EventRequest> {
+        let _lane = self.lane.enter();
         let _ = self.drain_server_leg_collector();
         let residence =
             orbital_core_base::runs_on::Residence::of_entities(self.entity_definitions.read().values());
@@ -2494,6 +2542,7 @@ impl RuntimeKernel {
         tick_name: &str,
         client_id: Option<&str>,
     ) -> Result<TickDispatch, KernelError> {
+        let _lane = self.lane.enter();
         let mut dispatched =
             self.dispatch_tick_unrepainted(orbital, trait_name, entity_id, tick_name, client_id)?;
         if dispatched.outcome.executed {
@@ -2513,6 +2562,7 @@ impl RuntimeKernel {
         tick_name: &str,
         client_id: Option<&str>,
     ) -> Result<TickDispatch, KernelError> {
+        let _lane = self.lane.enter();
         let eid = entity_id.unwrap_or("singleton").to_string();
         let trait_def = self
             .trait_definitions
@@ -4772,6 +4822,7 @@ impl RuntimeKernel {
     /// `total` re-counted (Q6). The one resolver every renderer and the embedded API reach, so `@read` is applied
     /// here and nowhere else. A store that answers through the host (the server role) is reached in a dispatch.
     pub fn resolve_rows(&self, reference: &RowSetRef, viewer: &Value) -> Result<RowPage, String> {
+        let _lane = self.lane.enter();
         let mut ctx = BindingContext::new();
         ctx.set_user(viewer.clone());
         self.rows.resolve_rows(reference, &ctx)
