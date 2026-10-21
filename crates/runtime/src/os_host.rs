@@ -71,6 +71,8 @@ pub struct OsHandles {
     pub completions: Arc<completion::Completions>,
     /// Where `~/` and `./` paths and grants are anchored: the user's home and the directory the program started in.
     pub anchors: OsAnchors,
+    /// The `kv/` stores of this program instance.
+    pub kv: crate::kv_host::KvStores,
 }
 
 impl Default for OsHandles {
@@ -82,6 +84,7 @@ impl Default for OsHandles {
             net: net::NetTable::new(ids),
             completions: Arc::default(),
             anchors: OsAnchors::of_process(),
+            kv: crate::kv_host::KvStores::default(),
         }
     }
 }
@@ -114,6 +117,7 @@ pub(crate) enum OsFamily {
     Process,
     Net,
     Sys,
+    Kv,
 }
 
 /// The one family that answers `op`.
@@ -134,6 +138,7 @@ pub(crate) fn family_of(op: OsOp) -> OsFamily {
         | NetworkStats | NetworkConnected | DefaultGateway | BatteryStatus | AcPower
         | ThermalZones | Notify | Speak | BrightnessGet | BrightnessSet | VolumeGet | VolumeSet
         | VolumeMute | Suspend | Hibernate => OsFamily::Sys,
+        KvGet | KvPut | KvDelete | KvScan | KvBatch => OsFamily::Kv,
     }
 }
 
@@ -149,6 +154,7 @@ fn dispatch(
         OsFamily::Process => process::answer(op, args, key, site, host),
         OsFamily::Net => net::answer(op, args, key, site, host),
         OsFamily::Sys => sys::answer(op, args, key, site, host),
+        OsFamily::Kv => Some(crate::kv_host::answer(op, args, host)),
     };
     // `os/close` takes an fd or a socket: the fs table is asked first, and a handle it does not own
     // (`None`) is offered to the net table.
@@ -480,18 +486,19 @@ mod tests {
 
     #[test]
     fn every_op_belongs_to_exactly_one_family_in_contract_order() {
-        let mut counts = [0usize; 4];
+        let mut counts = [0usize; 5];
         for op in OsOp::ALL {
             let slot = match family_of(*op) {
                 OsFamily::Fs => 0,
                 OsFamily::Process => 1,
                 OsFamily::Net => 2,
                 OsFamily::Sys => 3,
+                OsFamily::Kv => 4,
             };
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 18, 10, 31]);
+        assert_eq!(counts, [32, 18, 10, 31, 5]);
     }
 
     #[test]

@@ -146,9 +146,19 @@ os_ops! {
     VolumeMute => ("os/volume-mute", 0, 1, Single),
     Suspend => ("os/suspend", 0, 0, Single),
     Hibernate => ("os/hibernate", 0, 0, Single),
+    KvGet => ("kv/get", 2, 2, Single),
+    KvPut => ("kv/put", 3, 3, Single),
+    KvDelete => ("kv/delete", 2, 2, Single),
+    KvScan => ("kv/scan", 2, 3, Single),
+    KvBatch => ("kv/batch", 2, 2, Single),
 }
 
 impl OsOp {
+    /// Whether the operation is one of the `kv/` row-store asks (the host picks the medium; runs on every host).
+    pub fn is_kv(self) -> bool {
+        matches!(self, OsOp::KvGet | OsOp::KvPut | OsOp::KvDelete | OsOp::KvScan | OsOp::KvBatch)
+    }
+
     /// Whether the operation streams events to its call site's route.
     pub fn is_stream(self) -> bool {
         self.shape() == OsShape::Stream
@@ -259,10 +269,11 @@ mod tests {
     fn every_name_round_trips_through_the_one_table() {
         for op in OsOp::ALL {
             assert_eq!(OsOp::from_name(op.name()), Some(*op));
-            assert!(op.name().starts_with("os/"));
+            assert_eq!(op.name().starts_with("kv/"), op.is_kv());
+            assert!(op.name().starts_with("os/") || op.is_kv());
             assert!(op.min_args() <= op.max_args());
         }
-        assert_eq!(OsOp::ALL.len(), 91);
+        assert_eq!(OsOp::ALL.len(), 96);
         assert_eq!(OsOp::from_name("http"), None);
     }
 

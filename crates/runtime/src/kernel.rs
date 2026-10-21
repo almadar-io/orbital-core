@@ -3960,6 +3960,13 @@ impl RuntimeKernel {
                 Effect::Custom { name, emit, .. }
                     if orbital_core_base::agent_ports::is_agent_port_operator(name) =>
                 {
+                    let key = match &effect {
+                        Effect::Custom { key: Some(key), .. } => ctx
+                            .resolve_value_checked(key)
+                            .ok()
+                            .and_then(|k| k.as_str().map(str::to_string)),
+                        _ => None,
+                    };
                     let mut result = if self.effect_executor.environment().is_client() {
                         self.effect_executor.execute(&effect, ctx)
                     } else {
@@ -3970,7 +3977,7 @@ impl RuntimeKernel {
                     }
                     let completion = emit
                         .as_ref()
-                        .and_then(|e| agent_ports::agent_port_completion_emit(e, &result));
+                        .and_then(|e| agent_ports::agent_port_completion_emit(e, &result, key.as_deref()));
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -3981,11 +3988,12 @@ impl RuntimeKernel {
                     let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results) else {
                         return;
                     };
+                    let key = custom_key(&resolved);
                     let mut result = self.effect_executor.execute(&resolved, ctx);
                     if let Effect::Custom { emit: routes, .. } = &mut result.effect {
                         *routes = Some(op_emit.clone());
                     }
-                    let completion = substrate_completion_emit(op_emit, &result);
+                    let completion = substrate_completion_emit(op_emit, &result, key.as_deref());
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -5853,11 +5861,11 @@ fn resolved_custom_or_failed(
     ctx: &BindingContext,
     effect_results: &mut Vec<EffectResult>,
 ) -> Option<Effect> {
-    let Effect::Custom { name, args, emit } = effect else {
+    let Effect::Custom { name, args, key, emit } = effect else {
         return Some(effect.clone());
     };
-    let mut resolved = Vec::with_capacity(args.len());
-    for arg in args {
+    let mut resolved = Vec::with_capacity(args.len() + 1);
+    for arg in args.iter().chain(key) {
         match ctx.resolve_value_checked(arg) {
             Ok(value) => resolved.push(value.into_owned()),
             Err(fault) => {
@@ -5869,7 +5877,8 @@ fn resolved_custom_or_failed(
             }
         }
     }
-    Some(Effect::Custom { name: name.clone(), args: resolved, emit: emit.clone() })
+    let key = key.as_ref().and_then(|_| resolved.pop());
+    Some(Effect::Custom { name: name.clone(), args: resolved, key, emit: emit.clone() })
 }
 
 /// `effect` with its bindings resolved, or `None` after recording the typed argument mismatch as the effect's failure.
@@ -6285,17 +6294,35 @@ fn keyed_call_completion_emit(
 /// A keyed `call-service` echoes its key beside the record it answers with (D-A82); an `http` payload already
 /// carries it (the driver owns it), and a result that is not a record is left as it is.
 fn echo_key(payload: Value, effect: &Effect, key: Option<&str>) -> Value {
-    let (Effect::CallService { .. }, Some(key), Value::Object(mut fields)) = (effect, key, payload.clone())
-    else {
-        return payload;
-    };
-    fields.insert("key".to_string(), Value::String(key.to_string()));
-    Value::Object(fields)
+    match effect {
+        Effect::CallService { .. } => with_key(payload, key),
+        _ => payload,
+    }
+}
+
+/// The resolved `key` of a substrate op's options.
+fn custom_key(effect: &Effect) -> Option<String> {
+    match effect {
+        Effect::Custom { key: Some(key), .. } => key.as_str().map(str::to_string),
+        _ => None,
+    }
+}
+
+/// A completion payload with the call's `key` beside it (D-A82); a payload that is not a record is left as it is.
+fn with_key(payload: Value, key: Option<&str>) -> Value {
+    match (key, payload) {
+        (Some(key), Value::Object(mut fields)) => {
+            fields.insert("key".to_string(), Value::String(key.to_string()));
+            Value::Object(fields)
+        }
+        (_, payload) => payload,
+    }
 }
 
 /// A substrate op's declared completion — JS `runSubstrate`/`runProgramEffectArm`: `emit.success`
-/// carries `{ result }`, `emit.failure` `{ error }` plus `errors` (a program's validator issues).
-fn substrate_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<EffectResult> {
+/// carries `{ result }`, `emit.failure` `{ error }` plus `errors` (a program's validator issues), each with the
+/// op's `key` when it declares one.
+fn substrate_completion_emit(emit: &FetchEmit, result: &EffectResult, key: Option<&str>) -> Option<EffectResult> {
     let (event, payload) = match &result.outcome {
         EffectOutcome::Executed => {
             let mut payload = ValueMap::new();
@@ -6311,6 +6338,7 @@ fn substrate_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<
         ),
         EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
     };
+    let payload = with_key(payload, key);
     Some(EffectResult::executed(Effect::Emit { event, payload }))
 }
 

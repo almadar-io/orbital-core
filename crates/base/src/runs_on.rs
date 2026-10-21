@@ -299,8 +299,8 @@ pub fn ir_effect_site(effect: &OirEffect, residence: &Residence) -> RunsOn {
 /// Site of an effect operator by registry name; `Any` for every effect not in
 /// [`EFFECT_SITES`] (and for a name that is not an effect at all).
 pub fn runs_on(operator: &str) -> RunsOn {
-    if crate::os::OsOp::from_name(operator).is_some() {
-        return RunsOn::Server;
+    if let Some(op) = crate::os::OsOp::from_name(operator) {
+        return if op.is_kv() { RunsOn::Any } else { RunsOn::Server };
     }
     if let Some((_, site)) = EFFECT_SITES.iter().find(|(name, _)| *name == operator) {
         return *site;

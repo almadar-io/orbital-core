@@ -2387,6 +2387,7 @@ impl EffectExecutor {
         let effect = Effect::Custom {
             name: name.to_string(),
             args: args.to_vec(),
+            key: None,
             emit: None,
         };
 
@@ -3088,6 +3089,7 @@ mod tests {
         let effect = Effect::Custom {
             name: "my-custom-effect".to_string(),
             args: vec![Value::Number(42.0)],
+            key: None,
             emit: None,
         };
 

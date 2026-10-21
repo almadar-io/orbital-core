@@ -37,6 +37,8 @@ pub mod http_service;
 pub mod oauth_flow;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod os_host;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod kv_host;
 pub mod kernel;
 pub mod key_chord;
 pub mod listener;

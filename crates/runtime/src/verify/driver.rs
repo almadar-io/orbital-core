@@ -398,24 +398,7 @@ impl Harness {
             .filter(|t| t.event == event && t.from.states().contains(&hop.previous_state.as_str()))
             .nth(hop.fired_arm?)?;
         let ensures = arm.ensures.as_deref().filter(|e| !e.is_empty())?;
-        let entry = hop.entry.as_ref();
-        let failed = hop.failure.is_some()
-            || hop
-                .effect_results
-                .iter()
-                .any(|r| matches!(r.outcome, EffectOutcome::Failed));
-        let observation = plan_wire::PropositionObservation {
-            executed: hop.executed,
-            failed,
-            entity_before: entry
-                .map(|e| e.entity_before.to_value())
-                .unwrap_or(Value::Null),
-            entity_after: entry
-                .and_then(|e| e.entity_after.as_ref().map(|after| after.to_value()))
-                .unwrap_or(Value::Null),
-            payload: hop.payload.clone(),
-            unobserved: None,
-        };
+        let observation = plan_wire::PropositionObservation::of_hop(hop);
         Some(PropositionCheck {
             trait_name: trait_name.to_string(),
             from: hop.previous_state.clone(),

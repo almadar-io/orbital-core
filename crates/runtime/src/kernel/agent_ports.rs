@@ -220,6 +220,7 @@ impl RuntimeKernel {
 pub(super) fn agent_port_completion_emit(
     emit: &FetchEmit,
     result: &EffectResult,
+    key: Option<&str>,
 ) -> Option<EffectResult> {
     match &result.outcome {
         EffectOutcome::Executed => {
@@ -230,10 +231,10 @@ pub(super) fn agent_port_completion_emit(
             payload.insert("text".to_string(), Value::String(text));
             Some(EffectResult::executed(Effect::Emit {
                 event: emit.success.clone()?,
-                payload: Value::Object(payload),
+                payload: super::with_key(Value::Object(payload), key),
             }))
         }
-        EffectOutcome::Failed => super::substrate_completion_emit(emit, result),
+        EffectOutcome::Failed => super::substrate_completion_emit(emit, result, key),
         EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => None,
     }
 }

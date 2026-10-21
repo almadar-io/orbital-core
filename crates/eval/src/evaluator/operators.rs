@@ -31,6 +31,7 @@ pub use arg_types::{actual_of, operator_signature};
 pub use kind::OperatorKind;
 pub mod anim;
 pub mod array;
+pub mod bit;
 pub mod bytes;
 pub mod cast;
 pub mod csv;
@@ -58,6 +59,7 @@ pub mod xml;
 
 pub use anim::*;
 pub use array::*;
+pub use bit::*;
 pub use bytes::*;
 pub use cast::*;
 pub use csv::*;

@@ -377,6 +377,9 @@ pub enum Effect {
     Custom {
         name: String,
         args: Vec<Value>,
+        /// The options object's `key:` expression; the completion echoes it as `key`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<FetchEmit>,
     },
@@ -882,12 +885,16 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
         _ => {
             let mut values: Vec<Value> = args.iter().map(|e| Value::from(e.clone())).collect();
             let emit = values.last().and_then(parse_emit_config);
-            if emit.is_some() {
-                values.pop();
-            }
+            let options = if emit.is_some() { values.pop() } else { None };
+            let key = options
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|o| o.get("key"))
+                .cloned();
             Some(Effect::Custom {
                 name: op.to_string(),
                 args: values,
+                key,
                 emit,
             })
         }
@@ -2308,13 +2315,42 @@ mod tests {
         )
         .unwrap();
         match parse_effect(&expr).unwrap() {
-            Effect::Custom { name, args, emit } => {
+            Effect::Custom { name, args, key, emit } => {
+                assert!(key.is_none());
                 assert_eq!(name, "program/eval");
                 assert_eq!(args.len(), 2, "the emit object is not an argument");
                 assert_eq!(
                     emit.expect("emit parsed").success.as_deref(),
                     Some("EVALUATED")
                 );
+            }
+            other => panic!("expected Custom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_substrate_ops_options_key_is_kept_beside_its_emit() {
+        let expr: SExpression = serde_json::from_str(
+            r#"["program/dispatch", "Notes.ADD", {"title": "x"}, {"key": "@payload.k", "emit": {"success": "DONE"}}]"#,
+        )
+        .unwrap();
+        match parse_effect(&expr).unwrap() {
+            Effect::Custom { args, key, emit, .. } => {
+                assert_eq!(args.len(), 2, "the options object is not an argument");
+                assert_eq!(key, Some(Value::String("@payload.k".to_string())));
+                assert_eq!(emit.expect("emit parsed").success.as_deref(), Some("DONE"));
+            }
+            other => panic!("expected Custom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edge_a_key_without_emit_stays_in_its_argument() {
+        let expr: SExpression = serde_json::from_str(r#"["program/eval", {"key": "k"}]"#).unwrap();
+        match parse_effect(&expr).unwrap() {
+            Effect::Custom { args, key, emit, .. } => {
+                assert_eq!(args.len(), 1);
+                assert!(key.is_none() && emit.is_none());
             }
             other => panic!("expected Custom, got {other:?}"),
         }

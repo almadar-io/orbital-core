@@ -2354,3 +2354,136 @@ fn a_seeded_prob_draw_makes_no_ask() {
     assert!(seen.is_empty());
     assert!(payload_of(&response, "OK")["draw"].is_number());
 }
+
+mod kv_asks {
+    use orbital_core_runtime::kv_host::{json_text, KvStores};
+    use orbital_core_runtime::os_host::{answer_os, KvMode, OsGrants, OsHandles, OsHost};
+    use orbital_core_runtime::resumable::{CallSite, IoAnswer, IoRequest};
+    use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
+    use orbital_core_base::value::Value;
+    use serde_json::{json, Value as Json};
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    fn grants(store: &str, modes: &[KvMode]) -> OsGrants {
+        OsGrants { kv: BTreeMap::from([(store.to_string(), modes.to_vec())]), ..OsGrants::default() }
+    }
+
+    fn ask(handles: &OsHandles, grants: &OsGrants, op: &str, args: Vec<Value>) -> Result<Value, OsError> {
+        let on_event = |_: Option<&CallSite>, _: Value| {};
+        let host = OsHost { grants, handles, on_event: &on_event };
+        let op = OsOp::from_name(op).unwrap_or_else(|| panic!("{op} is not an op"));
+        match answer_os(Some(&host), &IoRequest::Os { op, args, key: None, site: None }) {
+            IoAnswer::Os(answer) => answer,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn v(json: Json) -> Value {
+        serde_json::from_value(json).expect("value")
+    }
+
+    fn replay_trace(kv: KvStores) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../orbital-shell-typescript/renderers/web/test/fixtures/kv-trace.json");
+        let trace: Json = serde_json::from_str(&std::fs::read_to_string(&path).expect("the shared kv trace")).unwrap();
+        let handles = OsHandles { kv, ..OsHandles::default() };
+        let grants = grants("rows", &[KvMode::Read, KvMode::Write]);
+        let steps = trace["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 20);
+        for (i, step) in steps.iter().enumerate() {
+            let op = step["op"].as_str().unwrap();
+            let args: Vec<Value> = step["args"].as_array().unwrap().iter().cloned().map(v).collect();
+            let answered = ask(&handles, &grants, op, args);
+            match (answered, step.get("expectError").and_then(Json::as_str)) {
+                (Ok(value), None) => assert_eq!(json_text(&value), json_text(&v(step["expect"].clone())), "step {i} {op}"),
+                (Err(error), Some(kind)) => assert_eq!(error.kind.as_str(), kind, "step {i} {op}: {}", error.message),
+                (other, want) => panic!("step {i} {op}: answered {other:?}, expected {want:?} / {}", step["expect"]),
+            }
+        }
+    }
+
+    #[test]
+    fn the_shared_kv_trace_replays_byte_identical_on_memory_and_directory_stores() {
+        let trace: Json = serde_json::from_str(
+            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../orbital-shell-typescript/renderers/web/test/fixtures/kv-trace.json")).unwrap(),
+        )
+        .unwrap();
+        let (app, locale) = (trace["app"].as_str().unwrap(), trace["locale"].as_str().unwrap());
+        replay_trace(KvStores::memory(app, locale));
+        let dir = tempfile::tempdir().expect("tempdir");
+        replay_trace(KvStores::directory(dir.path(), app, locale));
+        let file = dir.path().join("kv").join(app).join(locale).join("rows.json");
+        assert_eq!(
+            std::fs::read_to_string(file).unwrap(),
+            r#"{"order-line/1":false,"order.log/0001":{"op":"create"},"order/3":"three"}"#
+        );
+    }
+
+    #[test]
+    fn the_store_file_is_one_sorted_json_object_portable_to_a_fresh_host() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let grants = grants("rows", &[KvMode::Read, KvMode::Write]);
+        let handles = OsHandles { kv: KvStores::directory(dir.path(), "shop", "en"), ..OsHandles::default() };
+        let ops = v(json!([{ "kind": "put", "key": "b\"/\n", "value": [1] }, { "kind": "put", "key": "a", "value": { "z": 1 } }]));
+        assert_eq!(json_text(&ask(&handles, &grants, "kv/batch", vec![v(json!("rows")), ops]).unwrap()), r#"{"applied":2}"#);
+        let at = dir.path().join("kv/shop/en");
+        assert_eq!(std::fs::read_to_string(at.join("rows.json")).unwrap(), r#"{"a":{"z":1},"b\"/\n":[1]}"#);
+        let names: Vec<String> = std::fs::read_dir(&at).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        assert_eq!(names, ["rows.json"], "no temp file is left");
+        let again = OsHandles { kv: KvStores::directory(dir.path(), "shop", "en"), ..OsHandles::default() };
+        let got = ask(&again, &grants, "kv/get", vec![v(json!("rows")), v(json!("b\"/\n"))]).unwrap();
+        assert_eq!(json_text(&got), r#"{"found":true,"value":[1]}"#);
+        let other_locale = OsHandles { kv: KvStores::directory(dir.path(), "shop", "ar"), ..OsHandles::default() };
+        let miss = ask(&other_locale, &grants, "kv/get", vec![v(json!("rows")), v(json!("a"))]).unwrap();
+        assert_eq!(json_text(&miss), r#"{"found":false}"#, "control: another locale is another namespace");
+        let empty_key = ask(&handles, &grants, "kv/put", vec![v(json!("rows")), v(json!("")), v(json!(0.5))]).unwrap();
+        assert_eq!(json_text(&empty_key), r#"{"key":""}"#, "edge: the empty key is a key");
+        assert_eq!(std::fs::read_to_string(at.join("rows.json")).unwrap(), r#"{"":0.5,"a":{"z":1},"b\"/\n":[1]}"#);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_batch_whose_commit_fails_leaves_the_previous_store_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let grants = grants("rows", &[KvMode::Read, KvMode::Write]);
+        let handles = OsHandles { kv: KvStores::directory(dir.path(), "shop", "en"), ..OsHandles::default() };
+        let rows = || v(json!("rows"));
+        ask(&handles, &grants, "kv/put", vec![rows(), v(json!("a")), v(json!(1))]).unwrap();
+        let at = dir.path().join("kv/shop/en");
+        let before = std::fs::read(at.join("rows.json")).unwrap();
+        let batch = || v(json!([{ "kind": "put", "key": "b", "value": 2 }, { "kind": "delete", "key": "a" }]));
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let refused = ask(&handles, &grants, "kv/batch", vec![rows(), batch()]);
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if std::fs::metadata(&at).is_ok() && refused.is_ok() {
+            panic!("the directory ignored its permissions; this host cannot run the failure case");
+        }
+        assert_eq!(refused.expect_err("read-only").kind, OsErrorKind::Io);
+        assert_eq!(std::fs::read(at.join("rows.json")).unwrap(), before, "nothing of the failed batch is applied");
+        assert_eq!(std::fs::read_dir(&at).unwrap().count(), 1, "no temp file is left");
+        let invalid = v(json!([{ "kind": "put", "key": "b", "value": 2 }, { "kind": "frobnicate", "key": "a" }]));
+        assert_eq!(ask(&handles, &grants, "kv/batch", vec![rows(), invalid]).expect_err("bad op").kind, OsErrorKind::Invalid);
+        assert_eq!(std::fs::read(at.join("rows.json")).unwrap(), before, "an invalid batch applies nothing either");
+        assert_eq!(json_text(&ask(&handles, &grants, "kv/batch", vec![rows(), batch()]).unwrap()), r#"{"applied":2}"#, "control: the same batch commits when the directory is writable");
+        assert_eq!(std::fs::read_to_string(at.join("rows.json")).unwrap(), r#"{"b":2}"#);
+    }
+
+    #[test]
+    fn the_kv_grant_is_checked_per_store_and_mode() {
+        let handles = OsHandles { kv: KvStores::memory("shop", "en"), ..OsHandles::default() };
+        let read_only = grants("rows", &[KvMode::Read]);
+        let put = |g: &OsGrants, store: &str| ask(&handles, g, "kv/put", vec![v(json!(store)), v(json!("k")), v(json!(1))]);
+        assert_eq!(put(&read_only, "rows").expect_err("no write").kind, OsErrorKind::Denied);
+        assert!(ask(&handles, &read_only, "kv/scan", vec![v(json!("rows")), v(json!(""))]).is_ok(), "control: read is granted");
+        let globbed = grants("rows*", &[KvMode::Read, KvMode::Write]);
+        assert!(put(&globbed, "rows-log").is_ok(), "a store glob covers a matching name");
+        assert_eq!(put(&globbed, "other").expect_err("outside").kind, OsErrorKind::Denied, "control: not the glob");
+        assert_eq!(put(&OsGrants::default(), "rows").expect_err("closed").kind, OsErrorKind::Denied, "kv is closed by default");
+        assert_eq!(put(&globbed, "../x").expect_err("bad name").kind, OsErrorKind::Invalid, "edge: a bad name is invalid before the grant");
+        let unplaced = OsHandles::default();
+        let none = ask(&unplaced, &globbed, "kv/get", vec![v(json!("rows")), v(json!("k"))]);
+        assert_eq!(none.expect_err("no namespace").kind, OsErrorKind::Unsupported, "edge: a host with no app/locale");
+    }
+}

@@ -321,6 +321,49 @@ mod agent_ports {
         assert_eq!(got["result"], json!({ "entity": "Tag", "count": 0, "rows": [] }));
     }
 
+    fn keyed(key: Json) -> Json {
+        let mut options = options();
+        options["key"] = key;
+        options
+    }
+
+    #[test]
+    fn a_keyed_ops_completion_echoes_its_key_on_success() {
+        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let effect = json!(["persist/read-named", "Tag", keyed(json!("k1"))]);
+        let (state, got) = run_effect(&fixture, effect, json!({}));
+        assert_eq!(state, "done");
+        assert_eq!(got["key"], json!("k1"));
+        assert_eq!(got["result"], json!({ "entity": "Tag", "count": 0, "rows": [] }));
+    }
+
+    #[test]
+    fn a_keyed_ops_completion_echoes_its_key_on_failure() {
+        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let effect = json!(["program/dispatch", "Desk.Chat.ADD_NOTE", { "title": "x" }, keyed(json!("k1"))]);
+        let (state, got) = run_effect(&fixture, effect, json!({}));
+        assert_eq!(state, "failed");
+        assert_eq!(got, json!({ "error": "no substrate host configured for program/dispatch", "key": "k1" }));
+    }
+
+    #[test]
+    fn control_an_unkeyed_ops_completion_carries_no_key() {
+        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let effect = json!(["persist/read-named", "Tag", options()]);
+        let (state, got) = run_effect(&fixture, effect, json!({}));
+        assert_eq!(state, "done");
+        assert_eq!(got.as_object().map(|o| o.contains_key("key")), Some(false));
+    }
+
+    #[test]
+    fn edge_a_bound_key_is_echoed_resolved() {
+        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let effect = json!(["persist/read-named", "Tag", keyed(json!("@payload.k"))]);
+        let (state, got) = run_effect(&fixture, effect, json!({ "k": "from-payload" }));
+        assert_eq!(state, "done");
+        assert_eq!(got["key"], json!("from-payload"));
+    }
+
     fn read_as(user: Json) -> Json {
         let schema: OrbitalSchema = serde_json::from_value(json!({
             "name": "Policy",

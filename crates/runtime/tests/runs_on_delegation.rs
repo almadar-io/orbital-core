@@ -21,6 +21,7 @@ fn custom(name: &str) -> Effect {
     Effect::Custom {
         name: name.into(),
         args: vec![],
+        key: None,
         emit: None,
     }
 }

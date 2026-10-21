@@ -35,29 +35,42 @@ pub(crate) struct DispatchLane {
 
 impl DispatchLane {
     /// Take the lane in arrival order, or re-enter it as the holder `turn` names.
-    pub(crate) fn enter(self: &Arc<Self>, turn: Option<LaneTurn>) -> Result<LaneGuard, KernelError> {
+    pub(crate) fn enter(
+        self: &Arc<Self>,
+        turn: Option<LaneTurn>,
+    ) -> Result<LaneGuard, KernelError> {
         let mut s = self.state.lock();
         if s.held {
             let holder = LaneTurn(s.serving);
             let in_place = turn.is_none() && s.running_on == Some(std::thread::current().id());
             if turn == Some(holder) || in_place {
                 if let Some(event) = &s.parked {
-                    return Err(KernelError::LaneHeldByParkedDispatch { ticket: holder.0, event: event.clone() });
+                    return Err(KernelError::LaneHeldByParkedDispatch {
+                        ticket: holder.0,
+                        event: event.clone(),
+                    });
                 }
                 s.depth += 1;
-                return Ok(LaneGuard { lane: Some(self.clone()), turn: holder, outer: false });
+                return Ok(LaneGuard {
+                    lane: Some(self.clone()),
+                    turn: holder,
+                    outer: false,
+                });
             }
         }
         let ticket = s.next;
         s.next += 1;
-        #[cfg(any())]
         while s.held || s.serving != ticket {
             self.turn.wait(&mut s);
         }
         s.held = true;
         s.running_on = Some(std::thread::current().id());
         s.depth = 1;
-        Ok(LaneGuard { lane: Some(self.clone()), turn: LaneTurn(ticket), outer: true })
+        Ok(LaneGuard {
+            lane: Some(self.clone()),
+            turn: LaneTurn(ticket),
+            outer: true,
+        })
     }
 
     fn release(&self, s: &mut LaneState) {
@@ -92,7 +105,10 @@ impl LaneGuard {
             s.running_on = None;
             s.depth = 0;
             drop(s);
-            Some(LaneHold { lane: Some(lane), turn: self.turn })
+            Some(LaneHold {
+                lane: Some(lane),
+                turn: self.turn,
+            })
         } else {
             s.depth -= 1;
             None
@@ -130,7 +146,11 @@ impl LaneHold {
         s.depth = 1;
         s.parked = None;
         drop(s);
-        LaneGuard { lane: Some(lane), turn: self.turn, outer: true }
+        LaneGuard {
+            lane: Some(lane),
+            turn: self.turn,
+            outer: true,
+        }
     }
 }
 

@@ -404,6 +404,31 @@ pub struct PropositionObservation {
     pub unobserved: Option<String>,
 }
 
+impl PropositionObservation {
+    /// A dispatched hop as observed: the rows the kernel recorded before and after its effects.
+    pub fn of_hop(hop: &crate::process_result::ProcessEventResult) -> Self {
+        let entry = hop.entry.as_ref();
+        Self {
+            executed: hop.executed,
+            failed: hop.failure.is_some()
+                || hop.effect_results.iter().any(|r| {
+                    matches!(
+                        r.outcome,
+                        orbital_core_base::effect_types::EffectOutcome::Failed
+                    )
+                }),
+            entity_before: entry
+                .map(|e| e.entity_before.to_value())
+                .unwrap_or(orbital_core_base::value::Value::Null),
+            entity_after: entry
+                .and_then(|e| e.entity_after.as_ref().map(|after| after.to_value()))
+                .unwrap_or(orbital_core_base::value::Value::Null),
+            payload: hop.payload.clone(),
+            unobserved: None,
+        }
+    }
+}
+
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verdict", rename_all = "kebab-case")]

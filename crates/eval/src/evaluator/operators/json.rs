@@ -1,12 +1,15 @@
 //! JSON operators.
 //!
-//! `(json/parse s Shape)` — pure, deterministic: string → parsed `Value`; `Shape` names the type the value has (checked by `orb validate`, never evaluated). Invalid
-//! JSON or non-string input → `Value::Null` (JS `null`), never throws —
+//! `(json/parse s Shape)` — pure, deterministic: string → parsed `Value`; `Shape` names the type the value has (checked by `orb validate`,
+//! and at run time when the evaluator knows the type: see `run_time_shape`). Invalid JSON, a value not of its shape or
+//! non-string input → `Value::Null` (JS `null`), never throws —
 //! guards can branch on null. No reviver, no prototype access, no side
 //! effects. `(json/stringify v)` is the inverse: any `Value` → JSON string.
 
 use super::macros::*;
 use super::*;
+use orbital_core_base::ir::types::OirType;
+use orbital_core_base::type_compat::{parse_compat_type, CompatType};
 
 fn parse_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, serde_json::Error> {
     serde_json::from_str(text)
@@ -37,10 +40,40 @@ impl Operator for JsonParseOp {
         let Value::String(s) = val else {
             return Ok(Value::Null);
         };
-        Ok(parse_json::<serde_json::Value>(&s)
-            .map(json_to_value)
-            .unwrap_or(Value::Null))
+        let Ok(parsed) = parse_json::<serde_json::Value>(&s).map(json_to_value) else {
+            return Ok(Value::Null);
+        };
+        let Some((shape, declared)) = run_time_shape(&args[1])? else {
+            return Ok(parsed);
+        };
+        match super::arg_types::misfit_of_declared(&parsed, &declared) {
+            None => Ok(parsed),
+            Some((path, actual)) => {
+                tracing::warn!(
+                    target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
+                    "json/parse: the value is not of the shape {shape}: at `{path}` it is {actual}"
+                );
+                Ok(Value::Null)
+            }
+        }
     }
+}
+
+/// The shape a `json/parse` names, with the type a run-time check reads, when the evaluator knows it: a declared type
+/// recorded as JSON (as `typed` records one) or a built-in type name. A program's own alias is known only to `orb`.
+fn run_time_shape(arg: &SExpression) -> Result<Option<(String, OirType)>, OrbitalError> {
+    let SExpression::String(text) = arg else {
+        return Ok(None);
+    };
+    if text.starts_with('{') {
+        let declared = super::arg_types::declared_type(arg)?;
+        return Ok(Some((super::arg_types::declared_text(&declared), declared)));
+    }
+    Ok(match parse_compat_type(text) {
+        CompatType::Ty(OirType::Union { variants }) if variants.is_empty() => None,
+        CompatType::Ty(declared) => Some((text.clone(), declared)),
+        _ => None,
+    })
 }
 
 pub struct JsonValidOp;

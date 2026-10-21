@@ -664,6 +664,49 @@ mod tests {
         );
     }
 
+    fn parse_as(text: &str, shape: serde_json::Value) -> Value {
+        let shape = match shape {
+            serde_json::Value::String(name) => name,
+            declared => declared.to_string(),
+        };
+        eval(&serde_json::json!(["json/parse", text, shape]).to_string())
+    }
+
+    fn row_shape() -> serde_json::Value {
+        serde_json::json!({ "kind": "struct", "fields": [
+            { "name": "id", "fieldType": { "kind": "number" } },
+            { "name": "tags", "fieldType": { "kind": "array", "inner": { "kind": "string" } } },
+            { "name": "note", "fieldType": { "kind": "string" }, "required": false }
+        ] })
+    }
+
+    #[test]
+    fn json_parse_value_of_its_shape_is_returned() {
+        assert_eq!(parse_as("42", "number".into()), Value::Number(42.0));
+        let row = parse_as(r#"{"id": 1, "tags": ["a"]}"#, row_shape());
+        assert!(matches!(row, Value::Object(ref m) if m.get("id") == Some(&Value::Number(1.0))), "{row:?}");
+    }
+
+    #[test]
+    fn json_parse_value_not_of_its_shape_takes_the_failure_path() {
+        assert_eq!(parse_as(r#""abc""#, "number".into()), Value::Null);
+        assert_eq!(parse_as(r#"{"tags": ["a"]}"#, row_shape()), Value::Null, "missing required field");
+        assert_eq!(parse_as(r#"[{"id": 1, "tags": []}]"#, row_shape()), Value::Null, "bare array for a record");
+        assert_eq!(parse_as(r#"{"id": 1, "tags": ["a", 2]}"#, row_shape()), Value::Null, "nested element");
+        let rows = serde_json::json!({ "kind": "array", "inner": row_shape() });
+        assert_eq!(parse_as(r#"[{"id": 1, "tags": []}, {"id": "2", "tags": []}]"#, rows.clone()), Value::Null);
+        assert!(matches!(parse_as(r#"[{"id": 1, "tags": []}]"#, rows), Value::Array(ref v) if v.len() == 1));
+    }
+
+    #[test]
+    fn control_json_parse_shape_without_a_run_time_declaration_is_unchanged() {
+        assert_eq!(parse_as(r#""abc""#, "Row".into()), Value::String("abc".to_string()));
+        assert_eq!(
+            parse_as("[1]", "Row".into()),
+            Value::Array(vec![Value::Number(1.0)])
+        );
+    }
+
     #[test]
     fn json_stringify_round_trip() {
         assert_eq!(

@@ -454,12 +454,17 @@ pub fn declared_text(ty: &OirType) -> String {
     }
 }
 
-/// The kind of the first part of `value` that is not of `ty` (null is an absent value and is of every type).
-fn first_misfit(value: &Value, ty: &OirType) -> Option<&'static str> {
+/// The path to and the kind of the first part of `value` that is not of `ty` (null is an absent value and is of every
+/// type; a record's required field that is missing is `absent`).
+fn first_misfit(value: &Value, ty: &OirType) -> Option<(String, &'static str)> {
     if value.is_null() {
         return None;
     }
-    let misfit = || Some(value.type_name());
+    let misfit = || Some((String::new(), value.type_name()));
+    let at = |prefix: String| move |(path, actual): (String, &'static str)| (format!("{prefix}{path}"), actual);
+    let items = |items: &[Value], inner: &OirType| {
+        items.iter().enumerate().find_map(|(i, item)| first_misfit(item, inner).map(at(format!("[{i}]"))))
+    };
     match ty {
         OirType::SExpr | OirType::Json | OirType::Node | OirType::Trait | OirType::Orbital | OirType::Behavior => None,
         // An unbound variable admits any value; a bound one was substituted before run time.
@@ -473,33 +478,56 @@ fn first_misfit(value: &Value, ty: &OirType) -> Option<&'static str> {
             }
         }
         OirType::Array { inner } => match value {
-            Value::Array(items) => items.iter().find_map(|item| first_misfit(item, inner)),
+            Value::Array(list) => items(list, inner),
             _ => misfit(),
         },
         OirType::Tuple { items: slots } => match value {
-            Value::Array(items) => items.iter().zip(slots).find_map(|(item, slot)| first_misfit(item, slot)),
+            Value::Array(list) => list
+                .iter()
+                .zip(slots)
+                .enumerate()
+                .find_map(|(i, (item, slot))| first_misfit(item, slot).map(at(format!("[{i}]")))),
             _ => misfit(),
         },
         OirType::Map { value: inner, .. } => match value {
-            Value::Object(map) => map.values().find_map(|item| first_misfit(item, inner)),
+            Value::Object(map) => map.iter().find_map(|(k, item)| first_misfit(item, inner).map(at(format!(".{k}")))),
             _ => misfit(),
         },
-        OirType::Struct { .. } | OirType::File | OirType::Row { .. } | OirType::TypeRef { .. } => {
-            (!matches!(value, Value::Object(_))).then(|| value.type_name())
+        OirType::Struct { fields } => match value {
+            Value::Object(map) => fields.iter().find_map(|field| match map.get(&field.name) {
+                None => field.required.then(|| (format!(".{}", field.name), "absent")),
+                Some(item) => first_misfit(item, &field.field_type).map(at(format!(".{}", field.name))),
+            }),
+            _ => misfit(),
+        },
+        OirType::File | OirType::Row { .. } | OirType::TypeRef { .. } => {
+            (!matches!(value, Value::Object(_))).then(|| (String::new(), value.type_name()))
         }
-        OirType::Reference { .. } => (!matches!(value, Value::Object(_) | Value::String(_))).then(|| value.type_name()),
-        OirType::Number | OirType::Integer | OirType::Money => (!matches!(value, Value::Number(_))).then(|| value.type_name()),
-        OirType::Boolean => (!matches!(value, Value::Bool(_))).then(|| value.type_name()),
-        OirType::Date | OirType::DateTime => (!matches!(value, Value::String(_) | Value::Number(_))).then(|| value.type_name()),
-        _ => (!matches!(value, Value::String(_))).then(|| value.type_name()),
+        OirType::Reference { .. } => {
+            (!matches!(value, Value::Object(_) | Value::String(_))).then(|| (String::new(), value.type_name()))
+        }
+        OirType::Number | OirType::Integer | OirType::Money => {
+            (!matches!(value, Value::Number(_))).then(|| (String::new(), value.type_name()))
+        }
+        OirType::Boolean => (!matches!(value, Value::Bool(_))).then(|| (String::new(), value.type_name())),
+        OirType::Date | OirType::DateTime => {
+            (!matches!(value, Value::String(_) | Value::Number(_))).then(|| (String::new(), value.type_name()))
+        }
+        _ => (!matches!(value, Value::String(_))).then(|| (String::new(), value.type_name())),
     }
 }
 
-/// `value` is of the declared `ty`, kind by kind (a record's fields are not read, as in every argument check).
+/// Where `value` departs from the declared `ty` (`""` for the value itself, `.rows[2].id` inside it) and what kind of
+/// value is there, when it does.
+pub fn misfit_of_declared(value: &Value, ty: &OirType) -> Option<(String, &'static str)> {
+    first_misfit(value, ty)
+}
+
+/// `value` is of the declared `ty`, kind by kind, and a record's declared fields field by field.
 pub fn value_of_declared(value: &Value, ty: &OirType) -> Result<(), OrbitalError> {
     match first_misfit(value, ty) {
         None => Ok(()),
-        Some(actual) => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+        Some((_, actual)) => Err(OrbitalError::Eval(EvalError::TypeMismatch {
             expected: declared_text(ty),
             actual: actual.to_string(),
         })),

@@ -5,6 +5,7 @@ use crate::os::OsOp;
 use crate::schema::sexpr::SExpression;
 use crate::value::Value;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -15,6 +16,14 @@ pub enum FsMode {
     Create,
     Remove,
     Meta,
+}
+
+/// What a `kv/` call does to a store: `read` (get, scan) or `write` (put, delete, batch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KvMode {
+    Read,
+    Write,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -69,6 +78,7 @@ macro_rules! named_kinds {
 }
 
 named_kinds!(FsMode { Read => "read", Write => "write", Create => "create", Remove => "remove", Meta => "meta" });
+named_kinds!(KvMode { Read => "read", Write => "write" });
 named_kinds!(NetKind { Tcp => "tcp", Udp => "udp", Listen => "listen" });
 named_kinds!(StdioKind { In => "in", Out => "out", Err => "err" });
 named_kinds!(SysKind {
@@ -201,6 +211,9 @@ pub struct OsGrants {
     pub stdio: Vec<StdioKind>,
     pub sys: Vec<SysKind>,
     pub desktop: Vec<DesktopKind>,
+    /// `kv: { <store>: [read, write] }`: a store name, or a `*`/`?` glob over one, and the modes it grants.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub kv: BTreeMap<String, Vec<KvMode>>,
     #[serde(skip_serializing_if = "AnchoredGrants::is_empty")]
     pub anchored: AnchoredGrants,
 }
@@ -406,6 +419,9 @@ impl OsGrants {
         extend_missing(&mut self.stdio, &other.stdio);
         extend_missing(&mut self.sys, &other.sys);
         extend_missing(&mut self.desktop, &other.desktop);
+        for (store, modes) in &other.kv {
+            extend_missing(self.kv.entry(store.clone()).or_default(), modes);
+        }
     }
 
     /// Whether `path` may be used in `mode`. The path is matched lexically (`.`/`..` collapsed, refused when
@@ -476,6 +492,15 @@ impl OsGrants {
 
     pub fn desktop_allows(&self, kind: DesktopKind) -> bool {
         self.desktop.contains(&kind)
+    }
+
+    /// Whether the kv `store` may be used in `mode`: an entry naming it exactly or by a one-segment glob.
+    pub fn kv_allows(&self, store: &str, mode: KvMode) -> bool {
+        let text: Vec<char> = store.chars().collect();
+        self.kv.iter().any(|(glob, modes)| {
+            let pattern: Vec<char> = glob.chars().collect();
+            modes.contains(&mode) && segment_matches(&pattern, &text)
+        })
     }
 }
 
@@ -905,6 +930,15 @@ impl OsGrants {
                 grants: OsGrants { desktop: vec![*kind], ..OsGrants::default() },
             });
         }
+        for (store, modes) in &self.kv {
+            for mode in modes {
+                out.push(GrantAtom {
+                    path: format!("kv[{store:?}]"),
+                    label: format!("kv {store:?} {}", mode.name()),
+                    grants: OsGrants { kv: BTreeMap::from([(store.clone(), vec![*mode])]), ..OsGrants::default() },
+                });
+            }
+        }
         for (i, g) in self.anchored.fs.iter().enumerate() {
             for mode in &g.modes {
                 out.push(GrantAtom {
@@ -960,6 +994,14 @@ impl OsGrants {
             }
             if g.modes.is_empty() {
                 problem(format!("fs[{i}]"), format!("{:?} grants no mode", g.glob));
+            }
+        }
+        for (store, modes) in &self.kv {
+            if store.is_empty() || !store.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '*' | '?')) {
+                problem(format!("kv[{store:?}]"), format!("{store:?} is not a store name or a glob over one"));
+            }
+            if modes.is_empty() {
+                problem(format!("kv[{store:?}]"), format!("{store:?} grants no mode"));
             }
         }
         for (i, command) in self.exec.iter().enumerate() {
@@ -1050,6 +1092,7 @@ pub enum OsRequirement {
     Stdio { kind: StdioKind },
     Sys { kind: SysKind },
     Desktop { kind: DesktopKind },
+    Kv { store: String, mode: KvMode },
 }
 
 impl OsRequirement {
@@ -1092,6 +1135,7 @@ impl OsGrants {
             OsRequirement::Stdio { kind } => self.stdio_allows(*kind),
             OsRequirement::Sys { kind } => self.sys_allows(*kind),
             OsRequirement::Desktop { kind } => self.desktop_allows(*kind),
+            OsRequirement::Kv { store, mode } => self.kv_allows(store, *mode),
         }
     }
 }
@@ -1446,6 +1490,13 @@ pub fn anchored_net_args(op: OsOp) -> Option<(usize, usize)> {
     }
 }
 
+fn kv_need(args: &[SExpression], mode: KvMode, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
+    Ok(literal(args, 0, deferred)?
+        .map(|store| OsRequirement::Kv { store: store.to_string(), mode })
+        .into_iter()
+        .collect())
+}
+
 fn requirements_of(
     op: OsOp,
     args: &[SExpression],
@@ -1520,6 +1571,8 @@ fn requirements_of(
         BrightnessGet | BrightnessSet => desktop(DesktopKind::Brightness),
         VolumeGet | VolumeSet | VolumeMute => desktop(DesktopKind::Volume),
         Suspend | Hibernate => desktop(DesktopKind::Power),
+        KvGet | KvScan => kv_need(args, KvMode::Read, deferred),
+        KvPut | KvDelete | KvBatch => kv_need(args, KvMode::Write, deferred),
         Close | Read | Write | Seek | Fsync | Cwd | Wait | Kill | Pid | Ppid | CurrentExe | WatchProcess
         | WatchSignal | Environ | Isatty | TtySize | Send | Recv | Recvfrom | Shutdown | WatchPort
         | ClockMonotonic | WatchCron => Ok(Vec::new()),
