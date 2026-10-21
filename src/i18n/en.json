@@ -568,6 +568,7 @@
     "==": "==",
     ">": ">",
     ">=": ">=",
+    "access-check": "access-check",
     "and": "and",
     "anim/direction-from-delta": "anim/direction-from-delta",
     "anim/frame-at": "anim/frame-at",

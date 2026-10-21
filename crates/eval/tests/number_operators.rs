@@ -92,12 +92,18 @@ fn ecma_cases() -> Vec<(Json, &'static str)> {
 fn a_number_becomes_text_as_ecmascript_number_to_string() {
     for (number, want) in ecma_cases() {
         assert_eq!(eval_text(serde_json::json!(["str/concat", "", number])), want, "str/concat {number}");
-        assert_eq!(
-            eval_text(serde_json::json!(["str/concat", "", {"n": number}])),
-            format!("{{\"n\":{want}}}"),
-            "str/concat object {number}"
-        );
     }
+}
+
+#[test]
+fn control_str_concat_refuses_an_object_rather_than_stringifying_it() {
+    let ctx = BindingContextBuilder::new().build();
+    let expr = serde_json::json!(["str/concat", "", {"n": 1e19}]);
+    let result = Evaluator::new().evaluate(&serde_json::from_value(expr).unwrap(), &ctx);
+    assert!(
+        matches!(result, Err(orbital_core_base::error::OrbitalError::Eval(orbital_core_base::error::EvalError::TypeMismatch { .. }))),
+        "{result:?}"
+    );
 }
 
 #[test]

@@ -61,10 +61,67 @@ pub fn stamp_schema_identity(
 /// ledger and are left untouched (zero churn). This is the intrinsic-stamping
 /// chokepoint that makes name-only inputs impossible past the parse boundary,
 /// so the compiler's name-fallback rewriters are dead code.
-pub fn ensure_stamped(schema: &mut OrbitalSchema) {
-    if schema.ledger.is_none() {
-        stamp_schema_identity(schema, None, &HashSet::new());
+/// Returns every declaration id the author wrote that this re-mint replaced.
+pub fn ensure_stamped(schema: &mut OrbitalSchema) -> Vec<ReplacedAuthoredId> {
+    if schema.ledger.is_some() {
+        return Vec::new();
     }
+    let authored = declaration_ids(schema);
+    stamp_schema_identity(schema, None, &HashSet::new());
+    authored
+        .into_iter()
+        .zip(declaration_ids(schema))
+        .filter_map(|((path, before), (_, after))| match before {
+            Some(id) if Some(&id) != after.as_ref() => Some(ReplacedAuthoredId { path, id }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An authored declaration id that loading a ledger-less `.orb` replaced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacedAuthoredId {
+    pub path: String,
+    pub id: String,
+}
+
+fn declaration_ids(schema: &OrbitalSchema) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    for (oi, orbital) in schema.orbitals.iter().enumerate() {
+        let at = format!("orbitals[{oi}]");
+        out.push((format!("{at}.id"), orbital.id.clone()));
+        if let EntityRef::Inline(entity) = &orbital.entity {
+            out.push((format!("{at}.entity.id"), entity.id.clone()));
+        }
+        for (ai, aux) in orbital.auxiliary_entities.iter().flatten().enumerate() {
+            if let EntityRef::Inline(entity) = aux {
+                out.push((format!("{at}.auxiliaryEntities[{ai}].id"), entity.id.clone()));
+            }
+        }
+        for (ti, tr) in orbital.traits.iter().enumerate() {
+            let trait_at = format!("{at}.traits[{ti}]");
+            match tr {
+                TraitReference::Inline(td) => {
+                    out.push((format!("{trait_at}.id"), td.id.clone()));
+                    for (ei, ev) in td.state_machine.events.iter().flatten().enumerate() {
+                        out.push((
+                            format!("{trait_at}.stateMachine.events[{ei}].id"),
+                            ev.id.clone(),
+                        ));
+                    }
+                }
+                TraitReference::Reference { id, .. } => {
+                    out.push((format!("{trait_at}.id"), id.clone()));
+                }
+            }
+        }
+        for (pi, page) in orbital.pages.iter().flatten().enumerate() {
+            if let PageRef::Inline(p) = page {
+                out.push((format!("{at}.pages[{pi}].id"), p.id.clone()));
+            }
+        }
+    }
+    out
 }
 
 /// Id allocator: reuses prior ids by `(kind, bakedName, parentId)`, mints fresh
@@ -799,6 +856,41 @@ mod tests {
         let ids = trait_ids(&again);
         assert_eq!(ids[0], trait_ids(&first)[0]);
         assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn ledgerless_load_reports_the_authored_ids_it_replaces() {
+        let mut o = orbital("O", "E");
+        o["traits"][0]["id"] = serde_json::json!("t-1");
+        let mut schema = program(vec![o]);
+        let replaced = super::ensure_stamped(&mut schema);
+        assert_eq!(
+            replaced,
+            vec![super::ReplacedAuthoredId {
+                path: "orbitals[0].traits[0].id".to_string(),
+                id: "t-1".to_string(),
+            }]
+        );
+        assert_ne!(trait_ids(&schema), vec!["t-1".to_string()]);
+    }
+
+    #[test]
+    fn control_ledgerless_load_without_authored_ids_reports_nothing() {
+        let mut schema = program(vec![orbital("O", "E")]);
+        assert!(super::ensure_stamped(&mut schema).is_empty());
+    }
+
+    #[test]
+    fn control_ledger_carrying_load_keeps_authored_ids_and_reports_nothing() {
+        let mut o = orbital("O", "E");
+        o["traits"][0]["id"] = serde_json::json!("t-1");
+        let mut schema = program(vec![o]);
+        schema.ledger = Some(crate::identity::IdentityLedger {
+            schema_version: 1,
+            entries: Default::default(),
+        });
+        assert!(super::ensure_stamped(&mut schema).is_empty());
+        assert_eq!(trait_ids(&schema), vec!["t-1".to_string()]);
     }
 
     #[test]

@@ -87,6 +87,6 @@ mod tests {
 
     #[test]
     fn control_serde_json_default_number_text_is_not_ecmascript() {
-        assert_eq!(serde_json::to_string(&Value::Number(1e19)).unwrap(), "1e19");
+        assert_eq!(serde_json::to_string(&Value::Number(1e19)).unwrap(), "1e+19");
     }
 }

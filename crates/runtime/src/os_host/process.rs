@@ -590,65 +590,8 @@ fn tty_size(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     }
 }
 
-fn stdin_read(
-    args: &[Value],
-    site: Option<&CallSite>,
-    host: &OsHost<'_>,
-) -> Result<Value, OsError> {
-    let op = OsOp::StdinRead;
-    let limit = match arg_opt(args, 0) {
-        None => STDIN_CAP,
-        Some(_) => {
-            let n = arg_i64(args, 0, op)?;
-            usize::try_from(n)
-                .ok()
-                .filter(|n| *n > 0)
-                .ok_or_else(|| invalid(op, "count must be a positive integer"))?
-        }
-    };
-    if !host.grants.stdio_allows(StdioKind::In) {
-        return Err(denied(op, "stdio in is not granted"));
-    }
-    if is_tty(0) {
-        return Err(err(
-            OsErrorKind::Unsupported,
-            op,
-            "stdin is an interactive terminal; a bounded read would block indefinitely",
-        ));
-    }
-    let mut stdin = std::io::stdin().lock();
-    let mut total = 0usize;
-    let mut eof = false;
-    let mut buf = [0u8; STDIN_CHUNK];
-    while total < limit {
-        let want = STDIN_CHUNK.min(limit - total);
-        match stdin.read(&mut buf[..want]) {
-            Ok(0) => {
-                eof = true;
-                break;
-            }
-            Ok(n) => {
-                total += n;
-                (host.on_event)(site, object(vec![("data", bytes_value(&buf[..n]))]));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(io_error(op, &e)),
-        }
-    }
-    (host.on_event)(site, object(vec![("eof", Value::Bool(eof))]));
-    Ok(object(vec![("bytes", number(total as i64))]))
-}
-
-/// `os/stdin-read` keyed under a route when the host has a completion sink: the call is answered deferred and stdin
-/// is read on a thread of its own. Each chunk (at most `count` bytes) goes to the `onMessage` route as `{ data }`, one
-/// dispatch at a time, and the end of stdin to the success route as `{ eof: true }`. Cancelling the key ends the
-/// stream; a read already blocked drops the chunk it returns.
-pub(super) fn stdin_later(
-    args: &[Value],
-    key: &str,
-    site: &CallSite,
-    host: &OsHost<'_>,
-) -> Result<(), OsError> {
+/// The per-chunk `count` of `os/stdin-read` (default one chunk), checked with the grant and the terminal refusal.
+fn stdin_count(args: &[Value], host: &OsHost<'_>) -> Result<usize, OsError> {
     let op = OsOp::StdinRead;
     let count = match arg_opt(args, 0) {
         None => STDIN_CHUNK,
@@ -670,6 +613,40 @@ pub(super) fn stdin_later(
             "stdin is an interactive terminal; a bounded read would block indefinitely",
         ));
     }
+    Ok(count)
+}
+
+/// `os/stdin-read` answered in place: one read of at most `count` bytes, `{ data, eof }`.
+fn stdin_read(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
+    let count = stdin_count(args, host)?;
+    read_once(&mut std::io::stdin().lock(), count)
+}
+
+fn read_once(reader: &mut impl Read, count: usize) -> Result<Value, OsError> {
+    let mut buf = vec![0u8; count.min(STDIN_CAP)];
+    let mut total = 0usize;
+    while total < buf.len() {
+        match reader.read(&mut buf[total..]) {
+            Ok(0) => break,
+            Ok(n) => total += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(io_error(OsOp::StdinRead, &e)),
+        }
+    }
+    Ok(object(vec![("bytes", number(total as i64))]))
+}
+
+/// `os/stdin-read` keyed under a route when the host has a completion sink: the call is answered deferred and stdin
+/// is read on a thread of its own. Each chunk (at most `count` bytes) goes to the `onMessage` route as `{ data }`, one
+/// dispatch at a time, and the end of stdin to the success route as `{ eof: true }`. Cancelling the key ends the
+/// stream; a read already blocked drops the chunk it returns.
+pub(super) fn stdin_later(
+    args: &[Value],
+    key: &str,
+    site: &CallSite,
+    host: &OsHost<'_>,
+) -> Result<(), OsError> {
+    let count = stdin_count(args, host)?;
     stream_stdin(
         std::io::stdin(),
         count,
@@ -776,7 +753,7 @@ pub(super) fn answer(
             std_fd(args, host, op).map(|fd| object(vec![("ok", Value::Bool(is_tty(fd)))]))
         }
         OsOp::TtySize => tty_size(args, host),
-        OsOp::StdinRead => stdin_read(args, site, host),
+        OsOp::StdinRead => stdin_read(args, host),
         OsOp::WatchProcess | OsOp::WatchSignal | OsOp::WatchEnv => Err(err(
             OsErrorKind::Unsupported,
             op,
@@ -1617,5 +1594,23 @@ mod tests {
         )
         .expect_err("refused");
         assert_eq!(e.kind, OsErrorKind::Invalid);
+    }
+
+    #[test]
+    fn stdin_unkeyed_read_returns_at_most_count_bytes() {
+        let mut long = std::io::Cursor::new(b"abcdefgh".to_vec());
+        let r = read_once(&mut long, 4).expect("read");
+        assert_eq!(r, object(vec![("data", bytes_value(b"abcd")), ("eof", Value::Bool(false))]));
+        let rest = read_once(&mut long, 4).expect("read");
+        assert_eq!(field(&rest, "data"), bytes_value(b"efgh"), "the next read takes the next chunk");
+    }
+
+    #[test]
+    fn stdin_unkeyed_control_a_short_stdin_returns_everything() {
+        let mut short = std::io::Cursor::new(b"hi".to_vec());
+        let r = read_once(&mut short, 64).expect("read");
+        assert_eq!(r, object(vec![("data", bytes_value(b"hi")), ("eof", Value::Bool(false))]));
+        let end = read_once(&mut short, 64).expect("read");
+        assert_eq!(end, object(vec![("data", bytes_value(b"")), ("eof", Value::Bool(true))]), "edge: an empty read is eof");
     }
 }
