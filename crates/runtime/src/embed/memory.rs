@@ -4,6 +4,40 @@ use orbital_core_base::value::Value;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::BTreeMap;
 
+fn parse_checked<T: DeserializeOwned>(text: &str, contract: &str) -> Result<T, String> {
+    let raw: serde_json::Value = parse(text)?;
+    match contract {
+        "EntityRow" => validate_entity_row(&raw)?,
+        "RowWriteOp" => validate_row_write_op(&raw)?,
+        "RowWriteBatch" => {
+            let ops = raw.get("ops").and_then(serde_json::Value::as_array)
+                .ok_or_else(|| "invalid RowWriteBatch: `ops` must be an array".to_string())?;
+            for op in ops { validate_row_write_op(op)?; }
+        }
+        _ => return Err(format!("unknown memory store input type: {contract}")),
+    }
+    serde_json::from_value(raw).map_err(|error| format!("parse memory store input: {error}"))
+}
+
+fn validate_entity_row(row: &serde_json::Value) -> Result<(), String> {
+    let object = row.as_object().ok_or_else(|| "EntityRow must be an object".to_string())?;
+    if let Some(id) = object.get("id") {
+        if !id.is_string() {
+            return Err("EntityRow.id must be a string when present".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_row_write_op(op: &serde_json::Value) -> Result<(), String> {
+    let object = op.as_object().ok_or_else(|| "RowWriteOp must be an object".to_string())?;
+    if object.get("guard").is_some_and(serde_json::Value::is_null) {
+        return Err("RowWriteOp.guard must be omitted or a predicate, not null".to_string());
+    }
+    if let Some(data) = object.get("data") { validate_entity_row(data)?; }
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct MemoryStoreApi {
     source: InMemoryEntityCache,
@@ -32,14 +66,14 @@ impl MemoryStoreApi {
         json(
             &self
                 .source
-                .create(entity_type, &parse::<Value>(data_json)?)?,
+                .create(entity_type, &parse_checked::<Value>(data_json, "EntityRow")?)?,
         )
     }
     pub fn update(&self, entity_type: &str, id: &str, data_json: &str) -> Result<String, String> {
         let op = RowWriteOp::Update {
             entity_type: entity_type.to_string(),
             id: id.to_string(),
-            data: parse(data_json)?,
+            data: parse_checked(data_json, "EntityRow")?,
             guard: None,
         };
         json(
@@ -72,7 +106,7 @@ impl MemoryStoreApi {
         json(
             &self
                 .source
-                .write_where(&parse(op_json)?)
+                .write_where(&parse_checked(op_json, "RowWriteOp")?)
                 .ok_or("memory store does not support conditional writes")??,
         )
     }
@@ -80,7 +114,7 @@ impl MemoryStoreApi {
         json(
             &self
                 .source
-                .write_batch(&parse(batch_json)?)
+                .write_batch(&parse_checked(batch_json, "RowWriteBatch")?)
                 .ok_or("memory store does not support write batches")??,
         )
     }
@@ -235,5 +269,82 @@ mod tests {
             decoded(store.snapshot())["notes"].as_array().unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn raw_native_type_null_guards_refuse_before_any_batch_prefix_write() {
+        for kind in ["update", "delete", "rekey"] {
+            for mode in ["atomic", "stop"] {
+                let store = MemoryStoreApi::new();
+                store.create("Note", r#"{"id":"a","body":"kept"}"#).unwrap();
+                let before = decoded(store.snapshot());
+                let op = json!({"kind":kind,"entityType":"Note","id":"a",
+                    "newId":"b","data":{"body":"changed"},"guard":null});
+                assert!(store.write_where(&op.to_string()).is_err(), "{kind}: null guard");
+                assert_eq!(decoded(store.snapshot()), before);
+                let batch = json!({"onFailure":mode,"ops":[
+                    {"kind":"create","entityType":"Note","data":{"id":"prefix"}},op]});
+                assert!(store.write_batch(&batch.to_string()).is_err(), "{kind}: {mode}");
+                assert_eq!(decoded(store.snapshot()), before);
+            }
+        }
+    }
+
+    #[test]
+    fn raw_native_type_nonstring_row_ids_refuse_before_any_batch_prefix_write() {
+        for id in [Json::Null, json!(7), json!(true), json!([]), json!({})] {
+            for kind in ["create", "update"] {
+                for mode in ["atomic", "stop"] {
+                    let store = MemoryStoreApi::new();
+                    store.create("Note", r#"{"id":"a","body":"kept"}"#).unwrap();
+                    let before = decoded(store.snapshot());
+                    let op = json!({"kind":kind,"entityType":"Note","id":"a",
+                        "data":{"id":id,"body":"changed"}});
+                    assert!(store.write_where(&op.to_string()).is_err(), "{kind}: {id}");
+                    assert_eq!(decoded(store.snapshot()), before);
+                    let batch = json!({"onFailure":mode,"ops":[
+                        {"kind":"create","entityType":"Note","data":{"id":"prefix"}},op]});
+                    assert!(store.write_batch(&batch.to_string()).is_err(), "{kind}: {id}: {mode}");
+                    assert_eq!(decoded(store.snapshot()), before);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn raw_native_type_convenience_writes_refuse_present_nonstring_ids() {
+        for id in [Json::Null, json!(7), json!(true), json!([]), json!({})] {
+            let store = MemoryStoreApi::new();
+            store.create("Note", r#"{"id":"a","body":"kept"}"#).unwrap();
+            let before = decoded(store.snapshot());
+            let data = json!({"id":id,"body":"changed"}).to_string();
+            assert!(store.create("Note", &data).is_err(), "create: {id}");
+            assert_eq!(decoded(store.snapshot()), before);
+            assert!(store.update("Note", "a", &data).is_err(), "update: {id}");
+            assert_eq!(decoded(store.snapshot()), before);
+        }
+    }
+
+    #[test]
+    fn raw_native_type_missing_guards_and_null_comparison_values_keep_existing_outcomes() {
+        let store = MemoryStoreApi::new();
+        assert_eq!(decoded(store.create("Note", r#"{"active":true}"#))["id"], "Note-1");
+        let update = json!({"kind":"update","entityType":"Note","id":"Note-1",
+            "data":{"body":"kept"}});
+        assert_eq!(decoded(store.write_where(&update.to_string()))["kind"], "updated");
+        let null_value = json!({"kind":"compare","field":"active","op":"==","value":null});
+        let mut guarded = update.clone();
+        guarded["guard"] = null_value;
+        assert_eq!(decoded(store.write_where(&guarded.to_string())), json!({"kind":"refused"}));
+        let before = decoded(store.snapshot());
+        let missing_value = json!({"kind":"compare","field":"active","op":"=="});
+        for guard in [missing_value.clone(), json!({"kind":"not","of":missing_value})] {
+            guarded["guard"] = guard;
+            assert!(store.write_where(&guarded.to_string()).is_err());
+            let batch = json!({"onFailure":"stop","ops":[
+                {"kind":"create","entityType":"Note","data":{"id":"prefix"}},guarded]});
+            assert!(store.write_batch(&batch.to_string()).is_err());
+            assert_eq!(decoded(store.snapshot()), before);
+        }
     }
 }

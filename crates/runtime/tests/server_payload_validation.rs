@@ -229,13 +229,10 @@ mod native_record_event_admission {
     use orbital_core_runtime::kernel::{KernelError, RuntimeKernel};
     use std::sync::Arc;
 
-    fn program(version: Option<u32>, role: Option<&str>, field: Json) -> Json {
+    fn program(version: Option<u32>, field: Json) -> Json {
         let mut program = serde_json::to_value(schema()).unwrap();
         if let Some(version) = version {
             program["typeContractVersion"] = json!(version);
-        }
-        if let Some(role) = role {
-            program["sourceRole"] = json!(role);
         }
         program["orbitals"][0]["traits"][0]["stateMachine"]["events"][0]["payloadSchema"] =
             json!([field]);
@@ -270,79 +267,67 @@ mod native_record_event_admission {
 
     #[test]
     fn native_record_event_admission_separates_presence_from_null_for_all_four_forms() {
-        for role in [None, Some("application")] {
-            for (required, nullable) in [(false, false), (true, false), (false, true), (true, true)]
-            {
-                let kernel = kernel(program(
-                    Some(1),
-                    role,
-                    json!({
-                        "name": "value", "type": "string", "required": required, "nullable": nullable
-                    }),
-                ));
-                dispatch(&kernel, json!({}), !required);
-                dispatch(&kernel, json!({"value": null}), nullable);
-                dispatch(&kernel, json!({"value": "ok"}), true);
-                dispatch(&kernel, json!({"value": 42}), false);
-            }
+        for (required, nullable) in [(false, false), (true, false), (false, true), (true, true)] {
+            let kernel = kernel(program(
+                Some(1),
+                json!({
+                    "name": "value", "type": "string", "required": required, "nullable": nullable
+                }),
+            ));
+            dispatch(&kernel, json!({}), !required);
+            dispatch(&kernel, json!({"value": null}), nullable);
+            dispatch(&kernel, json!({"value": "ok"}), true);
+            dispatch(&kernel, json!({"value": 42}), false);
         }
     }
 
     #[test]
     fn native_record_event_admission_legacy_programs_keep_their_null_contract() {
-        for role in [None, Some("application")] {
-            for (required, nullable) in [(false, false), (true, false), (false, true), (true, true)]
-            {
-                let kernel = kernel(program(
-                    None,
-                    role,
-                    json!({
-                        "name": "value", "type": "string", "required": required, "nullable": nullable
-                    }),
-                ));
-                dispatch(&kernel, json!({}), !required);
-                dispatch(&kernel, json!({"value": null}), !required);
-                dispatch(&kernel, json!({"value": "ok"}), true);
-            }
+        for (required, nullable) in [(false, false), (true, false), (false, true), (true, true)] {
+            let kernel = kernel(program(
+                None,
+                json!({
+                    "name": "value", "type": "string", "required": required, "nullable": nullable
+                }),
+            ));
+            dispatch(&kernel, json!({}), !required);
+            dispatch(&kernel, json!({"value": null}), !required);
+            dispatch(&kernel, json!({"value": "ok"}), true);
         }
     }
 
     #[test]
     fn native_record_event_admission_checks_root_aliases_and_nested_values() {
-        for role in [None, Some("application")] {
-            let mut program = program(
-                Some(1),
-                role,
-                json!({
-                    "name": "data", "type": "Envelope", "required": true, "nullable": false
-                }),
-            );
-            program["types"] = json!({"Envelope": [{
-                "name": "nested", "type": "object", "required": true, "nullable": false,
-                "properties": [{"name": "value", "type": "string", "required": true, "nullable": false}]
-            }]});
-            let kernel = kernel(program);
-            dispatch(&kernel, json!({"data": {"nested": {"value": "ok"}}}), true);
-            let bad: Value =
-                serde_json::from_value(json!({"data": {"nested": {"value": 42}}})).unwrap();
-            let rejection = kernel.payload_rejection([("ChatComposer", "SEND")], &bad);
-            assert!(
-                rejection
-                    .as_deref()
-                    .is_some_and(|message| message.contains("data.nested.value")),
-                "{rejection:?}"
-            );
-            dispatch(&kernel, json!({"data": {"nested": {"value": 42}}}), false);
-            dispatch(&kernel, json!({"data": {"nested": {"value": null}}}), false);
-            dispatch(&kernel, json!({"data": {"nested": {}}}), false);
-        }
+        let mut program = program(
+            Some(1),
+            json!({
+                "name": "data", "type": "Envelope", "required": true, "nullable": false
+            }),
+        );
+        program["types"] = json!({"Envelope": [{
+            "name": "nested", "type": "object", "required": true, "nullable": false,
+            "properties": [{"name": "value", "type": "string", "required": true, "nullable": false}]
+        }]});
+        let kernel = kernel(program);
+        dispatch(&kernel, json!({"data": {"nested": {"value": "ok"}}}), true);
+        let bad: Value =
+            serde_json::from_value(json!({"data": {"nested": {"value": 42}}})).unwrap();
+        let rejection = kernel.payload_rejection([("ChatComposer", "SEND")], &bad);
+        assert!(
+            rejection
+                .as_deref()
+                .is_some_and(|message| message.contains("data.nested.value")),
+            "{rejection:?}"
+        );
+        dispatch(&kernel, json!({"data": {"nested": {"value": 42}}}), false);
+        dispatch(&kernel, json!({"data": {"nested": {"value": null}}}), false);
+        dispatch(&kernel, json!({"data": {"nested": {}}}), false);
     }
 
     #[test]
     fn native_record_event_admission_local_aliases_override_root_aliases() {
         let mut program = program(
             Some(1),
-            Some("application"),
             json!({
                 "name": "data", "type": "Envelope", "required": true, "nullable": false
             }),

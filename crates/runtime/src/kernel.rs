@@ -1,47 +1,65 @@
 //! Runtime kernel — canonical runtime lifecycle for Orbital applications.
 
-use super::http_request;
 use super::dispatch_memory::{DispatchMemory, DispatchView};
-use orbital_core_base::dispatch_mode::DispatchMode;
 use super::embed_index::EmbedIndex;
-use super::entity_access::{apply_read_access, scope_fetched_rows, EntityAccessPolicies, EntityAccessTable};
+use super::entity_access::{
+    apply_read_access, scope_fetched_rows, EntityAccessPolicies, EntityAccessTable,
+};
 use super::entity_source::EntitySource;
+use super::http_request;
 use super::listener::{ListenerManager, TriggerCallback};
-use super::process_result::{DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo, ProcessEventResult, RuntimeStats};
+use super::process_result::{
+    DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo,
+    ProcessEventResult, RuntimeStats,
+};
 use super::render_store::RenderStore;
 use super::resumable::{CallRoutes, CallSite, CallVerdict, IoPort, AWAITING_HOST};
+use orbital_core_base::dispatch_mode::DispatchMode;
 
 #[cfg(not(feature = "wire-drivers"))]
-const WIRE_DRIVERS_UNAVAILABLE: &str = "postgres and redis calls need the full kernel build; this is the client build";
-use super::row_query::{and_predicates, compile_predicate, default_row_order, query_unsupported_reason, resolve_row_set, NotExpressible, PredicateRole, QueryCapabilities, RowPage, RowWriteBatch, RowWriteOp, RowWriteOutcome, WriteCapabilities};
-use orbital_core_base::row_set::{nearest_rows, RowNearest, RowOrder, RowPredicate, RowQuery, RowSetRef, RowTotalMode};
+const WIRE_DRIVERS_UNAVAILABLE: &str =
+    "postgres and redis calls need the full kernel build; this is the client build";
+use super::row_query::{
+    and_predicates, compile_predicate, default_row_order, query_unsupported_reason,
+    resolve_row_set, NotExpressible, PredicateRole, QueryCapabilities, RowPage, RowWriteBatch,
+    RowWriteOp, RowWriteOutcome, WriteCapabilities,
+};
 use super::server_leg::ServerLegCollector;
 use super::shared_entity::SharedEntity;
-use orbital_core_base::theme::{resolve_theme, resolve_theme_default, ResolvedTheme, ThemeMode, ThemePresets};
 use crate::config::KernelConfig;
-use crate::effects::response::{delivery_record_value, DeliveryRecord, DispatchLog};
 use crate::effects::executor::page_ordered_rows;
-use orbital_core_base::bus_event::BusEventSource;
-use orbital_core_base::effect_types::PersistOperation;
-use orbital_core_base::codec;
 use crate::effects::executor::ServiceCaller;
+use crate::effects::executor::{EffectExecutor, FetchHandler, FetchPage, PersistenceHandler};
+use crate::effects::response::{delivery_record_value, DeliveryRecord, DispatchLog};
+use crate::effects::response::{EventRequest, EventResponse, TraitFrom};
+use orbital_core_base::bus_event::BusEventSource;
+use orbital_core_base::codec;
+use orbital_core_base::effect_types::PersistOperation;
+use orbital_core_base::effect_types::{
+    Effect, EffectOutcome, EffectResult, FetchEmit, RuntimeEnvironment,
+};
 use orbital_core_base::error::{EvalError, OrbitalError};
+use orbital_core_base::events::bus::{shared_bus, SharedEventBus};
 use orbital_core_base::oauth_ask::{OAuthFailureReason, OAuthReply};
 use orbital_core_base::os::{OsError, OsErrorKind};
 use orbital_core_base::os_grants::OsGrants;
+use orbital_core_base::row_set::{
+    nearest_rows, RowNearest, RowOrder, RowPredicate, RowQuery, RowSetRef, RowTotalMode,
+};
+use orbital_core_base::schema::sexpr::SExpression;
+use orbital_core_base::schema::types::{
+    EntityDefinition, EntityRef, OrbitalSchema, Persistence, TraitDefinition, TraitReference,
+};
+use orbital_core_base::theme::{
+    resolve_theme, resolve_theme_default, ResolvedTheme, ThemeMode, ThemePresets,
+};
+use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
-use orbital_core_eval::util::visit_key::DispatchVisits;
-use orbital_core_base::effect_types::{Effect, EffectOutcome, EffectResult, FetchEmit, RuntimeEnvironment};
-use crate::effects::executor::{EffectExecutor, FetchHandler, FetchPage, PersistenceHandler};
-use crate::effects::response::{EventRequest, EventResponse, TraitFrom};
 use orbital_core_eval::evaluator::context::{BindingContext, BindingContextBuilder, EntropySource};
 use orbital_core_eval::evaluator::Evaluator;
-use orbital_core_base::value::Value;
-use orbital_core_base::events::bus::{shared_bus, SharedEventBus};
-use orbital_core_base::schema::types::{EntityDefinition, EntityRef, OrbitalSchema, Persistence, TraitDefinition, TraitReference};
-use orbital_core_base::schema::sexpr::SExpression;
-use orbital_core_eval::state_machine::types::{EventPayload, TraitState};
 use orbital_core_eval::state_machine::manager::StateMachineManager;
+use orbital_core_eval::state_machine::types::{EventPayload, TraitState};
+use orbital_core_eval::util::visit_key::DispatchVisits;
 use parking_lot::RwLock;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -156,7 +174,9 @@ impl MountLifecycle {
 
     /// `trait_name` just ran `event`; when that is its lifecycle step, its held deliveries go out in arrival order.
     fn release_after(&mut self, trait_name: &str, event: &str) -> Vec<CascadeItem> {
-        if !orbital_core_base::events::is_bus_excluded_event(event) || !self.awaiting.remove(trait_name) {
+        if !orbital_core_base::events::is_bus_excluded_event(event)
+            || !self.awaiting.remove(trait_name)
+        {
             return Vec::new();
         }
         self.held.remove(trait_name).unwrap_or_default()
@@ -297,7 +317,8 @@ pub struct RuntimeKernel {
     pub(crate) suspended_commit: Arc<RwLock<Option<ProvisionalCommit>>>,
     /// A store-bound entity's declared `instances`, written through its driver by the next resumable dispatch
     /// before its first step (EXEC-STORE-4): one create batch per entity.
-    pub(crate) store_seeds: Arc<parking_lot::Mutex<std::collections::VecDeque<crate::resumable::StoreAsk>>>,
+    pub(crate) store_seeds:
+        Arc<parking_lot::Mutex<std::collections::VecDeque<crate::resumable::StoreAsk>>>,
     /// Frame slot -> the id of the row a carried row named: that trait reads that row under its frame,
     /// not the dispatch's address (G-CROSS-256).
     carried_rows: Arc<RwLock<HashMap<(String, String), String>>>,
@@ -615,12 +636,14 @@ impl EntitySourceHandler {
                 .map(|id| Value::String(id.clone()))
                 .collect(),
         };
-        let uncounted = reference.query.total == Some(RowTotalMode::None) || reference.query.nearest.is_some();
+        let uncounted =
+            reference.query.total == Some(RowTotalMode::None) || reference.query.nearest.is_some();
         let wanted = RowQuery {
             policy: combined.clone(),
-            filter: Some(and_predicates(reference.query.filter.clone(), Some(member)).unwrap_or(
-                RowPredicate::Const { value: true },
-            )),
+            filter: Some(
+                and_predicates(reference.query.filter.clone(), Some(member))
+                    .unwrap_or(RowPredicate::Const { value: true }),
+            ),
             total: Some(RowTotalMode::None),
             ..RowQuery::default()
         };
@@ -811,9 +834,13 @@ impl EntitySourceHandler {
                 }
                 match nearest {
                     Some(nearest) => {
-                        let ranked = nearest_rows(entities.into_iter().map(Arc::new).collect(), nearest)?;
+                        let ranked =
+                            nearest_rows(entities.into_iter().map(Arc::new).collect(), nearest)?;
                         let rows: Vec<Value> = ranked.iter().map(|row| (**row).clone()).collect();
-                        FetchPage { total: rows.len(), rows }
+                        FetchPage {
+                            total: rows.len(),
+                            rows,
+                        }
                     }
                     None => FetchPage {
                         rows: entities,
@@ -855,7 +882,18 @@ impl FetchHandler for EntitySourceHandler {
         include: Option<&Vec<String>>,
         ctx: &BindingContext,
     ) -> Result<FetchPage, String> {
-        self.fetch_rows(entity_type, id, filter, None, limit, offset, include, RowTotalMode::Exact, None, ctx)
+        self.fetch_rows(
+            entity_type,
+            id,
+            filter,
+            None,
+            limit,
+            offset,
+            include,
+            RowTotalMode::Exact,
+            None,
+            ctx,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -872,7 +910,18 @@ impl FetchHandler for EntitySourceHandler {
         nearest: Option<&RowNearest>,
         ctx: &BindingContext,
     ) -> Result<FetchPage, String> {
-        self.fetch_rows(entity_type, id, filter, order, limit, offset, include, total, nearest, ctx)
+        self.fetch_rows(
+            entity_type,
+            id,
+            filter,
+            order,
+            limit,
+            offset,
+            include,
+            total,
+            nearest,
+            ctx,
+        )
     }
 
     fn fetch_row_set(
@@ -893,10 +942,22 @@ impl FetchHandler for EntitySourceHandler {
             .and_then(|p| p.read.clone());
         let required_fields = self.required_fields_of(entity_type);
         let required = |field: &str| field == "id" || required_fields.contains(field);
-        let query = Self::compile_fetch(policy.as_ref(), filter, order, limit, offset, total, nearest, ctx, &required)
-            .map_err(|why| {
-                format!("{entity_type}: `deliver: ids` needs a fetch expressible as a row query ({why})")
-            })?;
+        let query = Self::compile_fetch(
+            policy.as_ref(),
+            filter,
+            order,
+            limit,
+            offset,
+            total,
+            nearest,
+            ctx,
+            &required,
+        )
+        .map_err(|why| {
+            format!(
+                "{entity_type}: `deliver: ids` needs a fetch expressible as a row query ({why})"
+            )
+        })?;
         tracing::debug!(
             target: orbital_core_base::logging::ns::RUNTIME_FETCH,
             entity = %entity_type,
@@ -906,10 +967,9 @@ impl FetchHandler for EntitySourceHandler {
             },
             "kernel.fetch.tier",
         );
-        let page = self
-            .source
-            .query_ids(entity_type, &query)
-            .ok_or_else(|| format!("{entity_type}: the store cannot answer a fetch by reference"))??;
+        let page = self.source.query_ids(entity_type, &query).ok_or_else(|| {
+            format!("{entity_type}: the store cannot answer a fetch by reference")
+        })??;
         Ok(RowSetRef {
             entity_type: entity_type.to_string(),
             ids: page.ids,
@@ -935,10 +995,12 @@ struct KernelI18n {
 fn entropy_from(io: Arc<IoPort>) -> EntropySource {
     EntropySource::new(move || {
         let raw = io.random(4)?;
-        let bytes: [u8; 4] = raw
-            .as_slice()
-            .try_into()
-            .map_err(|_| format!("prob/*: the host answered {} entropy bytes, not 4", raw.len()))?;
+        let bytes: [u8; 4] = raw.as_slice().try_into().map_err(|_| {
+            format!(
+                "prob/*: the host answered {} entropy bytes, not 4",
+                raw.len()
+            )
+        })?;
         Ok(u32::from_le_bytes(bytes))
     })
 }
@@ -1159,33 +1221,48 @@ impl RuntimeKernel {
 
     /// The credentials every registered program declares (`secret` knobs its `http` auth, `credential-status` and `hash/scrypt` salt slots
     /// read), by registered schema name: the program half of the catalog the credential effects check names against.
-    fn program_credentials(&self) -> Result<Vec<orbital_core_base::secrets::ProgramCredential>, String> {
+    fn program_credentials(
+        &self,
+    ) -> Result<Vec<orbital_core_base::secrets::ProgramCredential>, String> {
         let schemas = self.schemas.read();
         let mut names: Vec<&String> = schemas.keys().collect();
         names.sort();
         let mut found: Vec<orbital_core_base::secrets::ProgramCredential> = Vec::new();
         let mut add = |credential: orbital_core_base::secrets::ProgramCredential| {
-            if !found.iter().any(|c| c.group == credential.group && c.env_var == credential.env_var) {
+            if !found
+                .iter()
+                .any(|c| c.group == credential.group && c.env_var == credential.env_var)
+            {
                 found.push(credential);
             }
         };
         for name in names {
-            let program = serde_json::to_value(schemas[name].as_ref()).map_err(|e| format!("schema `{name}`: {e}"))?;
-            orbital_core_base::secrets::program_credentials(&program).into_iter().for_each(&mut add);
+            let program = serde_json::to_value(schemas[name].as_ref())
+                .map_err(|e| format!("schema `{name}`: {e}"))?;
+            orbital_core_base::secrets::program_credentials(&program)
+                .into_iter()
+                .for_each(&mut add);
         }
-        self.managed_credentials.read().iter().cloned().for_each(add);
+        self.managed_credentials
+            .read()
+            .iter()
+            .cloned()
+            .for_each(add);
         Ok(found)
     }
 
     /// Name the program whose credentials this kernel's credential effects manage beside its own (an integrations
     /// console serving the app a host shows): its declared credentials join the catalog, replacing the last one named.
     pub fn set_managed_program(&self, program: &serde_json::Value) {
-        *self.managed_credentials.write() = orbital_core_base::secrets::program_credentials(program);
+        *self.managed_credentials.write() =
+            orbital_core_base::secrets::program_credentials(program);
     }
 
     /// The credential catalog: the registry's services plus the credentials every registered program declares, what a
     /// `store`-source boot seeds the credential store with.
-    pub fn credential_catalog(&self) -> Result<orbital_core_base::credential_admin::Catalog, String> {
+    pub fn credential_catalog(
+        &self,
+    ) -> Result<orbital_core_base::credential_admin::Catalog, String> {
         let program = self.program_credentials()?;
         orbital_core_base::credential_admin::catalog(&program).map_err(|refusal| refusal.message)
     }
@@ -1225,8 +1302,7 @@ impl RuntimeKernel {
         // roster — its [identity] entity's seeded rows — which construction could
         // not see. Only fills a still-unset viewer: a later registration must not
         // clobber a viewer somebody already resolved or set.
-        if let Ok(crate::persona::EnvPersona::Bare(spec)) =
-            crate::persona::persona_from_env_spec()
+        if let Ok(crate::persona::EnvPersona::Bare(spec)) = crate::persona::persona_from_env_spec()
         {
             if matches!(self.get_current_user(), Value::Null) {
                 let roster = crate::persona::identity_roster(
@@ -1268,8 +1344,7 @@ impl RuntimeKernel {
                                     .filter(|f| f.required == Some(true) || f.default.is_some())
                                     .filter_map(|f| f.name.clone())
                                     .collect(),
-                                intrinsic_fields:
-                                    crate::entity_access::intrinsic_field_names(def),
+                                intrinsic_fields: crate::entity_access::intrinsic_field_names(def),
                             },
                         );
                     }
@@ -1311,7 +1386,10 @@ impl RuntimeKernel {
                 {
                     if let EntityRef::Inline(def) = entity_ref {
                         if let Some(registered) = defs.get(&def.name) {
-                            defaults.insert(def.name.clone(), SharedEntity::from_value(declared_defaults(registered)));
+                            defaults.insert(
+                                def.name.clone(),
+                                SharedEntity::from_value(declared_defaults(registered)),
+                            );
                         }
                     }
                 }
@@ -1399,24 +1477,38 @@ impl RuntimeKernel {
     /// The driver orbital's declared `queryCapabilities`/`writeCapabilities` config (EXEC-STORE-4) are what its
     /// bound entity's push-down honours, the same declaration a host store makes.
     fn declare_store_capabilities(&self, schema: &OrbitalSchema, entity_type: &str, driver: &str) {
-        let Some(config) = schema.orbitals.iter().find(|o| o.name == driver).and_then(|o| o.config.as_ref()) else {
+        let Some(config) = schema
+            .orbitals
+            .iter()
+            .find(|o| o.name == driver)
+            .and_then(|o| o.config.as_ref())
+        else {
             return;
         };
         let declared = |key: &str| {
-            config.get(key).and_then(|field| field.default.as_ref()).map(|value| {
-                serde_json::to_value(value).map_err(|e| e.to_string())
-            })
+            config
+                .get(key)
+                .and_then(|field| field.default.as_ref())
+                .map(|value| serde_json::to_value(value).map_err(|e| e.to_string()))
         };
         if let Some(value) = declared("queryCapabilities") {
-            match value.and_then(|v| serde_json::from_value::<QueryCapabilities>(v).map_err(|e| e.to_string())) {
+            match value.and_then(|v| {
+                serde_json::from_value::<QueryCapabilities>(v).map_err(|e| e.to_string())
+            }) {
                 Ok(capabilities) => self.io.set_query_capabilities(entity_type, capabilities),
-                Err(e) => tracing::error!(driver, entity = entity_type, error = %e, "kernel: store driver queryCapabilities malformed"),
+                Err(e) => {
+                    tracing::error!(driver, entity = entity_type, error = %e, "kernel: store driver queryCapabilities malformed")
+                }
             }
         }
         if let Some(value) = declared("writeCapabilities") {
-            match value.and_then(|v| serde_json::from_value::<WriteCapabilities>(v).map_err(|e| e.to_string())) {
+            match value.and_then(|v| {
+                serde_json::from_value::<WriteCapabilities>(v).map_err(|e| e.to_string())
+            }) {
                 Ok(capabilities) => self.io.set_write_capabilities(entity_type, capabilities),
-                Err(e) => tracing::error!(driver, entity = entity_type, error = %e, "kernel: store driver writeCapabilities malformed"),
+                Err(e) => {
+                    tracing::error!(driver, entity = entity_type, error = %e, "kernel: store driver writeCapabilities malformed")
+                }
             }
         }
     }
@@ -1529,7 +1621,8 @@ impl RuntimeKernel {
             std::sync::atomic::Ordering::SeqCst,
         );
         fork.record_entity_after.store(
-            self.record_entity_after.load(std::sync::atomic::Ordering::SeqCst),
+            self.record_entity_after
+                .load(std::sync::atomic::Ordering::SeqCst),
             std::sync::atomic::Ordering::SeqCst,
         );
         *fork.schemas.write() = self.schemas.read().clone();
@@ -1547,7 +1640,9 @@ impl RuntimeKernel {
         *fork.i18n.write() = self.i18n.read().clone();
         *fork.managed_credentials.write() = self.managed_credentials.read().clone();
         *fork.current_user.write() = self.current_user.read().clone();
-        fork.deliveries.write().copy_placement(&self.deliveries.read());
+        fork.deliveries
+            .write()
+            .copy_placement(&self.deliveries.read());
         let schemas = self.schemas.read();
         let mut names: Vec<&String> = schemas.keys().collect();
         names.sort();
@@ -1560,7 +1655,9 @@ impl RuntimeKernel {
                 if !seen.insert(trait_name.to_string()) {
                     continue;
                 }
-                fork.state_manager.write().register_shared_trait(def.clone());
+                fork.state_manager
+                    .write()
+                    .register_shared_trait(def.clone());
                 fork.register_trait_listeners(&def, &orbital.name)?;
             }
         }
@@ -1579,7 +1676,9 @@ impl RuntimeKernel {
                 .and_then(|(schema, index)| schemas.get(schema)?.orbitals.get(*index))
                 .map(|o| o.name.clone())
                 .unwrap_or_default();
-            fork.state_manager.write().register_shared_trait(def.clone());
+            fork.state_manager
+                .write()
+                .register_shared_trait(def.clone());
             fork.register_trait_listeners(&def, &orbital)?;
         }
         for name in names {
@@ -1810,7 +1909,9 @@ impl RuntimeKernel {
                 }
             }
             self.inject_relation_options(trait_name, &mut effect_results);
-            if let Some(refused) = self.deliver_remote_emits(trait_name, follow_on, &mut effect_results) {
+            if let Some(refused) =
+                self.deliver_remote_emits(trait_name, follow_on, &mut effect_results)
+            {
                 if failure.is_none() {
                     failure = Some(refused);
                 }
@@ -1820,7 +1921,10 @@ impl RuntimeKernel {
             let entity_after = self
                 .record_entity_after
                 .load(std::sync::atomic::Ordering::Relaxed)
-                .then(|| self.read_trait_entity(trait_name, entity_type, entity_id).merged(&captured_entity_data));
+                .then(|| {
+                    self.read_trait_entity(trait_name, entity_type, entity_id)
+                        .merged(&captured_entity_data)
+                });
             if self.io.suspended() {
                 // The transition is committed before its effects' I/O answers: an overlapping dispatch sees the
                 // state it entered. The replay runs the step again from `from` (G-CROSS-259).
@@ -1964,16 +2068,28 @@ impl RuntimeKernel {
     ) -> Option<String> {
         let mut failures = Vec::new();
         use orbital_core_base::ir::types::{declared_alias_shape, field_shape, OirField, OirType};
-        let entity_types: std::collections::BTreeMap<String, OirType> = self.entity_definitions.read()
+        let entity_types: std::collections::BTreeMap<String, OirType> = self
+            .entity_definitions
+            .read()
             .iter()
             .map(|(name, entity)| {
-                let fields = entity.fields.iter().filter_map(|field| {
-                    let name = field.name.as_ref()?;
-                    let mut declared = OirField::new(name.clone(), field_shape(field));
-                    declared.required = field.required.unwrap_or(false);
-                    Some(declared)
-                }).collect();
-                (name.clone(), OirType::Struct { fields })
+                let fields = entity
+                    .fields
+                    .iter()
+                    .filter_map(|field| {
+                        let name = field.name.as_ref()?;
+                        let mut declared = OirField::new(name.clone(), field_shape(field));
+                        declared.required = field.required.unwrap_or(false);
+                        Some(declared)
+                    })
+                    .collect();
+                (
+                    name.clone(),
+                    OirType::Struct {
+                        fields,
+                        additional: None,
+                    },
+                )
             })
             .collect();
         let definitions = self.trait_definitions.read();
@@ -1987,17 +2103,41 @@ impl RuntimeKernel {
                 let mut named = entity_types.clone();
                 let homes = self.trait_homes.read();
                 let schemas = self.schemas.read();
-                if let Some(aliases) = homes.get(trait_name)
-                    .and_then(|(name, index)| schemas.get(name)?.orbitals.get(*index))
-                    .and_then(|orbital| orbital.types.as_ref())
+                let mut version = None;
+                if let Some((program, index)) = homes
+                    .get(trait_name)
+                    .and_then(|(name, index)| schemas.get(name).map(|program| (program, *index)))
                 {
-                    named.extend(aliases.iter().map(|(name, members)| (name.clone(), declared_alias_shape(members))));
+                    version = program.type_contract_version;
+                    if let Some(aliases) = program.types.as_ref() {
+                        named.extend(
+                            aliases.iter().map(|(name, members)| {
+                                (name.clone(), declared_alias_shape(members))
+                            }),
+                        );
+                    }
+                    if let Some(aliases) = program
+                        .orbitals
+                        .get(index)
+                        .and_then(|orbital| orbital.types.as_ref())
+                    {
+                        named.extend(
+                            aliases.iter().map(|(name, members)| {
+                                (name.clone(), declared_alias_shape(members))
+                            }),
+                        );
+                    }
                 }
-                failures.extend(crate::payload_validation::validate_event_payload_with_types(event, payload, schema, &named));
+                failures.extend(
+                    crate::payload_validation::validate_event_payload_with_context(
+                        event, payload, schema, &named, version,
+                    ),
+                );
             }
         }
         drop(definitions);
-        (!failures.is_empty()).then(|| crate::payload_validation::format_payload_failures(&failures))
+        (!failures.is_empty())
+            .then(|| crate::payload_validation::format_payload_failures(&failures))
     }
 
     /// The API-boundary check of an external event: a server kernel refuses a payload that does not satisfy its
@@ -2322,7 +2462,8 @@ impl RuntimeKernel {
             "dispatch_with_server_leg",
         );
 
-        let outcomes = self.dispatch_in_turn(lane.turn(), trait_name, Some(&eid), event, payload.clone())?;
+        let outcomes =
+            self.dispatch_in_turn(lane.turn(), trait_name, Some(&eid), event, payload.clone())?;
         let mut response = EventResponse::from_process_results(&outcomes, trait_name, event);
         response.fold_rerenders(&self.rerender_stale());
 
@@ -2406,7 +2547,8 @@ impl RuntimeKernel {
                     // pre-dispatch row and the server cascades the rest itself.
                     // A never-written shared frame replays from the view the step read (its defaults), as the
                     // stateful leg carries it, so the host's echo of those defaults is not taken for a write.
-                    let replayed_from = if seed_row.is_null() && self.reads_shared_frame(trait_name) {
+                    let replayed_from = if seed_row.is_null() && self.reads_shared_frame(trait_name)
+                    {
                         outcomes
                             .iter()
                             .find(|(t, r)| t == trait_name && r.executed)
@@ -2467,9 +2609,14 @@ impl RuntimeKernel {
                             traits: traits.as_ref().map(|carried| {
                                 carried
                                     .iter()
-                                    .map(|c| match outcomes.iter().find(|(name, _)| name == &c.r#trait) {
-                                        Some((_, ran)) if c.r#trait != *t => TraitFrom { from: ran.new_state.clone(), ..c.clone() },
-                                        _ => c.clone(),
+                                    .map(|c| {
+                                        match outcomes.iter().find(|(name, _)| name == &c.r#trait) {
+                                            Some((_, ran)) if c.r#trait != *t => TraitFrom {
+                                                from: ran.new_state.clone(),
+                                                ..c.clone()
+                                            },
+                                            _ => c.clone(),
+                                        }
                                     })
                                     .collect()
                             }),
@@ -2570,8 +2717,9 @@ impl RuntimeKernel {
     ) -> Result<Vec<EventRequest>, KernelError> {
         let _lane = self.lane.enter(None)?;
         let _ = self.drain_server_leg_collector();
-        let residence =
-            orbital_core_base::runs_on::Residence::of_entities(self.entity_definitions.read().values());
+        let residence = orbital_core_base::runs_on::Residence::of_entities(
+            self.entity_definitions.read().values(),
+        );
         Ok(outcomes
             .iter()
             .filter_map(|(trait_name, result)| {
@@ -2616,8 +2764,9 @@ impl RuntimeKernel {
 
     /// Whether every effect is a data effect on a browser-stored entity (the host's store holds the data).
     fn all_browser_data(&self, effects: &[Effect]) -> bool {
-        let residence =
-            orbital_core_base::runs_on::Residence::of_entities(self.entity_definitions.read().values());
+        let residence = orbital_core_base::runs_on::Residence::of_entities(
+            self.entity_definitions.read().values(),
+        );
         effects.iter().all(|e| browser_data_effect(e, &residence))
     }
 
@@ -2699,7 +2848,8 @@ impl RuntimeKernel {
         // The leg replays the tick from the pre-tick row, so the store applies its writes once.
         let pre_tick_row = self.snapshot_trait(trait_name, Some(&eid)).entity;
 
-        let outcome = self.process_tick_in_turn(Some(lane.turn()), trait_name, Some(&eid), tick_name)?;
+        let outcome =
+            self.process_tick_in_turn(Some(lane.turn()), trait_name, Some(&eid), tick_name)?;
         let (tick_own, _) = self.drain_server_leg_collector();
         // The tick's own delegated effects, by where their data lives: browser-stored data
         // leaves as one `runTick` leg; server-owned work in a browser-run tick is an
@@ -2707,8 +2857,9 @@ impl RuntimeKernel {
         let (browser_own, server_own): (Vec<Effect>, Vec<Effect>) = if tick_own.is_empty() {
             (Vec::new(), Vec::new())
         } else {
-            let residence =
-                orbital_core_base::runs_on::Residence::of_entities(self.entity_definitions.read().values());
+            let residence = orbital_core_base::runs_on::Residence::of_entities(
+                self.entity_definitions.read().values(),
+            );
             tick_own
                 .into_iter()
                 .partition(|effect| browser_data_effect(effect, &residence))
@@ -2889,7 +3040,12 @@ impl RuntimeKernel {
     }
 
     /// A trait's `@entity`: declared field defaults, then its row, then its frame.
-    fn read_trait_entity(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> SharedEntity {
+    fn read_trait_entity(
+        &self,
+        trait_name: &str,
+        entity_type: &str,
+        entity_id: &str,
+    ) -> SharedEntity {
         let defaults = self
             .entity_defaults
             .read()
@@ -2916,7 +3072,8 @@ impl RuntimeKernel {
             .get(trait_name)
             .and_then(|d| d.linked_entity.clone())
             .unwrap_or_else(|| trait_name.to_string());
-        self.read_trait_entity(trait_name, &entity_type, entity_id).to_value()
+        self.read_trait_entity(trait_name, &entity_type, entity_id)
+            .to_value()
     }
 
     /// Merge `set` writes into a trait's frame; the row store is never touched.
@@ -2929,7 +3086,11 @@ impl RuntimeKernel {
     ) {
         let slot = self.frame_slot(trait_name, entity_type, entity_id);
         let mut frames = self.frames.write();
-        let merged = frames.get(&slot).cloned().unwrap_or_default().merged(writes);
+        let merged = frames
+            .get(&slot)
+            .cloned()
+            .unwrap_or_default()
+            .merged(writes);
         frames.insert(slot, merged);
     }
 
@@ -3052,7 +3213,9 @@ impl RuntimeKernel {
             }
         }
         for written in response.effect_results.iter().flatten() {
-            if written.effect == crate::effects::response::ServerEffectKind::Persist && written.success {
+            if written.effect == crate::effects::response::ServerEffectKind::Persist
+                && written.success
+            {
                 match &written.entity_type {
                     Some(entity_type) => self.rows.note_write(entity_type),
                     None => {
@@ -3063,7 +3226,9 @@ impl RuntimeKernel {
                             .and_then(Value::as_array)
                             .into_iter()
                             .flatten()
-                            .filter_map(|op| op.get_path("entityType")?.as_str().map(str::to_string))
+                            .filter_map(|op| {
+                                op.get_path("entityType")?.as_str().map(str::to_string)
+                            })
                         {
                             self.rows.note_write(&entity_type);
                         }
@@ -3076,7 +3241,9 @@ impl RuntimeKernel {
         {
             let mut renders = self.renders.write();
             for painted in response.client_effects_by_trait.iter().flatten() {
-                if let orbital_core_base::client_effect::ClientEffect::RenderUi { slot, .. } = &painted.effect {
+                if let orbital_core_base::client_effect::ClientEffect::RenderUi { slot, .. } =
+                    &painted.effect
+                {
                     renders.forget_slot(&painted.trait_name, slot);
                 }
             }
@@ -3108,7 +3275,12 @@ impl RuntimeKernel {
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .unwrap_or_else(|| "singleton".to_string());
-                self.write_trait_frame(trait_name, &entity_type, &id, &SharedEntity::from_value_ref(entity_val));
+                self.write_trait_frame(
+                    trait_name,
+                    &entity_type,
+                    &id,
+                    &SharedEntity::from_value_ref(entity_val),
+                );
                 trait_entity_ids.insert(trait_name.clone(), id);
             }
         }
@@ -3368,10 +3540,9 @@ impl RuntimeKernel {
     fn listener_config(&self, trait_name: &str) -> Value {
         let defs = self.trait_definitions.read();
         match defs.get(trait_name) {
-            Some(def) => bind_user_forwards(
-                config_defaults_value(def, &defs),
-                &self.current_user.read(),
-            ),
+            Some(def) => {
+                bind_user_forwards(config_defaults_value(def, &defs), &self.current_user.read())
+            }
             None => Value::Null,
         }
     }
@@ -3413,7 +3584,12 @@ impl RuntimeKernel {
             if l.triggers == event && direct_scopes.contains(&l.trait_name) {
                 continue;
             }
-            let mapped = envelope::mapped_listen_payload(&evaluator, &ctx, &l.payload_mapping, source_payload);
+            let mapped = envelope::mapped_listen_payload(
+                &evaluator,
+                &ctx,
+                &l.payload_mapping,
+                source_payload,
+            );
             debug!(
                 source_trait = %source_trait, event = %event,
                 listener_trait = %l.trait_name, triggers = %l.triggers,
@@ -3625,7 +3801,12 @@ impl RuntimeKernel {
             effect_results.retain(is_thrown_failure);
         }
 
-        (effect_results, Value::Object(entity_data.sets), runs, failure)
+        (
+            effect_results,
+            Value::Object(entity_data.sets),
+            runs,
+            failure,
+        )
     }
 
     /// Execute a single top-level effect expression.
@@ -3653,100 +3834,100 @@ impl RuntimeKernel {
         if let SExpression::Array(items) = effect_expr {
             if let Some(SExpression::String(head)) = items.first() {
                 if matches!(head.as_str(), "let" | "do" | "if" | "when") {
-                let mirrored = entity_data.apply(ctx);
-                let ctx: &BindingContext = &mirrored;
-                match head.as_str() {
-                    "let" => {
-                        // [ "let", [[name, valExpr], …], body… ]
-                        let mut child_ctx = ctx.child();
-                        if let Some(SExpression::Array(bindings)) = items.get(1) {
-                            for binding in bindings {
-                                if let SExpression::Array(pair) = binding {
-                                    if let (Some(SExpression::String(name)), Some(value_expr)) =
-                                        (pair.first(), pair.get(1))
-                                    {
-                                        if let Ok(value) =
-                                            evaluator.evaluate(value_expr, &child_ctx)
+                    let mirrored = entity_data.apply(ctx);
+                    let ctx: &BindingContext = &mirrored;
+                    match head.as_str() {
+                        "let" => {
+                            // [ "let", [[name, valExpr], …], body… ]
+                            let mut child_ctx = ctx.child();
+                            if let Some(SExpression::Array(bindings)) = items.get(1) {
+                                for binding in bindings {
+                                    if let SExpression::Array(pair) = binding {
+                                        if let (Some(SExpression::String(name)), Some(value_expr)) =
+                                            (pair.first(), pair.get(1))
                                         {
-                                            child_ctx.set_local(name, value);
+                                            if let Ok(value) =
+                                                evaluator.evaluate(value_expr, &child_ctx)
+                                            {
+                                                child_ctx.set_local(name, value);
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                        for body in items.iter().skip(2) {
-                            self.exec_effect_expr(
-                                body,
-                                &child_ctx,
-                                evaluator,
-                                effect_results,
-                                entity_data,
-                            );
-                            if effect_results.iter().any(is_thrown_failure) {
-                                break;
-                            }
-                        }
-                    }
-                    "do" => {
-                        for body in items.iter().skip(1) {
-                            self.exec_effect_expr(
-                                body,
-                                ctx,
-                                evaluator,
-                                effect_results,
-                                entity_data,
-                            );
-                            if effect_results.iter().any(is_thrown_failure) {
-                                break;
-                            }
-                        }
-                    }
-                    "if" => {
-                        // [ "if", cond, then, else? ]
-                        if let Some(cond) = items.get(1) {
-                            let truthy = evaluator
-                                .evaluate(cond, ctx)
-                                .map(|v| v.is_truthy())
-                                .unwrap_or(false);
-                            let branch = if truthy { items.get(2) } else { items.get(3) };
-                            if let Some(branch) = branch {
+                            for body in items.iter().skip(2) {
                                 self.exec_effect_expr(
-                                    branch,
+                                    body,
+                                    &child_ctx,
+                                    evaluator,
+                                    effect_results,
+                                    entity_data,
+                                );
+                                if effect_results.iter().any(is_thrown_failure) {
+                                    break;
+                                }
+                            }
+                        }
+                        "do" => {
+                            for body in items.iter().skip(1) {
+                                self.exec_effect_expr(
+                                    body,
                                     ctx,
                                     evaluator,
                                     effect_results,
                                     entity_data,
                                 );
+                                if effect_results.iter().any(is_thrown_failure) {
+                                    break;
+                                }
                             }
                         }
-                    }
-                    "when" => {
-                        // [ "when", cond, body… ]
-                        if let Some(cond) = items.get(1) {
-                            let truthy = evaluator
-                                .evaluate(cond, ctx)
-                                .map(|v| v.is_truthy())
-                                .unwrap_or(false);
-                            if truthy {
-                                for body in items.iter().skip(2) {
+                        "if" => {
+                            // [ "if", cond, then, else? ]
+                            if let Some(cond) = items.get(1) {
+                                let truthy = evaluator
+                                    .evaluate(cond, ctx)
+                                    .map(|v| v.is_truthy())
+                                    .unwrap_or(false);
+                                let branch = if truthy { items.get(2) } else { items.get(3) };
+                                if let Some(branch) = branch {
                                     self.exec_effect_expr(
-                                        body,
+                                        branch,
                                         ctx,
                                         evaluator,
                                         effect_results,
                                         entity_data,
                                     );
-                                    if effect_results.iter().any(is_thrown_failure) {
-                                        break;
-                                    }
                                 }
                             }
                         }
-                        return;
+                        "when" => {
+                            // [ "when", cond, body… ]
+                            if let Some(cond) = items.get(1) {
+                                let truthy = evaluator
+                                    .evaluate(cond, ctx)
+                                    .map(|v| v.is_truthy())
+                                    .unwrap_or(false);
+                                if truthy {
+                                    for body in items.iter().skip(2) {
+                                        self.exec_effect_expr(
+                                            body,
+                                            ctx,
+                                            evaluator,
+                                            effect_results,
+                                            entity_data,
+                                        );
+                                        if effect_results.iter().any(is_thrown_failure) {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                }
-                return;
+                    return;
                 }
             }
         }
@@ -3757,10 +3938,16 @@ impl RuntimeKernel {
     /// `ctx` with the value of every credential a `hash/scrypt` in `expr` names as its salt, resolved through the host's
     /// `Secret` ask. The value lives only in the evaluation context: it is not a binding and never reaches program data.
     /// `None` when `expr` hashes nothing or every salt is already held.
-    fn with_scrypt_salts(&self, expr: &SExpression, ctx: &BindingContext, evaluator: &Evaluator) -> Option<BindingContext> {
+    fn with_scrypt_salts(
+        &self,
+        expr: &SExpression,
+        ctx: &BindingContext,
+        evaluator: &Evaluator,
+    ) -> Option<BindingContext> {
         fn collect<'a>(expr: &'a SExpression, out: &mut Vec<&'a SExpression>) {
             if let SExpression::Array(items) = expr {
-                if matches!(items.first(), Some(SExpression::String(head)) if head == "hash/scrypt") {
+                if matches!(items.first(), Some(SExpression::String(head)) if head == "hash/scrypt")
+                {
                     out.extend(items.get(2));
                 }
                 for item in items {
@@ -3773,7 +3960,9 @@ impl RuntimeKernel {
         let mut held: Option<BindingContext> = None;
         for salt in salts {
             let current = held.as_ref().unwrap_or(ctx);
-            let Ok(Value::String(name)) = evaluator.evaluate(salt, current) else { continue };
+            let Ok(Value::String(name)) = evaluator.evaluate(salt, current) else {
+                continue;
+            };
             if current.secret(&name).is_some() {
                 continue;
             }
@@ -3801,7 +3990,9 @@ impl RuntimeKernel {
         if let Some(effect) = orbital_core_base::effect_types::parse_effect(effect_expr) {
             match &effect {
                 Effect::Set { path, value } => {
-                    let evaluated_value = if value.as_array().is_some() || value.as_object().is_some() {
+                    let evaluated_value = if value.as_array().is_some()
+                        || value.as_object().is_some()
+                    {
                         let sexpr = value_to_sexpr(value);
                         match evaluator.evaluate(&sexpr, ctx) {
                             Ok(v) => v,
@@ -3840,7 +4031,10 @@ impl RuntimeKernel {
                     emit: Some(fetch_emit),
                     ..
                 } if !fetch_emit.is_empty() => {
-                    let result = self.effect_executor.execute(&effect, ctx).with_declared_routes(fetch_emit);
+                    let result = self
+                        .effect_executor
+                        .execute(&effect, ctx)
+                        .with_declared_routes(fetch_emit);
                     let completion = fetch_completion_emit(fetch_emit, &result);
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
@@ -3849,7 +4043,10 @@ impl RuntimeKernel {
                     emit: Some(persist_emit),
                     ..
                 } if !persist_emit.is_empty() => {
-                    let result = self.effect_executor.execute(&effect, ctx).with_declared_routes(persist_emit);
+                    let result = self
+                        .effect_executor
+                        .execute(&effect, ctx)
+                        .with_declared_routes(persist_emit);
                     let completion = persist_completion_emit(persist_emit, &effect, &result, ctx);
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
@@ -3858,7 +4055,10 @@ impl RuntimeKernel {
                     emit: Some(batch_emit),
                     ..
                 } if !batch_emit.is_empty() => {
-                    let result = self.effect_executor.execute(&effect, ctx).with_declared_routes(batch_emit);
+                    let result = self
+                        .effect_executor
+                        .execute(&effect, ctx)
+                        .with_declared_routes(batch_emit);
                     let completion = persist_completion_emit(batch_emit, &effect, &result, ctx);
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
@@ -3868,7 +4068,9 @@ impl RuntimeKernel {
                         return;
                     };
                     let key = match &resolved {
-                        Effect::CallService { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        Effect::CallService { key, .. } => {
+                            key.as_ref().and_then(Value::as_str).map(str::to_string)
+                        }
                         _ => None,
                     };
                     let reused = key.as_deref().is_some_and(|k| {
@@ -3905,18 +4107,24 @@ impl RuntimeKernel {
                         return;
                     };
                     let key = match &resolved {
-                        Effect::Http { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        Effect::Http { key, .. } => {
+                            key.as_ref().and_then(Value::as_str).map(str::to_string)
+                        }
                         _ => None,
                     };
                     let (result, verdict) = if self.effect_executor.environment().is_client() {
                         (self.effect_executor.execute(&resolved, ctx), None)
                     } else {
                         self.io.set_call_site(self.call_site_of(emit.as_ref()));
-                        let principal = ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
+                        let principal =
+                            ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
                         let mut result = self.run_http(&resolved, principal.as_deref(), ctx.now);
                         let verdict = self.io.take_call_verdict();
                         self.io.set_call_site(None);
-                        if matches!(verdict, Some(CallVerdict::Cancelled | CallVerdict::Deferred)) {
+                        if matches!(
+                            verdict,
+                            Some(CallVerdict::Cancelled | CallVerdict::Deferred)
+                        ) {
                             result = EffectResult::executed(resolved);
                         }
                         (result, verdict)
@@ -3932,19 +4140,24 @@ impl RuntimeKernel {
                         return;
                     };
                     let key = match &resolved {
-                        Effect::Redis { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        Effect::Redis { key, .. } => {
+                            key.as_ref().and_then(Value::as_str).map(str::to_string)
+                        }
                         _ => None,
                     };
                     let result = if self.effect_executor.environment().is_client() {
                         self.effect_executor.execute(&resolved, ctx)
                     } else {
                         self.io.set_call_site(self.call_site_of(emit.as_ref()));
-                        let principal = ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
+                        let principal =
+                            ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
                         let result = self.run_redis(&resolved, principal.as_deref());
                         self.io.set_call_site(None);
                         result
                     };
-                    let completion = emit.as_ref().and_then(|e| keyed_call_completion_emit(e, &result, None, key.as_deref()));
+                    let completion = emit
+                        .as_ref()
+                        .and_then(|e| keyed_call_completion_emit(e, &result, None, key.as_deref()));
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -3953,19 +4166,24 @@ impl RuntimeKernel {
                         return;
                     };
                     let key = match &resolved {
-                        Effect::Postgres { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        Effect::Postgres { key, .. } => {
+                            key.as_ref().and_then(Value::as_str).map(str::to_string)
+                        }
                         _ => None,
                     };
                     let result = if self.effect_executor.environment().is_client() {
                         self.effect_executor.execute(&resolved, ctx)
                     } else {
                         self.io.set_call_site(self.call_site_of(emit.as_ref()));
-                        let principal = ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
+                        let principal =
+                            ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
                         let result = self.run_postgres(&resolved, principal.as_deref());
                         self.io.set_call_site(None);
                         result
                     };
-                    let completion = emit.as_ref().and_then(|e| keyed_call_completion_emit(e, &result, None, key.as_deref()));
+                    let completion = emit
+                        .as_ref()
+                        .and_then(|e| keyed_call_completion_emit(e, &result, None, key.as_deref()));
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -3974,7 +4192,9 @@ impl RuntimeKernel {
                         return;
                     };
                     let key = match &resolved {
-                        Effect::Os { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        Effect::Os { key, .. } => {
+                            key.as_ref().and_then(Value::as_str).map(str::to_string)
+                        }
                         _ => None,
                     };
                     let (result, verdict) = if self.effect_executor.environment().is_client() {
@@ -4000,7 +4220,9 @@ impl RuntimeKernel {
                         return;
                     };
                     let key = match &resolved {
-                        Effect::BrowserBeacon { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        Effect::BrowserBeacon { key, .. } => {
+                            key.as_ref().and_then(Value::as_str).map(str::to_string)
+                        }
                         _ => None,
                     };
                     self.io.set_call_site(self.call_site_of(emit.as_ref()));
@@ -4010,9 +4232,9 @@ impl RuntimeKernel {
                     if verdict == Some(CallVerdict::Cancelled) {
                         result = EffectResult::executed(resolved);
                     }
-                    let completion = emit
-                        .as_ref()
-                        .and_then(|e| keyed_call_completion_emit(e, &result, verdict, key.as_deref()));
+                    let completion = emit.as_ref().and_then(|e| {
+                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
+                    });
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -4031,9 +4253,9 @@ impl RuntimeKernel {
                     if verdict == Some(CallVerdict::Cancelled) {
                         result = EffectResult::executed(resolved);
                     }
-                    let completion = emit
-                        .as_ref()
-                        .and_then(|e| keyed_call_completion_emit(e, &result, verdict, key.as_deref()));
+                    let completion = emit.as_ref().and_then(|e| {
+                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
+                    });
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -4042,7 +4264,9 @@ impl RuntimeKernel {
                         return;
                     };
                     let key = match &resolved {
-                        Effect::BrowserTab { key, .. } => key.as_ref().and_then(Value::as_str).map(str::to_string),
+                        Effect::BrowserTab { key, .. } => {
+                            key.as_ref().and_then(Value::as_str).map(str::to_string)
+                        }
                         _ => None,
                     };
                     let mut result = self.run_browser_tab(&resolved);
@@ -4050,9 +4274,9 @@ impl RuntimeKernel {
                     if verdict == Some(CallVerdict::Cancelled) {
                         result = EffectResult::executed(resolved);
                     }
-                    let completion = emit
-                        .as_ref()
-                        .and_then(|e| keyed_call_completion_emit(e, &result, verdict, key.as_deref()));
+                    let completion = emit.as_ref().and_then(|e| {
+                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
+                    });
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -4092,7 +4316,8 @@ impl RuntimeKernel {
                             .and_then(|k| k.as_str().map(str::to_string)),
                         _ => None,
                     };
-                    self.io.set_substrate_call(self.call_site_of(emit.as_ref()), key.clone());
+                    self.io
+                        .set_substrate_call(self.call_site_of(emit.as_ref()), key.clone());
                     let mut result = if self.effect_executor.environment().is_client() {
                         self.effect_executor.execute(&effect, ctx)
                     } else {
@@ -4106,7 +4331,9 @@ impl RuntimeKernel {
                     let completion = emit
                         .as_ref()
                         .filter(|_| verdict != Some(CallVerdict::Deferred))
-                        .and_then(|e| agent_ports::agent_port_completion_emit(e, &result, key.as_deref()));
+                        .and_then(|e| {
+                            agent_ports::agent_port_completion_emit(e, &result, key.as_deref())
+                        });
                     effect_results.push(result);
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
@@ -4114,11 +4341,13 @@ impl RuntimeKernel {
                     emit: Some(op_emit),
                     ..
                 } if !op_emit.is_empty() || op_emit.on_message.is_some() => {
-                    let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results) else {
+                    let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results)
+                    else {
                         return;
                     };
                     let key = custom_key(&resolved);
-                    self.io.set_substrate_call(self.call_site_of(Some(op_emit)), key.clone());
+                    self.io
+                        .set_substrate_call(self.call_site_of(Some(op_emit)), key.clone());
                     let mut result = self.effect_executor.execute(&resolved, ctx);
                     let verdict = self.io.take_call_verdict();
                     self.io.set_call_site(None);
@@ -4132,7 +4361,8 @@ impl RuntimeKernel {
                     effect_results.extend(completion.map(EffectResult::as_completion));
                 }
                 Effect::Custom { .. } => {
-                    let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results) else {
+                    let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results)
+                    else {
                         return;
                     };
                     effect_results.push(self.effect_executor.execute(&resolved, ctx));
@@ -4205,7 +4435,11 @@ impl RuntimeKernel {
     /// The call site of a `call-service` made by the step in flight.
     fn call_site_of(&self, emit: Option<&FetchEmit>) -> Option<CallSite> {
         let (trait_name, follow_on) = self.step_site.read().clone()?;
-        let entity_id = self.step_frame.read().clone().unwrap_or_else(|| "singleton".to_string());
+        let entity_id = self
+            .step_frame
+            .read()
+            .clone()
+            .unwrap_or_else(|| "singleton".to_string());
         let orbital = self.emit_source(&trait_name).orbital;
         let routes = emit.map_or_else(CallRoutes::default, |e| CallRoutes {
             success: e.success.clone(),
@@ -4233,13 +4467,22 @@ impl RuntimeKernel {
     /// fetch and persist enforce (`entity_access`); no host ask.
     fn run_access_check(&self, effect: &Effect) -> EffectResult {
         let Effect::AccessCheck { request, .. } = effect else {
-            return EffectResult::failed(effect.clone(), "access-check: not an access-check effect");
+            return EffectResult::failed(
+                effect.clone(),
+                "access-check: not an access-check effect",
+            );
         };
         let field = |name: &str| request.as_object().and_then(|fields| fields.get(name));
-        let fail = |message: String| EffectResult::failed(effect.clone(), &format!("access-check: {message}"));
+        let fail = |message: String| {
+            EffectResult::failed(effect.clone(), &format!("access-check: {message}"))
+        };
         for name in ["entity", "action", "row", "viewer"] {
             if field(name).is_none() {
-                let hint = if name == "viewer" { " (null for nobody)" } else { "" };
+                let hint = if name == "viewer" {
+                    " (null for nobody)"
+                } else {
+                    ""
+                };
                 return fail(format!("the request needs `{name}`{hint}"));
             }
         }
@@ -4252,8 +4495,17 @@ impl RuntimeKernel {
             Some("update") => PersistOperation::Update,
             Some("delete") => PersistOperation::Delete,
             other => {
-                let got = other.map_or_else(|| field("action").map(Value::to_string_value).unwrap_or_default(), str::to_string);
-                return fail(format!("action must be create, read, update or delete, got `{got}`"));
+                let got = other.map_or_else(
+                    || {
+                        field("action")
+                            .map(Value::to_string_value)
+                            .unwrap_or_default()
+                    },
+                    str::to_string,
+                );
+                return fail(format!(
+                    "action must be create, read, update or delete, got `{got}`"
+                ));
             }
         };
         let row = field("row").cloned().unwrap_or(Value::Null);
@@ -4283,12 +4535,22 @@ impl RuntimeKernel {
                     PersistOperation::Update => policies.update.as_ref(),
                     _ => policies.delete.as_ref(),
                 };
-                super::entity_access::check_mutation_access(write, &row, policy, &viewer_ctx, entity).is_ok()
+                super::entity_access::check_mutation_access(
+                    write,
+                    &row,
+                    policy,
+                    &viewer_ctx,
+                    entity,
+                )
+                .is_ok()
             }
         };
         EffectResult::executed_with_value(
             effect.clone(),
-            Value::Object(ValueMap::from([("allowed".to_string(), Value::Bool(allowed))])),
+            Value::Object(ValueMap::from([(
+                "allowed".to_string(),
+                Value::Bool(allowed),
+            )])),
         )
     }
 
@@ -4331,7 +4593,10 @@ impl RuntimeKernel {
                             Value::Object(fields)
                         }
                         _ => Value::Object(ValueMap::from([
-                            ("error".to_string(), Value::String(result.error.clone().unwrap_or_default())),
+                            (
+                                "error".to_string(),
+                                Value::String(result.error.clone().unwrap_or_default()),
+                            ),
                             ("key".to_string(), key.clone()),
                         ])),
                     };
@@ -4339,12 +4604,20 @@ impl RuntimeKernel {
                 }
                 result
             }
-            Effect::CredentialStatus { credential, .. } | Effect::CredentialForget { credential, .. } => {
+            Effect::CredentialStatus { credential, .. }
+            | Effect::CredentialForget { credential, .. } => {
                 let status = matches!(effect, Effect::CredentialStatus { .. });
-                let head = if status { "credential-status" } else { "credential-forget" };
+                let head = if status {
+                    "credential-status"
+                } else {
+                    "credential-forget"
+                };
                 if !status || !matches!(credential, Value::Object(_)) {
                     if principal.is_none() {
-                        return EffectResult::failed(effect.clone(), &format!("{head}: nobody is signed in"));
+                        return EffectResult::failed(
+                            effect.clone(),
+                            &format!("{head}: nobody is signed in"),
+                        );
                     }
                     if !matches!(credential, Value::String(_)) {
                         return EffectResult::failed(
@@ -4353,15 +4626,23 @@ impl RuntimeKernel {
                         );
                     }
                 }
-                let slot = match orbital_core_base::http_wire::parse_credential_status_slot(credential) {
-                    Ok(slot) => slot,
-                    Err(error) => return EffectResult::failed(effect.clone(), &error.message()),
-                };
+                let slot =
+                    match orbital_core_base::http_wire::parse_credential_status_slot(credential) {
+                        Ok(slot) => slot,
+                        Err(error) => {
+                            return EffectResult::failed(effect.clone(), &error.message())
+                        }
+                    };
                 let principal = match slot.scope {
                     orbital_core_base::http_wire::SecretScope::App => None,
                     orbital_core_base::http_wire::SecretScope::User => match principal.as_deref() {
                         Some(principal) => Some(principal),
-                        None => return EffectResult::failed(effect.clone(), &format!("{head}: nobody is signed in")),
+                        None => {
+                            return EffectResult::failed(
+                                effect.clone(),
+                                &format!("{head}: nobody is signed in"),
+                            )
+                        }
                     },
                 };
                 let answer = if status {
@@ -4376,7 +4657,10 @@ impl RuntimeKernel {
                         effect.clone(),
                         Value::Object(ValueMap::from([
                             ("connected".to_string(), Value::Bool(standing.connected)),
-                            ("label".to_string(), Value::String(standing.label.unwrap_or_default())),
+                            (
+                                "label".to_string(),
+                                Value::String(standing.label.unwrap_or_default()),
+                            ),
                         ])),
                     ),
                     Err(message) => EffectResult::failed(effect.clone(), &message),
@@ -4385,10 +4669,18 @@ impl RuntimeKernel {
             Effect::CredentialAdmin { op, request, .. } => {
                 let caller = ServiceCaller::of_user(&ctx.user);
                 let catalog = || {
-                    let program = self.program_credentials().map_err(orbital_core_base::credential_admin::Refusal::plain)?;
+                    let program = self
+                        .program_credentials()
+                        .map_err(orbital_core_base::credential_admin::Refusal::plain)?;
                     orbital_core_base::credential_admin::catalog(&program)
                 };
-                match crate::credential_admin::run(&*self.io, *op, request, caller.as_ref(), &catalog) {
+                match crate::credential_admin::run(
+                    &*self.io,
+                    *op,
+                    request,
+                    caller.as_ref(),
+                    &catalog,
+                ) {
                     Ok(reply) => EffectResult::executed_with_value(effect.clone(), reply),
                     Err(refusal) => http_failure(
                         effect,
@@ -4396,16 +4688,19 @@ impl RuntimeKernel {
                             ("error".to_string(), Value::String(refusal.message)),
                             (
                                 "code".to_string(),
-                                refusal.code.map_or(Value::Null, |code| Value::String(code.to_string())),
+                                refusal
+                                    .code
+                                    .map_or(Value::Null, |code| Value::String(code.to_string())),
                             ),
                         ])),
                     ),
                 }
             }
-            Effect::OAuthAuthorize { client, options, .. } => {
-                self.run_oauth_authorize(effect, client, options, principal.as_deref())
-            }
-            Effect::OAuthConnectionStatus { provider, .. } | Effect::OAuthConnectionForget { provider, .. } => {
+            Effect::OAuthAuthorize {
+                client, options, ..
+            } => self.run_oauth_authorize(effect, client, options, principal.as_deref()),
+            Effect::OAuthConnectionStatus { provider, .. }
+            | Effect::OAuthConnectionForget { provider, .. } => {
                 self.run_oauth_connection(effect, provider, principal.as_deref())
             }
             other => EffectResult::noop(other.clone(), "not a host effect"),
@@ -4414,9 +4709,15 @@ impl RuntimeKernel {
 
     fn oauth_failed(effect: &Effect, reason: OAuthFailureReason) -> EffectResult {
         let payload = Value::Object(ValueMap::from([
-            ("error".to_string(), Value::String(reason.message().to_string())),
+            (
+                "error".to_string(),
+                Value::String(reason.message().to_string()),
+            ),
             ("code".to_string(), Value::String(reason.code().to_string())),
-            ("reason".to_string(), Value::String(reason.as_str().to_string())),
+            (
+                "reason".to_string(),
+                Value::String(reason.as_str().to_string()),
+            ),
         ]));
         http_failure(effect, payload)
     }
@@ -4431,10 +4732,12 @@ impl RuntimeKernel {
         principal: Option<&str>,
     ) -> EffectResult {
         let key = match effect {
-            Effect::OAuthAuthorize { key: Some(key), .. } => match orbital_core_base::effect_types::call_key_text(key) {
-                Ok(text) => Value::String(text.to_string()),
-                Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
-            },
+            Effect::OAuthAuthorize { key: Some(key), .. } => {
+                match orbital_core_base::effect_types::call_key_text(key) {
+                    Ok(text) => Value::String(text.to_string()),
+                    Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
+                }
+            }
             _ => Value::Null,
         };
         let mut result = self.authorize_inner(effect, client, options, principal);
@@ -4444,7 +4747,10 @@ impl RuntimeKernel {
                 Value::Object(fields)
             }
             _ => Value::Object(ValueMap::from([
-                ("error".to_string(), Value::String(result.error.clone().unwrap_or_default())),
+                (
+                    "error".to_string(),
+                    Value::String(result.error.clone().unwrap_or_default()),
+                ),
                 ("key".to_string(), key),
             ])),
         };
@@ -4459,10 +4765,13 @@ impl RuntimeKernel {
         options: &Value,
         principal: Option<&str>,
     ) -> EffectResult {
+        use crate::oauth_flow::{
+            build_authorization, build_mock_authorization, declared_metadata, plan_authorize,
+            FlowFailure, MOCK_PENDING_TTL_MS,
+        };
         use orbital_core_base::oauth_ask::OAuthAsk;
-        use orbital_core_base::oauth_client::OAuthServerDecl;
         use orbital_core_base::oauth_client::OAuthMode;
-        use crate::oauth_flow::{build_authorization, build_mock_authorization, declared_metadata, plan_authorize, FlowFailure, MOCK_PENDING_TTL_MS};
+        use orbital_core_base::oauth_client::OAuthServerDecl;
         let plan = match plan_authorize(client, options) {
             Ok(plan) => plan,
             Err(message) => return EffectResult::failed(effect.clone(), &message),
@@ -4474,7 +4783,15 @@ impl RuntimeKernel {
                 Err(message) => return EffectResult::failed(effect.clone(), &message),
             };
             let (auth_url, state, pending) = build_mock_authorization(&plan, &state_bytes);
-            return self.keep_pending_grant(effect, auth_url, state, pending, MOCK_PENDING_TTL_MS, principal, false);
+            return self.keep_pending_grant(
+                effect,
+                auth_url,
+                state,
+                pending,
+                MOCK_PENDING_TTL_MS,
+                principal,
+                false,
+            );
         }
         let who = match decl.client_id.scope {
             orbital_core_base::http_wire::SecretScope::App => None,
@@ -4498,16 +4815,25 @@ impl RuntimeKernel {
             };
             match self.io.secret(&slot.name, secret_who) {
                 Ok(Some(_)) => {}
-                Ok(None) => return Self::oauth_failed(effect, OAuthFailureReason::UnconfiguredClient),
+                Ok(None) => {
+                    return Self::oauth_failed(effect, OAuthFailureReason::UnconfiguredClient)
+                }
                 Err(message) => return EffectResult::failed(effect.clone(), &message),
             }
         }
         let meta = match &decl.server {
             OAuthServerDecl::Endpoints { .. } => declared_metadata(&decl.server),
             OAuthServerDecl::Issuer(issuer) => {
-                match self.io.oauth(&OAuthAsk::MetadataGet { issuer: issuer.clone() }, principal) {
+                match self.io.oauth(
+                    &OAuthAsk::MetadataGet {
+                        issuer: issuer.clone(),
+                    },
+                    principal,
+                ) {
                     Ok(OAuthReply::Metadata { metadata }) => metadata,
-                    Ok(_) | Err(_) => return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
+                    Ok(_) | Err(_) => {
+                        return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable)
+                    }
                 }
             }
         };
@@ -4516,15 +4842,30 @@ impl RuntimeKernel {
         };
         let (state_bytes, verifier_bytes) = match (self.io.random(32), self.io.random(32)) {
             (Ok(state), Ok(verifier)) => (state, verifier),
-            (Err(message), _) | (_, Err(message)) => return EffectResult::failed(effect.clone(), &message),
+            (Err(message), _) | (_, Err(message)) => {
+                return EffectResult::failed(effect.clone(), &message)
+            }
         };
-        let (auth_url, state, pending) = match build_authorization(&plan, &client_id, &meta, state_bytes, verifier_bytes) {
-            Ok(built) => built,
-            Err(FlowFailure::Reason(reason)) => return Self::oauth_failed(effect, reason),
-            Err(FlowFailure::Refused(refusal)) => return EffectResult::failed(effect.clone(), &refusal.message()),
-            Err(FlowFailure::Transport(_)) => return Self::oauth_failed(effect, OAuthFailureReason::ResponseInvalid),
-        };
-        self.keep_pending_grant(effect, auth_url, state, pending, 10 * 60 * 1000, principal, true)
+        let (auth_url, state, pending) =
+            match build_authorization(&plan, &client_id, &meta, state_bytes, verifier_bytes) {
+                Ok(built) => built,
+                Err(FlowFailure::Reason(reason)) => return Self::oauth_failed(effect, reason),
+                Err(FlowFailure::Refused(refusal)) => {
+                    return EffectResult::failed(effect.clone(), &refusal.message())
+                }
+                Err(FlowFailure::Transport(_)) => {
+                    return Self::oauth_failed(effect, OAuthFailureReason::ResponseInvalid)
+                }
+            };
+        self.keep_pending_grant(
+            effect,
+            auth_url,
+            state,
+            pending,
+            10 * 60 * 1000,
+            principal,
+            true,
+        )
     }
 
     /// Hand the pending grant to the host and report the authorization URL and state. A real (not mock) authorization then
@@ -4541,16 +4882,28 @@ impl RuntimeKernel {
     ) -> EffectResult {
         use orbital_core_base::oauth_ask::OAuthAsk;
         let redirect_uri = pending.redirect_uri.clone();
-        let put = OAuthAsk::PendingPut { state: state.clone(), grant: pending, ttl_ms };
+        let put = OAuthAsk::PendingPut {
+            state: state.clone(),
+            grant: pending,
+            ttl_ms,
+        };
         match self.io.oauth(&put, principal) {
             Ok(OAuthReply::Done) => {}
-            Ok(_) | Err(_) => return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
+            Ok(_) | Err(_) => {
+                return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable)
+            }
         }
         let code = if consent {
-            let ask = OAuthAsk::Consent { auth_url: auth_url.clone(), state: state.clone(), redirect_uri };
+            let ask = OAuthAsk::Consent {
+                auth_url: auth_url.clone(),
+                state: state.clone(),
+                redirect_uri,
+            };
             match self.io.oauth(&ask, principal) {
                 Ok(OAuthReply::Code { code }) => code.unwrap_or_default(),
-                Ok(_) | Err(_) => return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
+                Ok(_) | Err(_) => {
+                    return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable)
+                }
             }
         } else {
             String::new()
@@ -4566,37 +4919,71 @@ impl RuntimeKernel {
     }
 
     /// `oauth-connection-status` / `oauth-connection-forget`: store first, then caller (the legacy order).
-    fn run_oauth_connection(&self, effect: &Effect, provider: &Value, principal: Option<&str>) -> EffectResult {
+    fn run_oauth_connection(
+        &self,
+        effect: &Effect,
+        provider: &Value,
+        principal: Option<&str>,
+    ) -> EffectResult {
         use orbital_core_base::oauth_ask::{OAuthAsk, OAuthProvider};
         let status = matches!(effect, Effect::OAuthConnectionStatus { .. });
-        let head = if status { "oauth-connection-status" } else { "oauth-connection-forget" };
+        let head = if status {
+            "oauth-connection-status"
+        } else {
+            "oauth-connection-forget"
+        };
         let provider = match provider {
             Value::String(word) => match OAuthProvider::parse(word) {
                 Some(provider) => provider,
-                None => return EffectResult::failed(effect.clone(), &format!("{head}: provider must be google, github or auth0, not `{word}`")),
+                None => {
+                    return EffectResult::failed(
+                        effect.clone(),
+                        &format!("{head}: provider must be google, github or auth0, not `{word}`"),
+                    )
+                }
             },
-            _ => return EffectResult::failed(effect.clone(), &format!("{head}: provider must be a provider word")),
+            _ => {
+                return EffectResult::failed(
+                    effect.clone(),
+                    &format!("{head}: provider must be a provider word"),
+                )
+            }
         };
         match self.io.oauth(&OAuthAsk::ConnectionAvailable, principal) {
             Ok(OAuthReply::Flag { value: true }) => {}
-            Ok(_) | Err(_) => return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
+            Ok(_) | Err(_) => {
+                return Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable)
+            }
         }
         let Some(caller) = principal.filter(|p| !p.is_empty()) else {
             return Self::oauth_failed(effect, OAuthFailureReason::NotSignedIn);
         };
-        let ask = if status { OAuthAsk::ConnectionStatus { provider } } else { OAuthAsk::ConnectionRemove { provider } };
+        let ask = if status {
+            OAuthAsk::ConnectionStatus { provider }
+        } else {
+            OAuthAsk::ConnectionRemove { provider }
+        };
         match self.io.oauth(&ask, Some(caller)) {
-            Ok(OAuthReply::Row { row }) => {
-                EffectResult::executed_with_value(effect.clone(), crate::oauth_flow::row_value(&row))
-            }
+            Ok(OAuthReply::Row { row }) => EffectResult::executed_with_value(
+                effect.clone(),
+                crate::oauth_flow::row_value(&row),
+            ),
             Ok(_) | Err(_) => Self::oauth_failed(effect, OAuthFailureReason::StoreUnavailable),
         }
     }
 
     /// Run an `http` effect on the shared driver loop; the `HttpCallDriver` owns credentials, OAuth, pagination and
     /// streaming, and every ask it makes is journaled.
-    fn run_http(&self, effect: &Effect, principal: Option<&str>, now_ms: Option<f64>) -> EffectResult {
-        use crate::{driver::{drive, DriveContext, DriveEnd}, http_request::HttpCallDriver};
+    fn run_http(
+        &self,
+        effect: &Effect,
+        principal: Option<&str>,
+        now_ms: Option<f64>,
+    ) -> EffectResult {
+        use crate::{
+            driver::{drive, DriveContext, DriveEnd},
+            http_request::HttpCallDriver,
+        };
         let Effect::Http {
             method,
             origin,
@@ -4608,7 +4995,11 @@ impl RuntimeKernel {
         else {
             return EffectResult::noop(effect.clone(), "not an http effect");
         };
-        let key = match key.as_ref().map(orbital_core_base::effect_types::call_key_text).transpose() {
+        let key = match key
+            .as_ref()
+            .map(orbital_core_base::effect_types::call_key_text)
+            .transpose()
+        {
             Ok(key) => key,
             Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
         };
@@ -4619,18 +5010,33 @@ impl RuntimeKernel {
             request,
         ) {
             Ok(spec) => spec,
-            Err(refusal) => return http_failure(effect, http_request::with_key(
-                http_request::refusal_payload(&refusal), &key.map(str::to_string),
-            )),
+            Err(refusal) => {
+                return http_failure(
+                    effect,
+                    http_request::with_key(
+                        http_request::refusal_payload(&refusal),
+                        &key.map(str::to_string),
+                    ),
+                )
+            }
         };
         let egress = self.egress.read().clone();
-        let (mut driver, step) =
-            HttpCallDriver::start_as(spec, egress, key.map(str::to_string), now_ms, principal.map(str::to_string));
+        let (mut driver, step) = HttpCallDriver::start_as(
+            spec,
+            egress,
+            key.map(str::to_string),
+            now_ms,
+            principal.map(str::to_string),
+        );
         match drive(&self.io, &mut driver, step, DriveContext { principal, key }) {
-            DriveEnd::Done(Ok(payload)) => EffectResult::executed_with_value(effect.clone(), payload),
+            DriveEnd::Done(Ok(payload)) => {
+                EffectResult::executed_with_value(effect.clone(), payload)
+            }
             DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
             DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
-            DriveEnd::NoBeaconHost => EffectResult::failed(effect.clone(), "an http call asked for a beacon"),
+            DriveEnd::NoBeaconHost => {
+                EffectResult::failed(effect.clone(), "an http call asked for a beacon")
+            }
         }
     }
 
@@ -4638,11 +5044,25 @@ impl RuntimeKernel {
     /// Run a `redis` effect on the shared driver loop; the `RedisDriver` owns the RESP protocol, the handshake and the
     /// credential, and every ask it makes is a journaled `os/*` or secret ask.
     fn run_redis(&self, effect: &Effect, principal: Option<&str>) -> EffectResult {
-        use crate::{driver::{drive, DriveContext, DriveEnd}, redis::{self, RedisDriver}};
-        let Effect::Redis { origin, command, options, key, .. } = effect else {
+        use crate::{
+            driver::{drive, DriveContext, DriveEnd},
+            redis::{self, RedisDriver},
+        };
+        let Effect::Redis {
+            origin,
+            command,
+            options,
+            key,
+            ..
+        } = effect
+        else {
             return EffectResult::noop(effect.clone(), "not a redis effect");
         };
-        let key = match key.as_ref().map(orbital_core_base::effect_types::call_key_text).transpose() {
+        let key = match key
+            .as_ref()
+            .map(orbital_core_base::effect_types::call_key_text)
+            .transpose()
+        {
             Ok(key) => key.map(str::to_string),
             Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
         };
@@ -4652,11 +5072,23 @@ impl RuntimeKernel {
         };
         let egress = self.egress.read().clone();
         let (mut driver, step) = RedisDriver::start(spec, egress, key.clone());
-        match drive(&self.io, &mut driver, step, DriveContext { principal, key: None }) {
-            DriveEnd::Done(Ok(payload)) => EffectResult::executed_with_value(effect.clone(), payload),
+        match drive(
+            &self.io,
+            &mut driver,
+            step,
+            DriveContext {
+                principal,
+                key: None,
+            },
+        ) {
+            DriveEnd::Done(Ok(payload)) => {
+                EffectResult::executed_with_value(effect.clone(), payload)
+            }
             DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
             DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
-            DriveEnd::NoBeaconHost => EffectResult::failed(effect.clone(), "a redis call asked for a beacon"),
+            DriveEnd::NoBeaconHost => {
+                EffectResult::failed(effect.clone(), "a redis call asked for a beacon")
+            }
         }
     }
 
@@ -4664,25 +5096,54 @@ impl RuntimeKernel {
     /// Run a `postgres` effect on the shared driver loop; the `PostgresDriver` owns the Postgres protocol, the login
     /// and the result decoding, and every ask it makes is a journaled `os/*`, secret, random or clock ask.
     fn run_postgres(&self, effect: &Effect, principal: Option<&str>) -> EffectResult {
-        use crate::{driver::{drive, DriveContext, DriveEnd}, postgres::{self, PostgresDriver}};
-        let Effect::Postgres { origin, sql, params, options, key, .. } = effect else {
+        use crate::{
+            driver::{drive, DriveContext, DriveEnd},
+            postgres::{self, PostgresDriver},
+        };
+        let Effect::Postgres {
+            origin,
+            sql,
+            params,
+            options,
+            key,
+            ..
+        } = effect
+        else {
             return EffectResult::noop(effect.clone(), "not a postgres effect");
         };
-        let key = match key.as_ref().map(orbital_core_base::effect_types::call_key_text).transpose() {
+        let key = match key
+            .as_ref()
+            .map(orbital_core_base::effect_types::call_key_text)
+            .transpose()
+        {
             Ok(key) => key.map(str::to_string),
             Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
         };
         let spec = match postgres::parse_postgres_call(origin, sql, params, options) {
             Ok(spec) => spec,
-            Err(refusal) => return http_failure(effect, crate::redis::refusal_payload(&refusal, &key)),
+            Err(refusal) => {
+                return http_failure(effect, crate::redis::refusal_payload(&refusal, &key))
+            }
         };
         let egress = self.egress.read().clone();
         let (mut driver, step) = PostgresDriver::start(spec, egress, key.clone());
-        match drive(&self.io, &mut driver, step, DriveContext { principal, key: None }) {
-            DriveEnd::Done(Ok(payload)) => EffectResult::executed_with_value(effect.clone(), payload),
+        match drive(
+            &self.io,
+            &mut driver,
+            step,
+            DriveContext {
+                principal,
+                key: None,
+            },
+        ) {
+            DriveEnd::Done(Ok(payload)) => {
+                EffectResult::executed_with_value(effect.clone(), payload)
+            }
             DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
             DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
-            DriveEnd::NoBeaconHost => EffectResult::failed(effect.clone(), "a postgres call asked for a beacon"),
+            DriveEnd::NoBeaconHost => {
+                EffectResult::failed(effect.clone(), "a postgres call asked for a beacon")
+            }
         }
     }
 
@@ -4701,14 +5162,26 @@ impl RuntimeKernel {
         let Effect::Os { op, args, key, .. } = effect else {
             return EffectResult::noop(effect.clone(), "not an os effect");
         };
-        let key = match key.as_ref().map(orbital_core_base::effect_types::call_key_text).transpose() {
+        let key = match key
+            .as_ref()
+            .map(orbital_core_base::effect_types::call_key_text)
+            .transpose()
+        {
             Ok(key) => key,
-            Err(error) => return os_failure(effect, &OsError::new(OsErrorKind::Invalid, error.to_string())),
+            Err(error) => {
+                return os_failure(
+                    effect,
+                    &OsError::new(OsErrorKind::Invalid, error.to_string()),
+                )
+            }
         };
         if op.is_stream() && *op != orbital_core_base::os::OsOp::StdinRead && key.is_none() {
             return os_failure(
                 effect,
-                &OsError::new(OsErrorKind::Invalid, format!("{}: a stream needs a key", op.name())),
+                &OsError::new(
+                    OsErrorKind::Invalid,
+                    format!("{}: a stream needs a key", op.name()),
+                ),
             );
         }
         let keyed = |payload: Value| match (key, payload) {
@@ -4735,11 +5208,21 @@ impl RuntimeKernel {
     /// Run a `browser/beacon`: the one http driver parses, builds and egress-checks the request, and only the
     /// built request reaches the host's beacon port. A kernel with no host to answer fails `unavailable`.
     fn run_beacon(&self, effect: &Effect) -> EffectResult {
-        use crate::{driver::{drive, DriveContext, DriveEnd}, http_request::HttpCallDriver};
-        let Effect::BrowserBeacon { url, request, key, .. } = effect else {
+        use crate::{
+            driver::{drive, DriveContext, DriveEnd},
+            http_request::HttpCallDriver,
+        };
+        let Effect::BrowserBeacon {
+            url, request, key, ..
+        } = effect
+        else {
             return EffectResult::noop(effect.clone(), "not a beacon effect");
         };
-        let key = match key.as_ref().map(orbital_core_base::effect_types::call_key_text).transpose() {
+        let key = match key
+            .as_ref()
+            .map(orbital_core_base::effect_types::call_key_text)
+            .transpose()
+        {
             Ok(key) => key.map(str::to_string),
             Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
         };
@@ -4747,9 +5230,11 @@ impl RuntimeKernel {
             return http_failure(
                 effect,
                 http_request::with_key(
-                    http_request::refusal_payload(&orbital_core_base::http_wire::HttpRefusal::Invalid(
-                        "a beacon URL must be a string".to_string(),
-                    )),
+                    http_request::refusal_payload(
+                        &orbital_core_base::http_wire::HttpRefusal::Invalid(
+                            "a beacon URL must be a string".to_string(),
+                        ),
+                    ),
                     &key,
                 ),
             );
@@ -4757,18 +5242,34 @@ impl RuntimeKernel {
         let spec = match http_request::parse_beacon_call(url, request) {
             Ok(spec) => spec,
             Err(refusal) => {
-                return http_failure(effect, http_request::with_key(http_request::refusal_payload(&refusal), &key))
+                return http_failure(
+                    effect,
+                    http_request::with_key(http_request::refusal_payload(&refusal), &key),
+                )
             }
         };
         let egress = self.egress.read().clone();
         let (mut driver, step) = HttpCallDriver::start(spec, egress, key.clone());
-        match drive(&self.io, &mut driver, step, DriveContext { principal: None, key: key.as_deref() }) {
-            DriveEnd::Done(Ok(payload)) => EffectResult::executed_with_value(effect.clone(), payload),
+        match drive(
+            &self.io,
+            &mut driver,
+            step,
+            DriveContext {
+                principal: None,
+                key: key.as_deref(),
+            },
+        ) {
+            DriveEnd::Done(Ok(payload)) => {
+                EffectResult::executed_with_value(effect.clone(), payload)
+            }
             DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
             DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
             DriveEnd::NoBeaconHost => http_failure(
                 effect,
-                http_request::with_key(http_request::unavailable_payload("browser/beacon: no host answers beacons"), &key),
+                http_request::with_key(
+                    http_request::unavailable_payload("browser/beacon: no host answers beacons"),
+                    &key,
+                ),
             ),
         }
     }
@@ -4782,7 +5283,10 @@ impl RuntimeKernel {
             let mut result = EffectResult::failed(effect.clone(), &failure.message);
             result.return_value = Some(Value::Object(ValueMap::from([
                 ("error".to_string(), Value::String(failure.message)),
-                ("kind".to_string(), Value::String(failure.kind.as_str().to_string())),
+                (
+                    "kind".to_string(),
+                    Value::String(failure.kind.as_str().to_string()),
+                ),
                 ("key".to_string(), key_value.clone()),
             ])));
             result
@@ -4791,7 +5295,9 @@ impl RuntimeKernel {
         match effect {
             Effect::BrowserPrompt { text, schema, .. } => {
                 let (Value::String(text), Value::String(schema)) = (text, schema) else {
-                    return refuse("browser/prompt: the text and the response schema must be text".to_string());
+                    return refuse(
+                        "browser/prompt: the text and the response schema must be text".to_string(),
+                    );
                 };
                 match self.io.prompt(text, schema, key) {
                     Ok(reply) => EffectResult::executed_with_value(
@@ -4808,7 +5314,11 @@ impl RuntimeKernel {
                 let Value::Array(items) = texts else {
                     return refuse("browser/embed: the texts must be a list of text".to_string());
                 };
-                let Some(texts) = items.iter().map(|t| t.as_str().map(str::to_string)).collect::<Option<Vec<String>>>() else {
+                let Some(texts) = items
+                    .iter()
+                    .map(|t| t.as_str().map(str::to_string))
+                    .collect::<Option<Vec<String>>>()
+                else {
                     return refuse("browser/embed: the texts must be a list of text".to_string());
                 };
                 if texts.is_empty() {
@@ -4829,7 +5339,9 @@ impl RuntimeKernel {
                                 Value::Array(
                                     vectors
                                         .into_iter()
-                                        .map(|v| Value::Array(v.into_iter().map(Value::Number).collect()))
+                                        .map(|v| {
+                                            Value::Array(v.into_iter().map(Value::Number).collect())
+                                        })
                                         .collect(),
                                 ),
                             ),
@@ -4846,34 +5358,63 @@ impl RuntimeKernel {
     /// Run a `browser/tab-<op>` effect: the request is validated and the result shaped here, the host is asked
     /// only for raw tab and page operations, each one a journaled ask on the shared driver loop.
     fn run_browser_tab(&self, effect: &Effect) -> EffectResult {
-        use crate::{driver::{drive, DriveContext, DriveEnd}, tab::{refusal_payload, TabDriver}};
+        use crate::{
+            driver::{drive, DriveContext, DriveEnd},
+            tab::{refusal_payload, TabDriver},
+        };
         use orbital_core_base::tab_call::{parse_tab_call, WatchScope};
-        let Effect::BrowserTab { op, request, key, .. } = effect else {
+        let Effect::BrowserTab {
+            op, request, key, ..
+        } = effect
+        else {
             return EffectResult::noop(effect.clone(), "not a browser tab effect");
         };
-        let key = match key.as_ref().map(orbital_core_base::effect_types::call_key_text).transpose() {
+        let key = match key
+            .as_ref()
+            .map(orbital_core_base::effect_types::call_key_text)
+            .transpose()
+        {
             Ok(key) => key.map(str::to_string),
             Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
         };
         let failed = |payload: Value| {
-            let message = payload.get_path("error").map(Value::to_string_value).unwrap_or_default();
+            let message = payload
+                .get_path("error")
+                .map(Value::to_string_value)
+                .unwrap_or_default();
             let mut result = EffectResult::failed(effect.clone(), &message);
             result.return_value = Some(payload);
             result
         };
         let (caller_orbital, caller_trait) = self.caller_position();
         let inputs = self.external_inputs();
-        let scope = WatchScope { caller_orbital: caller_orbital.as_deref(), caller_trait: &caller_trait, inputs: &inputs };
+        let scope = WatchScope {
+            caller_orbital: caller_orbital.as_deref(),
+            caller_trait: &caller_trait,
+            inputs: &inputs,
+        };
         let call = match parse_tab_call(*op, request, Some(&scope), key.as_deref()) {
             Ok(call) => call,
             Err(message) => return failed(refusal_payload(&message, key.as_deref())),
         };
         let (mut driver, step) = TabDriver::start(call);
-        match drive(&self.io, &mut driver, step, DriveContext { principal: None, key: key.as_deref() }) {
-            DriveEnd::Done(Ok(payload)) => EffectResult::executed_with_value(effect.clone(), payload),
+        match drive(
+            &self.io,
+            &mut driver,
+            step,
+            DriveContext {
+                principal: None,
+                key: key.as_deref(),
+            },
+        ) {
+            DriveEnd::Done(Ok(payload)) => {
+                EffectResult::executed_with_value(effect.clone(), payload)
+            }
             DriveEnd::Done(Err(payload)) => failed(payload),
             DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
-            DriveEnd::NoBeaconHost => EffectResult::failed(effect.clone(), "a browser tab call asked for a beacon"),
+            DriveEnd::NoBeaconHost => {
+                EffectResult::failed(effect.clone(), "a browser tab call asked for a beacon")
+            }
         }
     }
 
@@ -4903,23 +5444,31 @@ impl RuntimeKernel {
                 let live = facts.available;
                 let pick = |field: PageFactField| live && fields.contains(&field);
                 let mut payload = ValueMap::from([
-                        ("available".to_string(), Value::Bool(live)),
-                        (
-                            "hostname".to_string(),
-                            Value::String(if pick(PageFactField::Hostname) { facts.hostname } else { String::new() }),
-                        ),
-                        (
-                            "referrer".to_string(),
-                            Value::String(if pick(PageFactField::Referrer) { facts.referrer } else { String::new() }),
-                        ),
-                        (
-                            "screenWidth".to_string(),
-                            match facts.screen_width {
-                                Some(width) if pick(PageFactField::ScreenWidth) => Value::Number(width),
-                                _ => Value::Null,
-                            },
-                        ),
-                    ]);
+                    ("available".to_string(), Value::Bool(live)),
+                    (
+                        "hostname".to_string(),
+                        Value::String(if pick(PageFactField::Hostname) {
+                            facts.hostname
+                        } else {
+                            String::new()
+                        }),
+                    ),
+                    (
+                        "referrer".to_string(),
+                        Value::String(if pick(PageFactField::Referrer) {
+                            facts.referrer
+                        } else {
+                            String::new()
+                        }),
+                    ),
+                    (
+                        "screenWidth".to_string(),
+                        match facts.screen_width {
+                            Some(width) if pick(PageFactField::ScreenWidth) => Value::Number(width),
+                            _ => Value::Null,
+                        },
+                    ),
+                ]);
                 if let Some(key) = &key {
                     payload.insert("key".to_string(), Value::String(key.clone()));
                 }
@@ -5057,7 +5606,9 @@ impl RuntimeKernel {
         self.trait_definitions
             .read()
             .get(trait_name)
-            .and_then(|d| orbital_core_eval::state_machine::core::StateMachineCore::get_trait_initial_state(d))
+            .and_then(|d| {
+                orbital_core_eval::state_machine::core::StateMachineCore::get_trait_initial_state(d)
+            })
             .map(str::to_string)
             .unwrap_or_default()
     }
@@ -5065,7 +5616,10 @@ impl RuntimeKernel {
     /// A registered trait's derived dispatch mode (`dispatch_mode::compute`).
     pub fn dispatch_mode_of(&self, trait_def: &TraitDefinition) -> DispatchMode {
         let defs = self.entity_definitions.read();
-        let entity_def = trait_def.linked_entity.as_deref().and_then(|name| defs.get(name));
+        let entity_def = trait_def
+            .linked_entity
+            .as_deref()
+            .and_then(|name| defs.get(name));
         let residence = orbital_core_base::runs_on::Residence::of_entities(defs.values());
         trait_def.dispatch_mode(entity_def, &residence)
     }
@@ -5099,7 +5653,10 @@ impl RuntimeKernel {
     /// Hold `state` as `trait_name`'s state under `entity_id`.
     pub(crate) fn set_held_state(&self, trait_name: &str, entity_id: &str, state: TraitState) {
         let mut state_manager = self.state_manager.write();
-        if state_manager.get_or_create_state(trait_name, Some(entity_id)).is_ok() {
+        if state_manager
+            .get_or_create_state(trait_name, Some(entity_id))
+            .is_ok()
+        {
             if let Some(held) = state_manager.get_state_mut(trait_name, Some(entity_id)) {
                 *held = state;
             }
@@ -5168,7 +5725,12 @@ impl RuntimeKernel {
                 Some(id) => self.carried_rows.write().insert(slot, id),
                 None => self.carried_rows.write().remove(&slot),
             };
-            self.write_trait_frame(trait_name, &entity_type, eid, &SharedEntity::from_value_ref(row));
+            self.write_trait_frame(
+                trait_name,
+                &entity_type,
+                eid,
+                &SharedEntity::from_value_ref(row),
+            );
         }
     }
 
@@ -5189,7 +5751,10 @@ impl RuntimeKernel {
             .store(fans_out, std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn set_dispatch_observer(&self, observer: Option<Arc<crate::dispatch_trace::DispatchObserver>>) {
+    pub fn set_dispatch_observer(
+        &self,
+        observer: Option<Arc<crate::dispatch_trace::DispatchObserver>>,
+    ) {
         *self.dispatch_observer.write() = observer;
     }
 
@@ -5209,13 +5774,20 @@ impl RuntimeKernel {
     pub fn enter_viewer(&self, user: Value) -> ViewerGuard {
         let thread = std::thread::current().id();
         let outer = self.viewer_by_thread.write().insert(thread, Arc::new(user));
-        ViewerGuard { slot: Arc::clone(&self.viewer_by_thread), thread, outer }
+        ViewerGuard {
+            slot: Arc::clone(&self.viewer_by_thread),
+            thread,
+            outer,
+        }
     }
 
     /// The viewer this thread entered, for a dispatch that starts now; a host that answers a call later, on another
     /// thread, re-enters it there.
     pub fn thread_viewer(&self) -> Option<Arc<Value>> {
-        self.viewer_by_thread.read().get(&std::thread::current().id()).cloned()
+        self.viewer_by_thread
+            .read()
+            .get(&std::thread::current().id())
+            .cloned()
     }
 
     /// Get the current user.
@@ -5375,14 +5947,26 @@ impl RuntimeKernel {
 
     /// The entity a registered trait is bound to.
     pub fn linked_entity_of(&self, trait_name: &str) -> Option<String> {
-        self.trait_definitions.read().get(trait_name).and_then(|d| d.linked_entity.clone())
+        self.trait_definitions
+            .read()
+            .get(trait_name)
+            .and_then(|d| d.linked_entity.clone())
     }
 
     /// Whether `viewer` may read the row a live item carries: the `@read` policy of the entity the emitting trait is
     /// bound to (the JS twin: `isRowVisibleToViewer`). An item whose entity does not resolve, or whose entity declares no
     /// policy, is visible to everyone.
-    pub fn live_item_visible_to(&self, item: &crate::effects::LiveBroadcastItem, viewer: &Value) -> bool {
-        let Some(entity) = item.source.r#trait.as_deref().and_then(|t| self.linked_entity_of(t)) else {
+    pub fn live_item_visible_to(
+        &self,
+        item: &crate::effects::LiveBroadcastItem,
+        viewer: &Value,
+    ) -> bool {
+        let Some(entity) = item
+            .source
+            .r#trait
+            .as_deref()
+            .and_then(|t| self.linked_entity_of(t))
+        else {
             return true;
         };
         let row = match &item.payload {
@@ -5428,9 +6012,18 @@ impl RuntimeKernel {
                     return Some(OrbitalDetail {
                         name: orbital.name.clone(),
                         entity: match &orbital.entity {
-                            EntityRef::Inline(entity) => EntitySummary { name: entity.name.clone(), fields: entity.fields.clone() },
-                            EntityRef::Reference(reference) => EntitySummary { name: reference.clone(), fields: Vec::new() },
-                            EntityRef::Extends(extends) => EntitySummary { name: extends.reference.clone(), fields: Vec::new() },
+                            EntityRef::Inline(entity) => EntitySummary {
+                                name: entity.name.clone(),
+                                fields: entity.fields.clone(),
+                            },
+                            EntityRef::Reference(reference) => EntitySummary {
+                                name: reference.clone(),
+                                fields: Vec::new(),
+                            },
+                            EntityRef::Extends(extends) => EntitySummary {
+                                name: extends.reference.clone(),
+                                fields: Vec::new(),
+                            },
                         },
                         traits: orbital
                             .traits
@@ -5524,7 +6117,12 @@ impl RuntimeKernel {
         let schemas: Vec<Arc<OrbitalSchema>> = self.schemas.read().values().cloned().collect();
         for schema in &schemas {
             let scratch = crate::entity_source::InMemoryEntityCache::new();
-            crate::seed::seed_sample_data_as(&scratch, schema, crate::seed::MOCK_SEED_COUNT, viewer_id.clone());
+            crate::seed::seed_sample_data_as(
+                &scratch,
+                schema,
+                crate::seed::MOCK_SEED_COUNT,
+                viewer_id.clone(),
+            );
             for orbital in &schema.orbitals {
                 for entity_ref in std::iter::once(&orbital.entity)
                     .chain(orbital.auxiliary_entities.iter().flatten())
@@ -5532,10 +6130,16 @@ impl RuntimeKernel {
                     let EntityRef::Inline(def) = entity_ref else {
                         continue;
                     };
-                    if def.persistence != Some(Persistence::Runtime) || !self.io.holds_runtime(&def.name) {
+                    if def.persistence != Some(Persistence::Runtime)
+                        || !self.io.holds_runtime(&def.name)
+                    {
                         continue;
                     }
-                    let Some(row) = scratch.list(&def.name).ok().and_then(|rows| rows.into_iter().next()) else {
+                    let Some(row) = scratch
+                        .list(&def.name)
+                        .ok()
+                        .and_then(|rows| rows.into_iter().next())
+                    else {
                         continue;
                     };
                     let mut row = (*row).clone();
@@ -5795,10 +6399,12 @@ fn state_render_sources(trait_def: &TraitDefinition, state_name: &str) -> Vec<(S
         .effects
         .iter()
         .flatten()
-        .filter_map(|expr| match orbital_core_base::effect_types::parse_effect(expr) {
-            Some(Effect::RenderUi { slot, content }) => Some((slot, content)),
-            _ => None,
-        })
+        .filter_map(
+            |expr| match orbital_core_base::effect_types::parse_effect(expr) {
+                Some(Effect::RenderUi { slot, content }) => Some((slot, content)),
+                _ => None,
+            },
+        )
         .collect()
 }
 
@@ -5822,7 +6428,9 @@ fn browser_data_effect(effect: &Effect, residence: &orbital_core_base::runs_on::
         Effect::Persist { entity_type, .. } | Effect::Fetch { entity_type, .. } => {
             residence.is_client(entity_type)
         }
-        Effect::Http { request, .. } => orbital_core_base::runs_on::resolved_http_is_keyless(request),
+        Effect::Http { request, .. } => {
+            orbital_core_base::runs_on::resolved_http_is_keyless(request)
+        }
         _ => false,
     }
 }
@@ -5886,7 +6494,9 @@ fn declared_defaults(def: &EntityDefinition) -> Value {
 
 #[cfg(test)]
 fn merge_entity(base: &Value, set: &Value) -> Value {
-    SharedEntity::from_value_ref(base).merged(&SharedEntity::from_value_ref(set)).to_value()
+    SharedEntity::from_value_ref(base)
+        .merged(&SharedEntity::from_value_ref(set))
+        .to_value()
 }
 
 /// Resolve every `@`-binding in a client-facing effect's content/payload against `ctx`,
@@ -5961,7 +6571,14 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
-        Effect::Postgres { origin, sql, params, options, key, emit } => Effect::Postgres {
+        Effect::Postgres {
+            origin,
+            sql,
+            params,
+            options,
+            key,
+            emit,
+        } => Effect::Postgres {
             origin: ctx.resolve_value_checked(&origin)?.into_owned(),
             sql: ctx.resolve_value_checked(&sql)?.into_owned(),
             params: ctx.resolve_value_checked(&params)?.into_owned(),
@@ -5969,7 +6586,13 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
-        Effect::Redis { origin, command, options, key, emit } => Effect::Redis {
+        Effect::Redis {
+            origin,
+            command,
+            options,
+            key,
+            emit,
+        } => Effect::Redis {
             origin: ctx.resolve_value_checked(&origin)?.into_owned(),
             command: ctx.resolve_value_checked(&command)?.into_owned(),
             options: ctx.resolve_value_checked(&options)?.into_owned(),
@@ -5981,13 +6604,23 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
-        Effect::BrowserTab { op, request, key, emit } => Effect::BrowserTab {
+        Effect::BrowserTab {
+            op,
+            request,
+            key,
+            emit,
+        } => Effect::BrowserTab {
             op,
             request: ctx.resolve_value_checked(&request)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
-        Effect::BrowserPrompt { text, schema, key, emit } => Effect::BrowserPrompt {
+        Effect::BrowserPrompt {
+            text,
+            schema,
+            key,
+            emit,
+        } => Effect::BrowserPrompt {
             text: ctx.resolve_value_checked(&text)?.into_owned(),
             schema: ctx.resolve_value_checked(&schema)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
@@ -5998,7 +6631,12 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
-        Effect::BrowserBeacon { url, request, key, emit } => Effect::BrowserBeacon {
+        Effect::BrowserBeacon {
+            url,
+            request,
+            key,
+            emit,
+        } => Effect::BrowserBeacon {
             url: ctx.resolve_value_checked(&url)?.into_owned(),
             request: ctx.resolve_value_checked(&request)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
@@ -6010,11 +6648,19 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
                 other => Value::String(other.to_string_value()),
             },
         },
-        Effect::Os { op, args, key, emit } => Effect::Os {
+        Effect::Os {
+            op,
+            args,
+            key,
+            emit,
+        } => Effect::Os {
             op,
             args: args
                 .iter()
-                .map(|arg| ctx.resolve_value_checked(arg).map(std::borrow::Cow::into_owned))
+                .map(|arg| {
+                    ctx.resolve_value_checked(arg)
+                        .map(std::borrow::Cow::into_owned)
+                })
                 .collect::<Result<_, EvalError>>()?,
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
@@ -6041,7 +6687,12 @@ fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> Result<Effec
             request: ctx.resolve_value_checked(&request)?.into_owned(),
             emit,
         },
-        Effect::OAuthAuthorize { client, options, key, emit } => Effect::OAuthAuthorize {
+        Effect::OAuthAuthorize {
+            client,
+            options,
+            key,
+            emit,
+        } => Effect::OAuthAuthorize {
             client: ctx.resolve_value_checked(&client)?.into_owned(),
             options: ctx.resolve_value_checked(&options)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
@@ -6067,7 +6718,13 @@ fn resolved_custom_or_failed(
     ctx: &BindingContext,
     effect_results: &mut Vec<EffectResult>,
 ) -> Option<Effect> {
-    let Effect::Custom { name, args, key, emit } = effect else {
+    let Effect::Custom {
+        name,
+        args,
+        key,
+        emit,
+    } = effect
+    else {
         return Some(effect.clone());
     };
     let mut resolved = Vec::with_capacity(args.len() + 1);
@@ -6084,7 +6741,12 @@ fn resolved_custom_or_failed(
         }
     }
     let key = key.as_ref().and_then(|_| resolved.pop());
-    Some(Effect::Custom { name: name.clone(), args: resolved, key, emit: emit.clone() })
+    Some(Effect::Custom {
+        name: name.clone(),
+        args: resolved,
+        key,
+        emit: emit.clone(),
+    })
 }
 
 /// `effect` with its bindings resolved, or `None` after recording the typed argument mismatch as the effect's failure.
@@ -6150,7 +6812,10 @@ fn os_failure(effect: &Effect, error: &OsError) -> EffectResult {
         effect,
         Value::Object(ValueMap::from([
             ("error".to_string(), Value::String(error.message.clone())),
-            ("kind".to_string(), Value::String(error.kind.as_str().to_string())),
+            (
+                "kind".to_string(),
+                Value::String(error.kind.as_str().to_string()),
+            ),
         ])),
     )
 }
@@ -6205,10 +6870,15 @@ fn resolve_http_request(request: &Value, ctx: &BindingContext) -> Result<Value, 
 }
 
 /// The fields a `browser/page-facts` asks for: a non-empty, duplicate-free list of the closed words.
-fn page_fact_fields(value: &Value) -> Result<Vec<orbital_core_base::ir::effects::PageFactField>, String> {
+fn page_fact_fields(
+    value: &Value,
+) -> Result<Vec<orbital_core_base::ir::effects::PageFactField>, String> {
     use orbital_core_base::ir::effects::PageFactField;
     let Value::Array(words) = value else {
-        return Err("browser/page-facts: the fields must be a list of hostname, referrer, screenWidth".to_string());
+        return Err(
+            "browser/page-facts: the fields must be a list of hostname, referrer, screenWidth"
+                .to_string(),
+        );
     };
     if words.is_empty() {
         return Err("browser/page-facts: the fields must name at least one fact".to_string());
@@ -6216,8 +6886,9 @@ fn page_fact_fields(value: &Value) -> Result<Vec<orbital_core_base::ir::effects:
     let mut fields = Vec::with_capacity(words.len());
     for word in words {
         let text = word.to_string_value();
-        let field = PageFactField::parse(&text)
-            .ok_or_else(|| format!("browser/page-facts: {text} is not one of hostname, referrer, screenWidth"))?;
+        let field = PageFactField::parse(&text).ok_or_else(|| {
+            format!("browser/page-facts: {text} is not one of hostname, referrer, screenWidth")
+        })?;
         if fields.contains(&field) {
             return Err(format!("browser/page-facts: {text} is listed twice"));
         }
@@ -6243,7 +6914,8 @@ fn resolve_render_slot(slot: String, ctx: &BindingContext) -> Result<String, Eva
 
 fn resolve_call_key(key: &Value, ctx: &BindingContext) -> Result<Value, EvalError> {
     let value = ctx.resolve_value_checked(key)?;
-    orbital_core_base::effect_types::call_key_text(&value).map(|text| Value::String(text.to_string()))
+    orbital_core_base::effect_types::call_key_text(&value)
+        .map(|text| Value::String(text.to_string()))
 }
 
 #[cfg(test)]
@@ -6326,9 +6998,16 @@ mod call_key_tests {
     fn a_cancel_call_on_a_bound_list_resolves_to_the_list_and_a_list_literal_evaluates() {
         let mut entity = ValueMap::new();
         entity.insert("batchId".to_string(), Value::String("b-7".to_string()));
-        entity.insert("keys".to_string(), Value::Array(vec!["x".into(), "y".into()]));
-        let ctx = BindingContextBuilder::new().entity(Value::Object(entity)).build();
-        let bound = Effect::CancelCall { key: Value::String("@entity.keys".into()) };
+        entity.insert(
+            "keys".to_string(),
+            Value::Array(vec!["x".into(), "y".into()]),
+        );
+        let ctx = BindingContextBuilder::new()
+            .entity(Value::Object(entity))
+            .build();
+        let bound = Effect::CancelCall {
+            key: Value::String("@entity.keys".into()),
+        };
         let Ok(Effect::CancelCall { key }) = resolve_effect_bindings(bound, &ctx) else {
             panic!("expected CancelCall");
         };
@@ -6415,10 +7094,12 @@ fn merge_nav_items(current: &Value, added: Vec<Value>) -> Value {
 fn persist_run(effects: &[SExpression], start: usize) -> Vec<Effect> {
     effects[start..]
         .iter()
-        .map_while(|expr| match orbital_core_base::effect_types::parse_effect(expr) {
-            Some(effect @ Effect::Persist { .. }) => Some(effect),
-            _ => None,
-        })
+        .map_while(
+            |expr| match orbital_core_base::effect_types::parse_effect(expr) {
+                Some(effect @ Effect::Persist { .. }) => Some(effect),
+                _ => None,
+            },
+        )
         .collect()
 }
 
@@ -6482,7 +7163,11 @@ fn keyed_call_completion_emit(
         }
         (None, EffectOutcome::Executed) => (
             emit.success.clone()?,
-            echo_key(result.return_value.clone().unwrap_or(Value::Null), &result.effect, key),
+            echo_key(
+                result.return_value.clone().unwrap_or(Value::Null),
+                &result.effect,
+                key,
+            ),
         ),
         (None, EffectOutcome::Failed) => (
             emit.failure.clone()?,
@@ -6531,7 +7216,11 @@ fn with_key(payload: Value, key: Option<&str>) -> Value {
 /// A substrate op's declared completion — JS `runSubstrate`/`runProgramEffectArm`: `emit.success`
 /// carries `{ result }`, `emit.failure` `{ error }` plus `errors` (a program's validator issues), each with the
 /// op's `key` when it declares one.
-fn substrate_completion_emit(emit: &FetchEmit, result: &EffectResult, key: Option<&str>) -> Option<EffectResult> {
+fn substrate_completion_emit(
+    emit: &FetchEmit,
+    result: &EffectResult,
+    key: Option<&str>,
+) -> Option<EffectResult> {
     let (event, payload) = match &result.outcome {
         EffectOutcome::Executed => (
             emit.success.clone()?,
@@ -6589,7 +7278,12 @@ fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<Effe
         EffectOutcome::Failed => {
             let mut payload = error_payload(result, None);
             if let Value::Object(fields) = &mut payload {
-                fields.insert("code".to_string(), result.code.map_or(Value::Null, |c| Value::String(c.as_str().to_string())));
+                fields.insert(
+                    "code".to_string(),
+                    result
+                        .code
+                        .map_or(Value::Null, |c| Value::String(c.as_str().to_string())),
+                );
             }
             (emit.failure.clone()?, payload)
         }
@@ -6616,11 +7310,22 @@ fn persist_completion_emit(
             if let Some(err) = &result.error {
                 payload.insert("error".to_string(), Value::String(err.clone()));
             }
-            payload.insert("code".to_string(), result.code.map_or(Value::Null, |c| Value::String(c.as_str().to_string())));
+            payload.insert(
+                "code".to_string(),
+                result
+                    .code
+                    .map_or(Value::Null, |c| Value::String(c.as_str().to_string())),
+            );
             if matches!(effect, Effect::PersistBatch { .. }) {
                 let at = result.batch_failure;
-                payload.insert("index".to_string(), at.map_or(Value::Null, |f| Value::Number(f.index as f64)));
-                payload.insert("completedCount".to_string(), Value::Number(at.map_or(0, |f| f.completed_count) as f64));
+                payload.insert(
+                    "index".to_string(),
+                    at.map_or(Value::Null, |f| Value::Number(f.index as f64)),
+                );
+                payload.insert(
+                    "completedCount".to_string(),
+                    Value::Number(at.map_or(0, |f| f.completed_count) as f64),
+                );
             }
             (emit.failure.clone()?, Value::Object(payload))
         }
@@ -6636,7 +7341,9 @@ fn persist_completion_emit(
                     // The declared id is a binding (`@payload.id`): the payload carries the id it named.
                     payload.insert(
                         "id".to_string(),
-                        id.clone().map_or(Value::Null, |id| ctx.resolve_value(&Value::String(id)).into_owned()),
+                        id.clone().map_or(Value::Null, |id| {
+                            ctx.resolve_value(&Value::String(id)).into_owned()
+                        }),
                     );
                     payload.insert("deleted".to_string(), Value::Bool(true));
                     Value::Object(payload)
@@ -7298,9 +8005,12 @@ mod embed_bubble_dispatch_tests {
 #[cfg(test)]
 mod client_dispatch_tests {
     use super::*;
-    use {orbital_core_base::bus_event::{BusEventSource, EmittedEvent}, orbital_core_base::client_effect::ClientEffect};
     use crate::entity_source::InMemoryEntityCache;
     use crate::server_leg::ServerLegCollector;
+    use {
+        orbital_core_base::bus_event::{BusEventSource, EmittedEvent},
+        orbital_core_base::client_effect::ClientEffect,
+    };
 
     /// `Persistor` (PersistedAwaited: not `local`, linked entity `Persistent`)
     /// transitions `idle -[CREATE]-> created` via a real `persist` effect —
@@ -8787,7 +9497,8 @@ mod mount_lifecycle_tests {
         list.iter()
             .map(|(t, e)| crate::effects::response::MountSeed {
                 r#trait: t.to_string(),
-                event: crate::effects::response::LifecycleEvent::parse(e).expect("a lifecycle event"),
+                event: crate::effects::response::LifecycleEvent::parse(e)
+                    .expect("a lifecycle event"),
             })
             .collect()
     }
@@ -9054,7 +9765,9 @@ mod fetch_payload_tests {
         let out = kernel.dispatch("Loader", None, "GO", Value::Null).unwrap();
         out.iter().find_map(|(_, r)| {
             r.effect_results.iter().find_map(|er| match &er.effect {
-                orbital_core_base::effect_types::Effect::Emit { event, payload } if event == "LOADED" => {
+                orbital_core_base::effect_types::Effect::Emit { event, payload }
+                    if event == "LOADED" =>
+                {
                     Some(payload.clone())
                 }
                 _ => None,
@@ -9323,13 +10036,23 @@ mod set_object_literal_tests {
             KernelConfig::default(),
         );
         kernel.register_schema(schema).unwrap();
-        let payload: Value = serde_json::from_value(serde_json::json!({ "data": { "id": "abc", "n": 3 } })).unwrap();
+        let payload: Value =
+            serde_json::from_value(serde_json::json!({ "data": { "id": "abc", "n": 3 } })).unwrap();
         let outcomes = kernel.dispatch("Holder", None, "GO", payload).unwrap();
-        outcomes.into_iter().find(|(t, _)| t == "Holder").expect("Holder ran").1.entity_data.to_value()
+        outcomes
+            .into_iter()
+            .find(|(t, _)| t == "Holder")
+            .expect("Holder ran")
+            .1
+            .entity_data
+            .to_value()
     }
 
     fn prof(row: &Value) -> Value {
-        row.as_object().and_then(|o| o.get("prof")).cloned().expect("prof is set")
+        row.as_object()
+            .and_then(|o| o.get("prof"))
+            .cloned()
+            .expect("prof is set")
     }
 
     #[test]
@@ -9349,14 +10072,21 @@ mod set_object_literal_tests {
 
     #[test]
     fn control_a_literal_with_no_computed_member_is_stored_as_written() {
-        let stored = prof(&row(serde_json::json!(["set", "@entity.prof", { "id": "fixed", "n": 7, "tags": ["a", "b"] }])));
-        let expected: Value = serde_json::from_value(serde_json::json!({ "id": "fixed", "n": 7, "tags": ["a", "b"] })).unwrap();
+        let stored = prof(&row(
+            serde_json::json!(["set", "@entity.prof", { "id": "fixed", "n": 7, "tags": ["a", "b"] }]),
+        ));
+        let expected: Value = serde_json::from_value(
+            serde_json::json!({ "id": "fixed", "n": 7, "tags": ["a", "b"] }),
+        )
+        .unwrap();
         assert_eq!(stored, expected);
     }
 
     #[test]
     fn control_a_bound_member_resolves() {
-        let stored = prof(&row(serde_json::json!(["set", "@entity.prof", { "id": "@payload.data.id" }])));
+        let stored = prof(&row(
+            serde_json::json!(["set", "@entity.prof", { "id": "@payload.data.id" }]),
+        ));
         let expected: Value = serde_json::from_value(serde_json::json!({ "id": "abc" })).unwrap();
         assert_eq!(stored, expected);
     }
@@ -9364,25 +10094,46 @@ mod set_object_literal_tests {
     // G-ORBITAL-CORE-019: an unresolved bare binding reads as null, as every other read of it does.
     #[test]
     fn a_bare_binding_that_resolves_to_nothing_stores_null_not_its_text() {
-        assert_eq!(prof(&row(serde_json::json!(["set", "@entity.prof", "@payload.status"]))), Value::Null);
+        assert_eq!(
+            prof(&row(serde_json::json!([
+                "set",
+                "@entity.prof",
+                "@payload.status"
+            ]))),
+            Value::Null
+        );
     }
 
     #[test]
     fn control_a_bare_binding_that_resolves_stores_its_value() {
-        assert_eq!(prof(&row(serde_json::json!(["set", "@entity.prof", "@payload.data.n"]))), Value::from(3));
+        assert_eq!(
+            prof(&row(serde_json::json!([
+                "set",
+                "@entity.prof",
+                "@payload.data.n"
+            ]))),
+            Value::from(3)
+        );
     }
 
     #[test]
     fn edge_text_after_a_binding_interpolates_it() {
         assert_eq!(
-            prof(&row(serde_json::json!(["set", "@entity.prof", "@payload.data.id done"]))),
+            prof(&row(serde_json::json!([
+                "set",
+                "@entity.prof",
+                "@payload.data.id done"
+            ]))),
             Value::String("abc done".into())
         );
     }
 
     #[test]
     fn edge_a_plain_string_is_stored_as_written() {
-        assert_eq!(prof(&row(serde_json::json!(["set", "@entity.prof", "open"]))), Value::String("open".into()));
+        assert_eq!(
+            prof(&row(serde_json::json!(["set", "@entity.prof", "open"]))),
+            Value::String("open".into())
+        );
     }
 }
 
@@ -9503,13 +10254,23 @@ mod os_grants_tests {
         use orbital_core_base::os_grants::NetKind;
         let k = kernel();
         k.register_schema(
-            serde_json::from_value(json!({ "name": "r", "egress": ["redis://cache.internal:6379"], "orbitals": [] })).unwrap(),
+            serde_json::from_value(
+                json!({ "name": "r", "egress": ["redis://cache.internal:6379"], "orbitals": [] }),
+            )
+            .unwrap(),
         )
         .unwrap();
-        assert!(k.os_grants().net_allows("cache.internal", 6379, NetKind::Tcp));
+        assert!(k
+            .os_grants()
+            .net_allows("cache.internal", 6379, NetKind::Tcp));
         let bare = kernel();
-        bare.register_schema(serde_json::from_value(json!({ "name": "r", "orbitals": [] })).unwrap()).unwrap();
-        assert!(!bare.os_grants().net_allows("cache.internal", 6379, NetKind::Tcp));
+        bare.register_schema(
+            serde_json::from_value(json!({ "name": "r", "orbitals": [] })).unwrap(),
+        )
+        .unwrap();
+        assert!(!bare
+            .os_grants()
+            .net_allows("cache.internal", 6379, NetKind::Tcp));
     }
 
     #[test]
@@ -9565,7 +10326,10 @@ mod os_grants_tests {
         assert_eq!(back["osGrants"]["env"], json!(["HOME"]));
         let plain: OrbitalSchema =
             serde_json::from_value(json!({ "name": "p", "orbitals": [] })).unwrap();
-        assert!(serde_json::to_value(&plain).unwrap().get("osGrants").is_none());
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("osGrants")
+            .is_none());
     }
 }
 
@@ -9605,7 +10369,10 @@ mod fork_shares_program_tests {
 
     fn fork_of(kernel: &RuntimeKernel) -> RuntimeKernel {
         kernel
-            .fork_session(Arc::new(crate::entity_source::InMemoryEntityCache::new()), KernelConfig::default())
+            .fork_session(
+                Arc::new(crate::entity_source::InMemoryEntityCache::new()),
+                KernelConfig::default(),
+            )
             .expect("forks")
     }
 
@@ -9614,7 +10381,10 @@ mod fork_shares_program_tests {
         let template = kernel_with_program();
         let fork = fork_of(&template);
         let (ours, theirs) = (template.schemas.read(), fork.schemas.read());
-        assert!(Arc::ptr_eq(&ours["Notes"], &theirs["Notes"]), "the fork must share the program, not copy it");
+        assert!(
+            Arc::ptr_eq(&ours["Notes"], &theirs["Notes"]),
+            "the fork must share the program, not copy it"
+        );
     }
 
     #[test]
@@ -9622,8 +10392,15 @@ mod fork_shares_program_tests {
         let template = kernel_with_program();
         let fork = fork_of(&template);
         let ours = template.trait_definitions.read()["NoteView"].clone();
-        let theirs = fork.state_manager.read().shared_trait("NoteView").expect("the fork knows the trait");
-        assert!(Arc::ptr_eq(&ours, &theirs), "the fork's state machine must share the definition, not copy it");
+        let theirs = fork
+            .state_manager
+            .read()
+            .shared_trait("NoteView")
+            .expect("the fork knows the trait");
+        assert!(
+            Arc::ptr_eq(&ours, &theirs),
+            "the fork's state machine must share the definition, not copy it"
+        );
     }
 
     #[test]
@@ -9642,7 +10419,10 @@ mod fork_shares_program_tests {
         let template = kernel_with_program();
         let fork = fork_of(&template);
         fork.seed_runtime_mock(Some("viewer-1".to_string()));
-        assert!(Arc::ptr_eq(&template.schemas.read()["Notes"], &fork.schemas.read()["Notes"]));
+        assert!(Arc::ptr_eq(
+            &template.schemas.read()["Notes"],
+            &fork.schemas.read()["Notes"]
+        ));
     }
 }
 
