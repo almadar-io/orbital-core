@@ -430,7 +430,7 @@ fn event_response_check(declared: &BTreeMap<String, String>) -> String {
 
 fn committed_path() -> PathBuf {
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
-        .join("../orbital-shell-typescript/renderers/core/src/generated/kernel-wire.ts")
+        .join("../orbital-shell-typescript/core/src/generated/kernel-wire.ts")
 }
 
 #[test]
