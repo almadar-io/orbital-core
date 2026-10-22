@@ -4,70 +4,167 @@
 //! trait resolution, event processing, effect execution, state rendering, and
 //! listener wiring — so that `orbital-client` and `orbital-server` become thin
 //! wrappers around a single source of truth.
+//!
+//! Directories under `src/` are organizational only — every module stays at the crate root
+//! (flat public paths) via its `#[path]`. See `README.md`.
 
-pub mod agent_ports;
-pub mod auth;
-pub mod callsite_capture;
-pub mod canvas_theme;
+// kernel — the one dispatch loop, worklist and step machinery
+#[path = "kernel/config.rs"]
 pub mod config;
-pub mod credential_admin;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod credential_store;
+#[path = "kernel/callsite_capture.rs"]
+pub mod callsite_capture;
+#[path = "kernel/dispatch_memory.rs"]
 pub mod dispatch_memory;
+#[path = "kernel/dispatch_trace.rs"]
 pub mod dispatch_trace;
-#[cfg(feature = "wire-drivers")]
-pub mod byte_stream;
-pub mod driver;
+#[path = "kernel/listener.rs"]
+pub mod listener;
+#[path = "kernel/mock_answer.rs"]
+pub mod mock_answer;
+#[path = "kernel/mock_random.rs"]
+pub mod mock_random;
+#[path = "kernel/payload_validation.rs"]
+pub mod payload_validation;
+#[path = "kernel/persona.rs"]
+pub mod persona;
+#[path = "kernel/planner.rs"]
+pub mod planner;
+#[path = "kernel/process_result.rs"]
+pub mod process_result;
+#[path = "kernel/program_machine.rs"]
+pub mod program_machine;
+#[path = "kernel/projected_payload.rs"]
+pub mod projected_payload;
+#[path = "kernel/relations.rs"]
+pub mod relations;
+#[path = "kernel/resumable.rs"]
+pub mod resumable;
+#[path = "kernel/seed.rs"]
+pub mod seed;
+#[path = "kernel/server_leg.rs"]
+pub mod server_leg;
+#[path = "kernel/shared_entity.rs"]
+pub mod shared_entity;
+#[path = "kernel/tick_clock.rs"]
+pub mod tick_clock;
+#[path = "kernel/trait_owners.rs"]
+pub mod trait_owners;
+pub mod kernel;
+
+// client — the client-role embedding of the same kernel
+#[path = "client/canvas_theme.rs"]
+pub mod canvas_theme;
+#[path = "client/desktop_protocol.rs"]
+pub mod desktop_protocol;
+#[path = "client/embed_index.rs"]
 pub mod embed_index;
-pub mod entity_access;
-pub mod entity_source;
-pub mod firestore;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod store_config;
+#[path = "client/motion.rs"]
+pub mod motion;
+#[path = "client/render_store.rs"]
+pub(crate) mod render_store;
+pub mod client;
+
+// server — the server-role embedding and its HTTP seam
+#[path = "server/auth.rs"]
+pub mod auth;
+#[path = "server/http_service.rs"]
+pub mod http_service;
+#[path = "server/stream_ticket.rs"]
 pub mod stream_ticket;
+
+// stores — row stores: kernel drivers over raw ports (EXEC-STORE)
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "stores/couchdb.rs"]
+pub mod couchdb;
+#[path = "stores/entity_access.rs"]
+pub mod entity_access;
+#[path = "stores/entity_source.rs"]
+pub mod entity_source;
+#[path = "stores/firestore.rs"]
+pub mod firestore;
+#[cfg(all(feature = "wire-drivers", not(target_arch = "wasm32")))]
+#[path = "stores/pg_rows.rs"]
+pub mod pg_rows;
+#[path = "stores/row_query.rs"]
+pub mod row_query;
+#[path = "stores/sidecar_store.rs"]
+pub mod sidecar_store;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "stores/store_config.rs"]
+pub mod store_config;
+#[path = "stores/store_driver.rs"]
+pub mod store_driver;
+#[path = "stores/vector_store.rs"]
+pub mod vector_store;
+
+// drivers — the sans-I/O step machines stores speak over (§3: `http` is one primitive)
+#[cfg(feature = "wire-drivers")]
+#[path = "drivers/byte_stream.rs"]
+pub mod byte_stream;
+#[path = "drivers/driver.rs"]
+pub mod driver;
+#[path = "drivers/http_request.rs"]
 pub mod http_request;
 #[cfg(feature = "wire-drivers")]
+#[path = "drivers/postgres.rs"]
 pub mod postgres;
-#[cfg(all(feature = "wire-drivers", not(target_arch = "wasm32")))]
-pub mod pg_rows;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod couchdb;
 #[cfg(feature = "wire-drivers")]
+#[path = "drivers/redis.rs"]
 pub mod redis;
-pub mod http_service;
-pub mod oauth_flow;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod os_host;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod kv_host;
-pub mod kernel;
-pub mod listener;
-pub mod mock_answer;
-pub mod mock_random;
-pub mod motion;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod native_host;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod credentials;
-#[cfg(feature = "native-transport")]
-pub mod native_transport;
-pub mod payload_validation;
-pub mod persona;
-pub mod process_result;
-pub mod projected_payload;
-pub mod relations;
-pub(crate) mod render_store;
-pub mod resumable;
-pub mod row_query;
-pub mod seed;
-pub mod server_leg;
-pub mod shared_entity;
-pub mod store_driver;
+#[path = "drivers/tab.rs"]
 pub mod tab;
-pub mod tick_clock;
 #[cfg(feature = "wire-drivers")]
+#[path = "drivers/tls/mod.rs"]
 pub mod tls;
-pub mod trait_owners;
+
+// security — auth, tokens and secrets (the kernel signs; hosts verify)
+#[path = "security/credential_admin.rs"]
+pub mod credential_admin;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "security/credential_store.rs"]
+pub mod credential_store;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "security/credentials.rs"]
+pub mod credentials;
+#[path = "security/jwt.rs"]
+pub mod jwt;
+#[path = "security/lenient.rs"]
+pub mod lenient;
+#[path = "security/oauth/mod.rs"]
+pub mod oauth;
+#[path = "security/oauth_flow.rs"]
+pub mod oauth_flow;
+#[path = "security/sigv4.rs"]
+pub mod sigv4;
+#[path = "security/webpush.rs"]
+pub mod webpush;
+
+// host — the native OS hosts and their transports (EXEC-HOST)
+#[path = "host/agent_ports.rs"]
+pub mod agent_ports;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "host/kv_host.rs"]
+pub mod kv_host;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "host/native_host.rs"]
+pub mod native_host;
+#[cfg(feature = "native-transport")]
+#[path = "host/native_transport.rs"]
+pub mod native_transport;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "host/os_host/mod.rs"]
+pub mod os_host;
+
+// effects — the effect pipeline (EXEC-EFFECTS)
+pub mod effects;
+
+// embed — the client embedding surface (EXEC-EMBED)
+pub mod embed;
+
+// verify — Layer 2 render verification (EXEC-VERIFY)
+#[path = "verify/render_report.rs"]
+pub mod render_report;
+pub mod verify;
 
 pub use config::{DispatchClock, KernelConfig};
 pub use orbital_core_base::dispatch_mode::{compute as compute_dispatch_mode, DispatchMode};
@@ -96,19 +193,3 @@ pub use server_leg::ServerLegCollector;
 pub use orbital_core_base::theme::{resolve_theme, ResolvedTheme, ThemeError, ThemeMode, ThemePresets};
 pub use tick_clock::{Calendar, TickClock};
 pub use trait_owners::TraitOwners;
-
-pub mod sidecar_store;
-pub mod vector_store;
-pub mod jwt;
-pub mod lenient;
-pub mod sigv4;
-pub mod webpush;
-pub mod effects;
-pub mod embed;
-pub mod oauth;
-pub mod client;
-pub mod desktop_protocol;
-pub mod planner;
-pub mod program_machine;
-pub mod render_report;
-pub mod verify;

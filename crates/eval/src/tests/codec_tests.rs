@@ -40,7 +40,7 @@ mod tests {
     #[test]
     fn decode_uri_component_runs_every_shared_vector() {
         let cases: Vec<UriDecodeCase> = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/operators/uri-decode-vectors.json"
+            "../../../../tests/fixtures/operators/uri-decode-vectors.json"
         ))
         .unwrap();
         assert!(cases.iter().any(|c| c.error));
@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn uri_component_valid_runs_its_shared_vectors() {
         let cases: Vec<UriDecodeCase> = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/operators/uri-decode-vectors.json"
+            "../../../../tests/fixtures/operators/uri-decode-vectors.json"
         ))
         .unwrap();
         let own: Vec<_> = cases
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn md5_runs_every_shared_vector() {
         let cases: Vec<UriDecodeCase> = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/operators/md5-vectors.json"
+            "../../../../tests/fixtures/operators/md5-vectors.json"
         ))
         .unwrap();
         assert!(

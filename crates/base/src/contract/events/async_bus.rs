@@ -254,6 +254,7 @@ impl Default for AsyncEventBus {
     }
 }
 
+#[cfg(not(feature = "async"))]
 impl AsyncEventBus {
     pub fn new() -> Self {
         panic!("AsyncEventBus requires the 'async' feature to be enabled")

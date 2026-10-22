@@ -176,7 +176,7 @@ fn notation_keys() -> &'static std::collections::BTreeSet<String> {
         struct Notation {
             keys: Vec<String>,
         }
-        let raw = include_str!("../../../../src/i18n/orb-notation.json");
+        let raw = include_str!("orb-notation.json");
         let parsed: Notation = serde_json::from_str(raw).expect("baked orb-notation.json");
         parsed.keys.into_iter().collect()
     })

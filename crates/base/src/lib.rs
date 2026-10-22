@@ -1,64 +1,147 @@
-pub mod agent_ports;
-pub mod behavior_index;
-pub mod behavior_packages;
-pub mod codec;
-pub mod credential_admin;
-pub mod cron;
-pub mod drawable;
-pub mod client_effect;
-pub mod effect_row;
-pub mod emit_contract;
-pub mod persist_batch;
-pub mod runs_on;
-pub mod effect_types;
-pub mod envelope;
-pub mod error;
-pub mod expects;
+//! orbital-core-base: types, IR, wire formats and shared contracts.
+//!
+//! Directories under `src/` are organizational only — every module stays at the crate root
+//! (flat public paths) via its `#[path]`. See `README.md`.
+
+// program — what a program IS: value model + IR + structure
+#[path = "program/value.rs"]
 pub mod value;
-pub mod viewer;
-pub mod events;
-pub mod fixtures;
-pub mod generate;
-pub mod i18n;
-pub mod language;
-pub mod language_data;
-pub mod project;
-pub mod identity;
-pub mod ir;
-pub mod logging;
-pub mod messages;
-pub mod oauth_ask;
-pub mod oauth_client;
-pub mod renderer_packs;
-pub mod route;
-pub mod dispatch_mode;
-pub mod external_inputs;
-pub mod inbound;
-pub mod os;
-pub mod os_grants;
-pub mod service_params;
-pub mod theme;
-pub mod schema;
-pub mod secrets;
-pub mod sql_guard;
-pub mod shell;
-pub mod shell_protocol;
-pub mod signature;
-pub mod slots;
-pub mod stamp;
-pub mod tab;
-pub mod tab_call;
-pub mod str_utils;
-pub mod time_util;
-pub mod type_compat;
-pub mod http_wire;
-pub mod bus_event;
-pub mod row_set;
-pub mod policy;
-pub mod entity_vocabulary;
-pub mod listen_match;
+#[path = "program/json_value.rs"]
 pub mod json_value;
+#[path = "program/type_compat.rs"]
+pub mod type_compat;
+#[path = "program/ir/mod.rs"]
+pub mod ir;
+#[path = "program/schema/mod.rs"]
+pub mod schema;
+#[path = "program/slots.rs"]
+pub mod slots;
+#[path = "program/stamp.rs"]
+pub mod stamp;
+#[path = "program/signature.rs"]
+pub mod signature;
+
+// wire — the serde JSON boundary every argument and result crosses
+#[path = "wire/codec.rs"]
+pub mod codec;
+#[path = "wire/envelope.rs"]
+pub mod envelope;
+#[path = "wire/bus_event.rs"]
+pub mod bus_event;
+#[path = "wire/client_effect.rs"]
+pub mod client_effect;
+#[path = "wire/effect_types.rs"]
+pub mod effect_types;
+#[path = "wire/http_wire.rs"]
+pub mod http_wire;
+#[path = "wire/oauth_wire.rs"]
 pub mod oauth_wire;
+#[path = "wire/row_set.rs"]
+pub mod row_set;
+#[path = "wire/tab.rs"]
+pub mod tab;
+#[path = "wire/tab_call.rs"]
+pub mod tab_call;
 #[cfg(feature = "ts-export")]
+#[path = "wire/wire_ts_export.rs"]
 pub mod wire_ts_export;
+
+// lang — installed-language data: what every phase validates against
+#[path = "lang/language/mod.rs"]
+pub mod language;
+#[path = "lang/i18n/mod.rs"]
+pub mod i18n;
+#[path = "lang/language_data.rs"]
+pub mod language_data;
+#[path = "lang/behavior_index.rs"]
+pub mod behavior_index;
+#[path = "lang/behavior_packages.rs"]
+pub mod behavior_packages;
+#[path = "lang/renderer_packs.rs"]
+pub mod renderer_packs;
+#[path = "lang/theme.rs"]
+pub mod theme;
+#[path = "lang/route.rs"]
+pub mod route;
+
+// contract — shared contracts: the kernel enforces them, hosts honor them
+#[path = "contract/effect_row.rs"]
+pub mod effect_row;
+#[path = "contract/emit_contract.rs"]
+pub mod emit_contract;
+#[path = "contract/persist_batch.rs"]
+pub mod persist_batch;
+#[path = "contract/runs_on.rs"]
+pub mod runs_on;
+#[path = "contract/expects.rs"]
+pub mod expects;
+#[path = "contract/external_inputs.rs"]
+pub mod external_inputs;
+#[path = "contract/service_params.rs"]
+pub mod service_params;
+#[path = "contract/listen_match.rs"]
+pub mod listen_match;
+#[path = "contract/policy.rs"]
+pub mod policy;
+#[path = "contract/entity_vocabulary.rs"]
+pub mod entity_vocabulary;
+#[path = "contract/identity.rs"]
+pub mod identity;
+#[path = "contract/viewer.rs"]
+pub mod viewer;
+#[path = "contract/dispatch_mode.rs"]
+pub mod dispatch_mode;
+#[path = "contract/inbound.rs"]
+pub mod inbound;
+#[path = "contract/credential_admin.rs"]
+pub mod credential_admin;
+#[path = "contract/sql_guard.rs"]
+pub mod sql_guard;
+#[path = "contract/events/mod.rs"]
+pub mod events;
+
+// host — the ask surface a host must be able to answer
+#[path = "host/os.rs"]
+pub mod os;
+#[path = "host/os_grants.rs"]
+pub mod os_grants;
+#[path = "host/agent_ports.rs"]
+pub mod agent_ports;
+#[path = "host/drawable.rs"]
+pub mod drawable;
+
+// backend — the shell/backend contract shells implement
+#[path = "backend/shell.rs"]
+pub mod shell;
+#[path = "backend/shell_protocol.rs"]
+pub mod shell_protocol;
+#[path = "backend/generate.rs"]
+pub mod generate;
+#[path = "backend/project.rs"]
+pub mod project;
+
+// security — token & secret shapes (the kernel signs; base holds the wire types)
+#[path = "security/jwt_alg.rs"]
 pub mod jwt_alg;
+#[path = "security/oauth_ask.rs"]
+pub mod oauth_ask;
+#[path = "security/oauth_client.rs"]
+pub mod oauth_client;
+#[path = "security/secrets.rs"]
+pub mod secrets;
+
+// util — shared plumbing, no domain vocabulary
+#[path = "util/error.rs"]
+pub mod error;
+#[path = "util/logging.rs"]
+pub mod logging;
+#[path = "util/messages.rs"]
+pub mod messages;
+#[path = "util/str_utils.rs"]
+pub mod str_utils;
+#[path = "util/time_util.rs"]
+pub mod time_util;
+#[path = "util/cron.rs"]
+pub mod cron;
+#[path = "util/fixtures.rs"]
+pub mod fixtures;

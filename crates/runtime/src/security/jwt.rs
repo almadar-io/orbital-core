@@ -451,13 +451,13 @@ mod tests {
     use p256::pkcs8::DecodePublicKey;
     use base64::engine::general_purpose::STANDARD;
 
-    const RS_PKCS8: &str = include_str!("../../../src/codec/fixtures/rs256-pkcs8.pem");
-    const RS_PKCS1: &str = include_str!("../../../src/codec/fixtures/rs256-pkcs1.pem");
-    const RS_SIG: &str = include_str!("../../../src/codec/fixtures/rs256-sig.b64");
-    const EC_PKCS8: &str = include_str!("../../../src/codec/fixtures/es256-pkcs8.pem");
-    const EC_SEC1: &str = include_str!("../../../src/codec/fixtures/es256-sec1.pem");
-    const EC_PUBLIC: &str = include_str!("../../../src/codec/fixtures/es256-public.pem");
-    const EC_OPENSSL_SIG: &str = include_str!("../../../src/codec/fixtures/es256-openssl-sig.b64");
+    const RS_PKCS8: &str = include_str!("../../tests/fixtures/jwt/rs256-pkcs8.pem");
+    const RS_PKCS1: &str = include_str!("../../tests/fixtures/jwt/rs256-pkcs1.pem");
+    const RS_SIG: &str = include_str!("../../tests/fixtures/jwt/rs256-sig.b64");
+    const EC_PKCS8: &str = include_str!("../../tests/fixtures/jwt/es256-pkcs8.pem");
+    const EC_SEC1: &str = include_str!("../../tests/fixtures/jwt/es256-sec1.pem");
+    const EC_PUBLIC: &str = include_str!("../../tests/fixtures/jwt/es256-public.pem");
+    const EC_OPENSSL_SIG: &str = include_str!("../../tests/fixtures/jwt/es256-openssl-sig.b64");
     const MESSAGE: &[u8] = b"eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJhIn0";
 
     #[test]

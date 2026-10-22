@@ -824,7 +824,7 @@ mod tests {
     use crate::external_inputs::external_inputs_of;
     use serde_json::Value as Json;
 
-    const VECTORS: &str = include_str!("../../runtime/tests/fixtures/agent-ports/vectors.json");
+    const VECTORS: &str = include_str!("../../../runtime/tests/fixtures/agent-ports/vectors.json");
 
     fn fixture() -> Json {
         serde_json::from_str(VECTORS).expect("the shared vectors parse")

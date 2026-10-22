@@ -52,7 +52,7 @@ pub struct I18nDefinition {
 /// The built-in English vocabulary.
 pub fn english() -> &'static I18nDefinition {
     static EN: OnceLock<I18nDefinition> = OnceLock::new();
-    EN.get_or_init(|| serde_json::from_str(include_str!("../../../../src/i18n/en.json")).expect("built-in en.json"))
+    EN.get_or_init(|| serde_json::from_str(include_str!("en.json")).expect("built-in en.json"))
 }
 
 /// English plus every installed language pack, keyed by language code.
