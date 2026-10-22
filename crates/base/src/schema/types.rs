@@ -34,6 +34,11 @@ where
 /// The root OrbitalSchema type
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrbitalSchema {
+    #[serde(default, rename = "typeContractVersion", skip_serializing_if = "Option::is_none", deserialize_with = "crate::ir::types::deserialize_type_contract_version")]
+    pub type_contract_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub types: Option<std::collections::BTreeMap<String, Vec<PayloadField>>>,
+
     /// Application name
     pub name: String,
 
@@ -2444,6 +2449,10 @@ pub enum Persistence {
 /// Field definition within an entity
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldDefinition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nullable: Option<bool>,
+    #[serde(default, rename = "additionalProperties", skip_serializing_if = "Option::is_none")]
+    pub additional_properties: Option<Box<FieldDefinition>>,
     /// Field name (optional for nested items/properties)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -2695,12 +2704,21 @@ pub fn tuple_slots_of(
     slots.into_iter().map(|(_, v)| v).collect()
 }
 
-/// `T.f` — a field `f` of the declared type `T` (an entity or a struct type).
+/// Authored type `T`, or its field `T.f` when `field` is present.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FieldProjection {
     #[serde(rename = "type")]
     pub type_name: String,
-    pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_projected_field")]
+    pub field: Option<String>,
+}
+
+fn deserialize_projected_field<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    let field = String::deserialize(deserializer)?;
+    if field.is_empty() {
+        return Err(serde::de::Error::custom("a projected field must be nonempty; omit field for a named type"));
+    }
+    Ok(Some(field))
 }
 
 /// Field type
@@ -2880,6 +2898,14 @@ impl FieldType {
     }
 }
 
+/// A nullable occurrence or binding makes the substituted value nullable.
+pub fn compose_nullability(occurrence: Option<bool>, binding: Option<bool>) -> Option<bool> {
+    match (occurrence, binding) {
+        (None, None) => None,
+        (occurrence, binding) => Some(occurrence.unwrap_or(false) || binding.unwrap_or(false)),
+    }
+}
+
 impl FieldDefinition {
     /// Replaces every type variable in this shape (items, properties, map
     /// values) by its binding, keeping the occurrence's own name, `required`
@@ -2889,16 +2915,21 @@ impl FieldDefinition {
             if let Some(bound) = bindings.get(var) {
                 let name = self.name.take();
                 let required = self.required;
+                let nullable = self.nullable;
                 let description = self.description.take();
                 *self = bound.clone();
                 self.name = name;
                 self.required = required.or(self.required);
+                self.nullable = compose_nullability(nullable, self.nullable);
                 self.description = description.or(self.description.take());
             }
             return;
         }
         if let Some(items) = self.items.as_deref_mut() {
             items.substitute_type_vars(bindings);
+        }
+        if let Some(additional) = self.additional_properties.as_deref_mut() {
+            additional.substitute_type_vars(bindings);
         }
         if let Some(props) = self.properties.as_mut() {
             for prop in props.values_mut() {
@@ -3631,6 +3662,10 @@ pub enum TraitScope {
 /// Configuration field definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigField {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nullable: Option<bool>,
+    #[serde(default, rename = "additionalProperties", skip_serializing_if = "Option::is_none")]
+    pub additional_properties: Option<Box<FieldDefinition>>,
     #[serde(rename = "type")]
     pub field_type: String,
     #[serde(
@@ -4222,6 +4257,10 @@ pub struct PayloadTypeWhen {
 /// Payload field definition
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PayloadField {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nullable: Option<bool>,
+    #[serde(default, rename = "additionalProperties", skip_serializing_if = "Option::is_none")]
+    pub additional_properties: Option<Box<PayloadField>>,
     /// The field's name; empty for a list's or map's element (`items`), which has none.
     #[serde(default)]
     pub name: String,
@@ -4853,6 +4892,44 @@ pub struct DesignHints {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn generic_substitution_composes_nullable_without_changing_field_presence() {
+        use serde_json::json;
+        for (occurrence, bound, expected) in [
+            (Some(false), Some(true), Some(true)),
+            (Some(true), Some(false), Some(true)),
+            (Some(false), Some(false), Some(false)),
+            (None, Some(true), Some(true)),
+            (None, None, None),
+        ] {
+            let mut field: super::FieldDefinition = serde_json::from_value(json!({
+                "name":"value", "type":"$v", "nullable":occurrence, "required":true,
+                "description":"keep"
+            })).unwrap();
+            let binding: super::FieldDefinition = serde_json::from_value(json!({
+                "type":"string", "nullable":bound, "required":false, "values":["ready"]
+            })).unwrap();
+            let bindings = std::collections::HashMap::from([("v".to_string(), binding)]);
+            field.substitute_type_vars(&bindings);
+            assert_eq!(field.nullable, expected, "occurrence={occurrence:?}, bound={bound:?}");
+            assert_eq!(field.required, Some(true));
+            assert_eq!(field.name.as_deref(), Some("value"));
+            assert_eq!(field.description.as_deref(), Some("keep"));
+            assert_eq!(field.values, Some(vec!["ready".to_string()]));
+        }
+        let mut container: super::FieldDefinition = serde_json::from_value(json!({
+            "type":"object", "properties":{"slot":{"type":"$v","nullable":false,"required":false}},
+            "items":{"type":"$v","nullable":false},
+            "additionalProperties":{"type":"$v","nullable":false}
+        })).unwrap();
+        let binding = serde_json::from_value(json!({"type":"string","nullable":true})).unwrap();
+        container.substitute_type_vars(&std::collections::HashMap::from([("v".to_string(), binding)]));
+        assert_eq!(container.properties.as_ref().unwrap()["slot"].nullable, Some(true));
+        assert_eq!(container.properties.as_ref().unwrap()["slot"].required, Some(false));
+        assert_eq!(container.items.as_ref().unwrap().nullable, Some(true));
+        assert_eq!(container.additional_properties.as_ref().unwrap().nullable, Some(true));
+    }
+
+    #[test]
     fn a_type_variable_is_dollar_named_on_the_wire_and_binds_by_substitution() {
         use serde_json::json;
         let page = json!({ "type": "object", "properties": {
@@ -5129,6 +5206,8 @@ mod tests {
     #[test]
     fn config_field_default_null_round_trips_as_some_null_not_none() {
         let bound = ConfigField {
+            nullable: None,
+            additional_properties: None,
             field_type: "trait".to_string(),
             default: Some(SExpression::String("@trait.DefaultForm".to_string())),
             label: None,
@@ -5172,6 +5251,8 @@ mod tests {
         let json = serde_json::to_value(&ConfigField {
             default: Some(SExpression::Null),
             ..ConfigField {
+                nullable: None,
+                additional_properties: None,
                 field_type: "trait".to_string(),
                 default: None,
                 label: None,
@@ -5479,6 +5560,8 @@ mod tests {
         config.insert(
             "pageSize".to_string(),
             ConfigField {
+                nullable: None,
+                additional_properties: None,
                 field_type: "number".to_string(),
                 default: Some(SExpression::Number(50.0)),
                 label: None,
