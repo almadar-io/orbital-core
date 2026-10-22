@@ -101,7 +101,6 @@ impl IndexedFile {
 /// Every behavior `pkg` ships, in path order: the files of its registry (or source) tree that its
 /// `files` allowlist covers.
 pub fn indexed_files(pkg: &BehaviorPackage) -> Result<Vec<IndexedFile>, DiscoverError> {
-    let root = pkg.registry.root();
     let mut files: Vec<(String, PathBuf)> = index_registry_source(&pkg.registry)?
         .into_iter()
         .filter(|(_, path)| pkg.ships(path))
@@ -109,22 +108,25 @@ pub fn indexed_files(pkg: &BehaviorPackage) -> Result<Vec<IndexedFile>, Discover
     files.sort_by(|a, b| a.1.cmp(&b.1));
     Ok(files
         .into_iter()
-        .map(|(name, path)| {
-            let dirs = path
-                .parent()
-                .and_then(|p| p.strip_prefix(root).ok())
-                .map(|rel| {
-                    rel.components()
-                        .filter_map(|c| match c {
-                            Component::Normal(s) => s.to_str().map(str::to_string),
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            IndexedFile { name, path, dirs }
-        })
+        .map(|(name, path)| indexed_file_at(pkg, name, path))
         .collect())
+}
+
+/// The behavior `name` whose registry program is at `path`, placed under `pkg`'s registry root.
+pub fn indexed_file_at(pkg: &BehaviorPackage, name: String, path: PathBuf) -> IndexedFile {
+    let dirs = path
+        .parent()
+        .and_then(|p| p.strip_prefix(pkg.registry.root()).ok())
+        .map(|rel| {
+            rel.components()
+                .filter_map(|c| match c {
+                    Component::Normal(s) => s.to_str().map(str::to_string),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    IndexedFile { name, path, dirs }
 }
 
 /// The names of the behaviors `pkg` ships.

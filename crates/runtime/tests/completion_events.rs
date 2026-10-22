@@ -560,8 +560,8 @@ mod agent_ports {
             "an event request is not restricted to declared inputs: the host routes its options"
         );
         let host = Arc::new(Recording { asked: Mutex::new(Vec::new()), answer: |_, _| json!(null) });
-        let (state, refused) = run_hosted(&fixture, json!(["program/dispatch", "Desk.Chat.SECRET", {}, { "stream": true, "orbital": "Desk", "event": "SECRET" }, options()]), Some(host.clone()));
-        assert_eq!((state.as_str(), refused["error"].clone()), ("failed", json!("program/dispatch: unsupported option \"stream\"")));
+        let (state, refused) = run_hosted(&fixture, json!(["program/dispatch", "Desk.Chat.SECRET", {}, { "verb": "POST", "orbital": "Desk", "event": "SECRET" }, options()]), Some(host.clone()));
+        assert_eq!((state.as_str(), refused["error"].clone()), ("failed", json!("program/dispatch: unsupported option \"verb\"")));
         assert!(host.asked.lock().is_empty(), "control: a refused option asks nothing");
     }
 
@@ -581,8 +581,52 @@ mod agent_ports {
         assert_eq!((state.as_str(), hostless["error"].clone()), ("failed", json!("no substrate host configured for program/inputs")));
     }
 
+    /// `Desk.Chat` moves idle -> busy on `GO`, whose effect reads the running states; `STAY` fires nothing.
+    fn state_reading_kernel() -> RuntimeKernel {
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "Desk",
+            "orbitals": [{
+                "name": "Desk",
+                "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "got", "type": "string" }] },
+                "traits": [{
+                    "name": "Chat", "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "busy" }],
+                        "transitions": [
+                            { "from": "idle", "to": "busy", "event": "GO", "effects": [["program/inputs", { "state": "Desk" }, { "emit": { "success": "READ" } }]] },
+                            { "from": "busy", "to": "busy", "event": "STAY", "effects": [["program/inputs", { "state": "Desk" }, { "emit": { "success": "READ" } }]] },
+                            { "from": "busy", "to": "busy", "event": "READ", "effects": [["set", "@entity.got", ["json/stringify", "@payload.result"]]] }
+                        ]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>, KernelConfig::default());
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
     #[test]
-    #[ignore = "process_event_composed holds state_manager for writing across effects (kernel.rs), so the asking dispatch cannot read states"]
+    fn an_effect_reading_the_states_sees_the_transition_it_belongs_to_committed() {
+        let kernel = state_reading_kernel();
+        kernel.dispatch("Chat", None, "GO", Value::Null).unwrap();
+        let snapshot = kernel.snapshot_trait("Chat", None);
+        let got: Json = serde_json::from_str(serde_json::to_value(&snapshot.entity).unwrap()["got"].as_str().unwrap_or("null")).unwrap();
+        let chat = got["state"]["traits"].as_array().and_then(|t| t.iter().find(|t| t["trait"] == "Chat").cloned()).unwrap_or(Json::Null);
+        assert_eq!(chat["state"], json!("busy"), "the effect ran after its transition committed: {got}");
+    }
+
+    #[test]
+    fn control_an_event_that_fires_nothing_reads_nothing() {
+        let kernel = state_reading_kernel();
+        kernel.dispatch("Chat", None, "STAY", Value::Null).unwrap();
+        let snapshot = kernel.snapshot_trait("Chat", None);
+        assert_eq!(snapshot.state, "idle");
+        assert!(serde_json::to_value(&snapshot.entity).unwrap()["got"].is_null(), "no effect ran");
+    }
+
+    #[test]
     fn program_inputs_answers_the_orbitals_running_states_and_the_counters() {
         let fixture: Json = serde_json::from_str(VECTORS).unwrap();
         let (state, got) = run_hosted(&fixture, json!(["program/inputs", { "state": "Desk", "stats": true }, options()]), None);

@@ -1248,7 +1248,9 @@ impl IoPort {
     /// A keyed substrate op with a declared route: the key and site its ask carries, else neither.
     fn substrate_site(&self) -> (Option<String>, Option<CallSite>) {
         let key = self.substrate_key.lock().clone();
-        let site = self.site.lock().clone().filter(|site| site.emit.success.is_some() || site.emit.failure.is_some());
+        let site = self.site.lock().clone().filter(|site| {
+            site.emit.success.is_some() || site.emit.failure.is_some() || site.emit.on_message.is_some()
+        });
         match (key, site) {
             (Some(key), Some(site)) => (Some(key), Some(site)),
             _ => (None, None),

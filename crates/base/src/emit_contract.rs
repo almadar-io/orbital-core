@@ -438,6 +438,10 @@ pub const FETCH_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field
 /// An agent-port or program-host failure: the message, and a program's validator issues when it has any.
 pub const SUBSTRATE_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("errors", "array")];
 
+/// A keyed agent-port or program op's failure: the substrate failure with the call's `key` beside it.
+pub const KEYED_SUBSTRATE_FAILURE_SHAPE: &[ShapeField] =
+    &[field("error", "string"), field("errors", "array"), field("key", "string")];
+
 /// A `persist batch` failure: the persist failure (message and the failing operation's store code, `null` for a cause
 /// that has none), the failing operation's position in the batch (`null` when no single operation is at fault, such
 /// as operations that do not evaluate) and the number of operations that completed before it (rolled back by a store
@@ -683,7 +687,7 @@ pub fn failure_payload(operator: &str, variant: CallVariant, keyed: bool) -> Pro
         _ if crate::agent_ports::is_agent_port_operator(operator)
             || crate::language::registry::is_program_host_effect(operator) =>
         {
-            ProducedPayload::Shape(SUBSTRATE_FAILURE_SHAPE)
+            ProducedPayload::Shape(if keyed { KEYED_SUBSTRATE_FAILURE_SHAPE } else { SUBSTRATE_FAILURE_SHAPE })
         }
         "call-service" | "call_service" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
         _ => ProducedPayload::Opaque,
@@ -1008,6 +1012,20 @@ mod tests {
             assert_eq!(failure, ProducedPayload::Shape(SUBSTRATE_FAILURE_SHAPE), "{op}");
             assert!(undeclared_reads(&["error", "errors"], &failure, &[]).is_empty());
             assert_eq!(undeclared_reads(&["message"], &failure, &[]), vec!["message"]);
+        }
+    }
+
+    #[test]
+    fn a_keyed_agent_port_or_program_failure_echoes_its_key() {
+        for op in crate::agent_ports::AGENT_PORT_OPERATORS.iter().copied().chain(["program/eval", "program/validate"]) {
+            let keyed = failure_payload(op, CallVariant::Plain, true);
+            assert_eq!(keyed, ProducedPayload::Shape(KEYED_SUBSTRATE_FAILURE_SHAPE), "{op}");
+            assert!(undeclared_reads(&["error", "errors", "key"], &keyed, &[]).is_empty(), "{op}");
+            assert_eq!(
+                undeclared_reads(&["key"], &failure_payload(op, CallVariant::Plain, false), &[]),
+                vec!["key"],
+                "control: an unkeyed {op} failure carries no key"
+            );
         }
     }
 

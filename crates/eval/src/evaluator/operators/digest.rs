@@ -226,6 +226,80 @@ impl Operator for HashPbkdf2Op {
     }
 }
 
+fn bytes_in(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Vec<u8>, OrbitalError> {
+    let s = string_arg(arg, ctx, op)?;
+    codec::base64_decode(&s).map_err(|e| {
+        OrbitalError::Eval(EvalError::InvalidArgument(format!(
+            "{op}: invalid bytes ({e})"
+        )))
+    })
+}
+
+fn compress(
+    args: &[SExpression],
+    ctx: &BindingContext,
+    op: &str,
+    run: fn(&[u8]) -> Vec<u8>,
+) -> EvalResult {
+    require_arity!(args, op, == 1);
+    let data = bytes_in(&args[0], ctx, op)?;
+    Ok(Value::String(codec::base64_encode(&run(&data))))
+}
+
+fn decompress(
+    args: &[SExpression],
+    ctx: &BindingContext,
+    op: &str,
+    run: fn(&[u8], usize) -> Result<Vec<u8>, String>,
+) -> EvalResult {
+    require_arity!(args, op, == 2);
+    let data = bytes_in(&args[0], ctx, op)?;
+    let max = match eval_expr(&args[1], ctx)? {
+        Value::Number(n) if n.fract() == 0.0 && n >= 0.0 && n <= u32::MAX as f64 => n as usize,
+        other => {
+            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                "{op}: maxBytes {}: expected a whole number from 0",
+                other.to_text()
+            ))))
+        }
+    };
+    let out = run(&data, max)
+        .map_err(|e| OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: {e}"))))?;
+    Ok(Value::String(codec::base64_encode(&out)))
+}
+
+/// gzip/compress (bytes) - gzip (RFC 1952) through flate2
+pub struct GzipCompressOp;
+impl Operator for GzipCompressOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        compress(args, ctx, "gzip/compress", codec::gzip_compress)
+    }
+}
+
+/// gzip/decompress (bytes, maxBytes) - every member, refusing an output past maxBytes
+pub struct GzipDecompressOp;
+impl Operator for GzipDecompressOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        decompress(args, ctx, "gzip/decompress", codec::gzip_decompress)
+    }
+}
+
+/// brotli/compress (bytes) - brotli (RFC 7932) through the brotli crate
+pub struct BrotliCompressOp;
+impl Operator for BrotliCompressOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        compress(args, ctx, "brotli/compress", codec::brotli_compress)
+    }
+}
+
+/// brotli/decompress (bytes, maxBytes) - one stream, refusing an output past maxBytes
+pub struct BrotliDecompressOp;
+impl Operator for BrotliDecompressOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        decompress(args, ctx, "brotli/decompress", codec::brotli_decompress)
+    }
+}
+
 /// hmac/sha256 (key, message, encoding)
 pub struct HmacSha256Op;
 impl Operator for HmacSha256Op {
@@ -327,6 +401,119 @@ mod tests {
             let err = eval(form).expect_err("refused");
             assert!(err.to_string().contains("hash/sha256"), "{err}");
         }
+    }
+
+    const HELLO3: &[u8] = b"hello hello hello";
+    const GZIP_CLI: &str = "H4sIAAAAAAAAA8tIzcnJV8hAkACAiPnlEQAAAA==";
+    const BROTLI_CLI: &str = "HxAA+I2Ubt5EVYaWbCBvAU8cYBw=";
+
+    fn bytes_of(form: serde_json::Value) -> Vec<u8> {
+        match eval(form) {
+            Ok(Value::String(b64)) => codec::base64_decode(&b64).expect("bytes"),
+            other => panic!("expected bytes, got {other:?}"),
+        }
+    }
+
+    fn refused(form: serde_json::Value, op: &str, says: &str) {
+        let err = eval(form).expect_err("refused").to_string();
+        assert!(err.contains(op) && err.contains(says), "{err}");
+    }
+
+    fn compression_cases(algo: &str, cli: &str) {
+        let (compress, decompress) = (format!("{algo}/compress"), format!("{algo}/decompress"));
+        let text = codec::base64_encode(HELLO3);
+        let packed = codec::base64_encode(&bytes_of(serde_json::json!([compress, text])));
+        assert_eq!(
+            bytes_of(serde_json::json!([decompress, packed, 17])),
+            HELLO3,
+            "round trip"
+        );
+        assert_eq!(
+            bytes_of(serde_json::json!([decompress, cli, 17])),
+            HELLO3,
+            "the CLI vector"
+        );
+        let empty = codec::base64_encode(&bytes_of(serde_json::json!([compress, ""])));
+        assert!(
+            bytes_of(serde_json::json!([decompress, empty, 0])).is_empty(),
+            "edge: empty input"
+        );
+        refused(
+            serde_json::json!([decompress, cli, 16]),
+            &decompress,
+            "larger than 16 bytes",
+        );
+        let mut corrupt = codec::base64_decode(cli).unwrap();
+        corrupt.truncate(corrupt.len() / 2);
+        refused(
+            serde_json::json!([decompress, codec::base64_encode(&corrupt), 1024]),
+            &decompress,
+            "",
+        );
+        refused(
+            serde_json::json!([
+                decompress,
+                codec::base64_encode(b"not compressed at all"),
+                1024
+            ]),
+            &decompress,
+            "",
+        );
+        refused(
+            serde_json::json!([decompress, "%%", 1024]),
+            &decompress,
+            "invalid bytes",
+        );
+        for max in [serde_json::json!(-1), serde_json::json!(1.5)] {
+            refused(
+                serde_json::json!([decompress, cli, max]),
+                &decompress,
+                "maxBytes",
+            );
+        }
+        assert!(
+            eval(serde_json::json!([decompress, cli])).is_err(),
+            "no implicit limit"
+        );
+        for typed in [
+            serde_json::json!([decompress, cli, "17"]),
+            serde_json::json!([compress, 42]),
+        ] {
+            assert!(
+                eval(typed.clone()).is_err(),
+                "the signature refuses {typed}"
+            );
+        }
+    }
+
+    #[test]
+    fn gzip_round_trips_reads_the_cli_vector_and_refuses_past_the_limit() {
+        compression_cases("gzip", GZIP_CLI);
+        let twice = [
+            codec::base64_decode(GZIP_CLI).unwrap(),
+            codec::base64_decode(GZIP_CLI).unwrap(),
+        ]
+        .concat();
+        assert_eq!(
+            bytes_of(serde_json::json!([
+                "gzip/decompress",
+                codec::base64_encode(&twice),
+                34
+            ])),
+            [HELLO3, HELLO3].concat(),
+            "edge: two members"
+        );
+    }
+
+    #[test]
+    fn brotli_round_trips_reads_the_cli_vector_and_refuses_past_the_limit() {
+        compression_cases("brotli", BROTLI_CLI);
+    }
+
+    #[test]
+    fn control_the_two_formats_do_not_read_each_other() {
+        assert!(eval(serde_json::json!(["gzip/decompress", BROTLI_CLI, 1024])).is_err());
+        assert!(eval(serde_json::json!(["brotli/decompress", GZIP_CLI, 1024])).is_err());
     }
 
     #[test]

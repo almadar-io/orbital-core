@@ -135,6 +135,47 @@ impl Completions {
         })
     }
 
+    /// Answer a keyed, `onMessage`-routed substrate op as a stream (EXEC-QUEUE-13): `next` is polled on a thread of its
+    /// own and each item it yields is the call's `onMessage` event, until the source ends or `cancel-call` drops the key.
+    pub fn open_substrate_stream(
+        this: &Arc<Self>,
+        key: &str,
+        site: &CallSite,
+        mut next: impl FnMut() -> StreamPoll + Send + 'static,
+    ) -> IoAnswer {
+        if !this.begin(key) {
+            return IoAnswer::Substrate(Err(SubstrateFailure {
+                message: format!("key {key} already has a stream open"),
+                errors: Vec::new(),
+            }));
+        }
+        let (completions, owned_key, owned_site) = (this.clone(), key.to_string(), site.clone());
+        let started = std::thread::Builder::new().name(format!("substrate-stream-{key}")).spawn(move || {
+            let (key, site) = (owned_key, owned_site);
+            while completions.is_live(&key) {
+                match next() {
+                    StreamPoll::Item(item) => {
+                        if !completions.message(&key, &site, item) {
+                            return;
+                        }
+                    }
+                    StreamPoll::Idle => std::thread::sleep(STREAM_IDLE),
+                    StreamPoll::Ended => {
+                        completions.cancel(&key);
+                        return;
+                    }
+                }
+            }
+        });
+        match started {
+            Ok(_) => IoAnswer::ServiceDeferred,
+            Err(error) => {
+                this.cancel(key);
+                IoAnswer::Substrate(Err(SubstrateFailure { message: error.to_string(), errors: Vec::new() }))
+            }
+        }
+    }
+
     /// Answer a keyed substrate op (R-a) by running `work` on a thread of its own and settling its completion through
     /// the sink, `op` shaping the success payload as an in-place completion would.
     pub fn defer_substrate(
@@ -205,6 +246,18 @@ impl Completions {
         }
     }
 }
+
+/// One poll of a substrate stream's source.
+pub enum StreamPoll {
+    /// The next item, delivered on the call's `onMessage` route.
+    Item(Value),
+    /// Nothing yet; the stream polls again shortly.
+    Idle,
+    /// The source is gone; the stream closes without an event.
+    Ended,
+}
+
+const STREAM_IDLE: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// Why [`Completions::run_later`] did not start.
 pub(super) enum RunLaterError {

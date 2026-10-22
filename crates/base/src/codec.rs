@@ -1,4 +1,4 @@
-//! The one set of wire codecs: percent-encoders, base64, SHA-256, MD5 and HMAC-SHA256. The `http` request builder
+//! The one set of wire codecs: percent-encoders, base64, SHA-256, MD5, HMAC-SHA256, gzip and brotli. The `http` request builder
 //! and the std operators all read these.
 
 use base64::Engine;
@@ -126,7 +126,8 @@ pub const SCRYPT_KEYLEN: usize = 32;
 
 /// scrypt (RFC 7914) at the fixed `hashApiKey` cost: the 32-byte key of `password` over `salt`.
 pub fn scrypt_api_key(password: &[u8], salt: &[u8]) -> Result<[u8; SCRYPT_KEYLEN], String> {
-    let params = scrypt::Params::new(SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P, SCRYPT_KEYLEN).map_err(|e| e.to_string())?;
+    let params = scrypt::Params::new(SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P, SCRYPT_KEYLEN)
+        .map_err(|e| e.to_string())?;
     let mut out = [0u8; SCRYPT_KEYLEN];
     scrypt::scrypt(password, salt, &params, &mut out).map_err(|e| e.to_string())?;
     Ok(out)
@@ -149,7 +150,12 @@ pub fn hex_decode(text: &str) -> Option<Vec<u8>> {
 
 /// PBKDF2 with HMAC-SHA256 (RFC 8018 section 5.2): `out_len` bytes derived from `password` and `salt` over
 /// `iterations` rounds (at least one).
-pub fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32, out_len: usize) -> Vec<u8> {
+pub fn pbkdf2_hmac_sha256(
+    password: &[u8],
+    salt: &[u8],
+    iterations: u32,
+    out_len: usize,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(out_len + 32);
     let mut block = 1u32;
     while out.len() < out_len {
@@ -187,6 +193,52 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     outer.update(block.map(|b| b ^ 0x5c));
     outer.update(inner.finalize());
     outer.finalize().into()
+}
+
+/// gzip (RFC 1952) at flate2's default level.
+pub fn gzip_compress(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(data)
+        .and_then(|()| encoder.finish())
+        .expect("gzip into memory cannot fail")
+}
+
+/// Every gzip member of `data`, as `gzip -d` reads it; an output past `max` bytes is refused.
+pub fn gzip_decompress(data: &[u8], max: usize) -> Result<Vec<u8>, String> {
+    read_bounded(flate2::read::MultiGzDecoder::new(data), max)
+}
+
+/// brotli (RFC 7932) at the `brotli` CLI's defaults: quality 11, window 22.
+pub fn brotli_compress(data: &[u8]) -> Vec<u8> {
+    let params = brotli::enc::BrotliEncoderParams {
+        quality: 11,
+        lgwin: 22,
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    brotli::BrotliCompress(&mut &data[..], &mut out, &params)
+        .expect("brotli into memory cannot fail");
+    out
+}
+
+/// One brotli stream; an output past `max` bytes is refused.
+pub fn brotli_decompress(data: &[u8], max: usize) -> Result<Vec<u8>, String> {
+    read_bounded(brotli::Decompressor::new(data, 4096), max)
+}
+
+fn read_bounded(reader: impl std::io::Read, max: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    reader
+        .take(max as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| e.to_string())?;
+    if out.len() > max {
+        return Err(format!("the output is larger than {max} bytes"));
+    }
+    Ok(out)
 }
 
 /// Lower-case hex.

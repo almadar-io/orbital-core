@@ -146,3 +146,35 @@ fn control_a_transition_with_no_failure_paints_every_render() {
     let response = run(schema(vec![render("before"), json!(["set", "@entity.ok", true]), render("after")]));
     assert_eq!(painted(&response, "Broken").len(), 2);
 }
+
+// G-ORB-477: an emit whose payload fails to evaluate is a failed effect: an effect-failed rejection, and nothing
+// is emitted, never the unevaluated payload.
+fn emitted(response: &EventResponse, event: &str) -> Vec<Json> {
+    response
+        .emitted_events
+        .iter()
+        .filter(|e| e.event == event)
+        .map(|e| serde_json::to_value(&e.payload).unwrap())
+        .collect()
+}
+
+#[test]
+fn an_emit_whose_payload_fails_to_evaluate_is_an_effect_failed_rejection_and_emits_nothing() {
+    let response = run(schema(vec![json!(["emit", "RESPOND", {
+        "requestId": "@entity.inflight",
+        "headers": ["array/append", ["object/get", null, "responseHeaders"], { "name": "content-type" }]
+    }])]));
+    assert!(response
+        .rejections
+        .iter()
+        .flatten()
+        .any(|r| r.code == TransitionRejectionCode::EffectFailed && r.trait_name.as_deref() == Some("Broken")));
+    assert_eq!(emitted(&response, "RESPOND"), Vec::<Json>::new());
+}
+
+#[test]
+fn control_an_emit_whose_payload_evaluates_is_emitted_resolved() {
+    let response = run(schema(vec![json!(["emit", "RESPOND", { "status": ["if", true, 403, 200] }])]));
+    assert!(response.rejections.iter().flatten().all(|r| r.code != TransitionRejectionCode::EffectFailed));
+    assert_eq!(emitted(&response, "RESPOND"), vec![json!({ "status": 403.0 })]);
+}

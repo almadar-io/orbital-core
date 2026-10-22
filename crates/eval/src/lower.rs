@@ -202,9 +202,9 @@ impl ExprLowerer {
             "not" | "!" => self.unary_op(args, OirExpr::not),
 
             // Arithmetic operators
-            "+" | "add" => self.binary_op(args, OirExpr::add),
+            "+" | "add" => self.variadic_binary_op(args, OirExpr::add),
             "-" | "sub" => self.binary_op(args, OirExpr::sub),
-            "*" | "mul" => self.binary_op(args, |l, r| OirExpr::BinaryOp {
+            "*" | "mul" => self.variadic_binary_op(args, |l, r| OirExpr::BinaryOp {
                 op: OirBinaryOp::Mul,
                 left: Box::new(l),
                 right: Box::new(r),
@@ -2036,6 +2036,46 @@ mod tests {
             .collect_bindings()
             .iter()
             .any(|b| b.root == OirBindingRoot::Entity));
+    }
+
+    fn bindings_of(op: &str, n: usize) -> Result<Vec<String>, LowerError> {
+        let args = (0..n).map(|i| SExpression::String(format!("@entity.a{i}"))).collect();
+        let lowered = lower_sexpr(&call(op, args))?;
+        let mut names: Vec<String> = lowered.collect_bindings().iter().map(|b| b.path.join(".")).collect();
+        names.sort();
+        Ok(names)
+    }
+
+    #[test]
+    fn an_n_ary_sum_or_product_lowers_every_operand() {
+        for op in ["+", "*"] {
+            assert_eq!(bindings_of(op, 4).expect("lowers"), ["a0", "a1", "a2", "a3"], "{op}");
+        }
+    }
+
+    #[test]
+    fn an_n_ary_sum_folds_left_as_the_kernel_adds() {
+        let lowered = lower_sexpr(&call("+", vec![SExpression::Number(9.0), SExpression::Number(4.0), SExpression::Number(2.0)]))
+            .expect("lowers");
+        let OirExpr::BinaryOp { op: OirBinaryOp::Add, left, right } = lowered else {
+            panic!("a sum: {lowered:?}");
+        };
+        assert!(matches!(*right, OirExpr::Number { value } if value == 2.0), "{right:?}");
+        assert!(matches!(*left, OirExpr::BinaryOp { op: OirBinaryOp::Add, .. }), "(9 + 4) + 2: {left:?}");
+    }
+
+    #[test]
+    fn control_a_difference_quotient_or_remainder_of_three_operands_is_refused_by_its_declared_arity() {
+        for op in ["-", "/", "%"] {
+            assert!(bindings_of(op, 3).is_err(), "{op}");
+        }
+    }
+
+    #[test]
+    fn control_binary_arithmetic_of_two_operands_is_unchanged() {
+        for op in ["+", "-", "*", "/", "%"] {
+            assert_eq!(bindings_of(op, 2).expect("lowers"), ["a0", "a1"], "{op}");
+        }
     }
 
     fn fetch_with(options: serde_json::Value) -> OirEffect {

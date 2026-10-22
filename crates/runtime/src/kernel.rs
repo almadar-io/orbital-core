@@ -946,11 +946,16 @@ fn entropy_from(io: Arc<IoPort>) -> EntropySource {
 pub struct ViewerGuard {
     slot: Arc<RwLock<HashMap<std::thread::ThreadId, Arc<Value>>>>,
     thread: std::thread::ThreadId,
+    outer: Option<Arc<Value>>,
 }
 
 impl Drop for ViewerGuard {
     fn drop(&mut self) {
-        self.slot.write().remove(&self.thread);
+        let mut slot = self.slot.write();
+        match self.outer.take() {
+            Some(outer) => slot.insert(self.thread, outer),
+            None => slot.remove(&self.thread),
+        };
     }
 }
 
@@ -1027,6 +1032,8 @@ impl RuntimeKernel {
         }
         if io.has_service() {
             executor = executor.with_service_handler(io.clone());
+        } else {
+            executor = executor.with_call_canceller(io.clone());
         }
         if io.has_substrate() {
             executor = executor.with_substrate_handler(io.clone());
@@ -1690,6 +1697,9 @@ impl RuntimeKernel {
         let result = state_manager
             .process_event_with_ctx(trait_name, Some(entity_id), &event_payload, &ctx)
             .map_err(|e| KernelError::Internal(e.to_string()))?;
+        // The transition is committed; its effects run without the state lock, so one that reads states (or
+        // dispatches in place) does not wait on its own dispatch (EXEC-QUEUE-11). The lane keeps other dispatches out.
+        drop(state_manager);
 
         if result.executed {
             let new_state = result
@@ -4008,7 +4018,7 @@ impl RuntimeKernel {
                 Effect::Custom {
                     emit: Some(op_emit),
                     ..
-                } if !op_emit.is_empty() => {
+                } if !op_emit.is_empty() || op_emit.on_message.is_some() => {
                     let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results) else {
                         return;
                     };
@@ -5099,8 +5109,8 @@ impl RuntimeKernel {
     /// however other requests set theirs meanwhile.
     pub fn enter_viewer(&self, user: Value) -> ViewerGuard {
         let thread = std::thread::current().id();
-        self.viewer_by_thread.write().insert(thread, Arc::new(user));
-        ViewerGuard { slot: Arc::clone(&self.viewer_by_thread), thread }
+        let outer = self.viewer_by_thread.write().insert(thread, Arc::new(user));
+        ViewerGuard { slot: Arc::clone(&self.viewer_by_thread), thread, outer }
     }
 
     /// The viewer this thread entered, for a dispatch that starts now; a host that answers a call later, on another
@@ -5987,6 +5997,7 @@ fn resolved_or_failed(
     match resolve_effect_bindings(effect.clone(), ctx) {
         Ok(resolved) => Some(resolved),
         Err(fault) => {
+            tracing::error!(effect = %effect.operator(), error = %fault, "kernel: effect arguments failed to evaluate");
             effect_results.push(EffectResult::failed(
                 effect.clone(),
                 &OrbitalError::Eval(fault).to_string(),

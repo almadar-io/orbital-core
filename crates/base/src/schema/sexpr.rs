@@ -112,7 +112,64 @@ impl<'de> serde::de::Visitor<'de> for SExpressionVisitor {
     }
 }
 
+/// What [`SExpression::try_rewrite`] does with a node it enters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RewriteVisit {
+    /// Rewrite the node's children, then hand the rebuilt node to `exit`.
+    Descend,
+    /// Keep the node and everything under it as written; `exit` is not called for it.
+    Keep,
+}
+
+enum RewriteFrame<'a> {
+    Enter(&'a SExpression),
+    Array(usize),
+    Object(Vec<String>),
+}
+
 impl SExpression {
+    /// A rewrite of the tree without recursion, so its depth is bounded by the heap, not the thread stack: `enter`
+    /// runs on every node in pre-order, `exit` on every descended node once its children are rewritten, in the order
+    /// a recursive walk visits them (the first error is the one a recursive walk would raise).
+    pub fn try_rewrite<E>(
+        &self,
+        mut enter: impl FnMut(&SExpression) -> Result<RewriteVisit, E>,
+        mut exit: impl FnMut(SExpression) -> Result<SExpression, E>,
+    ) -> Result<SExpression, E> {
+        let mut frames = vec![RewriteFrame::Enter(self)];
+        let mut done: Vec<SExpression> = Vec::new();
+        while let Some(frame) = frames.pop() {
+            match frame {
+                RewriteFrame::Enter(node) => {
+                    if enter(node)? == RewriteVisit::Keep {
+                        done.push(node.clone());
+                        continue;
+                    }
+                    match node {
+                        SExpression::Array(items) => {
+                            frames.push(RewriteFrame::Array(items.len()));
+                            frames.extend(items.iter().rev().map(RewriteFrame::Enter));
+                        }
+                        SExpression::Object(fields) => {
+                            frames.push(RewriteFrame::Object(fields.keys().cloned().collect()));
+                            frames.extend(fields.values().rev().map(RewriteFrame::Enter));
+                        }
+                        leaf => done.push(exit(leaf.clone())?),
+                    }
+                }
+                RewriteFrame::Array(len) => {
+                    let items = done.split_off(done.len() - len);
+                    done.push(exit(SExpression::Array(items))?);
+                }
+                RewriteFrame::Object(keys) => {
+                    let values = done.split_off(done.len() - keys.len());
+                    done.push(exit(SExpression::Object(keys.into_iter().zip(values).collect()))?);
+                }
+            }
+        }
+        Ok(done.pop().expect("a rewrite leaves its root"))
+    }
+
     /// Check if this is a null value
     pub fn is_null(&self) -> bool {
         matches!(self, SExpression::Null)
@@ -1005,6 +1062,81 @@ fn collect_json_value_leaves_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rewrite_input(json: serde_json::Value) -> SExpression {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn try_rewrite_rebuilds_bottom_up_in_walk_order_and_keeps_what_enter_keeps() {
+        let expr = rewrite_input(serde_json::json!(["a", ["quote", ["a"]], {"k": ["a", 1], "j": "a"}, "b"]));
+        let mut entered: Vec<SExpression> = Vec::new();
+        let rewritten: Result<SExpression, ()> = expr.try_rewrite(
+            |node| {
+                entered.push(node.clone());
+                Ok(if node.operator() == Some("quote") { RewriteVisit::Keep } else { RewriteVisit::Descend })
+            },
+            |node| Ok(if node.as_str() == Some("a") { SExpression::String("A".into()) } else { node }),
+        );
+        assert_eq!(rewritten.unwrap(), rewrite_input(serde_json::json!(["A", ["quote", ["a"]], {"k": ["A", 1], "j": "A"}, "b"])));
+        let order: Vec<String> = entered.iter().map(|n| serde_json::to_string(n).unwrap()).collect();
+        assert_eq!(order[1], "\"a\"");
+        assert_eq!(order[2], "[\"quote\",[\"a\"]]", "a kept node's children are never entered");
+        assert_eq!(order[3], "{\"k\":[\"a\",1.0],\"j\":\"a\"}");
+        assert_eq!(order[4], "[\"a\",1.0]", "an object's values are entered in key order, depth first");
+        assert_eq!(order.last().unwrap(), "\"b\"");
+    }
+
+    #[test]
+    fn try_rewrite_stops_at_the_first_error_in_walk_order() {
+        let expr = rewrite_input(serde_json::json!([["bad", 1], ["bad", 2]]));
+        let failed = expr.try_rewrite(
+            |_| Ok(RewriteVisit::Descend),
+            |node| {
+                let bad = match node.as_array().map(Vec::as_slice) {
+                    Some([SExpression::String(head), SExpression::Number(n)]) if head == "bad" => Some(*n),
+                    _ => None,
+                };
+                bad.map_or(Ok(node), Err)
+            },
+        );
+        assert_eq!(failed, Err(1.0));
+    }
+
+    #[test]
+    fn try_rewrite_of_a_tree_deeper_than_a_small_stack_completes() {
+        let mut deep = SExpression::Number(0.0);
+        for _ in 0..100_000 {
+            deep = SExpression::Array(vec![SExpression::String("do".into()), deep]);
+        }
+        let rewritten = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let out = deep.try_rewrite(|_| Ok::<_, ()>(RewriteVisit::Descend), Ok).expect("rewritten");
+                let mut depth = 0usize;
+                let mut at = &out;
+                while let SExpression::Array(items) = at {
+                    depth += 1;
+                    at = &items[1];
+                }
+                let leaf = at.clone();
+                // Comparing or dropping a tree this deep recurses, so both are leaked on purpose.
+                std::mem::forget(out);
+                std::mem::forget(deep);
+                (depth, leaf)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(rewritten, (100_000, SExpression::Number(0.0)));
+    }
+
+    #[test]
+    fn control_try_rewrite_of_a_leaf_is_the_leaf_after_exit() {
+        let leaf = SExpression::Number(3.0);
+        assert_eq!(leaf.try_rewrite(|_| Ok::<_, ()>(RewriteVisit::Descend), Ok), Ok(SExpression::Number(3.0)));
+        assert_eq!(leaf.try_rewrite(|_| Ok::<_, ()>(RewriteVisit::Keep), |_| Err(())), Ok(SExpression::Number(3.0)));
+    }
 
     #[test]
     fn every_variant_reads_from_json_and_integers_are_numbers() {

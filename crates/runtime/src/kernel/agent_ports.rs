@@ -66,7 +66,7 @@ fn failure_result(effect: &Effect, failure: AgentPortFailure) -> EffectResult {
 
 impl RuntimeKernel {
     /// The persisted entities of every registered program, once, in schema order.
-    fn readable_entities(&self) -> Vec<String> {
+    pub fn readable_entities(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for schema in self.schemas.read().values() {
             for name in readable_entities_of(schema) {
@@ -150,15 +150,6 @@ impl RuntimeKernel {
         let Value::Object(mut answer) = reflection else { return Ok(reflection) };
         if let Some(orbital) = reads.state.as_deref().filter(|o| self.get_orbital(o).is_none()) {
             return Err(AgentPortFailure::plain(format!("program/inputs: '{orbital}' is not a registered orbital")));
-        }
-        if reads.state.is_some() || reads.stats {
-            // The asking dispatch holds `state_manager` for writing across its effects (`process_event_composed`), so a
-            // blocking read here would wait on itself.
-            if self.state_manager.try_read().is_none() {
-                return Err(AgentPortFailure::plain(
-                    "program/inputs: state and stats cannot be read while the asking dispatch holds the trait states",
-                ));
-            }
         }
         if let Some(orbital) = &reads.state {
             let detail = self.get_orbital(orbital).ok_or_else(|| {

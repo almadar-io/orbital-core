@@ -624,16 +624,18 @@ fn stdin_read(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
 
 fn read_once(reader: &mut impl Read, count: usize) -> Result<Value, OsError> {
     let mut buf = vec![0u8; count.min(STDIN_CAP)];
-    let mut total = 0usize;
-    while total < buf.len() {
-        match reader.read(&mut buf[total..]) {
-            Ok(0) => break,
-            Ok(n) => total += n,
+    loop {
+        match reader.read(&mut buf) {
+            Ok(n) => {
+                return Ok(object(vec![
+                    ("data", bytes_value(&buf[..n])),
+                    ("eof", Value::Bool(n == 0)),
+                ]))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(io_error(OsOp::StdinRead, &e)),
         }
     }
-    Ok(object(vec![("bytes", number(total as i64))]))
 }
 
 /// `os/stdin-read` keyed under a route when the host has a completion sink: the call is answered deferred and stdin
@@ -717,7 +719,7 @@ pub(super) fn answer(
     op: OsOp,
     args: &[Value],
     _key: Option<&str>,
-    site: Option<&CallSite>,
+    _site: Option<&CallSite>,
     host: &OsHost<'_>,
 ) -> Option<Result<Value, OsError>> {
     Some(match op {

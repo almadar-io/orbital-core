@@ -485,6 +485,9 @@ pub struct EffectExecutor {
 
     /// Service handler
     service_handler: Option<Arc<dyn ServiceHandler>>,
+    /// Where `cancel-call` goes when no service handler is set: the host, which may hold a keyed substrate or `os/`
+    /// call under the key (EXEC-QUEUE-10/13).
+    call_canceller: Option<Arc<dyn ServiceHandler>>,
     substrate_handler: Option<Arc<dyn SubstrateHandler>>,
 
     /// Render handler (client-only)
@@ -525,6 +528,7 @@ impl EffectExecutor {
             fetch_handler: None,
             stream_fetch_handler: None,
             service_handler: None,
+            call_canceller: None,
             substrate_handler: None,
             render_handler: None,
             navigation_handler: None,
@@ -576,6 +580,12 @@ impl EffectExecutor {
 
     pub fn with_service_handler(mut self, handler: Arc<dyn ServiceHandler>) -> Self {
         self.service_handler = Some(handler);
+        self
+    }
+
+    /// Set where `cancel-call` goes when no service handler is set.
+    pub fn with_call_canceller(mut self, canceller: Arc<dyn ServiceHandler>) -> Self {
+        self.call_canceller = Some(canceller);
         self
     }
 
@@ -2245,7 +2255,7 @@ impl EffectExecutor {
             }
         };
 
-        if let Some(handler) = &self.service_handler {
+        if let Some(handler) = self.service_handler.as_ref().or(self.call_canceller.as_ref()) {
             for each in keys {
                 if let Err(e) = handler.cancel(each) {
                     return EffectResult::failed(effect, &e);

@@ -5,6 +5,7 @@
 
 use crate::effects::response::EventResponse;
 use orbital_core_base::value::{Value, ValueMap};
+pub use orbital_core_base::agent_ports::{inputs_reads, plan_inputs, InputsReads};
 
 fn spelled<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_value(value)

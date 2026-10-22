@@ -767,3 +767,133 @@ fn control_an_unkeyed_program_dispatch_on_behalf_of_a_parked_dispatch_is_refused
     assert!(hits.as_f64().unwrap_or(0.0) == 0.0, "no input ran: {hits}");
     assert!(asking.completions.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "nothing completes later");
 }
+
+// A keyed substrate stream (EXEC-QUEUE-13): each item the host's source yields arrives as the call's `onMessage` event, in
+// order, until `cancel-call` drops the key; an unkeyed subscribe is answered in place, and this host refuses it.
+
+struct Streams;
+
+impl orbital_core_runtime::effects::SubstrateHandler for Streams {
+    fn run(&self, op: &str, _: &[Value]) -> Result<Value, orbital_core_runtime::effects::SubstrateFailure> {
+        Err(orbital_core_runtime::effects::SubstrateFailure {
+            message: format!("{op} streams to its onMessage route: give it a key"),
+            errors: Vec::new(),
+        })
+    }
+}
+
+struct Live {
+    kernel: Arc<RuntimeKernel>,
+    sink: Arc<orbital_core_runtime::os_host::completion::KernelCompletionSink>,
+    feed: std::sync::mpsc::Sender<Value>,
+    delivered: std::sync::mpsc::Receiver<(String, serde_json::Value)>,
+}
+
+fn live_kernel() -> Live {
+    use orbital_core_runtime::os_host::completion::{KernelCompletionSink, StreamPoll};
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "live",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Feed", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" }, { "name": "count", "type": "number", "default": 0 }, { "name": "error", "type": "string" }] },
+            "traits": [{
+                "name": "Watch", "linkedEntity": "Feed",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "OPEN", "effects": [["program/live", {}, { "key": "live", "emit": { "onMessage": "ITEM", "failure": "LIVE_FAILED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "OPEN_UNKEYED", "effects": [["program/live", {}, { "emit": { "onMessage": "ITEM", "failure": "LIVE_FAILED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "STOP", "effects": [["cancel-call", "live"]] },
+                        { "from": "idle", "to": "idle", "event": "ITEM", "effects": [["set", "@entity.count", ["+", "@entity.count", 1]]] },
+                        { "from": "idle", "to": "idle", "event": "LIVE_FAILED", "effects": [["set", "@entity.error", "@payload.error"]] }
+                    ]
+                }
+            }]
+        }]
+    }))
+    .unwrap();
+    let config = orbital_core_runtime::config::KernelConfig {
+        substrate_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::SubstrateHandler>),
+        ..Default::default()
+    };
+    let store = Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>;
+    let kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config));
+    kernel.register_schema(schema).unwrap();
+    let (feed, source) = std::sync::mpsc::channel::<Value>();
+    let source = std::sync::Mutex::new(Some(source));
+    let handles = Arc::new(orbital_core_runtime::os_host::OsHandles::default());
+    let native = Arc::new(
+        orbital_core_runtime::native_host::NativeHost::new(
+            store,
+            Arc::new(Offline),
+            Arc::new(orbital_core_runtime::credentials::Credentials::from_env(Default::default())),
+            Vec::new(),
+            orbital_core_runtime::os_host::OsGrants::default(),
+            handles.clone(),
+            Arc::new(|_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {}),
+        )
+        .with_substrate(Some(Arc::new(Streams) as Arc<dyn orbital_core_runtime::effects::SubstrateHandler>))
+        .with_substrate_streams(Some(Arc::new(move |op: &str, _: &[Value]| {
+            let receiver = source.lock().unwrap().take().filter(|_| op == "program/live")?;
+            Some(Box::new(move || match receiver.try_recv() {
+                Ok(item) => StreamPoll::Item(item),
+                Err(std::sync::mpsc::TryRecvError::Empty) => StreamPoll::Idle,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => StreamPoll::Ended,
+            }) as orbital_core_runtime::native_host::SubstrateSource)
+        }) as Arc<orbital_core_runtime::native_host::SubstrateStreams>)),
+    );
+    let (tx, delivered) = std::sync::mpsc::channel();
+    let done = std::sync::Mutex::new(tx);
+    let sink = Arc::new(KernelCompletionSink::new(
+        kernel.clone(),
+        Arc::new(move |request: &orbital_core_runtime::resumable::IoRequest| native.answer(request)),
+        Arc::new(move |_: &orbital_core_runtime::resumable::CallSite, event: &str, result: Result<orbital_core_runtime::resumable::DispatchOutcomes, orbital_core_runtime::resumable::DispatchError>| {
+            let payload = result.unwrap().first().map(|(_, r)| serde_json::to_value(&r.payload).unwrap()).unwrap_or_default();
+            done.lock().unwrap().send((event.to_string(), payload)).unwrap();
+        }),
+    ));
+    handles.completions.set_sink(sink.clone());
+    Live { kernel, sink, feed, delivered }
+}
+
+fn send_live(live: &Live, event: &str) {
+    let started = live.kernel.start_dispatch("Watch", None, event, Value::Null, None, None).unwrap();
+    live.sink.drive(started).unwrap();
+}
+
+fn live_item(n: f64) -> Value {
+    Value::Object([("n".to_string(), Value::Number(n))].into_iter().collect())
+}
+
+fn watch(kernel: &RuntimeKernel) -> serde_json::Value {
+    serde_json::to_value(&kernel.snapshot_trait("Watch", None).entity).unwrap()
+}
+
+#[test]
+fn a_keyed_stream_delivers_each_item_to_its_message_route_in_order_until_cancelled() {
+    let live = live_kernel();
+    send_live(&live, "OPEN");
+    live.feed.send(live_item(1.0)).unwrap();
+    live.feed.send(live_item(2.0)).unwrap();
+    let wait = std::time::Duration::from_secs(5);
+    let first = live.delivered.recv_timeout(wait).expect("the first item arrived");
+    let second = live.delivered.recv_timeout(wait).expect("the second item arrived");
+    assert_eq!((first.0.as_str(), first.1["n"].clone(), first.1["key"].clone()), ("ITEM", serde_json::json!(1.0), serde_json::json!("live")));
+    assert_eq!((second.0.as_str(), second.1["n"].clone()), ("ITEM", serde_json::json!(2.0)), "in the order the source yielded them");
+    send_live(&live, "STOP");
+    live.feed.send(live_item(3.0)).unwrap();
+    assert!(live.delivered.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "cancel-call stopped the stream");
+    assert_eq!(watch(&live.kernel)["count"].as_f64(), Some(2.0));
+}
+
+#[test]
+fn control_an_unkeyed_subscribe_is_answered_in_place_and_refused() {
+    let live = live_kernel();
+    send_live(&live, "OPEN_UNKEYED");
+    live.feed.send(live_item(1.0)).unwrap();
+    assert!(live.delivered.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "no stream was opened");
+    let entity = watch(&live.kernel);
+    assert!(entity["error"].as_str().unwrap_or_default().contains("give it a key"), "{entity}");
+    assert_eq!(entity["count"].as_f64().unwrap_or(0.0), 0.0, "no item arrived");
+}

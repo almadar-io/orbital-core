@@ -653,8 +653,8 @@ fn arguments_of(raw: Option<&Value>) -> Result<Arguments, String> {
 }
 
 /// The event-request options of a `program/dispatch` (owner, 2026-10-21): what the HTTP dispatch routes carry.
-pub const DISPATCH_REQUEST_OPTIONS: [&str; 13] = [
-    "wire", "input", "orbital", "targetTrait", "entityId", "event", "traits", "mount", "clientId", "locale",
+pub const DISPATCH_REQUEST_OPTIONS: [&str; 14] = [
+    "wire", "stream", "input", "orbital", "targetTrait", "entityId", "event", "traits", "mount", "clientId", "locale",
     "delivery", "dispatchLog", "viewer",
 ];
 
@@ -671,7 +671,7 @@ fn list_of_records(value: &Value, required: &[&str], optional: &[&str]) -> bool 
 
 fn request_option_error(key: &str, value: &Value) -> Option<String> {
     let ok = match key {
-        "wire" | "input" => matches!(value, Value::Bool(_)),
+        "wire" | "stream" | "input" => matches!(value, Value::Bool(_)),
         "orbital" | "event" => value.as_str().is_some_and(|s| !s.is_empty()),
         "targetTrait" | "entityId" | "clientId" | "locale" => value.as_str().is_some(),
         "traits" => value.is_null() || list_of_records(value, &["trait", "from"], &["event"]),
@@ -699,6 +699,9 @@ fn schema_option(raw: Option<&Value>) -> Result<DispatchOptions, String> {
             return Err(error);
         }
         request.insert(key.clone(), value.clone());
+    }
+    if request.get("stream") == Some(&Value::Bool(true)) && request.get("wire") != Some(&Value::Bool(true)) {
+        return Err("program/dispatch: stream items are part of the wire answer: stream needs wire".to_string());
     }
     if !request.is_empty() && !(request.contains_key("orbital") && request.contains_key("event")) {
         return Err("program/dispatch: an event request names its orbital and event".to_string());
@@ -1070,6 +1073,7 @@ mod tests {
     fn program_dispatch_carries_each_request_option_to_the_host() {
         for (key, given) in [
             ("wire", serde_json::json!(true)),
+            ("stream", serde_json::json!(false)),
             ("input", serde_json::json!(false)),
             ("entityId", serde_json::json!("n1")),
             ("traits", serde_json::json!([{ "trait": "Chat", "from": "idle", "event": "ADD_NOTE" }])),
@@ -1097,7 +1101,8 @@ mod tests {
     #[test]
     fn program_dispatch_refuses_a_malformed_or_unknown_request_option() {
         for (bad, why) in [
-            (request(serde_json::json!({ "stream": true })), "unsupported option \"stream\""),
+            (request(serde_json::json!({ "verb": "POST" })), "unsupported option \"verb\""),
+            (request(serde_json::json!({ "stream": true })), "stream needs wire"),
             (request(serde_json::json!({ "wire": "yes" })), "option \"wire\" has the wrong shape"),
             (request(serde_json::json!({ "input": 1 })), "option \"input\" has the wrong shape"),
             (request(serde_json::json!({ "entityId": 3 })), "option \"entityId\" has the wrong shape"),

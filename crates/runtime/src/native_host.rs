@@ -21,6 +21,12 @@ pub type SubstrateWork = Box<dyn FnOnce() -> Result<Value, SubstrateFailure> + S
 /// Builds the [`SubstrateWork`] of a deferred op from its name and arguments.
 pub type SubstrateLater = dyn Fn(&str, &[Value]) -> SubstrateWork + Send + Sync;
 
+/// The source of one substrate stream, polled off the asking thread.
+pub type SubstrateSource = Box<dyn FnMut() -> crate::os_host::completion::StreamPoll + Send>;
+
+/// Opens the [`SubstrateSource`] of a streaming op from its name and arguments; `None` for an op that does not stream.
+pub type SubstrateStreams = dyn Fn(&str, &[Value]) -> Option<SubstrateSource> + Send + Sync;
+
 /// The refusal every `call-service` gets from a native host: it has no provider for any service (hosting and the registry
 /// are `@almadar-io/hosting`'s, answered by the JS host; see G-CROSS-170). The wording is the JS host's `NOT_CONFIGURED`
 /// integration error, so a program sees one refusal on every host.
@@ -46,6 +52,7 @@ pub struct NativeHost {
     on_event: Arc<StreamEvents>,
     substrate: Option<Arc<dyn SubstrateHandler>>,
     substrate_later: Option<Arc<SubstrateLater>>,
+    substrate_streams: Option<Arc<SubstrateStreams>>,
 }
 
 impl NativeHost {
@@ -72,6 +79,7 @@ impl NativeHost {
             on_event,
             substrate: None,
             substrate_later: None,
+            substrate_streams: None,
         }
     }
 
@@ -87,6 +95,12 @@ impl NativeHost {
         self
     }
 
+    /// Which substrate ops stream to their `onMessage` route when keyed, and how their items are read.
+    pub fn with_substrate_streams(mut self, streams: Option<Arc<SubstrateStreams>>) -> Self {
+        self.substrate_streams = streams;
+        self
+    }
+
     /// A keyed substrate op with a declared route, when a completion sink is installed, runs as a dispatch of its own
     /// (R-a): the ask is answered `ServiceDeferred` and its outcome settles through the sink.
     fn defer_substrate(&self, request: &IoRequest) -> Option<IoAnswer> {
@@ -94,6 +108,11 @@ impl NativeHost {
             return None;
         };
         self.handles.completions.sink()?;
+        if let (Some(streams), Some(_)) = (&self.substrate_streams, &site.emit.on_message) {
+            if let Some(source) = streams(op, args) {
+                return Some(crate::os_host::completion::Completions::open_substrate_stream(&self.handles.completions, key, site, source));
+            }
+        }
         let work = match (&self.substrate_later, &self.substrate) {
             (Some(later), _) => later(op, args),
             (None, Some(handler)) => {
