@@ -228,7 +228,7 @@ pub struct GuardCapabilities {
 }
 
 /// What a host's `writeWhere` / `writeBatch` honours for one entity type.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteCapabilities {
@@ -237,10 +237,12 @@ pub struct WriteCapabilities {
     pub returns_row: bool,
     pub stop_runs: bool,
     pub atomic_batch: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rekey: Option<bool>,
 }
 
 impl WriteCapabilities {
-    /// A store that runs every write form, transactions included.
+    /// The existing write forms, without opting into optional capabilities.
     pub fn full() -> Self {
         let q = QueryCapabilities::full();
         Self {
@@ -253,6 +255,7 @@ impl WriteCapabilities {
             returns_row: true,
             stop_runs: true,
             atomic_batch: true,
+            rekey: None,
         }
     }
 }
@@ -689,6 +692,13 @@ pub enum RowWriteOp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         guard: Option<RowPredicate>,
     },
+    Rekey {
+        entity_type: String,
+        id: String,
+        new_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guard: Option<RowPredicate>,
+    },
     Delete {
         entity_type: String,
         id: String,
@@ -703,14 +713,17 @@ impl RowWriteOp {
             Self::Create { entity_type, .. }
             | Self::Upsert { entity_type, .. }
             | Self::Update { entity_type, .. }
-            | Self::Delete { entity_type, .. } => entity_type,
+            | Self::Delete { entity_type, .. }
+            | Self::Rekey { entity_type, .. } => entity_type,
         }
     }
 
     pub fn guard(&self) -> Option<&RowPredicate> {
         match self {
             Self::Create { .. } | Self::Upsert { .. } => None,
-            Self::Update { guard, .. } | Self::Delete { guard, .. } => guard.as_ref(),
+            Self::Update { guard, .. } | Self::Delete { guard, .. } | Self::Rekey { guard, .. } => {
+                guard.as_ref()
+            }
         }
     }
 }
@@ -880,6 +893,45 @@ pub fn apply_write(
             table.insert(id.clone(), Arc::new(row.clone()));
             RowWriteOutcome::Updated {
                 row,
+                before: guard.as_ref().map(|_| (*before).clone()),
+            }
+        }
+        RowWriteOp::Rekey {
+            id, new_id, guard, ..
+        } => {
+            if new_id.is_empty() {
+                return RowWriteOutcome::Failed {
+                    message: "rekey needs a nonempty string destination id".to_string(),
+                };
+            }
+            let Some(before) = table.get(id).cloned() else {
+                return RowWriteOutcome::NotFound;
+            };
+            if guard.as_ref().is_some_and(|g| !g.matches(&before)) {
+                return RowWriteOutcome::Refused;
+            }
+            if id != new_id {
+                let Value::Object(mut moved) = (*before).clone() else {
+                    return RowWriteOutcome::Failed {
+                        message: "rekey needs an object row".to_string(),
+                    };
+                };
+                moved.insert("id".to_string(), Value::String(new_id.clone()));
+                let moved = Arc::new(Value::Object(moved));
+                let original = std::mem::take(table);
+                for (key, row) in original {
+                    if key == *id {
+                        table.insert(new_id.clone(), moved.clone());
+                    } else {
+                        table.insert(key, row);
+                    }
+                }
+            }
+            let row = table
+                .get(new_id)
+                .expect("the source row mapped to the destination");
+            RowWriteOutcome::Updated {
+                row: (**row).clone(),
                 before: guard.as_ref().map(|_| (*before).clone()),
             }
         }

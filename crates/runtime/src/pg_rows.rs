@@ -1344,6 +1344,7 @@ impl PostgresRows {
     ) -> Result<RowWriteOutcome, WriteFault> {
         let table = self.table_of(op.entity_type());
         match op {
+            RowWriteOp::Rekey { .. } => Err(WriteFault::Failed("rekey is unsupported by this store".to_string())),
             RowWriteOp::Create { data, .. } => {
                 let map = data_map(data);
                 if !matches!(map.get("id"), Some(Value::String(_))) {
@@ -1462,6 +1463,15 @@ impl PostgresRows {
     }
 
     fn write_ops(&self, batch: &RowWriteBatch) -> Result<Vec<RowWriteOutcome>, WriteFault> {
+        if batch
+            .ops
+            .iter()
+            .any(|op| matches!(op, RowWriteOp::Rekey { .. }))
+        {
+            return Err(WriteFault::Failed(
+                "rekey is unsupported by this store".to_string(),
+            ));
+        }
         let mut lease = self.lease()?;
         if batch.on_failure == RowWriteFailureMode::Stop {
             let mut outcomes = Vec::new();
@@ -2004,5 +2014,42 @@ mod tests {
         assert_eq!(id.len(), 36);
         assert_eq!(id.as_bytes()[14], b'4');
         assert_ne!(id, mint_id());
+    }
+    #[test]
+    fn rekey_is_refused_before_any_database_request_or_successful_prefix() {
+        struct NoConnection(std::sync::atomic::AtomicUsize);
+        impl PgPort for NoConnection {
+            fn connect(&self, _: &str, _: u16) -> Result<Box<dyn PgConn>, String> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err("unexpected connection".into())
+            }
+        }
+        let port = Arc::new(NoConnection(std::sync::atomic::AtomicUsize::new(0)));
+        let rows = PostgresRows::new(
+            PgConfig::from_url("postgres://u@localhost/db").unwrap(),
+            port.clone(),
+        );
+        let rekey: RowWriteOp = serde_json::from_value(
+            serde_json::json!({"kind":"rekey","entityType":"Item","id":"a","newId":"b"}),
+        )
+        .unwrap();
+        assert!(
+            matches!(rows.write_where(&rekey), Some(Err(ref message)) if message == "rekey is unsupported by this store")
+        );
+        for on_failure in [RowWriteFailureMode::Stop, RowWriteFailureMode::Atomic] {
+            let create = RowWriteOp::Create {
+                entity_type: "Item".into(),
+                data: serde_json::from_value(serde_json::json!({"id":"new"})).unwrap(),
+            };
+            let result = rows.write_batch(&RowWriteBatch {
+                ops: vec![create, rekey.clone()],
+                on_failure,
+            });
+            assert!(
+                matches!(result, Some(Err(ref message)) if message == "rekey is unsupported by this store")
+            );
+        }
+        assert_eq!(port.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(rows.write_capabilities().rekey, None);
     }
 }

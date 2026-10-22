@@ -1081,12 +1081,7 @@ pub fn parse_http_call(
         return invalid(format!("origin `{origin}` is not scheme://host[:port][/prefix]"));
     };
     let origin = origin.trim_end_matches('/');
-    if !path.starts_with('/') || path.starts_with("//") || path.contains('\\') {
-        return Err(HttpRefusal::OriginEscape(path.to_string()));
-    }
-    if path.contains('#') {
-        return invalid("path must not carry a fragment");
-    }
+    orbital_core_base::http_wire::check_http_path(path)?;
     match split_url(&format!("{origin}{path}")) {
         Some((joined, _)) if joined == origin_parts => {}
         _ => return Err(HttpRefusal::OriginEscape(path.to_string())),

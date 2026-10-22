@@ -361,7 +361,7 @@ fn a_path_with_its_own_query_gets_the_options_appended_with_ampersand() {
 
 #[test]
 fn origin_escapes_are_refused_and_dotdot_on_the_host_is_fine() {
-    for path in ["//evil.com", "@evil.com", "https://evil.com/x", "/a\\b", "evil"] {
+    for path in ["", "//evil.com", "@evil.com", "https://evil.com/x", "/a\\b", "evil"] {
         assert!(
             matches!(parse(HttpMethod::Get, path, json!({})), Err(HttpRefusal::OriginEscape(_))),
             "{path}"

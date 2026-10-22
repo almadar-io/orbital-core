@@ -495,6 +495,7 @@ const OS_NAMES: &[ShapeField] = &[field("names", "array")];
 const OS_EOF: &[ShapeField] = &[field("eof", "boolean")];
 const OS_TTY_SIZE: &[ShapeField] = &[field("rows", "number"), field("cols", "number")];
 const OS_SOCK: &[ShapeField] = &[field("sock", "number")];
+const OS_LISTENING: &[ShapeField] = &[field("sock", "number"), field("address", "string"), field("port", "number")];
 const OS_ACCEPTED: &[ShapeField] = &[field("sock", "number"), field("peer", "string")];
 const OS_RECVFROM: &[ShapeField] = &[field("data", "bytes"), field("peer", "string")];
 const OS_ADDRESSES: &[ShapeField] = &[field("addresses", "array")];
@@ -573,7 +574,7 @@ fn os_contract(op: OsOp) -> OsContract {
         OsOp::StdinRead => stream(OS_EOF, OS_DATA),
         OsOp::TtySize => single(OS_TTY_SIZE),
         OsOp::TcpConnect | OsOp::UdpBind => single(OS_SOCK),
-        OsOp::TcpListen => stream(OS_SOCK, OS_ACCEPTED),
+        OsOp::TcpListen => stream(OS_LISTENING, OS_ACCEPTED),
         OsOp::Recvfrom => single(OS_RECVFROM),
         OsOp::DnsResolve => single(OS_ADDRESSES),
         OsOp::WatchPort => stream(OS_NONE, OS_EVENT_PORT),

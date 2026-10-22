@@ -104,6 +104,7 @@ pub fn write_capabilities() -> WriteCapabilities {
         returns_row: true,
         stop_runs: true,
         atomic_batch: false,
+        rekey: None,
     }
 }
 
@@ -725,6 +726,7 @@ impl CouchRows {
         let outcome = match op {
             RowWriteOp::Create { entity_type, data } => self.write_create(entity_type, data),
             RowWriteOp::Upsert { entity_type, data } => self.write_upsert(entity_type, data),
+            RowWriteOp::Rekey { .. } => Err("rekey is unsupported by this store".to_string()),
             _ => self.write_existing(op),
         };
         outcome.unwrap_or_else(|message| RowWriteOutcome::Failed { message })
@@ -870,6 +872,9 @@ impl EntitySource for CouchRows {
     /// Ordered writes, each its own `_rev`-guarded write; a failure stops the run with earlier writes kept. CouchDB
     /// cannot make a batch atomic, so an atomic batch is not answered.
     fn write_batch(&self, batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
+        if batch.ops.iter().any(|op| matches!(op, RowWriteOp::Rekey { .. })) {
+            return Some(Err("rekey is unsupported by this store".to_string()));
+        }
         if batch.on_failure == RowWriteFailureMode::Atomic {
             return None;
         }
@@ -1131,5 +1136,32 @@ mod tests {
             rows.write_batch(&stop).unwrap().unwrap(),
             vec![RowWriteOutcome::NotFound]
         );
+    }
+    #[test]
+    fn rekey_is_refused_before_any_database_request_or_successful_prefix() {
+        let script = Script::new(&[]);
+        let rows = CouchRows::new("http://c:5984", script.clone()).unwrap();
+        let rekey: RowWriteOp = serde_json::from_value(
+            json!({"kind":"rekey","entityType":"Item","id":"a","newId":"b"}),
+        )
+        .unwrap();
+        assert!(
+            matches!(rows.write_where(&rekey), Some(Ok(RowWriteOutcome::Failed { ref message })) if message == "rekey is unsupported by this store")
+        );
+        for on_failure in [RowWriteFailureMode::Stop, RowWriteFailureMode::Atomic] {
+            let create = RowWriteOp::Create {
+                entity_type: "Item".into(),
+                data: serde_json::from_value(json!({"id":"new"})).unwrap(),
+            };
+            let result = rows.write_batch(&RowWriteBatch {
+                ops: vec![create, rekey.clone()],
+                on_failure,
+            });
+            assert!(
+                matches!(result, Some(Err(ref message)) if message == "rekey is unsupported by this store")
+            );
+        }
+        assert!(script.sent().is_empty());
+        assert_eq!(rows.write_capabilities().rekey, None);
     }
 }

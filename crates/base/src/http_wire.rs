@@ -233,6 +233,16 @@ pub enum HttpRefusal {
     Invalid(String),
 }
 
+pub fn check_http_path(path: &str) -> Result<(), HttpRefusal> {
+    if !path.starts_with('/') || path.starts_with("//") || path.contains('\\') {
+        return Err(HttpRefusal::OriginEscape(path.to_string()));
+    }
+    if path.contains('#') {
+        return Err(HttpRefusal::Invalid("path must not carry a fragment".to_string()));
+    }
+    Ok(())
+}
+
 impl HttpRefusal {
     pub fn message(&self) -> String {
         match self {

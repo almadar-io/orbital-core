@@ -4041,7 +4041,7 @@ pub struct EmitDefinition {
     pub scope_overridden: Option<bool>,
 
     /// The entity this WHOLE payload was declared as (`type X = Event
-    /// <EntityName>`, the bare/concrete form) — set by `orbital-lolo` at
+    /// <EntityName>`, `Event @entity`, or `Event E`) — set by `orbital-lolo` at
     /// lowering, when the alias's payload resolves to a known entity's own
     /// field list flattened at the payload root (G4,
     /// `Almadar_Compiler_Gaps.md` §82). Distinct from `PayloadField.entity`
@@ -4053,7 +4053,11 @@ pub struct EmitDefinition {
     /// or trait-reference override has materialized; kept in sync across
     /// entity renames by `rewrite_payload_entity_refs`, the same one owner
     /// `PayloadField.entity` already uses. `None` for any other payload
-    /// shape (struct/primitive/sentinel).
+    /// shape (authored wrapper, struct, primitive or array). Symbolic `@entity`
+    /// and `$E` origins remain symbolic for implicit linked-entity binding;
+    /// explicit entity arguments become concrete, and scalar/struct arguments clear it.
+    /// Old unmarked generic carriers must be regenerated from source; their
+    /// `value` field name cannot distinguish them from authored wrappers.
     #[serde(
         rename = "payloadEntity",
         default,

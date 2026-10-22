@@ -176,6 +176,7 @@ struct Frame<'v> {
 
 struct Fold<'a> {
     shape: &'a str,
+    root: &'a str,
     def: &'a FieldDefinition,
     params: &'a [String],
     body: &'a SExpression,
@@ -203,7 +204,7 @@ impl Fold<'_> {
         let mut children = Vec::new();
         let plan = match value {
             Value::Array(items) => {
-                if declared.items.as_deref().and_then(|i| i.by_name_reference()) == Some(self.shape) {
+                if declared.items.as_deref().and_then(|i| i.by_name_reference()) == Some(self.root) {
                     children.extend(items.iter());
                     Plan::List
                 } else {
@@ -211,7 +212,7 @@ impl Fold<'_> {
                 }
             }
             Value::Object(node) if is_map(declared) => {
-                if declared.items.as_deref().and_then(|i| i.by_name_reference()) == Some(self.shape) {
+                if declared.items.as_deref().and_then(|i| i.by_name_reference()) == Some(self.root) {
                     children.extend(node.values());
                     Plan::Map(node.keys().cloned().collect())
                 } else {
@@ -225,7 +226,7 @@ impl Fold<'_> {
                     .ok_or_else(|| bad("the definition declares no fields"))?;
                 let mut slots = Vec::new();
                 for (key, child) in node {
-                    let Some(position) = fields.get(key).and_then(|d| child_position(d, self.shape)) else {
+                    let Some(position) = fields.get(key).and_then(|d| child_position(d, self.root)) else {
                         continue;
                     };
                     let slot = match (position, child) {
@@ -330,11 +331,37 @@ impl Operator for TreeFoldOp {
         }
         Fold {
             shape,
+            root: def.name.as_deref().unwrap_or(shape),
             def: &*def,
             params: &params,
             body: &*body,
             ctx,
         }
         .run(&value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_fold_alias_uses_the_declared_root_but_keeps_its_authored_error_label() {
+        let declaration = json!({"name":"Value","type":"union","values":["string","array"],"properties":{
+            "string":{"type":"string"},
+            "array":{"type":"array","items":{"type":"union","values":["Value"]}}
+        }}).to_string();
+        let expression = |value| {
+            let body: SExpression = serde_json::from_value(value).unwrap();
+            let quoted = orbital_core_base::schema::quote::quote_expr(&body);
+            serde_json::from_value::<SExpression>(json!([
+                "tree/fold",quoted,["fn",["n","k"],["if",["validate/array","@n"],["array/flatten","@k"],["list","@n"]]],"Alias",declaration
+            ])).unwrap()
+        };
+        let context = BindingContext::new();
+        assert_eq!(eval_expr(&expression(json!(["a",["b"]])), &context).unwrap(), serde_json::from_value::<Value>(json!(["a","b"])).unwrap());
+        let error = eval_expr(&expression(json!(3)), &context).unwrap_err().to_string();
+        assert!(error.contains("Alias"), "{error}");
     }
 }

@@ -154,10 +154,15 @@ impl InMemoryEntityCache {
         let mut outcomes: Vec<RowWriteOutcome> = Vec::with_capacity(batch.ops.len());
         for op in &batch.ops {
             let entity = op.entity_type().to_string();
-            let table = cache.entry(self.store_key(&entity)).or_default();
+            let key = self.store_key(&entity);
+            let existed = cache.contains_key(&key);
+            let table = cache.entry(key.clone()).or_default();
             let mut mint = || self.next_id(&entity);
             let outcome = apply_write(table, op, &mut CreateIds::Mint(&mut mint));
             let applied = outcome.applied();
+            if !applied && !existed {
+                cache.remove(&key);
+            }
             outcomes.push(outcome);
             if !applied {
                 if batch.on_failure == RowWriteFailureMode::Atomic {

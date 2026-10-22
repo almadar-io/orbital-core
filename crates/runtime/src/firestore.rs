@@ -1199,11 +1199,19 @@ impl FirestoreRows {
     }
 
     fn transact_once(&self, batch: &RowWriteBatch) -> FirestoreResult<Vec<RowWriteOutcome>> {
+        if batch
+            .ops
+            .iter()
+            .any(|op| matches!(op, RowWriteOp::Rekey { .. }))
+        {
+            return Err(FirestoreError::plain("rekey is unsupported by this store"));
+        }
         let mut touched: Vec<(String, String)> = Vec::new();
         for op in &batch.ops {
             let id = match op {
                 RowWriteOp::Create { data, .. } | RowWriteOp::Upsert { data, .. } => id_of(data),
                 RowWriteOp::Update { id, .. } | RowWriteOp::Delete { id, .. } => Some(id.clone()),
+                RowWriteOp::Rekey { .. } => return Err(FirestoreError::plain("rekey is unsupported by this store")),
             };
             if let Some(id) = id {
                 let key = (op.entity_type().to_string(), id);
@@ -1951,5 +1959,31 @@ mod tests {
             FirestoreConfig::from_lookup(&env(&[]), &none, transport).is_err(),
             "control: no credentials is an error"
         );
+    }
+    #[test]
+    fn rekey_is_refused_before_any_database_request_or_successful_prefix() {
+        let (rows, script) = store(&[], "", &[]);
+        let rekey: RowWriteOp = serde_json::from_value(
+            json!({"kind":"rekey","entityType":"Item","id":"a","newId":"b"}),
+        )
+        .unwrap();
+        assert!(
+            matches!(rows.write_where(&rekey), Some(Err(ref message)) if message == "rekey is unsupported by this store")
+        );
+        for on_failure in [RowWriteFailureMode::Stop, RowWriteFailureMode::Atomic] {
+            let create = RowWriteOp::Create {
+                entity_type: "Item".into(),
+                data: serde_json::from_value(json!({"id":"new"})).unwrap(),
+            };
+            let result = rows.write_batch(&RowWriteBatch {
+                ops: vec![create, rekey.clone()],
+                on_failure,
+            });
+            assert!(
+                matches!(result, Some(Err(ref message)) if message == "rekey is unsupported by this store")
+            );
+        }
+        assert!(script.urls().is_empty());
+        assert_eq!(rows.write_capabilities().rekey, None);
     }
 }

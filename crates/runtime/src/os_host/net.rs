@@ -815,6 +815,10 @@ mod tests {
         let port = id_of(&field(&bound, "port"));
         assert!(port > 0, "an ephemeral port is reported");
         assert_eq!(field(&bound, "address"), s("127.0.0.1"));
+        let Value::Object(fields) = &bound else { panic!("listener reply must be an object") };
+        let names: Vec<&str> = fields.keys().map(String::as_str).collect();
+        let contract = orbital_core_base::emit_contract::success_payload("os/tcp-listen", orbital_core_base::emit_contract::CallVariant::Plain);
+        assert!(orbital_core_base::emit_contract::undeclared_reads(&names, &contract, &[]).is_empty(), "the published contract must expose every field the listener returns");
         let connect_grants = tcp_grant(port as u16);
         let client = OsHost { grants: &connect_grants, handles: &handles, on_event: &on_event };
         let mut accepted = Vec::new();

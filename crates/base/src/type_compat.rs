@@ -125,7 +125,9 @@ pub fn is_program_data(t: &OirType) -> bool {
     match t {
         OirType::Optional { inner } => is_program_data(inner),
         OirType::Boolean => true,
-        OirType::Array { inner } => is_program_data(inner) || is_object_family(inner) || is_json_family(inner),
+        OirType::Array { inner } => {
+            is_program_data(inner) || is_object_family(inner) || is_json_family(inner)
+        }
         OirType::Tuple { items } => items
             .iter()
             .all(|i| is_program_data(i) || is_object_family(i) || is_json_family(i)),
@@ -140,7 +142,10 @@ pub fn is_json_family(t: &OirType) -> bool {
 /// Kinds the legacy predicate erased to `"string"`: String itself, and the
 /// string-valued Enum/Trait (via `oir_type_kind`).
 pub fn is_string_kind(t: &OirType) -> bool {
-    matches!(t, OirType::String | OirType::Enum { .. } | OirType::Trait | OirType::CallKey)
+    matches!(
+        t,
+        OirType::String | OirType::Enum { .. } | OirType::Trait | OirType::CallKey
+    )
 }
 
 /// Kinds erased to `"number"`: Number, Integer, and Money (numeric at rest).
@@ -178,253 +183,466 @@ pub fn primitive_union_member(dst: &OirType, src: &OirType) -> bool {
 /// Known container members compare recursively. Optional stays transparent,
 /// numeric kinds widen without narrowing, semantic strings refine at runtime,
 /// references accept rows or id strings, and Node accepts renderable content.
+/// Compare types with declared aliases resolved only when their shape is needed.
+pub fn sub_with_named(
+    src: &OirType,
+    dst: &OirType,
+    resolve: &dyn Fn(&str) -> Option<OirType>,
+) -> Option<Coercion> {
+    Relation {
+        resolve: Some(resolve),
+        aliases: Vec::new(),
+        checked: false,
+    }
+    .sub(src, dst, 0)
+}
+
+/// An assignment whose declaration supplies no runtime conversion or check.
+pub fn checked_sub_with_named(
+    src: &OirType,
+    dst: &OirType,
+    resolve: &dyn Fn(&str) -> Option<OirType>,
+) -> Option<Coercion> {
+    Relation {
+        resolve: Some(resolve),
+        aliases: Vec::new(),
+        checked: true,
+    }
+    .sub(src, dst, 0)
+}
+
 pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
-    // Optional is transparent both directions (mirrors `oir_type_kind`); the
-    // witness is unchecked — Optional is accepted via an unchecked unwrap.
-    if let OirType::Optional { inner } = dst {
-        return sub(src, inner).map(|c| Coercion::Wrap(Box::new(c)));
+    Relation {
+        resolve: None,
+        aliases: Vec::new(),
+        checked: false,
     }
-    if let OirType::Optional { inner } = src {
-        return sub(inner, dst).map(|c| Coercion::Unwrap { checked: false, inner: Box::new(c) });
-    }
-    if src == dst {
-        return Some(Coercion::Identity);
-    }
-    if let OirType::Union { variants } = src {
-        if !variants.is_empty() {
-            return variants
-                .iter()
-                .map(|variant| sub(&variant.field_type, dst))
-                .collect::<Option<Vec<_>>>()
-                .map(|coercions| {
-                    if coercions.iter().any(Coercion::requires_cast) {
-                        Coercion::Explicit
-                    } else {
-                        Coercion::Erase { from: src.clone() }
-                    }
-                });
-        }
-    }
-    if let OirType::Union { variants } = dst {
-        if !variants.is_empty() {
-            let mut explicit = false;
-            for variant in variants {
-                if let Some(coercion) = sub(src, &variant.field_type) {
-                    if !coercion.requires_cast() {
-                        return Some(Coercion::Widen(WidenKind::ToUnionMember));
-                    }
-                    explicit = true;
-                }
-            }
-            return explicit.then_some(Coercion::Explicit);
-        }
-    }
-    match (src, dst) {
-        (OirType::Struct { fields: actual }, OirType::Struct { fields: expected })
-            if !actual.is_empty() && !expected.is_empty() =>
+    .sub(src, dst, 0)
+}
+
+type NamedTypeResolver<'a> = &'a dyn Fn(&str) -> Option<OirType>;
+
+struct Relation<'a> {
+    resolve: Option<NamedTypeResolver<'a>>,
+    aliases: Vec<(OirType, OirType, usize)>,
+    checked: bool,
+}
+
+impl Relation<'_> {
+    fn sub(&mut self, src: &OirType, dst: &OirType, progress: usize) -> Option<Coercion> {
+        let witness = self.sub_inner(src, dst, progress)?;
+        if self.checked
+            && matches!(
+                witness,
+                Coercion::Explicit
+                    | Coercion::Refine(_)
+                    | Coercion::Unwrap { checked: false, .. }
+                    | Coercion::Widen(
+                        WidenKind::StringToDate
+                            | WidenKind::StringToDateTime
+                            | WidenKind::NumericToDate
+                            | WidenKind::NumericToDateTime
+                    )
+            )
         {
-            let mut explicit = false;
-            for field in expected {
-                match actual.iter().find(|a| a.name == field.name) {
-                    Some(found) => {
-                        if !is_unknowable(&found.field_type) {
-                            explicit |= sub(&found.field_type, &field.field_type)?.requires_cast();
-                        }
-                    }
-                    None if field.required
-                        && !matches!(field.field_type, OirType::Optional { .. }) =>
-                    {
-                        return None
-                    }
-                    None => {}
-                }
-            }
-            return Some(if explicit {
-                Coercion::Explicit
-            } else {
-                Coercion::Erase { from: src.clone() }
-            });
+            return None;
         }
-        (
-            OirType::Map {
-                key: actual_key,
-                value: actual_value,
-            },
-            OirType::Map {
-                key: expected_key,
-                value: expected_value,
-            },
-        ) => {
-            let mut explicit = sub(actual_key, expected_key)?.requires_cast();
-            if !is_unknowable(actual_value) && !is_json_family(expected_value) {
-                explicit |= sub(actual_value, expected_value)?.requires_cast();
-            }
-            return Some(if explicit {
-                Coercion::Explicit
-            } else {
-                Coercion::Erase { from: src.clone() }
-            });
-        }
-        (OirType::Struct { fields }, OirType::Map { key, value }) if !fields.is_empty() => {
-            let mut explicit = sub(&OirType::String, key)?.requires_cast();
-            for field in fields {
-                if !is_unknowable(&field.field_type) && !is_json_family(value) {
-                    explicit |= sub(&field.field_type, value)?.requires_cast();
-                }
-            }
-            return Some(if explicit {
-                Coercion::Explicit
-            } else {
-                Coercion::Erase { from: src.clone() }
-            });
-        }
-        (OirType::Map { value, .. }, OirType::Struct { fields }) if !fields.is_empty() => {
-            let mut explicit = false;
-            if !is_unknowable(value) {
-                for field in fields {
-                    explicit |= sub(value, &field.field_type)?.requires_cast();
-                }
-            }
-            return Some(if explicit {
-                Coercion::Explicit
-            } else {
-                Coercion::Erase { from: src.clone() }
-            });
-        }
-        _ => {}
+        Some(witness)
     }
-    match dst {
-        OirType::Optional { .. } => unreachable!("Optional stripped above"),
-        // Enum/Trait are erased to "string"; a string-kind source is the
-        // kind-level equality the legacy predicate admitted.
-        OirType::Enum { .. } | OirType::Trait => match src {
-            _ if is_string_kind(src) => Some(Coercion::Identity),
+
+    fn sub_inner(&mut self, src: &OirType, dst: &OirType, progress: usize) -> Option<Coercion> {
+        if self.checked {
+            if let (OirType::Optional { inner: source }, OirType::Optional { inner: target }) =
+                (src, dst)
+            {
+                return self
+                    .sub(source, target, progress)
+                    .map(|c| Coercion::Wrap(Box::new(c)));
+            }
+        }
+        // Optional is transparent both directions (mirrors `oir_type_kind`); the
+        // witness is unchecked — Optional is accepted via an unchecked unwrap.
+        if let OirType::Optional { inner } = dst {
+            return self
+                .sub(src, inner, progress)
+                .map(|c| Coercion::Wrap(Box::new(c)));
+        }
+        if let OirType::Optional { inner } = src {
+            return self.sub(inner, dst, progress).map(|c| Coercion::Unwrap {
+                checked: false,
+                inner: Box::new(c),
+            });
+        }
+        if src == dst
+            && (!self.checked
+                || !matches!(
+                    src,
+                    OirType::Array { .. }
+                        | OirType::Tuple { .. }
+                        | OirType::Map { .. }
+                        | OirType::Struct { fields: _ }
+                        | OirType::Union { .. }
+                        | OirType::TypeRef { .. }
+                        | OirType::Reference { .. }
+                ))
+        {
+            return Some(Coercion::Identity);
+        }
+        let expanded_src = match (self.resolve, src) {
+            (Some(resolve), OirType::TypeRef { name } | OirType::Reference { entity: name }) => {
+                resolve(name)
+            }
             _ => None,
-        },
-        // An orbital value is only ever an orbital value (identity is caught above).
-        OirType::Orbital => None,
-        OirType::Behavior => None,
-        OirType::String => match src {
-            _ if is_string_kind(src) => Some(Coercion::Identity),
+        };
+        let expanded_dst = match (self.resolve, dst) {
+            (Some(resolve), OirType::TypeRef { name } | OirType::Reference { entity: name }) => {
+                resolve(name)
+            }
             _ => None,
-        },
-        OirType::Number => match src {
-            OirType::Integer => Some(Coercion::Widen(WidenKind::IntegerNumber)),
-            OirType::Money => Some(Coercion::Widen(WidenKind::MoneyNumber)),
-            _ => None,
-        },
-        // Integer is the narrower numeric kind: Number/Money do not narrow
-        // back down to Integer (4.4); only Integer == Integer, caught above.
-        OirType::Integer => None,
-        OirType::Boolean => None,
-        OirType::Date => match src {
-            _ if is_string_kind(src) => Some(Coercion::Widen(WidenKind::StringToDate)),
-            _ if is_number_kind(src) => Some(Coercion::Widen(WidenKind::NumericToDate)),
-            _ => None,
-        },
-        OirType::DateTime => match src {
-            _ if is_string_kind(src) => Some(Coercion::Widen(WidenKind::StringToDateTime)),
-            _ if is_number_kind(src) => Some(Coercion::Widen(WidenKind::NumericToDateTime)),
-            _ => None,
-        },
-        OirType::Email | OirType::Url | OirType::Phone | OirType::Uuid | OirType::Image => {
-            match src {
-                _ if is_string_kind(src) => {
-                    Some(Coercion::Refine(semantic_kind(dst).expect("semantic dst")))
+        };
+        if expanded_src.is_some() || expanded_dst.is_some() {
+            if let Some((_, _, previous)) = self
+                .aliases
+                .iter()
+                .rev()
+                .find(|(s, d, _)| s == src && d == dst)
+            {
+                // Alias expansion alone never establishes a recursive structural match.
+                return (progress > *previous).then_some(Coercion::Identity);
+            }
+            self.aliases.push((src.clone(), dst.clone(), progress));
+            let result = self.sub(
+                expanded_src.as_ref().unwrap_or(src),
+                expanded_dst.as_ref().unwrap_or(dst),
+                progress,
+            );
+            self.aliases.pop();
+            return result;
+        }
+        if self.checked
+            && (matches!(src, OirType::TypeRef { .. }) || matches!(dst, OirType::TypeRef { .. }))
+        {
+            return None;
+        }
+        if self.checked
+            && src == dst
+            && (matches!(src, OirType::Reference { .. })
+                || matches!(src, OirType::Struct { fields } if fields.is_empty()))
+        {
+            return Some(Coercion::Identity);
+        }
+        if let OirType::Union { variants } = src {
+            if !variants.is_empty() {
+                return variants
+                    .iter()
+                    .map(|variant| self.sub(&variant.field_type, dst, progress))
+                    .collect::<Option<Vec<_>>>()
+                    .map(|coercions| {
+                        if coercions.iter().any(Coercion::requires_cast) {
+                            Coercion::Explicit
+                        } else {
+                            Coercion::Erase { from: src.clone() }
+                        }
+                    });
+            }
+        }
+        if let OirType::Union { variants } = dst {
+            if !variants.is_empty() {
+                let mut explicit = false;
+                for variant in variants {
+                    if let Some(coercion) = self.sub(src, &variant.field_type, progress) {
+                        if !coercion.requires_cast() {
+                            return Some(Coercion::Widen(WidenKind::ToUnionMember));
+                        }
+                        explicit = true;
+                    }
+                }
+                return explicit.then_some(Coercion::Explicit);
+            }
+        }
+        match (src, dst) {
+            (OirType::Struct { fields: actual }, OirType::Struct { fields: expected })
+                if !actual.is_empty() && !expected.is_empty() =>
+            {
+                let mut explicit = false;
+                for field in expected {
+                    match actual.iter().find(|a| a.name == field.name) {
+                        Some(found) => {
+                            if self.checked
+                                && field.required
+                                && !found.required
+                                && found.default.is_none()
+                            {
+                                return None;
+                            }
+                            if self.checked || !is_unknowable(&found.field_type) {
+                                explicit |= self
+                                    .sub(&found.field_type, &field.field_type, progress + 1)?
+                                    .requires_cast();
+                            }
+                        }
+                        None if field.required
+                            && !matches!(field.field_type, OirType::Optional { .. }) =>
+                        {
+                            return None
+                        }
+                        None => {}
+                    }
+                }
+                return Some(if explicit {
+                    Coercion::Explicit
+                } else {
+                    Coercion::Erase { from: src.clone() }
+                });
+            }
+            (
+                OirType::Map {
+                    key: actual_key,
+                    value: actual_value,
+                },
+                OirType::Map {
+                    key: expected_key,
+                    value: expected_value,
+                },
+            ) => {
+                let mut explicit = self
+                    .sub(actual_key, expected_key, progress + 1)?
+                    .requires_cast();
+                if self.checked || !is_unknowable(actual_value) && !is_json_family(expected_value) {
+                    explicit |= self
+                        .sub(actual_value, expected_value, progress + 1)?
+                        .requires_cast();
+                }
+                return Some(if explicit {
+                    Coercion::Explicit
+                } else {
+                    Coercion::Erase { from: src.clone() }
+                });
+            }
+            (OirType::Struct { fields }, OirType::Map { key, value }) if !fields.is_empty() => {
+                let mut explicit = self
+                    .sub(&OirType::String, key, progress + 1)?
+                    .requires_cast();
+                for field in fields {
+                    if self.checked || !is_unknowable(&field.field_type) && !is_json_family(value) {
+                        explicit |= self
+                            .sub(&field.field_type, value, progress + 1)?
+                            .requires_cast();
+                    }
+                }
+                return Some(if explicit {
+                    Coercion::Explicit
+                } else {
+                    Coercion::Erase { from: src.clone() }
+                });
+            }
+            (OirType::Map { value, .. }, OirType::Struct { fields }) if !fields.is_empty() => {
+                if self.checked && fields.iter().any(|f| f.required && f.default.is_none()) {
+                    return None;
+                }
+                let mut explicit = false;
+                if self.checked || !is_unknowable(value) {
+                    for field in fields {
+                        explicit |= self
+                            .sub(value, &field.field_type, progress + 1)?
+                            .requires_cast();
+                    }
+                }
+                return Some(if explicit {
+                    Coercion::Explicit
+                } else {
+                    Coercion::Erase { from: src.clone() }
+                });
+            }
+            _ => {}
+        }
+        if self.checked {
+            if matches!(dst, OirType::Enum { .. }) {
+                return None;
+            }
+            if matches!(dst, OirType::Struct { fields } if fields.is_empty())
+                && is_object_family(src)
+            {
+                return Some(Coercion::Erase { from: src.clone() });
+            }
+            if matches!(
+                dst,
+                OirType::Struct { .. }
+                    | OirType::Map { .. }
+                    | OirType::Union { .. }
+                    | OirType::File
+                    | OirType::Row { .. }
+            ) {
+                return None;
+            }
+        }
+        match dst {
+            OirType::Optional { .. } => unreachable!("Optional stripped above"),
+            // Enum/Trait are erased to "string"; a string-kind source is the
+            // kind-level equality the legacy predicate admitted.
+            OirType::Enum { .. } | OirType::Trait => match src {
+                _ if is_string_kind(src) => Some(Coercion::Identity),
+                _ => None,
+            },
+            // An orbital value is only ever an orbital value (identity is caught above).
+            OirType::Orbital => None,
+            OirType::Behavior => None,
+            OirType::String => match src {
+                _ if is_string_kind(src) => Some(Coercion::Identity),
+                _ => None,
+            },
+            OirType::Number => match src {
+                OirType::Integer => Some(Coercion::Widen(WidenKind::IntegerNumber)),
+                OirType::Money => Some(Coercion::Widen(WidenKind::MoneyNumber)),
+                _ => None,
+            },
+            // Integer is the narrower numeric kind: Number/Money do not narrow
+            // back down to Integer (4.4); only Integer == Integer, caught above.
+            OirType::Integer => None,
+            OirType::Boolean => None,
+            OirType::Date => match src {
+                _ if is_string_kind(src) => Some(Coercion::Widen(WidenKind::StringToDate)),
+                _ if is_number_kind(src) => Some(Coercion::Widen(WidenKind::NumericToDate)),
+                _ => None,
+            },
+            OirType::DateTime => match src {
+                _ if is_string_kind(src) => Some(Coercion::Widen(WidenKind::StringToDateTime)),
+                _ if is_number_kind(src) => Some(Coercion::Widen(WidenKind::NumericToDateTime)),
+                _ => None,
+            },
+            OirType::Email | OirType::Url | OirType::Phone | OirType::Uuid | OirType::Image => {
+                match src {
+                    _ if is_string_kind(src) => {
+                        Some(Coercion::Refine(semantic_kind(dst).expect("semantic dst")))
+                    }
+                    _ => None,
+                }
+            }
+            OirType::Money => match src {
+                OirType::Number | OirType::Integer => Some(Coercion::Widen(WidenKind::MoneyNumber)),
+                _ => None,
+            },
+            // Bytes is an opaque base64 string at rest: only bytes (identity, caught above) fits.
+            OirType::Bytes => None,
+            // A call key is a string at rest; a string-kind source converts only through `as`.
+            OirType::CallKey => match src {
+                _ if is_string_kind(src) => Some(Coercion::Explicit),
+                _ => None,
+            },
+            // The object family (Struct/Union/Map/File/TypeRef) and the json family
+            // (Json/SExpr) are mutually compatible.
+            OirType::Struct { .. }
+            | OirType::Union { .. }
+            | OirType::Map { .. }
+            | OirType::File
+            | OirType::TypeRef { .. }
+            | OirType::Row { .. }
+            | OirType::Json
+            | OirType::SExpr => match src {
+                _ if is_object_family(src) || is_json_family(src) => {
+                    Some(Coercion::Erase { from: src.clone() })
+                }
+                OirType::Var { .. } if matches!(dst, OirType::Json) => {
+                    Some(Coercion::Erase { from: src.clone() })
+                }
+                _ if matches!(dst, OirType::SExpr) && is_program_data(src) => {
+                    Some(Coercion::Erase { from: src.clone() })
+                }
+                _ if primitive_union_member(dst, src) => {
+                    Some(Coercion::Widen(WidenKind::ToUnionMember))
                 }
                 _ => None,
-            }
+            },
+            // Renderable content: object-family pattern trees, arrays of them,
+            // string leaves — plus any scalar, which React paints as text (the
+            // arm moved in from config_type.rs's file-local special case).
+            OirType::Node => match src {
+                _ if is_string_kind(src)
+                    || is_number_kind(src)
+                    || matches!(src, OirType::Boolean) =>
+                {
+                    Some(Coercion::Widen(WidenKind::ScalarToNode))
+                }
+                OirType::Array { .. } => Some(Coercion::Erase { from: src.clone() }),
+                _ if is_object_family(src) => Some(Coercion::Erase { from: src.clone() }),
+                _ => None,
+            },
+            // Structural (Phase 4.2): Array<T> ≤ Array<U> iff T ≤ U. Element
+            // types that admit no coercion reject the assignment outright.
+            OirType::Array { inner: d_inner } => match src {
+                OirType::Array { inner: s_inner } => {
+                    if !self.checked && is_unknowable(s_inner) {
+                        Some(Coercion::Element(Box::new(Coercion::Erase {
+                            from: (**s_inner).clone(),
+                        })))
+                    } else {
+                        self.sub(s_inner, d_inner, progress + 1)
+                            .map(|element| Coercion::Element(Box::new(element)))
+                    }
+                }
+                // The empty list is typed by the list slot it fills: the slot supplies the element.
+                OirType::Tuple { items } if items.is_empty() => Some(Coercion::Identity),
+                // A tuple is an array of its slots: every slot must fit the element.
+                OirType::Tuple { items } => items
+                    .iter()
+                    .map(|slot| self.sub(slot, d_inner, progress + 1))
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|coercions| {
+                        if coercions.iter().any(Coercion::requires_cast) {
+                            Some(Coercion::Explicit)
+                        } else {
+                            coercions
+                                .into_iter()
+                                .next()
+                                .map(|element| Coercion::Element(Box::new(element)))
+                        }
+                    }),
+                _ => None,
+            },
+            // A tuple takes a same-arity tuple slot by slot, or an array whose element fits
+            // every slot (a literal's arity is checked where the literal is validated).
+            OirType::Tuple { items: d_items } => match src {
+                OirType::Tuple { items: s_items } if s_items.len() == d_items.len() => s_items
+                    .iter()
+                    .zip(d_items)
+                    .map(|(s, d)| self.sub(s, d, progress + 1))
+                    .collect::<Option<Vec<_>>>()
+                    .map(|coercions| {
+                        if coercions.iter().any(Coercion::requires_cast) {
+                            Coercion::Explicit
+                        } else {
+                            Coercion::Identity
+                        }
+                    }),
+                // An array of unknowable elements (a literal's erased `array` kind) erases.
+                OirType::Array { inner } if !self.checked && is_unknowable(inner) => {
+                    Some(Coercion::Erase { from: src.clone() })
+                }
+                OirType::Array { inner: s_inner } if !self.checked => d_items
+                    .iter()
+                    .map(|d| self.sub(s_inner, d, progress + 1))
+                    .collect::<Option<Vec<_>>>()
+                    .map(|coercions| {
+                        if coercions.iter().any(Coercion::requires_cast) {
+                            Coercion::Explicit
+                        } else {
+                            Coercion::Identity
+                        }
+                    }),
+                _ => None,
+            },
+            // An entity field takes a loaded row (object family) or an id string.
+            OirType::Reference { .. } => match src {
+                _ if is_object_family(src) => Some(Coercion::Row { from_id: false }),
+                _ if is_string_kind(src) => Some(Coercion::Row { from_id: true }),
+                _ => None,
+            },
+            // Opaque: only the same variable (identity, caught above) or an unknowable value.
+            OirType::Var { .. } => match src {
+                OirType::Json => Some(Coercion::Erase { from: src.clone() }),
+                _ => None,
+            },
         }
-        OirType::Money => match src {
-            OirType::Number | OirType::Integer => Some(Coercion::Widen(WidenKind::MoneyNumber)),
-            _ => None,
-        },
-        // Bytes is an opaque base64 string at rest: only bytes (identity, caught above) fits.
-        OirType::Bytes => None,
-        // A call key is a string at rest; a string-kind source converts only through `as`.
-        OirType::CallKey => match src {
-            _ if is_string_kind(src) => Some(Coercion::Explicit),
-            _ => None,
-        },
-        // The object family (Struct/Union/Map/File/TypeRef) and the json family
-        // (Json/SExpr) are mutually compatible.
-        OirType::Struct { .. }
-        | OirType::Union { .. }
-        | OirType::Map { .. }
-        | OirType::File
-        | OirType::TypeRef { .. }
-        | OirType::Row { .. }
-        | OirType::Json
-        | OirType::SExpr => match src {
-            _ if is_object_family(src) || is_json_family(src) => {
-                Some(Coercion::Erase { from: src.clone() })
-            }
-            OirType::Var { .. } if matches!(dst, OirType::Json) => {
-                Some(Coercion::Erase { from: src.clone() })
-            }
-            _ if matches!(dst, OirType::SExpr) && is_program_data(src) => {
-                Some(Coercion::Erase { from: src.clone() })
-            }
-            _ if primitive_union_member(dst, src) => Some(Coercion::Widen(WidenKind::ToUnionMember)),
-            _ => None,
-        },
-        // Renderable content: object-family pattern trees, arrays of them,
-        // string leaves — plus any scalar, which React paints as text (the
-        // arm moved in from config_type.rs's file-local special case).
-        OirType::Node => match src {
-            _ if is_string_kind(src) || is_number_kind(src) || matches!(src, OirType::Boolean) => {
-                Some(Coercion::Widen(WidenKind::ScalarToNode))
-            }
-            OirType::Array { .. } => Some(Coercion::Erase { from: src.clone() }),
-            _ if is_object_family(src) => Some(Coercion::Erase { from: src.clone() }),
-            _ => None,
-        },
-        // Structural (Phase 4.2): Array<T> ≤ Array<U> iff T ≤ U. Element
-        // types that admit no coercion reject the assignment outright.
-        OirType::Array { inner: d_inner } => match src {
-            OirType::Array { inner: s_inner } => {
-                sub(s_inner, d_inner).map(|element| Coercion::Element(Box::new(element)))
-            }
-            // The empty list is typed by the list slot it fills: the slot supplies the element.
-            OirType::Tuple { items } if items.is_empty() => Some(Coercion::Identity),
-            // A tuple is an array of its slots: every slot must fit the element.
-            OirType::Tuple { items } => items
-                .iter()
-                .map(|slot| sub(slot, d_inner))
-                .collect::<Option<Vec<_>>>()
-                .and_then(|cs| cs.into_iter().next())
-                .map(|element| Coercion::Element(Box::new(element))),
-            _ => None,
-        },
-        // A tuple takes a same-arity tuple slot by slot, or an array whose element fits
-        // every slot (a literal's arity is checked where the literal is validated).
-        OirType::Tuple { items: d_items } => match src {
-            OirType::Tuple { items: s_items } if s_items.len() == d_items.len() => s_items
-                .iter()
-                .zip(d_items)
-                .map(|(s, d)| sub(s, d))
-                .collect::<Option<Vec<_>>>()
-                .map(|_| Coercion::Identity),
-            // An array of unknowable elements (a literal's erased `array` kind) erases.
-            OirType::Array { .. } if is_unknowable(src) => Some(Coercion::Erase { from: src.clone() }),
-            OirType::Array { inner: s_inner } => d_items
-                .iter()
-                .map(|d| sub(s_inner, d))
-                .collect::<Option<Vec<_>>>()
-                .map(|_| Coercion::Identity),
-            _ => None,
-        },
-        // An entity field takes a loaded row (object family) or an id string.
-        OirType::Reference { .. } => match src {
-            _ if is_object_family(src) => Some(Coercion::Row { from_id: false }),
-            _ if is_string_kind(src) => Some(Coercion::Row { from_id: true }),
-            _ => None,
-        },
-        // Opaque: only the same variable (identity, caught above) or an unknowable value.
-        OirType::Var { .. } => match src {
-            OirType::Json => Some(Coercion::Erase { from: src.clone() }),
-            _ => None,
-        },
     }
 }
 
@@ -454,7 +672,9 @@ impl CompatType {
     pub fn witness_type(&self) -> OirType {
         match self {
             CompatType::Ty(t) => t.clone(),
-            CompatType::Entity => OirType::Reference { entity: "entity".into() },
+            CompatType::Entity => OirType::Reference {
+                entity: "entity".into(),
+            },
             CompatType::Named(n) => OirType::Reference { entity: n.clone() },
             CompatType::MapTag => OirType::Map {
                 key: Box::new(OirType::String),
@@ -465,7 +685,9 @@ impl CompatType {
             CompatType::FileTag => OirType::File,
             CompatType::Int => OirType::Integer,
             CompatType::Float => OirType::Number,
-            CompatType::Null => OirType::Optional { inner: Box::new(OirType::Json) },
+            CompatType::Null => OirType::Optional {
+                inner: Box::new(OirType::Json),
+            },
             CompatType::Any | CompatType::Unknown(_) => OirType::Json,
         }
     }
@@ -478,8 +700,17 @@ pub fn literal_union_members(t: &str) -> Option<Vec<&str>> {
 
 /// The literal union (`"a" | "b"`) that writes a closed string set, when every member can be written in one.
 pub fn literal_union_text(values: &[String]) -> Option<String> {
-    (!values.is_empty() && values.iter().all(|v| !v.contains(['"', '\\']) && !v.contains(" | ")))
-        .then(|| values.iter().map(|v| format!("\"{v}\"")).collect::<Vec<_>>().join(" | "))
+    (!values.is_empty()
+        && values
+            .iter()
+            .all(|v| !v.contains(['"', '\\']) && !v.contains(" | ")))
+    .then(|| {
+        values
+            .iter()
+            .map(|v| format!("\"{v}\""))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    })
 }
 
 fn is_string_literal_union(t: &str) -> bool {
@@ -530,7 +761,9 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         // A schemaless object — an empty Struct is its nearest `OirType` shape;
         // the family arm makes every cross-variant object pairing erase.
         "object" => CompatType::Ty(OirType::Struct { fields: vec![] }),
-        "array" => CompatType::Ty(OirType::Array { inner: Box::new(OirType::Json) }),
+        "array" => CompatType::Ty(OirType::Array {
+            inner: Box::new(OirType::Json),
+        }),
         _ if tuple_type_slots(t).is_some() => {
             let items = tuple_type_slots(t)
                 .unwrap_or_default()
@@ -558,14 +791,25 @@ pub fn parse_compat_type(s: &str) -> CompatType {
                     CompatType::Ty(ty) => ty,
                     _ => OirType::Json,
                 },
-                _ => OirType::Json,
+                declared => match parse_compat_type(declared) {
+                    CompatType::Ty(ty) => ty,
+                    CompatType::Named(_) => OirType::Struct { fields: Vec::new() },
+                    CompatType::MapTag => OirType::map(OirType::String, OirType::Json),
+                    _ => OirType::Json,
+                },
             };
-            CompatType::Ty(OirType::Array { inner: Box::new(inner) })
+            CompatType::Ty(OirType::Array {
+                inner: Box::new(inner),
+            })
         }
         _ if t.starts_with("Map<") && t.ends_with('>') => CompatType::MapTag,
-        _ if t.len() > 1 && t.starts_with('$') => CompatType::Ty(OirType::Var { name: t[1..].to_string() }),
+        _ if t.len() > 1 && t.starts_with('$') => CompatType::Ty(OirType::Var {
+            name: t[1..].to_string(),
+        }),
         // `"a" | "b"`: a closed set of strings is an enum of strings.
-        _ if is_string_literal_union(t) => CompatType::Ty(OirType::Enum { name: t.to_string() }),
+        _ if is_string_literal_union(t) => CompatType::Ty(OirType::Enum {
+            name: t.to_string(),
+        }),
         _ if t.chars().next().is_some_and(char::is_uppercase) => {
             match crate::language::program_types::program_type(t) {
                 Some(shape) => CompatType::Ty(shape.clone()),
@@ -593,11 +837,15 @@ pub fn sub_compat(src: &CompatType, dst: &CompatType) -> Option<Coercion> {
         return sub_compat(src, &Ty((**inner).clone())).map(|c| Coercion::Wrap(Box::new(c)));
     }
     if let Ty(OirType::Optional { inner }) = src {
-        return sub_compat(&Ty((**inner).clone()), dst)
-            .map(|c| Coercion::Unwrap { checked: false, inner: Box::new(c) });
+        return sub_compat(&Ty((**inner).clone()), dst).map(|c| Coercion::Unwrap {
+            checked: false,
+            inner: Box::new(c),
+        });
     }
     match (src, dst) {
-        (_, Any) => Some(Coercion::Erase { from: src.witness_type() }),
+        (_, Any) => Some(Coercion::Erase {
+            from: src.witness_type(),
+        }),
         (Ty(s), Ty(d)) => sub(s, d),
         (_, Entity) => match src {
             Ty(t) if is_object_family(t) => Some(Coercion::Row { from_id: false }),
@@ -621,9 +869,9 @@ pub fn sub_compat(src: &CompatType, dst: &CompatType) -> Option<Coercion> {
             MapTag => Some(Coercion::Identity),
             _ => None,
         },
-        (MapTag, Ty(d)) if is_object_family(d) || is_json_family(d) => {
-            Some(Coercion::Erase { from: src.witness_type() })
-        }
+        (MapTag, Ty(d)) if is_object_family(d) || is_json_family(d) => Some(Coercion::Erase {
+            from: src.witness_type(),
+        }),
         (_, Timestamp) => match src {
             Ty(t) if is_string_kind(t) => Some(Coercion::Widen(WidenKind::StringToDateTime)),
             Ty(t) if is_number_kind(t) => Some(Coercion::Widen(WidenKind::NumericToDateTime)),
@@ -765,19 +1013,14 @@ pub fn oir_type_kind(t: &crate::ir::types::OirType) -> String {
     }
 }
 
-/// An inferred type carrying no element information never rejects —
-/// enumerated site leniency, not a special case. `Optional` is stripped
-/// first: an `Optional<Json>` is still unknowable.
+/// An inferred type carrying no shape information is undecidable. An array
+/// retains its outer kind even when its element type is unknown.
 pub fn is_unknowable(t: &OirType) -> bool {
     let t = match t {
         OirType::Optional { inner } => inner.as_ref(),
         _ => t,
     };
-    match t {
-        OirType::Json | OirType::SExpr => true,
-        OirType::Array { inner } => matches!(**inner, OirType::Json | OirType::SExpr),
-        _ => false,
-    }
+    is_json_family(t)
 }
 
 /// Returns `true` when a value whose *inferred* type is `inferred` may be
@@ -786,18 +1029,23 @@ pub fn is_unknowable(t: &OirType) -> bool {
 /// The companion to `set_value_type_compatible` for the `(set @field <expr>)`
 /// path where the value's type is *inferred* through the SExpression
 /// (Gap G-LOLO-SET-OP-RETURN). **Conservative on unknowable inferred types**:
-/// an open `Json`/`SExpr`, or an array whose element type is undeclared (e.g.
-/// an input-dependent operator the std metadata can't pin down, or an empty
-/// literal), never rejects — better to under-enforce than false-positive.
+/// an open `Json`/`SExpr` never rejects. An array with unknown elements still
+/// checks its outer kind; matching array/tuple slots supply its element type.
 /// A concrete inferred type — including a concrete Array element — compares
 /// structurally through `sub`, passed by its real `OirType`, not an erased
 /// kind string.
-pub fn oir_type_satisfies_field(inferred: &crate::ir::types::OirType, declared_field: &str) -> bool {
+pub fn oir_type_satisfies_field(
+    inferred: &crate::ir::types::OirType,
+    declared_field: &str,
+) -> bool {
     if is_unknowable(inferred) {
         return true;
     }
-    sub_compat(&CompatType::Ty(inferred.clone()), &parse_compat_type(declared_field))
-        .is_some_and(|c| !c.requires_cast())
+    sub_compat(
+        &CompatType::Ty(inferred.clone()),
+        &parse_compat_type(declared_field),
+    )
+    .is_some_and(|c| !c.requires_cast())
 }
 
 /// Structured sibling of [`oir_type_satisfies_field`] for callers that
@@ -836,7 +1084,49 @@ pub fn compat_kind_oir(kind: &str) -> OirType {
 
 #[cfg(test)]
 mod tests {
-    use super::{enum_value_is_member, oir_type_satisfies_field};
+    #[test]
+    fn checked_assignment_requires_known_identity_preserving_evidence() {
+        use crate::ir::OirField;
+        let resolve = |_: &str| None;
+        let check =
+            |source: &OirType, target: &OirType| checked_sub_with_named(source, target, &resolve);
+        let map = OirType::Map {
+            key: Box::new(OirType::String),
+            value: Box::new(OirType::Number),
+        };
+        for (source, target) in [
+            (OirType::Struct { fields: Vec::new() }, map.clone()),
+            (
+                OirType::array(OirType::Json),
+                OirType::array(OirType::Number),
+            ),
+            (OirType::String, OirType::CallKey),
+            (OirType::String, OirType::Email),
+            (OirType::String, OirType::Date),
+            (OirType::optional(OirType::Number), OirType::Number),
+            (
+                OirType::TypeRef {
+                    name: "Missing".into(),
+                },
+                OirType::TypeRef {
+                    name: "Missing".into(),
+                },
+            ),
+        ] {
+            assert!(check(&source, &target).is_none(), "{source:?} → {target:?}");
+        }
+        let record = OirType::Struct {
+            fields: vec![OirField::new("n", OirType::Number)],
+        };
+        assert!(check(&record, &map).is_some());
+        assert!(check(&OirType::Integer, &OirType::Number).is_some());
+        assert!(check(&OirType::Number, &OirType::optional(OirType::Number)).is_some());
+        assert!(
+            sub(&OirType::String, &OirType::Email).is_some(),
+            "ordinary assignment unchanged"
+        );
+    }
+    use super::{checked_sub_with_named, enum_value_is_member, oir_type_satisfies_field, sub};
     use crate::ir::types::OirType;
 
     fn record(fields: &[(&str, OirType)]) -> OirType {
@@ -856,6 +1146,143 @@ mod tests {
                 .map(|(i, ty)| crate::ir::types::OirField::new(i.to_string(), ty.clone()))
                 .collect(),
         }
+    }
+
+    #[test]
+    fn named_relation_resolves_recursive_lists_maps_and_known_record_fields() {
+        let reference = |name: &str| OirType::TypeRef { name: name.into() };
+        let value = reference("V");
+        let names = std::collections::HashMap::from([
+            (
+                "V",
+                union(&[
+                    OirType::String,
+                    OirType::Number,
+                    OirType::Boolean,
+                    OirType::array(OirType::optional(value.clone())),
+                    OirType::map(OirType::String, OirType::optional(value.clone())),
+                ]),
+            ),
+            (
+                "Cell",
+                record(&[
+                    ("kind", OirType::String),
+                    ("next", OirType::optional(reference("Cell"))),
+                ]),
+            ),
+        ]);
+        let resolve = |name: &str| names.get(name).cloned();
+        assert!(
+            super::sub_with_named(&OirType::array(OirType::String), &value, &resolve).is_some()
+        );
+        assert!(super::sub_with_named(
+            &OirType::map(OirType::String, OirType::array(OirType::String)),
+            &OirType::map(OirType::String, OirType::optional(value)),
+            &resolve
+        )
+        .is_some());
+        let cell = reference("Cell");
+        assert!(
+            super::sub_with_named(&record(&[("kind", OirType::String)]), &cell, &resolve).is_some()
+        );
+        assert!(
+            super::sub_with_named(&record(&[("kind", OirType::Number)]), &cell, &resolve).is_none()
+        );
+        assert!(super::sub_with_named(
+            &record(&[
+                ("kind", OirType::String),
+                ("next", record(&[("kind", OirType::Number)]))
+            ]),
+            &cell,
+            &resolve
+        )
+        .is_none());
+        assert!(super::sub_with_named(
+            &OirType::array(record(&[("kind", OirType::Number)])),
+            &OirType::array(cell),
+            &resolve
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn named_relation_resolves_explicit_reference_aliases_without_changing_entity_ids() {
+        let reference = |name: &str| OirType::Reference {
+            entity: name.into(),
+        };
+        let names = std::collections::HashMap::from([
+            ("NoteRecord", record(&[("kind", OirType::String)])),
+            ("A", reference("B")),
+            ("B", reference("A")),
+        ]);
+        let resolve = |name: &str| names.get(name).cloned();
+        let alias = reference("NoteRecord");
+        let good = record(&[("kind", OirType::String)]);
+        let bad = record(&[("kind", OirType::Number)]);
+        assert!(super::sub_with_named(&good, &alias, &resolve).is_some());
+        assert!(super::sub_with_named(&bad, &alias, &resolve).is_none());
+        assert!(super::sub_with_named(&OirType::String, &alias, &resolve).is_none());
+        assert!(super::sub_with_named(&alias, &good, &resolve).is_some());
+        assert!(super::sub_with_named(&alias, &bad, &resolve).is_none());
+        let entity = reference("Person");
+        assert!(super::sub_with_named(&OirType::String, &entity, &resolve).is_some());
+        assert!(super::sub_with_named(&good, &entity, &resolve).is_some());
+        assert!(super::sub(&bad, &alias).is_some());
+        for actual in [OirType::String, OirType::array(OirType::String)] {
+            assert!(super::sub_with_named(&actual, &reference("A"), &resolve).is_none());
+        }
+    }
+
+    #[test]
+    fn named_relation_cycles_need_structural_progress_and_real_union_members() {
+        let reference = |name: &str| OirType::TypeRef { name: name.into() };
+        let names = std::collections::HashMap::from([
+            ("A", reference("B")),
+            ("B", reference("A")),
+            ("V", union(&[reference("V"), OirType::Number])),
+            (
+                "NoList",
+                union(&[
+                    OirType::String,
+                    OirType::map(OirType::String, reference("NoList")),
+                ]),
+            ),
+            (
+                "Left",
+                record(&[
+                    ("kind", OirType::String),
+                    ("next", OirType::optional(reference("Left"))),
+                ]),
+            ),
+            (
+                "Right",
+                record(&[
+                    ("kind", OirType::String),
+                    ("next", OirType::optional(reference("Right"))),
+                ]),
+            ),
+            (
+                "Bad",
+                record(&[
+                    ("kind", OirType::Number),
+                    ("next", OirType::optional(reference("Bad"))),
+                ]),
+            ),
+        ]);
+        let resolve = |name: &str| names.get(name).cloned();
+        for src in [OirType::String, OirType::array(OirType::String)] {
+            assert!(super::sub_with_named(&src, &reference("A"), &resolve).is_none());
+            assert!(super::sub_with_named(&src, &reference("V"), &resolve).is_none());
+        }
+        assert!(super::sub_with_named(&OirType::Number, &reference("V"), &resolve).is_some());
+        assert!(super::sub_with_named(
+            &OirType::array(OirType::String),
+            &reference("NoList"),
+            &resolve
+        )
+        .is_none());
+        assert!(super::sub_with_named(&reference("Left"), &reference("Right"), &resolve).is_some());
+        assert!(super::sub_with_named(&reference("Left"), &reference("Bad"), &resolve).is_none());
     }
 
     #[test]
@@ -938,6 +1365,85 @@ mod tests {
     }
 
     #[test]
+    fn tuple_routes_preserve_every_explicit_slot_coercion() {
+        let tuple = |items| OirType::Tuple { items };
+        let routes = [
+            (
+                tuple(vec![OirType::CallKey, OirType::String]),
+                OirType::array(OirType::CallKey),
+            ),
+            (
+                tuple(vec![OirType::CallKey, OirType::String]),
+                tuple(vec![OirType::CallKey, OirType::CallKey]),
+            ),
+            (
+                OirType::array(OirType::String),
+                tuple(vec![OirType::String, OirType::CallKey]),
+            ),
+        ];
+        for (source, target) in routes {
+            assert!(
+                !super::assignable(&source, &target),
+                "{source:?} -> {target:?}"
+            );
+            assert!(super::castable(&source, &target));
+        }
+        let keys = tuple(vec![OirType::CallKey, OirType::CallKey]);
+        assert!(super::assignable(&keys, &OirType::array(OirType::CallKey)));
+        assert!(super::assignable(
+            &keys,
+            &tuple(vec![OirType::String, OirType::String])
+        ));
+        assert!(super::assignable(&keys, &OirType::array(OirType::String)));
+        assert!(super::assignable(
+            &OirType::array(OirType::CallKey),
+            &tuple(vec![OirType::String, OirType::CallKey])
+        ));
+    }
+
+    #[test]
+    fn unknown_list_elements_do_not_erase_the_known_outer_kind() {
+        let unknown_list = OirType::array(OirType::Json);
+        let source = record(&[("kind", unknown_list.clone())]);
+        assert!(!super::assignable(
+            &source,
+            &record(&[("kind", OirType::String)])
+        ));
+        assert!(super::assignable(
+            &source,
+            &record(&[("kind", OirType::array(OirType::String))])
+        ));
+        assert!(!super::assignable(
+            &OirType::map(OirType::String, unknown_list.clone()),
+            &OirType::map(OirType::String, OirType::String)
+        ));
+        assert!(super::assignable(
+            &OirType::map(OirType::String, unknown_list.clone()),
+            &OirType::map(OirType::String, OirType::array(OirType::String))
+        ));
+        assert!(!super::oir_type_satisfies(&unknown_list, &OirType::String));
+        assert!(!super::oir_type_satisfies_field(&unknown_list, "string"));
+        assert!(!super::oir_type_accepts_kind(&OirType::String, "array"));
+        assert!(super::oir_type_satisfies(
+            &unknown_list,
+            &OirType::array(OirType::String)
+        ));
+        assert!(super::assignable(
+            &unknown_list,
+            &OirType::Tuple {
+                items: vec![OirType::String, OirType::Number]
+            }
+        ));
+        assert!(super::oir_type_satisfies(&OirType::Json, &OirType::String));
+        assert!(super::set_value_type_compatible("[string]", "array"));
+        assert!(!super::set_value_type_compatible(
+            "[string]",
+            "[AgentActivity]"
+        ));
+        assert!(super::set_value_type_compatible("[Foo]", "[Bar]"));
+    }
+
+    #[test]
     fn structural_fields_preserve_explicit_cast_requirements() {
         let plain = record(&[("key", OirType::String)]);
         let keyed = record(&[("key", OirType::CallKey)]);
@@ -1010,17 +1516,46 @@ mod tests {
         let t = OirType::Var { name: "t".into() };
         let u = OirType::Var { name: "u".into() };
         assert!(super::assignable(&t, &t));
-        assert!(super::assignable(&t, &OirType::Json), "a variable erases to json");
-        assert!(super::assignable(&OirType::Json, &t), "an unknowable value may be a t");
+        assert!(
+            super::assignable(&t, &OirType::Json),
+            "a variable erases to json"
+        );
+        assert!(
+            super::assignable(&OirType::Json, &t),
+            "an unknowable value may be a t"
+        );
         assert!(super::assignable(&OirType::optional(t.clone()), &t));
-        assert!(super::assignable(&OirType::array(t.clone()), &OirType::array(t.clone())));
-        for concrete in [OirType::String, OirType::Number, OirType::Struct { fields: vec![] }, OirType::Node] {
-            assert!(!super::castable(&t, &concrete), "control: a t is no {concrete:?}");
-            assert!(!super::castable(&concrete, &t), "control: a {concrete:?} is no t");
+        assert!(super::assignable(
+            &OirType::array(t.clone()),
+            &OirType::array(t.clone())
+        ));
+        for concrete in [
+            OirType::String,
+            OirType::Number,
+            OirType::Struct { fields: vec![] },
+            OirType::Node,
+        ] {
+            assert!(
+                !super::castable(&t, &concrete),
+                "control: a t is no {concrete:?}"
+            );
+            assert!(
+                !super::castable(&concrete, &t),
+                "control: a {concrete:?} is no t"
+            );
         }
-        assert!(!super::castable(&t, &u), "control: two variables are distinct");
-        assert_eq!(super::parse_compat_type(&super::oir_type_kind(&t)), super::CompatType::Ty(t.clone()));
-        assert_eq!(super::parse_compat_type("$"), super::CompatType::Unknown("$".into()));
+        assert!(
+            !super::castable(&t, &u),
+            "control: two variables are distinct"
+        );
+        assert_eq!(
+            super::parse_compat_type(&super::oir_type_kind(&t)),
+            super::CompatType::Ty(t.clone())
+        );
+        assert_eq!(
+            super::parse_compat_type("$"),
+            super::CompatType::Unknown("$".into())
+        );
     }
 
     #[test]
@@ -1029,7 +1564,10 @@ mod tests {
             .expect("the installed language declares Viewer")
             .clone();
         assert!(super::oir_type_accepts_kind(&viewer, "Viewer"));
-        assert_eq!(super::parse_compat_type("Viewer"), super::CompatType::Ty(viewer.clone()));
+        assert_eq!(
+            super::parse_compat_type("Viewer"),
+            super::CompatType::Ty(viewer.clone())
+        );
         assert!(
             !super::oir_type_accepts_kind(&viewer, "NoSuchProgramType"),
             "control: an unknown name is not a record"
@@ -1044,25 +1582,46 @@ mod tests {
     #[test]
     fn a_list_of_a_nominal_std_type_is_that_list() {
         let orbitals = OirType::array(OirType::Orbital);
-        assert!(super::oir_type_satisfies(&orbitals, &super::compat_kind_oir("[orbital]")));
+        assert!(super::oir_type_satisfies(
+            &orbitals,
+            &super::compat_kind_oir("[orbital]")
+        ));
         assert!(
-            !super::oir_type_satisfies(&OirType::array(OirType::String), &super::compat_kind_oir("[orbital]")),
+            !super::oir_type_satisfies(
+                &OirType::array(OirType::String),
+                &super::compat_kind_oir("[orbital]")
+            ),
             "control: a list of strings is not a list of orbitals"
         );
-        assert!(super::oir_type_satisfies(&OirType::array(OirType::Trait), &super::compat_kind_oir("[trait]")));
-        assert!(super::oir_type_satisfies(&OirType::array(OirType::Behavior), &super::compat_kind_oir("[behavior]")));
+        assert!(super::oir_type_satisfies(
+            &OirType::array(OirType::Trait),
+            &super::compat_kind_oir("[trait]")
+        ));
+        assert!(super::oir_type_satisfies(
+            &OirType::array(OirType::Behavior),
+            &super::compat_kind_oir("[behavior]")
+        ));
     }
 
     #[test]
     fn a_declared_list_of_lists_keeps_its_depth() {
         let lists = OirType::array(OirType::array(OirType::Number));
-        assert!(super::oir_type_satisfies(&lists, &super::compat_kind_oir("[[number]]")));
+        assert!(super::oir_type_satisfies(
+            &lists,
+            &super::compat_kind_oir("[[number]]")
+        ));
         assert!(
-            !super::oir_type_satisfies(&OirType::array(OirType::array(OirType::String)), &super::compat_kind_oir("[[number]]")),
+            !super::oir_type_satisfies(
+                &OirType::array(OirType::array(OirType::String)),
+                &super::compat_kind_oir("[[number]]")
+            ),
             "control: a list of string lists is not a list of number lists"
         );
         assert!(
-            !super::oir_type_satisfies(&OirType::array(OirType::Number), &super::compat_kind_oir("[[number]]")),
+            !super::oir_type_satisfies(
+                &OirType::array(OirType::Number),
+                &super::compat_kind_oir("[[number]]")
+            ),
             "control: a list of numbers is not a list of lists"
         );
     }
@@ -1070,8 +1629,14 @@ mod tests {
     #[test]
     fn the_empty_list_fits_a_list_of_any_element() {
         let empty = OirType::Tuple { items: Vec::new() };
-        assert!(super::oir_type_satisfies(&empty, &OirType::array(OirType::String)));
-        assert!(super::oir_type_satisfies(&empty, &OirType::array(OirType::array(OirType::Number))));
+        assert!(super::oir_type_satisfies(
+            &empty,
+            &OirType::array(OirType::String)
+        ));
+        assert!(super::oir_type_satisfies(
+            &empty,
+            &OirType::array(OirType::array(OirType::Number))
+        ));
         assert!(
             !super::oir_type_satisfies(&empty, &OirType::String),
             "control: an empty list is not a string"
@@ -1178,19 +1743,26 @@ mod compat_tests {
 
     #[test]
     fn oir_type_satisfies_field_keeps_inferred_element_type() {
-        let string_array = Array { inner: Box::new(String) };
-        let number_array = Array { inner: Box::new(Number) };
-        let json_array = Array { inner: Box::new(Json) };
+        let string_array = Array {
+            inner: Box::new(String),
+        };
+        let number_array = Array {
+            inner: Box::new(Number),
+        };
+        let json_array = Array {
+            inner: Box::new(Json),
+        };
         // A concrete inferred element type compares structurally, not by the
         // erased "array" kind — this is the 4.2-follow-up fix: the inferred
         // side is no longer round-tripped through `oir_type_kind`.
         assert!(oir_type_satisfies_field(&string_array, "[string]"));
         assert!(!oir_type_satisfies_field(&number_array, "[string]"));
-        // An inferred array whose element is itself unknowable never rejects
-        // (the `is_unknowable` leniency), regardless of the declared element.
+        // Unknown elements retain a known array kind and fit typed array slots.
         assert!(oir_type_satisfies_field(&json_array, "[string]"));
         // Optional is transparent on the inferred side.
-        let opt_string_array = Optional { inner: Box::new(string_array.clone()) };
+        let opt_string_array = Optional {
+            inner: Box::new(string_array.clone()),
+        };
         assert!(oir_type_satisfies_field(&opt_string_array, "[string]"));
     }
 
@@ -1200,27 +1772,52 @@ mod compat_tests {
     // of a kind-string (the `field_shape` callers' shape).
     #[test]
     fn oir_type_satisfies_mirrors_the_str_wrapper() {
-        let string_array = Array { inner: Box::new(String) };
-        let number_array = Array { inner: Box::new(Number) };
-        assert!(oir_type_satisfies(&string_array, &Array { inner: Box::new(String) }));
-        assert!(!oir_type_satisfies(&number_array, &Array { inner: Box::new(String) }));
+        let string_array = Array {
+            inner: Box::new(String),
+        };
+        let number_array = Array {
+            inner: Box::new(Number),
+        };
+        assert!(oir_type_satisfies(
+            &string_array,
+            &Array {
+                inner: Box::new(String)
+            }
+        ));
+        assert!(!oir_type_satisfies(
+            &number_array,
+            &Array {
+                inner: Box::new(String)
+            }
+        ));
         // Unknowable inferred types never reject, declared side real or not.
-        assert!(oir_type_satisfies(&Json, &Array { inner: Box::new(String) }));
+        assert!(oir_type_satisfies(
+            &Json,
+            &Array {
+                inner: Box::new(String)
+            }
+        ));
         assert!(oir_type_satisfies(&SExpr, &Number));
     }
 
     #[test]
     fn oir_type_accepts_kind_mirrors_the_str_wrapper() {
         assert!(oir_type_accepts_kind(
-            &Array { inner: Box::new(String) },
+            &Array {
+                inner: Box::new(String)
+            },
             "[string]"
         ));
         assert!(!oir_type_accepts_kind(
-            &Array { inner: Box::new(String) },
+            &Array {
+                inner: Box::new(String)
+            },
             "[number]"
         ));
         // A real `Reference` declared side still takes a row or an id string.
-        let article = Reference { entity: "Article".into() };
+        let article = Reference {
+            entity: "Article".into(),
+        };
         assert!(oir_type_accepts_kind(&article, "string"));
         assert!(oir_type_accepts_kind(&article, "object"));
         assert!(!oir_type_accepts_kind(&article, "number"));
@@ -1230,12 +1827,16 @@ mod compat_tests {
         assert!(oir_type_accepts_kind(&File, "object"));
         // An erased-element actual never rejects.
         assert!(oir_type_accepts_kind(
-            &Array { inner: Box::new(Json) },
+            &Array {
+                inner: Box::new(Json)
+            },
             "[json]"
         ));
         assert!(oir_type_accepts_kind(
             &Array {
-                inner: Box::new(Array { inner: Box::new(Number) })
+                inner: Box::new(Array {
+                    inner: Box::new(Number)
+                })
             },
             "[[float]]"
         ));
@@ -1247,7 +1848,9 @@ mod compat_tests {
         assert_eq!(compat_kind_oir("number!"), Number);
         assert_eq!(
             compat_kind_oir("[string]"),
-            Array { inner: Box::new(String) }
+            Array {
+                inner: Box::new(String)
+            }
         );
         // Markers with no real `OirType` fall back to their witness type.
         assert_eq!(compat_kind_oir("money"), Money);
@@ -1352,13 +1955,19 @@ mod compat_tests {
         use super::sub;
         assert_eq!(sub(&String, &String), Some(C::Identity));
         // Integer -> Number widens; Number -> Integer does not narrow (4.4).
-        assert_eq!(sub(&Integer, &Number), Some(C::Widen(WidenKind::IntegerNumber)));
+        assert_eq!(
+            sub(&Integer, &Number),
+            Some(C::Widen(WidenKind::IntegerNumber))
+        );
         assert_eq!(sub(&Number, &Integer), None);
         assert_eq!(sub(&Money, &Integer), None);
         // Money <-> Number stay mutually compatible; Integer -> Money widens.
         assert_eq!(sub(&Money, &Number), Some(C::Widen(WidenKind::MoneyNumber)));
         assert_eq!(sub(&Number, &Money), Some(C::Widen(WidenKind::MoneyNumber)));
-        assert_eq!(sub(&Integer, &Money), Some(C::Widen(WidenKind::MoneyNumber)));
+        assert_eq!(
+            sub(&Integer, &Money),
+            Some(C::Widen(WidenKind::MoneyNumber))
+        );
         assert_eq!(sub(&Boolean, &Boolean), Some(C::Identity));
         assert_eq!(sub(&Boolean, &Number), None);
         assert_eq!(sub(&Number, &String), None);
@@ -1369,15 +1978,33 @@ mod compat_tests {
     fn sub_optional_wrap_unwrap_witnesses() {
         use super::sub;
         assert_eq!(
-            sub(&String, &Optional { inner: Box::new(String) }),
+            sub(
+                &String,
+                &Optional {
+                    inner: Box::new(String)
+                }
+            ),
             Some(C::Wrap(Box::new(C::Identity)))
         );
         assert_eq!(
-            sub(&Optional { inner: Box::new(String) }, &String),
-            Some(C::Unwrap { checked: false, inner: Box::new(C::Identity) })
+            sub(
+                &Optional {
+                    inner: Box::new(String)
+                },
+                &String
+            ),
+            Some(C::Unwrap {
+                checked: false,
+                inner: Box::new(C::Identity)
+            })
         );
         assert_eq!(
-            sub(&Optional { inner: Box::new(Integer) }, &Number),
+            sub(
+                &Optional {
+                    inner: Box::new(Integer)
+                },
+                &Number
+            ),
             Some(C::Unwrap {
                 checked: false,
                 inner: Box::new(C::Widen(WidenKind::IntegerNumber))
@@ -1385,8 +2012,12 @@ mod compat_tests {
         );
         assert_eq!(
             sub(
-                &Optional { inner: Box::new(String) },
-                &Optional { inner: Box::new(String) }
+                &Optional {
+                    inner: Box::new(String)
+                },
+                &Optional {
+                    inner: Box::new(String)
+                }
             ),
             Some(C::Wrap(Box::new(C::Unwrap {
                 checked: false,
@@ -1394,7 +2025,12 @@ mod compat_tests {
             })))
         );
         assert_eq!(
-            sub(&Optional { inner: Box::new(Number) }, &String),
+            sub(
+                &Optional {
+                    inner: Box::new(Number)
+                },
+                &String
+            ),
             None
         );
     }
@@ -1402,7 +2038,9 @@ mod compat_tests {
     #[test]
     fn sub_string_kind_family() {
         use super::sub;
-        let status = Enum { name: "Status".into() };
+        let status = Enum {
+            name: "Status".into(),
+        };
         // Enum/Trait erase to "string": kind-level equality with String.
         assert_eq!(sub(&String, &status), Some(C::Identity));
         assert_eq!(sub(&status, &String), Some(C::Identity));
@@ -1412,10 +2050,7 @@ mod compat_tests {
             sub(&String, &Email),
             Some(C::Refine(SemanticStringKind::Email))
         );
-        assert_eq!(
-            sub(&status, &Url),
-            Some(C::Refine(SemanticStringKind::Url))
-        );
+        assert_eq!(sub(&status, &Url), Some(C::Refine(SemanticStringKind::Url)));
         // …but semantic domains do not escape to string or inter-assign.
         assert_eq!(sub(&Email, &String), None);
         assert_eq!(sub(&Email, &Url), None);
@@ -1429,7 +2064,10 @@ mod compat_tests {
         assert_eq!(sub(&CallKey, &String), Some(C::Identity));
         assert_eq!(sub(&CallKey, &CallKey), Some(C::Identity));
         assert_eq!(sub(&Number, &CallKey), None);
-        assert!(!assignable(&String, &CallKey), "a bare string is not assignable");
+        assert!(
+            !assignable(&String, &CallKey),
+            "a bare string is not assignable"
+        );
         assert!(assignable(&CallKey, &String));
         assert!(assignable(&CallKey, &CallKey));
         assert!(!oir_type_satisfies(&String, &CallKey));
@@ -1438,8 +2076,14 @@ mod compat_tests {
         assert!(!set_value_type_compatible("callkey", "string"));
         assert!(set_value_type_compatible("string", "CallKey"));
         assert!(set_value_type_compatible("callkey", "callkey"));
-        assert!(!set_value_type_compatible("bytes", "string"), "control: bytes unchanged");
-        assert!(set_value_type_compatible("email", "string"), "control: semantic domains still refine");
+        assert!(
+            !set_value_type_compatible("bytes", "string"),
+            "control: bytes unchanged"
+        );
+        assert!(
+            set_value_type_compatible("email", "string"),
+            "control: semantic domains still refine"
+        );
         assert!(castable(&String, &CallKey));
         assert!(castable(&CallKey, &String));
         assert!(!castable(&Number, &CallKey));
@@ -1449,7 +2093,9 @@ mod compat_tests {
     fn an_optional_or_listed_call_key_slot_still_needs_the_cast() {
         use super::assignable;
         use crate::ir::types::OirType as T;
-        let optional = Optional { inner: Box::new(CallKey) };
+        let optional = Optional {
+            inner: Box::new(CallKey),
+        };
         assert!(!assignable(&String, &optional));
         assert!(assignable(&CallKey, &optional));
         let keys = T::array(CallKey);
@@ -1461,7 +2107,10 @@ mod compat_tests {
     fn sub_date_family_and_scalars() {
         use super::sub;
         assert_eq!(sub(&String, &Date), Some(C::Widen(WidenKind::StringToDate)));
-        assert_eq!(sub(&Integer, &DateTime), Some(C::Widen(WidenKind::NumericToDateTime)));
+        assert_eq!(
+            sub(&Integer, &DateTime),
+            Some(C::Widen(WidenKind::NumericToDateTime))
+        );
         assert_eq!(sub(&Money, &Date), Some(C::Widen(WidenKind::NumericToDate)));
         assert_eq!(sub(&Date, &DateTime), None);
         assert_eq!(sub(&DateTime, &Date), None);
@@ -1477,13 +2126,25 @@ mod compat_tests {
                 crate::ir::types::OirField::new("number".to_string(), Number),
             ],
         };
-        assert_eq!(sub(&String, &union), Some(C::Widen(WidenKind::ToUnionMember)));
-        assert_eq!(sub(&Number, &union), Some(C::Widen(WidenKind::ToUnionMember)));
-        assert_eq!(sub(&Integer, &union), Some(C::Widen(WidenKind::ToUnionMember)));
+        assert_eq!(
+            sub(&String, &union),
+            Some(C::Widen(WidenKind::ToUnionMember))
+        );
+        assert_eq!(
+            sub(&Number, &union),
+            Some(C::Widen(WidenKind::ToUnionMember))
+        );
+        assert_eq!(
+            sub(&Integer, &union),
+            Some(C::Widen(WidenKind::ToUnionMember))
+        );
         assert_eq!(sub(&Boolean, &union), None, "boolean is not a member");
         // A tagged union of structs takes no primitive.
         let tagged = Union {
-            variants: vec![crate::ir::types::OirField::new("a".to_string(), Struct { fields: vec![] })],
+            variants: vec![crate::ir::types::OirField::new(
+                "a".to_string(),
+                Struct { fields: vec![] },
+            )],
         };
         assert_eq!(sub(&String, &tagged), None);
     }
@@ -1492,7 +2153,10 @@ mod compat_tests {
     fn sub_object_json_family_mutually_compatible() {
         use super::sub;
         let row = Struct { fields: vec![] };
-        let bag = Map { key: Box::new(String), value: Box::new(Json) };
+        let bag = Map {
+            key: Box::new(String),
+            value: Box::new(Json),
+        };
         assert_eq!(sub(&row, &bag), Some(C::Erase { from: row.clone() }));
         assert_eq!(sub(&bag, &row), Some(C::Erase { from: bag.clone() }));
         assert_eq!(sub(&Json, &row), Some(C::Erase { from: Json }));
@@ -1501,42 +2165,95 @@ mod compat_tests {
         assert_eq!(sub(&File, &row), Some(C::Erase { from: File }));
         // json does not leak into string/array-declared slots.
         assert_eq!(sub(&Json, &String), None);
-        assert_eq!(sub(&Json, &Array { inner: Box::new(Json) }), None);
+        assert_eq!(
+            sub(
+                &Json,
+                &Array {
+                    inner: Box::new(Json)
+                }
+            ),
+            None
+        );
     }
 
     #[test]
     fn an_atom_and_a_list_of_program_data_are_an_sexpr() {
         use super::sub;
-        let list = |inner: crate::ir::types::OirType| Array { inner: Box::new(inner) };
+        let list = |inner: crate::ir::types::OirType| Array {
+            inner: Box::new(inner),
+        };
         for atom in [String, Number, Boolean] {
             assert!(sub(&atom, &SExpr).is_some(), "{atom:?} is an atom");
         }
-        assert!(sub(&list(SExpr), &SExpr).is_some(), "a list of expressions is an expression");
+        assert!(
+            sub(&list(SExpr), &SExpr).is_some(),
+            "a list of expressions is an expression"
+        );
         assert!(sub(&list(String), &SExpr).is_some());
         assert!(sub(&list(list(Number)), &SExpr).is_some());
-        assert!(sub(&Tuple { items: vec![String, Number, list(SExpr)] }, &SExpr).is_some());
-        assert!(sub(&Tuple { items: vec![] }, &SExpr).is_some(), "the empty list");
-        assert!(sub(&Struct { fields: vec![] }, &SExpr).is_some(), "an options object");
-        assert!(sub(&Optional { inner: Box::new(String) }, &SExpr).is_some());
-        assert_eq!(sub(&SExpr, &String), None, "control: an expression is not a string");
-        assert_eq!(sub(&SExpr, &list(SExpr)), None, "control: nor a list, until it is read as one");
-        assert_eq!(sub(&list(Date), &SExpr), None, "control: a list holding a date is not program data");
-        assert_eq!(sub(&String, &Json), None, "control: only the expression type takes atoms");
+        assert!(sub(
+            &Tuple {
+                items: vec![String, Number, list(SExpr)]
+            },
+            &SExpr
+        )
+        .is_some());
+        assert!(
+            sub(&Tuple { items: vec![] }, &SExpr).is_some(),
+            "the empty list"
+        );
+        assert!(
+            sub(&Struct { fields: vec![] }, &SExpr).is_some(),
+            "an options object"
+        );
+        assert!(sub(
+            &Optional {
+                inner: Box::new(String)
+            },
+            &SExpr
+        )
+        .is_some());
+        assert_eq!(
+            sub(&SExpr, &String),
+            None,
+            "control: an expression is not a string"
+        );
+        assert_eq!(
+            sub(&SExpr, &list(SExpr)),
+            None,
+            "control: nor a list, until it is read as one"
+        );
+        assert_eq!(
+            sub(&list(Date), &SExpr),
+            None,
+            "control: a list holding a date is not program data"
+        );
+        assert_eq!(
+            sub(&String, &Json),
+            None,
+            "control: only the expression type takes atoms"
+        );
     }
 
     #[test]
     fn sub_arrays_structural() {
         use super::sub;
-        let a = Array { inner: Box::new(String) };
+        let a = Array {
+            inner: Box::new(String),
+        };
         // Identical array: the top-level Identity shortcut answers before
         // the structural Array arm is consulted.
         assert_eq!(sub(&a, &a.clone()), Some(C::Identity));
         // Coercible element: the element witness is lifted (string-kind →
         // enum is the kind-level identity the Enum arm admits).
-        let b = Array { inner: Box::new(Enum { name: "E".into() }) };
+        let b = Array {
+            inner: Box::new(Enum { name: "E".into() }),
+        };
         assert_eq!(sub(&a, &b), Some(C::Element(Box::new(C::Identity))));
         // Element-incompatible arrays reject outright (Phase 4.2).
-        let c = Array { inner: Box::new(Number) };
+        let c = Array {
+            inner: Box::new(Number),
+        };
         assert_eq!(sub(&a, &c), None);
         assert_eq!(sub(&a, &String), None);
         assert_eq!(sub(&Json, &a), None);
@@ -1545,7 +2262,9 @@ mod compat_tests {
     #[test]
     fn sub_reference_row_or_id() {
         use super::sub;
-        let article = Reference { entity: "Article".into() };
+        let article = Reference {
+            entity: "Article".into(),
+        };
         let row = Struct { fields: vec![] };
         assert_eq!(sub(&row, &article), Some(C::Row { from_id: false }));
         assert_eq!(sub(&String, &article), Some(C::Row { from_id: true }));
@@ -1555,7 +2274,12 @@ mod compat_tests {
         );
         // Distinct references do not inter-assign; entities do not escape.
         assert_eq!(
-            sub(&Reference { entity: "Comment".into() }, &article),
+            sub(
+                &Reference {
+                    entity: "Comment".into()
+                },
+                &article
+            ),
             None
         );
         assert_eq!(sub(&article, &String), None);
@@ -1566,11 +2290,20 @@ mod compat_tests {
     #[test]
     fn sub_row_is_object_family() {
         use super::sub;
-        let row = Row { entity: "Revision".into() };
-        let revision_ref = Reference { entity: "Revision".into() };
+        let row = Row {
+            entity: "Revision".into(),
+        };
+        let revision_ref = Reference {
+            entity: "Revision".into(),
+        };
         let object = Struct { fields: vec![] };
         // A row takes an object-family value and erases into shapeless destinations.
-        assert_eq!(sub(&object, &row), Some(C::Erase { from: object.clone() }));
+        assert_eq!(
+            sub(&object, &row),
+            Some(C::Erase {
+                from: object.clone()
+            })
+        );
         assert_eq!(sub(&Json, &row), Some(C::Erase { from: Json }));
         assert_eq!(sub(&row, &object), Some(C::Erase { from: row.clone() }));
         assert_eq!(sub(&row, &row), Some(C::Identity));
@@ -1588,11 +2321,16 @@ mod compat_tests {
         use super::sub;
         assert_eq!(sub(&String, &Node), Some(C::Widen(WidenKind::ScalarToNode)));
         assert_eq!(sub(&Number, &Node), Some(C::Widen(WidenKind::ScalarToNode)));
-        assert_eq!(sub(&Boolean, &Node), Some(C::Widen(WidenKind::ScalarToNode)));
+        assert_eq!(
+            sub(&Boolean, &Node),
+            Some(C::Widen(WidenKind::ScalarToNode))
+        );
         assert_eq!(sub(&Money, &Node), Some(C::Widen(WidenKind::ScalarToNode)));
         let row = Struct { fields: vec![] };
         assert_eq!(sub(&row, &Node), Some(C::Erase { from: row }));
-        let arr = Array { inner: Box::new(String) };
+        let arr = Array {
+            inner: Box::new(String),
+        };
         assert_eq!(sub(&arr, &Node), Some(C::Erase { from: arr }));
         // json is not renderable content.
         assert_eq!(sub(&Json, &Node), None);
@@ -1740,10 +2478,22 @@ mod record_binding_tests {
             bound_shape_of_payload_field("object", Some("Staff")),
             Some(BoundShape::Record(Some("Staff".into())))
         );
-        assert_eq!(bound_shape_of_payload_field("[object]", Some("Staff")), Some(BoundShape::Collection));
-        assert_eq!(bound_shape_of_payload_field("object", None), Some(BoundShape::Record(None)));
-        assert_eq!(bound_shape_of_payload_field("object", Some("@entity")), None);
-        assert_eq!(bound_shape_of_payload_field("string", None), Some(BoundShape::Other));
+        assert_eq!(
+            bound_shape_of_payload_field("[object]", Some("Staff")),
+            Some(BoundShape::Collection)
+        );
+        assert_eq!(
+            bound_shape_of_payload_field("object", None),
+            Some(BoundShape::Record(None))
+        );
+        assert_eq!(
+            bound_shape_of_payload_field("object", Some("@entity")),
+            None
+        );
+        assert_eq!(
+            bound_shape_of_payload_field("string", None),
+            Some(BoundShape::Other)
+        );
     }
 
     #[test]
@@ -1760,10 +2510,23 @@ mod tuple_type_tests {
     /// `.lolo` `[T1, T2, …]` (two or more slots) is a tuple; `[T]` stays an array.
     #[test]
     fn a_bracketed_list_of_two_or_more_types_is_a_tuple() {
-        assert_eq!(tuple_type_slots("[number, number, number]"), Some(vec!["number", "number", "number"]));
-        assert_eq!(tuple_type_slots("[[number], string]"), Some(vec!["[number]", "string"]));
-        assert_eq!(tuple_type_slots("[Map<string, number>, number]"), Some(vec!["Map<string, number>", "number"]));
-        assert_eq!(tuple_type_slots("[number, number]!"), Some(vec!["number", "number"]), "a required marker is not part of the type");
+        assert_eq!(
+            tuple_type_slots("[number, number, number]"),
+            Some(vec!["number", "number", "number"])
+        );
+        assert_eq!(
+            tuple_type_slots("[[number], string]"),
+            Some(vec!["[number]", "string"])
+        );
+        assert_eq!(
+            tuple_type_slots("[Map<string, number>, number]"),
+            Some(vec!["Map<string, number>", "number"])
+        );
+        assert_eq!(
+            tuple_type_slots("[number, number]!"),
+            Some(vec!["number", "number"]),
+            "a required marker is not part of the type"
+        );
     }
 
     fn tuple(items: Vec<OirType>) -> OirType {
@@ -1774,11 +2537,24 @@ mod tuple_type_tests {
     fn a_tuple_relates_slot_by_slot_and_to_arrays() {
         let n3 = tuple(vec![OirType::Number, OirType::Number, OirType::Number]);
         assert!(sub(&n3, &n3).is_some());
-        assert!(sub(&OirType::array(OirType::Number), &n3).is_some(), "an array literal fits when its element fits every slot");
-        assert!(sub(&n3, &OirType::array(OirType::Number)).is_some(), "a tuple is an array of its slots");
-        assert!(sub(&tuple(vec![OirType::String, OirType::Number]), &tuple(vec![OirType::Number, OirType::Number])).is_none());
+        assert!(
+            sub(&OirType::array(OirType::Number), &n3).is_some(),
+            "an array literal fits when its element fits every slot"
+        );
+        assert!(
+            sub(&n3, &OirType::array(OirType::Number)).is_some(),
+            "a tuple is an array of its slots"
+        );
+        assert!(sub(
+            &tuple(vec![OirType::String, OirType::Number]),
+            &tuple(vec![OirType::Number, OirType::Number])
+        )
+        .is_none());
         assert!(sub(&OirType::array(OirType::String), &n3).is_none());
-        assert!(sub(&tuple(vec![OirType::Number, OirType::Number]), &n3).is_none(), "arity must match");
+        assert!(
+            sub(&tuple(vec![OirType::Number, OirType::Number]), &n3).is_none(),
+            "arity must match"
+        );
         assert_eq!(oir_type_kind(&n3), "array");
     }
 
@@ -1786,10 +2562,22 @@ mod tuple_type_tests {
     /// tuple of the same slots fits, a string does not.
     #[test]
     fn a_declared_tuple_in_the_kind_relation() {
-        assert!(set_value_type_compatible("[number, number, number]", "array"));
-        assert!(set_value_type_compatible("[number, number, number]", "[number, number, number]"));
-        assert!(!set_value_type_compatible("[number, number, number]", "string"));
-        assert!(!set_value_type_compatible("[number, number]", "[string, string]"));
+        assert!(set_value_type_compatible(
+            "[number, number, number]",
+            "array"
+        ));
+        assert!(set_value_type_compatible(
+            "[number, number, number]",
+            "[number, number, number]"
+        ));
+        assert!(!set_value_type_compatible(
+            "[number, number, number]",
+            "string"
+        ));
+        assert!(!set_value_type_compatible(
+            "[number, number]",
+            "[string, string]"
+        ));
     }
 
     #[test]

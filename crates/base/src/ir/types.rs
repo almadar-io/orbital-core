@@ -999,6 +999,17 @@ impl DeclaredShape {
         ty: OirType,
         aliases: &std::collections::BTreeMap<String, Vec<crate::schema::types::PayloadField>>,
     ) -> Self {
+        Self::with_resolver(name, ty, |next| {
+            aliases.get(next).map(|members| declared_alias_shape(members))
+        })
+    }
+
+    /// Close a declared type over exactly the named definitions its shape reaches.
+    pub fn with_resolver(
+        name: Option<String>,
+        ty: OirType,
+        resolve: impl Fn(&str) -> Option<OirType>,
+    ) -> Self {
         let mut named = std::collections::BTreeMap::new();
         let mut pending: Vec<String> = Vec::new();
         names_in(&ty, &mut pending);
@@ -1006,10 +1017,9 @@ impl DeclaredShape {
             if named.contains_key(&next) {
                 continue;
             }
-            let Some(members) = aliases.get(&next) else {
+            let Some(shape) = resolve(&next) else {
                 continue;
             };
-            let shape = declared_alias_shape(members);
             names_in(&shape, &mut pending);
             named.insert(next, shape);
         }
@@ -1049,7 +1059,7 @@ impl DeclaredShape {
 }
 
 /// Every name `ty` refers to by name (`TypeRef`, `Reference`).
-fn names_in(ty: &OirType, out: &mut Vec<String>) {
+pub fn names_in(ty: &OirType, out: &mut Vec<String>) {
     match ty {
         OirType::TypeRef { name } | OirType::Reference { entity: name } => out.push(name.clone()),
         OirType::Array { inner } | OirType::Optional { inner } => names_in(inner, out),
@@ -2302,6 +2312,31 @@ pub fn invoked_services_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_shape_resolver_keeps_nullable_recursive_aliases_and_excludes_unrelated_types() {
+        let reference = |name: &str| OirType::TypeRef { name: name.into() };
+        let definitions = std::collections::BTreeMap::from([
+            ("Alias", reference("V")),
+            ("V", OirType::array(OirType::optional(reference("V")))),
+            ("Unused", OirType::Boolean),
+        ]);
+        let shape = DeclaredShape::with_resolver(Some("Alias".into()), reference("Alias"), |name| {
+            definitions.get(name).cloned()
+        });
+        assert_eq!(
+            shape.named.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["Alias", "V"]
+        );
+        assert_eq!(
+            shape.named["V"],
+            OirType::array(OirType::optional(reference("V")))
+        );
+        assert_eq!(
+            DeclaredShape::parse(&serde_json::to_string(&shape).unwrap()),
+            Some(shape)
+        );
+    }
 
     fn transition(
         from: OirTransitionFrom,

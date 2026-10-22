@@ -942,7 +942,7 @@ mod tests {
 
     #[test]
     fn round_honours_its_decimals_argument() {
-        assert_eq!(eval(r#"["math/round", 3.14159, 3]"#), Value::Number(3.142));
+        assert_eq!(eval(r#"["math/round", 3.14159, 3]"#), Value::Number(3142.0 / 1000.0));
         assert_eq!(eval(r#"["math/round", 3.456, 2]"#), Value::Number(3.46));
         assert_eq!(eval(r#"["math/round", 343.55749, 1]"#), Value::Number(343.6));
     }

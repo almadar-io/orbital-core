@@ -1750,14 +1750,19 @@ impl EntitySource for IoPort {
     }
 
     fn write_where(&self, op: &RowWriteOp) -> Option<Result<RowWriteOutcome, String>> {
-        if let Some(outcome) = self.bound_single_write(op.entity_type(), || op.clone()) {
-            return Some(outcome);
+        if !matches!(op, RowWriteOp::Rekey { .. }) {
+            if let Some(outcome) = self.bound_single_write(op.entity_type(), || op.clone()) {
+                return Some(outcome);
+            }
         }
         if self.direct() {
             if self.store_bound(op.entity_type()) {
                 return Some(Err(self.store_off_path(op.entity_type())));
             }
-            return self.source.write_where(op);
+            return self.source.write_where(op).or_else(|| {
+                matches!(op, RowWriteOp::Rekey { .. })
+                    .then(|| Err("rekey is unsupported by this store".to_string()))
+            });
         }
         let batch = RowWriteBatch {
             ops: vec![op.clone()],
@@ -1774,10 +1779,20 @@ impl EntitySource for IoPort {
 
     fn write_batch(&self, batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
         if self.direct() {
-            if let Some(op) = batch.ops.iter().find(|op| self.store_bound(op.entity_type())) {
+            if let Some(op) = batch
+                .ops
+                .iter()
+                .find(|op| self.store_bound(op.entity_type()))
+            {
                 return Some(Err(self.store_off_path(op.entity_type())));
             }
-            return self.source.write_batch(batch);
+            return self.source.write_batch(batch).or_else(|| {
+                batch
+                    .ops
+                    .iter()
+                    .any(|op| matches!(op, RowWriteOp::Rekey { .. }))
+                    .then(|| Err("rekey is unsupported by this store".to_string()))
+            });
         }
         self.push_writes(batch)
     }
@@ -1791,11 +1806,32 @@ impl IoPort {
     /// Send `batch` as one `WriteRows` when the host declared capabilities covering every op; `None` when it
     /// did not (or declined) and nothing was written.
     fn push_writes(&self, batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
+        let rekey = batch
+            .ops
+            .iter()
+            .any(|op| matches!(op, RowWriteOp::Rekey { .. }));
         {
             let declared = self.write_capabilities.read();
+            for op in batch
+                .ops
+                .iter()
+                .filter(|op| matches!(op, RowWriteOp::Rekey { .. }))
+            {
+                if declared.get(op.entity_type()).and_then(|c| c.rekey) != Some(true) {
+                    return Some(Err("rekey is unsupported by this store".to_string()));
+                }
+            }
             for op in &batch.ops {
                 let entity = op.entity_type();
-                let capabilities = declared.get(entity)?;
+                let capabilities = match declared.get(entity) {
+                    Some(capabilities) => capabilities,
+                    None if rekey => {
+                        return Some(Err(
+                            "write capabilities are missing for a rekey batch".to_string()
+                        ))
+                    }
+                    None => return None,
+                };
                 let reason = if !capabilities.conditional {
                     Some("not-conditional")
                 } else if batch.on_failure == RowWriteFailureMode::Atomic
@@ -1814,7 +1850,17 @@ impl IoPort {
                         .map(|r| r.as_str())
                 };
                 if let Some(reason) = reason {
-                    self.notice("kernel.write.pushdown-fallback", entity, reason, "");
+                    let tag = if rekey {
+                        "kernel.write.pushdown-refused"
+                    } else {
+                        "kernel.write.pushdown-fallback"
+                    };
+                    self.notice(tag, entity, reason, "");
+                    if rekey {
+                        return Some(Err(format!(
+                            "rekey batch is unsupported by this store: {reason}"
+                        )));
+                    }
                     return None;
                 }
             }
@@ -1822,7 +1868,10 @@ impl IoPort {
         match self.ask(|| IoRequest::WriteRows {
             batch: batch.clone(),
         }) {
-            Asked::Direct => self.source.write_batch(batch),
+            Asked::Direct => self
+                .source
+                .write_batch(batch)
+                .or_else(|| rekey.then(|| Err("rekey is unsupported by this store".to_string()))),
             Asked::Answer(IoAnswer::Wrote(outcomes)) => {
                 for op in &batch.ops {
                     self.forget_reads(op.entity_type());
@@ -1831,13 +1880,19 @@ impl IoPort {
             }
             Asked::Answer(IoAnswer::WriteUnsupported(detail)) => {
                 let entity = batch.ops.first().map_or("", |op| op.entity_type());
-                self.notice(
-                    "kernel.write.pushdown-fallback",
-                    entity,
-                    "host-declined",
-                    &detail,
-                );
-                None
+                let tag = if rekey {
+                    "kernel.write.pushdown-refused"
+                } else {
+                    "kernel.write.pushdown-fallback"
+                };
+                self.notice(tag, entity, "host-declined", &detail);
+                if rekey {
+                    Some(Err(format!(
+                        "rekey batch was refused by the host: {detail}"
+                    )))
+                } else {
+                    None
+                }
             }
             Asked::Answer(_) | Asked::Withheld => Some(Err(AWAITING_HOST.to_string())),
         }
@@ -3636,6 +3691,50 @@ mod store_ask_tests {
         let port = IoPort::new(Arc::new(HostAnswered), None, None);
         port.bind_store("Ticket", "Rows");
         port
+    }
+
+    #[test]
+    fn rekey_requires_explicit_capability_and_never_falls_back_after_host_refusal() {
+        let op = RowWriteOp::Rekey {
+            entity_type: "Ticket".into(),
+            id: "a".into(),
+            new_id: "b".into(),
+            guard: None,
+        };
+        let direct = IoPort::new(Arc::new(HostAnswered), None, None);
+        assert!(matches!(direct.write_where(&op), Some(Err(_))));
+        assert!(matches!(
+            direct.write_batch(&RowWriteBatch {
+                ops: vec![op.clone()],
+                on_failure: RowWriteFailureMode::Stop
+            }),
+            Some(Err(_))
+        ));
+        for capability in [None, Some(false)] {
+            let port = bound_port();
+            let mut capabilities = WriteCapabilities::full();
+            capabilities.rekey = capability;
+            port.set_write_capabilities("Ticket", capabilities);
+            let (outcome, end) = port.run_step(Vec::new(), || port.write_where(&op));
+            assert!(
+                matches!(outcome, Some(Err(ref message)) if message == "rekey is unsupported by this store")
+            );
+            assert!(end.store_asks.is_empty() && end.pending.is_empty());
+        }
+        let port = bound_port();
+        let (outcome, end) = port.run_step(Vec::new(), || port.write_where(&op));
+        assert!(matches!(outcome, Some(Err(_))));
+        assert!(end.store_asks.is_empty() && end.pending.is_empty());
+        let mut capabilities = WriteCapabilities::full();
+        capabilities.rekey = Some(true);
+        port.set_write_capabilities("Ticket", capabilities);
+        let (_, end) = port.run_step(Vec::new(), || port.write_where(&op));
+        assert_eq!(end.store_asks.len(), 1);
+        let request = end.store_asks[0].request.clone();
+        let refusal = Exchange::new(request, IoAnswer::WriteUnsupported("driver refused".into()));
+        let (outcome, end) = port.run_step(vec![refusal], || port.write_where(&op));
+        assert!(matches!(outcome, Some(Err(ref message)) if message.contains("driver refused")));
+        assert!(end.store_asks.is_empty() && end.pending.is_empty());
     }
 
     fn take(guard: Option<crate::row_query::RowPredicate>) -> IoRequest {

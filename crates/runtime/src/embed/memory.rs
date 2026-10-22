@@ -88,7 +88,9 @@ impl MemoryStoreApi {
         json(&QueryCapabilities::full())
     }
     pub fn write_capabilities(&self) -> Result<String, String> {
-        json(&WriteCapabilities::full())
+        let mut capabilities = WriteCapabilities::full();
+        capabilities.rekey = Some(true);
+        json(&capabilities)
     }
     pub fn bind_collection(&self, entity_type: &str, collection: &str) {
         self.source.bind_collection(entity_type, collection);
