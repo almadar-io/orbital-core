@@ -244,14 +244,14 @@ impl NativeHost {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::effects::executor::SubstrateFailure;
     use crate::entity_source::InMemoryEntityCache;
     use crate::http_service::{HttpRequest, HttpResponse, TransportError};
 
     struct Echo;
-    struct Offline;
+    pub(crate) struct Offline;
 
     impl Transport for Offline {
         fn send(&self, _: &HttpRequest) -> Result<HttpResponse, TransportError> {

@@ -13,6 +13,38 @@ pub enum OsShape {
     Stream,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OsFamily {
+    Fs,
+    Process,
+    Net,
+    Sys,
+    Kv,
+}
+
+/// The one family that answers `op`.
+pub fn family_of(op: OsOp) -> OsFamily {
+    use OsOp::*;
+    match op {
+        ReadFile | WriteFile | AppendFile | Open | Close | Read | Write | Seek | Truncate
+        | Fsync | Copy | Rename | Remove | Link | Symlink | Readlink | WatchFiles | Mkdir
+        | Rmdir | ListDir | Glob | Mktemp | Realpath | Cwd | Chdir | Stat | Lstat | Access
+        | Exists | Chmod | Chown | Utimes => OsFamily::Fs,
+        Spawn | Wait | Kill | Pid | Ppid | CurrentExe | WatchProcess | WatchSignal | Getenv | Setenv
+        | Unsetenv | Environ | WatchEnv | StdinRead | StdoutWrite | StderrWrite | Isatty
+        | TtySize => OsFamily::Process,
+        TcpConnect | TcpListen | Send | Recv | UdpBind | Sendto | Recvfrom | DnsResolve
+        | Shutdown | WatchPort => OsFamily::Net,
+        ClockMonotonic | Uid | Gid | Username | GroupOf | WatchCron | CpuUsage | MemoryInfo
+        | Uptime | LoadAvg | Hostname | Uname | DiskUsage | Mounts | DiskIo | NetworkInterfaces
+        | NetworkStats | NetworkConnected | DefaultGateway | BatteryStatus | AcPower
+        | ThermalZones | Notify | Speak | BrightnessGet | BrightnessSet | VolumeGet | VolumeSet
+        | VolumeMute | Suspend | Hibernate => OsFamily::Sys,
+        KvGet | KvPut | KvDelete | KvScan | KvBatch => OsFamily::Kv,
+    }
+}
+
+
 macro_rules! os_ops {
     ($( $variant:ident => ($name:literal, $min:literal, $max:literal, $shape:ident) ),+ $(,)?) => {
         /// One variant per `os/` effect operation; the host's answerer matches it exhaustively.
@@ -167,7 +199,8 @@ impl OsOp {
     /// Whether a keyed call of the operation that declares a completion route may end after the dispatch that
     /// asked it, its outcome arriving later as an event of the route (EXEC-QUEUE-10).
     pub fn defers_completion(self) -> bool {
-        matches!(self, OsOp::Wait | OsOp::Read | OsOp::Send | OsOp::Recv | OsOp::Recvfrom | OsOp::StdinRead)
+        (family_of(self) == OsFamily::Fs && self.shape() == OsShape::Single && self != OsOp::Cwd)
+            || matches!(self, OsOp::Wait | OsOp::Send | OsOp::Recv | OsOp::Recvfrom | OsOp::StdinRead)
     }
 }
 
@@ -291,13 +324,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_blocking_waits_reads_stdin_stream_sends_and_receives_defer_their_completion() {
-        let deferring: Vec<&str> = OsOp::ALL
-            .iter()
-            .filter(|op| op.defers_completion())
-            .map(|op| op.name())
-            .collect();
-        assert_eq!(deferring, vec!["os/read", "os/wait", "os/stdin-read", "os/send", "os/recv", "os/recvfrom"]);
+    fn finite_filesystem_answers_and_existing_blocking_operations_defer_their_completion() {
+        for op in OsOp::ALL.iter().copied().filter(|op| family_of(*op) == OsFamily::Fs) {
+            assert_eq!(op.defers_completion(), op.shape() == OsShape::Single && op != OsOp::Cwd, "{}", op.name());
+        }
+        let other: Vec<_> = OsOp::ALL.iter().copied()
+            .filter(|op| family_of(*op) != OsFamily::Fs && op.defers_completion()).collect();
+        assert_eq!(other, vec![OsOp::Wait, OsOp::StdinRead, OsOp::Send, OsOp::Recv, OsOp::Recvfrom]);
         assert!(!OsOp::Wait.is_stream() && !OsOp::Recv.is_stream());
         assert!(!OsOp::Spawn.defers_completion() && !OsOp::Sendto.defers_completion());
     }

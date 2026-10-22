@@ -43,7 +43,9 @@ struct Branch {
 impl Branch {
     /// `false` when the literal contradicts the branch outright.
     fn add(&mut self, atom: &Atom, positive: bool) -> bool {
-        let set = |map: &mut BTreeMap<String, bool>, key: &str| match map.insert(key.to_string(), positive) {
+        let set = |map: &mut BTreeMap<String, bool>, key: &str| match map
+            .insert(key.to_string(), positive)
+        {
             Some(prev) => prev == positive,
             None => true,
         };
@@ -82,8 +84,13 @@ fn axioms(f: &Formula, vars: &Vars) -> Formula {
     let mut parts = Vec::new();
     for v in used {
         match vars.get(&v) {
-            Some(VarInfo { nullable: false, .. }) => parts.push(Formula::Lit(Atom::Null(v.clone()), false)),
-            Some(VarInfo { sort: Sort::Num, nullable: true }) => parts.push(Formula::or(vec![
+            Some(VarInfo {
+                nullable: false, ..
+            }) => parts.push(Formula::Lit(Atom::Null(v.clone()), false)),
+            Some(VarInfo {
+                sort: Sort::Num,
+                nullable: true,
+            }) => parts.push(Formula::or(vec![
                 Formula::Lit(Atom::Null(v.clone()), false),
                 Formula::atom(Atom::Lin(Lin::var(&v), Rel::Eq)),
             ])),
@@ -97,7 +104,13 @@ pub fn decide(f: &Formula, vars: &Vars) -> Outcome {
     let whole = Formula::and(vec![f.clone(), axioms(f, vars)]);
     let mut budget = MAX_BRANCHES;
     let mut unknown: Option<String> = None;
-    let found = search(vec![&whole], Branch::default(), vars, &mut budget, &mut unknown);
+    let found = search(
+        vec![&whole],
+        Branch::default(),
+        vars,
+        &mut budget,
+        &mut unknown,
+    );
     match (found, unknown) {
         (Some(mut model), _) => {
             // Any extension of a satisfying branch satisfies the formula: a variable the branch left free takes a
@@ -110,7 +123,12 @@ pub fn decide(f: &Formula, vars: &Vars) -> Outcome {
                 }
                 let value = match vars.get(&v).map(|i| &i.sort) {
                     Some(Sort::Num) => ModelValue::Num(Rat::ZERO),
-                    Some(Sort::Str(domain)) => ModelValue::Str(domain.as_ref().and_then(|d| d.first().cloned()).unwrap_or_else(|| "s".to_string())),
+                    Some(Sort::Str(domain)) => ModelValue::Str(
+                        domain
+                            .as_ref()
+                            .and_then(|d| d.first().cloned())
+                            .unwrap_or_else(|| "s".to_string()),
+                    ),
                     Some(Sort::Bool) => ModelValue::Bool(false),
                     None => continue,
                 };
@@ -119,7 +137,9 @@ pub fn decide(f: &Formula, vars: &Vars) -> Outcome {
             Outcome::Sat(model)
         }
         (None, Some(reason)) => Outcome::Unknown(reason),
-        (None, None) if budget == 0 => Outcome::Unknown(format!("more than {MAX_BRANCHES} case splits")),
+        (None, None) if budget == 0 => {
+            Outcome::Unknown(format!("more than {MAX_BRANCHES} case splits"))
+        }
         (None, None) => Outcome::Unsat,
     }
 }
@@ -170,9 +190,18 @@ fn search(
 fn theory(branch: &Branch, vars: &Vars) -> Result<Option<Model>, String> {
     let is_null = |v: &str| branch.nulls.get(v) == Some(&true);
     let mentions_null = |t: &STerm| matches!(t, STerm::Var(v) if is_null(v));
-    let strs: Vec<_> = branch.strs.iter().filter(|(a, b, _)| !mentions_null(a) && !mentions_null(b)).cloned().collect();
-    let Some(strings) = solve_strings(&strs, vars) else { return Ok(None) };
-    let Some(numbers) = solve_linear(&branch.lins)? else { return Ok(None) };
+    let strs: Vec<_> = branch
+        .strs
+        .iter()
+        .filter(|(a, b, _)| !mentions_null(a) && !mentions_null(b))
+        .cloned()
+        .collect();
+    let Some(strings) = solve_strings(&strs, vars) else {
+        return Ok(None);
+    };
+    let Some(numbers) = solve_linear(&branch.lins)? else {
+        return Ok(None);
+    };
     let mut used = BTreeSet::new();
     for (lin, _) in &branch.lins {
         used.extend(lin.terms.keys().cloned());
@@ -186,7 +215,10 @@ fn theory(branch: &Branch, vars: &Vars) -> Result<Option<Model>, String> {
     }
     used.extend(branch.bools.keys().cloned());
     used.extend(branch.nulls.keys().cloned());
-    let mut model = Model { opaque: branch.opaque.clone(), ..Model::default() };
+    let mut model = Model {
+        opaque: branch.opaque.clone(),
+        ..Model::default()
+    };
     for v in used {
         let value = if is_null(&v) {
             ModelValue::Null
@@ -195,9 +227,16 @@ fn theory(branch: &Branch, vars: &Vars) -> Result<Option<Model>, String> {
                 Some(Sort::Num) => ModelValue::Num(numbers.get(&v).copied().unwrap_or(Rat::ZERO)),
                 Some(Sort::Str(domain)) => match strings.get(&v) {
                     Some(s) => ModelValue::Str(s.clone()),
-                    None => ModelValue::Str(domain.as_ref().and_then(|d| d.first().cloned()).unwrap_or_else(|| "s".to_string())),
+                    None => ModelValue::Str(
+                        domain
+                            .as_ref()
+                            .and_then(|d| d.first().cloned())
+                            .unwrap_or_else(|| "s".to_string()),
+                    ),
                 },
-                Some(Sort::Bool) => ModelValue::Bool(branch.bools.get(&v).copied().unwrap_or(false)),
+                Some(Sort::Bool) => {
+                    ModelValue::Bool(branch.bools.get(&v).copied().unwrap_or(false))
+                }
                 None => continue,
             }
         };
@@ -219,14 +258,18 @@ struct Stage {
 }
 
 fn substitute(lin: &Lin, var: &str, by: &Lin) -> Option<Lin> {
-    let Some(a) = lin.terms.get(var).copied() else { return Some(lin.clone()) };
+    let Some(a) = lin.terms.get(var).copied() else {
+        return Some(lin.clone());
+    };
     let mut rest = lin.clone();
     rest.terms.remove(var);
     rest.add(&by.scale(a)?)
 }
 
 fn eval_lin(lin: &Lin, values: &BTreeMap<String, Rat>) -> Option<Rat> {
-    lin.terms.iter().try_fold(lin.c, |acc, (v, a)| acc.checked_plus(a.checked_times(values.get(v).copied().unwrap_or(Rat::ZERO))?))
+    lin.terms.iter().try_fold(lin.c, |acc, (v, a)| {
+        acc.checked_plus(a.checked_times(values.get(v).copied().unwrap_or(Rat::ZERO))?)
+    })
 }
 
 /// `Ok(Some(values))` satisfying every constraint, `Ok(None)` when they conflict.
@@ -251,7 +294,14 @@ fn solve_linear(constraints: &[(Lin, Rel)]) -> Result<Option<BTreeMap<String, Ra
         };
         let mut rest = eq.clone();
         rest.terms.remove(&var);
-        let by = rest.scale(Rat::ONE.checked_negate().and_then(|m| m.checked_over(a)).ok_or(OVERFLOW)?).ok_or(OVERFLOW)?;
+        let by = rest
+            .scale(
+                Rat::ONE
+                    .checked_negate()
+                    .and_then(|m| m.checked_over(a))
+                    .ok_or(OVERFLOW)?,
+            )
+            .ok_or(OVERFLOW)?;
         for e in eqs.iter_mut() {
             *e = substitute(e, &var, &by).ok_or(OVERFLOW)?;
         }
@@ -278,18 +328,36 @@ fn solve_linear(constraints: &[(Lin, Rel)]) -> Result<Option<BTreeMap<String, Ra
         for (lin, _) in &ineqs {
             for (v, a) in &lin.terms {
                 let e = candidates.entry(v).or_default();
-                if a.is_positive() { e.0 += 1 } else { e.1 += 1 }
+                if a.is_positive() {
+                    e.0 += 1
+                } else {
+                    e.1 += 1
+                }
             }
         }
-        let Some(var) = candidates.iter().min_by_key(|(_, (p, n))| p * n).map(|(v, _)| (*v).clone()) else { break };
-        let (with, without): (Vec<_>, Vec<_>) = ineqs.into_iter().partition(|(l, _)| l.terms.contains_key(&var));
-        let (upper, lower): (Vec<_>, Vec<_>) = with.iter().cloned().partition(|(l, _)| l.terms[&var].is_positive());
+        let Some(var) = candidates
+            .iter()
+            .min_by_key(|(_, (p, n))| p * n)
+            .map(|(v, _)| (*v).clone())
+        else {
+            break;
+        };
+        let (with, without): (Vec<_>, Vec<_>) = ineqs
+            .into_iter()
+            .partition(|(l, _)| l.terms.contains_key(&var));
+        let (upper, lower): (Vec<_>, Vec<_>) = with
+            .iter()
+            .cloned()
+            .partition(|(l, _)| l.terms[&var].is_positive());
         let mut next = without;
         for (u, us) in &upper {
             for (l, ls) in &lower {
                 let au = u.terms[&var];
                 let al = l.terms[&var].checked_negate().ok_or(OVERFLOW)?;
-                let combined = u.scale(al).and_then(|x| l.scale(au).and_then(|y| x.add(&y))).ok_or(OVERFLOW)?;
+                let combined = u
+                    .scale(al)
+                    .and_then(|x| l.scale(au).and_then(|y| x.add(&y)))
+                    .ok_or(OVERFLOW)?;
                 next.push((combined, *us || *ls));
             }
         }
@@ -309,7 +377,10 @@ fn solve_linear(constraints: &[(Lin, Rel)]) -> Result<Option<BTreeMap<String, Ra
             let mut rest = lin.clone();
             rest.terms.remove(&stage.var);
             let k = eval_lin(&rest, &values).ok_or(OVERFLOW)?;
-            let bound = k.checked_negate().and_then(|m| m.checked_over(a)).ok_or(OVERFLOW)?;
+            let bound = k
+                .checked_negate()
+                .and_then(|m| m.checked_over(a))
+                .ok_or(OVERFLOW)?;
             if a.is_positive() {
                 let tighter = match hi {
                     None => true,
@@ -334,8 +405,17 @@ fn solve_linear(constraints: &[(Lin, Rel)]) -> Result<Option<BTreeMap<String, Ra
             (None, Some((h, false))) => h,
             (Some((l, true)), None) => l.checked_plus(Rat::ONE).ok_or(OVERFLOW)?,
             (None, Some((h, true))) => h.checked_minus(Rat::ONE).ok_or(OVERFLOW)?,
-            (Some((l, true)), Some((h, false))) => if l.checked_plus(Rat::ONE).is_some_and(|x| x <= h) { l.checked_plus(Rat::ONE).ok_or(OVERFLOW)? } else { h },
-            (Some((l, true)), Some((h, true))) => l.checked_plus(h).and_then(|s| s.checked_over(Rat::int(2))).ok_or(OVERFLOW)?,
+            (Some((l, true)), Some((h, false))) => {
+                if l.checked_plus(Rat::ONE).is_some_and(|x| x <= h) {
+                    l.checked_plus(Rat::ONE).ok_or(OVERFLOW)?
+                } else {
+                    h
+                }
+            }
+            (Some((l, true)), Some((h, true))) => l
+                .checked_plus(h)
+                .and_then(|s| s.checked_over(Rat::int(2)))
+                .ok_or(OVERFLOW)?,
         };
         values.insert(stage.var.clone(), value);
     }
@@ -365,7 +445,10 @@ fn solve_strings(lits: &[(STerm, STerm, bool)], vars: &Vars) -> Option<BTreeMap<
             nodes.len() - 1
         })
     };
-    let pairs: Vec<(usize, usize, bool)> = lits.iter().map(|(a, b, p)| (id(a, &mut nodes), id(b, &mut nodes), *p)).collect();
+    let pairs: Vec<(usize, usize, bool)> = lits
+        .iter()
+        .map(|(a, b, p)| (id(a, &mut nodes), id(b, &mut nodes), *p))
+        .collect();
     let mut parent: Vec<usize> = (0..nodes.len()).collect();
     fn find(parent: &mut [usize], x: usize) -> usize {
         let mut r = x;
@@ -400,12 +483,19 @@ fn solve_strings(lits: &[(STerm, STerm, bool)], vars: &Vars) -> Option<BTreeMap<
             match &nodes[*m] {
                 STerm::Lit(s) => {
                     every_literal.insert(s.clone());
-                    if fixed.insert(*root, s.clone()).is_some_and(|prev| prev != *s) {
+                    if fixed
+                        .insert(*root, s.clone())
+                        .is_some_and(|prev| prev != *s)
+                    {
                         return None;
                     }
                 }
                 STerm::Var(v) => {
-                    if let Some(VarInfo { sort: Sort::Str(Some(d)), .. }) = vars.get(v) {
+                    if let Some(VarInfo {
+                        sort: Sort::Str(Some(d)),
+                        ..
+                    }) = vars.get(v)
+                    {
                         every_literal.extend(d.iter().cloned());
                         let d: BTreeSet<String> = d.iter().cloned().collect();
                         domain = Some(match domain {
@@ -443,18 +533,34 @@ fn solve_strings(lits: &[(STerm, STerm, bool)], vars: &Vars) -> Option<BTreeMap<
         }
     };
     let mut assigned = fixed.clone();
-    let open: Vec<usize> = classes.keys().copied().filter(|r| !fixed.contains_key(r)).collect();
+    let open: Vec<usize> = classes
+        .keys()
+        .copied()
+        .filter(|r| !fixed.contains_key(r))
+        .collect();
     for r in &open {
         if domains.get(r).is_some_and(|d| d.is_none()) {
             assigned.insert(*r, fresh_value());
         }
     }
-    let finite: Vec<usize> = open.iter().copied().filter(|r| !assigned.contains_key(r)).collect();
-    fn assign(i: usize, finite: &[usize], domains: &BTreeMap<usize, Option<BTreeSet<String>>>, apart: &BTreeMap<usize, BTreeSet<usize>>, assigned: &mut BTreeMap<usize, String>) -> bool {
+    let finite: Vec<usize> = open
+        .iter()
+        .copied()
+        .filter(|r| !assigned.contains_key(r))
+        .collect();
+    fn assign(
+        i: usize,
+        finite: &[usize],
+        domains: &BTreeMap<usize, Option<BTreeSet<String>>>,
+        apart: &BTreeMap<usize, BTreeSet<usize>>,
+        assigned: &mut BTreeMap<usize, String>,
+    ) -> bool {
         let Some(&r) = finite.get(i) else { return true };
         let options = domains.get(&r).cloned().flatten().unwrap_or_default();
         for option in options {
-            let clash = apart.get(&r).is_some_and(|others| others.iter().any(|o| assigned.get(o) == Some(&option)));
+            let clash = apart
+                .get(&r)
+                .is_some_and(|others| others.iter().any(|o| assigned.get(o) == Some(&option)));
             if clash {
                 continue;
             }
@@ -487,7 +593,17 @@ mod tests {
     use orbital_core_base::schema::sexpr::SExpression;
 
     fn vars(list: &[(&str, Sort, bool)]) -> Vars {
-        list.iter().map(|(n, s, nullable)| (n.to_string(), VarInfo { sort: s.clone(), nullable: *nullable })).collect()
+        list.iter()
+            .map(|(n, s, nullable)| {
+                (
+                    n.to_string(),
+                    VarInfo {
+                        sort: s.clone(),
+                        nullable: *nullable,
+                    },
+                )
+            })
+            .collect()
     }
 
     fn parse(text: &str) -> SExpression {
@@ -509,7 +625,12 @@ mod tests {
     }
 
     fn num(names: &[&str]) -> Vars {
-        vars(&names.iter().map(|n| (*n, Sort::Num, false)).collect::<Vec<_>>())
+        vars(
+            &names
+                .iter()
+                .map(|n| (*n, Sort::Num, false))
+                .collect::<Vec<_>>(),
+        )
     }
 
     #[test]
@@ -522,18 +643,41 @@ mod tests {
     #[test]
     fn transitivity_is_proved_and_its_control_is_refuted() {
         let v = num(&["@a", "@b", "@c"]);
-        assert_eq!(valid(r#"["and", ["<=", "@a", "@b"], ["<=", "@b", "@c"]]"#, r#"["<=", "@a", "@c"]"#, &v), Outcome::Unsat);
-        assert!(matches!(valid(r#"["<=", "@a", "@b"]"#, r#"["<=", "@a", "@c"]"#, &v), Outcome::Sat(_)));
+        assert_eq!(
+            valid(
+                r#"["and", ["<=", "@a", "@b"], ["<=", "@b", "@c"]]"#,
+                r#"["<=", "@a", "@c"]"#,
+                &v
+            ),
+            Outcome::Unsat
+        );
+        assert!(matches!(
+            valid(r#"["<=", "@a", "@b"]"#, r#"["<=", "@a", "@c"]"#, &v),
+            Outcome::Sat(_)
+        ));
     }
 
     #[test]
     fn strict_bounds_distinguish_lt_from_le() {
         let v = num(&["@x"]);
-        assert_eq!(sat(r#"["and", ["<", "@x", 1], [">", "@x", 1]]"#, &v), Outcome::Unsat);
-        assert_eq!(sat(r#"["and", ["<", "@x", 1], [">=", "@x", 1]]"#, &v), Outcome::Unsat);
-        assert!(matches!(sat(r#"["and", ["<=", "@x", 1], [">=", "@x", 1]]"#, &v), Outcome::Sat(_)));
-        let Outcome::Sat(m) = sat(r#"["and", ["<", "@x", 2], [">", "@x", 1]]"#, &v) else { panic!() };
-        let ModelValue::Num(x) = m.values["@x"] else { panic!() };
+        assert_eq!(
+            sat(r#"["and", ["<", "@x", 1], [">", "@x", 1]]"#, &v),
+            Outcome::Unsat
+        );
+        assert_eq!(
+            sat(r#"["and", ["<", "@x", 1], [">=", "@x", 1]]"#, &v),
+            Outcome::Unsat
+        );
+        assert!(matches!(
+            sat(r#"["and", ["<=", "@x", 1], [">=", "@x", 1]]"#, &v),
+            Outcome::Sat(_)
+        ));
+        let Outcome::Sat(m) = sat(r#"["and", ["<", "@x", 2], [">", "@x", 1]]"#, &v) else {
+            panic!()
+        };
+        let ModelValue::Num(x) = m.values["@x"] else {
+            panic!()
+        };
         assert!(x > Rat::int(1) && x < Rat::int(2));
     }
 
@@ -541,38 +685,85 @@ mod tests {
     fn three_variable_linear_update_is_proved() {
         let v = num(&["@paid", "@total", "@amount"]);
         assert_eq!(
-            valid(r#"["and", ["<=", "@paid", "@total"], ["<=", ["+", "@paid", "@amount"], "@total"]]"#, r#"["<=", ["+", "@paid", "@amount"], "@total"]"#, &v),
+            valid(
+                r#"["and", ["<=", "@paid", "@total"], ["<=", ["+", "@paid", "@amount"], "@total"]]"#,
+                r#"["<=", ["+", "@paid", "@amount"], "@total"]"#,
+                &v
+            ),
             Outcome::Unsat
         );
-        let Outcome::Sat(m) = valid(r#"["<=", "@paid", "@total"]"#, r#"["<=", ["+", "@paid", "@amount"], "@total"]"#, &v) else { panic!() };
-        let get = |k: &str| match m.values[k] { ModelValue::Num(r) => r, _ => panic!() };
+        let Outcome::Sat(m) = valid(
+            r#"["<=", "@paid", "@total"]"#,
+            r#"["<=", ["+", "@paid", "@amount"], "@total"]"#,
+            &v,
+        ) else {
+            panic!()
+        };
+        let get = |k: &str| match m.values[k] {
+            ModelValue::Num(r) => r,
+            _ => panic!(),
+        };
         assert!(get("@paid").checked_plus(get("@amount")).unwrap() > get("@total"));
     }
 
     #[test]
     fn disequality_splits_and_equality_cycles_close() {
         let v = num(&["@x", "@y"]);
-        assert_eq!(sat(r#"["and", ["=", "@x", "@y"], ["!=", "@x", "@y"]]"#, &v), Outcome::Unsat);
+        assert_eq!(
+            sat(r#"["and", ["=", "@x", "@y"], ["!=", "@x", "@y"]]"#, &v),
+            Outcome::Unsat
+        );
         assert!(matches!(sat(r#"["!=", "@x", 3]"#, &v), Outcome::Sat(_)));
-        assert_eq!(valid(r#"["and", ["=", "@x", ["+", "@y", 1]], ["=", "@y", 2]]"#, r#"["=", "@x", 3]"#, &v), Outcome::Unsat);
+        assert_eq!(
+            valid(
+                r#"["and", ["=", "@x", ["+", "@y", 1]], ["=", "@y", 2]]"#,
+                r#"["=", "@x", 3]"#,
+                &v
+            ),
+            Outcome::Unsat
+        );
     }
 
     #[test]
     fn enum_domains_are_exhaustive() {
         let status = Sort::Str(Some(vec!["open".into(), "paid".into(), "refunded".into()]));
         let v = vars(&[("@s", status, false)]);
-        assert_eq!(sat(r#"["and", ["!=", "@s", "open"], ["!=", "@s", "paid"], ["!=", "@s", "refunded"]]"#, &v), Outcome::Unsat);
-        let Outcome::Sat(m) = sat(r#"["and", ["!=", "@s", "open"], ["!=", "@s", "paid"]]"#, &v) else { panic!() };
+        assert_eq!(
+            sat(
+                r#"["and", ["!=", "@s", "open"], ["!=", "@s", "paid"], ["!=", "@s", "refunded"]]"#,
+                &v
+            ),
+            Outcome::Unsat
+        );
+        let Outcome::Sat(m) = sat(r#"["and", ["!=", "@s", "open"], ["!=", "@s", "paid"]]"#, &v)
+        else {
+            panic!()
+        };
         assert_eq!(m.values["@s"], ModelValue::Str("refunded".into()));
         assert_eq!(sat(r#"["=", "@s", "shipped"]"#, &v), Outcome::Unsat);
     }
 
     #[test]
     fn string_chains_and_open_strings() {
-        let v = vars(&[("@a", Sort::Str(None), false), ("@b", Sort::Str(None), false), ("@c", Sort::Str(None), false)]);
-        assert_eq!(sat(r#"["and", ["=", "@a", "@b"], ["=", "@b", "@c"], ["!=", "@a", "@c"]]"#, &v), Outcome::Unsat);
-        assert_eq!(sat(r#"["and", ["=", "@a", "x"], ["=", "@a", "y"]]"#, &v), Outcome::Unsat);
-        let Outcome::Sat(m) = sat(r#"["and", ["!=", "@a", "@b"], ["!=", "@a", ""]]"#, &v) else { panic!() };
+        let v = vars(&[
+            ("@a", Sort::Str(None), false),
+            ("@b", Sort::Str(None), false),
+            ("@c", Sort::Str(None), false),
+        ]);
+        assert_eq!(
+            sat(
+                r#"["and", ["=", "@a", "@b"], ["=", "@b", "@c"], ["!=", "@a", "@c"]]"#,
+                &v
+            ),
+            Outcome::Unsat
+        );
+        assert_eq!(
+            sat(r#"["and", ["=", "@a", "x"], ["=", "@a", "y"]]"#, &v),
+            Outcome::Unsat
+        );
+        let Outcome::Sat(m) = sat(r#"["and", ["!=", "@a", "@b"], ["!=", "@a", ""]]"#, &v) else {
+            panic!()
+        };
         assert_ne!(m.values["@a"], m.values["@b"]);
         assert_ne!(m.values["@a"], ModelValue::Str(String::new()));
     }
@@ -581,43 +772,106 @@ mod tests {
     fn null_follows_loose_eq_and_numeric_coercion() {
         let v = vars(&[("@x", Sort::Num, true)]);
         // A null number orders as 0 but equals only null.
-        assert_eq!(valid(r#"["=", "@x", null]"#, r#"[">=", "@x", 0]"#, &v), Outcome::Unsat);
-        assert_eq!(sat(r#"["and", ["=", "@x", null], ["=", "@x", 0]]"#, &v), Outcome::Unsat);
-        assert!(matches!(sat(r#"["and", ["<", "@x", 1], [">", "@x", -1], ["!=", "@x", 0]]"#, &v), Outcome::Sat(_)));
+        assert_eq!(
+            valid(r#"["=", "@x", null]"#, r#"[">=", "@x", 0]"#, &v),
+            Outcome::Unsat
+        );
+        assert_eq!(
+            sat(r#"["and", ["=", "@x", null], ["=", "@x", 0]]"#, &v),
+            Outcome::Unsat
+        );
+        assert!(matches!(
+            sat(
+                r#"["and", ["<", "@x", 1], [">", "@x", -1], ["!=", "@x", 0]]"#,
+                &v
+            ),
+            Outcome::Sat(_)
+        ));
         // Control: a non-nullable number is never null.
         let strict = vars(&[("@x", Sort::Num, false)]);
         assert_eq!(sat(r#"["=", "@x", null]"#, &strict), Outcome::Unsat);
         // A nullable enum keeps its domain only when present.
         let status = Sort::Str(Some(vec!["open".into()]));
         let s = vars(&[("@s", status, true)]);
-        assert!(matches!(sat(r#"["!=", "@s", "open"]"#, &s), Outcome::Sat(_)));
+        assert!(matches!(
+            sat(r#"["!=", "@s", "open"]"#, &s),
+            Outcome::Sat(_)
+        ));
     }
 
     #[test]
     fn booleans_and_truthiness() {
-        let v = vars(&[("@f", Sort::Bool, true), ("@n", Sort::Num, false), ("@s", Sort::Str(None), false)]);
-        assert_eq!(sat(r#"["and", "@f", ["=", "@f", false]]"#, &v), Outcome::Unsat);
+        let v = vars(&[
+            ("@f", Sort::Bool, true),
+            ("@n", Sort::Num, false),
+            ("@s", Sort::Str(None), false),
+        ]);
+        assert_eq!(
+            sat(r#"["and", "@f", ["=", "@f", false]]"#, &v),
+            Outcome::Unsat
+        );
         assert_eq!(sat(r#"["and", "@n", ["=", "@n", 0]]"#, &v), Outcome::Unsat);
         assert_eq!(sat(r#"["and", "@s", ["=", "@s", ""]]"#, &v), Outcome::Unsat);
-        assert_eq!(sat(r#"["and", ["not", "@f"], ["=", "@f", true]]"#, &v), Outcome::Unsat);
+        assert_eq!(
+            sat(r#"["and", ["not", "@f"], ["=", "@f", true]]"#, &v),
+            Outcome::Unsat
+        );
         assert!(matches!(sat(r#"["not", "@f"]"#, &v), Outcome::Sat(_)));
     }
 
     #[test]
     fn if_and_let_are_unfolded() {
         let v = num(&["@x"]);
-        assert_eq!(valid(r#"[">", "@x", 5]"#, r#"["if", [">", "@x", 0], true, false]"#, &v), Outcome::Unsat);
-        assert_eq!(valid(r#"["=", "@x", 4]"#, r#"["let", [["y", ["+", "@x", 1]]], ["=", "@y", 5]]"#, &v), Outcome::Unsat);
+        assert_eq!(
+            valid(
+                r#"[">", "@x", 5]"#,
+                r#"["if", [">", "@x", 0], true, false]"#,
+                &v
+            ),
+            Outcome::Unsat
+        );
+        assert_eq!(
+            valid(
+                r#"["=", "@x", 4]"#,
+                r#"["let", [["y", ["+", "@x", 1]]], ["=", "@y", 5]]"#,
+                &v
+            ),
+            Outcome::Unsat
+        );
     }
 
     #[test]
     fn an_if_operand_is_split_per_branch() {
         let v = num(&["@x"]);
-        assert_eq!(valid(r#"true"#, r#"[">=", ["if", [">", "@x", 0], "@x", 0], 0]"#, &v), Outcome::Unsat);
-        assert_eq!(valid(r#"true"#, r#"["<=", 0, ["if", [">", "@x", 0], "@x", 0]]"#, &v), Outcome::Unsat);
+        assert_eq!(
+            valid(
+                r#"true"#,
+                r#"[">=", ["if", [">", "@x", 0], "@x", 0], 0]"#,
+                &v
+            ),
+            Outcome::Unsat
+        );
+        assert_eq!(
+            valid(
+                r#"true"#,
+                r#"["<=", 0, ["if", [">", "@x", 0], "@x", 0]]"#,
+                &v
+            ),
+            Outcome::Unsat
+        );
         // Control: without the clamp the operand can be negative; a missing else is null, which equals no number.
-        assert!(matches!(valid(r#"true"#, r#"[">=", ["if", [">", "@x", -5], "@x", 0], 0]"#, &v), Outcome::Sat(_)));
-        assert!(matches!(valid(r#"true"#, r#"["=", ["if", [">", "@x", 0], 1], 1]"#, &v), Outcome::Sat(_)));
+        assert!(matches!(
+            valid(
+                r#"true"#,
+                r#"[">=", ["if", [">", "@x", -5], "@x", 0], 0]"#,
+                &v
+            ),
+            Outcome::Sat(_)
+        ));
+        assert!(matches!(
+            valid(r#"true"#, r#"["=", ["if", [">", "@x", 0], 1], 1]"#, &v),
+            Outcome::Sat(_)
+        ));
     }
 
     #[test]
@@ -628,7 +882,8 @@ mod tests {
         assert_eq!(t.opaque.len(), 1);
         assert!(matches!(decide(&f, &v), Outcome::Sat(_)));
         // The same opaque expression is one atom: it cannot be both true and false.
-        let both = parse(r#"["and", [">", ["str/len", "@s"], 3], ["not", [">", ["str/len", "@s"], 3]]]"#);
+        let both =
+            parse(r#"["and", [">", ["str/len", "@s"], 3], ["not", [">", ["str/len", "@s"], 3]]]"#);
         let f = Translator::new(&v).truthy(&both).unwrap();
         assert_eq!(decide(&f, &v), Outcome::Unsat);
     }

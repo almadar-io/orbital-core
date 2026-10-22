@@ -153,6 +153,8 @@ fn field_definition_unset_options_omit_nulls() {
     // `skip_serializing_if`. Construct one with most fields unset and assert
     // the wire JSON contains no null literals.
     let field = FieldDefinition {
+        nullable: None,
+        additional_properties: None,
         mock: None,
         merged_from: None,
         name: Some("status".to_string()),
@@ -180,6 +182,8 @@ fn field_definition_unset_options_omit_nulls() {
     // Also check the populated case retains the value but introduces no
     // nulls anywhere else.
     let field_with_default = FieldDefinition {
+        nullable: None,
+        additional_properties: None,
         mock: None,
         merged_from: None,
         name: Some("status".to_string()),
@@ -210,7 +214,7 @@ fn field_definition_unset_options_omit_nulls() {
 #[test]
 fn emit_payload_field_omits_optional_nulls() {
     // PayloadField has skip_serializing_if on description and required.
-    let field = PayloadField { values: None,
+    let field = PayloadField { nullable: None, additional_properties: None, values: None,
         name: "id".to_string(),
         field_type: "string".to_string(),
         required: Some(true),
@@ -237,7 +241,7 @@ fn emit_payload_field_omits_optional_nulls() {
 /// test in this file left `type_when: None`.
 #[test]
 fn emit_payload_field_with_type_when_round_trips() {
-    let field = PayloadField { values: None,
+    let field = PayloadField { nullable: None, additional_properties: None, values: None,
         name: "value".to_string(),
         field_type: "string".to_string(),
         required: Some(true),

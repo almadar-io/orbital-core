@@ -230,7 +230,7 @@ impl PrettyPrinter {
             OirType::Reference { entity } => format!("-> {}", entity),
             OirType::Row { entity } => entity.clone(),
             OirType::Enum { name } => format!("enum {}", name),
-            OirType::Struct { fields } => {
+            OirType::Struct { fields, .. } => {
                 let parts: Vec<String> = fields
                     .iter()
                     .map(|f| format!("{}: {}", f.name, self.format_type(&f.field_type)))

@@ -17,8 +17,13 @@ use orbital_core_base::schema::types::OrbitalSchema;
 pub enum Verdict {
     Proved,
     /// A counterexample the evaluator confirms, on an obligation the model does not over-approximate.
-    Violated { counterexample: serde_json::Value },
-    Unproved { reason: String, counterexample: Option<serde_json::Value> },
+    Violated {
+        counterexample: serde_json::Value,
+    },
+    Unproved {
+        reason: String,
+        counterexample: Option<serde_json::Value>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -34,25 +39,44 @@ pub fn prove(schema: &OrbitalSchema) -> Vec<Finding> {
         .into_iter()
         .map(|o| {
             let verdict = match &o.unbuildable {
-                Some(reason) => Verdict::Unproved { reason: reason.clone(), counterexample: None },
+                Some(reason) => Verdict::Unproved {
+                    reason: reason.clone(),
+                    counterexample: None,
+                },
                 None => judge(&o),
             };
-            Finding { proposition: o.proposition, site: o.site, verdict }
+            Finding {
+                proposition: o.proposition,
+                site: o.site,
+                verdict,
+            }
         })
         .collect()
 }
 
 fn judge(o: &obligations::Obligation) -> Verdict {
-    let overflow = || Verdict::Unproved { reason: "arithmetic overflow while building the formula".to_string(), counterexample: None };
+    let overflow = || Verdict::Unproved {
+        reason: "arithmetic overflow while building the formula".to_string(),
+        counterexample: None,
+    };
     // Time is a positive epoch number the whole obligation shares (`@now` and `(time/now)`).
     let mut vars = o.vars.clone();
-    vars.entry("@now".to_string()).or_insert(formula::VarInfo { sort: formula::Sort::Num, nullable: false });
+    vars.entry("@now".to_string()).or_insert(formula::VarInfo {
+        sort: formula::Sort::Num,
+        nullable: false,
+    });
     let mut lens = Vec::new();
     for e in o.assumptions.iter().chain(std::iter::once(&o.goal)) {
         formula::array_lens(e, &mut lens);
     }
     for len in &lens {
-        vars.insert(formula::array_len_var(len), formula::VarInfo { sort: formula::Sort::Num, nullable: false });
+        vars.insert(
+            formula::array_len_var(len),
+            formula::VarInfo {
+                sort: formula::Sort::Num,
+                nullable: false,
+            },
+        );
     }
     let mut t = Translator::new(&vars);
     let mut parts = Vec::new();
@@ -81,25 +105,42 @@ fn judge(o: &obligations::Obligation) -> Verdict {
             None => return overflow(),
         }
     }
-    let Some(goal) = t.truthy(&o.goal).and_then(Formula::negate) else { return overflow() };
+    let Some(goal) = t.truthy(&o.goal).and_then(Formula::negate) else {
+        return overflow();
+    };
     parts.push(goal);
     match decide(&Formula::and(parts), &vars) {
         Outcome::Unsat => Verdict::Proved,
-        Outcome::Unknown(reason) => Verdict::Unproved { reason, counterexample: None },
+        Outcome::Unknown(reason) => Verdict::Unproved {
+            reason,
+            counterexample: None,
+        },
         Outcome::Sat(model) => {
             let cex = confirm::counterexample(&model);
             if !confirm::confirms(&model, &o.assumptions, &o.goal) {
-                let undecided: Vec<String> = t.opaque.values().map(orbital_core_base::schema::format_sexpr).collect();
+                let undecided: Vec<String> = t
+                    .opaque
+                    .values()
+                    .map(orbital_core_base::schema::format_sexpr)
+                    .collect();
                 let reason = if undecided.is_empty() {
                     "the solver's model is not confirmed by the evaluator".to_string()
                 } else {
                     format!("outside the decidable fragment: {}", undecided.join(", "))
                 };
-                Verdict::Unproved { reason, counterexample: None }
+                Verdict::Unproved {
+                    reason,
+                    counterexample: None,
+                }
             } else if let Some(reason) = &o.inexact {
-                Verdict::Unproved { reason: reason.clone(), counterexample: Some(cex) }
+                Verdict::Unproved {
+                    reason: reason.clone(),
+                    counterexample: Some(cex),
+                }
             } else {
-                Verdict::Violated { counterexample: cex }
+                Verdict::Violated {
+                    counterexample: cex,
+                }
             }
         }
     }
@@ -108,8 +149,8 @@ fn judge(o: &obligations::Obligation) -> Verdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value as J};
     use orbital_core_base::schema::types::{EntityRef, TraitReference};
+    use serde_json::{json, Value as J};
 
     /// One orbital: entity `Order`, trait `Checkout -> Order` with the given transitions/ticks, and the given strict
     /// spec expectations already merged onto it.
@@ -159,7 +200,10 @@ mod tests {
     }
 
     fn verdicts(schema: &OrbitalSchema) -> Vec<(String, Verdict)> {
-        prove(schema).into_iter().map(|f| (f.site, f.verdict)).collect()
+        prove(schema)
+            .into_iter()
+            .map(|f| (f.site, f.verdict))
+            .collect()
     }
 
     fn only(schema: &OrbitalSchema) -> Verdict {
@@ -175,15 +219,88 @@ mod tests {
     }
 
     #[test]
+    fn record_contract_required_nullable_payload_does_not_prove_a_nonnull_invariant() {
+        let transition = json!([{ "from": "open", "to": "open", "event": "ADD",
+            "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
+        let invariant = row_invariant(json!(["!=", "@entity.total", null]));
+        for (required, nullable, proved) in [
+            (false, false, false),
+            (true, false, true),
+            (false, true, false),
+            (true, true, false),
+        ] {
+            let mut wire =
+                serde_json::to_value(program(transition.clone(), J::Null, invariant.clone()))
+                    .unwrap();
+            wire["typeContractVersion"] = json!(1);
+            wire["orbitals"][0]["entity"]["fields"][1]["nullable"] = json!(true);
+            wire["orbitals"][0]["traits"][0]["stateMachine"]["events"][2]["payloadSchema"][0]
+                ["nullable"] = json!(nullable);
+            wire["orbitals"][0]["traits"][0]["stateMachine"]["events"][2]["payloadSchema"][0]
+                ["required"] = json!(required);
+            let schema: OrbitalSchema = serde_json::from_value(wire).unwrap();
+            let verdict = only(&schema);
+            if proved {
+                assert_eq!(verdict, Verdict::Proved);
+            } else if required {
+                assert!(
+                    matches!(verdict, Verdict::Violated { .. }),
+                    "required nullable payload: {verdict:?}"
+                );
+            } else {
+                assert!(
+                    !matches!(verdict, Verdict::Proved),
+                    "optional payload (nullable={nullable}): {verdict:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn record_contract_presence_proof_distinguishes_an_absent_field_from_present_null() {
+        for (row, expected) in [(json!({"total": null}), true), (json!({}), false)] {
+            let transition = json!([{ "from": "open", "to": "open", "event": "ADD",
+                "effects": [["persist", "create", "Order", row]] }]);
+            let mut wire = serde_json::to_value(program(
+                transition,
+                J::Null,
+                row_invariant(json!(["object/has", "@entity", "total"])),
+            ))
+            .unwrap();
+            wire["typeContractVersion"] = json!(1);
+            wire["orbitals"][0]["entity"]["fields"][1]["required"] = json!(false);
+            wire["orbitals"][0]["entity"]["fields"][1]["nullable"] = json!(true);
+            let schema: OrbitalSchema = serde_json::from_value(wire).unwrap();
+            let verdict = only(&schema);
+            if expected {
+                assert_eq!(verdict, Verdict::Proved, "present-null is present");
+            } else {
+                assert!(
+                    matches!(verdict, Verdict::Violated { .. }),
+                    "absent field: {verdict:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_create_is_proved_by_its_guard_and_refuted_without_it() {
         let inv = row_invariant(json!([">=", "@entity.total", 0]));
         let guarded = json!([{ "from": "open", "to": "open", "event": "ADD", "guard": [">=", "@payload.total", 0],
             "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
-        assert_eq!(only(&program(guarded, J::Null, inv.clone())), Verdict::Proved);
+        assert_eq!(
+            only(&program(guarded, J::Null, inv.clone())),
+            Verdict::Proved
+        );
         let bare = json!([{ "from": "open", "to": "open", "event": "ADD",
             "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
-        let Verdict::Violated { counterexample } = only(&program(bare, J::Null, inv)) else { panic!() };
-        assert!(counterexample["payload"]["total"].as_f64().unwrap() < 0.0, "{counterexample}");
+        let Verdict::Violated { counterexample } = only(&program(bare, J::Null, inv)) else {
+            panic!()
+        };
+        assert!(
+            counterexample["payload"]["total"].as_f64().unwrap() < 0.0,
+            "{counterexample}"
+        );
     }
 
     #[test]
@@ -197,11 +314,18 @@ mod tests {
             }
             json!([t])
         };
-        let ok = pay(Some(json!(["<=", ["+", "@entity.paid", "@payload.amount"], "@entity.total"])));
+        let ok = pay(Some(json!([
+            "<=",
+            ["+", "@entity.paid", "@payload.amount"],
+            "@entity.total"
+        ])));
         assert_eq!(only(&program(ok, J::Null, inv.clone())), Verdict::Proved);
-        let Verdict::Violated { counterexample } = only(&program(pay(None), J::Null, inv)) else { panic!() };
+        let Verdict::Violated { counterexample } = only(&program(pay(None), J::Null, inv)) else {
+            panic!()
+        };
         let row = &counterexample["row"];
-        let paid = row["paid"].as_f64().unwrap_or(0.0) + counterexample["payload"]["amount"].as_f64().unwrap();
+        let paid = row["paid"].as_f64().unwrap_or(0.0)
+            + counterexample["payload"]["amount"].as_f64().unwrap();
         assert!(paid > row["total"].as_f64().unwrap(), "{counterexample}");
     }
 
@@ -214,7 +338,10 @@ mod tests {
         ]);
         let v = verdicts(&program(t, J::Null, inv));
         assert_eq!(v.len(), 2, "{v:#?}");
-        assert!(v.iter().all(|(_, verdict)| *verdict == Verdict::Proved), "{v:#?}");
+        assert!(
+            v.iter().all(|(_, verdict)| *verdict == Verdict::Proved),
+            "{v:#?}"
+        );
     }
 
     #[test]
@@ -222,7 +349,10 @@ mod tests {
         let inv = row_invariant(json!([">=", "@entity.total", 0]));
         let t = json!([{ "from": "open", "to": "open", "event": "ADD",
             "effects": [["persist", "batch", [["create", "Order", { "total": -3 }]]]] }]);
-        assert!(matches!(only(&program(t, J::Null, inv)), Verdict::Violated { .. }));
+        assert!(matches!(
+            only(&program(t, J::Null, inv)),
+            Verdict::Violated { .. }
+        ));
     }
 
     #[test]
@@ -238,7 +368,9 @@ mod tests {
         let inv = row_invariant(json!([">", ["str/len", "@entity.status"], 0]));
         let t = json!([{ "from": "open", "to": "open", "event": "ADD",
             "effects": [["persist", "create", "Order", { "total": 1, "status": "open" }]] }]);
-        let Verdict::Unproved { reason, .. } = only(&program(t, J::Null, inv)) else { panic!() };
+        let Verdict::Unproved { reason, .. } = only(&program(t, J::Null, inv)) else {
+            panic!()
+        };
         assert!(reason.contains("str/len"), "{reason}");
     }
 
@@ -246,23 +378,45 @@ mod tests {
     fn a_state_invariant_follows_the_sets_into_the_state() {
         let holds = state_holds("paid", json!(["=", "@entity.status", "paid"]));
         let to_paid = |status: &str| json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.status", status]] }]);
-        assert_eq!(only(&program(to_paid("paid"), J::Null, holds.clone())), Verdict::Proved);
-        let Verdict::Violated { .. } = only(&program(to_paid("open"), J::Null, holds)) else { panic!() };
+        assert_eq!(
+            only(&program(to_paid("paid"), J::Null, holds.clone())),
+            Verdict::Proved
+        );
+        let Verdict::Violated { .. } = only(&program(to_paid("open"), J::Null, holds)) else {
+            panic!()
+        };
     }
 
     #[test]
     fn a_transition_out_of_a_state_assumes_that_states_own_proposition() {
         let into = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.paid", ["+", "@entity.paid", 1]]] }]);
         let both = |source: J| {
-            let mut all = state_holds("paid", json!([">=", "@entity.paid", 1])).as_array().unwrap().clone();
+            let mut all = state_holds("paid", json!([">=", "@entity.paid", 1]))
+                .as_array()
+                .unwrap()
+                .clone();
             all.extend(source.as_array().unwrap().clone());
             J::Array(all)
         };
-        let v = verdicts(&program(into.clone(), J::Null, both(state_holds("open", json!([">=", "@entity.paid", 0])))));
+        let v = verdicts(&program(
+            into.clone(),
+            J::Null,
+            both(state_holds("open", json!([">=", "@entity.paid", 0]))),
+        ));
         let entry = v.iter().find(|(s, _)| s.contains("PAY")).unwrap();
         assert_eq!(entry.1, Verdict::Proved, "{v:#?}");
-        let v = verdicts(&program(into, J::Null, state_holds("paid", json!([">=", "@entity.paid", 1]))));
-        assert!(matches!(v.iter().find(|(s, _)| s.contains("PAY")).unwrap().1, Verdict::Violated { .. }), "{v:#?}");
+        let v = verdicts(&program(
+            into,
+            J::Null,
+            state_holds("paid", json!([">=", "@entity.paid", 1])),
+        ));
+        assert!(
+            matches!(
+                v.iter().find(|(s, _)| s.contains("PAY")).unwrap().1,
+                Verdict::Violated { .. }
+            ),
+            "{v:#?}"
+        );
     }
 
     #[test]
@@ -270,7 +424,10 @@ mod tests {
         let holds = state_holds("paid", json!(["=", "@entity.status", "paid"]));
         let t = json!([{ "from": "open", "to": "paid", "event": "PAY", "guard": ["and", "@config.enabled", [">", ["array/len", "@payload.data"], 0]],
             "effects": [["set", "@entity.status", "open"]] }]);
-        assert!(!matches!(only(&program(t, J::Null, holds)), Verdict::Proved));
+        assert!(!matches!(
+            only(&program(t, J::Null, holds)),
+            Verdict::Proved
+        ));
     }
 
     #[test]
@@ -283,37 +440,90 @@ mod tests {
         assert!(v.iter().all(|(_, x)| *x == Verdict::Proved), "{v:#?}");
         let unfloored = tick(json!(["-", "@entity.paid", 1]));
         let v = verdicts(&program(into.clone(), unfloored, holds.clone()));
-        assert!(v.iter().any(|(s, x)| s.contains("tick drain") && matches!(x, Verdict::Violated { .. })), "{v:#?}");
+        assert!(
+            v.iter()
+                .any(|(s, x)| s.contains("tick drain") && matches!(x, Verdict::Violated { .. })),
+            "{v:#?}"
+        );
         let nullable_operand = tick(json!(["math/max", 0, "@payload.missing"]));
         let v = verdicts(&program(into, nullable_operand, holds));
-        assert!(v.iter().any(|(s, x)| s.contains("tick drain") && matches!(x, Verdict::Unproved { .. })), "{v:#?}");
+        assert!(
+            v.iter()
+                .any(|(s, x)| s.contains("tick drain") && matches!(x, Verdict::Unproved { .. })),
+            "{v:#?}"
+        );
     }
 
     #[test]
     fn the_clock_is_a_positive_number() {
         let inv = row_invariant(json!([">", "@entity.paid", 0]));
         let stamp = |value: J| json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "create", "Order", { "total": 1, "paid": value }]] }]);
-        assert_eq!(only(&program(stamp(json!(["time/now"])), J::Null, inv.clone())), Verdict::Proved);
-        assert_eq!(only(&program(stamp(json!("@now")), J::Null, inv.clone())), Verdict::Proved);
-        assert!(!matches!(only(&program(stamp(json!(["-", ["time/now"], 5])), J::Null, inv)), Verdict::Proved));
+        assert_eq!(
+            only(&program(stamp(json!(["time/now"])), J::Null, inv.clone())),
+            Verdict::Proved
+        );
+        assert_eq!(
+            only(&program(stamp(json!("@now")), J::Null, inv.clone())),
+            Verdict::Proved
+        );
+        assert!(!matches!(
+            only(&program(stamp(json!(["-", ["time/now"], 5])), J::Null, inv)),
+            Verdict::Proved
+        ));
     }
 
     #[test]
     fn an_array_length_is_a_non_negative_number() {
         let inv = row_invariant(json!([">=", "@entity.total", 0]));
         let create = |total: J| json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "create", "Order", { "total": total }]] }]);
-        assert_eq!(only(&program(create(json!(["array/len", "@payload.rows"])), J::Null, inv.clone())), Verdict::Proved);
-        assert_eq!(only(&program(create(json!(["or", ["array/len", "@payload.rows"], 0])), J::Null, inv.clone())), Verdict::Proved);
-        assert!(!matches!(only(&program(create(json!(["-", ["array/len", "@payload.rows"], 1])), J::Null, inv)), Verdict::Proved));
+        assert_eq!(
+            only(&program(
+                create(json!(["array/len", "@payload.rows"])),
+                J::Null,
+                inv.clone()
+            )),
+            Verdict::Proved
+        );
+        assert_eq!(
+            only(&program(
+                create(json!(["or", ["array/len", "@payload.rows"], 0])),
+                J::Null,
+                inv.clone()
+            )),
+            Verdict::Proved
+        );
+        assert!(!matches!(
+            only(&program(
+                create(json!(["-", ["array/len", "@payload.rows"], 1])),
+                J::Null,
+                inv
+            )),
+            Verdict::Proved
+        ));
     }
 
     #[test]
     fn a_merged_payload_record_is_its_literal_keys_over_the_record() {
         let inv = row_invariant(json!([">=", "@entity.total", 0]));
-        let create = |over: J| json!([{ "from": "open", "to": "open", "event": "ADD",
-            "effects": [["persist", "create", "Order", ["object/merge", "@payload", over]]] }]);
-        assert_eq!(only(&program(create(json!({ "total": 5 })), J::Null, inv.clone())), Verdict::Proved);
-        assert!(matches!(only(&program(create(json!({ "paid": 0 })), J::Null, inv)), Verdict::Violated { .. }), "control: the record's own total is unconstrained");
+        let create = |over: J| {
+            json!([{ "from": "open", "to": "open", "event": "ADD",
+            "effects": [["persist", "create", "Order", ["object/merge", "@payload", over]]] }])
+        };
+        assert_eq!(
+            only(&program(
+                create(json!({ "total": 5 })),
+                J::Null,
+                inv.clone()
+            )),
+            Verdict::Proved
+        );
+        assert!(
+            matches!(
+                only(&program(create(json!({ "paid": 0 })), J::Null, inv)),
+                Verdict::Violated { .. }
+            ),
+            "control: the record's own total is unconstrained"
+        );
     }
 
     #[test]
@@ -324,7 +534,13 @@ mod tests {
         ] }]);
         let v = verdicts(&program(t.clone(), J::Null, holds.clone()));
         assert_eq!(v.len(), 2, "{v:#?}");
-        assert_eq!(v.iter().filter(|(_, x)| matches!(x, Verdict::Violated { .. })).count(), 1, "{v:#?}");
+        assert_eq!(
+            v.iter()
+                .filter(|(_, x)| matches!(x, Verdict::Violated { .. }))
+                .count(),
+            1,
+            "{v:#?}"
+        );
         let guarded = json!([{ "from": "open", "to": "paid", "event": "PAY", "guard": [">", "@payload.amount", 0], "effects": t[0]["effects"] }]);
         let v = verdicts(&program(guarded, J::Null, holds));
         assert!(v.iter().all(|(_, x)| *x == Verdict::Proved), "{v:#?}");
@@ -333,23 +549,43 @@ mod tests {
     #[test]
     fn a_tick_in_the_state_must_preserve_it() {
         let holds = state_holds("paid", json!([">=", "@entity.paid", 0]));
-        let ticks = |delta: f64| json!([{ "name": "accrue", "interval": 1000, "appliesTo": ["paid"],
-            "effects": [["set", "@entity.paid", ["+", "@entity.paid", delta]]] }]);
+        let ticks = |delta: f64| {
+            json!([{ "name": "accrue", "interval": 1000, "appliesTo": ["paid"],
+            "effects": [["set", "@entity.paid", ["+", "@entity.paid", delta]]] }])
+        };
         let into = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.paid", "@payload.amount"]], "guard": [">=", "@payload.amount", 0] }]);
         let v = verdicts(&program(into.clone(), ticks(1.0), holds.clone()));
         assert!(v.iter().all(|(_, x)| *x == Verdict::Proved), "{v:#?}");
         let v = verdicts(&program(into, ticks(-1.0), holds));
-        assert!(v.iter().any(|(s, x)| s.contains("tick accrue") && matches!(x, Verdict::Violated { .. })), "{v:#?}");
+        assert!(
+            v.iter()
+                .any(|(s, x)| s.contains("tick accrue") && matches!(x, Verdict::Violated { .. })),
+            "{v:#?}"
+        );
     }
 
     #[test]
     fn an_initial_state_owes_its_defaults() {
         let holds = |expr: J| state_holds("open", expr);
-        let v = verdicts(&program(json!([]), J::Null, holds(json!(["=", "@entity.status", "open"]))));
+        let v = verdicts(&program(
+            json!([]),
+            J::Null,
+            holds(json!(["=", "@entity.status", "open"])),
+        ));
         let defaults = v.iter().find(|(s, _)| s.contains("defaults")).unwrap();
         assert_eq!(defaults.1, Verdict::Proved);
-        let v = verdicts(&program(json!([]), J::Null, holds(json!(["=", "@entity.status", "paid"]))));
-        assert!(matches!(v.iter().find(|(s, _)| s.contains("defaults")).unwrap().1, Verdict::Violated { .. }), "{v:#?}");
+        let v = verdicts(&program(
+            json!([]),
+            J::Null,
+            holds(json!(["=", "@entity.status", "paid"])),
+        ));
+        assert!(
+            matches!(
+                v.iter().find(|(s, _)| s.contains("defaults")).unwrap().1,
+                Verdict::Violated { .. }
+            ),
+            "{v:#?}"
+        );
     }
 
     // G-ORBITAL-CORE-019: a `set` of a binding that reads nothing stores null, so an optional binding is its value or null.
@@ -357,7 +593,13 @@ mod tests {
     fn a_set_from_an_optional_binding_is_its_value_or_null() {
         let holds = state_holds("paid", json!(["!=", "@entity.status", "refunded"]));
         let optional = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.status", "@payload.status"]] }]);
-        assert!(matches!(only(&program(optional, J::Null, holds.clone())), Verdict::Violated { .. }), "the payload may carry `refunded`");
+        assert!(
+            matches!(
+                only(&program(optional, J::Null, holds.clone())),
+                Verdict::Violated { .. }
+            ),
+            "the payload may carry `refunded`"
+        );
         let required = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.paid", "@payload.amount"], ["set", "@entity.status", "paid"]] }]);
         assert_eq!(only(&program(required, J::Null, holds)), Verdict::Proved);
     }
@@ -368,10 +610,24 @@ mod tests {
         let optional = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.status", "@payload.status"]] }]);
         assert_eq!(only(&program(optional, J::Null, holds)), Verdict::Proved);
         let ensures = json!([["=", "@entity.paid", "@payload.tip"]]);
-        let t = json!([pay(json!([["set", "@entity.paid", "@payload.tip"]]), ensures, None)]);
+        let t = json!([pay(
+            json!([["set", "@entity.paid", "@payload.tip"]]),
+            ensures,
+            None
+        )]);
         assert_eq!(only(&program(t, J::Null, J::Null)), Verdict::Proved);
-        let signed = json!([pay(json!([["set", "@entity.paid", "@payload.tip"]]), json!([[">=", "@entity.paid", 0]]), None)]);
-        assert!(matches!(only(&program(signed, J::Null, J::Null)), Verdict::Violated { .. }), "control: an optional tip may be negative");
+        let signed = json!([pay(
+            json!([["set", "@entity.paid", "@payload.tip"]]),
+            json!([[">=", "@entity.paid", 0]]),
+            None
+        )]);
+        assert!(
+            matches!(
+                only(&program(signed, J::Null, J::Null)),
+                Verdict::Violated { .. }
+            ),
+            "control: an optional tip may be negative"
+        );
     }
 
     #[test]
@@ -384,32 +640,73 @@ mod tests {
             }
             json!([t])
         };
-        let v = verdicts(&program(raise(Some(json!(["<", "@entity.paid", "@payload.total"]))), J::Null, holds.clone()));
-        assert!(v.iter().filter(|(s, _)| s.contains("ADD")).all(|(_, x)| *x == Verdict::Proved), "{v:#?}");
+        let v = verdicts(&program(
+            raise(Some(json!(["<", "@entity.paid", "@payload.total"]))),
+            J::Null,
+            holds.clone(),
+        ));
+        assert!(
+            v.iter()
+                .filter(|(s, _)| s.contains("ADD"))
+                .all(|(_, x)| *x == Verdict::Proved),
+            "{v:#?}"
+        );
         let v = verdicts(&program(raise(None), J::Null, holds));
-        assert!(v.iter().any(|(s, x)| s.contains("ADD") && matches!(x, Verdict::Violated { .. })), "control: without the guard the new total may sit below paid {v:#?}");
+        assert!(
+            v.iter()
+                .any(|(s, x)| s.contains("ADD") && matches!(x, Verdict::Violated { .. })),
+            "control: without the guard the new total may sit below paid {v:#?}"
+        );
     }
 
     #[test]
     fn an_entity_read_inside_a_set_is_the_pre_state_value() {
         let copy = json!([["set", "@entity.paid", "@entity.total"]]);
-        let t = json!([pay(copy.clone(), json!([["=", "@entity.paid", "@entity.total"]]), None)]);
+        let t = json!([pay(
+            copy.clone(),
+            json!([["=", "@entity.paid", "@entity.total"]]),
+            None
+        )]);
         assert_eq!(only(&program(t, J::Null, J::Null)), Verdict::Proved);
-        let t = json!([pay(copy.clone(), json!([["=", "@entity.paid", "@fromEntity.total"]]), None)]);
+        let t = json!([pay(
+            copy.clone(),
+            json!([["=", "@entity.paid", "@fromEntity.total"]]),
+            None
+        )]);
         assert_eq!(only(&program(t, J::Null, J::Null)), Verdict::Proved);
-        let t = json!([pay(copy, json!([["=", "@entity.paid", "@fromEntity.paid"]]), None)]);
-        assert!(matches!(only(&program(t, J::Null, J::Null)), Verdict::Violated { .. }), "control: the old paid is gone");
-        let reset = json!([["set", "@entity.total", 0], ["set", "@entity.paid", "@entity.total"]]);
+        let t = json!([pay(
+            copy,
+            json!([["=", "@entity.paid", "@fromEntity.paid"]]),
+            None
+        )]);
+        assert!(
+            matches!(
+                only(&program(t, J::Null, J::Null)),
+                Verdict::Violated { .. }
+            ),
+            "control: the old paid is gone"
+        );
+        let reset = json!([
+            ["set", "@entity.total", 0],
+            ["set", "@entity.paid", "@entity.total"]
+        ]);
         let t = json!([pay(reset, json!([["=", "@entity.paid", 0]]), None)]);
-        assert_eq!(only(&program(t, J::Null, J::Null)), Verdict::Proved, "a later set reads the earlier one");
+        assert_eq!(
+            only(&program(t, J::Null, J::Null)),
+            Verdict::Proved,
+            "a later set reads the earlier one"
+        );
     }
 
     /// The fixture with `Checkout`'s config knobs set to the given fields.
     fn configured(transitions: J, knobs: J) -> OrbitalSchema {
         use orbital_core_base::schema::types::ConfigField;
         let mut schema = program(transitions, J::Null, J::Null);
-        let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] else { panic!() };
-        let knobs: std::collections::HashMap<String, ConfigField> = serde_json::from_value(knobs).unwrap();
+        let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] else {
+            panic!()
+        };
+        let knobs: std::collections::HashMap<String, ConfigField> =
+            serde_json::from_value(knobs).unwrap();
         td.config = Some(knobs);
         schema
     }
@@ -417,40 +714,107 @@ mod tests {
     #[test]
     fn a_config_knob_is_the_runs_constant() {
         let knobs = json!({ "cap": { "type": "number", "default": 10 }, "on": { "type": "boolean", "default": true } });
-        let capped = |effects: J| json!([pay(effects, json!([["<=", "@entity.paid", "@config.cap"]]), None)]);
-        assert_eq!(only(&configured(capped(json!([["set", "@entity.paid", "@config.cap"]])), knobs.clone())), Verdict::Proved);
+        let capped = |effects: J| {
+            json!([pay(
+                effects,
+                json!([["<=", "@entity.paid", "@config.cap"]]),
+                None
+            )])
+        };
+        assert_eq!(
+            only(&configured(
+                capped(json!([["set", "@entity.paid", "@config.cap"]])),
+                knobs.clone()
+            )),
+            Verdict::Proved
+        );
         assert!(
-            matches!(only(&configured(capped(json!([["set", "@entity.paid", ["+", "@config.cap", 1]]])), knobs.clone())), Verdict::Violated { .. }),
+            matches!(
+                only(&configured(
+                    capped(json!([["set", "@entity.paid", ["+", "@config.cap", 1]]])),
+                    knobs.clone()
+                )),
+                Verdict::Violated { .. }
+            ),
             "control: one past the cap"
         );
-        let guarded = json!([pay(json!([["set", "@entity.paid", ["+", "@entity.paid", 1]]]), json!([["<", "@fromEntity.paid", "@config.cap"]]), Some(json!(["<", "@entity.paid", "@config.cap"])))]);
-        assert_eq!(only(&configured(guarded, knobs)), Verdict::Proved, "a guard reads the knob");
+        let guarded = json!([pay(
+            json!([["set", "@entity.paid", ["+", "@entity.paid", 1]]]),
+            json!([["<", "@fromEntity.paid", "@config.cap"]]),
+            Some(json!(["<", "@entity.paid", "@config.cap"]))
+        )]);
+        assert_eq!(
+            only(&configured(guarded, knobs)),
+            Verdict::Proved,
+            "a guard reads the knob"
+        );
     }
 
     #[test]
     fn a_count_gated_by_a_config_flag_is_proved_per_flag() {
-        let count = json!([["when", "@config.on", ["set", "@entity.paid", ["+", "@entity.paid", 1]]]]);
-        let either = json!([["if", "@config.on", ["=", "@entity.paid", ["+", "@fromEntity.paid", 1]], ["=", "@entity.paid", "@fromEntity.paid"]]]);
+        let count = json!([[
+            "when",
+            "@config.on",
+            ["set", "@entity.paid", ["+", "@entity.paid", 1]]
+        ]]);
+        let either = json!([[
+            "if",
+            "@config.on",
+            ["=", "@entity.paid", ["+", "@fromEntity.paid", 1]],
+            ["=", "@entity.paid", "@fromEntity.paid"]
+        ]]);
         let grows = json!([["=", "@entity.paid", ["+", "@fromEntity.paid", 1]]]);
         let flag = |on: bool| json!({ "on": { "type": "boolean", "default": on } });
         let proved = |s: &OrbitalSchema| verdicts(s).iter().all(|(_, v)| *v == Verdict::Proved);
         for on in [true, false] {
-            assert!(proved(&configured(json!([pay(count.clone(), either.clone(), None)]), flag(on))), "on = {on}");
+            assert!(
+                proved(&configured(
+                    json!([pay(count.clone(), either.clone(), None)]),
+                    flag(on)
+                )),
+                "on = {on}"
+            );
         }
-        assert!(proved(&configured(json!([pay(count.clone(), grows.clone(), None)]), flag(true))));
+        assert!(proved(&configured(
+            json!([pay(count.clone(), grows.clone(), None)]),
+            flag(true)
+        )));
         let v = verdicts(&configured(json!([pay(count, grows, None)]), flag(false)));
-        assert!(v.iter().any(|(_, x)| matches!(x, Verdict::Violated { .. })), "control: a disabled flag counts nothing {v:#?}");
+        assert!(
+            v.iter().any(|(_, x)| matches!(x, Verdict::Violated { .. })),
+            "control: a disabled flag counts nothing {v:#?}"
+        );
     }
 
     #[test]
     fn a_config_knob_bound_at_run_time_is_unproved_and_an_unset_one_is_null() {
         let ensures = json!([["=", "@entity.paid", "@config.cap"]]);
-        let t = json!([pay(json!([["set", "@entity.paid", 3]]), ensures.clone(), None)]);
+        let t = json!([pay(
+            json!([["set", "@entity.paid", 3]]),
+            ensures.clone(),
+            None
+        )]);
         let bound = json!({ "cap": { "type": "number", "default": "@user.cap" } });
-        assert!(matches!(only(&configured(t.clone(), bound)), Verdict::Unproved { .. }), "a viewer-bound knob is never refuted");
+        assert!(
+            matches!(
+                only(&configured(t.clone(), bound)),
+                Verdict::Unproved { .. }
+            ),
+            "a viewer-bound knob is never refuted"
+        );
         let unset = json!({ "cap": { "type": "number" } });
-        assert!(matches!(only(&configured(t, unset.clone())), Verdict::Violated { .. }), "an unset knob reads null");
-        let t = json!([pay(json!([["set", "@entity.paid", "@config.cap"]]), json!([["=", "@entity.paid", null]]), None)]);
+        assert!(
+            matches!(
+                only(&configured(t, unset.clone())),
+                Verdict::Violated { .. }
+            ),
+            "an unset knob reads null"
+        );
+        let t = json!([pay(
+            json!([["set", "@entity.paid", "@config.cap"]]),
+            json!([["=", "@entity.paid", null]]),
+            None
+        )]);
         assert_eq!(only(&configured(t, unset)), Verdict::Proved);
     }
 
@@ -459,12 +823,26 @@ mod tests {
         let inv = row_invariant(json!([">=", "@entity.total", 0]));
         let elsewhere = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "batch",
             ["array/concat", [["create", "Ledger", { "n": 1 }]], ["array/map", "@entity.items", ["fn", "i", ["update", "Ledger", "@i.id", { "n": 2 }]]]]]] }]);
-        assert!(prove(&program(elsewhere, J::Null, inv.clone())).is_empty(), "the batch writes only Ledger");
+        assert!(
+            prove(&program(elsewhere, J::Null, inv.clone())).is_empty(),
+            "the batch writes only Ledger"
+        );
         let here = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "batch",
             ["array/map", "@entity.items", ["fn", "i", ["update", "Order", "@i.id", { "total": "@i.total" }]]]]] }]);
-        assert!(prove(&program(here, J::Null, inv.clone())).iter().all(|f| matches!(f.verdict, Verdict::Unproved { .. })), "it writes Order with data the prover cannot follow");
+        assert!(
+            prove(&program(here, J::Null, inv.clone()))
+                .iter()
+                .all(|f| matches!(f.verdict, Verdict::Unproved { .. })),
+            "it writes Order with data the prover cannot follow"
+        );
         let opaque = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "batch", "@payload.ops"]] }]);
-        assert!(matches!(only(&program(opaque, J::Null, inv)), Verdict::Unproved { .. }), "control: a batch it cannot follow may write anything");
+        assert!(
+            matches!(
+                only(&program(opaque, J::Null, inv)),
+                Verdict::Unproved { .. }
+            ),
+            "control: a batch it cannot follow may write anything"
+        );
     }
 
     #[test]
@@ -482,10 +860,23 @@ mod tests {
                     "effects": [["persist", "update", "Order", "@entity.id", { "total": -1 }]] }] }
         }))
         .unwrap();
-        schema.orbitals[0].traits.push(orbital_core_base::schema::types::TraitReference::Inline(refund));
+        schema.orbitals[0]
+            .traits
+            .push(orbital_core_base::schema::types::TraitReference::Inline(
+                refund,
+            ));
         let v = verdicts(&schema);
-        let foreign = v.iter().find(|(s, _)| s.contains("Refund")).expect("foreign obligation");
-        let Verdict::Unproved { counterexample: Some(_), .. } = &foreign.1 else { panic!("{v:#?}") };
+        let foreign = v
+            .iter()
+            .find(|(s, _)| s.contains("Refund"))
+            .expect("foreign obligation");
+        let Verdict::Unproved {
+            counterexample: Some(_),
+            ..
+        } = &foreign.1
+        else {
+            panic!("{v:#?}")
+        };
     }
 
     #[test]
@@ -493,21 +884,43 @@ mod tests {
         use orbital_core_base::schema::types::{ConfigField, TraitReference};
         let inv = row_invariant(json!([">=", "@entity.total", 0]));
         let with_target = |default: J, effects: J| {
-            let mut schema = program(json!([{ "from": "open", "to": "open", "event": "ADD", "effects": effects }]), J::Null, inv.clone());
+            let mut schema = program(
+                json!([{ "from": "open", "to": "open", "event": "ADD", "effects": effects }]),
+                J::Null,
+                inv.clone(),
+            );
             if let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] {
-                let field: ConfigField = serde_json::from_value(json!({ "type": "entity", "default": default })).unwrap();
-                td.config = Some(std::collections::HashMap::from([("target".to_string(), field)]));
+                let field: ConfigField =
+                    serde_json::from_value(json!({ "type": "entity", "default": default }))
+                        .unwrap();
+                td.config = Some(std::collections::HashMap::from([(
+                    "target".to_string(),
+                    field,
+                )]));
             }
             schema
         };
         let create = json!([["persist", "create", "@config.target", { "total": -1 }]]);
-        assert!(matches!(only(&with_target(json!("Order"), create.clone())), Verdict::Violated { .. }));
-        let Verdict::Unproved { reason, .. } = only(&with_target(json!("@config.elsewhere"), create)) else { panic!() };
+        assert!(matches!(
+            only(&with_target(json!("Order"), create.clone())),
+            Verdict::Violated { .. }
+        ));
+        let Verdict::Unproved { reason, .. } =
+            only(&with_target(json!("@config.elsewhere"), create))
+        else {
+            panic!()
+        };
         assert!(reason.contains("not statically known"), "{reason}");
         let computed = json!([["persist", "batch", ["array/concat", "@payload.ops", []]]]);
-        assert!(matches!(only(&with_target(json!("Order"), computed)), Verdict::Unproved { .. }));
+        assert!(matches!(
+            only(&with_target(json!("Order"), computed)),
+            Verdict::Unproved { .. }
+        ));
         let other = json!([["persist", "create", "@config.target", { "total": -1 }]]);
-        assert!(prove(&with_target(json!("Invoice"), other)).is_empty(), "control: a resolved target that is another entity owes nothing");
+        assert!(
+            prove(&with_target(json!("Invoice"), other)).is_empty(),
+            "control: a resolved target that is another entity owes nothing"
+        );
     }
 
     /// Soundness against the evaluator: every implication the solver proves holds on seeded random ground values
@@ -531,41 +944,151 @@ mod tests {
         .into_iter()
         .collect();
         let cases: Vec<(J, J)> = vec![
-            (json!(["<=", "@entity.a", "@entity.b"]), json!(["<=", ["-", "@entity.a", 1], "@entity.b"])),
-            (json!(["and", ["<=", ["+", "@entity.a", "@payload.c"], "@entity.b"], [">=", "@payload.c", 0]]), json!(["<=", "@entity.a", "@entity.b"])),
-            (json!(["=", "@entity.a", null]), json!([">=", "@entity.a", 0])),
-            (json!(["=", "@entity.a", null]), json!(["!=", "@entity.a", 0])),
-            (json!(["!=", "@entity.s", "open"]), json!(["or", ["=", "@entity.s", "paid"], ["=", "@entity.s", null]])),
-            (json!(["=", "@entity.t", "@entity.s"]), json!(["or", ["=", "@entity.t", null], ["!=", "@entity.t", "x"]])),
+            (
+                json!(["<=", "@entity.a", "@entity.b"]),
+                json!(["<=", ["-", "@entity.a", 1], "@entity.b"]),
+            ),
+            (
+                json!([
+                    "and",
+                    ["<=", ["+", "@entity.a", "@payload.c"], "@entity.b"],
+                    [">=", "@payload.c", 0]
+                ]),
+                json!(["<=", "@entity.a", "@entity.b"]),
+            ),
+            (
+                json!(["=", "@entity.a", null]),
+                json!([">=", "@entity.a", 0]),
+            ),
+            (
+                json!(["=", "@entity.a", null]),
+                json!(["!=", "@entity.a", 0]),
+            ),
+            (
+                json!(["!=", "@entity.s", "open"]),
+                json!(["or", ["=", "@entity.s", "paid"], ["=", "@entity.s", null]]),
+            ),
+            (
+                json!(["=", "@entity.t", "@entity.s"]),
+                json!(["or", ["=", "@entity.t", null], ["!=", "@entity.t", "x"]]),
+            ),
             (json!("@entity.f"), json!(["=", "@entity.f", true])),
-            (json!(["not", "@entity.f"]), json!(["or", ["=", "@entity.f", false], ["=", "@entity.f", null]])),
-            (json!(["and", [">", "@entity.a", 1], ["<", "@entity.a", 3]]), json!(["!=", ["*", 2, "@entity.a"], 7])),
-            (json!(["if", [">", "@payload.c", 0], ["=", "@entity.b", 1], ["=", "@entity.b", 2]]), json!(["and", [">=", "@entity.b", 1], ["<=", "@entity.b", 2]])),
-            (json!(["let", [["d", ["+", "@entity.b", 2]]], [">", "@d", 4]]), json!([">", "@entity.b", 2])),
-            (json!(true), json!([">=", ["if", [">", "@entity.a", 0], "@entity.a", 0], 0])),
-            (json!([">", "@entity.b", 0]), json!(["=", ["if", [">", "@entity.b", 0], "x", "y"], "x"])),
-            (json!([">=", "@entity.a", 0]), json!([">=", ["or", "@entity.a", 7], 0])),
-            (json!(true), json!([">=", ["math/max", 0, ["-", "@entity.b", 100]], 0])),
+            (
+                json!(["not", "@entity.f"]),
+                json!(["or", ["=", "@entity.f", false], ["=", "@entity.f", null]]),
+            ),
+            (
+                json!(["and", [">", "@entity.a", 1], ["<", "@entity.a", 3]]),
+                json!(["!=", ["*", 2, "@entity.a"], 7]),
+            ),
+            (
+                json!([
+                    "if",
+                    [">", "@payload.c", 0],
+                    ["=", "@entity.b", 1],
+                    ["=", "@entity.b", 2]
+                ]),
+                json!(["and", [">=", "@entity.b", 1], ["<=", "@entity.b", 2]]),
+            ),
+            (
+                json!(["let", [["d", ["+", "@entity.b", 2]]], [">", "@d", 4]]),
+                json!([">", "@entity.b", 2]),
+            ),
+            (
+                json!(true),
+                json!([">=", ["if", [">", "@entity.a", 0], "@entity.a", 0], 0]),
+            ),
+            (
+                json!([">", "@entity.b", 0]),
+                json!(["=", ["if", [">", "@entity.b", 0], "x", "y"], "x"]),
+            ),
+            (
+                json!([">=", "@entity.a", 0]),
+                json!([">=", ["or", "@entity.a", 7], 0]),
+            ),
+            (
+                json!(true),
+                json!([">=", ["math/max", 0, ["-", "@entity.b", 100]], 0]),
+            ),
             (json!(true), json!(["<=", ["math/min", 5, "@entity.b"], 5])),
-            (json!(true), json!([">=", ["math/abs", ["-", "@entity.b", 3]], 0])),
-            (json!([">", "@entity.b", 3]), json!(["=", ["math/abs", ["-", "@entity.b", 3]], ["-", "@entity.b", 3]])),
-            (json!([">", "@entity.b", 2]), json!([">=", ["math/max", "@entity.b", 3], 3])),
-            (json!(true), json!(["<=", ["+", ["if", [">", "@entity.b", 0], 1, 0], ["if", ["<", "@entity.b", 5], 1, 0]], 2])),
-            (json!(["and", [">", "@entity.b", 0], ["<", "@entity.b", 5]]), json!(["=", ["+", ["if", [">", "@entity.b", 0], 1, 0], ["if", ["<", "@entity.b", 5], 1, 0]], 2])),
+            (
+                json!(true),
+                json!([">=", ["math/abs", ["-", "@entity.b", 3]], 0]),
+            ),
+            (
+                json!([">", "@entity.b", 3]),
+                json!([
+                    "=",
+                    ["math/abs", ["-", "@entity.b", 3]],
+                    ["-", "@entity.b", 3]
+                ]),
+            ),
+            (
+                json!([">", "@entity.b", 2]),
+                json!([">=", ["math/max", "@entity.b", 3], 3]),
+            ),
+            (
+                json!(true),
+                json!([
+                    "<=",
+                    [
+                        "+",
+                        ["if", [">", "@entity.b", 0], 1, 0],
+                        ["if", ["<", "@entity.b", 5], 1, 0]
+                    ],
+                    2
+                ]),
+            ),
+            (
+                json!(["and", [">", "@entity.b", 0], ["<", "@entity.b", 5]]),
+                json!([
+                    "=",
+                    [
+                        "+",
+                        ["if", [">", "@entity.b", 0], 1, 0],
+                        ["if", ["<", "@entity.b", 5], 1, 0]
+                    ],
+                    2
+                ]),
+            ),
         ];
         let mut seed: u64 = 0x5eed;
         let mut next = |n: usize| {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 33) as usize) % n
         };
-        let nums = [None, Some(-2.0), Some(-1.0), Some(0.0), Some(0.5), Some(1.0), Some(2.0), Some(3.0), Some(3.5), Some(4.0), Some(5.0)];
+        let nums = [
+            None,
+            Some(-2.0),
+            Some(-1.0),
+            Some(0.0),
+            Some(0.5),
+            Some(1.0),
+            Some(2.0),
+            Some(3.0),
+            Some(3.5),
+            Some(4.0),
+            Some(5.0),
+        ];
         let strs = [None, Some("open"), Some("paid"), Some("x"), Some("")];
         let bools = [None, Some(true), Some(false)];
         for (assume, goal) in cases {
-            let (assume, goal): (SExpression, SExpression) = (serde_json::from_value(assume).unwrap(), serde_json::from_value(goal).unwrap());
+            let (assume, goal): (SExpression, SExpression) = (
+                serde_json::from_value(assume).unwrap(),
+                serde_json::from_value(goal).unwrap(),
+            );
             let mut t = Translator::new(&vars);
-            let f = Formula::and(vec![t.truthy(&assume).unwrap(), t.truthy(&goal).unwrap().negate().unwrap()]);
-            assert_eq!(decide(&f, &vars), Outcome::Unsat, "{assume:?} => {goal:?} should be proved");
+            let f = Formula::and(vec![
+                t.truthy(&assume).unwrap(),
+                t.truthy(&goal).unwrap().negate().unwrap(),
+            ]);
+            assert_eq!(
+                decide(&f, &vars),
+                Outcome::Unsat,
+                "{assume:?} => {goal:?} should be proved"
+            );
             for _ in 0..2000 {
                 let mut model = Model::default();
                 for (name, info) in &vars {
@@ -576,7 +1099,9 @@ mod tests {
                             None => ModelValue::Num(Rat::ZERO),
                         },
                         Sort::Str(domain) => match strs[next(strs.len())] {
-                            Some(v) if domain.as_ref().is_none_or(|d| d.iter().any(|x| x == v)) => ModelValue::Str(v.to_string()),
+                            Some(v) if domain.as_ref().is_none_or(|d| d.iter().any(|x| x == v)) => {
+                                ModelValue::Str(v.to_string())
+                            }
                             _ if info.nullable => ModelValue::Null,
                             _ => ModelValue::Str("open".to_string()),
                         },
@@ -587,7 +1112,10 @@ mod tests {
                     };
                     model.values.insert(name.clone(), value);
                 }
-                assert!(!confirm::confirms(&model, std::slice::from_ref(&assume), &goal), "unsound: {assume:?} => {goal:?} fails on {model:?}");
+                assert!(
+                    !confirm::confirms(&model, std::slice::from_ref(&assume), &goal),
+                    "unsound: {assume:?} => {goal:?} fails on {model:?}"
+                );
             }
         }
     }
@@ -611,69 +1139,175 @@ mod tests {
 
     #[test]
     fn an_ensures_relating_the_new_row_to_the_old_one_is_proved() {
-        let ensures = json!([["=", "@entity.paid", ["+", "@fromEntity.paid", "@payload.amount"]]]);
-        let t = json!([pay(json!([["set", "@entity.paid", ["+", "@entity.paid", "@payload.amount"]]]), ensures, None)]);
+        let ensures = json!([[
+            "=",
+            "@entity.paid",
+            ["+", "@fromEntity.paid", "@payload.amount"]
+        ]]);
+        let t = json!([pay(
+            json!([[
+                "set",
+                "@entity.paid",
+                ["+", "@entity.paid", "@payload.amount"]
+            ]]),
+            ensures,
+            None
+        )]);
         assert_eq!(only(&program(t, J::Null, J::Null)), Verdict::Proved);
     }
 
     #[test]
     fn an_off_by_one_write_breaks_the_ensures_with_a_confirmed_counterexample() {
-        let ensures = json!([["=", "@entity.paid", ["+", "@fromEntity.paid", "@payload.amount"]]]);
-        let t = json!([pay(json!([["set", "@entity.paid", ["+", ["+", "@entity.paid", "@payload.amount"], 1]]]), ensures, None)]);
+        let ensures = json!([[
+            "=",
+            "@entity.paid",
+            ["+", "@fromEntity.paid", "@payload.amount"]
+        ]]);
+        let t = json!([pay(
+            json!([[
+                "set",
+                "@entity.paid",
+                ["+", ["+", "@entity.paid", "@payload.amount"], 1]
+            ]]),
+            ensures,
+            None
+        )]);
         // `x + 1 = x` fails for every input, so any row is a counterexample.
-        assert!(matches!(only(&program(t, J::Null, J::Null)), Verdict::Violated { .. }));
+        assert!(matches!(
+            only(&program(t, J::Null, J::Null)),
+            Verdict::Violated { .. }
+        ));
     }
 
     #[test]
     fn an_opaque_write_leaves_the_ensures_unproved_never_passed() {
         let ensures = json!([[">=", "@entity.paid", 0]]);
-        let t = json!([pay(json!([["set", "@entity.paid", ["str/len", "@payload.status"]]]), ensures, None)]);
-        let Verdict::Unproved { reason, .. } = only(&program(t, J::Null, J::Null)) else { panic!() };
+        let t = json!([pay(
+            json!([["set", "@entity.paid", ["str/len", "@payload.status"]]]),
+            ensures,
+            None
+        )]);
+        let Verdict::Unproved { reason, .. } = only(&program(t, J::Null, J::Null)) else {
+            panic!()
+        };
         assert!(reason.contains("str/len"), "{reason}");
     }
 
     #[test]
     fn an_own_row_update_is_what_the_ensures_reads_and_its_control_fails() {
         let write = json!([["persist", "update", "Order", "@entity.id", { "paid": ["+", "@entity.paid", "@payload.amount"] }]]);
-        let grows = json!([["=", "@entity.paid", ["+", "@fromEntity.paid", "@payload.amount"]]]);
-        assert_eq!(only(&program(json!([pay(write.clone(), grows, None)]), J::Null, J::Null)), Verdict::Proved);
+        let grows = json!([[
+            "=",
+            "@entity.paid",
+            ["+", "@fromEntity.paid", "@payload.amount"]
+        ]]);
+        assert_eq!(
+            only(&program(
+                json!([pay(write.clone(), grows, None)]),
+                J::Null,
+                J::Null
+            )),
+            Verdict::Proved
+        );
         let unchanged = json!([["=", "@entity.paid", "@fromEntity.paid"]]);
-        assert!(matches!(only(&program(json!([pay(write, unchanged, None)]), J::Null, J::Null)), Verdict::Violated { .. }));
+        assert!(matches!(
+            only(&program(
+                json!([pay(write, unchanged, None)]),
+                J::Null,
+                J::Null
+            )),
+            Verdict::Violated { .. }
+        ));
     }
 
     #[test]
     fn the_ensures_assumes_the_guard_and_the_source_states_holds() {
         let ensures = json!([[">=", "@entity.paid", 0]]);
-        let spend = json!([["set", "@entity.paid", ["+", "@entity.paid", "@payload.amount"]]]);
+        let spend = json!([[
+            "set",
+            "@entity.paid",
+            ["+", "@entity.paid", "@payload.amount"]
+        ]]);
         let guard = json!([">=", "@payload.amount", 0]);
-        let mut schema = program(json!([pay(spend.clone(), ensures.clone(), Some(guard.clone()))]), J::Null, J::Null);
-        assert!(matches!(of_kind(&schema, true)[..], [(_, Verdict::Violated { .. })]), "without the source state's @holds the old row may be negative");
-        let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] else { panic!() };
-        td.state_machine.states[0].holds = Some(serde_json::from_value(json!([">=", "@entity.paid", 0])).unwrap());
-        assert_eq!(of_kind(&schema, true), vec![(of_kind(&schema, true)[0].0.clone(), Verdict::Proved)]);
+        let mut schema = program(
+            json!([pay(spend.clone(), ensures.clone(), Some(guard.clone()))]),
+            J::Null,
+            J::Null,
+        );
+        assert!(
+            matches!(of_kind(&schema, true)[..], [(_, Verdict::Violated { .. })]),
+            "without the source state's @holds the old row may be negative"
+        );
+        let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] else {
+            panic!()
+        };
+        td.state_machine.states[0].holds =
+            Some(serde_json::from_value(json!([">=", "@entity.paid", 0])).unwrap());
+        assert_eq!(
+            of_kind(&schema, true),
+            vec![(of_kind(&schema, true)[0].0.clone(), Verdict::Proved)]
+        );
         let unguarded = program(json!([pay(spend, ensures, None)]), J::Null, J::Null);
-        assert!(matches!(of_kind(&unguarded, true)[..], [(_, Verdict::Violated { .. })]), "control: the guard is what keeps it");
+        assert!(
+            matches!(
+                of_kind(&unguarded, true)[..],
+                [(_, Verdict::Violated { .. })]
+            ),
+            "control: the guard is what keeps it"
+        );
     }
 
     #[test]
     fn a_spec_ensures_and_the_same_body_ensures_owe_one_obligation() {
-        let ensures = json!([["=", "@entity.paid", ["+", "@fromEntity.paid", "@payload.amount"]]]);
+        let ensures = json!([[
+            "=",
+            "@entity.paid",
+            ["+", "@fromEntity.paid", "@payload.amount"]
+        ]]);
         let spec = json!([{ "kind": "transition", "traitName": "Checkout", "from": "open", "event": "PAY", "to": "paid", "ensures": ensures, "strict": true }]);
-        let t = json!([pay(json!([["set", "@entity.paid", ["+", "@entity.paid", "@payload.amount"]]]), ensures, None)]);
+        let t = json!([pay(
+            json!([[
+                "set",
+                "@entity.paid",
+                ["+", "@entity.paid", "@payload.amount"]
+            ]]),
+            ensures,
+            None
+        )]);
         assert_eq!(only(&program(t, J::Null, spec.clone())), Verdict::Proved);
         let bare = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.paid", 0]] }]);
-        assert!(matches!(only(&program(bare, J::Null, spec)), Verdict::Violated { .. }), "a spec ensures binds a body without one");
+        assert!(
+            matches!(
+                only(&program(bare, J::Null, spec)),
+                Verdict::Violated { .. }
+            ),
+            "a spec ensures binds a body without one"
+        );
     }
 
     #[test]
     fn a_body_invariant_and_a_body_holds_are_owed_like_spec_ones() {
         let t = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
         let mut schema = program(t, J::Null, J::Null);
-        let EntityRef::Inline(def) = &mut schema.orbitals[0].entity else { panic!() };
-        def.invariants = Some(vec![serde_json::from_value(json!([">=", "@entity.total", 0])).unwrap()]);
+        let EntityRef::Inline(def) = &mut schema.orbitals[0].entity else {
+            panic!()
+        };
+        def.invariants = Some(vec![serde_json::from_value(json!([
+            ">=",
+            "@entity.total",
+            0
+        ]))
+        .unwrap()]);
         assert!(matches!(only(&schema), Verdict::Violated { .. }));
-        let control = program(json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]), J::Null, J::Null);
-        assert!(prove(&control).is_empty(), "control: no proposition, no obligation");
+        let control = program(
+            json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]),
+            J::Null,
+            J::Null,
+        );
+        assert!(
+            prove(&control).is_empty(),
+            "control: no proposition, no obligation"
+        );
     }
 
     #[test]

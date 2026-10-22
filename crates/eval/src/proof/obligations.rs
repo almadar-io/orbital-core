@@ -12,12 +12,14 @@
 
 use super::formula::{Sort, VarInfo, Vars};
 use orbital_core_base::effect_types::strip_trailing_emit_options;
-use orbital_core_base::persist_batch::{batch_written_entities, classify_ops, is_op_tuple, BatchOps};
+use orbital_core_base::persist_batch::{
+    batch_written_entities, classify_ops, is_op_tuple, BatchOps,
+};
 use orbital_core_base::policy::identity_entity_def;
 use orbital_core_base::schema::sexpr::{SExpression, SequentialBindings};
 use orbital_core_base::schema::types::{
-    EntityDefinition, EntityRef, ExpectDeclaration, FieldDefinition, FieldType, OrbitalSchema, PayloadField,
-    Persistence, TraitDefinition, TraitReference,
+    EntityDefinition, EntityRef, ExpectDeclaration, FieldDefinition, FieldType, OrbitalSchema,
+    PayloadField, Persistence, TraitDefinition, TraitReference,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,11 +41,24 @@ const MAX_PATHS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Proposition {
-    Row { entity: String, expr: SExpression },
-    State { trait_name: String, state: String, expr: SExpression },
+    Row {
+        entity: String,
+        expr: SExpression,
+    },
+    State {
+        trait_name: String,
+        state: String,
+        expr: SExpression,
+    },
     /// `@ensures` of the transition `from --event--> to`: holds over the `@entity` after its effects, with
     /// `@fromEntity` the `@entity` before them.
-    Transition { trait_name: String, from: String, event: String, to: String, expr: SExpression },
+    Transition {
+        trait_name: String,
+        from: String,
+        event: String,
+        to: String,
+        expr: SExpression,
+    },
 }
 
 /// The root an `@ensures` reads the entity before the transition through.
@@ -74,15 +89,38 @@ pub fn propositions(schema: &OrbitalSchema) -> Vec<Proposition> {
     for orbital in &schema.orbitals {
         for e in orbital.expects.iter().flatten().filter(|e| e.is_strict()) {
             match e {
-                ExpectDeclaration::Entity { name, invariants: Some(list), .. } => {
+                ExpectDeclaration::Entity {
+                    name,
+                    invariants: Some(list),
+                    ..
+                } => {
                     for expr in list {
-                        add(Proposition::Row { entity: name.clone(), expr: expr.clone() });
+                        add(Proposition::Row {
+                            entity: name.clone(),
+                            expr: expr.clone(),
+                        });
                     }
                 }
-                ExpectDeclaration::State { trait_name, state, holds: Some(expr), .. } => {
-                    add(Proposition::State { trait_name: trait_name.clone(), state: state.clone(), expr: expr.clone() });
+                ExpectDeclaration::State {
+                    trait_name,
+                    state,
+                    holds: Some(expr),
+                    ..
+                } => {
+                    add(Proposition::State {
+                        trait_name: trait_name.clone(),
+                        state: state.clone(),
+                        expr: expr.clone(),
+                    });
                 }
-                ExpectDeclaration::Transition { trait_name, from, event, to, ensures: Some(list), .. } => {
+                ExpectDeclaration::Transition {
+                    trait_name,
+                    from,
+                    event,
+                    to,
+                    ensures: Some(list),
+                    ..
+                } => {
                     for expr in list {
                         add(Proposition::Transition {
                             trait_name: trait_name.clone(),
@@ -99,18 +137,28 @@ pub fn propositions(schema: &OrbitalSchema) -> Vec<Proposition> {
         if orbital.is_spec() {
             continue;
         }
-        for e in std::iter::once(&orbital.entity).chain(orbital.auxiliary_entities.iter().flatten()) {
+        for e in std::iter::once(&orbital.entity).chain(orbital.auxiliary_entities.iter().flatten())
+        {
             if let EntityRef::Inline(def) = e {
                 for expr in def.invariants.iter().flatten() {
-                    add(Proposition::Row { entity: def.name.clone(), expr: expr.clone() });
+                    add(Proposition::Row {
+                        entity: def.name.clone(),
+                        expr: expr.clone(),
+                    });
                 }
             }
         }
         for t in &orbital.traits {
-            let TraitReference::Inline(td) = t else { continue };
+            let TraitReference::Inline(td) = t else {
+                continue;
+            };
             for st in &td.state_machine.states {
                 if let Some(expr) = &st.holds {
-                    add(Proposition::State { trait_name: td.name.clone(), state: st.name.clone(), expr: expr.clone() });
+                    add(Proposition::State {
+                        trait_name: td.name.clone(),
+                        state: st.name.clone(),
+                        expr: expr.clone(),
+                    });
                 }
             }
             for tr in &td.state_machine.transitions {
@@ -148,12 +196,18 @@ pub fn obligations(schema: &OrbitalSchema) -> Vec<Obligation> {
                     .collect();
                 program.row_obligations(p, entity, expr, &invariants, &mut out);
             }
-            Proposition::State { trait_name, state, expr } => {
+            Proposition::State {
+                trait_name,
+                state,
+                expr,
+            } => {
                 let row_invariants = |entity: &str| -> Vec<SExpression> {
                     props
                         .iter()
                         .filter_map(|q| match q {
-                            Proposition::Row { entity: e, expr } if e == entity => Some(expr.clone()),
+                            Proposition::Row { entity: e, expr } if e == entity => {
+                                Some(expr.clone())
+                            }
                             _ => None,
                         })
                         .collect()
@@ -162,22 +216,52 @@ pub fn obligations(schema: &OrbitalSchema) -> Vec<Obligation> {
                     props
                         .iter()
                         .filter_map(|q| match q {
-                            Proposition::State { trait_name: t, state: s, expr } if t == trait_ && s == st => Some(expr.clone()),
+                            Proposition::State {
+                                trait_name: t,
+                                state: s,
+                                expr,
+                            } if t == trait_ && s == st => Some(expr.clone()),
                             _ => None,
                         })
                         .collect()
                 };
-                program.state_obligations(p, trait_name, state, expr, &Known { rows: &row_invariants, states: &state_holds }, &mut out);
+                program.state_obligations(
+                    p,
+                    trait_name,
+                    state,
+                    expr,
+                    &Known {
+                        rows: &row_invariants,
+                        states: &state_holds,
+                    },
+                    &mut out,
+                );
             }
-            Proposition::Transition { trait_name, from, event, to, expr } => {
+            Proposition::Transition {
+                trait_name,
+                from,
+                event,
+                to,
+                expr,
+            } => {
                 let source_holds: Vec<SExpression> = props
                     .iter()
                     .filter_map(|q| match q {
-                        Proposition::State { trait_name: t, state: s, expr } if t == trait_name && s == from => Some(expr.clone()),
+                        Proposition::State {
+                            trait_name: t,
+                            state: s,
+                            expr,
+                        } if t == trait_name && s == from => Some(expr.clone()),
                         _ => None,
                     })
                     .collect();
-                program.transition_obligations(p, (trait_name, from, event, to), expr, &source_holds, &mut out);
+                program.transition_obligations(
+                    p,
+                    (trait_name, from, event, to),
+                    expr,
+                    &source_holds,
+                    &mut out,
+                );
             }
         }
     }
@@ -226,7 +310,12 @@ fn steps(td: &TraitDefinition) -> Vec<Step<'_>> {
     for tick in td.ticks.iter().flatten() {
         let from = match &tick.applies_to {
             Some(states) if !states.is_empty() => states.iter().map(String::as_str).collect(),
-            _ => td.state_machine.states.iter().map(|s| s.name.as_str()).collect(),
+            _ => td
+                .state_machine
+                .states
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect(),
         };
         out.push(Step {
             site: format!("{}: tick {}", td.name, tick.name),
@@ -250,20 +339,30 @@ impl<'a> Program<'a> {
                     traits.push(td);
                 }
             }
-            for e in std::iter::once(&orbital.entity).chain(orbital.auxiliary_entities.iter().flatten()) {
+            for e in
+                std::iter::once(&orbital.entity).chain(orbital.auxiliary_entities.iter().flatten())
+            {
                 if let EntityRef::Inline(def) = e {
                     entities.push(def);
                 }
             }
         }
-        Program { schema, traits, entities }
+        Program {
+            schema,
+            traits,
+            entities,
+        }
     }
 
     fn entity(&self, name: &str) -> Option<&'a EntityDefinition> {
         self.entities.iter().copied().find(|e| e.name == name)
     }
 
-    fn payload_fields<'t>(&self, td: &'t TraitDefinition, event: Option<&str>) -> &'t [PayloadField] {
+    fn payload_fields<'t>(
+        &self,
+        td: &'t TraitDefinition,
+        event: Option<&str>,
+    ) -> &'t [PayloadField] {
         let Some(event) = event else { return &[] };
         td.state_machine
             .events
@@ -282,13 +381,17 @@ impl<'a> Program<'a> {
         }
         for f in self.payload_fields(td, event) {
             let name = format!("@payload.{}", f.name);
-            let nullable = f.required != Some(true);
+            let nullable = f.required != Some(true) || f.nullable == Some(true);
             match payload_sort(f) {
                 Some(sort) => {
                     vars.insert(name, VarInfo { sort, nullable });
                 }
                 None => {
-                    let record = f.entity.as_deref().or(Some(f.field_type.as_str())).and_then(|e| self.entity(e));
+                    let record = f
+                        .entity
+                        .as_deref()
+                        .or(Some(f.field_type.as_str()))
+                        .and_then(|e| self.entity(e));
                     if let Some(def) = record {
                         add_entity_vars(&mut vars, &name, def, true);
                     }
@@ -309,7 +412,9 @@ impl<'a> Program<'a> {
         invariants: &[SExpression],
         out: &mut Vec<Obligation>,
     ) {
-        let Some(def) = self.entity(entity) else { return };
+        let Some(def) = self.entity(entity) else {
+            return;
+        };
         let intrinsic: BTreeSet<&str> = def
             .fields
             .iter()
@@ -332,7 +437,11 @@ impl<'a> Program<'a> {
                 for (pi, path) in paths.iter().enumerate() {
                     for w in path.writes.iter().filter(|w| w.entity == UNKNOWN_TARGET) {
                         let site = format!("{}, {}{}", step.site, w.at, path_label(&paths, pi));
-                        out.push(unbuildable(prop, &site, "a write whose target entity is not statically known".to_string()));
+                        out.push(unbuildable(
+                            prop,
+                            &site,
+                            "a write whose target entity is not statically known".to_string(),
+                        ));
                     }
                     for w in path.writes.iter().filter(|w| w.entity == entity) {
                         let site = format!("{}, {}{}", step.site, w.at, path_label(&paths, pi));
@@ -340,7 +449,9 @@ impl<'a> Program<'a> {
                             && matches!(&w.id, Some(SExpression::String(s)) if s == "@entity.id");
                         let to_row = |e: &SExpression| -> SExpression {
                             if linked {
-                                subst_fields(e, "@entity", &|f| (!set_fields.contains(f)).then(|| bind(ROW, f)))
+                                subst_fields(e, "@entity", &|f| {
+                                    (!set_fields.contains(f)).then(|| bind(ROW, f))
+                                })
                             } else {
                                 e.clone()
                             }
@@ -348,7 +459,13 @@ impl<'a> Program<'a> {
                         let mut vars = self.base_vars(td, step.event);
                         add_entity_vars(&mut vars, ROW, def, false);
                         let mut notes = path.notes.clone();
-                        let mut base: Vec<SExpression> = step.guard.into_iter().cloned().chain(path.conds.iter().cloned()).map(|e| to_row(&e)).collect();
+                        let mut base: Vec<SExpression> = step
+                            .guard
+                            .into_iter()
+                            .cloned()
+                            .chain(path.conds.iter().cloned())
+                            .map(|e| to_row(&e))
+                            .collect();
                         if let Data::Whole(b) | Data::Merge(b, _) = &w.data {
                             self.add_record_vars(&mut vars, b, def);
                         }
@@ -361,46 +478,113 @@ impl<'a> Program<'a> {
                                     Some(v) => to_row(v),
                                     None => old.unwrap_or_else(|| default_of(def, f)),
                                 },
-                                Data::Whole(SExpression::String(b)) if b.starts_with('@') => to_row(&SExpression::String(format!("{b}.{f}"))),
-                                Data::Whole(other) => unresolved(&format!("{f} of {}", canonical(other))),
+                                Data::Whole(SExpression::String(b)) if b.starts_with('@') => {
+                                    to_row(&SExpression::String(format!("{b}.{f}")))
+                                }
+                                Data::Whole(other) => {
+                                    unresolved(&format!("{f} of {}", canonical(other)))
+                                }
                                 Data::Merge(b, over) => match (over.get(f), b) {
                                     (Some(v), _) => to_row(v),
-                                    (None, SExpression::String(b)) if b.starts_with('@') => to_row(&SExpression::String(format!("{b}.{f}"))),
-                                    (None, other) => unresolved(&format!("{f} of {}", canonical(other))),
+                                    (None, SExpression::String(b)) if b.starts_with('@') => {
+                                        to_row(&SExpression::String(format!("{b}.{f}")))
+                                    }
+                                    (None, other) => {
+                                        unresolved(&format!("{f} of {}", canonical(other)))
+                                    }
                                 },
                             }
                         };
-                        let fields: Vec<&str> = def.fields.iter().filter_map(|f| f.name.as_deref()).collect();
+                        let fields: Vec<&str> = def
+                            .fields
+                            .iter()
+                            .filter_map(|f| f.name.as_deref())
+                            .collect();
                         if matches!(w.op, WriteOp::Create | WriteOp::Upsert) {
-                            let created: BTreeMap<&str, SExpression> = fields.iter().map(|f| (*f, new_field(f, None))).collect();
-                            out.push(configured(td, Obligation {
-                                proposition: prop.clone(),
-                                site: format!("{site} (create)"),
-                                assumptions: base.clone(),
-                                goal: subst_fields(inv, "@entity", &|f| Some(created.get(f).cloned().unwrap_or(SExpression::Null))),
-                                vars: vars.clone(),
-                                inexact: join(&notes),
-                                unbuildable: None,
-                            }));
+                            let created: BTreeMap<&str, SExpression> =
+                                fields.iter().map(|f| (*f, new_field(f, None))).collect();
+                            let whole = match &w.data {
+                                Data::Fields(written) => {
+                                    let mut record: orbital_core_base::schema::SObject = written
+                                        .iter()
+                                        .filter(|(name, _)| !intrinsic.contains(name.as_str()))
+                                        .map(|(name, value)| (name.clone(), to_row(value)))
+                                        .collect();
+                                    for field in &def.fields {
+                                        if let (Some(name), Some(default)) =
+                                            (&field.name, &field.default)
+                                        {
+                                            if !intrinsic.contains(name.as_str()) {
+                                                record
+                                                    .entry(name.clone())
+                                                    .or_insert_with(|| default.clone());
+                                            }
+                                        }
+                                    }
+                                    SExpression::Object(record)
+                                }
+                                _ => unresolved("created whole record"),
+                            };
+                            out.push(configured(
+                                td,
+                                Obligation {
+                                    proposition: prop.clone(),
+                                    site: format!("{site} (create)"),
+                                    assumptions: base.clone(),
+                                    goal: subst_record(
+                                        inv,
+                                        "@entity",
+                                        &|f| {
+                                            Some(
+                                                created
+                                                    .get(f)
+                                                    .cloned()
+                                                    .unwrap_or(SExpression::Null),
+                                            )
+                                        },
+                                        &whole,
+                                    ),
+                                    vars: vars.clone(),
+                                    inexact: join(&notes),
+                                    unbuildable: None,
+                                },
+                            ));
                         }
                         if matches!(w.op, WriteOp::Update | WriteOp::Upsert) {
                             if matches!(w.data, Data::Whole(_) | Data::Merge(..)) {
-                                notes.push("a whole-record update merges only the keys its value carries".to_string());
+                                notes.push(
+                                    "a whole-record update merges only the keys its value carries"
+                                        .to_string(),
+                                );
                             }
-                            let old = |f: &str| -> SExpression { if intrinsic.contains(f) { SExpression::Null } else { bind(ROW, f) } };
+                            let old = |f: &str| -> SExpression {
+                                if intrinsic.contains(f) {
+                                    SExpression::Null
+                                } else {
+                                    bind(ROW, f)
+                                }
+                            };
                             for i in invariants {
                                 base.push(subst_fields(i, "@entity", &|f| Some(old(f))));
                             }
-                            let updated: BTreeMap<&str, SExpression> = fields.iter().map(|f| (*f, new_field(f, Some(old(f))))).collect();
-                            out.push(configured(td, Obligation {
-                                proposition: prop.clone(),
-                                site: format!("{site} (update)"),
-                                assumptions: base,
-                                goal: subst_fields(inv, "@entity", &|f| Some(updated.get(f).cloned().unwrap_or_else(|| old(f)))),
-                                vars,
-                                inexact: join(&notes),
-                                unbuildable: None,
-                            }));
+                            let updated: BTreeMap<&str, SExpression> = fields
+                                .iter()
+                                .map(|f| (*f, new_field(f, Some(old(f)))))
+                                .collect();
+                            out.push(configured(
+                                td,
+                                Obligation {
+                                    proposition: prop.clone(),
+                                    site: format!("{site} (update)"),
+                                    assumptions: base,
+                                    goal: subst_fields(inv, "@entity", &|f| {
+                                        Some(updated.get(f).cloned().unwrap_or_else(|| old(f)))
+                                    }),
+                                    vars,
+                                    inexact: join(&notes),
+                                    unbuildable: None,
+                                },
+                            ));
                         }
                     }
                 }
@@ -431,7 +615,9 @@ impl<'a> Program<'a> {
             let linked = td.linked_entity.as_deref().and_then(|e| self.entity(e));
             let set_fields = fields_set_anywhere(td);
             for step in steps(td) {
-                if step.to.is_some_and(|to| to != state) || (step.to.is_none() && !step.from.contains(&state)) {
+                if step.to.is_some_and(|to| to != state)
+                    || (step.to.is_none() && !step.from.contains(&state))
+                {
                     continue;
                 }
                 let paths = match run(step.effects, td, step.event, self) {
@@ -472,23 +658,43 @@ impl<'a> Program<'a> {
                     let goal = subst_fields(holds, "@entity", &|f| after.get(f).cloned());
                     for (inside, held) in &starts {
                         let inside = *inside;
-                        let mut assumptions: Vec<SExpression> =
-                            step.guard.into_iter().cloned().chain(path.conds.iter().cloned()).collect();
+                        let mut assumptions: Vec<SExpression> = step
+                            .guard
+                            .into_iter()
+                            .cloned()
+                            .chain(path.conds.iter().cloned())
+                            .collect();
                         assumptions.extend(held.iter().cloned());
-                        let label = if starts.len() > 1 { if inside { " (from the state)" } else { " (from another state)" } } else { "" };
-                        out.push(configured(td, Obligation {
-                            proposition: prop.clone(),
-                            site: format!("{}{}{}", step.site, path_label(&paths, pi), label),
-                            assumptions,
-                            goal: goal.clone(),
-                            vars: vars.clone(),
-                            inexact: join(&notes),
-                            unbuildable: None,
-                        }));
+                        let label = if starts.len() > 1 {
+                            if inside {
+                                " (from the state)"
+                            } else {
+                                " (from another state)"
+                            }
+                        } else {
+                            ""
+                        };
+                        out.push(configured(
+                            td,
+                            Obligation {
+                                proposition: prop.clone(),
+                                site: format!("{}{}{}", step.site, path_label(&paths, pi), label),
+                                assumptions,
+                                goal: goal.clone(),
+                                vars: vars.clone(),
+                                inexact: join(&notes),
+                                unbuildable: None,
+                            },
+                        ));
                     }
                 }
             }
-            if td.state_machine.states.iter().any(|s| s.name == state && s.is_initial == Some(true)) {
+            if td
+                .state_machine
+                .states
+                .iter()
+                .any(|s| s.name == state && s.is_initial == Some(true))
+            {
                 self.initial_obligations(prop, td, linked, holds, row_invariants, out);
             }
             self.foreign_obligations(prop, td, linked, &set_fields, holds, out);
@@ -529,17 +735,25 @@ impl<'a> Program<'a> {
                     }
                     let post = subst_fields(ensures, "@entity", &|f| after.get(f).cloned());
                     let goal = subst_fields(&post, FROM_ENTITY, &|f| Some(bind("@entity", f)));
-                    let mut assumptions: Vec<SExpression> = step.guard.into_iter().cloned().chain(path.conds.iter().cloned()).collect();
+                    let mut assumptions: Vec<SExpression> = step
+                        .guard
+                        .into_iter()
+                        .cloned()
+                        .chain(path.conds.iter().cloned())
+                        .collect();
                     assumptions.extend(source_holds.iter().cloned());
-                    out.push(configured(td, Obligation {
-                        proposition: prop.clone(),
-                        site: format!("{}{}", step.site, path_label(&paths, pi)),
-                        assumptions,
-                        goal,
-                        vars,
-                        inexact: join(&notes),
-                        unbuildable: None,
-                    }));
+                    out.push(configured(
+                        td,
+                        Obligation {
+                            proposition: prop.clone(),
+                            site: format!("{}{}", step.site, path_label(&paths, pi)),
+                            assumptions,
+                            goal,
+                            vars,
+                            inexact: join(&notes),
+                            unbuildable: None,
+                        },
+                    ));
                 }
             }
         }
@@ -556,27 +770,38 @@ impl<'a> Program<'a> {
     ) {
         let mut vars = self.base_vars(td, None);
         let defaults = |f: &str| Some(linked.map_or(SExpression::Null, |def| default_of(def, f)));
-        out.push(configured(td, Obligation {
-            proposition: prop.clone(),
-            site: format!("{}: mounted with its entity's defaults", td.name),
-            assumptions: Vec::new(),
-            goal: subst_fields(holds, "@entity", &defaults),
-            vars: vars.clone(),
-            inexact: None,
-            unbuildable: None,
-        }));
-        let Some(def) = linked.filter(|d| d.persistence != Some(Persistence::Runtime)) else { return };
+        out.push(configured(
+            td,
+            Obligation {
+                proposition: prop.clone(),
+                site: format!("{}: mounted with its entity's defaults", td.name),
+                assumptions: Vec::new(),
+                goal: subst_fields(holds, "@entity", &defaults),
+                vars: vars.clone(),
+                inexact: None,
+                unbuildable: None,
+            },
+        ));
+        let Some(def) = linked.filter(|d| d.persistence != Some(Persistence::Runtime)) else {
+            return;
+        };
         add_entity_vars(&mut vars, INIT, def, true);
         let row = |f: &str| Some(bind(INIT, f));
-        out.push(configured(td, Obligation {
-            proposition: prop.clone(),
-            site: format!("{}: mounted on a stored {} row", td.name, def.name),
-            assumptions: row_invariants(&def.name).iter().map(|i| subst_fields(i, "@entity", &row)).collect(),
-            goal: subst_fields(holds, "@entity", &row),
-            vars,
-            inexact: None,
-            unbuildable: None,
-        }));
+        out.push(configured(
+            td,
+            Obligation {
+                proposition: prop.clone(),
+                site: format!("{}: mounted on a stored {} row", td.name, def.name),
+                assumptions: row_invariants(&def.name)
+                    .iter()
+                    .map(|i| subst_fields(i, "@entity", &row))
+                    .collect(),
+                goal: subst_fields(holds, "@entity", &row),
+                vars,
+                inexact: None,
+                unbuildable: None,
+            },
+        ));
     }
 
     /// Another trait's write of the row `td` may be showing, or of a shared frame, can change `td`'s `@entity`
@@ -593,23 +818,38 @@ impl<'a> Program<'a> {
         let Some(def) = linked else { return };
         let holds = &config_read(td, holds);
         for other in self.traits.iter().filter(|u| u.name != td.name) {
-            let shares_frame = def.shared && other.linked_entity.as_deref() == Some(def.name.as_str());
+            let shares_frame =
+                def.shared && other.linked_entity.as_deref() == Some(def.name.as_str());
             for step in steps(other) {
                 let Ok(paths) = run(step.effects, other, step.event, self) else {
-                    out.push(unbuildable(prop, &step.site, format!("more than {MAX_PATHS} effect paths")));
+                    out.push(unbuildable(
+                        prop,
+                        &step.site,
+                        format!("more than {MAX_PATHS} effect paths"),
+                    ));
                     continue;
                 };
                 for (pi, path) in paths.iter().enumerate() {
-                    let rename = |e: &SExpression| config_read(other, &subst_fields(e, "@entity", &|f| Some(bind(OTHER, f))));
+                    let rename = |e: &SExpression| {
+                        config_read(
+                            other,
+                            &subst_fields(e, "@entity", &|f| Some(bind(OTHER, f))),
+                        )
+                    };
                     let mut changed: BTreeMap<String, SExpression> = BTreeMap::new();
                     if path.writes.iter().any(|w| w.entity == UNKNOWN_TARGET) {
                         for f in def.fields.iter().filter_map(|f| f.name.as_deref()) {
                             if !set_fields.contains(f) {
-                                changed.insert(f.to_string(), unresolved(&format!("{f} after an unknown write")));
+                                changed.insert(
+                                    f.to_string(),
+                                    unresolved(&format!("{f} after an unknown write")),
+                                );
                             }
                         }
                     }
-                    for w in path.writes.iter().filter(|w| w.entity == def.name && matches!(w.op, WriteOp::Update | WriteOp::Upsert)) {
+                    for w in path.writes.iter().filter(|w| {
+                        w.entity == def.name && matches!(w.op, WriteOp::Update | WriteOp::Upsert)
+                    }) {
                         match &w.data {
                             Data::Fields(m) => {
                                 for (f, v) in m {
@@ -621,7 +861,10 @@ impl<'a> Program<'a> {
                             Data::Whole(b) | Data::Merge(b, _) => {
                                 for f in def.fields.iter().filter_map(|f| f.name.as_deref()) {
                                     if !set_fields.contains(f) {
-                                        changed.insert(f.to_string(), unresolved(&format!("{f} of {}", canonical(b))));
+                                        changed.insert(
+                                            f.to_string(),
+                                            unresolved(&format!("{f} of {}", canonical(b))),
+                                        );
                                     }
                                 }
                             }
@@ -642,7 +885,12 @@ impl<'a> Program<'a> {
                     if let Some(o) = other.linked_entity.as_deref().and_then(|e| self.entity(e)) {
                         add_entity_vars(&mut vars, OTHER, o, true);
                     }
-                    let mut assumptions: Vec<SExpression> = step.guard.into_iter().chain(path.conds.iter()).map(rename).collect();
+                    let mut assumptions: Vec<SExpression> = step
+                        .guard
+                        .into_iter()
+                        .chain(path.conds.iter())
+                        .map(rename)
+                        .collect();
                     assumptions.push(holds.clone());
                     out.push(Obligation {
                         proposition: prop.clone(),
@@ -670,9 +918,14 @@ fn frame_after(
     let mut after = path.frame.clone();
     let Some(def) = linked else { return after };
     for w in path.writes.iter().filter(|w| w.entity == UNKNOWN_TARGET) {
-        notes.push(format!("{} may write its own row through a target that is not statically known ({})", td.name, w.at));
+        notes.push(format!(
+            "{} may write its own row through a target that is not statically known ({})",
+            td.name, w.at
+        ));
         for f in def.fields.iter().filter_map(|f| f.name.as_deref()) {
-            after.entry(f.to_string()).or_insert_with(|| unresolved(&format!("{f} after an unknown write")));
+            after
+                .entry(f.to_string())
+                .or_insert_with(|| unresolved(&format!("{f} after an unknown write")));
         }
     }
     for w in &path.writes {
@@ -699,7 +952,9 @@ fn frame_after(
             Data::Whole(b) | Data::Merge(b, _) => {
                 notes.push("a whole-record update of the trait's own row".to_string());
                 for f in def.fields.iter().filter_map(|f| f.name.as_deref()) {
-                    after.entry(f.to_string()).or_insert_with(|| unresolved(&format!("{f} of {}", canonical(b))));
+                    after
+                        .entry(f.to_string())
+                        .or_insert_with(|| unresolved(&format!("{f} of {}", canonical(b))));
                 }
             }
         }
@@ -752,7 +1007,12 @@ impl Path {
     }
 }
 
-fn run(effects: &[SExpression], td: &TraitDefinition, event: Option<&str>, program: &Program<'_>) -> Result<Vec<Path>, String> {
+fn run(
+    effects: &[SExpression],
+    td: &TraitDefinition,
+    event: Option<&str>,
+    program: &Program<'_>,
+) -> Result<Vec<Path>, String> {
     let mut paths = vec![Path::default()];
     for (i, e) in effects.iter().enumerate() {
         let mut next = Vec::new();
@@ -767,9 +1027,20 @@ fn run(effects: &[SExpression], td: &TraitDefinition, event: Option<&str>, progr
     Ok(paths)
 }
 
-fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, event: Option<&str>, program: &Program<'_>) -> Result<Vec<Path>, String> {
-    let SExpression::Array(items) = effect else { return Ok(vec![path]) };
-    let Some(SExpression::String(head)) = items.first() else { return Ok(vec![path]) };
+fn exec(
+    effect: &SExpression,
+    mut path: Path,
+    at: &str,
+    td: &TraitDefinition,
+    event: Option<&str>,
+    program: &Program<'_>,
+) -> Result<Vec<Path>, String> {
+    let SExpression::Array(items) = effect else {
+        return Ok(vec![path]);
+    };
+    let Some(SExpression::String(head)) = items.first() else {
+        return Ok(vec![path]);
+    };
     let seq = |body: &[SExpression], start: Path| -> Result<Vec<Path>, String> {
         let mut paths = vec![start];
         for (j, e) in body.iter().enumerate() {
@@ -787,14 +1058,22 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
     match head.as_str() {
         "do" => seq(&items[1..], path),
         "if" | "when" => {
-            let Some(cond) = items.get(1) else { return Ok(vec![path]) };
+            let Some(cond) = items.get(1) else {
+                return Ok(vec![path]);
+            };
             let cond = path.read(cond);
             let mut yes = path.clone();
             yes.conds.push(cond.clone());
             let mut no = path;
-            no.conds.push(SExpression::Array(vec![SExpression::String("not".to_string()), cond]));
+            no.conds.push(SExpression::Array(vec![
+                SExpression::String("not".to_string()),
+                cond,
+            ]));
             let (then, otherwise): (&[SExpression], &[SExpression]) = if head == "if" {
-                (items.get(2).map(std::slice::from_ref).unwrap_or(&[]), items.get(3).map(std::slice::from_ref).unwrap_or(&[]))
+                (
+                    items.get(2).map(std::slice::from_ref).unwrap_or(&[]),
+                    items.get(3).map(std::slice::from_ref).unwrap_or(&[]),
+                )
             } else {
                 (&items[2..], &[])
             };
@@ -803,7 +1082,9 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
             Ok(out)
         }
         "let" => {
-            let Some(scope) = SequentialBindings::from_args(&items[1..]) else { return Ok(vec![path]) };
+            let Some(scope) = SequentialBindings::from_args(&items[1..]) else {
+                return Ok(vec![path]);
+            };
             let mut values: Vec<(String, SExpression)> = Vec::new();
             for (name, init) in &scope.bindings {
                 let mut v = path.read(init);
@@ -814,20 +1095,30 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
             }
             let body: Vec<SExpression> = items[2..]
                 .iter()
-                .map(|b| values.iter().rev().fold(b.clone(), |acc, (n, v)| super::witness::substitute_var(&acc, n, v)))
+                .map(|b| {
+                    values.iter().rev().fold(b.clone(), |acc, (n, v)| {
+                        super::witness::substitute_var(&acc, n, v)
+                    })
+                })
                 .collect();
             seq(&body, path)
         }
         "set" => {
             match (items.get(1), items.get(2)) {
-                (Some(SExpression::String(target)), Some(value)) => match target.strip_prefix("@entity.") {
-                    Some(field) if !field.contains('.') => {
-                        // A binding that reads nothing stores null, as every other read of it (G-ORBITAL-CORE-019).
-                        path.frame.insert(field.to_string(), path.read(value));
+                (Some(SExpression::String(target)), Some(value)) => {
+                    match target.strip_prefix("@entity.") {
+                        Some(field) if !field.contains('.') => {
+                            // A binding that reads nothing stores null, as every other read of it (G-ORBITAL-CORE-019).
+                            path.frame.insert(field.to_string(), path.read(value));
+                        }
+                        _ => path
+                            .notes
+                            .push(format!("`set {target}` is not a top-level `@entity` field")),
                     }
-                    _ => path.notes.push(format!("`set {target}` is not a top-level `@entity` field")),
-                },
-                _ => path.notes.push("a `set` without a literal target".to_string()),
+                }
+                _ => path
+                    .notes
+                    .push("a `set` without a literal target".to_string()),
             }
             Ok(vec![path])
         }
@@ -835,7 +1126,13 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
             let linked = td.linked_entity.as_deref().and_then(|e| program.entity(e));
             let args = strip_trailing_emit_options(&items[1..]);
             let unknown = |path: &mut Path, at: String| {
-                path.writes.push(Write { op: WriteOp::Upsert, entity: UNKNOWN_TARGET.to_string(), id: None, data: Data::Fields(BTreeMap::new()), at });
+                path.writes.push(Write {
+                    op: WriteOp::Upsert,
+                    entity: UNKNOWN_TARGET.to_string(),
+                    id: None,
+                    data: Data::Fields(BTreeMap::new()),
+                    at,
+                });
             };
             match args.first().and_then(|a| a.as_str()) {
                 Some("batch") => match args.get(1).and_then(batch_tuples) {
@@ -848,7 +1145,9 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
                                     op: WriteOp::Upsert,
                                     entity: entity.to_string(),
                                     id: None,
-                                    data: Data::Whole(unresolved(&format!("a {entity} row a built batch writes"))),
+                                    data: Data::Whole(unresolved(&format!(
+                                        "a {entity} row a built batch writes"
+                                    ))),
                                     at: format!("{at} (batch)"),
                                 });
                             }
@@ -860,15 +1159,25 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
                             let (op, id, data) = match t.first().and_then(|a| a.as_str()) {
                                 Some("create") => (WriteOp::Create, None, t.get(2)),
                                 Some("upsert") => (WriteOp::Upsert, None, t.get(2)),
-                                Some("update") => (WriteOp::Update, t.get(2).map(|i| path.read(i)), t.get(3)),
+                                Some("update") => {
+                                    (WriteOp::Update, t.get(2).map(|i| path.read(i)), t.get(3))
+                                }
                                 _ => continue,
                             };
                             let Some(entity) = t.get(1).and_then(|e| target_entity(td, e)) else {
                                 unknown(&mut path, format!("{at} (batch)"));
                                 continue;
                             };
-                            let data = data.map(|d| data_of(&mut path, d, linked)).unwrap_or(Data::Fields(BTreeMap::new()));
-                            path.writes.push(Write { op, entity, id, data, at: format!("{at} (batch)") });
+                            let data = data
+                                .map(|d| data_of(&mut path, d, linked))
+                                .unwrap_or(Data::Fields(BTreeMap::new()));
+                            path.writes.push(Write {
+                                op,
+                                entity,
+                                id,
+                                data,
+                                at: format!("{at} (batch)"),
+                            });
                         }
                     }
                 },
@@ -881,12 +1190,18 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
                         ("update", n) if n >= 4 => (Some(path.read(&args[2])), args.get(3)),
                         _ => (None, args.get(2)),
                     };
-                    let data = data.map(|d| data_of(&mut path, d, linked)).unwrap_or(Data::Fields(BTreeMap::new()));
+                    let data = data
+                        .map(|d| data_of(&mut path, d, linked))
+                        .unwrap_or(Data::Fields(BTreeMap::new()));
                     let id = id.or_else(|| match &data {
                         Data::Fields(m) => m.get("id").cloned(),
-                        Data::Whole(SExpression::String(b)) if b.starts_with('@') => Some(SExpression::String(format!("{b}.id"))),
+                        Data::Whole(SExpression::String(b)) if b.starts_with('@') => {
+                            Some(SExpression::String(format!("{b}.id")))
+                        }
                         Data::Merge(b, over) => over.get("id").cloned().or_else(|| match b {
-                            SExpression::String(b) if b.starts_with('@') => Some(SExpression::String(format!("{b}.id"))),
+                            SExpression::String(b) if b.starts_with('@') => {
+                                Some(SExpression::String(format!("{b}.id")))
+                            }
                             _ => None,
                         }),
                         Data::Whole(_) => None,
@@ -896,7 +1211,13 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
                         "update" => WriteOp::Update,
                         _ => WriteOp::Upsert,
                     };
-                    path.writes.push(Write { op, entity, id, data, at: at.to_string() });
+                    path.writes.push(Write {
+                        op,
+                        entity,
+                        id,
+                        data,
+                        at: at.to_string(),
+                    });
                 }
                 _ => {}
             }
@@ -905,7 +1226,10 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
         "fetch" => {
             if items.get(1).and_then(|e| e.as_str()) == td.linked_entity.as_deref() {
                 if let Some(def) = td.linked_entity.as_deref().and_then(|e| program.entity(e)) {
-                    path.notes.push(format!("a `fetch` of {} may rebind the trait's `@entity`", def.name));
+                    path.notes.push(format!(
+                        "a `fetch` of {} may rebind the trait's `@entity`",
+                        def.name
+                    ));
                     for f in def.fields.iter().filter_map(|f| f.name.as_deref()) {
                         path.frame.insert(f.to_string(), bind(FETCHED, f));
                     }
@@ -921,9 +1245,12 @@ fn exec(effect: &SExpression, mut path: Path, at: &str, td: &TraitDefinition, ev
 /// frame holds them now; any other value is a whole record read field by field.
 fn data_of(path: &mut Path, data: &SExpression, linked: Option<&EntityDefinition>) -> Data {
     match (data, linked) {
-        (SExpression::Object(map), _) => Data::Fields(map.iter().map(|(k, v)| (k.clone(), path.read(v))).collect()),
+        (SExpression::Object(map), _) => {
+            Data::Fields(map.iter().map(|(k, v)| (k.clone(), path.read(v))).collect())
+        }
         (SExpression::String(b), Some(def)) if b == "@entity" => {
-            path.notes.push("`@entity` written whole carries only the keys its frame holds".to_string());
+            path.notes
+                .push("`@entity` written whole carries only the keys its frame holds".to_string());
             Data::Fields(
                 def.fields
                     .iter()
@@ -937,8 +1264,15 @@ fn data_of(path: &mut Path, data: &SExpression, linked: Option<&EntityDefinition
                 && matches!(&items[0], SExpression::String(h) if h == "object/merge")
                 && matches!(&items[2], SExpression::Object(_)) =>
         {
-            let SExpression::Object(over) = &items[2] else { unreachable!() };
-            Data::Merge(path.read(&items[1]), over.iter().map(|(k, v)| (k.clone(), path.read(v))).collect())
+            let SExpression::Object(over) = &items[2] else {
+                unreachable!()
+            };
+            Data::Merge(
+                path.read(&items[1]),
+                over.iter()
+                    .map(|(k, v)| (k.clone(), path.read(v)))
+                    .collect(),
+            )
         }
         (other, _) => Data::Whole(path.read(other)),
     }
@@ -946,14 +1280,19 @@ fn data_of(path: &mut Path, data: &SExpression, linked: Option<&EntityDefinition
 
 /// Whether an effect (or one nested in its control flow) is a `persist`.
 fn has_persist(effect: &SExpression) -> bool {
-    let SExpression::Array(items) = effect else { return false };
-    matches!(items.first(), Some(SExpression::String(h)) if h == "persist") || items.iter().any(has_persist)
+    let SExpression::Array(items) = effect else {
+        return false;
+    };
+    matches!(items.first(), Some(SExpression::String(h)) if h == "persist")
+        || items.iter().any(has_persist)
 }
 
 /// The entity a write names: a literal, or `@config.<knob>` read through the trait's resolved config (call-site
 /// overrides are folded into it). `None` when it is not statically known.
 fn target_entity(td: &TraitDefinition, expr: &SExpression) -> Option<String> {
-    let SExpression::String(s) = expr else { return None };
+    let SExpression::String(s) = expr else {
+        return None;
+    };
     if !s.starts_with('@') {
         return Some(s.clone());
     }
@@ -983,7 +1322,9 @@ fn batch_tuples(ops: &SExpression) -> Option<Vec<&[SExpression]>> {
 fn fields_set_anywhere(td: &TraitDefinition) -> BTreeSet<String> {
     fn walk(e: &SExpression, out: &mut BTreeSet<String>) {
         if let SExpression::Array(items) = e {
-            if let (Some(SExpression::String(h)), Some(SExpression::String(t))) = (items.first(), items.get(1)) {
+            if let (Some(SExpression::String(h)), Some(SExpression::String(t))) =
+                (items.first(), items.get(1))
+            {
                 if h == "set" {
                     if let Some(f) = t.strip_prefix("@entity.") {
                         out.insert(f.split('.').next().unwrap_or(f).to_string());
@@ -1011,7 +1352,9 @@ fn fields_set_anywhere(td: &TraitDefinition) -> BTreeSet<String> {
 /// are folded in): a scalar default is that constant, no default reads null, and a default bound at run time
 /// (`@user.…`, a forward) or a structured one is unresolved. A knob the trait does not declare is left as written.
 fn config_read(td: &TraitDefinition, expr: &SExpression) -> SExpression {
-    let Some(config) = td.config.as_ref() else { return expr.clone() };
+    let Some(config) = td.config.as_ref() else {
+        return expr.clone();
+    };
     subst_fields(expr, "@config", &|knob| {
         let field = config.get(knob)?;
         Some(match &field.default {
@@ -1034,7 +1377,10 @@ fn bind(root: &str, field: &str) -> SExpression {
 }
 
 pub fn unresolved(what: &str) -> SExpression {
-    SExpression::Array(vec![SExpression::String(UNRESOLVED.to_string()), SExpression::String(what.to_string())])
+    SExpression::Array(vec![
+        SExpression::String(UNRESOLVED.to_string()),
+        SExpression::String(what.to_string()),
+    ])
 }
 
 fn canonical(e: &SExpression) -> String {
@@ -1046,7 +1392,11 @@ fn join(notes: &[String]) -> Option<String> {
 }
 
 fn path_label(paths: &[Path], i: usize) -> String {
-    if paths.len() > 1 { format!(" [branch {}]", i + 1) } else { String::new() }
+    if paths.len() > 1 {
+        format!(" [branch {}]", i + 1)
+    } else {
+        String::new()
+    }
 }
 
 fn unbuildable(prop: &Proposition, site: &str, reason: String) -> Obligation {
@@ -1063,15 +1413,32 @@ fn unbuildable(prop: &Proposition, site: &str, reason: String) -> Obligation {
 
 /// `expr` with each read `<root>.<field>[.rest]` replaced by `value(field)` when it gives one: a binding is
 /// re-rooted (keeping `.rest`), any other value replaces a bare field read, and a nested read of a non-binding value
-/// is unresolved. A bare `<root>` read of the whole record is unresolved when any field is replaced.
-pub fn subst_fields(expr: &SExpression, root: &str, value: &dyn Fn(&str) -> Option<SExpression>) -> SExpression {
+/// is unresolved. Exact whole-record replacement uses the same traversal separately.
+pub fn subst_fields(
+    expr: &SExpression,
+    root: &str,
+    value: &dyn Fn(&str) -> Option<SExpression>,
+) -> SExpression {
+    subst_record(expr, root, value, &SExpression::String(root.to_string()))
+}
+
+fn subst_record(
+    expr: &SExpression,
+    root: &str,
+    value: &dyn Fn(&str) -> Option<SExpression>,
+    whole: &SExpression,
+) -> SExpression {
     match expr {
         SExpression::String(s) => {
-            let Some(rest) = s.strip_prefix(root) else { return expr.clone() };
-            if rest.is_empty() {
+            let Some(rest) = s.strip_prefix(root) else {
                 return expr.clone();
+            };
+            if rest.is_empty() {
+                return whole.clone();
             }
-            let Some(path) = rest.strip_prefix('.') else { return expr.clone() };
+            let Some(path) = rest.strip_prefix('.') else {
+                return expr.clone();
+            };
             let (field, tail) = match path.split_once('.') {
                 Some((f, t)) => (f, Some(t)),
                 None => (path, None),
@@ -1079,12 +1446,23 @@ pub fn subst_fields(expr: &SExpression, root: &str, value: &dyn Fn(&str) -> Opti
             match (value(field), tail) {
                 (None, _) => expr.clone(),
                 (Some(v), None) => v,
-                (Some(SExpression::String(b)), Some(t)) if b.starts_with('@') => SExpression::String(format!("{b}.{t}")),
+                (Some(SExpression::String(b)), Some(t)) if b.starts_with('@') => {
+                    SExpression::String(format!("{b}.{t}"))
+                }
                 (Some(_), Some(_)) => unresolved(s),
             }
         }
-        SExpression::Array(items) => SExpression::Array(items.iter().map(|i| subst_fields(i, root, value)).collect()),
-        SExpression::Object(map) => SExpression::Object(map.iter().map(|(k, v)| (k.clone(), subst_fields(v, root, value))).collect()),
+        SExpression::Array(items) => SExpression::Array(
+            items
+                .iter()
+                .map(|i| subst_record(i, root, value, whole))
+                .collect(),
+        ),
+        SExpression::Object(map) => SExpression::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), subst_record(v, root, value, whole)))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -1119,9 +1497,8 @@ fn payload_sort(f: &PayloadField) -> Option<Sort> {
     match f.field_type.as_str() {
         "number" | "money" => Some(Sort::Num),
         "boolean" => Some(Sort::Bool),
-        "string" | "enum" | "date" | "datetime" | "timestamp" | "email" | "url" | "phone" | "uuid" | "image" => {
-            Some(Sort::Str(f.values.clone()))
-        }
+        "string" | "enum" | "date" | "datetime" | "timestamp" | "email" | "url" | "phone"
+        | "uuid" | "image" => Some(Sort::Str(f.values.clone())),
         _ => None,
     }
 }
@@ -1129,11 +1506,17 @@ fn payload_sort(f: &PayloadField) -> Option<Sort> {
 /// `<root>.<field>` for every typed field of `def`; `id` is never null in a stored row.
 fn add_entity_vars(vars: &mut Vars, root: &str, def: &EntityDefinition, all_nullable: bool) {
     for f in &def.fields {
-        let (Some(name), Some(sort)) = (f.name.as_deref(), field_sort(f)) else { continue };
-        let nullable = all_nullable || (f.required != Some(true) && name != "id");
+        let (Some(name), Some(sort)) = (f.name.as_deref(), field_sort(f)) else {
+            continue;
+        };
+        let nullable =
+            all_nullable || f.nullable == Some(true) || (f.required != Some(true) && name != "id");
         vars.insert(format!("{root}.{name}"), VarInfo { sort, nullable });
     }
     if !all_nullable {
-        vars.entry(format!("{root}.id")).or_insert(VarInfo { sort: Sort::Str(None), nullable: false });
+        vars.entry(format!("{root}.id")).or_insert(VarInfo {
+            sort: Sort::Str(None),
+            nullable: false,
+        });
     }
 }

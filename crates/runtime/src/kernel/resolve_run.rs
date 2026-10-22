@@ -4,8 +4,8 @@
 
 use super::*;
 use crate::resumable::{
-    accept_into, accept_replies, number_requests, DispatchError, Exchange, IoReply, Progress, ResolveContinuation,
-    ResolveProgress, StoreLeg,
+    accept_into, accept_replies, number_requests, DispatchError, Exchange, IoReply, Progress,
+    ResolveContinuation, ResolveProgress, StoreLeg,
 };
 
 impl RuntimeKernel {
@@ -35,7 +35,9 @@ impl RuntimeKernel {
     ) -> Result<ResolveProgress, DispatchError> {
         match continuation.store.as_mut() {
             Some(leg) => accept_into(&mut leg.driver, replies)?,
-            None => continuation.journal.extend(accept_replies(&continuation.pending, replies)?),
+            None => continuation
+                .journal
+                .extend(accept_replies(&continuation.pending, replies)?),
         }
         continuation.pending.clear();
         self.drive_resolve(continuation)
@@ -53,10 +55,20 @@ impl RuntimeKernel {
             let Some(leg) = c.store.take() else { break };
             let StoreLeg { ask, driver, seed } = *leg;
             match self.drive_resumable(driver)? {
-                Progress::Await { continuation, requests } => {
+                Progress::Await {
+                    continuation,
+                    requests,
+                } => {
                     c.pending = requests.clone();
-                    c.store = Some(Box::new(StoreLeg { ask, driver: continuation, seed }));
-                    return Ok(ResolveProgress::Await { continuation: c, requests });
+                    c.store = Some(Box::new(StoreLeg {
+                        ask,
+                        driver: continuation,
+                        seed,
+                    }));
+                    return Ok(ResolveProgress::Await {
+                        continuation: c,
+                        requests,
+                    });
                 }
                 Progress::Done(outcomes) => {
                     let answer = self.store_reply(&ask, &outcomes);
@@ -82,7 +94,11 @@ impl RuntimeKernel {
             }
             c.journal = end.journal;
             c.store = match self.store_driver_run(&ask) {
-                Ok(driver) => Some(Box::new(StoreLeg { ask, driver, seed: None })),
+                Ok(driver) => Some(Box::new(StoreLeg {
+                    ask,
+                    driver,
+                    seed: None,
+                })),
                 Err(message) => {
                     let answer = Self::store_failed(&ask, message);
                     c.journal.push(Exchange::new(ask.request, answer));

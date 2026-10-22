@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn a_record_is_its_members_typed() {
         let table = parse(&text()).unwrap();
-        let OirType::Struct { fields } = &table["Sample"] else {
+        let OirType::Struct { fields, .. } = &table["Sample"] else {
             panic!("a record");
         };
         let by_name = |n: &str| {

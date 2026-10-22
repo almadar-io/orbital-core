@@ -3250,7 +3250,7 @@ mod http_replay_tests {
         assert!(site.is_none());
         let (_, end) = port.run_step(Vec::new(), || port.os(OsOp::Stat, &[Value::Null], Some("k")));
         let [IoRequest::Os { site, .. }] = end.pending.as_slice() else { panic!("expected a pending os ask") };
-        assert!(site.is_none());
+        assert_eq!(site.as_ref().map(|s| s.emit.success.clone()), Some(Some("DONE".to_string())));
         port.set_call_site(Some(CallSite { emit: CallRoutes::default(), ..routed_site() }));
         let (_, end) = port.run_step(Vec::new(), || port.os(OsOp::Wait, &[Value::Number(7.0)], Some("k")));
         let [IoRequest::Os { site, .. }] = end.pending.as_slice() else { panic!("expected a pending os ask") };
@@ -3258,13 +3258,17 @@ mod http_replay_tests {
     }
 
     #[test]
-    fn only_a_keyed_wait_with_a_call_site_may_be_answered_deferred() {
+    fn keyed_wait_and_finite_fs_with_a_call_site_may_be_answered_deferred() {
         let deferred = IoAnswer::ServiceDeferred;
         assert!(deferred.answers(&wait_ask(Some("k"), Some(routed_site()))));
         assert!(!deferred.answers(&wait_ask(None, Some(routed_site()))));
         assert!(!deferred.answers(&wait_ask(Some("k"), None)));
         let stat = IoRequest::Os { op: OsOp::Stat, args: vec![Value::Null], key: Some("k".into()), site: Some(routed_site()) };
-        assert!(!deferred.answers(&stat));
+        assert!(deferred.answers(&stat));
+        let stat_without_site = IoRequest::Os { op: OsOp::Stat, args: vec![Value::Null], key: Some("k".into()), site: None };
+        assert!(!deferred.answers(&stat_without_site));
+        let stat_without_key = IoRequest::Os { op: OsOp::Stat, args: vec![Value::Null], key: None, site: Some(routed_site()) };
+        assert!(!deferred.answers(&stat_without_key));
         assert!(os_ok().answers(&wait_ask(None, None)));
     }
 

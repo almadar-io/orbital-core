@@ -46,17 +46,18 @@ pub(super) enum SockEntry {
 
 /// Open sockets; ids come from the counter shared with the fs table, so an id names one handle. Shared with the
 /// accept loops, which add each accepted connection.
+#[derive(Clone)]
 pub struct NetTable {
     pub(super) socks: Arc<HandleSlab<SockEntry>>,
     /// The last write turn taken on each stream socket.
-    writes: Mutex<HashMap<i64, Arc<Turn>>>,
+    writes: Arc<Mutex<HashMap<i64, Arc<Turn>>>>,
 }
 
 impl NetTable {
     pub(super) fn new(ids: IdCounter) -> Self {
         Self {
             socks: Arc::new(HandleSlab::new(ids)),
-            writes: Mutex::new(HashMap::new()),
+            writes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -611,13 +612,13 @@ fn shutdown(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
 }
 
 /// `None` when `id` is not a socket, so the caller answers `closed`.
-fn close(args: &[Value], host: &OsHost<'_>) -> Option<Result<Value, OsError>> {
+pub(super) fn close(args: &[Value], table: &NetTable) -> Option<Result<Value, OsError>> {
     let id = match arg_i64(args, 0, OsOp::Close) {
         Ok(id) => id,
         Err(e) => return Some(Err(e)),
     };
-    host.handles.net.writes.lock().remove(&id);
-    host.handles.net.socks.remove(id).map(|entry| {
+    table.writes.lock().remove(&id);
+    table.socks.remove(id).map(|entry| {
         // A keyed read pending on this socket holds a duplicate of it; shutting down ends the connection for both.
         if let SockEntry::Stream(stream) = entry {
             let _ = stream.shutdown(Shutdown::Both);
@@ -643,7 +644,7 @@ pub(super) fn answer(
         OsOp::Recvfrom => recvfrom(args, host),
         OsOp::DnsResolve => dns_resolve(args, host),
         OsOp::Shutdown => shutdown(args, host),
-        OsOp::Close => return close(args, host),
+        OsOp::Close => return close(args, &host.handles.net),
         OsOp::WatchPort => Err(err(
             op,
             OsErrorKind::Unsupported,

@@ -46,7 +46,7 @@ impl Operator for JsonParseOp {
         let Some((shape, declared)) = run_time_shape(&args[1])? else {
             return Ok(parsed);
         };
-        match super::arg_types::misfit_of_declared(&parsed, &declared.ty, &declared.named) {
+        match super::arg_types::misfit_of_shape(&parsed, &declared) {
             None => Ok(parsed),
             Some((path, actual)) => {
                 tracing::warn!(
@@ -74,7 +74,7 @@ fn run_time_shape(arg: &SExpression) -> Result<Option<(String, std::rc::Rc<Decla
         CompatType::Ty(OirType::Union { variants }) if variants.is_empty() => None,
         CompatType::Ty(declared) => Some((
             text.clone(),
-            std::rc::Rc::new(DeclaredShape { name: None, ty: declared, named: Default::default() }),
+            std::rc::Rc::new(DeclaredShape { version: None, name: None, ty: declared, named: Default::default() }),
         )),
         _ => None,
     })

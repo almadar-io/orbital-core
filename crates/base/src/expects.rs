@@ -13,8 +13,8 @@ use serde_json::{Map, Value};
 
 use crate::ir::expr::{OirBinding, OirBindingRoot};
 use crate::route::{extract_static_path_prefix, path_matches_pattern};
-use crate::schema::types::ExpectDeclaration;
 use crate::schema::sexpr::SExpression;
+use crate::schema::types::ExpectDeclaration;
 
 /// A cross-boundary usage derivation could not turn into a declaration.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -126,6 +126,13 @@ fn merge_field(prior: &Value, field: &Value) -> Result<Value, String> {
     {
         merged.insert("required".into(), Value::Bool(true));
     }
+    let nullable = |v: &Value| v.get("nullable").and_then(Value::as_bool);
+    if nullable(prior).is_some() || nullable(field).is_some() {
+        merged.insert(
+            "nullable".into(),
+            Value::Bool(nullable(prior).unwrap_or(true) && nullable(field).unwrap_or(true)),
+        );
+    }
     let as_number = |n: f64| {
         serde_json::Number::from_f64(n).map(|x| {
             if n.fract() == 0.0 {
@@ -189,7 +196,40 @@ fn merge_field(prior: &Value, field: &Value) -> Result<Value, String> {
             };
             properties.insert(key.clone(), next);
         }
+        for (declared, constrained) in [(prior, field), (field, prior)] {
+            if let Some(additional) = constrained.get("additionalProperties") {
+                for key in declared
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flatten()
+                    .map(|(key, _)| key)
+                {
+                    if constrained
+                        .get("properties")
+                        .and_then(Value::as_object)
+                        .is_some_and(|fixed| fixed.contains_key(key))
+                    {
+                        continue;
+                    }
+                    if let Some(fixed) = properties.get(key) {
+                        properties.insert(key.clone(), merge_field(fixed, additional)?);
+                    }
+                }
+            }
+        }
         merged.insert("properties".into(), Value::Object(properties));
+    }
+    if prior.get("additionalProperties").is_some() || field.get("additionalProperties").is_some() {
+        let additional = match (
+            prior.get("additionalProperties"),
+            field.get("additionalProperties"),
+        ) {
+            (Some(left), Some(right)) => merge_field(left, right)?,
+            (Some(value), None) | (None, Some(value)) => value.clone(),
+            (None, None) => unreachable!(),
+        };
+        merged.insert("additionalProperties".into(), additional);
     }
     if prior.get("items").is_some() || field.get("items").is_some() {
         let items = match (prior.get("items"), field.get("items")) {

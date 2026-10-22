@@ -19,12 +19,16 @@ fn to_value(v: &ModelValue) -> Value {
 }
 
 fn insert_path(target: &mut ValueMap, path: &[&str], value: Value) {
-    let Some((head, tail)) = path.split_first() else { return };
+    let Some((head, tail)) = path.split_first() else {
+        return;
+    };
     if tail.is_empty() {
         target.insert(head.to_string(), value);
         return;
     }
-    let child = target.entry(head.to_string()).or_insert_with(|| Value::Object(ValueMap::new()));
+    let child = target
+        .entry(head.to_string())
+        .or_insert_with(|| Value::Object(ValueMap::new()));
     if !matches!(child, Value::Object(_)) {
         *child = Value::Object(ValueMap::new());
     }
@@ -37,20 +41,33 @@ fn insert_path(target: &mut ValueMap, path: &[&str], value: Value) {
 pub fn roots(model: &Model) -> BTreeMap<String, ValueMap> {
     let mut out: BTreeMap<String, ValueMap> = BTreeMap::new();
     for (name, value) in &model.values {
-        if let (Some(inner), ModelValue::Num(n)) = (name.strip_prefix("@len:(array/len @").and_then(|r| r.strip_suffix(')')), value) {
+        if let (Some(inner), ModelValue::Num(n)) = (
+            name.strip_prefix("@len:(array/len @")
+                .and_then(|r| r.strip_suffix(')')),
+            value,
+        ) {
             // The length of a plain bound array: the array itself, that many null elements long.
             let count = n.to_f64();
-            if (0.0..=4096.0).contains(&count) && count.fract() == 0.0 && !inner.contains(|c: char| c.is_whitespace() || c == '(') {
+            if (0.0..=4096.0).contains(&count)
+                && count.fract() == 0.0
+                && !inner.contains(|c: char| c.is_whitespace() || c == '(')
+            {
                 let parts: Vec<&str> = inner.split('.').collect();
                 if let Some((root, rest)) = parts.split_first() {
                     if !rest.is_empty() {
-                        insert_path(out.entry(root.to_string()).or_default(), rest, Value::Array(vec![Value::Null; count as usize]));
+                        insert_path(
+                            out.entry(root.to_string()).or_default(),
+                            rest,
+                            Value::Array(vec![Value::Null; count as usize]),
+                        );
                     }
                 }
             }
             continue;
         }
-        let Some(path) = name.strip_prefix('@') else { continue };
+        let Some(path) = name.strip_prefix('@') else {
+            continue;
+        };
         let mut parts = path.split('.');
         let Some(root) = parts.next() else { continue };
         let rest: Vec<&str> = parts.collect();
@@ -66,7 +83,8 @@ pub fn roots(model: &Model) -> BTreeMap<String, ValueMap> {
 fn reads_unresolved(e: &SExpression) -> bool {
     match e {
         SExpression::Array(items) => {
-            matches!(items.first(), Some(SExpression::String(h)) if h == super::obligations::UNRESOLVED) || items.iter().any(reads_unresolved)
+            matches!(items.first(), Some(SExpression::String(h)) if h == super::obligations::UNRESOLVED)
+                || items.iter().any(reads_unresolved)
         }
         _ => false,
     }
@@ -98,9 +116,15 @@ pub fn confirms(model: &Model, assumptions: &[SExpression], goal: &SExpression) 
 /// The counterexample as JSON for a diagnostic, roots named without the prover's `__` prefix.
 pub fn counterexample(model: &Model) -> serde_json::Value {
     let mut out = serde_json::Map::new();
-    for (root, map) in roots(model).into_iter().filter(|(r, _)| !r.starts_with("len:") && r != "now") {
+    for (root, map) in roots(model)
+        .into_iter()
+        .filter(|(r, _)| !r.starts_with("len:") && r != "now")
+    {
         let name = root.strip_prefix("__").unwrap_or(&root).to_string();
-        out.insert(name, serde_json::to_value(Value::Object(map)).unwrap_or(serde_json::Value::Null));
+        out.insert(
+            name,
+            serde_json::to_value(Value::Object(map)).unwrap_or(serde_json::Value::Null),
+        );
     }
     serde_json::Value::Object(out)
 }

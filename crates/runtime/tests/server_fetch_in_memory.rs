@@ -85,8 +85,16 @@ mod runtime_mock_seed {
                 ] },
                 "traits": [{ "name": "T", "linkedEntity": "Counter", "stateMachine": {
                     "states": [{ "name": "idle", "isInitial": true }],
-                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
-                        "effects": [["fetch", "Counter", { "emit": { "success": "LOADED" } }]] }] } }] }]
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT",
+                          "effects": [["fetch", "Counter", { "emit": { "success": "LOADED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "READ_ID",
+                          "effects": [["emit", "OBSERVED", { "id": "@entity.id", "count": "@entity.count" }]] },
+                        { "from": "idle", "to": "idle", "event": "UPDATE",
+                          "effects": [["persist", "update", "Counter", "@entity.id", { "count": 7 }]] },
+                        { "from": "idle", "to": "idle", "event": "DELETE",
+                          "effects": [["persist", "delete", "Counter", "@entity.id"]] }
+                    ] } }] }]
         }))
         .unwrap();
         EmbeddedServer::new(schema).unwrap()
@@ -124,6 +132,48 @@ mod runtime_mock_seed {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0]["id"], json!("singleton"));
         assert_eq!(rows[0]["count"].as_f64(), Some(0.0), "a literal default is honored");
+    }
+
+    #[test]
+    fn runtime_singleton_address_preserves_the_seeded_rows_domain_id() {
+        let server = server("runtime");
+        server.seed_runtime_mock(Some("viewer-1".to_string()));
+        let row = server.kernel().entity_source().read("Counter", "singleton").unwrap();
+        let expected_id = orbital_core_runtime::seed::mock_row_id("Counter", 1);
+        assert_eq!(row.get_path("id").and_then(|id| id.as_str()), Some(expected_id.as_str()));
+        let ServerProgress::Done(response) = start(&server) else {
+            panic!("a runtime singleton never asks the host");
+        };
+        assert_eq!(loaded_rows(&response)[0]["id"], json!(expected_id));
+    }
+
+    fn dispatch_singleton(server: &EmbeddedServer, event: &str) -> EventResponse {
+        let request = EventRequest {
+            event: event.to_string(),
+            target_trait: Some("T".to_string()),
+            ..Default::default()
+        };
+        let ServerProgress::Done(response) = server.start("Main", request).unwrap() else {
+            panic!("a runtime singleton never asks the host");
+        };
+        response
+    }
+
+    #[test]
+    fn runtime_singleton_binding_and_persist_keep_address_separate_from_domain_id() {
+        let server = server("runtime");
+        server.seed_runtime_mock(Some("viewer-1".to_string()));
+        let expected_id = orbital_core_runtime::seed::mock_row_id("Counter", 1);
+        let observed = dispatch_singleton(&server, "READ_ID");
+        let payload = observed.emitted_events.iter().find(|event| event.event == "OBSERVED")
+            .expect("READ_ID emits OBSERVED").payload.as_ref().expect("OBSERVED carries its entity fields");
+        assert_eq!(payload.get_path("id").and_then(|id| id.as_str()), Some(expected_id.as_str()));
+        dispatch_singleton(&server, "UPDATE");
+        let row = server.kernel().entity_source().read("Counter", "singleton").unwrap();
+        assert_eq!(row.get_path("count").and_then(|value| value.as_number()), Some(7.0));
+        assert_eq!(row.get_path("id").and_then(|id| id.as_str()), Some(expected_id.as_str()));
+        dispatch_singleton(&server, "DELETE");
+        assert!(server.kernel().entity_source().find("Counter", "singleton").unwrap().is_none());
     }
 
     #[test]

@@ -108,6 +108,14 @@ fn start(trait_name: &str) -> EventRequest {
     }
 }
 
+#[test]
+fn runtime_singleton_and_literal_singleton_row_keep_distinct_frames() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    assert!(matches!(server.start("Board", start("Scoped")).unwrap(), ServerProgress::Done(_)));
+    assert_eq!(server.get_state("Scoped", None), "running");
+    assert_eq!(server.get_state("Scoped", Some("singleton")), "idle");
+}
+
 fn emitted(response: &EventResponse) -> Vec<&str> {
     response
         .emitted_events

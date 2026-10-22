@@ -5,8 +5,11 @@
 
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
-use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema};
 use serde_json::{json, Value as Json};
+use {
+    orbital_core_base::schema::types::OrbitalSchema,
+    orbital_core_runtime::effects::response::{EventRequest, EventResponse},
+};
 
 fn schema() -> OrbitalSchema {
     let trait_with = |name: &str, field: Json, arms: Json| {
@@ -127,7 +130,11 @@ mod kernel_dispatch {
     use std::sync::Arc;
 
     fn kernel(environment: RuntimeEnvironment) -> RuntimeKernel {
-        let kernel = RuntimeKernel::new(environment, Arc::new(InMemoryEntityCache::new()), Default::default());
+        let kernel = RuntimeKernel::new(
+            environment,
+            Arc::new(InMemoryEntityCache::new()),
+            Default::default(),
+        );
         kernel.register_schema(schema()).unwrap();
         kernel
     }
@@ -144,17 +151,36 @@ mod kernel_dispatch {
             matches!(&refused, Err(KernelError::PayloadInvalid(m)) if m == "Payload validation failed for event 'SEND': value (missing, expected string)"),
             "{refused:?}"
         );
-        let null = kernel.dispatch("InlineRender", None, "SEND", payload(json!({ "value": null })));
-        assert!(matches!(&null, Err(KernelError::PayloadInvalid(m)) if m.contains("value (null, expected string)")), "{null:?}");
+        let null = kernel.dispatch(
+            "InlineRender",
+            None,
+            "SEND",
+            payload(json!({ "value": null })),
+        );
+        assert!(
+            matches!(&null, Err(KernelError::PayloadInvalid(m)) if m.contains("value (null, expected string)")),
+            "{null:?}"
+        );
     }
 
     #[test]
     fn control_a_present_field_an_optional_one_and_a_client_kernel_dispatch_as_before() {
         let server = kernel(RuntimeEnvironment::Server);
-        assert!(server.dispatch("InlineRender", None, "SEND", payload(json!({ "value": "hi" }))).is_ok());
-        assert!(server.dispatch("ChatComposer", None, "SEND", payload(json!({}))).is_ok());
+        assert!(server
+            .dispatch(
+                "InlineRender",
+                None,
+                "SEND",
+                payload(json!({ "value": "hi" }))
+            )
+            .is_ok());
+        assert!(server
+            .dispatch("ChatComposer", None, "SEND", payload(json!({})))
+            .is_ok());
         let client = kernel(RuntimeEnvironment::Client);
-        assert!(client.dispatch("InlineRender", None, "SEND", payload(json!({}))).is_ok());
+        assert!(client
+            .dispatch("InlineRender", None, "SEND", payload(json!({})))
+            .is_ok());
     }
 }
 
@@ -165,13 +191,170 @@ fn dispatch_checks_orbital_aliases_and_entity_rows_through_named_definitions() {
     use std::sync::Arc;
     let mut program = serde_json::to_value(schema()).unwrap();
     let orbital = &mut program["orbitals"][0];
-    orbital["types"] = json!({"Envelope": [{"name": "rows", "type": "[Message]", "required": true}]});
+    orbital["types"] =
+        json!({"Envelope": [{"name": "rows", "type": "[Message]", "required": true}]});
     orbital["traits"][0]["stateMachine"]["events"][0]["payloadSchema"] = json!([
         {"name": "data", "type": "Envelope", "required": true}
     ]);
-    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()), Default::default());
-    kernel.register_schema(serde_json::from_value(program).unwrap()).unwrap();
-    let bad = kernel.payload_rejection([("ChatComposer", "SEND")], &serde_json::from_value(json!({"data": {"rows": [{"id": 42}]}})).unwrap());
-    assert!(bad.as_deref().is_some_and(|error| error.contains("data.rows[0].id")), "{bad:?}");
-    assert!(kernel.payload_rejection([("ChatComposer", "SEND")], &serde_json::from_value(json!({"data": {"rows": [{"id": "ok"}]}})).unwrap()).is_none());
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()),
+        Default::default(),
+    );
+    kernel
+        .register_schema(serde_json::from_value(program).unwrap())
+        .unwrap();
+    let bad = kernel.payload_rejection(
+        [("ChatComposer", "SEND")],
+        &serde_json::from_value(json!({"data": {"rows": [{"id": 42}]}})).unwrap(),
+    );
+    assert!(
+        bad.as_deref()
+            .is_some_and(|error| error.contains("data.rows[0].id")),
+        "{bad:?}"
+    );
+    assert!(kernel
+        .payload_rejection(
+            [("ChatComposer", "SEND")],
+            &serde_json::from_value(json!({"data": {"rows": [{"id": "ok"}]}})).unwrap()
+        )
+        .is_none());
+}
+
+mod native_record_event_admission {
+    use super::*;
+    use orbital_core_base::effect_types::RuntimeEnvironment;
+    use orbital_core_base::value::Value;
+    use orbital_core_runtime::entity_source::InMemoryEntityCache;
+    use orbital_core_runtime::kernel::{KernelError, RuntimeKernel};
+    use std::sync::Arc;
+
+    fn program(version: Option<u32>, role: Option<&str>, field: Json) -> Json {
+        let mut program = serde_json::to_value(schema()).unwrap();
+        if let Some(version) = version {
+            program["typeContractVersion"] = json!(version);
+        }
+        if let Some(role) = role {
+            program["sourceRole"] = json!(role);
+        }
+        program["orbitals"][0]["traits"][0]["stateMachine"]["events"][0]["payloadSchema"] =
+            json!([field]);
+        program
+    }
+
+    fn kernel(program: Json) -> RuntimeKernel {
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()),
+            Default::default(),
+        );
+        kernel
+            .register_schema(serde_json::from_value(program).unwrap())
+            .unwrap();
+        kernel
+    }
+
+    fn dispatch(kernel: &RuntimeKernel, payload: Json, accepted: bool) {
+        let payload: Value = serde_json::from_value(payload).unwrap();
+        let outcome = kernel.dispatch("ChatComposer", None, "SEND", payload);
+        if accepted {
+            let outcome = outcome.expect("a contract-admitted payload executes");
+            assert!(outcome.iter().any(|(_, result)| result.executed));
+        } else {
+            assert!(
+                matches!(&outcome, Err(KernelError::PayloadInvalid(_))),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_record_event_admission_separates_presence_from_null_for_all_four_forms() {
+        for role in [None, Some("application")] {
+            for (required, nullable) in [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let kernel = kernel(program(
+                    Some(1),
+                    role,
+                    json!({
+                        "name": "value", "type": "string", "required": required, "nullable": nullable
+                    }),
+                ));
+                dispatch(&kernel, json!({}), !required);
+                dispatch(&kernel, json!({"value": null}), nullable);
+                dispatch(&kernel, json!({"value": "ok"}), true);
+                dispatch(&kernel, json!({"value": 42}), false);
+            }
+        }
+    }
+
+    #[test]
+    fn native_record_event_admission_legacy_programs_keep_their_null_contract() {
+        for role in [None, Some("application")] {
+            for (required, nullable) in [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let kernel = kernel(program(
+                    None,
+                    role,
+                    json!({
+                        "name": "value", "type": "string", "required": required, "nullable": nullable
+                    }),
+                ));
+                dispatch(&kernel, json!({}), !required);
+                dispatch(&kernel, json!({"value": null}), !required);
+                dispatch(&kernel, json!({"value": "ok"}), true);
+            }
+        }
+    }
+
+    #[test]
+    fn native_record_event_admission_checks_root_aliases_and_nested_values() {
+        for role in [None, Some("application")] {
+            let mut program = program(
+                Some(1),
+                role,
+                json!({
+                    "name": "data", "type": "Envelope", "required": true, "nullable": false
+                }),
+            );
+            program["types"] = json!({"Envelope": [{
+                "name": "nested", "type": "object", "required": true, "nullable": false,
+                "properties": [{"name": "value", "type": "string", "required": true, "nullable": false}]
+            }]});
+            let kernel = kernel(program);
+            dispatch(&kernel, json!({"data": {"nested": {"value": "ok"}}}), true);
+            let bad: Value =
+                serde_json::from_value(json!({"data": {"nested": {"value": 42}}})).unwrap();
+            let rejection = kernel.payload_rejection([("ChatComposer", "SEND")], &bad);
+            assert!(
+                rejection
+                    .as_deref()
+                    .is_some_and(|message| message.contains("data.nested.value")),
+                "{rejection:?}"
+            );
+            dispatch(&kernel, json!({"data": {"nested": {"value": 42}}}), false);
+            dispatch(&kernel, json!({"data": {"nested": {"value": null}}}), false);
+            dispatch(&kernel, json!({"data": {"nested": {}}}), false);
+        }
+    }
+
+    #[test]
+    fn native_record_event_admission_local_aliases_override_root_aliases() {
+        let mut program = program(
+            Some(1),
+            Some("application"),
+            json!({
+                "name": "data", "type": "Envelope", "required": true, "nullable": false
+            }),
+        );
+        program["types"] = json!({"Envelope": [{
+            "name": "value", "type": "string", "required": true, "nullable": false
+        }]});
+        program["orbitals"][0]["types"] = json!({"Envelope": [{
+            "name": "value", "type": "number", "required": true, "nullable": false
+        }]});
+        let kernel = kernel(program);
+        dispatch(&kernel, json!({"data": {"value": 42}}), true);
+        dispatch(&kernel, json!({"data": {"value": "root-only"}}), false);
+    }
 }

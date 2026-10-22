@@ -112,7 +112,7 @@ fn scalar_known(value: &Value) -> Option<Known> {
         Value::Number(_) => Some(Known::Type(OirType::Number)),
         Value::String(_) => Some(Known::Type(OirType::String)),
         Value::Bool(_) => Some(Known::Type(OirType::Boolean)),
-        Value::Object(_) => Some(Known::Type(OirType::Struct { fields: Vec::new() })),
+        Value::Object(_) => Some(Known::Type(OirType::Struct { fields: Vec::new(), additional: None })),
     }
 }
 
@@ -413,15 +413,9 @@ pub fn declared_shape(arg: &SExpression) -> Result<std::rc::Rc<DeclaredShape>, O
     if let Some(known) = DECLARED.with(|d| d.borrow().get(text).cloned()) {
         return Ok(known);
     }
-    let shape = match DeclaredShape::parse(text) {
-        Some(shape) => shape,
-        None => {
-            let ty: OirType = serde_json::from_str(text).map_err(|e| {
-                OrbitalError::Eval(EvalError::InvalidArgument(format!("typed: the declared type is not a type: {e}")))
-            })?;
-            DeclaredShape { name: None, ty, named: BTreeMap::new() }
-        }
-    };
+    let shape = DeclaredShape::read(text).map_err(|error| {
+        OrbitalError::Eval(EvalError::InvalidArgument(format!("typed: the declared type is not a type: {error}")))
+    })?;
     let shape = std::rc::Rc::new(shape);
     DECLARED.with(|d| d.borrow_mut().insert(text.clone(), std::rc::Rc::clone(&shape)));
     Ok(shape)
@@ -491,29 +485,31 @@ fn declared_alias(ty: &OirType, named: &BTreeMap<String, OirType>) -> Option<Oir
     }
 }
 
-/// The path to and the kind of the first part of `value` that is not of `ty` (null is an absent value and is of every
-/// type; a record's required field that is missing is `absent`). A name `named` defines is checked as its definition,
+/// The first mismatch under the explicit legacy or nullable-field contract. A name `named` defines is checked as its definition,
 /// so each item of a list of a recursive union matches a member of the union on its own; a closed string set
 /// (`"a" | "b"`) admits only its members.
-fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) -> Option<(String, &'static str)> {
-    if value.is_null() {
+fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>, strict: bool) -> Option<(String, &'static str)> {
+    if value.is_null() && (!strict || matches!(ty, OirType::Optional { .. })) {
         return None;
     }
     if let Some(declared) = declared_alias(ty, named) {
-        return first_misfit(value, &declared, named);
+        return first_misfit(value, &declared, named, strict);
     }
     let misfit = || Some((String::new(), value.type_name()));
+    if strict && value.is_null() && !matches!(ty, OirType::Union { .. }) {
+        return misfit();
+    }
     let at = |prefix: String| move |(path, actual): (String, &'static str)| (format!("{prefix}{path}"), actual);
     let items = |items: &[Value], inner: &OirType| {
-        items.iter().enumerate().find_map(|(i, item)| first_misfit(item, inner, named).map(at(format!("[{i}]"))))
+        items.iter().enumerate().find_map(|(i, item)| first_misfit(item, inner, named, strict).map(at(format!("[{i}]"))))
     };
     match ty {
         OirType::SExpr | OirType::Json | OirType::Node | OirType::Trait | OirType::Orbital | OirType::Behavior => None,
         // An unbound variable admits any value; a bound one was substituted before run time.
         OirType::Var { .. } => None,
-        OirType::Optional { inner } => first_misfit(value, inner, named),
+        OirType::Optional { inner } => first_misfit(value, inner, named, strict),
         OirType::Union { variants } => {
-            if variants.iter().any(|v| first_misfit(value, &v.field_type, named).is_none()) {
+            if variants.iter().any(|v| first_misfit(value, &v.field_type, named, strict).is_none()) {
                 None
             } else {
                 misfit()
@@ -528,20 +524,23 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) 
                 .iter()
                 .zip(slots)
                 .enumerate()
-                .find_map(|(i, (item, slot))| first_misfit(item, slot, named).map(at(format!("[{i}]")))),
+                .find_map(|(i, (item, slot))| first_misfit(item, slot, named, strict).map(at(format!("[{i}]")))),
             _ => misfit(),
         },
         OirType::Map { value: inner, .. } => match value {
             Value::Object(map) => {
-                map.iter().find_map(|(k, item)| first_misfit(item, inner, named).map(at(format!(".{k}"))))
+                map.iter().find_map(|(k, item)| first_misfit(item, inner, named, strict).map(at(format!(".{k}"))))
             }
             _ => misfit(),
         },
-        OirType::Struct { fields } => match value {
+        OirType::Struct { fields, additional } => match value {
             Value::Object(map) => fields.iter().find_map(|field| match map.get(&field.name) {
                 None => field.required.then(|| (format!(".{}", field.name), "absent")),
-                Some(item) => first_misfit(item, &field.field_type, named).map(at(format!(".{}", field.name))),
-            }),
+                Some(item) => first_misfit(item, &field.field_type, named, strict).map(at(format!(".{}", field.name))),
+            }).or_else(|| additional.as_deref().and_then(|additional| {
+                map.iter().filter(|(key, _)| !fields.iter().any(|field| field.name.as_str() == key.as_str()))
+                    .find_map(|(key, item)| first_misfit(item, additional, named, strict).map(at(format!(".{key}"))))
+            })),
             _ => misfit(),
         },
         OirType::File | OirType::Row { .. } | OirType::TypeRef { .. } => {
@@ -561,9 +560,10 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) 
             Value::String(text) if orbital_core_base::codec::base64_decode(text).is_ok() => None,
             _ => misfit(),
         },
-        OirType::Enum { name } => match (value, orbital_core_base::type_compat::literal_union_members(name)) {
-            (Value::String(text), Some(members)) => (!members.contains(&text.as_str())).then(|| (String::new(), "string")),
-            (Value::String(_), None) => None,
+        OirType::Enum { name } => match (value, orbital_core_base::type_compat::decode_literal_union(name)) {
+            (Value::String(text), Ok(Some(members))) => (!members.contains(text)).then(|| (String::new(), "string")),
+            (Value::String(_), Ok(None)) => None,
+            (Value::String(_), Err(_)) if !strict => None,
             _ => misfit(),
         },
         _ => (!matches!(value, Value::String(_))).then(|| (String::new(), value.type_name())),
@@ -573,15 +573,32 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) 
 /// Where `value` departs from the declared `ty` (`""` for the value itself, `.rows[2].id` inside it) and what kind of
 /// value is there, when it does; a by-name reference reads its definition from `named`.
 pub fn misfit_of_declared(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) -> Option<(String, &'static str)> {
-    first_misfit(value, ty, named)
+    first_misfit(value, ty, named, false)
 }
 
 /// `value` is of the declared `ty`, kind by kind, and a record's declared fields field by field.
 pub fn value_of_declared(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) -> Result<(), OrbitalError> {
-    match first_misfit(value, ty, named) {
+    match first_misfit(value, ty, named, false) {
         None => Ok(()),
         Some((_, actual)) => Err(OrbitalError::Eval(EvalError::TypeMismatch {
             expected: declared_text(ty),
+            actual: actual.to_string(),
+        })),
+    }
+}
+
+pub fn misfit_of_shape(value: &Value, declared: &DeclaredShape) -> Option<(String, &'static str)> {
+    if declared.version.is_some_and(|version| version != 1) {
+        return Some((String::new(), "unsupported declared-shape version"));
+    }
+    first_misfit(value, &declared.ty, &declared.named, declared.version == Some(1))
+}
+
+pub fn value_of_shape(value: &Value, declared: &DeclaredShape) -> Result<(), OrbitalError> {
+    match misfit_of_shape(value, declared) {
+        None => Ok(()),
+        Some((_, actual)) => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: declared_text(&declared.ty),
             actual: actual.to_string(),
         })),
     }
@@ -695,6 +712,67 @@ mod tests {
             "params": params, "returnType": "boolean",
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn strict_record_contract_checks_null_presence_and_catchall_on_both_value_entries() {
+        use crate::evaluator::context::BindingContext;
+        use crate::evaluator::operators::{Operator, cast::TypedOp, json::JsonParseOp};
+        let context = BindingContext::new();
+        let shape = serde_json::json!({"version":1,"type":{"kind":"struct","fields":[
+            {"name":"id","fieldType":{"kind":"string"},"required":false},
+            {"name":"token","fieldType":{"kind":"optional","inner":{"kind":"string"}},"required":true}
+        ],"additional":{"kind":"number"}}});
+        let declaration = SExpression::String(shape.to_string());
+        for (value, accepted) in [
+            (serde_json::json!({"token":null,"id":"","extra":2}), true),
+            (serde_json::json!({"token":"ok"}), true),
+            (serde_json::json!({}), false),
+            (serde_json::json!({"token":false}), false),
+            (serde_json::json!({"token":null,"id":null}), false),
+            (serde_json::json!({"token":null,"extra":"bad"}), false),
+            (serde_json::json!({"token":null,"extra":null}), false),
+        ] {
+            let literal: SExpression = serde_json::from_value(value.clone()).unwrap();
+            let quoted = orbital_core_base::schema::quote::quote_expr(&literal);
+            let typed = TypedOp.evaluate(&[quoted, declaration.clone()], &context);
+            assert_eq!(typed.is_ok(), accepted, "typed {value}: {typed:?}");
+            let parsed = JsonParseOp.evaluate(&[SExpression::String(value.to_string()), declaration.clone()], &context).unwrap();
+            assert_eq!(!parsed.is_null(), accepted, "parse {value}: {parsed:?}");
+        }
+        let legacy = SExpression::String(serde_json::json!({"type":{"kind":"string"}}).to_string());
+        assert!(TypedOp.evaluate(&[SExpression::Null, legacy], &context).is_ok(), "old unmarked null semantics remain");
+        let strict = SExpression::String(serde_json::json!({"version":1,"type":{"kind":"string"}}).to_string());
+        assert!(TypedOp.evaluate(&[SExpression::Null, strict], &context).is_err(), "new nonnull root refuses null");
+    }
+
+    #[test]
+    fn malformed_quoted_enum_is_not_a_nominal_type_in_a_strict_descriptor() {
+        use crate::evaluator::context::BindingContext;
+        use crate::evaluator::operators::{Operator, cast::TypedOp, json::JsonParseOp};
+        let context = BindingContext::new();
+        for name in [r#""bad\q""#, r#""unterminated"#, r#""a" |"#] {
+            let declaration = SExpression::String(serde_json::json!({"version":1,"type":{"kind":"enum","name":name}}).to_string());
+            assert!(TypedOp.evaluate(&[SExpression::String("anything".into()), declaration.clone()], &context).is_err(), "{name}");
+            let parsed = JsonParseOp.evaluate(&[SExpression::String("\"anything\"".into()), declaration], &context).unwrap();
+            assert!(parsed.is_null(), "{name}: {parsed:?}");
+            let legacy = SExpression::String(serde_json::json!({"type":{"kind":"enum","name":name}}).to_string());
+            assert!(TypedOp.evaluate(&[SExpression::String("anything".into()), legacy], &context).is_ok());
+        }
+        let nominal = SExpression::String(serde_json::json!({"version":1,"type":{"kind":"enum","name":"Status"}}).to_string());
+        assert!(TypedOp.evaluate(&[SExpression::String("ready".into()), nominal], &context).is_ok());
+        let old_quoted = SExpression::String(serde_json::json!({"version":1,"type":{"kind":"enum","name":"\"line1\nline2\" | \"ready\""}}).to_string());
+        assert!(TypedOp.evaluate(&[SExpression::String("line1\nline2".into()), old_quoted], &context).is_ok());
+    }
+
+    #[test]
+    fn unknown_descriptor_version_cannot_fall_back_to_a_bare_type() {
+        for wire in [
+            serde_json::json!({"version":2,"kind":"string"}),
+            serde_json::json!({"version":2,"type":{"kind":"string"},"kind":"string"}),
+        ] {
+            assert!(declared_shape(&SExpression::String(wire.to_string())).is_err(), "{wire}");
+        }
     }
 
     fn check(op: &EmbeddedOperator, args: &[Value]) -> Result<(), OrbitalError> {

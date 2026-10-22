@@ -969,6 +969,8 @@ mod tests {
     #[test]
     fn a_wrong_type_issue_names_what_was_sent_and_a_missing_one_does_not() {
         let fields = vec![PayloadField {
+            nullable: None,
+            additional_properties: None,
             name: "n".to_string(),
             field_type: "number".to_string(),
             values: None,

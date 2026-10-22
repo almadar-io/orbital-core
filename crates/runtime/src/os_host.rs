@@ -12,7 +12,7 @@ pub mod sys;
 pub use orbital_core_base::os_grants::*;
 
 use orbital_core_base::value::Value;
-use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
+use orbital_core_base::os::{family_of, OsError, OsErrorKind, OsFamily, OsOp};
 use crate::resumable::{CallSite, IoAnswer, IoRequest};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -111,36 +111,6 @@ pub struct OsHost<'a> {
     pub on_event: &'a dyn Fn(Option<&CallSite>, Value),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OsFamily {
-    Fs,
-    Process,
-    Net,
-    Sys,
-    Kv,
-}
-
-/// The one family that answers `op`.
-pub(crate) fn family_of(op: OsOp) -> OsFamily {
-    use orbital_core_base::os::OsOp::*;
-    match op {
-        ReadFile | WriteFile | AppendFile | Open | Close | Read | Write | Seek | Truncate
-        | Fsync | Copy | Rename | Remove | Link | Symlink | Readlink | WatchFiles | Mkdir
-        | Rmdir | ListDir | Glob | Mktemp | Realpath | Cwd | Chdir | Stat | Lstat | Access
-        | Exists | Chmod | Chown | Utimes => OsFamily::Fs,
-        Spawn | Wait | Kill | Pid | Ppid | CurrentExe | WatchProcess | WatchSignal | Getenv | Setenv
-        | Unsetenv | Environ | WatchEnv | StdinRead | StdoutWrite | StderrWrite | Isatty
-        | TtySize => OsFamily::Process,
-        TcpConnect | TcpListen | Send | Recv | UdpBind | Sendto | Recvfrom | DnsResolve
-        | Shutdown | WatchPort => OsFamily::Net,
-        ClockMonotonic | Uid | Gid | Username | GroupOf | WatchCron | CpuUsage | MemoryInfo
-        | Uptime | LoadAvg | Hostname | Uname | DiskUsage | Mounts | DiskIo | NetworkInterfaces
-        | NetworkStats | NetworkConnected | DefaultGateway | BatteryStatus | AcPower
-        | ThermalZones | Notify | Speak | BrightnessGet | BrightnessSet | VolumeGet | VolumeSet
-        | VolumeMute | Suspend | Hibernate => OsFamily::Sys,
-        KvGet | KvPut | KvDelete | KvScan | KvBatch => OsFamily::Kv,
-    }
-}
 
 fn dispatch(
     op: OsOp,
@@ -162,6 +132,10 @@ fn dispatch(
         (None, OsOp::Close) => net::answer(op, args, key, site, host),
         (answered, _) => answered,
     };
+    finish_answer(op, answered)
+}
+
+fn finish_answer(op: OsOp, answered: Option<Result<Value, OsError>>) -> Result<Value, OsError> {
     match (answered, op) {
         (Some(result), _) => result,
         (None, OsOp::Close) => Err(OsError::new(
@@ -198,6 +172,7 @@ fn defer(
         OsOp::Recv => net::recv_later(args, key, site, host),
         OsOp::Recvfrom => net::recvfrom_later(args, key, site, host),
         OsOp::StdinRead => process::stdin_later(args, key, site, host),
+        _ if family_of(op) == OsFamily::Fs => fs::later(op, args, key, site, host),
         _ => return None,
     })
 }

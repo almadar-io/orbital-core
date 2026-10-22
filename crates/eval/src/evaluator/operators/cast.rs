@@ -43,7 +43,7 @@ impl Operator for TypedOp {
         require_arity!(args, "typed", == 2);
         let declared = super::arg_types::declared_shape(&args[1])?;
         let value = eval_expr(&args[0], ctx)?;
-        super::arg_types::value_of_declared(&value, &declared.ty, &declared.named)?;
+        super::arg_types::value_of_shape(&value, &declared)?;
         Ok(value)
     }
 }

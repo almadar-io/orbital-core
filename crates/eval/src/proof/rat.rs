@@ -56,7 +56,11 @@ impl Rat {
         if d == 0 {
             return None;
         }
-        let (n, d) = if d < 0 { (n.checked_neg()?, d.checked_neg()?) } else { (n, d) };
+        let (n, d) = if d < 0 {
+            (n.checked_neg()?, d.checked_neg()?)
+        } else {
+            (n, d)
+        };
         let g = gcd(n.unsigned_abs(), d.unsigned_abs());
         let g = i128::try_from(g.max(1)).ok()?;
         Some(Rat { n: n / g, d: d / g })
@@ -87,11 +91,17 @@ impl Rat {
     }
 
     pub fn checked_negate(self) -> Option<Rat> {
-        Some(Rat { n: self.n.checked_neg()?, d: self.d })
+        Some(Rat {
+            n: self.n.checked_neg()?,
+            d: self.d,
+        })
     }
 
     pub fn checked_plus(self, o: Rat) -> Option<Rat> {
-        let n = self.n.checked_mul(o.d)?.checked_add(o.n.checked_mul(self.d)?)?;
+        let n = self
+            .n
+            .checked_mul(o.d)?
+            .checked_add(o.n.checked_mul(self.d)?)?;
         Rat::new(n, self.d.checked_mul(o.d)?)
     }
 
@@ -106,7 +116,6 @@ impl Rat {
     pub fn checked_over(self, o: Rat) -> Option<Rat> {
         Rat::new(self.n.checked_mul(o.d)?, self.d.checked_mul(o.n)?)
     }
-
 }
 
 fn parse_decimal(text: &str) -> Option<Rat> {
@@ -121,12 +130,22 @@ fn parse_decimal(text: &str) -> Option<Rat> {
     let (whole, frac) = digits.split_once('.').unwrap_or((digits, ""));
     let mut n: i128 = 0;
     for c in whole.chars().chain(frac.chars()) {
-        n = n.checked_mul(10)?.checked_add(i128::from(c.to_digit(10)?))?;
+        n = n
+            .checked_mul(10)?
+            .checked_add(i128::from(c.to_digit(10)?))?;
     }
     let scale = exponent - i32::try_from(frac.len()).ok()?;
     let ten = |k: u32| 10i128.checked_pow(k);
-    let r = if scale >= 0 { Rat::new(n.checked_mul(ten(scale.unsigned_abs())?)?, 1)? } else { Rat::new(n, ten(scale.unsigned_abs())?)? };
-    if negative { r.checked_negate() } else { Some(r) }
+    let r = if scale >= 0 {
+        Rat::new(n.checked_mul(ten(scale.unsigned_abs())?)?, 1)?
+    } else {
+        Rat::new(n, ten(scale.unsigned_abs())?)?
+    };
+    if negative {
+        r.checked_negate()
+    } else {
+        Some(r)
+    }
 }
 
 #[cfg(test)]
@@ -145,7 +164,12 @@ mod tests {
     #[test]
     fn arithmetic_normalizes_and_overflow_is_none() {
         let third = Rat::new(1, 3).unwrap();
-        assert_eq!(third.checked_plus(third).and_then(|x| x.checked_plus(third)), Some(Rat::ONE));
+        assert_eq!(
+            third
+                .checked_plus(third)
+                .and_then(|x| x.checked_plus(third)),
+            Some(Rat::ONE)
+        );
         assert_eq!(Rat::new(2, -4), Rat::new(-1, 2));
         assert_eq!(Rat::int(i128::MAX).checked_plus(Rat::ONE), None);
         assert_eq!(Rat::ONE.checked_over(Rat::ZERO), None);

@@ -7,6 +7,24 @@
 //! returns the declared target; the client re-fires emitted follow-ups), so Layer 1 does
 //! not need it.
 
+#[cfg(test)]
+mod source_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn named_source_provenance_keeps_expanded_synthesis_and_real_projection() {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({"name":"Test","orbitals":[{
+            "name":"Thing","entity":{"name":"Thing","persistence":"runtime","fields":[]},"traits":[]
+        }]})).unwrap();
+        let ctx = EntityCtx { schema: &schema, owner_fields: &[], viewer_id: None };
+        let mut field = serde_json::from_value(serde_json::json!({"name":"count","type":"number",
+            "projectedFrom":{"typeName":"Thing"}})).unwrap();
+        assert!(synth_field(&field, None, &ctx).is_number());
+        field.projected_from.as_mut().unwrap().field = Some("id".into());
+        assert!(synth_field(&field, None, &ctx).is_string());
+    }
+}
+
 use serde::{Deserialize, Serialize};
 use orbital_core_base::effect_types::{parse_effect, Effect, PersistOperation};
 use orbital_core_base::schema::types::{EntityDefinition, EntityRef, OrbitalSchema, TraitDefinition, TraitReference};
@@ -620,10 +638,11 @@ pub(crate) fn synth_field(
     // or, for a `@create` policy comparing another field to `@user.id`, denied
     // outright because only `{id}` existed to compare against.
     // `T.f`: the value (each element's, for an array) is `f` of `T`'s seeded row.
-    if let Some(projection) = &f.projected_from {
+    if let Some((projection, source_field)) = f.projected_from.as_ref()
+        .and_then(|projection| projection.field.as_deref().map(|field| (projection, field))) {
         if entity_def(ctx.schema, &projection.type_name).is_some() {
             let row = synth_entity_row(ctx, &projection.type_name);
-            let value = row.get(&projection.field).cloned().unwrap_or(serde_json::Value::Null);
+            let value = row.get(source_field).cloned().unwrap_or(serde_json::Value::Null);
             return if field_type.starts_with('[') { serde_json::Value::Array(vec![value]) } else { value };
         }
     }

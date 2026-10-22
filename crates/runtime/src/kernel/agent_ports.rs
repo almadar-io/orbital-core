@@ -145,15 +145,29 @@ impl RuntimeKernel {
     /// `reflection` with the runtime reads the options ask for: `state` (each running instance of the orbital's traits,
     /// its state and entity), `stats` (the kernel's counters) and `trace` (the host's last n dispatch steps, asked of
     /// the host, which keeps the trace).
-    fn with_runtime_reads(&self, reflection: Value, args: &[Value]) -> Result<Value, AgentPortFailure> {
+    fn with_runtime_reads(
+        &self,
+        reflection: Value,
+        args: &[Value],
+    ) -> Result<Value, AgentPortFailure> {
         let reads: InputsReads = inputs_reads(args).map_err(AgentPortFailure::plain)?;
-        let Value::Object(mut answer) = reflection else { return Ok(reflection) };
-        if let Some(orbital) = reads.state.as_deref().filter(|o| self.get_orbital(o).is_none()) {
-            return Err(AgentPortFailure::plain(format!("program/inputs: '{orbital}' is not a registered orbital")));
+        let Value::Object(mut answer) = reflection else {
+            return Ok(reflection);
+        };
+        if let Some(orbital) = reads
+            .state
+            .as_deref()
+            .filter(|o| self.get_orbital(o).is_none())
+        {
+            return Err(AgentPortFailure::plain(format!(
+                "program/inputs: '{orbital}' is not a registered orbital"
+            )));
         }
         if let Some(orbital) = &reads.state {
             let detail = self.get_orbital(orbital).ok_or_else(|| {
-                AgentPortFailure::plain(format!("program/inputs: '{orbital}' is not a registered orbital"))
+                AgentPortFailure::plain(format!(
+                    "program/inputs: '{orbital}' is not a registered orbital"
+                ))
             })?;
             let mut traits = Vec::new();
             for trait_name in &detail.traits {
@@ -168,7 +182,10 @@ impl RuntimeKernel {
                     let snapshot = self.snapshot_trait(trait_name, entity_id.as_deref());
                     let mut row = ValueMap::new();
                     row.insert("trait".to_string(), Value::String(trait_name.clone()));
-                    row.insert("entityId".to_string(), Value::String(entity_id.unwrap_or_else(|| "singleton".to_string())));
+                    row.insert(
+                        "entityId".to_string(),
+                        Value::String(entity_id.unwrap_or_else(|| "singleton".to_string())),
+                    );
                     row.insert("state".to_string(), Value::String(state));
                     row.insert("entity".to_string(), snapshot.entity);
                     traits.push(Value::Object(row));
@@ -198,7 +215,10 @@ impl RuntimeKernel {
             let trace = self
                 .io
                 .run("program/inputs", &[Value::Object(ask)])
-                .map_err(|failure| AgentPortFailure { error: failure.message, errors: failure.errors })?;
+                .map_err(|failure| AgentPortFailure {
+                    error: failure.message,
+                    errors: failure.errors,
+                })?;
             answer.insert("trace".to_string(), trace);
         }
         Ok(Value::Object(answer))
@@ -267,15 +287,25 @@ impl RuntimeKernel {
             DispatchPlan::Dispatch { input, payload } => (input, payload),
             DispatchPlan::Request { payload, options } => {
                 let address = args.first().cloned().unwrap_or(Value::Null);
-                return match self.io.run("program/dispatch", &[address, payload, Value::Object(options)]) {
+                return match self.io.run(
+                    "program/dispatch",
+                    &[address, payload, Value::Object(options)],
+                ) {
                     Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
                     Err(failure) => failure_result(
                         effect,
-                        AgentPortFailure { error: failure.message, errors: failure.errors },
+                        AgentPortFailure {
+                            error: failure.message,
+                            errors: failure.errors,
+                        },
                     ),
                 };
             }
-            DispatchPlan::Inbound { name, body, headers } => {
+            DispatchPlan::Inbound {
+                name,
+                body,
+                headers,
+            } => {
                 let mut ask = ValueMap::new();
                 ask.insert("inbound".to_string(), Value::String(name));
                 ask.insert("body".to_string(), Value::String(body));
@@ -284,7 +314,10 @@ impl RuntimeKernel {
                     Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
                     Err(failure) => failure_result(
                         effect,
-                        AgentPortFailure { error: failure.message, errors: failure.errors },
+                        AgentPortFailure {
+                            error: failure.message,
+                            errors: failure.errors,
+                        },
                     ),
                 };
             }

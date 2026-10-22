@@ -35,10 +35,16 @@ pub trait OsCompletionSink: Send + Sync {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CompletionTestPhase { BeforeWork, BeforeClaim, Terminal }
+
 /// The sink a program instance delivers to, and the keys whose completion is still wanted.
 #[derive(Default)]
 pub struct Completions {
     sink: Mutex<Option<Arc<dyn OsCompletionSink>>>,
+    #[cfg(test)]
+    test_observer: Mutex<Option<Arc<dyn Fn(&str, u64, CompletionTestPhase) + Send + Sync>>>,
     live: Mutex<HashMap<String, u64>>,
     next: std::sync::atomic::AtomicU64,
     /// Claimed completions still being delivered: open until their dispatch (and any call it starts) has run.
@@ -46,6 +52,17 @@ pub struct Completions {
 }
 
 impl Completions {
+    #[cfg(test)]
+    pub(super) fn set_test_observer(&self, observer: Arc<dyn Fn(&str, u64, CompletionTestPhase) + Send + Sync>) {
+        *self.test_observer.lock() = Some(observer);
+    }
+
+    #[cfg(test)]
+    fn observe_test_phase(&self, key: &str, lease: u64, phase: CompletionTestPhase) {
+        let observer = self.test_observer.lock().clone();
+        if let Some(observer) = observer { observer(key, lease, phase); }
+    }
+
     pub fn set_sink(&self, sink: Arc<dyn OsCompletionSink>) {
         *self.sink.lock() = Some(sink);
     }
@@ -249,7 +266,7 @@ impl Completions {
         }
     }
 
-    fn spawn_later<T: Send + 'static>(
+    pub(super) fn spawn_later<T: Send + 'static>(
         this: &Arc<Self>,
         key: &str,
         site: &CallSite,
@@ -263,10 +280,18 @@ impl Completions {
         let started = std::thread::Builder::new().name(format!("os-later-{key}")).spawn({
             let (completions, key) = (completions.clone(), key.clone());
             move || {
-                let outcome = work(lease);
-                if completions.claim_current(&key, lease) {
-                    deliver(&completions, &key, &site, outcome);
+                #[cfg(test)]
+                completions.observe_test_phase(&key, lease, CompletionTestPhase::BeforeWork);
+                {
+                    let outcome = work(lease);
+                    #[cfg(test)]
+                    completions.observe_test_phase(&key, lease, CompletionTestPhase::BeforeClaim);
+                    if completions.claim_current(&key, lease) {
+                        deliver(&completions, &key, &site, outcome);
+                    }
                 }
+                #[cfg(test)]
+                completions.observe_test_phase(&key, lease, CompletionTestPhase::Terminal);
             }
         });
         started.map(drop).map_err(|e| {

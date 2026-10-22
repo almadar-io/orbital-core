@@ -851,10 +851,13 @@ pub fn mock_row_id(label: &str, n: usize) -> String {
 
 /// A relation cell a seeder may fill: missing, or the `""` / `[]` placeholder.
 /// Where a field's value (each element's, for an array) is projected from: `T.f`.
-fn projection_of(field: &FieldDefinition) -> Option<&orbital_core_base::schema::types::FieldProjection> {
-    field.projected_from.as_ref().or_else(|| {
+fn projection_of(field: &FieldDefinition) -> Option<(&orbital_core_base::schema::types::FieldProjection, &str)> {
+    fn actual(projection: &orbital_core_base::schema::types::FieldProjection) -> Option<(&orbital_core_base::schema::types::FieldProjection, &str)> {
+        projection.field.as_deref().map(|field| (projection, field))
+    }
+    field.projected_from.as_ref().and_then(actual).or_else(|| {
         (field.field_type == FieldType::Array)
-            .then(|| field.items.as_ref().and_then(|i| i.projected_from.as_ref()))
+            .then(|| field.items.as_ref().and_then(|i| i.projected_from.as_ref()).and_then(actual))
             .flatten()
     })
 }
@@ -1406,7 +1409,7 @@ impl<'a> MockSeeder<'a> {
                 .cloned()
                 .unwrap_or_else(|| store.clone());
             for field in &def.fields {
-                let (Some(name), Some(projection)) = (field.name.as_deref(), projection_of(field))
+                let (Some(name), Some((projection, source_field))) = (field.name.as_deref(), projection_of(field))
                 else {
                     continue;
                 };
@@ -1428,7 +1431,7 @@ impl<'a> MockSeeder<'a> {
                         continue;
                     }
                     let picked = target_rows[i % target_rows.len()]
-                        .get_path(&projection.field)
+                        .get_path(source_field)
                         .cloned()
                         .unwrap_or(Value::Null);
                     let value = if field.field_type == FieldType::Array {
@@ -1773,6 +1776,26 @@ mod policy_tests {
 mod tests {
     use super::*;
     use orbital_core_base::value::ValueMap;
+
+    #[test]
+    fn named_source_provenance_preserves_expanded_sampling_and_real_projections() {
+        let mut field: FieldDefinition = serde_json::from_value(serde_json::json!({
+            "name":"row","type":"object","properties":{"label":{"type":"string"}},
+            "projectedFrom":{"typeName":"Shared"}
+        })).unwrap();
+        assert!(projection_of(&field).is_none());
+        let sampled = sample_value(&field, "Note", 0, None, 0, &mut Entropy::Index).unwrap();
+        assert!(sampled.get_path("label").is_some());
+        field.projected_from.as_mut().unwrap().field = Some("label".into());
+        assert_eq!(projection_of(&field).unwrap().1, "label");
+        assert_eq!(sample_value(&field, "Note", 0, None, 0, &mut Entropy::Index), Some(Value::String(String::new())));
+        let mut array: FieldDefinition = serde_json::from_value(serde_json::json!({
+            "type":"array","items":{"type":"string","projectedFrom":{"typeName":"Shared"}}
+        })).unwrap();
+        assert!(projection_of(&array).is_none());
+        array.items.as_mut().unwrap().projected_from.as_mut().unwrap().field = Some("label".into());
+        assert_eq!(projection_of(&array).unwrap().1, "label");
+    }
 
     fn rows(n: usize) -> Vec<Value> {
         (0..n)

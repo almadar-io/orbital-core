@@ -1,10 +1,10 @@
 //! API-boundary event payload validation through the kernel's declared-shape checker.
 
-use std::collections::BTreeMap;
-use orbital_core_base::ir::types::{payload_field_shape, OirType};
-use orbital_core_eval::evaluator::operators::arg_types::misfit_of_declared;
+use orbital_core_base::ir::types::{payload_field_shape, DeclaredShape, OirType};
 use orbital_core_base::schema::types::PayloadField;
 use orbital_core_base::value::Value;
+use orbital_core_eval::evaluator::operators::arg_types::misfit_of_shape;
+use std::collections::BTreeMap;
 
 /// One violation of an event's declared payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +47,16 @@ pub fn validate_event_payload_with_types(
     schema: &[PayloadField],
     named: &BTreeMap<String, OirType>,
 ) -> Vec<PayloadFailure> {
+    validate_event_payload_with_context(event, payload, schema, named, None)
+}
+
+pub(crate) fn validate_event_payload_with_context(
+    event: &str,
+    payload: &Value,
+    schema: &[PayloadField],
+    named: &BTreeMap<String, OirType>,
+    version: Option<u32>,
+) -> Vec<PayloadFailure> {
     let mut failures = Vec::new();
     for field in schema {
         let fail = |reason| PayloadFailure {
@@ -64,15 +74,22 @@ pub fn validate_event_payload_with_types(
                     failures.push(fail(PayloadFailureReason::Missing));
                 }
             }
-            Some(Value::Null) => {
+            Some(Value::Null) if version.is_none() => {
                 if field.required == Some(true) {
                     failures.push(fail(PayloadFailureReason::Null));
                 }
             }
             Some(value) => {
-                if let Some((path, actual)) = misfit_of_declared(value, &payload_field_shape(field), named) {
+                let mut declared =
+                    DeclaredShape::with_resolver(None, payload_field_shape(field), |name| {
+                        named.get(name).cloned()
+                    });
+                declared.version = version;
+                if let Some((path, actual)) = misfit_of_shape(value, &declared) {
                     let mut failure = fail(if actual == "absent" {
                         PayloadFailureReason::Missing
+                    } else if version == Some(1) && actual == "null" {
+                        PayloadFailureReason::Null
                     } else {
                         PayloadFailureReason::WrongType
                     });
@@ -144,16 +161,21 @@ mod tests {
             validate_event_payload("E", &payload(json!({ "list": "x", "data": [1] })), &schema);
         assert_eq!(bad.len(), 2);
         let objects = [field("rows", "[object]", false)];
-        assert_eq!(validate_event_payload("E", &payload(json!({"rows": [1]})), &objects)[0].field, "rows[0]");
+        assert_eq!(
+            validate_event_payload("E", &payload(json!({"rows": [1]})), &objects)[0].field,
+            "rows[0]"
+        );
     }
 
     #[test]
     fn scalar_types_are_checked_and_unresolved_entity_references_accept_ids() {
         let schema = [field("n", "number", false), field("row", "Note", false)];
-        assert!(
-            validate_event_payload("E", &payload(json!({ "n": 1, "row": "note-id" })), &schema)
-                .is_empty()
-        );
+        assert!(validate_event_payload(
+            "E",
+            &payload(json!({ "n": 1, "row": "note-id" })),
+            &schema
+        )
+        .is_empty());
     }
 
     #[test]
@@ -162,10 +184,26 @@ mod tests {
             {"name": "count", "type": "number"},
             {"name": "mode", "type": "string", "values": ["on", "off"]},
             {"name": "counts", "type": "object", "items": {"name": "", "type": "number"}}
-        ])).unwrap();
-        let failures = validate_event_payload("E", &payload(json!({"count": "bad", "mode": "other", "counts": {"one": "bad"}})), &schema);
-        assert_eq!(failures.iter().map(|failure| failure.field.as_str()).collect::<Vec<_>>(), ["count", "mode", "counts.one"]);
-        assert!(validate_event_payload("E", &payload(json!({"count": 1, "mode": "on", "counts": {"one": 1}})), &schema).is_empty());
+        ]))
+        .unwrap();
+        let failures = validate_event_payload(
+            "E",
+            &payload(json!({"count": "bad", "mode": "other", "counts": {"one": "bad"}})),
+            &schema,
+        );
+        assert_eq!(
+            failures
+                .iter()
+                .map(|failure| failure.field.as_str())
+                .collect::<Vec<_>>(),
+            ["count", "mode", "counts.one"]
+        );
+        assert!(validate_event_payload(
+            "E",
+            &payload(json!({"count": 1, "mode": "on", "counts": {"one": 1}})),
+            &schema
+        )
+        .is_empty());
     }
 
     #[test]
@@ -174,12 +212,23 @@ mod tests {
             "name": "rows", "type": "[object]", "properties": [
                 {"name": "count", "type": "number", "required": true}
             ]
-        }])).unwrap();
-        let failures = validate_event_payload("E", &payload(json!({"rows": [{"count": "wrong"}]})), &schema);
+        }]))
+        .unwrap();
+        let failures = validate_event_payload(
+            "E",
+            &payload(json!({"rows": [{"count": "wrong"}]})),
+            &schema,
+        );
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].field, "rows[0].count");
-        assert!(validate_event_payload("E", &payload(json!({"rows": [{"count": 2}]})), &schema).is_empty());
-        assert_eq!(validate_event_payload("E", &payload(json!({"rows": [{}]})), &schema)[0].reason, PayloadFailureReason::Missing);
+        assert!(
+            validate_event_payload("E", &payload(json!({"rows": [{"count": 2}]})), &schema)
+                .is_empty()
+        );
+        assert_eq!(
+            validate_event_payload("E", &payload(json!({"rows": [{}]})), &schema)[0].reason,
+            PayloadFailureReason::Missing
+        );
     }
 
     #[test]

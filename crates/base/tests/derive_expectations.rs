@@ -2,7 +2,41 @@
 //! `@almadar/core`'s `derive-expectations.test.ts`, the derivation's former owner, plus the
 //! event arm.
 
-use orbital_core_base::expects::{derive_expectations, merge_expectation_shape, DerivedExpectations};
+use orbital_core_base::expects::{
+    derive_expectations, merge_expectation_shape, DerivedExpectations,
+};
+
+#[test]
+fn record_contract_merge_intersects_nullable_without_conflating_required_presence() {
+    for (left, right) in [(true, false), (false, true)] {
+        let existing =
+            json!([{ "name": "value", "type": "string", "required": false, "nullable": left }]);
+        let incoming =
+            json!([{ "name": "value", "type": "string", "required": true, "nullable": right }]);
+        let merged = merge_expectation_shape(Some(&existing), Some(&incoming))
+            .unwrap()
+            .unwrap();
+        assert_eq!(merged[0]["required"], true);
+        assert_eq!(
+            merged[0]["nullable"], false,
+            "nonnull obligation survives either merge order"
+        );
+    }
+}
+
+#[test]
+fn record_contract_merge_checks_additional_value_constraints() {
+    let prior = json!([{ "name": "row", "type": "object", "properties": { "id": { "type": "string" } }, "additionalProperties": { "type": "number", "nullable": true } }]);
+    let incoming = json!([{ "name": "row", "type": "object", "properties": { "id": { "type": "string" } }, "additionalProperties": { "type": "number", "nullable": false } }]);
+    let merged = merge_expectation_shape(Some(&prior), Some(&incoming))
+        .unwrap()
+        .unwrap();
+    assert_eq!(merged[0]["additionalProperties"]["nullable"], false);
+    let incompatible = json!([{ "name": "row", "type": "object", "additionalProperties": { "type": "boolean", "nullable": false } }]);
+    assert!(merge_expectation_shape(Some(&prior), Some(&incompatible)).is_err());
+    let crossed = json!([{ "name": "row", "type": "object", "properties": { "label": { "type": "string", "required": true } }, "additionalProperties": { "type": "number", "nullable": false } }]);
+    assert!(merge_expectation_shape(Some(&prior), Some(&crossed)).is_err(), "a fixed field from another contract must still satisfy this contract's extra-value constraint");
+}
 use serde_json::{json, Value};
 
 fn customer_fields() -> Value {
@@ -1049,7 +1083,13 @@ fn an_entity_expectation_keeps_its_persistence_marks_and_access_through_json() {
     });
     let decl: ExpectDeclaration = serde_json::from_value(with.clone()).unwrap();
     match &decl {
-        ExpectDeclaration::Entity { persistence, shared, read_policy, access_waivers, .. } => {
+        ExpectDeclaration::Entity {
+            persistence,
+            shared,
+            read_policy,
+            access_waivers,
+            ..
+        } => {
             assert_eq!(*persistence, Some(Persistence::Persistent));
             assert!(*shared);
             assert!(read_policy.is_some() && access_waivers.is_some());
@@ -1059,7 +1099,11 @@ fn an_entity_expectation_keeps_its_persistence_marks_and_access_through_json() {
     assert_eq!(serde_json::to_value(&decl).unwrap(), with);
     let bare = json!({ "kind": "entity", "name": "Order" });
     let decl: ExpectDeclaration = serde_json::from_value(bare.clone()).unwrap();
-    assert_eq!(serde_json::to_value(&decl).unwrap(), bare, "control: nothing stated writes nothing");
+    assert_eq!(
+        serde_json::to_value(&decl).unwrap(),
+        bare,
+        "control: nothing stated writes nothing"
+    );
 }
 
 #[test]
@@ -1070,7 +1114,11 @@ fn a_page_expectation_keeps_the_traits_it_mounts() {
     assert!(matches!(&decl, ExpectDeclaration::Page { traits: Some(t), .. } if t.len() == 2));
     assert_eq!(serde_json::to_value(&decl).unwrap(), with);
     let bare = json!({ "kind": "page", "path": "/orders" });
-    assert_eq!(serde_json::to_value(serde_json::from_value::<ExpectDeclaration>(bare.clone()).unwrap()).unwrap(), bare);
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<ExpectDeclaration>(bare.clone()).unwrap())
+            .unwrap(),
+        bare
+    );
 }
 
 #[test]

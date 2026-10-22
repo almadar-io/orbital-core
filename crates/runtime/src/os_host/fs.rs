@@ -26,18 +26,19 @@ enum PipeEnd {
 
 /// Open descriptors and the virtual working directory; ids come from the counter shared with the net table,
 /// so an id names one handle.
+#[derive(Clone)]
 pub struct FsTable {
     #[allow(dead_code)]
-    pub(super) fds: HandleSlab<FdEntry>,
+    pub(super) fds: Arc<HandleSlab<FdEntry>>,
     #[allow(dead_code)]
-    cwd: Mutex<Option<PathBuf>>,
+    cwd: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl FsTable {
     pub(super) fn new(ids: IdCounter) -> Self {
         Self {
-            fds: HandleSlab::new(ids),
-            cwd: Mutex::new(None),
+            fds: Arc::new(HandleSlab::new(ids)),
+            cwd: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -61,13 +62,34 @@ pub(super) fn answer(
     #[cfg(not(unix))]
     {
         let _ = (args, host);
-        match op {
-            OsOp::Close => None,
-            _ => Some(Err(OsError::new(
-                orbital_core_base::os::OsErrorKind::Unsupported,
-                format!("{}: files are not supported on this platform", op.name()),
-            ))),
-        }
+        unsupported(op)
+    }
+}
+
+#[cfg(not(unix))]
+fn unsupported(op: OsOp) -> Option<Result<Value, OsError>> {
+    match op {
+        OsOp::Close => None,
+        _ => Some(Err(OsError::new(
+            orbital_core_base::os::OsErrorKind::Unsupported,
+            format!("{}: files are not supported on this platform", op.name()),
+        ))),
+    }
+}
+
+pub(super) fn later(op: OsOp, args: &[Value], key: &str, site: &CallSite, host: &OsHost<'_>) -> Result<(), OsError> {
+    #[cfg(unix)]
+    { ops::later(op, args, key, site, host) }
+    #[cfg(not(unix))]
+    {
+        let (args, net) = (args.to_vec(), host.handles.net.clone());
+        super::completion::Completions::run_later(&host.handles.completions, key, site, move || {
+            let answered = match (unsupported(op), op) {
+                (None, OsOp::Close) => super::net::close(&args, &net),
+                (answered, _) => answered,
+            };
+            super::finish_answer(op, answered)
+        }).map_err(|error| super::net::later_error(op, error, key))
     }
 }
 
@@ -100,9 +122,9 @@ mod ops {
     use super::super::completion::Completions;
     use crate::resumable::CallSite;
     use super::super::{OsHost, FIRST_HANDLE_ID};
-    use super::{FdEntry, PipeEnd};
+    use super::{FdEntry, FsTable, PipeEnd};
     use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
-    use orbital_core_base::os_grants::{AnchoredPath, FsMode, GrantAnchor, OsGrants};
+    use orbital_core_base::os_grants::{AnchoredPath, FsMode, GrantAnchor, OsAnchors, OsGrants};
     use orbital_core_base::value::{Value, ValueMap};
     use std::collections::VecDeque;
     use std::ffi::{CString, OsString};
@@ -125,16 +147,20 @@ mod ops {
         args: &[Value],
         host: &OsHost<'_>,
     ) -> Option<Result<Value, OsError>> {
-        let cx = Cx { op, host };
+        answer_context(&Cx::new(op, host), args)
+    }
+
+    fn answer_context(cx: &Cx<'_>, args: &[Value]) -> Option<Result<Value, OsError>> {
+        let op = cx.op;
         if op == OsOp::Close {
             let fd = match arg_i64(args, 0, op) {
                 Ok(fd) => fd,
                 Err(e) => return Some(Err(e)),
             };
-            if fd < FIRST_HANDLE_ID || !host.handles.fs.fds.contains(fd) {
+            if fd < FIRST_HANDLE_ID || !cx.fs.fds.contains(fd) {
                 return None;
             }
-            host.handles.fs.fds.remove(fd);
+            cx.fs.fds.remove(fd);
             return Some(Ok(obj([])));
         }
         Some(cx.run(args))
@@ -303,7 +329,7 @@ mod ops {
         site: &CallSite,
         host: &OsHost<'_>,
     ) -> Result<(), OsError> {
-        let cx = Cx { op: OsOp::Read, host };
+        let cx = Cx::new(OsOp::Read, host);
         let (count, pipe, buf) = cx.read_source(args)?;
         Completions::run_later(&host.handles.completions, key, site, move || {
             finish_read(OsOp::Read, count, pipe, buf)
@@ -311,12 +337,75 @@ mod ops {
         .map_err(|e| super::super::net::later_error(OsOp::Read, e, key))
     }
 
-    struct Cx<'a, 'h> {
-        op: OsOp,
-        host: &'a OsHost<'h>,
+    struct OpenedFile {
+        table: Arc<super::super::HandleSlab<FdEntry>>,
+        fd: Option<i64>,
     }
 
-    impl Cx<'_, '_> {
+    impl OpenedFile {
+        fn release(mut self) -> Value {
+            let fd = self.fd.take().expect("owned Open allocation");
+            obj([("fd", Value::Number(fd as f64))])
+        }
+    }
+
+    impl Drop for OpenedFile {
+        fn drop(&mut self) {
+            if let Some(fd) = self.fd.take() { self.table.remove(fd); }
+        }
+    }
+
+    enum FsCompletion {
+        Answer(Result<Value, OsError>),
+        Open(Result<OpenedFile, OsError>),
+    }
+
+    pub(super) fn later(
+        op: OsOp,
+        args: &[Value],
+        key: &str,
+        site: &CallSite,
+        host: &OsHost<'_>,
+    ) -> Result<(), OsError> {
+        let (fs, net) = (host.handles.fs.clone(), host.handles.net.clone());
+        let (grants, anchors) = (host.grants.clone(), host.handles.anchors.clone());
+        let cwd = fs.cwd.lock().clone();
+        let args = args.to_vec();
+        Completions::spawn_later(&host.handles.completions, key, site, move |_| {
+            let cx = Cx { op, grants: &grants, anchors: &anchors, fs: &fs, cwd };
+            if op == OsOp::Open {
+                FsCompletion::Open(cx.open(&args))
+            } else {
+                let answered = answer_context(&cx, &args);
+                let answered = match (answered, op) {
+                    (None, OsOp::Close) => super::super::net::close(&args, &net),
+                    (answered, _) => answered,
+                };
+                FsCompletion::Answer(super::super::finish_answer(op, answered))
+            }
+        }, |completions, key, site, outcome| {
+            let result = match outcome {
+                FsCompletion::Answer(result) => result,
+                FsCompletion::Open(result) => result.map(OpenedFile::release),
+            };
+            completions.deliver(key, site, result);
+        }).map_err(|error| super::super::net::later_error(op, error, key))
+    }
+
+    struct Cx<'a> {
+        op: OsOp,
+        grants: &'a OsGrants,
+        anchors: &'a OsAnchors,
+        fs: &'a FsTable,
+        cwd: Option<PathBuf>,
+    }
+
+    impl<'a> Cx<'a> {
+        fn new(op: OsOp, host: &'a OsHost<'_>) -> Self {
+            Self { op, grants: host.grants, anchors: &host.handles.anchors,
+                fs: &host.handles.fs, cwd: host.handles.fs.cwd.lock().clone() }
+        }
+
         fn err(&self, kind: OsErrorKind, what: impl std::fmt::Display) -> OsError {
             OsError::new(kind, format!("{}: {what}", self.op.name()))
         }
@@ -332,14 +421,14 @@ mod ops {
         /// The absolute path `raw` names: as written, a `~/` or `./` form under its anchor, or a bare relative path
         /// under the working directory `os/chdir` set.
         fn absolute(&self, raw: &str) -> Result<PathBuf, OsError> {
-            if let Some(anchored) = self.host.handles.anchors.expand(raw).map_err(|m| self.err(OsErrorKind::Invalid, m))? {
+            if let Some(anchored) = self.anchors.expand(raw).map_err(|m| self.err(OsErrorKind::Invalid, m))? {
                 return Ok(anchored);
             }
             let given = Path::new(raw);
             if given.is_absolute() {
                 return Ok(given.to_path_buf());
             }
-            match self.host.handles.fs.cwd.lock().as_ref() {
+            match self.cwd.as_ref() {
                 Some(cwd) => Ok(cwd.join(given)),
                 None => Err(self.err(
                     OsErrorKind::Invalid,
@@ -349,7 +438,7 @@ mod ops {
         }
 
         fn allow(&self, path: &Path, mode: FsMode) -> Result<(), OsError> {
-            if self.host.grants.fs_allows_at(path, mode, &self.host.handles.anchors) {
+            if self.grants.fs_allows_at(path, mode, self.anchors) {
                 Ok(())
             } else {
                 Err(self.err(
@@ -421,7 +510,7 @@ mod ops {
             fd: i64,
             f: impl FnOnce(&mut FdEntry) -> Result<R, OsError>,
         ) -> Result<R, OsError> {
-            self.host.handles.fs.fds.with(fd, f).unwrap_or_else(|| {
+            self.fs.fds.with(fd, f).unwrap_or_else(|| {
                 Err(self.err(OsErrorKind::Closed, format!("fd {fd} is not open")))
             })
         }
@@ -461,7 +550,7 @@ mod ops {
                 OsOp::ReadFile => self.read_file(args),
                 OsOp::WriteFile => self.write_file(args, false),
                 OsOp::AppendFile => self.write_file(args, true),
-                OsOp::Open => self.open(args),
+                OsOp::Open => self.open(args).map(OpenedFile::release),
                 OsOp::Close => Ok(obj([])),
                 OsOp::Read => self.read(args),
                 OsOp::Write => self.write(args),
@@ -495,7 +584,7 @@ mod ops {
                     fs::symlink_metadata(&path).map_err(|e| self.io(&path, &e))?;
                     Ok(obj([("path", text(&path))]))
                 }
-                OsOp::Cwd => match self.host.handles.fs.cwd.lock().as_ref() {
+                OsOp::Cwd => match self.fs.cwd.lock().as_ref() {
                     Some(cwd) => Ok(obj([("path", text(cwd))])),
                     None => Err(self.err(
                         OsErrorKind::Invalid,
@@ -511,7 +600,7 @@ mod ops {
                             format!("{} is not a directory", path.display()),
                         ));
                     }
-                    *self.host.handles.fs.cwd.lock() = Some(path);
+                    *self.fs.cwd.lock() = Some(path);
                     Ok(obj([]))
                 }
                 OsOp::Stat | OsOp::Lstat => {
@@ -617,7 +706,7 @@ mod ops {
             })
         }
 
-        fn open(&self, args: &[Value]) -> Result<Value, OsError> {
+        fn open(&self, args: &[Value]) -> Result<OpenedFile, OsError> {
             let raw = arg_str(args, 0, self.op)?;
             let flags = self.parse_flags(arg_str(args, 1, self.op)?)?;
             let mode = self.mode_arg(args, 2)?;
@@ -648,8 +737,8 @@ mod ops {
                 options.mode(mode);
             }
             let file = options.open(&at.real).map_err(|e| self.io(&at.real, &e))?;
-            let fd = self.host.handles.fs.fds.insert(FdEntry::File(file));
-            Ok(obj([("fd", Value::Number(fd as f64))]))
+            let fd = self.fs.fds.insert(FdEntry::File(file));
+            Ok(OpenedFile { table: self.fs.fds.clone(), fd: Some(fd) })
         }
 
         fn read(&self, args: &[Value]) -> Result<Value, OsError> {
@@ -899,7 +988,7 @@ mod ops {
         /// An anchored pattern matches under the boot-resolved anchor and answers anchor-relative paths. Its prefix
         /// need not be granted: a narrow anchored grant covers it, and every match is checked against the grants.
         fn anchored_glob(&self, anchored: &AnchoredPath) -> Result<Value, OsError> {
-            let anchors = &self.host.handles.anchors;
+            let anchors = self.anchors;
             if anchored.path.as_deref().is_none_or(str::is_empty) {
                 return Err(self.err(OsErrorKind::Invalid, "empty pattern"));
             }
@@ -964,14 +1053,14 @@ mod ops {
 
         fn consider(&self, path: &Path, matcher: &OsGrants, out: &mut Vec<String>) {
             if !matcher.fs_allows(path, FsMode::Read)
-                || !self.host.grants.fs_allows_at(path, FsMode::Read, &self.host.handles.anchors)
+                || !self.grants.fs_allows_at(path, FsMode::Read, self.anchors)
             {
                 return;
             }
             let Ok(real) = resolve(path, true) else {
                 return;
             };
-            if real != path && !self.host.grants.fs_allows_at(&real, FsMode::Read, &self.host.handles.anchors) {
+            if real != path && !self.grants.fs_allows_at(&real, FsMode::Read, self.anchors) {
                 return;
             }
             if fs::symlink_metadata(path).is_ok() {
@@ -2255,4 +2344,286 @@ mod tests {
         assert_eq!(e.kind, OsErrorKind::Unsupported);
         assert!(e.message.contains("streaming host not implemented"));
     }
+    mod finite_fs_completion {
+        use super::*;
+        use crate::entity_source::InMemoryEntityCache;
+        use crate::native_host::NativeHost;
+        use crate::os_host::completion::{CompletionTestPhase, OsCompletionSink};
+        use crate::resumable::{CallRoutes, CallSite, IoAnswer, IoRequest};
+        use std::sync::{mpsc, Arc};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        struct Sink(mpsc::Sender<(String, Result<Value, OsError>)>);
+        impl OsCompletionSink for Sink {
+            fn complete(&self, _: &CallSite, key: &str, outcome: Result<Value, OsError>) {
+                self.0.send((key.to_string(), outcome)).expect("completion receiver");
+            }
+        }
+
+        struct Paused {
+            entered: mpsc::Receiver<u64>,
+            release: mpsc::Sender<()>,
+            terminal: mpsc::Receiver<u64>,
+        }
+
+        fn pause_first(handles: &OsHandles, phase: CompletionTestPhase) -> Paused {
+            let (entered_tx, entered) = mpsc::channel();
+            let (release, release_rx) = mpsc::channel();
+            let (terminal_tx, terminal) = mpsc::channel();
+            let release_rx = parking_lot::Mutex::new(release_rx);
+            let first = AtomicBool::new(true);
+            handles.completions.set_test_observer(Arc::new(move |key, lease, observed| {
+                assert_eq!(key, "open");
+                if observed == phase && first.swap(false, Ordering::SeqCst) {
+                    entered_tx.send(lease).expect("phase receiver");
+                    release_rx.lock().recv_timeout(Duration::from_secs(5)).expect("release paused worker");
+                }
+                if observed == CompletionTestPhase::Terminal {
+                    terminal_tx.send(lease).expect("terminal receiver");
+                }
+            }));
+            Paused { entered, release, terminal }
+        }
+
+        fn native(fx: &Fx, handles: Arc<OsHandles>) -> (NativeHost, mpsc::Receiver<(String, Result<Value, OsError>)>) {
+            let (tx, rx) = mpsc::channel();
+            handles.completions.set_sink(Arc::new(Sink(tx)));
+            (native_context(fx, handles), rx)
+        }
+
+        fn native_context(fx: &Fx, handles: Arc<OsHandles>) -> NativeHost {
+            NativeHost::new(
+                Arc::new(InMemoryEntityCache::new()),
+                Arc::new(crate::native_host::tests::Offline),
+                Arc::new(crate::credentials::Credentials::from_env(Default::default())),
+                Vec::new(), fx.grants.clone(), handles,
+                Arc::new(|_: Option<&CallSite>, _: Value| {}),
+            )
+        }
+
+        fn request(op: OsOp, args: Vec<Value>, key: Option<&str>) -> IoRequest {
+            IoRequest::Os {
+                op, args, key: key.map(str::to_string),
+                site: Some(CallSite {
+                    orbital: None, trait_name: "Boundary".into(), follow_on: false,
+                    entity_id: "singleton".into(),
+                    emit: CallRoutes { success: Some("DONE".into()), failure: Some("FAILED".into()), ..Default::default() },
+                }),
+            }
+        }
+
+        fn open(host: &NativeHost, fx: &Fx) {
+            let answer = host.answer(&request(OsOp::Open, vec![fx.s("file"), st("r")], Some("open")));
+            assert!(matches!(answer, IoAnswer::ServiceDeferred), "keyed Open must defer before waiting for a worker: {answer:?}");
+        }
+
+        fn terminal(paused: &Paused, lease: u64) {
+            loop {
+                if paused.terminal.recv_timeout(Duration::from_secs(5)).expect("worker reached terminal after discard cleanup") == lease { return; }
+            }
+        }
+
+        #[test]
+        fn finite_fs_completion_close_preserves_file_socket_and_unknown_handle_results() {
+            let fx = Fx::new();
+            fs::write(fx.p("file"), b"payload").unwrap();
+            for keyed in [false, true] {
+                for kind in ["file", "socket", "unknown"] {
+                    let handles = Arc::new(OsHandles::default());
+                    let (host, delivered) = native(&fx, handles.clone());
+                    let mut peer = None;
+                    let fd = match kind {
+                        "file" => {
+                            let IoAnswer::Os(Ok(opened)) = host.answer(&request(OsOp::Open, vec![fx.s("file"), st("r")], None)) else { panic!("inline Open") };
+                            let Value::Number(fd) = get(&opened, "fd") else { panic!("Open descriptor") };
+                            *fd as i64
+                        }
+                        "socket" => {
+                            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                            let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+                            peer = Some(listener.accept().unwrap().0);
+                            handles.net.socks.insert(super::super::super::net::SockEntry::Stream(stream))
+                        }
+                        _ => 999_999,
+                    };
+                    let result = if keyed {
+                        let paused = pause_first(&handles, CompletionTestPhase::BeforeClaim);
+                        let answer = host.answer(&request(OsOp::Close, vec![n(fd)], Some("open")));
+                        assert!(matches!(answer, IoAnswer::ServiceDeferred), "{kind}: {answer:?}");
+                        let lease = paused.entered.recv_timeout(Duration::from_secs(5)).expect("Close before claim");
+                        paused.release.send(()).unwrap();
+                        let (key, result) = delivered.recv_timeout(Duration::from_secs(5)).expect("Close completion");
+                        assert_eq!(key, "open");
+                        terminal(&paused, lease);
+                        result
+                    } else {
+                        let IoAnswer::Os(result) = host.answer(&request(OsOp::Close, vec![n(fd)], None)) else { panic!("inline Close") };
+                        result
+                    };
+                    if kind == "unknown" {
+                        assert_eq!(result, Err(OsError::new(OsErrorKind::Closed, "os/close: not an open handle")));
+                    } else {
+                        assert_eq!(result, Ok(Value::Object(ValueMap::new())));
+                    }
+                    assert!(!handles.fs.fds.contains(fd));
+                    assert!(!handles.net.socks.contains(fd));
+                    assert!(handles.completions.live_keys().is_empty());
+                    drop(peer);
+                }
+            }
+        }
+
+        #[test]
+        fn finite_fs_completion_captures_virtual_cwd_before_later_chdir() {
+            let fx = Fx::new();
+            fs::create_dir(fx.p("first")).unwrap();
+            fs::create_dir(fx.p("second")).unwrap();
+            fs::write(fx.p("first/file"), b"first").unwrap();
+            fs::write(fx.p("second/file"), b"second").unwrap();
+            let handles = Arc::new(OsHandles::default());
+            let (host, delivered) = native(&fx, handles.clone());
+            assert!(matches!(host.answer(&request(OsOp::Chdir, vec![fx.s("first")], None)), IoAnswer::Os(Ok(_))));
+            let IoAnswer::Os(Ok(expected)) = host.answer(&request(OsOp::ReadFile, vec![st("file")], None)) else { panic!("inline read") };
+            let paused = pause_first(&handles, CompletionTestPhase::BeforeWork);
+            let answer = host.answer(&request(OsOp::ReadFile, vec![st("file")], Some("open")));
+            assert!(matches!(answer, IoAnswer::ServiceDeferred), "{answer:?}");
+            let lease = paused.entered.recv_timeout(Duration::from_secs(5)).expect("read paused before work");
+            assert!(matches!(host.answer(&request(OsOp::Chdir, vec![fx.s("second")], None)), IoAnswer::Os(Ok(_))));
+            paused.release.send(()).unwrap();
+            let (_, result) = delivered.recv_timeout(Duration::from_secs(5)).expect("read completion");
+            assert_eq!(result, Ok(expected));
+            terminal(&paused, lease);
+            assert_eq!(handles.fs.cwd.lock().as_ref(), Some(&fx.p("second")));
+        }
+
+        #[test]
+        fn finite_fs_completion_captures_original_grants_and_boot_anchors() {
+            let fx = Fx::new();
+            fs::create_dir(fx.p("first")).unwrap();
+            fs::create_dir(fx.p("second")).unwrap();
+            fs::write(fx.p("first/file"), b"first").unwrap();
+            fs::write(fx.p("second/file"), b"second").unwrap();
+            let mut handles = Arc::new(OsHandles { anchors: super::super::super::OsAnchors {
+                start: Some(fx.p("first")), ..Default::default()
+            }, ..Default::default() });
+            let (host, delivered) = native(&fx, handles.clone());
+            let IoAnswer::Os(Ok(expected)) = host.answer(&request(OsOp::ReadFile, vec![st("./file")], None)) else { panic!("inline anchored read") };
+            let paused = pause_first(&handles, CompletionTestPhase::BeforeWork);
+            let answer = host.answer(&request(OsOp::ReadFile, vec![st("./file")], Some("open")));
+            assert!(matches!(answer, IoAnswer::ServiceDeferred), "{answer:?}");
+            let lease = paused.entered.recv_timeout(Duration::from_secs(5)).expect("read paused before work");
+            drop(host);
+            Arc::get_mut(&mut handles).expect("worker owns only canonical shared tables and captured context")
+                .anchors.start = Some(fx.p("second"));
+            let denied = Fx::new().with_grants(|_| Vec::new());
+            let later_host = native_context(&denied, handles.clone());
+            assert!(matches!(later_host.answer(&request(OsOp::ReadFile, vec![st("./file")], None)), IoAnswer::Os(Err(OsError { kind: OsErrorKind::Denied, .. }))));
+            paused.release.send(()).unwrap();
+            let (_, result) = delivered.recv_timeout(Duration::from_secs(5)).expect("original-context completion");
+            assert_eq!(result, Ok(expected));
+            terminal(&paused, lease);
+        }
+
+        #[test]
+        fn finite_fs_completion_denied_stat_preserves_the_original_kind_and_message() {
+            let fx = Fx::new().with_grants(|root| vec![grant(format!("{}/file", root.display()), &ALL)]);
+            let expected = fx.call(OsOp::Stat, vec![fx.s("denied")]).expect_err("outside the grant");
+            assert_eq!(expected.kind, OsErrorKind::Denied);
+            let handles = Arc::new(OsHandles::default());
+            let paused = pause_first(&handles, CompletionTestPhase::BeforeClaim);
+            let (host, delivered) = native(&fx, handles.clone());
+            let request = |key| IoRequest::Os {
+                op: OsOp::Stat, args: vec![fx.s("denied")], key,
+                site: Some(CallSite {
+                    orbital: None, trait_name: "Boundary".into(), follow_on: false,
+                    entity_id: "singleton".into(),
+                    emit: CallRoutes { failure: Some("FAILED".into()), ..Default::default() },
+                }),
+            };
+            match host.answer(&request(None)) {
+                IoAnswer::Os(Err(error)) => assert_eq!(error, expected),
+                other => panic!("unkeyed refusal must remain inline: {other:?}"),
+            }
+            let answer = host.answer(&request(Some("open".into())));
+            assert!(matches!(answer, IoAnswer::ServiceDeferred), "keyed stat refusal must defer: {answer:?}");
+            let lease = paused.entered.recv_timeout(Duration::from_secs(5)).expect("refusal before claim");
+            paused.release.send(()).unwrap();
+            let (key, outcome) = delivered.recv_timeout(Duration::from_secs(5)).expect("deferred failure");
+            assert_eq!(key, "open");
+            assert_eq!(outcome.expect_err("grant refusal"), expected);
+            terminal(&paused, lease);
+            assert!(handles.completions.live_keys().is_empty());
+            assert!(handles.fs.fds.entries.lock().is_empty());
+        }
+
+        #[test]
+        fn finite_fs_completion_cancelled_open_closes_its_exact_allocation() {
+            let fx = Fx::new();
+            fs::write(fx.p("file"), b"payload").unwrap();
+            let handles = Arc::new(OsHandles::default());
+            let paused = pause_first(&handles, CompletionTestPhase::BeforeClaim);
+            let (host, delivered) = native(&fx, handles.clone());
+            open(&host, &fx);
+            let lease = paused.entered.recv_timeout(Duration::from_secs(5)).expect("open allocated before claim");
+            let allocated: Vec<_> = handles.fs.fds.entries.lock().keys().copied().collect();
+            assert_eq!(allocated.len(), 1);
+            assert!(handles.cancel_completion("open"));
+            paused.release.send(()).unwrap();
+            terminal(&paused, lease);
+            assert!(!handles.fs.fds.contains(allocated[0]), "discarded Open leaked its allocated descriptor");
+            assert!(handles.completions.live_keys().is_empty());
+            assert!(matches!(delivered.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        }
+
+        #[test]
+        fn finite_fs_completion_close_all_prevents_a_late_open_handle_leak() {
+            let fx = Fx::new();
+            fs::write(fx.p("file"), b"payload").unwrap();
+            let handles = Arc::new(OsHandles::default());
+            let paused = pause_first(&handles, CompletionTestPhase::BeforeWork);
+            let (host, delivered) = native(&fx, handles.clone());
+            open(&host, &fx);
+            let lease = paused.entered.recv_timeout(Duration::from_secs(5)).expect("worker paused before Open");
+            assert!(handles.fs.fds.entries.lock().is_empty());
+            handles.close_all();
+            paused.release.send(()).unwrap();
+            terminal(&paused, lease);
+            assert!(handles.fs.fds.entries.lock().is_empty(), "Open after close_all left an unreachable descriptor");
+            assert!(handles.completions.live_keys().is_empty());
+            assert!(matches!(delivered.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        }
+
+        #[test]
+        fn finite_fs_completion_reused_key_keeps_only_the_new_open_allocation() {
+            let fx = Fx::new();
+            fs::write(fx.p("file"), b"payload").unwrap();
+            let handles = Arc::new(OsHandles::default());
+            let paused = pause_first(&handles, CompletionTestPhase::BeforeClaim);
+            let (host, delivered) = native(&fx, handles.clone());
+            open(&host, &fx);
+            let old_lease = paused.entered.recv_timeout(Duration::from_secs(5)).expect("old Open allocated");
+            let allocated: Vec<_> = handles.fs.fds.entries.lock().keys().copied().collect();
+            assert_eq!(allocated.len(), 1);
+            let old_fd = allocated[0];
+            assert!(handles.cancel_completion("open"));
+            open(&host, &fx);
+            let (key, outcome) = delivered.recv_timeout(Duration::from_secs(5)).expect("new lease completes while old lease is paused");
+            assert_eq!(key, "open");
+            let outcome = outcome.expect("new Open succeeds");
+            let Value::Number(new_fd) = get(&outcome, "fd") else { panic!("Open returned no numeric descriptor: {outcome:?}") };
+            let new_fd = *new_fd as i64;
+            assert_ne!(old_fd, new_fd);
+            let new_lease = paused.terminal.recv_timeout(Duration::from_secs(5)).expect("new lease reaches terminal");
+            assert_ne!(new_lease, old_lease);
+            paused.release.send(()).unwrap();
+            terminal(&paused, old_lease);
+            assert!(!handles.fs.fds.contains(old_fd));
+            assert!(handles.fs.fds.contains(new_fd), "old lease cleanup closed the new allocation");
+            assert!(handles.completions.live_keys().is_empty());
+            assert!(matches!(delivered.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            handles.close_all();
+        }
+    }
+
 }

@@ -18,11 +18,14 @@ pub fn projected_payload<'a>(
         let Some(projection) = &field.projected_from else {
             continue;
         };
+        let Some(source_field) = projection.field.as_deref() else {
+            continue;
+        };
         let Some(row) = rows_for(&projection.type_name).and_then(|rows| rows.first()) else {
             continue;
         };
         let value = row
-            .get_path(&projection.field)
+            .get_path(source_field)
             .cloned()
             .unwrap_or(Value::Null);
         let value = if field.field_type.starts_with('[') {
@@ -60,4 +63,20 @@ pub fn projected_through_mapping<'a>(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_source_provenance_does_not_read_rows_but_real_projection_does() {
+        let mut field: PayloadField = serde_json::from_value(serde_json::json!({
+            "name":"row","type":"object","projectedFrom":{"typeName":"Shared"}
+        })).unwrap();
+        assert!(projected_payload(&[field.clone()], |_| panic!("Named source is not a row projection")).is_empty());
+        field.projected_from.as_mut().unwrap().field = Some("label".into());
+        let rows = vec![serde_json::from_value(serde_json::json!({"label":"kept"})).unwrap()];
+        assert_eq!(projected_payload(&[field], |_| Some(&rows))["row"], Value::String("kept".into()));
+    }
 }

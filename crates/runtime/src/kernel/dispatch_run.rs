@@ -7,11 +7,11 @@
 use super::envelope::Origin;
 use super::*;
 use crate::effects::response::MountSeed;
-use crate::row_query::RowWriteOutcome;
 use crate::resumable::{
     accept_into, number_requests, DispatchContinuation, DispatchError, DispatchOutcomes, Exchange,
     IoAnswer, IoReply, Progress, StoreAsk, StoreLeg,
 };
+use crate::row_query::RowWriteOutcome;
 use orbital_core_base::envelope::{DeliverRefusal, DeliverRefusalKind, Envelope, EnvelopeVerdict};
 use orbital_core_base::value::ValueMap;
 
@@ -102,11 +102,16 @@ pub(crate) struct DispatchRun {
 }
 
 impl DispatchRun {
-    pub(crate) fn dispatch_id(&self) -> u64 { self.origin.seq }
+    pub(crate) fn dispatch_id(&self) -> u64 {
+        self.origin.seq
+    }
 
     /// The event of the seed in flight, which names a dispatch parked on its ask.
     fn parked_event(&self) -> String {
-        self.seed.as_ref().map(|seed| seed.event_name.clone()).unwrap_or_default()
+        self.seed
+            .as_ref()
+            .map(|seed| seed.event_name.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -149,7 +154,9 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        self.dispatch_entered(None, trait_name, entity_id, event_name, payload, delivery, log)
+        self.dispatch_entered(
+            None, trait_name, entity_id, event_name, payload, delivery, log,
+        )
     }
 
     /// [`Self::dispatch`] on behalf of the dispatch holding `turn` (EXEC-CONC-0): it re-enters that dispatch while
@@ -162,7 +169,15 @@ impl RuntimeKernel {
         event_name: &str,
         payload: Value,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        self.dispatch_entered(Some(turn), trait_name, entity_id, event_name, payload, None, None)
+        self.dispatch_entered(
+            Some(turn),
+            trait_name,
+            entity_id,
+            event_name,
+            payload,
+            None,
+            None,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -316,10 +331,16 @@ impl RuntimeKernel {
         continuation: DispatchContinuation,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         match self.drive_resumable(continuation)? {
-            Progress::Await { mut continuation, requests } => {
+            Progress::Await {
+                mut continuation,
+                requests,
+            } => {
                 let event = continuation.run.parked_event();
                 continuation.lane = lane.park(event);
-                Ok(Progress::Await { continuation, requests })
+                Ok(Progress::Await {
+                    continuation,
+                    requests,
+                })
             }
             done => Ok(done),
         }
@@ -478,7 +499,14 @@ impl RuntimeKernel {
 
     fn run_of(&self, plans: Vec<SeedPlan>) -> DispatchRun {
         DispatchRun {
-            trace_seeds: plans.iter().map(|p| crate::dispatch_trace::TraceSeed { trait_name: p.trait_name.clone(), entity_id: p.entity_id.clone(), event: p.event_name.clone() }).collect(),
+            trace_seeds: plans
+                .iter()
+                .map(|p| crate::dispatch_trace::TraceSeed {
+                    trait_name: p.trait_name.clone(),
+                    entity_id: p.entity_id.clone(),
+                    event: p.event_name.clone(),
+                })
+                .collect(),
             plans: plans.into(),
             seed: None,
             outcomes: Vec::new(),
@@ -490,31 +518,46 @@ impl RuntimeKernel {
     }
 
     fn observe_dispatch(&self, run: &DispatchRun, error: Option<String>) {
-        let Some(observer) = self.dispatch_observer.read().clone() else { return };
-        if !(observer.enabled)() { return; }
+        let Some(observer) = self.dispatch_observer.read().clone() else {
+            return;
+        };
+        if !(observer.enabled)() {
+            return;
+        }
         let defs = self.trait_definitions.read();
-        let outcomes = run.outcomes.iter().map(|(name, result)| {
-            let observed_state = self.state_manager.read()
-                .get_state(name, Some(&result.state_entity_id))
-                .map(|state| state.current_state.clone());
-            let mut trace = crate::dispatch_trace::transition_of(name, result, observed_state);
-            let source = self.emit_source(name);
-            trace.trait_id = source.trait_id;
-            trace.orbital_id = source.orbital_id;
-            if let Some(def) = defs.get(name) {
-                trace.definition_fingerprint = Some(
-                    orbital_core_base::schema::trait_execution_fingerprint(def)
-                        .expect("registered trait definition serializes"),
-                );
-                if let Some(metadata) = def.source_declaration.as_ref() {
-                    trace.source_trait_id = Some(metadata.trait_id.clone());
-                    trace.source_declaration_fingerprint = Some(metadata.fingerprint.clone());
+        let outcomes = run
+            .outcomes
+            .iter()
+            .map(|(name, result)| {
+                let observed_state = self
+                    .state_manager
+                    .read()
+                    .get_state(name, Some(&result.state_entity_id))
+                    .map(|state| state.current_state.clone());
+                let mut trace = crate::dispatch_trace::transition_of(name, result, observed_state);
+                let source = self.emit_source(name);
+                trace.trait_id = source.trait_id;
+                trace.orbital_id = source.orbital_id;
+                if let Some(def) = defs.get(name) {
+                    trace.definition_fingerprint = Some(
+                        orbital_core_base::schema::trait_execution_fingerprint(def)
+                            .expect("registered trait definition serializes"),
+                    );
+                    if let Some(metadata) = def.source_declaration.as_ref() {
+                        trace.source_trait_id = Some(metadata.trait_id.clone());
+                        trace.source_declaration_fingerprint = Some(metadata.fingerprint.clone());
+                    }
                 }
-            }
-            trace
-        }).collect();
+                trace
+            })
+            .collect();
         drop(defs);
-        (observer.completed)(crate::dispatch_trace::DispatchTraceRecord { dispatch_id: run.origin.seq, seeds: run.trace_seeds.clone(), outcomes, error });
+        (observer.completed)(crate::dispatch_trace::DispatchTraceRecord {
+            dispatch_id: run.origin.seq,
+            seeds: run.trace_seeds.clone(),
+            outcomes,
+            error,
+        });
     }
 
     /// Run every unit with the host's handlers answering at the I/O point: no suspension, no replay.
@@ -558,10 +601,20 @@ impl RuntimeKernel {
                     }
                 };
                 match driven {
-                    Progress::Await { continuation, requests } => {
+                    Progress::Await {
+                        continuation,
+                        requests,
+                    } => {
                         c.pending = requests.clone();
-                        c.store = Some(Box::new(StoreLeg { ask, driver: continuation, seed }));
-                        return Ok(Progress::Await { continuation: c, requests });
+                        c.store = Some(Box::new(StoreLeg {
+                            ask,
+                            driver: continuation,
+                            seed,
+                        }));
+                        return Ok(Progress::Await {
+                            continuation: c,
+                            requests,
+                        });
                     }
                     Progress::Done(outcomes) => {
                         let answer = self.store_reply(&ask, &outcomes);
@@ -581,7 +634,11 @@ impl RuntimeKernel {
                 (p, moved)
             });
             let journal = std::mem::take(&mut c.journal);
-            let (result, end) = self.io.run_step_reading(journal, std::mem::take(&mut c.reads), || self.unit(&mut c.run));
+            let (result, end) =
+                self.io
+                    .run_step_reading(journal, std::mem::take(&mut c.reads), || {
+                        self.unit(&mut c.run)
+                    });
             let committed = self.suspended_commit.write().take();
             let suspended = !end.pending.is_empty() || !end.store_asks.is_empty();
             match replay {
@@ -620,7 +677,13 @@ impl RuntimeKernel {
                 c.journal = end.journal;
                 if let Some(ask) = end.store_asks.into_iter().next() {
                     match self.store_driver_run(&ask) {
-                        Ok(driver) => c.store = Some(Box::new(StoreLeg { ask, driver, seed: None })),
+                        Ok(driver) => {
+                            c.store = Some(Box::new(StoreLeg {
+                                ask,
+                                driver,
+                                seed: None,
+                            }))
+                        }
                         Err(message) => {
                             let answer = Self::store_failed(&ask, message);
                             c.journal.push(Exchange::new(ask.request, answer));
@@ -656,13 +719,25 @@ impl RuntimeKernel {
         self.store_seeds
             .lock()
             .iter()
-            .map(|ask| (ask.key.clone(), StoreAsk { key: self.io.next_store_key(), ..ask.clone() }))
+            .map(|ask| {
+                (
+                    ask.key.clone(),
+                    StoreAsk {
+                        key: self.io.next_store_key(),
+                        ..ask.clone()
+                    },
+                )
+            })
             .collect()
     }
 
     pub(crate) fn seed_leg_for(&self, origin: String, ask: StoreAsk) -> Option<Box<StoreLeg>> {
         match self.store_driver_run(&ask) {
-            Ok(driver) => Some(Box::new(StoreLeg { ask, driver, seed: Some(origin) })),
+            Ok(driver) => Some(Box::new(StoreLeg {
+                ask,
+                driver,
+                seed: Some(origin),
+            })),
             Err(message) => {
                 tracing::warn!(driver = %ask.driver, %message, "kernel: store seed not sent");
                 None
@@ -672,20 +747,29 @@ impl RuntimeKernel {
 
     pub(crate) fn seed_landed(&self, ask: &StoreAsk, answer: &IoAnswer, origin: &str) {
         Self::report_seed(ask, answer);
-        self.store_seeds.lock().retain(|registered| registered.key != origin);
+        self.store_seeds
+            .lock()
+            .retain(|registered| registered.key != origin);
     }
 
     /// The driver orbital's dispatch of the verb `ask` maps to, in a frame of its own keyed by the ask.
     pub(crate) fn store_driver_run(&self, ask: &StoreAsk) -> Result<DispatchContinuation, String> {
-        let verb = crate::store_driver::verb_for(&ask.request, &ask.key)
-            .ok_or_else(|| format!("store driver {}: {:?} is not a row ask a driver answers", ask.driver, ask.request))?;
+        let verb = crate::store_driver::verb_for(&ask.request, &ask.key).ok_or_else(|| {
+            format!(
+                "store driver {}: {:?} is not a row ask a driver answers",
+                ask.driver, ask.request
+            )
+        })?;
         let candidates: Vec<String> = {
             let schemas = self.schemas.read();
             self.trait_homes
                 .read()
                 .iter()
                 .filter(|(_, (schema, at))| {
-                    schemas.get(schema).and_then(|s| s.orbitals.get(*at)).is_some_and(|o| o.name == ask.driver)
+                    schemas
+                        .get(schema)
+                        .and_then(|s| s.orbitals.get(*at))
+                        .is_some_and(|o| o.name == ask.driver)
                 })
                 .map(|(name, _)| name.clone())
                 .collect()
@@ -697,7 +781,14 @@ impl RuntimeKernel {
                 ask.driver, verb.event, handlers
             ));
         };
-        let mut driver = Self::continuation_of(self.run_of_dispatch(target, Some(&ask.key), verb.event, verb.payload, None, None));
+        let mut driver = Self::continuation_of(self.run_of_dispatch(
+            target,
+            Some(&ask.key),
+            verb.event,
+            verb.payload,
+            None,
+            None,
+        ));
         driver.seeds = Some(Default::default());
         Ok(driver)
     }
@@ -707,38 +798,58 @@ impl RuntimeKernel {
         match answer {
             IoAnswer::Wrote(Ok(outcomes)) => {
                 for outcome in outcomes {
-                    if !matches!(outcome, RowWriteOutcome::Created { .. } | RowWriteOutcome::DuplicateId) {
+                    if !matches!(
+                        outcome,
+                        RowWriteOutcome::Created { .. } | RowWriteOutcome::DuplicateId
+                    ) {
                         tracing::warn!(driver = %ask.driver, key = %ask.key, ?outcome, "kernel: store seed row not created");
                     }
                 }
             }
-            other => tracing::warn!(driver = %ask.driver, key = %ask.key, answer = ?other, "kernel: store seed failed"),
+            other => {
+                tracing::warn!(driver = %ask.driver, key = %ask.key, answer = ?other, "kernel: store seed failed")
+            }
         }
     }
 
     pub(crate) fn store_failed(ask: &StoreAsk, message: String) -> IoAnswer {
-        crate::store_driver::failed_answer(&ask.request, message)
-            .unwrap_or_else(|| IoAnswer::Wrote(Err(format!("store driver {}: not a row ask", ask.driver))))
+        crate::store_driver::failed_answer(&ask.request, message).unwrap_or_else(|| {
+            IoAnswer::Wrote(Err(format!("store driver {}: not a row ask", ask.driver)))
+        })
     }
 
     /// The answer the driver's keyed reply gives `ask`: a driver that sent none, or a malformed one, failed it.
     pub(crate) fn store_reply(&self, ask: &StoreAsk, outcomes: &DispatchOutcomes) -> IoAnswer {
         use crate::store_driver::*;
-        const REPLIES: [&str; 7] =
-            [ROW_FOUND, ROWS_LISTED, ROWS_PAGE, ROWS_IDS, ROWS_WRITTEN, STORE_UNSUPPORTED, STORE_FAILED];
-        let reply = outcomes.iter().flat_map(|(_, r)| r.effect_results.iter()).find_map(|er| match &er.effect {
-            Effect::Emit { event, payload }
-                if REPLIES.contains(&event.as_str()) && reply_key(payload) == Some(ask.key.as_str()) =>
-            {
-                Some((event.as_str(), payload))
-            }
-            _ => None,
-        });
+        const REPLIES: [&str; 7] = [
+            ROW_FOUND,
+            ROWS_LISTED,
+            ROWS_PAGE,
+            ROWS_IDS,
+            ROWS_WRITTEN,
+            STORE_UNSUPPORTED,
+            STORE_FAILED,
+        ];
+        let reply = outcomes
+            .iter()
+            .flat_map(|(_, r)| r.effect_results.iter())
+            .find_map(|er| match &er.effect {
+                Effect::Emit { event, payload }
+                    if REPLIES.contains(&event.as_str())
+                        && reply_key(payload) == Some(ask.key.as_str()) =>
+                {
+                    Some((event.as_str(), payload))
+                }
+                _ => None,
+            });
         let failed = |message: String| Self::store_failed(ask, message);
         match reply {
             Some((event, payload)) => answer_for(&ask.request, event, payload)
                 .unwrap_or_else(|e| failed(format!("store driver {}: {e}", ask.driver))),
-            None => failed(format!("store driver {} sent no reply for ask {}", ask.driver, ask.key)),
+            None => failed(format!(
+                "store driver {} sent no reply for ask {}",
+                ask.driver, ask.key
+            )),
         }
     }
 
@@ -807,7 +918,10 @@ impl RuntimeKernel {
     fn hold_user(&self, user: Option<&Value>) -> Option<UserHold> {
         let user = user?;
         let previous = std::mem::replace(&mut *self.current_user.write(), user.clone());
-        Some(UserHold { slot: Arc::clone(&self.current_user), previous })
+        Some(UserHold {
+            slot: Arc::clone(&self.current_user),
+            previous,
+        })
     }
 
     /// The run's viewer locale, held for one unit unless the caller already holds one.

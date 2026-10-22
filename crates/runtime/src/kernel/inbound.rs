@@ -6,7 +6,8 @@
 use super::*;
 use crate::resumable::{DispatchError, DispatchOutcomes, Progress};
 use orbital_core_base::inbound::{
-    answer_of, cascade_capped, dispatch_failed, find_inbound, inbound_payload, inbound_unanswered, unknown_hook, InboundAnswer, InboundRoute,
+    answer_of, cascade_capped, dispatch_failed, find_inbound, inbound_payload, inbound_unanswered,
+    unknown_hook, InboundAnswer, InboundRoute,
 };
 
 /// How long [`RuntimeKernel::await_inbound_answer`] waits for a late answer between checks that a call is still open.
@@ -81,11 +82,15 @@ impl RuntimeKernel {
     /// The trait that handles `event` as an inbound hook in `orbital`, when a client-facing route's request
     /// names it. The route refuses such a request (`TransitionRejectionCode::InboundOnlyEvent`): only
     /// `deliver_inbound` / `start_inbound` deliver an inbound event.
-    pub fn inbound_only_trait(&self, orbital: &str, trait_name: Option<&str>, event: &str) -> Option<String> {
-        self.schemas
-            .read()
-            .values()
-            .find_map(|schema| orbital_core_base::inbound::inbound_only_trait(schema, orbital, trait_name, event))
+    pub fn inbound_only_trait(
+        &self,
+        orbital: &str,
+        trait_name: Option<&str>,
+        event: &str,
+    ) -> Option<String> {
+        self.schemas.read().values().find_map(|schema| {
+            orbital_core_base::inbound::inbound_only_trait(schema, orbital, trait_name, event)
+        })
     }
 
     /// Whether a delivery's outcomes settle it: the handler trait emitted the answer event or one of its effects failed.
@@ -93,12 +98,17 @@ impl RuntimeKernel {
     /// A dispatch the step cap cut also settles it: the answer it owed can no longer come ([`Self::inbound_cut`]).
     pub fn inbound_answered(route: &InboundRoute, outcomes: &DispatchOutcomes) -> bool {
         Self::inbound_late_answer(route, outcomes).is_some()
-            || outcomes.iter().any(|(trait_name, result)| *trait_name == route.trait_name && result.failure.is_some())
+            || outcomes.iter().any(|(trait_name, result)| {
+                *trait_name == route.trait_name && result.failure.is_some()
+            })
     }
 
     /// The cap answer for a dispatch of the handler trait that `CROSS_TRAIT_CASCADE_CAP` cut before it answered.
     fn inbound_cut(route: &InboundRoute, outcomes: &DispatchOutcomes) -> Option<InboundAnswer> {
-        if !outcomes.iter().any(|(trait_name, _)| *trait_name == route.trait_name) {
+        if !outcomes
+            .iter()
+            .any(|(trait_name, _)| *trait_name == route.trait_name)
+        {
             return None;
         }
         outcomes
@@ -109,7 +119,10 @@ impl RuntimeKernel {
 
     /// The answer a later dispatch of the handler trait carries: present only when that dispatch emitted the route's
     /// answer event (a handler whose keyed I/O completes after the delivering dispatch answers then).
-    pub fn inbound_late_answer(route: &InboundRoute, outcomes: &DispatchOutcomes) -> Option<InboundAnswer> {
+    pub fn inbound_late_answer(
+        route: &InboundRoute,
+        outcomes: &DispatchOutcomes,
+    ) -> Option<InboundAnswer> {
         let emitted = outcomes.iter().filter(|(trait_name, _)| *trait_name == route.trait_name).any(|(_, result)| {
             result.effect_results.iter().any(|run| {
                 matches!((&run.effect, &run.outcome), (Effect::Emit { event, .. }, outcome) if *event == route.answer && !matches!(outcome, EffectOutcome::Failed))
@@ -137,7 +150,9 @@ impl RuntimeKernel {
         let deadline = timeout.map(|limit| std::time::Instant::now() + limit);
         loop {
             if !open_calls() {
-                return late.try_recv().unwrap_or_else(|_| inbound_unanswered(&route.trait_name, &route.event));
+                return late
+                    .try_recv()
+                    .unwrap_or_else(|_| inbound_unanswered(&route.trait_name, &route.event));
             }
             let wait = match deadline {
                 Some(deadline) => {
@@ -151,7 +166,9 @@ impl RuntimeKernel {
             };
             match late.recv_timeout(wait) {
                 Ok(answer) => return answer,
-                Err(RecvTimeoutError::Disconnected) => return Self::inbound_answer(route, outcomes),
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Self::inbound_answer(route, outcomes)
+                }
                 Err(RecvTimeoutError::Timeout) => {}
             }
         }
@@ -167,15 +184,16 @@ impl RuntimeKernel {
                 .filter(|(trait_name, _)| *trait_name == route.trait_name)
                 .map(|(_, result)| result)
         };
-        let emits =
-            own()
-                .flat_map(|result| &result.effect_results)
-                .filter_map(|run| match (&run.effect, &run.outcome) {
-                    (Effect::Emit { event, payload }, outcome) if !matches!(outcome, EffectOutcome::Failed) => {
-                        Some((event.as_str(), payload))
-                    }
-                    _ => None,
-                });
+        let emits = own()
+            .flat_map(|result| &result.effect_results)
+            .filter_map(|run| match (&run.effect, &run.outcome) {
+                (Effect::Emit { event, payload }, outcome)
+                    if !matches!(outcome, EffectOutcome::Failed) =>
+                {
+                    Some((event.as_str(), payload))
+                }
+                _ => None,
+            });
         let answer = answer_of(route, emits.clone());
         if emits.clone().any(|(event, _)| event == route.answer) {
             return answer;
@@ -262,7 +280,10 @@ mod tests {
     ) -> InboundAnswer {
         kernel.deliver_inbound(
             name,
-            [("X-Goog-Resource-State", state), ("X-Goog-Channel-Token", token)],
+            [
+                ("X-Goog-Resource-State", state),
+                ("X-Goog-Channel-Token", token),
+            ],
             "",
             secrets,
         )
@@ -319,10 +340,25 @@ mod tests {
     #[test]
     fn the_kernel_checks_the_sender_against_the_credential_and_an_unset_credential_is_unchecked() {
         let k = kernel(json!(["google-calendar"]));
-        let ok = deliver_with(&k, "google-calendar", "exists", "s3cret", &Vault(Some("s3cret")));
+        let ok = deliver_with(
+            &k,
+            "google-calendar",
+            "exists",
+            "s3cret",
+            &Vault(Some("s3cret")),
+        );
         assert_eq!(ok.status, 200);
-        let bad = deliver_with(&k, "google-calendar", "exists", "guess", &Vault(Some("s3cret")));
-        assert_eq!((bad.status, bad.body.as_str()), (400, r#"{"error":"bad-token"}"#));
+        let bad = deliver_with(
+            &k,
+            "google-calendar",
+            "exists",
+            "guess",
+            &Vault(Some("s3cret")),
+        );
+        assert_eq!(
+            (bad.status, bad.body.as_str()),
+            (400, r#"{"error":"bad-token"}"#)
+        );
         let unchecked = deliver_with(&k, "google-calendar", "exists", "anything", &Vault(None));
         assert_eq!(unchecked.status, 200);
     }
@@ -344,7 +380,10 @@ mod tests {
             k.inbound_only_trait("Cal", Some("Push"), "PUSH"),
             Some("Push".to_string())
         );
-        assert_eq!(k.inbound_only_trait("Cal", None, "PUSH"), Some("Push".to_string()));
+        assert_eq!(
+            k.inbound_only_trait("Cal", None, "PUSH"),
+            Some("Push".to_string())
+        );
         assert_eq!(k.inbound_only_trait("Cal", Some("Push"), "INIT"), None);
         assert_eq!(k.inbound_only_trait("Other", None, "PUSH"), None);
     }
@@ -354,34 +393,66 @@ mod tests {
         let kernel = kernel(json!(["google-calendar"]));
         let route = kernel.inbound_route("google-calendar").unwrap();
         let answered = kernel
-            .dispatch(&route.trait_name, None, "PUSH", serde_json::from_value(json!({ "headers": { "x-goog-resource-state": "sync" }, "verified": true })).unwrap())
+            .dispatch(
+                &route.trait_name,
+                None,
+                "PUSH",
+                serde_json::from_value(
+                    json!({ "headers": { "x-goog-resource-state": "sync" }, "verified": true }),
+                )
+                .unwrap(),
+            )
             .unwrap();
-        let late = RuntimeKernel::inbound_late_answer(&route, &answered).expect("the handler emitted the answer event");
+        let late = RuntimeKernel::inbound_late_answer(&route, &answered)
+            .expect("the handler emitted the answer event");
         assert_eq!(late.status, 200);
         assert!(RuntimeKernel::inbound_answered(&route, &answered));
         let silent = kernel
-            .dispatch(&route.trait_name, None, "PUSH", serde_json::from_value(json!({ "headers": { "x-goog-resource-state": "gone" }, "verified": true })).unwrap())
+            .dispatch(
+                &route.trait_name,
+                None,
+                "PUSH",
+                serde_json::from_value(
+                    json!({ "headers": { "x-goog-resource-state": "gone" }, "verified": true }),
+                )
+                .unwrap(),
+            )
             .unwrap();
-        assert_eq!(RuntimeKernel::inbound_late_answer(&route, &silent), None, "control: no answer event, no late answer");
+        assert_eq!(
+            RuntimeKernel::inbound_late_answer(&route, &silent),
+            None,
+            "control: no answer event, no late answer"
+        );
         assert!(!RuntimeKernel::inbound_answered(&route, &silent));
         let mut elsewhere = route.clone();
         elsewhere.trait_name = "Other".to_string();
-        assert_eq!(RuntimeKernel::inbound_late_answer(&elsewhere, &answered), None, "control: another trait's emit answers nothing");
+        assert_eq!(
+            RuntimeKernel::inbound_late_answer(&elsewhere, &answered),
+            None,
+            "control: another trait's emit answers nothing"
+        );
     }
 
     fn unanswered_delivery() -> (InboundRoute, DispatchOutcomes) {
         let kernel = kernel(json!(["google-calendar"]));
         let route = kernel.inbound_route("google-calendar").unwrap();
-        let payload =
-            serde_json::from_value(json!({ "headers": { "x-goog-resource-state": "gone" }, "verified": true }))
-                .unwrap();
-        let outcomes = kernel.dispatch(&route.trait_name, None, "PUSH", payload).unwrap();
+        let payload = serde_json::from_value(
+            json!({ "headers": { "x-goog-resource-state": "gone" }, "verified": true }),
+        )
+        .unwrap();
+        let outcomes = kernel
+            .dispatch(&route.trait_name, None, "PUSH", payload)
+            .unwrap();
         assert!(!RuntimeKernel::inbound_answered(&route, &outcomes));
         (route, outcomes)
     }
 
     fn late_answer() -> InboundAnswer {
-        InboundAnswer { status: 200, body: "late".to_string(), stderr: None }
+        InboundAnswer {
+            status: 200,
+            body: "late".to_string(),
+            stderr: None,
+        }
     }
 
     /// G-ORB-472: a delivery with no answer and no open call left is answered, instead of parking its host forever.
@@ -393,7 +464,11 @@ mod tests {
         assert_eq!(answer.status, 500, "{}", answer.body);
         let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
         assert_eq!(
-            (body["code"].as_str(), body["trait"].as_str(), body["event"].as_str()),
+            (
+                body["code"].as_str(),
+                body["trait"].as_str(),
+                body["event"].as_str()
+            ),
             (Some("inbound-unanswered"), Some("Push"), Some("PUSH"))
         );
     }
@@ -403,7 +478,10 @@ mod tests {
         let (route, outcomes) = unanswered_delivery();
         let (sender, late) = std::sync::mpsc::channel();
         sender.send(late_answer()).unwrap();
-        assert_eq!(RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, None), late_answer());
+        assert_eq!(
+            RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, None),
+            late_answer()
+        );
     }
 
     #[test]
@@ -432,9 +510,17 @@ mod tests {
     fn control_a_call_open_past_the_timeout_answers_the_delivering_dispatch() {
         let (route, outcomes) = unanswered_delivery();
         let (_sender, late) = std::sync::mpsc::channel();
-        let answer =
-            RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || true, Some(INBOUND_OPEN_CHECK * 2));
-        assert_eq!((answer.status, answer.body.as_str()), (500, r#"{"error":"inbound-unanswered"}"#));
+        let answer = RuntimeKernel::await_inbound_answer(
+            &route,
+            &outcomes,
+            &late,
+            || true,
+            Some(INBOUND_OPEN_CHECK * 2),
+        );
+        assert_eq!(
+            (answer.status, answer.body.as_str()),
+            (500, r#"{"error":"inbound-unanswered"}"#)
+        );
     }
 
     fn looping_kernel() -> RuntimeKernel {
@@ -482,7 +568,8 @@ mod tests {
     fn a_handler_cut_by_the_cascade_cap_answers_the_cut() {
         let k = looping_kernel();
         let steps = CROSS_TRAIT_CASCADE_CAP + 500;
-        let answer = k.deliver_inbound("cli-loop", [], &format!(r#"{{"n":{steps}}}"#), &Vault(None));
+        let answer =
+            k.deliver_inbound("cli-loop", [], &format!(r#"{{"n":{steps}}}"#), &Vault(None));
         assert_eq!(answer.status, 500, "{}", answer.body);
         let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
         assert_eq!(body["code"], "cascade-cap");
@@ -492,19 +579,31 @@ mod tests {
         let route = k.inbound_route("cli-loop").unwrap();
         let payload = serde_json::from_value(json!({ "body": { "n": steps } })).unwrap();
         let outcomes = k.dispatch("Loop", None, "LOOP", payload).unwrap();
-        assert!(RuntimeKernel::inbound_answered(&route, &outcomes), "the cut settles the delivery");
-        assert_eq!(RuntimeKernel::inbound_late_answer(&route, &outcomes).map(|a| a.status), Some(500));
+        assert!(
+            RuntimeKernel::inbound_answered(&route, &outcomes),
+            "the cut settles the delivery"
+        );
+        assert_eq!(
+            RuntimeKernel::inbound_late_answer(&route, &outcomes).map(|a| a.status),
+            Some(500)
+        );
     }
 
     #[test]
     fn control_a_handler_under_the_cascade_cap_answers_its_own_emit() {
         let k = looping_kernel();
         let answer = k.deliver_inbound("cli-loop", [], r#"{"n":10}"#, &Vault(None));
-        assert_eq!((answer.status, answer.body.as_str()), (200, r#"{"ok":true}"#));
+        assert_eq!(
+            (answer.status, answer.body.as_str()),
+            (200, r#"{"ok":true}"#)
+        );
         let route = k.inbound_route("cli-loop").unwrap();
         let payload = serde_json::from_value(json!({ "body": { "n": 10 } })).unwrap();
         let outcomes = k.dispatch("Loop", None, "LOOP", payload).unwrap();
         assert!(outcomes.iter().all(|(_, r)| r.cascade_cut.is_none()));
-        assert_eq!(RuntimeKernel::inbound_late_answer(&route, &outcomes).map(|a| a.status), Some(200));
+        assert_eq!(
+            RuntimeKernel::inbound_late_answer(&route, &outcomes).map(|a| a.status),
+            Some(200)
+        );
     }
 }

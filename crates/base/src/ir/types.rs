@@ -655,6 +655,8 @@ pub enum OirType {
     /// to `Record<string, FieldValue | undefined>`.
     Struct {
         fields: Vec<OirField>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        additional: Option<Box<OirType>>,
     },
     /// A TAGGED union of struct variants. `variants` are in declaration order;
     /// each carries its own name so codegen can emit a discriminated union and
@@ -699,6 +701,53 @@ pub enum OirType {
 }
 
 impl OirType {
+    /// Rewrite existing type nodes; replacements are terminal for this traversal.
+    pub fn rewrite(&mut self, replace: &impl Fn(&OirType) -> Option<OirType>) -> bool {
+        if let Some(next) = replace(self) {
+            let changed = *self != next;
+            *self = next;
+            return changed;
+        }
+        match self {
+            Self::Array { inner } | Self::Optional { inner } => inner.rewrite(replace),
+            Self::Map { key, value } => {
+                let key_changed = key.rewrite(replace);
+                value.rewrite(replace) | key_changed
+            }
+            Self::Tuple { items } => {
+                let mut changed = false;
+                for item in items {
+                    changed |= item.rewrite(replace);
+                }
+                changed
+            }
+            Self::Struct { fields, additional } => {
+                let mut changed = false;
+                for field in fields { changed |= field.field_type.rewrite(replace); }
+                if let Some(additional) = additional { changed |= additional.rewrite(replace); }
+                changed
+            }
+            Self::Union { variants: fields } => {
+                let mut changed = false;
+                for field in fields {
+                    changed |= field.field_type.rewrite(replace);
+                }
+                changed
+            }
+            _ => false,
+        }
+    }
+
+    pub fn substitute_type_vars(
+        &mut self,
+        bindings: &std::collections::BTreeMap<String, OirType>,
+    ) -> bool {
+        self.rewrite(&|ty| match ty {
+            Self::Var { name } => bindings.get(name).cloned(),
+            _ => None,
+        })
+    }
+
     /// Create an array type
     pub fn array(inner: OirType) -> Self {
         Self::Array {
@@ -775,6 +824,16 @@ impl OirType {
 /// `Reference` when it has one: `sub`'s `Reference` arm, not `Json`'s, is
 /// what accepts a row or an id string.
 pub fn field_shape(field: &FieldDefinition) -> OirType {
+    let shape = field_shape_inner(field);
+    if field.nullable == Some(true) { OirType::optional(shape) } else { shape }
+}
+
+fn field_shape_inner(field: &FieldDefinition) -> OirType {
+    if matches!(field.field_type, FieldType::String | FieldType::Enum) {
+        if let Some(members) = field.values.as_deref().and_then(crate::type_compat::literal_union_text) {
+            return OirType::enum_type(members);
+        }
+    }
     match &field.field_type {
         FieldType::String => OirType::String,
         FieldType::Number => OirType::Number,
@@ -812,8 +871,9 @@ pub fn field_shape(field: &FieldDefinition) -> OirType {
                     })
                     .collect();
                 fields.sort_by(|a, b| a.name.cmp(&b.name));
-                OirType::Struct { fields }
+                OirType::Struct { fields, additional: field.additional_properties.as_deref().map(field_shape).map(Box::new) }
             }
+            (None, _) if field.additional_properties.is_some() => OirType::Struct { fields: Vec::new(), additional: field.additional_properties.as_deref().map(field_shape).map(Box::new) },
             (None, Some(items)) => OirType::map(OirType::String, field_shape(items)),
             (None, None) => OirType::Json,
         },
@@ -851,6 +911,14 @@ pub fn field_shape(field: &FieldDefinition) -> OirType {
     }
 }
 
+pub fn payload_array_item_type(field_type: &str) -> Option<&str> {
+    let trimmed = field_type.trim();
+    if crate::type_compat::tuple_type_slots(trimmed).is_some() {
+        return None;
+    }
+    trimmed.strip_prefix('[')?.strip_suffix(']')
+}
+
 /// The type a `.orb` payload type text names: `[X]`, `Map<K,V>`, a tuple, a primitive or semantic keyword, a
 /// `$var`; any other identifier is the entity (or alias) of that name, as a `Reference`.
 pub fn payload_type_shape(field_type: &str) -> OirType {
@@ -860,7 +928,7 @@ pub fn payload_type_shape(field_type: &str) -> OirType {
             items: slots.into_iter().map(payload_type_shape).collect(),
         };
     }
-    if let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+    if let Some(inner) = payload_array_item_type(trimmed) {
         return OirType::array(payload_type_shape(inner));
     }
     // The key is a comma-free atom, so split on the FIRST comma (the value may itself be `Map<…>`/`[…]`).
@@ -888,7 +956,7 @@ pub fn payload_type_shape(field_type: &str) -> OirType {
         // In a payload position a relation travels as the related row's id and an enum as its literal value.
         "relation" | "enum" => return OirType::String,
         "array" | "list" => return OirType::array(OirType::Json),
-        "object" => return OirType::Struct { fields: Vec::new() },
+        "object" => return OirType::Struct { fields: Vec::new(), additional: None },
         "json" | "tensor" => return OirType::Json,
         "sexpr" => return OirType::SExpr,
         "node" => return OirType::Node,
@@ -898,7 +966,7 @@ pub fn payload_type_shape(field_type: &str) -> OirType {
     }
     // `@entity(<knob>)`: a row of the entity a knob names, and nothing names it here: an empty record.
     if trimmed.starts_with("@entity(") && trimmed.ends_with(')') {
-        return OirType::Struct { fields: Vec::new() };
+        return OirType::Struct { fields: Vec::new(), additional: None };
     }
     if let Some(name) = trimmed.strip_prefix('$').filter(|n| !n.is_empty()) {
         return OirType::Var { name: name.to_string() };
@@ -930,14 +998,46 @@ pub fn payload_tuple_slots(
 /// `TypeRef` it names, `properties` are a union's variants or a record's members (`[object]` a list of it), `items`
 /// a list's or map's element; an alias or entity name stays the `Reference` [`payload_type_shape`] makes of it.
 pub fn payload_field_shape(field: &crate::schema::types::PayloadField) -> OirType {
+    payload_field_shape_with_entity(field, &|_| false)
+}
+
+pub fn payload_field_shape_with_entity(
+    field: &crate::schema::types::PayloadField,
+    is_entity: &impl Fn(&str) -> bool,
+) -> OirType {
+    let shape = payload_field_shape_inner(field, is_entity);
+    if field.nullable == Some(true) { OirType::optional(shape) } else { shape }
+}
+
+fn payload_field_shape_inner(
+    field: &crate::schema::types::PayloadField,
+    is_entity: &impl Fn(&str) -> bool,
+) -> OirType {
+    if field.field_type != "union" {
+        if let Some(entity) = field.entity.as_deref().filter(|entity| is_entity(entity)) {
+            let reference = OirType::Reference { entity: entity.to_string() };
+            return if field.field_type.trim_start().starts_with('[') {
+                OirType::array(reference)
+            } else {
+                reference
+            };
+        }
+    }
     if let Some(slots) = payload_tuple_slots(field) {
-        return OirType::Tuple { items: slots.into_iter().map(payload_field_shape).collect() };
+        return OirType::Tuple { items: slots.into_iter().map(|field| payload_field_shape_with_entity(field, is_entity)).collect() };
     }
-    if let (true, Some(item)) = (field.field_type == "array", field.items.as_deref()) {
-        return OirType::array(payload_field_shape(item));
+    if let Some(item) = field.items.as_deref() {
+        match payload_type_shape(&field.field_type) {
+            OirType::Array { .. } => return OirType::array(payload_field_shape_with_entity(item, is_entity)),
+            OirType::Map { key, .. } => return OirType::map(*key, payload_field_shape_with_entity(item, is_entity)),
+            _ => {}
+        }
     }
-    if let (true, None, Some(item)) = (field.field_type == "object", &field.properties, field.items.as_deref()) {
-        return OirType::map(OirType::String, payload_field_shape(item));
+    if let (true, None, Some(item)) = (field.field_type == "object" && field.additional_properties.is_none(), &field.properties, field.items.as_deref()) {
+        return OirType::map(OirType::String, payload_field_shape_with_entity(item, is_entity));
+    }
+    if field.field_type == "object" && field.properties.as_ref().is_none_or(Vec::is_empty) && field.additional_properties.is_some() {
+        return OirType::Struct { fields: Vec::new(), additional: field.additional_properties.as_deref().map(|field| payload_field_shape_with_entity(field, is_entity)).map(Box::new) };
     }
     let list = field.field_type.trim_start().starts_with('[');
     match &field.properties {
@@ -955,15 +1055,16 @@ pub fn payload_field_shape(field: &crate::schema::types::PayloadField) -> OirTyp
             let fields: Vec<OirField> = props
                 .iter()
                 .map(|p| {
-                    let mut f = OirField::new(p.name.clone(), payload_field_shape(p));
+                    let mut f = OirField::new(p.name.clone(), payload_field_shape_with_entity(p, is_entity));
                     f.required = p.required.unwrap_or(false);
+                    f.description = p.description.clone();
                     f
                 })
                 .collect();
             if field.field_type == "union" {
                 return OirType::Union { variants: fields };
             }
-            let record = OirType::Struct { fields };
+            let record = OirType::Struct { fields, additional: field.additional_properties.as_deref().map(|field| payload_field_shape_with_entity(field, is_entity)).map(Box::new) };
             if list {
                 OirType::array(record)
             } else {
@@ -984,12 +1085,22 @@ pub fn payload_field_shape(field: &crate::schema::types::PayloadField) -> OirTyp
 /// alias stays finite; `name` is the program's name for it, when it has one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeclaredShape {
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_type_contract_version")]
+    pub version: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(rename = "type")]
     pub ty: OirType,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub named: std::collections::BTreeMap<String, OirType>,
+}
+
+pub(crate) fn deserialize_type_contract_version<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u32>, D::Error> {
+    let version = Option::<u32>::deserialize(deserializer)?;
+    if version.is_some_and(|version| version != 1) {
+        return Err(serde::de::Error::custom("unsupported declared-shape version"));
+    }
+    Ok(version)
 }
 
 impl DeclaredShape {
@@ -1023,7 +1134,7 @@ impl DeclaredShape {
             names_in(&shape, &mut pending);
             named.insert(next, shape);
         }
-        Self { name, ty, named }
+        Self { version: None, name, ty, named }
     }
 
     /// The program alias `name` as a declared shape, when `aliases` declares it.
@@ -1038,15 +1149,17 @@ impl DeclaredShape {
     /// The declared shape a recorded text writes: this form, or a bare `OirType` (no named types); `None` for text
     /// that is neither (a type name).
     pub fn parse(text: &str) -> Option<Self> {
-        if !text.starts_with('{') {
-            return None;
+        Self::read(text).ok()
+    }
+
+    /// Decode one supported shape, preserving its diagnostic and legacy bare-type form.
+    pub fn read(text: &str) -> Result<Self, serde_json::Error> {
+        let value: serde_json::Value = serde_json::from_str(text)?;
+        if value.get("version").is_some() || value.get("type").is_some() && value.get("kind").is_none() {
+            return serde_json::from_value(value);
         }
-        let value: serde_json::Value = serde_json::from_str(text).ok()?;
-        if value.get("type").is_some() && value.get("kind").is_none() {
-            return serde_json::from_value(value).ok();
-        }
-        let ty: OirType = serde_json::from_value(value).ok()?;
-        Some(Self { name: None, ty, named: Default::default() })
+        let ty: OirType = serde_json::from_value(value)?;
+        Ok(Self { version: None, name: None, ty, named: Default::default() })
     }
 
     /// The program's name for the shape a recorded text writes: the shape's `name`, or the text itself (a type name).
@@ -1068,7 +1181,10 @@ pub fn names_in(ty: &OirType, out: &mut Vec<String>) {
             names_in(value, out);
         }
         OirType::Tuple { items } => items.iter().for_each(|item| names_in(item, out)),
-        OirType::Struct { fields } => fields.iter().for_each(|f| names_in(&f.field_type, out)),
+        OirType::Struct { fields, additional } => {
+            fields.iter().for_each(|f| names_in(&f.field_type, out));
+            if let Some(additional) = additional { names_in(additional, out); }
+        }
         OirType::Union { variants } => variants.iter().for_each(|v| names_in(&v.field_type, out)),
         _ => {}
     }
@@ -1080,11 +1196,13 @@ pub fn declared_alias_shape(members: &[crate::schema::types::PayloadField]) -> O
     match members {
         [only] if only.name.is_empty() => payload_field_shape(only),
         _ => OirType::Struct {
+            additional: None,
             fields: members
                 .iter()
                 .map(|p| {
                     let mut f = OirField::new(p.name.clone(), payload_field_shape(p));
                     f.required = p.required.unwrap_or(false);
+                    f.description = p.description.clone();
                     f
                 })
                 .collect(),
@@ -2314,6 +2432,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn payload_array_item_type_distinguishes_lists_from_tuples() {
+        assert_eq!(payload_array_item_type(" [ string ] "), Some(" string "));
+        assert_eq!(payload_array_item_type("[Map<string,number>]"), Some("Map<string,number>"));
+        assert_eq!(payload_array_item_type("[[string,number]]"), Some("[string,number]"));
+        for non_array in ["[string,number]", "[string,[number]]", "Map<string,number>", "string"] {
+            assert_eq!(payload_array_item_type(non_array), None, "{non_array}");
+        }
+        assert_eq!(payload_type_shape("[string]"), OirType::array(OirType::String));
+        let tuple = OirType::Tuple { items: vec![OirType::String, OirType::Number] };
+        assert_eq!(payload_type_shape("[string,number]"), tuple);
+        assert_eq!(payload_type_shape("[[string,number]]"), OirType::array(tuple));
+    }
+
+    #[test]
     fn declared_shape_resolver_keeps_nullable_recursive_aliases_and_excludes_unrelated_types() {
         let reference = |name: &str| OirType::TypeRef { name: name.into() };
         let definitions = std::collections::BTreeMap::from([
@@ -2336,6 +2468,125 @@ mod tests {
             DeclaredShape::parse(&serde_json::to_string(&shape).unwrap()),
             Some(shape)
         );
+    }
+
+    #[test]
+    fn type_var_substitution_visits_nested_types_once_and_preserves_metadata() {
+        let var = |name: &str| OirType::Var { name: name.into() };
+        let mut field = OirField::new("slot", OirType::optional(var("t")));
+        field.required = false;
+        field.description = Some("keep".into());
+        let mut shape = OirType::Tuple { items: vec![
+            OirType::map(var("t"), OirType::array(var("t"))),
+            OirType::Struct { fields: vec![field.clone()], additional: None },
+            OirType::Union { variants: vec![OirField::new("case", var("t"))] },
+            OirType::TypeRef { name: "t".into() },
+            OirType::reference("t"),
+            var("unbound"),
+        ] };
+        let bindings = std::collections::BTreeMap::from([
+            ("t".into(), var("next")),
+            ("next".into(), OirType::Number),
+        ]);
+        assert!(shape.substitute_type_vars(&bindings));
+        let OirType::Tuple { items } = &shape else { panic!("tuple preserved") };
+        assert_eq!(items[0], OirType::map(var("next"), OirType::array(var("next"))));
+        let OirType::Struct { fields, .. } = &items[1] else { panic!("record preserved") };
+        field.field_type = OirType::optional(var("next"));
+        assert_eq!(fields, &[field]);
+        assert_eq!(items[2], OirType::Union { variants: vec![OirField::new("case", var("next"))] });
+        assert_eq!(items[3], OirType::TypeRef { name: "t".into() });
+        assert_eq!(items[4], OirType::reference("t"));
+        assert_eq!(items[5], var("unbound"));
+        assert!(!shape.substitute_type_vars(&std::collections::BTreeMap::new()));
+        let mut cycle = var("t");
+        assert!(cycle.substitute_type_vars(&std::collections::BTreeMap::from([
+            ("t".into(), OirType::array(var("t"))),
+        ])));
+        assert_eq!(cycle, OirType::array(var("t")), "new nodes are not revisited");
+        let mut explicit = OirType::map(OirType::String, OirType::reference("Before"));
+        assert!(explicit.rewrite(&|ty| match ty {
+            OirType::Reference { entity } if entity == "Before" => Some(OirType::reference("After")),
+            _ => None,
+        }));
+        assert_eq!(explicit, OirType::map(OirType::String, OirType::reference("After")));
+        assert!(!explicit.rewrite(&|ty| Some(ty.clone())));
+    }
+
+    #[test]
+    fn declared_shape_contract_version_is_explicit_and_legacy_remains_unmarked() {
+        let old = DeclaredShape::parse(r#"{"type":{"kind":"string"}}"#).unwrap();
+        assert!(serde_json::to_value(&old).unwrap().get("version").is_none());
+        let current = DeclaredShape::parse(r#"{"version":1,"type":{"kind":"string"}}"#).unwrap();
+        assert_eq!(serde_json::to_value(&current).unwrap()["version"], 1);
+        assert!(DeclaredShape::parse(r#"{"version":2,"type":{"kind":"string"}}"#).is_none());
+        let aliases = std::collections::BTreeMap::new();
+        let built = DeclaredShape::with_named(None, OirType::String, &aliases);
+        assert!(serde_json::to_value(&built).unwrap().get("version").is_none());
+        let legacy: crate::schema::OrbitalSchema = serde_json::from_value(serde_json::json!({"name":"old","orbitals":[]})).unwrap();
+        assert!(serde_json::to_value(legacy).unwrap().get("typeContractVersion").is_none());
+        let current: crate::schema::OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name":"new","orbitals":[],"typeContractVersion":1,
+            "types":{"Row":[{"name":"", "type":"object", "nullable":false, "additionalProperties":{"type":"string","nullable":false}}]}
+        })).unwrap();
+        assert_eq!(current.type_contract_version, Some(1));
+        assert!(current.types.as_ref().unwrap().contains_key("Row"));
+        assert!(serde_json::from_value::<crate::schema::OrbitalSchema>(serde_json::json!({"name":"bad","orbitals":[],"typeContractVersion":2})).is_err());
+    }
+
+    #[test]
+    fn payload_container_items_preserve_explicit_nullable_value_contract() {
+        for (container, key) in [("Map<string,string>", "value"), ("[string]", "inner")] {
+            let field: crate::schema::PayloadField = serde_json::from_value(serde_json::json!({
+                "type":container, "nullable":false,
+                "items":{"type":"string","nullable":true}
+            })).unwrap();
+            let shape = serde_json::to_value(payload_field_shape(&field)).unwrap();
+            assert_eq!(shape[key]["kind"], "optional", "{container}: {shape}");
+            assert_eq!(shape[key]["inner"]["kind"], "string");
+            if key == "value" { assert_eq!(shape["key"]["kind"], "string"); }
+        }
+    }
+
+    #[test]
+    fn explicit_nullable_and_additional_values_survive_schema_and_shape_readers() {
+        let value = serde_json::json!({
+            "type": "object", "nullable": false,
+            "properties": {
+                "id": {"type":"string", "required":false, "nullable":false},
+                "token": {"type":"string", "required":true, "nullable":true}
+            },
+            "additionalProperties": {"type":"number", "nullable":true}
+        });
+        let field: FieldDefinition = serde_json::from_value(value).unwrap();
+        let wire = serde_json::to_value(&field).unwrap();
+        assert_eq!(wire["nullable"], false);
+        assert_eq!(wire["additionalProperties"]["nullable"], true);
+        let shape = serde_json::to_value(field_shape(&field)).unwrap();
+        assert_eq!(shape["kind"], "struct");
+        assert_eq!(shape["additional"]["kind"], "optional");
+        assert_eq!(shape["additional"]["inner"]["kind"], "number");
+        let fields = shape["fields"].as_array().unwrap();
+        assert_eq!(fields[0]["required"], false);
+        assert_eq!(fields[0]["fieldType"]["kind"], "string");
+        assert_eq!(fields[1]["required"], true);
+        assert_eq!(fields[1]["fieldType"]["kind"], "optional");
+        let payload: crate::schema::PayloadField = serde_json::from_value(serde_json::json!({
+            "name":"row", "type":"object", "nullable":false,
+            "properties":[{"name":"id", "type":"string", "required":false, "nullable":false}],
+            "additionalProperties":{"type":"number", "nullable":true}
+        })).unwrap();
+        let payload_wire = serde_json::to_value(&payload).unwrap();
+        assert_eq!(payload_wire["nullable"], false);
+        assert_eq!(payload_wire["additionalProperties"]["nullable"], true);
+        let payload_shape = serde_json::to_value(payload_field_shape(&payload)).unwrap();
+        assert_eq!(payload_shape["additional"]["kind"], "optional");
+        let catchall = OirType::Struct { fields: Vec::new(), additional: Some(Box::new(OirType::TypeRef { name: "Cell".into() })) };
+        let closed = DeclaredShape::with_resolver(None, catchall, |name| (name == "Cell").then_some(OirType::String));
+        assert_eq!(closed.named.get("Cell"), Some(&OirType::String));
+        let mut variable = OirType::Struct { fields: Vec::new(), additional: Some(Box::new(OirType::Var { name: "cell".into() })) };
+        assert!(variable.substitute_type_vars(&std::collections::BTreeMap::from([("cell".into(), OirType::String)])));
+        assert_eq!(serde_json::to_value(variable).unwrap()["additional"]["kind"], "string");
     }
 
     fn transition(
@@ -2480,6 +2731,8 @@ mod tests {
 
     fn bare_field(field_type: FieldType) -> FieldDefinition {
         FieldDefinition {
+            nullable: None,
+            additional_properties: None,
             name: None,
             field_type,
             required: None,
@@ -2525,8 +2778,35 @@ mod tests {
     fn a_bare_payload_object_has_a_record_shape_while_json_stays_unconstrained() {
         let object: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({"name": "data", "type": "object"})).unwrap();
         let json: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({"name": "data", "type": "json"})).unwrap();
-        assert_eq!(payload_field_shape(&object), OirType::Struct { fields: Vec::new() });
+        assert_eq!(payload_field_shape(&object), OirType::Struct { fields: Vec::new(), additional: None });
         assert_eq!(payload_field_shape(&json), OirType::Json);
+    }
+
+    #[test]
+    fn field_shape_retains_closed_string_and_enum_values_through_nullable_containers() {
+        let expected = OirType::enum_type("\"ready\" | \"done\"");
+        for kind in [FieldType::String, FieldType::Enum] {
+            let mut field = bare_field(kind);
+            field.values = Some(vec!["ready".into(), "done".into()]);
+            field.nullable = Some(false);
+            assert_eq!(field_shape(&field), expected);
+            let OirType::Enum { name } = field_shape(&field) else { panic!("closed values retained") };
+            let members = crate::type_compat::literal_union_members(&name).unwrap();
+            assert!(members.iter().any(|member| member == "ready"));
+            assert!(!members.iter().any(|member| member == "wrong"));
+            field.nullable = Some(true);
+            let nullable = OirType::optional(expected.clone());
+            assert_eq!(field_shape(&field), nullable);
+            let mut map = bare_field(FieldType::Object);
+            map.items = Some(Box::new(field.clone()));
+            assert_eq!(field_shape(&map), OirType::map(OirType::String, nullable.clone()));
+            let mut record = bare_field(FieldType::Object);
+            record.properties = Some(std::collections::HashMap::new());
+            record.additional_properties = Some(Box::new(field));
+            assert_eq!(field_shape(&record), OirType::Struct { fields: Vec::new(), additional: Some(Box::new(nullable)) });
+        }
+        assert_eq!(field_shape(&bare_field(FieldType::String)), OirType::String);
+        assert_eq!(field_shape(&bare_field(FieldType::Enum)), OirType::enum_type("Enum"));
     }
 
     #[test]
@@ -2566,7 +2846,7 @@ mod tests {
         props.insert("label".to_string(), bare_field(FieldType::String));
         props.insert("count".to_string(), bare_field(FieldType::Number));
         f.properties = Some(props);
-        let OirType::Struct { fields } = field_shape(&f) else {
+        let OirType::Struct { fields, .. } = field_shape(&f) else {
             panic!("an object with properties is a struct");
         };
         let named: Vec<(&str, &OirType)> = fields.iter().map(|f| (f.name.as_str(), &f.field_type)).collect();
