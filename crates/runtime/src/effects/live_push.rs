@@ -47,6 +47,25 @@ pub struct StreamItem {
 }
 
 impl StreamItem {
+    pub fn of_outcomes(outcomes: &[(String, crate::ProcessEventResult)], response: &EventResponse) -> Vec<Self> {
+        let mut items = Vec::new();
+        for (trait_name, result) in outcomes {
+            for effect_result in &result.effect_results {
+                if let Some(effect) = ClientEffect::from_effect(&effect_result.effect) {
+                    items.push(Self::effect(effect));
+                } else if let orbital_core_base::effect_types::Effect::Emit { event, payload } = &effect_result.effect {
+                    items.push(Self::event(EmittedEvent {
+                        event: event.clone(),
+                        payload: (!payload.is_null()).then(|| payload.clone()),
+                        source: Some(BusEventSource::from_trait(trait_name.clone())),
+                    }));
+                }
+            }
+        }
+        items.push(Self::complete(response.clone()));
+        items
+    }
+
     pub fn event(event: EmittedEvent) -> Self {
         Self {
             payload: StreamItemPayload::Event(event),

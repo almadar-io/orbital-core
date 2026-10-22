@@ -8,7 +8,7 @@ pub mod server;
 pub mod wire;
 
 pub use server::{
-    os_completion_event_json, os_deferring_ops_json, os_glob_matches, tab_url_matches,
+    substrate_completion_event_json, os_completion_event_json, os_deferring_ops_json, os_glob_matches, tab_url_matches,
     EmbeddedServer, ServerProgress, ServerResolve,
 };
 

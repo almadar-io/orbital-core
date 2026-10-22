@@ -1,7 +1,8 @@
-//! The API-boundary check of an event's payload against its trait's declared `payloadSchema`: required
-//! fields, and the container (`[X]` array, `object`) a present field's type declares. JS twin:
-//! `validateEventPayload` / `formatPayloadValidationError` (`almadar-runtime/src/traits/PayloadValidator.ts`).
+//! API-boundary event payload validation through the kernel's declared-shape checker.
 
+use std::collections::BTreeMap;
+use orbital_core_base::ir::types::{payload_field_shape, OirType};
+use orbital_core_eval::evaluator::operators::arg_types::misfit_of_declared;
 use orbital_core_base::schema::types::PayloadField;
 use orbital_core_base::value::Value;
 
@@ -31,30 +32,20 @@ impl PayloadFailureReason {
     }
 }
 
-enum Container {
-    Array,
-    Object,
-    Opaque,
-}
-
-/// The container a payload field's `type` declares (`payloadTypeContainer`).
-fn container_of(declared: &str) -> Container {
-    if declared == "array"
-        || (declared.len() > 2 && declared.starts_with('[') && declared.ends_with(']'))
-    {
-        Container::Array
-    } else if declared == "object" {
-        Container::Object
-    } else {
-        Container::Opaque
-    }
-}
-
 /// One failure per violated field of `schema`; empty when the payload is valid or the event declares none.
 pub fn validate_event_payload(
     event: &str,
     payload: &Value,
     schema: &[PayloadField],
+) -> Vec<PayloadFailure> {
+    validate_event_payload_with_types(event, payload, schema, &BTreeMap::new())
+}
+
+pub fn validate_event_payload_with_types(
+    event: &str,
+    payload: &Value,
+    schema: &[PayloadField],
+    named: &BTreeMap<String, OirType>,
 ) -> Vec<PayloadFailure> {
     let mut failures = Vec::new();
     for field in schema {
@@ -79,13 +70,14 @@ pub fn validate_event_payload(
                 }
             }
             Some(value) => {
-                let wrong = match container_of(&field.field_type) {
-                    Container::Array => !matches!(value, Value::Array(_)),
-                    Container::Object => !matches!(value, Value::Object(_)),
-                    Container::Opaque => false,
-                };
-                if wrong {
-                    failures.push(fail(PayloadFailureReason::WrongType));
+                if let Some((path, actual)) = misfit_of_declared(value, &payload_field_shape(field), named) {
+                    let mut failure = fail(if actual == "absent" {
+                        PayloadFailureReason::Missing
+                    } else {
+                        PayloadFailureReason::WrongType
+                    });
+                    failure.field.push_str(&path);
+                    failures.push(failure);
                 }
             }
         }
@@ -151,15 +143,43 @@ mod tests {
         let bad =
             validate_event_payload("E", &payload(json!({ "list": "x", "data": [1] })), &schema);
         assert_eq!(bad.len(), 2);
+        let objects = [field("rows", "[object]", false)];
+        assert_eq!(validate_event_payload("E", &payload(json!({"rows": [1]})), &objects)[0].field, "rows[0]");
     }
 
     #[test]
-    fn edge_a_scalar_type_and_an_entity_name_are_opaque() {
+    fn scalar_types_are_checked_and_unresolved_entity_references_accept_ids() {
         let schema = [field("n", "number", false), field("row", "Note", false)];
         assert!(
-            validate_event_payload("E", &payload(json!({ "n": "x", "row": 3 })), &schema)
+            validate_event_payload("E", &payload(json!({ "n": 1, "row": "note-id" })), &schema)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn scalar_maps_and_closed_literals_use_the_declared_shape_checker() {
+        let schema: Vec<PayloadField> = serde_json::from_value(json!([
+            {"name": "count", "type": "number"},
+            {"name": "mode", "type": "string", "values": ["on", "off"]},
+            {"name": "counts", "type": "object", "items": {"name": "", "type": "number"}}
+        ])).unwrap();
+        let failures = validate_event_payload("E", &payload(json!({"count": "bad", "mode": "other", "counts": {"one": "bad"}})), &schema);
+        assert_eq!(failures.iter().map(|failure| failure.field.as_str()).collect::<Vec<_>>(), ["count", "mode", "counts.one"]);
+        assert!(validate_event_payload("E", &payload(json!({"count": 1, "mode": "on", "counts": {"one": 1}})), &schema).is_empty());
+    }
+
+    #[test]
+    fn nested_array_records_reject_a_misfit_at_its_declared_path() {
+        let schema: Vec<PayloadField> = serde_json::from_value(json!([{
+            "name": "rows", "type": "[object]", "properties": [
+                {"name": "count", "type": "number", "required": true}
+            ]
+        }])).unwrap();
+        let failures = validate_event_payload("E", &payload(json!({"rows": [{"count": "wrong"}]})), &schema);
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].field, "rows[0].count");
+        assert!(validate_event_payload("E", &payload(json!({"rows": [{"count": 2}]})), &schema).is_empty());
+        assert_eq!(validate_event_payload("E", &payload(json!({"rows": [{}]})), &schema)[0].reason, PayloadFailureReason::Missing);
     }
 
     #[test]

@@ -1691,6 +1691,7 @@ impl Orbital {
 /// regular `EntityRef::Inline(merged_entity)` so downstream phases see no
 /// surprises.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EntityRefExtends {
     /// Reference to imported entity: "Alias.entity"
     #[serde(rename = "extends")]
@@ -1724,22 +1725,7 @@ pub struct EntityRefExtends {
 /// - inline `EntityDefinition` (a literal `name`/`fields`/...)
 /// - simple string reference `"Alias.entity"`
 ///
-/// Variant ordering matters because of `serde(untagged)`: serde tries the
-/// variants in order and uses the first that successfully deserializes,
-/// and `EntityDefinition` does NOT carry `#[serde(deny_unknown_fields)]`,
-/// so a JSON object with the discriminating `extends` key would otherwise
-/// be silently swallowed by `Inline` (which would treat `extends` as an
-/// unknown field and discard it). The ordering below is therefore:
-///
-/// 1. `Extends` FIRST — disambiguated by the required `extends` key on
-///    `EntityRefExtends::reference`. An inline entity (no `extends` key)
-///    fails this variant immediately because `reference` is `String`, not
-///    `Option<String>`, so serde rejects the missing-key shape.
-/// 2. `Inline` second — the literal `EntityDefinition` shape. Matches any
-///    object with `name` + `fields` + (optional persistence/collection).
-/// 3. `Reference(String)` last — the bare string form. Cannot match a JSON
-///    object, so it only fires when the JSON is a literal string.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 #[expect(clippy::large_enum_variant, reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs")]
 pub enum EntityRef {
@@ -1749,6 +1735,27 @@ pub enum EntityRef {
     Inline(EntityDefinition),
     /// Reference to imported entity: "Alias.entity"
     Reference(String),
+}
+
+impl<'de> Deserialize<'de> for EntityRef {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match &value {
+            serde_json::Value::String(reference) => Ok(Self::Reference(reference.clone())),
+            serde_json::Value::Object(object) if object.contains_key("extends") => {
+                serde_json::from_value(value).map(Self::Extends).map_err(D::Error::custom)
+            }
+            serde_json::Value::Object(_) => {
+                serde_json::from_value(value).map(Self::Inline).map_err(D::Error::custom)
+            }
+            _ => Err(D::Error::custom("entity must be an inline object, an extends object, or a string reference")),
+        }
+    }
 }
 
 impl EntityRef {
@@ -2219,6 +2226,7 @@ pub const FRAMEWORK_STAMPED_FIELDS: &[&str] = &["id", "createdAt", "updatedAt"];
 
 /// Entity definition - the data schema for an orbital
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EntityDefinition {
     /// Entity name
     pub name: String,
@@ -2321,6 +2329,71 @@ pub struct EntityDefinition {
     /// runtime effect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invariants: Option<Vec<SExpression>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamps: Option<bool>,
+    #[serde(default, rename = "softDelete", skip_serializing_if = "Option::is_none")]
+    pub soft_delete: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visual_prompt: Option<String>,
+    #[serde(default, rename = "assetRef", skip_serializing_if = "Option::is_none")]
+    pub asset_ref: Option<SemanticAssetRef>,
+}
+
+/// Twin of `@almadar/core`'s entity asset metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticAssetRef {
+    pub role: String,
+    pub category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animations: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<VisualStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dimension: Option<AssetDimension>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect: Option<AssetAspect>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VisualStyle {
+    Pixel,
+    Vector,
+    Hd,
+    #[serde(rename = "1-bit")]
+    OneBit,
+    Isometric,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AssetDimension {
+    #[serde(rename = "2d")]
+    TwoDimensional,
+    #[serde(rename = "3d")]
+    ThreeDimensional,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AssetAspect {
+    #[serde(rename = "1:1")]
+    Square,
+    #[serde(rename = "16:9")]
+    Widescreen,
+    #[serde(rename = "5:7")]
+    Card,
+    #[serde(rename = "8:1")]
+    EffectStrip,
+    #[serde(rename = "4:1")]
+    WideBar,
+    #[serde(rename = "5:3")]
+    WideScene,
+    #[serde(rename = "1:2")]
+    TallBanner,
 }
 
 impl EntityDefinition {
@@ -2344,6 +2417,7 @@ impl EntityDefinition {
 /// Why a declared access directive is deliberately absent, per operation.
 /// Each value is the author's stated reason; `None` means "not waived".
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AccessWaivers {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read: Option<String>,
@@ -5319,6 +5393,11 @@ mod tests {
     #[test]
     fn test_entity_shared_false_omitted_from_serialization() {
         let entity = EntityDefinition {
+            timestamps: None,
+            soft_delete: None,
+            description: None,
+            visual_prompt: None,
+            asset_ref: None,
             store: None,
             name: "Task".to_string(),
             id: None,

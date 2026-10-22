@@ -193,6 +193,7 @@ pub struct Signature<'a> {
     unbounded: bool,
     checks: bool,
     returns: &'a OperatorTypeRef,
+    semantics: Option<&'a str>,
 }
 
 impl<'a> Signature<'a> {
@@ -202,6 +203,7 @@ impl<'a> Signature<'a> {
             unbounded: op.max_arity.is_none(),
             checks: op.params.iter().any(|p| checks(&p.ty)),
             returns: &op.return_type,
+            semantics: op.return_semantics.as_deref(),
         }
     }
 
@@ -319,7 +321,7 @@ impl<'a> Signature<'a> {
         mode: Mode,
     ) -> Option<Result<(), Mismatch>> {
         use crate::language::registry::OperatorTypeRefKind as K;
-        let OperatorTypeRef::Tagged(K::Object { fields: declared, open }) = self.formal(index)? else {
+        let OperatorTypeRef::Tagged(K::Object { fields: declared, open, optional }) = self.formal(index)? else {
             return None;
         };
         if *open == Some(true) || declared.is_empty() {
@@ -332,6 +334,7 @@ impl<'a> Signature<'a> {
         scratch.strict = mode == Mode::Static;
         for name in &names {
             let Some((_, actual)) = fields.iter().find(|(given, _)| given == *name) else {
+                if optional.contains(name) { continue; }
                 return Some(Err(Mismatch::Type {
                     expected: format!("an object with `{name}` ({})", expected_name(&declared[*name])),
                     actual: format!("an object where `{name}` is missing"),
@@ -385,6 +388,14 @@ impl<'a> Signature<'a> {
     /// variable nothing bound, `void`, a function).
     pub fn result(&self, bindings: &CallBindings) -> Option<OirType> {
         resolve(self.returns, bindings)
+    }
+
+    pub fn result_with_options(&self, bindings: &CallBindings, option: impl Fn(usize, &str) -> Option<bool>) -> Option<OirType> {
+        let Some((index, field)) = self.semantics.and_then(|sem| sem.strip_prefix("option-branch<")).and_then(|sem| sem.strip_suffix('>')).and_then(|sem| sem.split_once(',')) else { return self.result(bindings); };
+        let Ok(index) = index.parse::<usize>() else { return self.result(bindings); };
+        let Some(selected) = option(index, field) else { return self.result(bindings); };
+        let OperatorTypeRef::Tagged(OperatorTypeRefKind::Union { of }) = self.returns else { return self.result(bindings); };
+        of.get(usize::from(selected)).and_then(|ty| resolve(ty, bindings))
     }
 
     /// Whether the operator is declared to return `void` (it is run for its effect).
@@ -1482,12 +1493,17 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 }
                 Some(OirType::map(resolve(key, b)?, resolve(value, b)?))
             }
-            K::Object { fields, .. } => {
+            K::Object { fields, optional, .. } => {
                 let mut names: Vec<&String> = fields.keys().collect();
                 names.sort();
                 let mut out = Vec::new();
                 for name in names {
-                    out.push(OirField::new(name.clone(), resolve(&fields[name], b)?));
+                    let mut field = OirField::new(name.clone(), resolve(&fields[name], b)?);
+                    if optional.contains(name) {
+                        field.required = false;
+                        field.field_type = OirType::Optional { inner: Box::new(field.field_type) };
+                    }
+                    out.push(field);
                 }
                 Some(OirType::Struct { fields: out })
             }
@@ -1625,6 +1641,28 @@ mod tests {
             "returnType": returns,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn literal_option_selects_a_declared_return_branch_but_dynamic_keeps_the_union() {
+        let mut operator = op(json!([]), json!({ "kind": "union", "of": ["bytes", "number"] }), None);
+        operator.return_semantics = Some("option-branch<1,result>".into());
+        let signature = Signature::of(&operator);
+        let bindings = CallBindings::new();
+        assert_eq!(signature.result_with_options(&bindings, |index, field| { assert_eq!((index, field), (1, "result")); Some(true) }), Some(OirType::Number));
+        assert_eq!(signature.result_with_options(&bindings, |_, _| Some(false)), Some(OirType::Bytes));
+        assert_eq!(signature.result_with_options(&bindings, |_, _| None), signature.result(&bindings));
+    }
+
+    #[test]
+    fn closed_optional_options_allow_omission_without_weakening_field_types() {
+        let operator = op(json!([p("options", json!({ "kind": "object", "fields": { "result": "boolean", "level": "number" }, "optional": ["result", "level"] }))]), json!("bytes"), None);
+        let signature = Signature::of(&operator);
+        let check = |fields: Vec<(String, Actual<'_>)>| signature.bind_shape_literal(&mut CallBindings::new(), 0, &fields, Mode::Static).unwrap();
+        assert!(check(vec![]).is_ok());
+        assert!(check(vec![("result".into(), Actual::of_type(OirType::Boolean))]).is_ok());
+        assert!(check(vec![("result".into(), Actual::of_type(OirType::String))]).is_err());
+        assert!(check(vec![("undeclared".into(), Actual::of_type(OirType::Number))]).is_err());
     }
 
     fn var(name: &str) -> serde_json::Value {

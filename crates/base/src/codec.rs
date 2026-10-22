@@ -195,53 +195,173 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     outer.finalize().into()
 }
 
-/// gzip (RFC 1952) at flate2's default level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CodecFailure {
+    Magic, Method, Flags, HeaderCrc, Truncated, Block, Crc, Size, Trailing, OutputLimit,
+}
+
+impl CodecFailure {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Magic => "magic", Self::Method => "method", Self::Flags => "flags",
+            Self::HeaderCrc => "header-crc", Self::Truncated => "truncated", Self::Block => "block",
+            Self::Crc => "crc", Self::Size => "size", Self::Trailing => "trailing", Self::OutputLimit => "output-limit",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CodecDecoded {
+    pub data: Vec<u8>,
+    pub crc: Option<u32>,
+}
+
 pub fn gzip_compress(data: &[u8]) -> Vec<u8> {
+    gzip_compress_level(data, 6)
+}
+
+pub fn gzip_compress_level(data: &[u8], level: u32) -> Vec<u8> {
     use std::io::Write;
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder
-        .write_all(data)
-        .and_then(|()| encoder.finish())
-        .expect("gzip into memory cannot fail")
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level));
+    encoder.write_all(data).and_then(|()| encoder.finish()).expect("gzip into memory cannot fail")
 }
 
-/// Every gzip member of `data`, as `gzip -d` reads it; an output past `max` bytes is refused.
 pub fn gzip_decompress(data: &[u8], max: usize) -> Result<Vec<u8>, String> {
-    read_bounded(flate2::read::MultiGzDecoder::new(data), max)
+    gzip_decode(data, max).map(|out| out.data).map_err(|error| error.code().to_string())
 }
 
-/// brotli (RFC 7932) at the `brotli` CLI's defaults: quality 11, window 22.
-pub fn brotli_compress(data: &[u8]) -> Vec<u8> {
-    let params = brotli::enc::BrotliEncoderParams {
-        quality: 11,
-        lgwin: 22,
-        ..Default::default()
-    };
+pub type CodecResult = Result<CodecDecoded, CodecFailure>;
+
+pub fn gzip_decode(data: &[u8], max: usize) -> CodecResult {
     let mut out = Vec::new();
-    brotli::BrotliCompress(&mut &data[..], &mut out, &params)
-        .expect("brotli into memory cannot fail");
+    let mut offset = 0;
+    loop {
+        let start = offset;
+        if data.len() - start < 18 {
+            return Err(if start == 0 { CodecFailure::Truncated } else { CodecFailure::Trailing });
+        }
+        if data[start..start + 2] != [31, 139] {
+            return Err(if start == 0 { CodecFailure::Magic } else { CodecFailure::Trailing });
+        }
+        if data[start + 2] != 8 { return Err(CodecFailure::Method); }
+        let flags = data[start + 3];
+        if flags & 224 != 0 { return Err(CodecFailure::Flags); }
+        offset += 10;
+        if flags & 4 != 0 {
+            let extra = data.get(offset..offset + 2).ok_or(CodecFailure::Truncated)?;
+            offset += 2 + usize::from(u16::from_le_bytes([extra[0], extra[1]]));
+            if offset > data.len() { return Err(CodecFailure::Truncated); }
+        }
+        for mask in [8, 16] {
+            if flags & mask != 0 {
+                offset += data[offset..].iter().position(|byte| *byte == 0).ok_or(CodecFailure::Truncated)? + 1;
+            }
+        }
+        if flags & 2 != 0 {
+            let mut crc = flate2::Crc::new(); crc.update(&data[start..offset]);
+            let header_crc = data.get(offset..offset + 2).ok_or(CodecFailure::Truncated)?;
+            if u16::from_le_bytes([header_crc[0], header_crc[1]]) != crc.sum() as u16 { return Err(CodecFailure::HeaderCrc); }
+            offset += 2;
+        }
+        let mut decoder = flate2::Decompress::new(false);
+        let mut crc = flate2::Crc::new();
+        let member_start = out.len();
+        loop {
+            let mut buffer = [0; 8192];
+            let before_in = decoder.total_in();
+            let before_out = decoder.total_out();
+            let status = decoder.decompress(&data[offset..], &mut buffer, flate2::FlushDecompress::None).map_err(|_| CodecFailure::Block)?;
+            let consumed = (decoder.total_in() - before_in) as usize;
+            let produced = (decoder.total_out() - before_out) as usize;
+            offset += consumed;
+            if produced > max - out.len() { return Err(CodecFailure::OutputLimit); }
+            crc.update(&buffer[..produced]);
+            out.extend_from_slice(&buffer[..produced]);
+            if status == flate2::Status::StreamEnd { break; }
+            if consumed == 0 && produced == 0 { return Err(if offset == data.len() { CodecFailure::Truncated } else { CodecFailure::Block }); }
+        }
+        let trailer = data.get(offset..offset + 8).ok_or(CodecFailure::Truncated)?;
+        let expected_crc = u32::from_le_bytes(trailer[..4].try_into().expect("four bytes"));
+        let expected_size = u32::from_le_bytes(trailer[4..].try_into().expect("four bytes"));
+        if crc.sum() != expected_crc { return Err(CodecFailure::Crc); }
+        if (out.len() - member_start) as u32 != expected_size { return Err(CodecFailure::Size); }
+        offset += 8;
+        if offset == data.len() { return Ok(CodecDecoded { data: out, crc: Some(crc.sum()) }); }
+    }
+}
+
+pub fn brotli_compress(data: &[u8]) -> Vec<u8> {
+    brotli_compress_options(data, 11, 22)
+}
+
+pub fn brotli_compress_options(data: &[u8], quality: i32, window: i32) -> Vec<u8> {
+    let params = brotli::enc::BrotliEncoderParams { quality, lgwin: window, ..Default::default() };
+    let mut out = Vec::new();
+    brotli::BrotliCompress(&mut &data[..], &mut out, &params).expect("brotli into memory cannot fail");
     out
 }
 
-/// One brotli stream; an output past `max` bytes is refused.
 pub fn brotli_decompress(data: &[u8], max: usize) -> Result<Vec<u8>, String> {
-    read_bounded(brotli::Decompressor::new(data, 4096), max)
+    brotli_decode(data, max).map(|out| out.data).map_err(|error| error.code().to_string())
 }
 
-fn read_bounded(reader: impl std::io::Read, max: usize) -> Result<Vec<u8>, String> {
+pub fn brotli_decode(data: &[u8], max: usize) -> CodecResult {
     use std::io::Read;
+    let mut reader = brotli::Decompressor::new(data, 4096);
     let mut out = Vec::new();
-    reader
-        .take(max as u64 + 1)
-        .read_to_end(&mut out)
-        .map_err(|e| e.to_string())?;
-    if out.len() > max {
-        return Err(format!("the output is larger than {max} bytes"));
+    let mut buffer = [0; 8192];
+    loop {
+        let n = reader.read(&mut buffer).map_err(|error| if error.kind() == std::io::ErrorKind::UnexpectedEof { CodecFailure::Truncated } else { CodecFailure::Block })?;
+        if n == 0 { return Ok(CodecDecoded { data: out, crc: None }); }
+        if n > max - out.len() { return Err(CodecFailure::OutputLimit); }
+        out.extend_from_slice(&buffer[..n]);
     }
-    Ok(out)
 }
 
 /// Lower-case hex.
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod structured_codec_tests {
+    use super::*;
+
+    #[test]
+    fn gzip_refusal_codes_are_structural_and_complete() {
+        let valid = gzip_compress(b"hello");
+        let code = |bytes: &[u8]| gzip_decode(bytes, 100).unwrap_err();
+        assert_eq!(code(&valid[..4]), CodecFailure::Truncated);
+        let mut bad = valid.clone(); bad[0] = 0;
+        assert_eq!(code(&bad), CodecFailure::Magic);
+        bad = valid.clone(); bad[2] = 7;
+        assert_eq!(code(&bad), CodecFailure::Method);
+        bad = valid.clone(); bad[3] = 32;
+        assert_eq!(code(&bad), CodecFailure::Flags);
+        bad = valid.clone(); bad[10] = 7;
+        assert_eq!(code(&bad), CodecFailure::Block);
+        bad = valid.clone(); let n = bad.len(); bad[n - 8] ^= 1;
+        assert_eq!(code(&bad), CodecFailure::Crc);
+        bad = valid.clone(); bad[n - 4] ^= 1;
+        assert_eq!(code(&bad), CodecFailure::Size);
+        bad = valid.clone(); bad.extend_from_slice(b"junk");
+        assert_eq!(code(&bad), CodecFailure::Trailing);
+        bad = valid.clone(); bad[3] = 2; bad.splice(10..10, [0, 0]);
+        assert_eq!(code(&bad), CodecFailure::HeaderCrc);
+        let mut crc = flate2::Crc::new(); crc.update(&bad[..10]);
+        bad[10..12].copy_from_slice(&(crc.sum() as u16).to_le_bytes());
+        assert_eq!(gzip_decode(&bad, 5).unwrap().data, b"hello");
+        assert_eq!(gzip_decode(&valid, 4).unwrap_err(), CodecFailure::OutputLimit);
+        assert_eq!(gzip_decode(&valid, 5).unwrap().data, b"hello");
+        assert_eq!(gzip_decode(&[valid.clone(), valid].concat(), 10).unwrap().data, b"hellohello");
+    }
+
+    #[test]
+    fn brotli_structured_failure_and_exact_limit_control() {
+        let valid = brotli_compress(b"hello");
+        assert_eq!(brotli_decode(&valid, 4).unwrap_err(), CodecFailure::OutputLimit);
+        assert_eq!(brotli_decode(&valid, 5).unwrap().data, b"hello");
+        assert_eq!(brotli_decode(&[255; 8], 100).unwrap_err(), CodecFailure::Block);
+    }
 }

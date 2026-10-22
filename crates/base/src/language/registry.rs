@@ -106,6 +106,8 @@ pub enum OperatorTypeRefKind {
         fields: HashMap<String, OperatorTypeRef>,
         #[serde(default)]
         open: Option<bool>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        optional: Vec<String>,
     },
     Entity {
         #[serde(default)]

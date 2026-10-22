@@ -396,19 +396,9 @@ impl OsCompletionSink for KernelCompletionSink {
     }
 
     fn settle(&self, site: &CallSite, key: &str, outcome: Result<Value, Value>) {
-        let (route, payload) = match outcome {
-            Ok(payload) => (site.emit.success.clone(), payload),
-            Err(payload) => (site.emit.failure.clone(), payload),
-        };
-        let Some(event) = route else { return };
-        let payload = match payload {
-            Value::Object(mut fields) => {
-                fields.insert("key".to_string(), Value::String(key.to_string()));
-                Value::Object(fields)
-            }
-            other => other,
-        };
-        self.dispatch_completion(site, key, event, payload);
+        if let Some((event, payload)) = crate::resumable::substrate_completion_event(site, key, outcome) {
+            self.dispatch_completion(site, key, event, payload);
+        }
     }
 }
 

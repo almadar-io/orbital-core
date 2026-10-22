@@ -103,6 +103,7 @@ pub struct EmbeddedServer {
     /// Row-set resolves waiting on the host; they share `next_flight`'s ids with the dispatches.
     resolves: Mutex<HashMap<u64, ResolveContinuation>>,
     next_flight: Mutex<u64>,
+    dispatch_stream: Mutex<Vec<crate::effects::live_push::StreamItem>>,
 }
 
 /// The row source and config of a server-role kernel whose host answers every ask.
@@ -150,6 +151,7 @@ impl EmbeddedServer {
             flights: Mutex::new(HashMap::new()),
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
+            dispatch_stream: Mutex::new(Vec::new()),
         })
     }
 
@@ -166,6 +168,7 @@ impl EmbeddedServer {
             flights: Mutex::new(HashMap::new()),
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
+            dispatch_stream: Mutex::new(Vec::new()),
         })
     }
 
@@ -611,11 +614,27 @@ impl EmbeddedServer {
         Ok(self.os_grants().allows(&need))
     }
 
+    pub fn live_item_delivered(&self, item_json: &str, viewer_json: &str, client_id: Option<&str>) -> Result<bool, String> {
+        let item: crate::effects::LiveBroadcastItem = serde_json::from_str(item_json).map_err(|e| format!("parse item_json: {e}"))?;
+        let viewer: Value = serde_json::from_str(viewer_json).map_err(|e| format!("parse viewer_json: {e}"))?;
+        Ok(item.delivered_to(client_id, |item| viewer.is_null() || self.kernel.live_item_visible_to(item, &viewer)))
+    }
+
+    /// The last settled dispatch's ordered items; read before another dispatch starts.
+    pub fn dispatch_stream_json(&self) -> Result<String, String> {
+        serde_json::to_string(&*self.dispatch_stream.lock()).map_err(|e| format!("serialize: {e}"))
+    }
+
     /// [`Self::start`] over JSON: the request in, a `ServerProgressWire` out.
     pub fn start_json(&self, orbital: &str, request_json: &str) -> Result<String, String> {
         let request: EventRequest =
             serde_json::from_str(request_json).map_err(|e| format!("parse request_json: {e}"))?;
+        self.dispatch_stream.lock().clear();
         let progress = self.start(orbital, request)?;
+        if let ServerProgress::Done(response) = &progress {
+            let mut items = self.dispatch_stream.lock();
+            if items.is_empty() { items.push(crate::effects::live_push::StreamItem::complete(response.clone())); }
+        }
         serde_json::to_string(&ServerProgressWire::from(&progress))
             .map_err(|e| format!("serialize: {e}"))
     }
@@ -676,6 +695,7 @@ impl EmbeddedServer {
                 self.kernel
                     .echo_frames(&mut response, seed.entity_id.as_deref());
                 self.echo_held_states(&mut response, &seed.trait_name, seed.entity_id.as_deref());
+                *self.dispatch_stream.lock() = crate::effects::live_push::StreamItem::of_outcomes(&outcomes, &response);
                 Ok(ServerProgress::Done(response))
             }
             Progress::Await {
@@ -729,6 +749,14 @@ pub fn os_completion_event_json(site_json: &str, key: &str, outcome_json: &str) 
         .map_err(|e| format!("parse outcome_json: {e}"))?
         .into();
     let fired = completion_event(&site, key, outcome).map(|(event, payload)| EventFired { event, payload });
+    serde_json::to_string(&fired).map_err(|e| format!("serialize: {e}"))
+}
+
+pub fn substrate_completion_event_json(site_json: &str, key: &str, op: &str, outcome_json: &str) -> Result<String, String> {
+    let site: CallSite = serde_json::from_str::<CallSiteWire>(site_json).map_err(|e| format!("parse site_json: {e}"))?.into();
+    let outcome: Result<Value, super::wire::SubstrateFailureWire> = serde_json::from_str::<Settled<Value, super::wire::SubstrateFailureWire>>(outcome_json).map_err(|e| format!("parse outcome_json: {e}"))?.into();
+    let outcome = outcome.map(|value| crate::agent_ports::completion_result(op, value)).map_err(|failure| crate::agent_ports::failure_payload(&crate::effects::executor::SubstrateFailure { message: failure.message, errors: failure.errors }));
+    let fired = crate::resumable::substrate_completion_event(&site, key, outcome).map(|(event, payload)| EventFired { event, payload });
     serde_json::to_string(&fired).map_err(|e| format!("serialize: {e}"))
 }
 

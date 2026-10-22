@@ -1892,13 +1892,26 @@ impl RuntimeKernel {
     }
 
     /// The refusal text when `payload` does not satisfy the `payloadSchema` any of `targets` (trait, the event it
-    /// receives) declares: required fields, and the container a present field's type declares. `None` when it does.
+    /// receives) declares, including nested fields and program-defined types. `None` when it does.
     pub fn payload_rejection<'a>(
         &self,
         targets: impl IntoIterator<Item = (&'a str, &'a str)>,
         payload: &Value,
     ) -> Option<String> {
         let mut failures = Vec::new();
+        use orbital_core_base::ir::types::{declared_alias_shape, field_shape, OirField, OirType};
+        let entity_types: std::collections::BTreeMap<String, OirType> = self.entity_definitions.read()
+            .iter()
+            .map(|(name, entity)| {
+                let fields = entity.fields.iter().filter_map(|field| {
+                    let name = field.name.as_ref()?;
+                    let mut declared = OirField::new(name.clone(), field_shape(field));
+                    declared.required = field.required.unwrap_or(false);
+                    Some(declared)
+                }).collect();
+                (name.clone(), OirType::Struct { fields })
+            })
+            .collect();
         let definitions = self.trait_definitions.read();
         for (trait_name, event) in targets {
             let declared = definitions
@@ -1907,7 +1920,16 @@ impl RuntimeKernel {
                 .and_then(|events| events.iter().find(|declared| declared.key == event))
                 .and_then(|declared| declared.payload_schema.as_deref());
             if let Some(schema) = declared {
-                failures.extend(crate::payload_validation::validate_event_payload(event, payload, schema));
+                let mut named = entity_types.clone();
+                let homes = self.trait_homes.read();
+                let schemas = self.schemas.read();
+                if let Some(aliases) = homes.get(trait_name)
+                    .and_then(|(name, index)| schemas.get(name)?.orbitals.get(*index))
+                    .and_then(|orbital| orbital.types.as_ref())
+                {
+                    named.extend(aliases.iter().map(|(name, members)| (name.clone(), declared_alias_shape(members))));
+                }
+                failures.extend(crate::payload_validation::validate_event_payload_with_types(event, payload, schema, &named));
             }
         }
         drop(definitions);

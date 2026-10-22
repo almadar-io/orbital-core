@@ -255,6 +255,21 @@ pub struct CallSite {
 }
 
 /// The event and payload `outcome` fires on `site`'s routes.
+pub fn substrate_completion_event(site: &CallSite, key: &str, outcome: Result<Value, Value>) -> Option<(String, Value)> {
+    let (event, payload) = match outcome {
+        Ok(payload) => (site.emit.success.clone()?, payload),
+        Err(payload) => (site.emit.failure.clone()?, payload),
+    };
+    let payload = match payload {
+        Value::Object(mut fields) => {
+            fields.insert("key".to_string(), Value::String(key.to_string()));
+            Value::Object(fields)
+        }
+        other => other,
+    };
+    Some((event, payload))
+}
+
 pub fn completion_event(
     site: &CallSite,
     key: &str,

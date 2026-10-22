@@ -235,69 +235,82 @@ fn bytes_in(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Vec<u8>
     })
 }
 
-fn compress(
-    args: &[SExpression],
-    ctx: &BindingContext,
-    op: &str,
-    run: fn(&[u8]) -> Vec<u8>,
-) -> EvalResult {
-    require_arity!(args, op, == 1);
-    let data = bytes_in(&args[0], ctx, op)?;
-    Ok(Value::String(codec::base64_encode(&run(&data))))
+fn codec_options(args: &[SExpression], index: usize, ctx: &BindingContext, op: &str, keys: &[&str]) -> Result<Value, OrbitalError> {
+    let value = match args.get(index) { Some(arg) => eval_expr(arg, ctx)?, None => Value::Object(Default::default()) };
+    let Value::Object(fields) = &value else { return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: options must be an object")))); };
+    for (key, value) in fields {
+        if !keys.contains(&key.as_str()) || (key == "result" && !matches!(value, Value::Bool(_))) {
+            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: invalid option {key}"))));
+        }
+    }
+    Ok(value)
 }
 
-fn decompress(
-    args: &[SExpression],
-    ctx: &BindingContext,
-    op: &str,
-    run: fn(&[u8], usize) -> Result<Vec<u8>, String>,
-) -> EvalResult {
-    require_arity!(args, op, == 2);
+fn codec_setting(options: &Value, key: &str, default: u32, max: u32, min: u32, op: &str) -> Result<u32, OrbitalError> {
+    let Some(value) = options.as_object().and_then(|fields| fields.get(key)) else { return Ok(default); };
+    if let Value::Number(n) = value {
+        if n.fract() == 0.0 && *n >= f64::from(min) && *n <= f64::from(max) { return Ok(*n as u32); }
+    }
+    Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: {key} must be a whole number from {min} to {max}"))))
+}
+
+fn codec_answer(answer: Result<codec::CodecDecoded, codec::CodecFailure>, options: &Value, op: &str, max: usize) -> EvalResult {
+    if options.as_object().and_then(|fields| fields.get("result")) == Some(&Value::Bool(true)) {
+        let (ok, data, crc, code) = match answer {
+            Ok(decoded) => (true, Value::String(codec::base64_encode(&decoded.data)), decoded.crc.map(|crc| Value::Number(f64::from(crc))).unwrap_or(Value::Null), Value::Null),
+            Err(error) => (false, Value::Null, Value::Null, Value::String(error.code().to_string())),
+        };
+        return Ok(Value::Object([("ok", Value::Bool(ok)), ("data", data), ("crc", crc), ("code", code)].into_iter().map(|(key, value)| (key.to_string(), value)).collect()));
+    }
+    answer.map(|decoded| Value::String(codec::base64_encode(&decoded.data))).map_err(|error| {
+        let detail = if error == codec::CodecFailure::OutputLimit { format!("the output is larger than {max} bytes") } else { error.code().to_string() };
+        OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: {detail}")))
+    })
+}
+
+fn compress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult {
+    require_arity!(args, op, >= 1);
+    if args.len() > 2 { require_arity!(args, op, == 2); }
+    let data = bytes_in(&args[0], ctx, op)?;
+    let gzip = op == "gzip/compress";
+    let options = codec_options(args, 1, ctx, op, if gzip { &["result", "level"] } else { &["result", "quality", "window"] })?;
+    let packed = if gzip {
+        codec::gzip_compress_level(&data, codec_setting(&options, "level", 6, 9, 0, op)?)
+    } else {
+        codec::brotli_compress_options(&data, codec_setting(&options, "quality", 11, 11, 0, op)? as i32, codec_setting(&options, "window", 22, 24, 10, op)? as i32)
+    };
+    let crc = if gzip { Some(u32::from_le_bytes(packed[packed.len() - 8..packed.len() - 4].try_into().expect("gzip trailer"))) } else { None };
+    codec_answer(Ok(codec::CodecDecoded { data: packed, crc }), &options, op, 0)
+}
+
+fn decompress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult {
+    require_arity!(args, op, >= 2);
+    if args.len() > 3 { require_arity!(args, op, == 3); }
     let data = bytes_in(&args[0], ctx, op)?;
     let max = match eval_expr(&args[1], ctx)? {
         Value::Number(n) if n.fract() == 0.0 && n >= 0.0 && n <= u32::MAX as f64 => n as usize,
-        other => {
-            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "{op}: maxBytes {}: expected a whole number from 0",
-                other.to_text()
-            ))))
-        }
+        other => return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: maxBytes {}: expected a whole number from 0", other.to_text())))),
     };
-    let out = run(&data, max)
-        .map_err(|e| OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: {e}"))))?;
-    Ok(Value::String(codec::base64_encode(&out)))
+    let options = codec_options(args, 2, ctx, op, &["result"])?;
+    let answer = if op == "gzip/decompress" { codec::gzip_decode(&data, max) } else { codec::brotli_decode(&data, max) };
+    codec_answer(answer, &options, op, max)
 }
 
-/// gzip/compress (bytes) - gzip (RFC 1952) through flate2
 pub struct GzipCompressOp;
 impl Operator for GzipCompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        compress(args, ctx, "gzip/compress", codec::gzip_compress)
-    }
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult { compress(args, ctx, "gzip/compress") }
 }
-
-/// gzip/decompress (bytes, maxBytes) - every member, refusing an output past maxBytes
 pub struct GzipDecompressOp;
 impl Operator for GzipDecompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        decompress(args, ctx, "gzip/decompress", codec::gzip_decompress)
-    }
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult { decompress(args, ctx, "gzip/decompress") }
 }
-
-/// brotli/compress (bytes) - brotli (RFC 7932) through the brotli crate
 pub struct BrotliCompressOp;
 impl Operator for BrotliCompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        compress(args, ctx, "brotli/compress", codec::brotli_compress)
-    }
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult { compress(args, ctx, "brotli/compress") }
 }
-
-/// brotli/decompress (bytes, maxBytes) - one stream, refusing an output past maxBytes
 pub struct BrotliDecompressOp;
 impl Operator for BrotliDecompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        decompress(args, ctx, "brotli/decompress", codec::brotli_decompress)
-    }
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult { decompress(args, ctx, "brotli/decompress") }
 }
 
 /// hmac/sha256 (key, message, encoding)
@@ -514,6 +527,25 @@ mod tests {
     fn control_the_two_formats_do_not_read_each_other() {
         assert!(eval(serde_json::json!(["gzip/decompress", BROTLI_CLI, 1024])).is_err());
         assert!(eval(serde_json::json!(["brotli/decompress", GZIP_CLI, 1024])).is_err());
+    }
+
+    #[test]
+    fn structured_codec_results_keep_plain_bytes_and_failure_codes() {
+        for family in ["gzip", "brotli"] {
+            let packed = eval(serde_json::json!([format!("{family}/compress"), "aGVsbG8="])).unwrap();
+            let structured = eval(serde_json::json!([format!("{family}/compress"), "aGVsbG8=", { "result": true }])).unwrap();
+            assert_eq!(structured.as_object().unwrap().get("data"), Some(&packed));
+            let refused = eval(serde_json::json!([format!("{family}/decompress"), packed, 4, { "result": true }])).unwrap();
+            assert_eq!(refused.as_object().unwrap().get("ok"), Some(&Value::Bool(false)));
+            assert_eq!(refused.as_object().unwrap().get("code"), Some(&Value::String("output-limit".into())));
+            assert_eq!(refused.as_object().unwrap().get("data"), Some(&Value::Null));
+        }
+        for call in [
+            serde_json::json!(["gzip/compress", "", { "level": 10 }]),
+            serde_json::json!(["brotli/compress", "", { "quality": 12 }]),
+            serde_json::json!(["brotli/compress", "", { "window": 9 }]),
+            serde_json::json!(["gzip/decompress", GZIP_CLI, 100, { "result": "true" }]),
+        ] { assert!(eval(call).is_err()); }
     }
 
     #[test]

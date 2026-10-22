@@ -557,6 +557,10 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) 
         OirType::Date | OirType::DateTime => {
             (!matches!(value, Value::String(_) | Value::Number(_))).then(|| (String::new(), value.type_name()))
         }
+        OirType::Bytes => match value {
+            Value::String(text) if orbital_core_base::codec::base64_decode(text).is_ok() => None,
+            _ => misfit(),
+        },
         OirType::Enum { name } => match (value, orbital_core_base::type_compat::literal_union_members(name)) {
             (Value::String(text), Some(members)) => (!members.contains(&text.as_str())).then(|| (String::new(), "string")),
             (Value::String(_), None) => None,
@@ -712,6 +716,25 @@ mod tests {
 
     fn s(t: &str) -> Value {
         Value::String(t.to_string())
+    }
+
+    #[test]
+    fn declared_bytes_require_the_canonical_base64_wire_encoding() {
+        let named = BTreeMap::new();
+        for valid in ["", "AA==", "AP9h", "aGVsbG8="] {
+            assert!(value_of_declared(&s(valid), &OirType::Bytes, &named).is_ok(), "{valid}");
+        }
+        for invalid in ["plain text", "AA", "AA-_", "!!", "AB=="] {
+            assert!(value_of_declared(&s(invalid), &OirType::Bytes, &named).is_err(), "{invalid}");
+            assert!(value_of_declared(&s(invalid), &OirType::String, &named).is_ok());
+        }
+        assert!(value_of_declared(&num(1.0), &OirType::Bytes, &named).is_err());
+        let bytes = OirType::array(OirType::Bytes);
+        assert!(value_of_declared(&Value::Array(vec![s("AA==")]), &bytes, &named).is_ok());
+        assert_eq!(
+            misfit_of_declared(&Value::Array(vec![s("AA=="), s("invalid bytes")]), &bytes, &named),
+            Some(("[1]".to_string(), "string"))
+        );
     }
 
     #[test]

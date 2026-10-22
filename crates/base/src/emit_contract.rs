@@ -71,6 +71,8 @@ pub enum CallVariant<'a> {
     /// The operator has one contract, or the call site carries no literal
     /// action (the legacy 3-element `persist`).
     Plain,
+    /// A keyed stdin read completes after streaming its chunks.
+    StdinStream,
     /// `persist`'s literal action keyword (`create`, `update`, `delete`, ...).
     PersistAction(&'a str),
     /// An `http` call site that carries `paginate`.
@@ -457,10 +459,10 @@ pub const PERSIST_BATCH_FAILURE_SHAPE: &[ShapeField] = &[
 pub const PERSIST_BATCH_FIELDS: &[&str] = &["operations", "completedCount", "totalCount"];
 
 const OS_NONE: &[ShapeField] = &[];
-const OS_DATA: &[ShapeField] = &[field("data", "string")];
+const OS_DATA: &[ShapeField] = &[field("data", "bytes")];
 const OS_BYTES: &[ShapeField] = &[field("bytes", "number")];
 const OS_FD: &[ShapeField] = &[field("fd", "number")];
-const OS_READ: &[ShapeField] = &[field("data", "string"), field("eof", "boolean")];
+const OS_READ: &[ShapeField] = &[field("data", "bytes"), field("eof", "boolean")];
 const OS_OFFSET: &[ShapeField] = &[field("offset", "number")];
 const OS_TARGET: &[ShapeField] = &[field("target", "string")];
 const OS_ENTRIES: &[ShapeField] = &[field("entries", "array")];
@@ -494,7 +496,7 @@ const OS_EOF: &[ShapeField] = &[field("eof", "boolean")];
 const OS_TTY_SIZE: &[ShapeField] = &[field("rows", "number"), field("cols", "number")];
 const OS_SOCK: &[ShapeField] = &[field("sock", "number")];
 const OS_ACCEPTED: &[ShapeField] = &[field("sock", "number"), field("peer", "string")];
-const OS_RECVFROM: &[ShapeField] = &[field("data", "string"), field("peer", "string")];
+const OS_RECVFROM: &[ShapeField] = &[field("data", "bytes"), field("peer", "string")];
 const OS_ADDRESSES: &[ShapeField] = &[field("addresses", "array")];
 const OS_NANOS: &[ShapeField] = &[field("nanos", "number")];
 const OS_UID: &[ShapeField] = &[field("uid", "number")];
@@ -602,6 +604,9 @@ fn os_contract(op: OsOp) -> OsContract {
 /// [`ProducedPayload::Opaque`] rather than guessing "create" -- a wrong guess
 /// would report against the wrong contract), or an `http` call's `paginate`.
 pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload {
+    if operator == "os/stdin-read" && variant != CallVariant::StdinStream {
+        return ProducedPayload::Shape(OS_READ);
+    }
     if let Some(op) = OsOp::from_name(operator) {
         return os_contract(op).success;
     }
@@ -757,6 +762,29 @@ pub fn undeclared_reads<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn os_binary_reads_declare_bytes_while_text_facts_stay_strings() {
+        for operator in ["os/read-file", "os/read", "os/recv", "os/recvfrom"] {
+            let ProducedPayload::Shape(shape) = success_payload(operator, CallVariant::Plain) else {
+                panic!("{operator} must declare its payload");
+            };
+            assert_eq!(shape.iter().find(|f| f.name == "data").unwrap().field_type, "bytes", "{operator}");
+        }
+        let ProducedPayload::Shape(shape) = message_payload("os/stdin-read") else {
+            panic!("stdin chunks must declare their payload");
+        };
+        assert_eq!(shape, &[field("data", "bytes")]);
+        assert_eq!(success_payload("os/getenv", CallVariant::Plain), ProducedPayload::Shape(OS_VALUE));
+        assert_eq!(OS_VALUE, &[field("value", "string")]);
+    }
+
+    #[test]
+    fn stdin_success_is_narrowed_between_single_read_and_stream_end() {
+        assert_eq!(success_payload("os/stdin-read", CallVariant::Plain), ProducedPayload::Shape(OS_READ));
+        assert_eq!(success_payload("os/stdin-read", CallVariant::StdinStream), ProducedPayload::Shape(OS_EOF));
+        assert_eq!(message_payload("os/stdin-read"), ProducedPayload::Shape(OS_DATA));
+    }
 
     #[test]
     fn redis_emits_its_reply_and_a_typed_failure() {

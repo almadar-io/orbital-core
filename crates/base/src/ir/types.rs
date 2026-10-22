@@ -888,7 +888,8 @@ pub fn payload_type_shape(field_type: &str) -> OirType {
         // In a payload position a relation travels as the related row's id and an enum as its literal value.
         "relation" | "enum" => return OirType::String,
         "array" | "list" => return OirType::array(OirType::Json),
-        "object" | "json" | "tensor" => return OirType::Json,
+        "object" => return OirType::Struct { fields: Vec::new() },
+        "json" | "tensor" => return OirType::Json,
         "sexpr" => return OirType::SExpr,
         "node" => return OirType::Node,
         // UI scalar and name-reference brands travel as strings.
@@ -2465,6 +2466,14 @@ mod tests {
         m.entities.push(OirEntity::new("B"));
         assert_eq!(m.distinct_entities().len(), 2);
         assert_eq!(m.entities.len(), 2);
+    }
+
+    #[test]
+    fn a_bare_payload_object_has_a_record_shape_while_json_stays_unconstrained() {
+        let object: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({"name": "data", "type": "object"})).unwrap();
+        let json: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({"name": "data", "type": "json"})).unwrap();
+        assert_eq!(payload_field_shape(&object), OirType::Struct { fields: Vec::new() });
+        assert_eq!(payload_field_shape(&json), OirType::Json);
     }
 
     #[test]

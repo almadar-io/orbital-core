@@ -157,3 +157,21 @@ mod kernel_dispatch {
         assert!(client.dispatch("InlineRender", None, "SEND", payload(json!({}))).is_ok());
     }
 }
+
+#[test]
+fn dispatch_checks_orbital_aliases_and_entity_rows_through_named_definitions() {
+    use orbital_core_base::effect_types::RuntimeEnvironment;
+    use orbital_core_runtime::{entity_source::InMemoryEntityCache, kernel::RuntimeKernel};
+    use std::sync::Arc;
+    let mut program = serde_json::to_value(schema()).unwrap();
+    let orbital = &mut program["orbitals"][0];
+    orbital["types"] = json!({"Envelope": [{"name": "rows", "type": "[Message]", "required": true}]});
+    orbital["traits"][0]["stateMachine"]["events"][0]["payloadSchema"] = json!([
+        {"name": "data", "type": "Envelope", "required": true}
+    ]);
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()), Default::default());
+    kernel.register_schema(serde_json::from_value(program).unwrap()).unwrap();
+    let bad = kernel.payload_rejection([("ChatComposer", "SEND")], &serde_json::from_value(json!({"data": {"rows": [{"id": 42}]}})).unwrap());
+    assert!(bad.as_deref().is_some_and(|error| error.contains("data.rows[0].id")), "{bad:?}");
+    assert!(kernel.payload_rejection([("ChatComposer", "SEND")], &serde_json::from_value(json!({"data": {"rows": [{"id": "ok"}]}})).unwrap()).is_none());
+}
