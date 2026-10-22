@@ -4,6 +4,8 @@
 
 pub mod embed_tokens;
 pub mod format;
+pub mod fingerprint;
+pub use fingerprint::{capture_trait_source_declaration, trait_execution_fingerprint};
 pub mod behavior_value;
 pub mod quote;
 pub mod sexpr;

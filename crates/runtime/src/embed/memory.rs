@@ -1,0 +1,237 @@
+use crate::entity_source::{EntitySource, InMemoryEntityCache};
+use crate::row_query::{QueryCapabilities, RowWriteOp, WriteCapabilities};
+use orbital_core_base::value::Value;
+use serde::{de::DeserializeOwned, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Default)]
+pub struct MemoryStoreApi {
+    source: InMemoryEntityCache,
+}
+
+fn parse<T: DeserializeOwned>(json: &str) -> Result<T, String> {
+    serde_json::from_str(json).map_err(|e| format!("parse memory store input: {e}"))
+}
+
+fn json<T: Serialize>(value: &T) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|e| format!("serialize memory store result: {e}"))
+}
+
+impl MemoryStoreApi {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn get_by_id(&self, entity_type: &str, id: &str) -> Result<String, String> {
+        json(&self.source.find(entity_type, id)?.as_deref())
+    }
+    pub fn list(&self, entity_type: &str) -> Result<String, String> {
+        let rows = self.source.list(entity_type)?;
+        json(&rows.iter().map(|row| row.as_ref()).collect::<Vec<_>>())
+    }
+    pub fn create(&self, entity_type: &str, data_json: &str) -> Result<String, String> {
+        json(
+            &self
+                .source
+                .create(entity_type, &parse::<Value>(data_json)?)?,
+        )
+    }
+    pub fn update(&self, entity_type: &str, id: &str, data_json: &str) -> Result<String, String> {
+        let op = RowWriteOp::Update {
+            entity_type: entity_type.to_string(),
+            id: id.to_string(),
+            data: parse(data_json)?,
+            guard: None,
+        };
+        json(
+            &self
+                .source
+                .write_where(&op)
+                .ok_or("memory store does not support conditional writes")??,
+        )
+    }
+    pub fn delete(&self, entity_type: &str, id: &str) -> Result<(), String> {
+        self.source.delete(entity_type, id)
+    }
+    pub fn query_page(&self, entity_type: &str, query_json: &str) -> Result<String, String> {
+        json(
+            &self
+                .source
+                .query_page(entity_type, &parse(query_json)?)
+                .ok_or("memory store does not support row queries")??,
+        )
+    }
+    pub fn query_ids(&self, entity_type: &str, query_json: &str) -> Result<String, String> {
+        json(
+            &self
+                .source
+                .query_ids(entity_type, &parse(query_json)?)
+                .ok_or("memory store does not support id queries")??,
+        )
+    }
+    pub fn write_where(&self, op_json: &str) -> Result<String, String> {
+        json(
+            &self
+                .source
+                .write_where(&parse(op_json)?)
+                .ok_or("memory store does not support conditional writes")??,
+        )
+    }
+    pub fn write_batch(&self, batch_json: &str) -> Result<String, String> {
+        json(
+            &self
+                .source
+                .write_batch(&parse(batch_json)?)
+                .ok_or("memory store does not support write batches")??,
+        )
+    }
+    pub fn query_capabilities(&self) -> Result<String, String> {
+        json(&QueryCapabilities::full())
+    }
+    pub fn write_capabilities(&self) -> Result<String, String> {
+        json(&WriteCapabilities::full())
+    }
+    pub fn bind_collection(&self, entity_type: &str, collection: &str) {
+        self.source.bind_collection(entity_type, collection);
+    }
+    pub fn clear(&self) {
+        self.source.clear();
+    }
+    pub fn snapshot(&self) -> Result<String, String> {
+        let rows: Result<BTreeMap<_, _>, String> = self
+            .source
+            .entity_types()
+            .into_iter()
+            .map(|name| {
+                self.source.list(&name).map(|rows| {
+                    (
+                        name,
+                        rows.into_iter()
+                            .map(|row| (*row).clone())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+            })
+            .collect();
+        json(&rows?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value as Json};
+
+    fn decoded(result: Result<String, String>) -> Json {
+        serde_json::from_str(&result.unwrap()).unwrap()
+    }
+
+    #[test]
+    fn crud_aliases_and_missing_updates_preserve_native_rows() {
+        let store = MemoryStoreApi::new();
+        store.bind_collection("Note", "notes");
+        store.bind_collection("SharedNote", "notes");
+        assert_eq!(decoded(store.get_by_id("Note", "absent")), Json::Null);
+        assert_eq!(
+            decoded(store.update("Note", "absent", r#"{"body":"ignored"}"#)),
+            json!({"kind":"not-found"})
+        );
+        assert_eq!(decoded(store.list("Note")), json!([]));
+        assert_eq!(
+            decoded(store.create("Note", r#"{"body":"first"}"#)),
+            json!({"id":"Note-1","body":"first"})
+        );
+        assert_eq!(
+            decoded(store.update("SharedNote", "Note-1", r#"{"title":"kept","id":"wrong"}"#))
+                ["kind"],
+            "updated"
+        );
+        assert_eq!(
+            decoded(store.get_by_id("Note", "Note-1")),
+            json!({"id":"Note-1","body":"first","title":"kept"})
+        );
+        assert_eq!(
+            decoded(store.snapshot())["notes"].as_array().unwrap().len(),
+            1
+        );
+        store.delete("SharedNote", "Note-1").unwrap();
+        assert_eq!(decoded(store.get_by_id("Note", "Note-1")), Json::Null);
+        store.delete("Note", "absent").unwrap();
+    }
+
+    #[test]
+    fn guarded_atomic_and_stop_writes_have_the_native_outcomes() {
+        let store = MemoryStoreApi::new();
+        store.create("Note", r#"{"id":"a","active":true}"#).unwrap();
+        let refused = json!({"kind":"update","entityType":"Note","id":"a","data":{"active":false},"guard":{"kind":"compare","field":"active","op":"==","value":false}});
+        assert_eq!(
+            decoded(store.write_where(&refused.to_string())),
+            json!({"kind":"refused"})
+        );
+        for (mode, first, retained) in [("atomic", "rolled-back", false), ("stop", "created", true)]
+        {
+            let batch = json!({"onFailure":mode,"ops":[{"kind":"create","entityType":"Note","data":{"id":"b"}}, refused, {"kind":"delete","entityType":"Note","id":"a"}]});
+            let outcomes = decoded(store.write_batch(&batch.to_string()));
+            assert_eq!(outcomes.as_array().unwrap().len(), 2);
+            assert_eq!(outcomes[0]["kind"], first);
+            assert_eq!(outcomes[1]["kind"], "refused");
+            assert_eq!(!decoded(store.get_by_id("Note", "b")).is_null(), retained);
+            assert!(!decoded(store.get_by_id("Note", "a")).is_null());
+        }
+        assert_eq!(
+            decoded(
+                store.write_where(r#"{"kind":"create","entityType":"Note","data":{"id":"a"}}"#)
+            ),
+            json!({"kind":"duplicate-id"})
+        );
+    }
+
+    #[test]
+    fn queries_share_policy_filter_window_ids_and_nearest_semantics() {
+        let store = MemoryStoreApi::new();
+        for row in [
+            json!({"id":"a","rank":1,"visible":true,"vector":[1,0]}),
+            json!({"id":"b","rank":2,"visible":true,"vector":[0,1]}),
+            json!({"id":"c","rank":3,"visible":false,"vector":[1,0]}),
+        ] {
+            store.create("Note", &row.to_string()).unwrap();
+        }
+        let query = json!({"policy":{"kind":"compare","field":"visible","op":"==","value":true},"filter":{"kind":"compare","field":"rank","op":">=","value":1},"order":{"field":"rank","direction":"desc"},"limit":1});
+        let page = decoded(store.query_page("Note", &query.to_string()));
+        assert_eq!(page["total"], 2);
+        assert_eq!(page["rows"][0]["id"], "b");
+        assert_eq!(
+            decoded(store.query_ids("Note", &query.to_string())),
+            json!({"ids":["b"],"total":2})
+        );
+        let nearest = json!({"policy":{"kind":"compare","field":"visible","op":"==","value":true},"nearest":{"field":"vector","vector":[1,0],"k":1}});
+        let page = decoded(store.query_page("Note", &nearest.to_string()));
+        assert_eq!(page["rows"][0]["id"], "a");
+        assert_eq!(page["total"], 1);
+        assert!(store
+            .query_page(
+                "Note",
+                r#"{"nearest":{"field":"vector","vector":[0,0],"k":1}}"#
+            )
+            .is_err());
+        assert_eq!(decoded(store.query_capabilities())["nearest"], true);
+        assert_eq!(decoded(store.write_capabilities())["atomicBatch"], true);
+    }
+
+    #[test]
+    fn malformed_inputs_do_not_mutate_rows_and_clear_keeps_aliases() {
+        let store = MemoryStoreApi::new();
+        store.bind_collection("Note", "notes");
+        assert!(store.create("Note", "{").is_err());
+        assert!(store.write_where(r#"{"kind":"bad"}"#).is_err());
+        assert!(store.write_batch(r#"{"ops":[]}"#).is_err());
+        assert_eq!(decoded(store.snapshot()), json!({}));
+        store.create("Note", "{}").unwrap();
+        store.clear();
+        assert_eq!(decoded(store.snapshot()), json!({}));
+        assert_eq!(decoded(store.create("Note", "{}"))["id"], "Note-2");
+        assert_eq!(
+            decoded(store.snapshot())["notes"].as_array().unwrap().len(),
+            1
+        );
+    }
+}

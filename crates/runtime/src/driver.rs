@@ -475,6 +475,10 @@ impl<'de> Deserialize<'de> for DriverStep {
 /// A sans-I/O protocol driver: `start` (its constructor) yields the first [`DriverStep`], `resume` the rest.
 pub trait Driver {
     fn resume(&mut self, answer: DriverAnswer) -> DriverStep;
+
+    fn http_continuation(&self) -> Option<Box<crate::http_request::HttpCallDriver>> {
+        None
+    }
 }
 
 /// What the loop needs about the call it drives: the signed-in user a user-scoped secret or an OAuth ask acts
@@ -536,7 +540,7 @@ pub(crate) fn drive<D: Driver>(
                 DriverAnswer::Http(io.http_send(&request, ctx.key, delay_ms))
             }
             DriverAsk::HttpStream { request, framing } => {
-                DriverAnswer::Http(io.http_stream(&request, ctx.key, framing))
+                DriverAnswer::Http(io.http_stream(&request, ctx.key, framing, driver.http_continuation()))
             }
             DriverAsk::Beacon { request } => match io.http_beacon(&request, ctx.key) {
                 Some(outcome) => DriverAnswer::Beacon(outcome),

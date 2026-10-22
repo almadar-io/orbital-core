@@ -805,15 +805,33 @@ mod os_effects {
     #[test]
     fn a_stream_with_no_key_fails_before_any_ask() {
         let (response, seen) = run(
-            json!(["os/stdin-read", routes()]),
+            json!(["os/watch-env", "MODE", routes()]),
             go(None),
             |request| panic!("a keyless stream must not ask the host, asked {request:?}"),
         );
         assert!(seen.is_empty());
         assert_eq!(
             payload_of(&response, "BAD"),
-            json!({ "error": "os/stdin-read: a stream needs a key", "kind": "invalid" })
+            json!({ "error": "os/watch-env: a stream needs a key", "kind": "invalid" })
         );
+    }
+
+    #[test]
+    fn plain_stdin_reads_once_without_a_stream_site_and_routes_data_and_eof() {
+        for payload in [json!({ "data": "zLE=", "eof": false }), json!({ "data": "", "eof": true })] {
+            let (response, seen) = run(
+                json!(["os/stdin-read", 2, routes()]),
+                go(None),
+                |_| IoAnswer::Os(Ok(serde_json::from_value(payload.clone()).unwrap())),
+            );
+            assert_eq!(seen.len(), 1);
+            let IoRequest::Os { op, args, key, site } = &seen[0] else { panic!("an os ask") };
+            assert_eq!(*op, OsOp::StdinRead);
+            assert_eq!(serde_json::to_value(args).unwrap(), json!([2]));
+            assert!(key.is_none() && site.is_none(), "plain stdin is one bounded read");
+            assert_eq!(payload_of(&response, "OK"), payload);
+            assert!(emitted(&response).iter().all(|(event, _)| *event != "BAD"));
+        }
     }
 
     #[test]

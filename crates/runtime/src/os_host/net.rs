@@ -422,7 +422,7 @@ pub(super) fn recvfrom_later(args: &[Value], key: &str, site: &CallSite, host: &
 
 /// What an accept loop does with each ready connection; `false` ends the stream.
 pub(super) type OnAccept =
-    fn(TcpStream, SocketAddr, &Arc<HandleSlab<SockEntry>>, &Arc<Completions>, &str, &CallSite) -> bool;
+    fn(TcpStream, SocketAddr, &Arc<HandleSlab<SockEntry>>, &Arc<Completions>, &str, &CallSite, u64) -> bool;
 
 /// `os/tcp-listen`: bind, answer `{ sock, address, port }`, and accept on a thread of its own. Each connection is
 /// added to the socket table and delivered as `{ sock, peer }` on the `onMessage` route. Cancelling the key or
@@ -443,13 +443,14 @@ fn deliver_connection(
     completions: &Arc<Completions>,
     key: &str,
     site: &CallSite,
+    lease: u64,
 ) -> bool {
     let conn = socks.insert(SockEntry::Stream(stream));
     let event = object([
         ("sock", Value::Number(conn as f64)),
         ("peer", Value::String(peer.to_string())),
     ]);
-    if completions.message(key, site, event) {
+    if completions.message(key, lease, site, event) {
         return true;
     }
     socks.remove(conn);
@@ -480,9 +481,9 @@ pub(super) fn listen(
     let listener = TcpListener::bind(addrs.as_slice()).map_err(|e| io_error(op, &e))?;
     let local = listener.local_addr().map_err(|e| io_error(op, &e))?;
     listener.set_nonblocking(true).map_err(|e| io_error(op, &e))?;
-    if !completions.begin(key) {
+    let Some(lease) = completions.begin_lease(key) else {
         return Err(err(op, OsErrorKind::Invalid, format!("key {key} already has a stream open")));
-    }
+    };
     let socks = host.handles.net.socks.clone();
     let id = socks.insert(SockEntry::Listener(listener));
     let (owned_key, owned_site) = (key.to_string(), site.clone());
@@ -490,10 +491,10 @@ pub(super) fn listen(
         .name(format!("os-listen-{key}"))
         .spawn({
             let (completions, socks) = (completions.clone(), socks.clone());
-            move || accept_loop(op, id, &socks, &completions, &owned_key, &owned_site, on_accept)
+            move || accept_loop(op, id, &socks, &completions, &owned_key, &owned_site, on_accept, lease)
         });
     if let Err(e) = started {
-        completions.cancel(key);
+        completions.cancel_current(key, lease);
         socks.remove(id);
         return Err(io_error(op, &e));
     }
@@ -513,9 +514,10 @@ fn accept_loop(
     key: &str,
     site: &CallSite,
     on_accept: OnAccept,
+    lease: u64,
 ) {
     loop {
-        if !completions.is_live(key) {
+        if !completions.is_current(key, lease) {
             return;
         }
         let accepted = socks.with(id, |entry| match entry {
@@ -523,7 +525,7 @@ fn accept_loop(
             _ => None,
         });
         let Some(Some(accepted)) = accepted else {
-            completions.cancel(key);
+            completions.cancel_current(key, lease);
             return;
         };
         match accepted {
@@ -535,12 +537,12 @@ fn accept_loop(
                         set_timeouts(op, |t| stream.set_read_timeout(t), |t| stream.set_write_timeout(t))
                     });
                 if let Err(error) = ready {
-                    if completions.claim(key) {
+                    if completions.claim_current(key, lease) {
                         completions.deliver(key, site, Err(error));
                     }
                     return;
                 }
-                if !on_accept(stream, peer, socks, completions, key, site) {
+                if !on_accept(stream, peer, socks, completions, key, site, lease) {
                     return;
                 }
             }
@@ -548,7 +550,7 @@ fn accept_loop(
                 std::thread::sleep(ACCEPT_POLL);
             }
             Err(e) => {
-                if completions.claim(key) {
+                if completions.claim_current(key, lease) {
                     completions.deliver(key, site, Err(io_error(op, &e)));
                 }
                 return;

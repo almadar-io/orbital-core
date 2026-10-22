@@ -4,6 +4,7 @@
 //! repaints) is made here.
 
 pub mod eval_wire;
+pub mod memory;
 pub mod server;
 pub mod wire;
 

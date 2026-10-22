@@ -68,6 +68,7 @@ pub mod runtime {
     pub use orbital_core_runtime::canvas_theme;
     pub use orbital_core_runtime::config;
     pub use orbital_core_runtime::dispatch_memory;
+    pub use orbital_core_runtime::dispatch_trace;
     pub use orbital_core_runtime::embed_index;
     pub mod entity_access {
         pub use orbital_core_base::entity_vocabulary::identity_field;

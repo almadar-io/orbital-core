@@ -3263,3 +3263,32 @@ mod tcp_egress {
         assert!(!origin_allowed("redis://cache.internal:6379", &declared()));
     }
 }
+
+#[test]
+fn stream_decoder_preserves_utf8_across_every_byte_boundary_and_flushes_the_tail() {
+    for framing in [StreamFraming::Sse, StreamFraming::JsonLines] {
+        let body = match framing {
+            StreamFraming::Sse => "data: ž🌿\r\n\r\ndata: last",
+            StreamFraming::JsonLines => "ž🌿\nlast",
+        };
+        let mut carry = String::new();
+        let mut expected = frame_stream(framing, Some("trace"), body, &mut carry);
+        expected.extend(frame_stream_finish(framing, Some("trace"), &mut carry));
+        for boundary in 0..=body.len() {
+            let mut decoder = StreamDecoder::new(framing, Some("trace"));
+            let mut events = decoder.push(&body.as_bytes()[..boundary]);
+            events.extend(decoder.push(&body.as_bytes()[boundary..]));
+            events.extend(decoder.finish());
+            assert_eq!(events, expected, "boundary {boundary}, {framing:?}");
+        }
+    }
+}
+
+#[test]
+fn stream_decoder_matches_text_response_replacement_of_invalid_and_incomplete_utf8() {
+    let mut decoder = StreamDecoder::new(StreamFraming::JsonLines, None);
+    assert!(decoder.push(b"a\xff\xe2").is_empty());
+    assert!(decoder.push(b"\x82").is_empty());
+    assert_eq!(decoder.finish(), vec![val(json!({"data": "a��", "event": null, "id": null, "key": null}))]);
+    assert!(decoder.finish().is_empty());
+}

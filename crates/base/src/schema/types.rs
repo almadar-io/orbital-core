@@ -3441,6 +3441,9 @@ pub struct TraitDefinition {
     #[serde(rename = "sourceBehavior", skip_serializing_if = "Option::is_none")]
     pub source_behavior: Option<SourceBehaviorMetadata>,
 
+    #[serde(rename = "sourceDeclaration", default, skip_serializing_if = "Option::is_none")]
+    pub source_declaration: Option<SourceDeclarationMetadata>,
+
     /// Set by the inline phase alongside `source_behavior`. Carries the
     /// resolved `EntityDefinition` of the imported behavior so the
     /// client-side mock-data generator can produce rows for the trait's
@@ -3594,6 +3597,13 @@ pub struct SourceBehaviorMetadata {
     /// Original trait name inside the imported behavior, before any
     /// call-site `name:` rename.
     pub original_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceDeclarationMetadata {
+    pub trait_id: String,
+    pub fingerprint: String,
 }
 
 /// Trait category

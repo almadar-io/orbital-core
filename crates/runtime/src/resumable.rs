@@ -120,6 +120,8 @@ pub enum IoRequest {
         key: Option<String>,
         framing: StreamFraming,
         site: Option<CallSite>,
+        /// In-process continuation; the wire contract never carries held credentials.
+        continuation: Option<Box<crate::http_request::HttpCallDriver>>,
     },
     /// The built request of a `browser/beacon`: the host queues it or sends one keepalive fetch, and answers how.
     HttpBeacon {
@@ -483,6 +485,7 @@ impl std::fmt::Debug for IoRequest {
                 key,
                 framing,
                 site,
+                ..
             } => f
                 .debug_struct("HttpStream")
                 .field("request", request)
@@ -802,6 +805,8 @@ pub struct DispatchContinuation {
 }
 
 impl DispatchContinuation {
+    pub fn dispatch_id(&self) -> u64 { self.run.dispatch_id() }
+
     /// The lane turn this parked dispatch holds (EXEC-CONC-0): the token a call made on its behalf carries.
     pub fn turn(&self) -> Option<crate::kernel::LaneTurn> {
         self.lane.as_ref().map(|hold| hold.turn())
@@ -1933,12 +1938,14 @@ impl IoPort {
         request: &HttpRequest,
         key: Option<&str>,
         framing: StreamFraming,
+        continuation: Option<Box<crate::http_request::HttpCallDriver>>,
     ) -> Result<HttpResponse, TransportError> {
         match self.ask(|| IoRequest::HttpStream {
             request: request.clone(),
             key: key.map(str::to_string),
             framing,
             site: self.site.lock().clone(),
+            continuation,
         }) {
             Asked::Direct => Err(TransportError::Failed(NO_HTTP_HOST.to_string())),
             Asked::Answer(answer) => self.http_answer(answer),
@@ -2112,7 +2119,9 @@ impl IoPort {
     fn os_site(&self, op: OsOp, key: Option<&str>) -> Option<CallSite> {
         let site = self.site.lock().clone()?;
         let routed = site.emit.success.is_some() || site.emit.failure.is_some();
-        (op.is_stream() || (op.defers_completion() && key.is_some() && routed)).then_some(site)
+        ((op.is_stream() && (op != OsOp::StdinRead || key.is_some()))
+            || (op.defers_completion() && key.is_some() && routed))
+            .then_some(site)
     }
 
     pub(crate) fn clock(&self) -> Result<i64, String> {
@@ -2562,19 +2571,25 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
                 key,
                 framing,
                 site,
+                ..
             },
             Some(host),
-        ) => IoAnswer::Http(blocking_send(host, request).map(|mut reply| {
-            let text = reply.text().into_owned();
-            let mut carry = String::new();
-            let mut events = http_request::frame_stream(*framing, key.as_deref(), &text, &mut carry);
-            events.extend(http_request::frame_stream_finish(*framing, key.as_deref(), &mut carry));
-            for event in events {
+        ) => IoAnswer::Http((|| {
+            if let Some(refusal) = address_refusal(&request.url, host.egress) {
+                return Err(TransportError::Refused(refusal));
+            }
+            let mut decoder = http_request::StreamDecoder::new(*framing, key.as_deref());
+            let reply = host.transport.stream(request, &mut |bytes| {
+                for event in decoder.push(bytes) {
+                    (host.on_event)(site.as_ref(), event);
+                }
+                Ok(())
+            })?;
+            for event in decoder.finish() {
                 (host.on_event)(site.as_ref(), event);
             }
-            reply.body = Vec::new();
-            reply
-        })),
+            Ok(reply)
+        })()),
         (IoRequest::HttpBeacon { request, .. }, Some(host)) => IoAnswer::HttpBeacon(
             blocking_send(host, request).map(|reply| BeaconOutcome::Fetched { status: reply.status }),
         ),
@@ -2694,12 +2709,16 @@ pub fn answer_batch(
     requests: &[PendingRequest],
     answer: &(dyn Fn(&IoRequest) -> IoAnswer + Sync),
 ) -> Vec<IoReply> {
+    let dispatch_id = crate::dispatch_trace::answer_dispatch_id();
     std::thread::scope(|scope| {
         let overlapped: Vec<_> = requests
             .iter()
             .map(|p| {
                 matches!(p.request, IoRequest::CallService { key: Some(_), .. })
-                    .then(|| scope.spawn(move || answer(&p.request)))
+                    .then(|| scope.spawn(move || {
+                        let _context = crate::dispatch_trace::AnswerContext::enter(dispatch_id);
+                        answer(&p.request)
+                    }))
             })
             .collect();
         requests
@@ -2727,7 +2746,10 @@ fn drive_with(
         match progress {
             Progress::Done(outcomes) => return Ok(outcomes),
             Progress::Await { continuation, requests } => {
-                progress = kernel.resume(continuation, serve(&requests))?;
+                let context = crate::dispatch_trace::AnswerContext::enter(Some(continuation.dispatch_id()));
+                let replies = serve(&requests);
+                drop(context);
+                progress = kernel.resume(continuation, replies)?;
             }
         }
     }
@@ -2883,7 +2905,7 @@ mod http_replay_tests {
         let (_, end) = port.run_step(recorded(&request), || port.http_send(&request, Some("k"), None));
         assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
         let (_, end) = port.run_step(recorded(&request), || {
-            port.http_stream(&request, None, StreamFraming::Sse)
+            port.http_stream(&request, None, StreamFraming::Sse, None)
         });
         assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
     }
@@ -2950,6 +2972,7 @@ mod http_replay_tests {
             key: key.map(str::to_string),
             framing: StreamFraming::Sse,
             site: None,
+            continuation: None,
         };
         let IoAnswer::Http(Ok(reply)) = answer_http(Some(&host), &request) else {
             panic!("expected an Http reply")

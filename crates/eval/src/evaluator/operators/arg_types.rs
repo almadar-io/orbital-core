@@ -524,7 +524,7 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) 
             _ => misfit(),
         },
         OirType::Tuple { items: slots } => match value {
-            Value::Array(list) => list
+            Value::Array(list) if list.len() == slots.len() => list
                 .iter()
                 .zip(slots)
                 .enumerate()

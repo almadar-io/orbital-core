@@ -10,10 +10,10 @@
 //! exhaustive-by-construction function over all `OirType` variants, so adding
 //! a variant forces a decision here instead of letting a string comparator
 //! quietly answer `false`. `set_value_type_compatible` is a thin wrapper that
-//! parses the legacy kind-string vocabulary into the relation. The relation is
-//! lenient by design (it only rejects clear kind contradictions, deferring
-//! element-type drift to the structural checks elsewhere); the remaining
-//! leniency is enumerated in `mod compat_tests`, not implicit.
+//! parses the legacy kind-string vocabulary into the relation. The relation
+//! checks known structural members recursively. Schemaless records and opaque
+//! recursive references remain undecidable; remaining leniency is enumerated
+//! in `mod compat_tests`, not implicit.
 
 use crate::ir::types::OirType;
 
@@ -68,8 +68,7 @@ pub enum Coercion {
         inner: Box<Coercion>,
     },
     /// Lift through Array value (structural since Phase 4.2 — the inner
-    /// coercion is the element witness). Map values stay element-blind
-    /// until their own arm tightening.
+    /// coercion is the element witness).
     Element(Box<Coercion>),
     /// Reference assignment: id string (`from_id: true`) or loaded row.
     Row {
@@ -176,14 +175,9 @@ pub fn primitive_union_member(dst: &OirType, src: &OirType) -> bool {
 /// The type relation: `Some(coercion)` when a value of type `src` may be
 /// assigned to a slot of type `dst`, `None` on a clear kind contradiction.
 ///
-/// Exhaustive over all `OirType` variants: every arm's acceptance set is
-/// reverse-engineered from the legacy string predicate (both sides erased by
-/// `oir_type_kind`), decision-for-decision — Optional transparent both
-/// directions, arrays element-blind, the object/json/Map family mutually
-/// compatible, semantic-string refinements from any string-kind
-/// source, the numeric kinds widening upward (Integer/Money → Number, Integer → Money) but never narrowing back to Integer, Reference taking a row
-/// (object family) or an id string, and `Node` accepting any primitive (the
-/// widening arm moved in from config_type.rs).
+/// Known container members compare recursively. Optional stays transparent,
+/// numeric kinds widen without narrowing, semantic strings refine at runtime,
+/// references accept rows or id strings, and Node accepts renderable content.
 pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
     // Optional is transparent both directions (mirrors `oir_type_kind`); the
     // witness is unchecked — Optional is accepted via an unchecked unwrap.
@@ -195,6 +189,109 @@ pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
     }
     if src == dst {
         return Some(Coercion::Identity);
+    }
+    if let OirType::Union { variants } = src {
+        if !variants.is_empty() {
+            return variants
+                .iter()
+                .map(|variant| sub(&variant.field_type, dst))
+                .collect::<Option<Vec<_>>>()
+                .map(|coercions| {
+                    if coercions.iter().any(Coercion::requires_cast) {
+                        Coercion::Explicit
+                    } else {
+                        Coercion::Erase { from: src.clone() }
+                    }
+                });
+        }
+    }
+    if let OirType::Union { variants } = dst {
+        if !variants.is_empty() {
+            let mut explicit = false;
+            for variant in variants {
+                if let Some(coercion) = sub(src, &variant.field_type) {
+                    if !coercion.requires_cast() {
+                        return Some(Coercion::Widen(WidenKind::ToUnionMember));
+                    }
+                    explicit = true;
+                }
+            }
+            return explicit.then_some(Coercion::Explicit);
+        }
+    }
+    match (src, dst) {
+        (OirType::Struct { fields: actual }, OirType::Struct { fields: expected })
+            if !actual.is_empty() && !expected.is_empty() =>
+        {
+            let mut explicit = false;
+            for field in expected {
+                match actual.iter().find(|a| a.name == field.name) {
+                    Some(found) => {
+                        if !is_unknowable(&found.field_type) {
+                            explicit |= sub(&found.field_type, &field.field_type)?.requires_cast();
+                        }
+                    }
+                    None if field.required
+                        && !matches!(field.field_type, OirType::Optional { .. }) =>
+                    {
+                        return None
+                    }
+                    None => {}
+                }
+            }
+            return Some(if explicit {
+                Coercion::Explicit
+            } else {
+                Coercion::Erase { from: src.clone() }
+            });
+        }
+        (
+            OirType::Map {
+                key: actual_key,
+                value: actual_value,
+            },
+            OirType::Map {
+                key: expected_key,
+                value: expected_value,
+            },
+        ) => {
+            let mut explicit = sub(actual_key, expected_key)?.requires_cast();
+            if !is_unknowable(actual_value) && !is_json_family(expected_value) {
+                explicit |= sub(actual_value, expected_value)?.requires_cast();
+            }
+            return Some(if explicit {
+                Coercion::Explicit
+            } else {
+                Coercion::Erase { from: src.clone() }
+            });
+        }
+        (OirType::Struct { fields }, OirType::Map { key, value }) if !fields.is_empty() => {
+            let mut explicit = sub(&OirType::String, key)?.requires_cast();
+            for field in fields {
+                if !is_unknowable(&field.field_type) && !is_json_family(value) {
+                    explicit |= sub(&field.field_type, value)?.requires_cast();
+                }
+            }
+            return Some(if explicit {
+                Coercion::Explicit
+            } else {
+                Coercion::Erase { from: src.clone() }
+            });
+        }
+        (OirType::Map { value, .. }, OirType::Struct { fields }) if !fields.is_empty() => {
+            let mut explicit = false;
+            if !is_unknowable(value) {
+                for field in fields {
+                    explicit |= sub(value, &field.field_type)?.requires_cast();
+                }
+            }
+            return Some(if explicit {
+                Coercion::Explicit
+            } else {
+                Coercion::Erase { from: src.clone() }
+            });
+        }
+        _ => {}
     }
     match dst {
         OirType::Optional { .. } => unreachable!("Optional stripped above"),
@@ -741,6 +838,172 @@ pub fn compat_kind_oir(kind: &str) -> OirType {
 mod tests {
     use super::{enum_value_is_member, oir_type_satisfies_field};
     use crate::ir::types::OirType;
+
+    fn record(fields: &[(&str, OirType)]) -> OirType {
+        OirType::Struct {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| crate::ir::types::OirField::new(*name, ty.clone()))
+                .collect(),
+        }
+    }
+
+    fn union(types: &[OirType]) -> OirType {
+        OirType::Union {
+            variants: types
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| crate::ir::types::OirField::new(i.to_string(), ty.clone()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn structural_nested_record_fields_reject_contradictions() {
+        let expected = record(&[(
+            "cells",
+            OirType::array(record(&[("kind", OirType::String)])),
+        )]);
+        let good = record(&[(
+            "cells",
+            OirType::array(record(&[
+                ("kind", OirType::String),
+                ("extra", OirType::Boolean),
+            ])),
+        )]);
+        let bad = record(&[(
+            "cells",
+            OirType::array(record(&[("kind", OirType::Number)])),
+        )]);
+        assert!(super::assignable(&good, &expected));
+        assert!(!super::assignable(&bad, &expected));
+        assert!(super::assignable(
+            &record(&[("cells", OirType::array(OirType::Json))]),
+            &expected
+        ));
+    }
+
+    #[test]
+    fn structural_typed_maps_check_values_and_record_members() {
+        let expected = OirType::map(OirType::String, record(&[("kind", OirType::String)]));
+        let good = OirType::map(OirType::String, record(&[("kind", OirType::String)]));
+        let bad = OirType::map(OirType::String, record(&[("kind", OirType::Number)]));
+        assert!(super::assignable(&good, &expected));
+        assert!(!super::assignable(&bad, &expected));
+        assert!(super::assignable(
+            &record(&[("a", record(&[("kind", OirType::String)]))]),
+            &expected
+        ));
+        assert!(!super::assignable(
+            &record(&[("a", record(&[("kind", OirType::Number)]))]),
+            &expected
+        ));
+        assert!(super::assignable(
+            &OirType::map(OirType::String, OirType::Json),
+            &expected
+        ));
+        assert!(super::assignable(
+            &record(&[("a", OirType::String)]),
+            &OirType::map(OirType::String, OirType::Json)
+        ));
+        assert!(!super::assignable(
+            &OirType::map(OirType::String, OirType::Number),
+            &record(&[("kind", OirType::String)])
+        ));
+    }
+
+    #[test]
+    fn structural_unions_check_each_possible_source_member() {
+        let strings = record(&[("kind", OirType::String)]);
+        let numbers = record(&[("kind", OirType::Number)]);
+        let expected = union(&[
+            OirType::Boolean,
+            strings.clone(),
+            OirType::array(OirType::String),
+        ]);
+        assert!(super::assignable(&strings, &expected));
+        assert!(super::assignable(
+            &OirType::array(OirType::String),
+            &expected
+        ));
+        assert!(super::assignable(
+            &union(&[strings.clone(), OirType::Boolean]),
+            &expected
+        ));
+        assert!(!super::assignable(&numbers, &expected));
+        assert!(!super::assignable(
+            &union(&[strings.clone(), numbers]),
+            &strings
+        ));
+    }
+
+    #[test]
+    fn structural_fields_preserve_explicit_cast_requirements() {
+        let plain = record(&[("key", OirType::String)]);
+        let keyed = record(&[("key", OirType::CallKey)]);
+        assert!(!super::assignable(&plain, &keyed));
+        assert!(super::castable(&plain, &keyed));
+        assert!(super::assignable(&keyed, &plain));
+        assert!(!super::assignable(
+            &OirType::map(OirType::String, OirType::String),
+            &OirType::map(OirType::String, OirType::CallKey)
+        ));
+        assert!(!super::assignable(
+            &union(&[OirType::String, OirType::CallKey]),
+            &OirType::CallKey
+        ));
+        assert!(super::assignable(
+            &OirType::String,
+            &union(&[OirType::CallKey, OirType::String])
+        ));
+    }
+
+    #[test]
+    fn structural_unknown_nullable_and_recursive_shapes_remain_compatible() {
+        let string_record = record(&[("kind", OirType::String)]);
+        let unknown = record(&[]);
+        assert!(super::assignable(&unknown, &string_record));
+        assert!(super::assignable(&string_record, &unknown));
+        assert!(!super::assignable(
+            &record(&[("kind", OirType::String)]),
+            &record(&[("kind", OirType::String), ("later", OirType::Boolean)])
+        ));
+        let mut optional_field = crate::ir::types::OirField::new("later", OirType::Boolean);
+        optional_field.required = false;
+        let optional_record = OirType::Struct {
+            fields: vec![
+                crate::ir::types::OirField::new("kind", OirType::String),
+                optional_field,
+            ],
+        };
+        assert!(super::assignable(&string_record, &optional_record));
+        assert!(super::assignable(
+            &record(&[("kind", OirType::optional(OirType::String))]),
+            &string_record
+        ));
+        let recursive = record(&[
+            ("kind", OirType::String),
+            (
+                "next",
+                OirType::optional(OirType::TypeRef {
+                    name: "Cell".into(),
+                }),
+            ),
+        ]);
+        assert!(super::assignable(&recursive, &recursive));
+        assert!(!super::assignable(
+            &record(&[
+                ("kind", OirType::Number),
+                (
+                    "next",
+                    OirType::TypeRef {
+                        name: "Cell".into()
+                    }
+                )
+            ]),
+            &recursive
+        ));
+    }
 
     #[test]
     fn a_type_variable_is_opaque() {

@@ -43,6 +43,9 @@ pub struct ProcessEventResult {
 
     /// Position of the arm that fired among the state's `from --event-->` arms.
     pub fired_arm: Option<usize>,
+    pub transition_index: Option<usize>,
+    pub entity_id: String,
+    pub state_entity_id: String,
 
     /// Every guarded arm evaluated while choosing the arm, in order.
     pub guards: Vec<ArmGuard>,

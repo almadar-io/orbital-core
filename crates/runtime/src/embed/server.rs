@@ -172,6 +172,42 @@ impl EmbeddedServer {
         })
     }
 
+    /// A fresh control program using this app's entity policies; app routes, sessions and grants are not inherited.
+    pub fn fork_program(&self, schema: OrbitalSchema) -> Result<Self, String> {
+        if schema.orbitals.is_empty() {
+            return Err("resolved schema declares no orbitals".to_string());
+        }
+        let orbital_traits = schema
+            .orbitals
+            .iter()
+            .map(|orbital| {
+                (
+                    orbital.name.clone(),
+                    orbital
+                        .traits
+                        .iter()
+                        .filter_map(|t| t.trait_name().map(str::to_string))
+                        .collect(),
+                )
+            })
+            .collect();
+        let (host, config) = host_answered();
+        let kernel = self
+            .kernel
+            .program_context(host, config, schema)
+            .map_err(|e| format!("fork_program: {e}"))?;
+        Ok(Self {
+            kernel,
+            orbital_traits,
+            default_user: Mutex::new(self.default_user.lock().clone()),
+            tick_mount: Mutex::new(BTreeSet::new()),
+            flights: Mutex::new(HashMap::new()),
+            resolves: Mutex::new(HashMap::new()),
+            next_flight: Mutex::new(0),
+            dispatch_stream: Mutex::new(Vec::new()),
+        })
+    }
+
     pub fn kernel(&self) -> &RuntimeKernel {
         &self.kernel
     }
@@ -775,4 +811,178 @@ pub fn os_glob_matches(glob: &str, path: &str) -> bool {
 /// host attaches a `browser/tab-watch` to the tabs it names with.
 pub fn tab_url_matches(pattern: &str, url: &str) -> bool {
     orbital_core_base::tab_call::matches_pattern(pattern, url)
+}
+
+#[cfg(test)]
+mod program_context_tests {
+    use super::*;
+    use serde_json::{json, Value as Json};
+
+    fn program(
+        name: &str,
+        orbital: &str,
+        entity: &str,
+        trait_name: &str,
+        effect: Json,
+    ) -> OrbitalSchema {
+        serde_json::from_value(json!({
+            "name":name, "orbitals":[{"name":orbital,"entity":{"name":entity,"persistence":"runtime","fields":[{"name":"id","type":"string"}]},
+            "traits":[{"name":trait_name,"linkedEntity":entity,"stateMachine":{"states":[{"name":"idle","isInitial":true},{"name":"done"}],"transitions":[{"from":"idle","to":"done","event":"GO","effects":[effect]}]}}]}]
+        })).unwrap()
+    }
+
+    fn app() -> EmbeddedServer {
+        let mut schema = program(
+            "App",
+            "AppOrbital",
+            "Note",
+            "AppTrait",
+            json!(["emit", "APP_DONE", {}]),
+        );
+        let orbital_core_base::schema::types::EntityRef::Inline(entity) =
+            &mut schema.orbitals[0].entity
+        else {
+            panic!("inline entity")
+        };
+        entity.collection = Some("notes".to_string());
+        let policy = serde_json::from_value(json!([
+            "=",
+            ["object/get", "@entity", "ownerId"],
+            "@user.id"
+        ]))
+        .unwrap();
+        entity.read_policy = Some(policy);
+        entity.create_policy = entity.read_policy.clone();
+        schema.os_grants = Some(serde_json::from_value(json!({"exec":["parent-only"]})).unwrap());
+        schema.egress = Some(vec!["https://parent.example".to_string()]);
+        EmbeddedServer::new(schema).unwrap()
+    }
+
+    fn request(trait_name: &str) -> EventRequest {
+        EventRequest {
+            event: "GO".to_string(),
+            target_trait: Some(trait_name.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn control_checks_app_policies_without_inheriting_routes_or_grants() {
+        let parent = app();
+        for action in ["create", "read"] {
+            for (viewer, allowed) in [
+                (json!({"id":"owner"}), true),
+                (json!({"id":"other"}), false),
+                (Json::Null, false),
+            ] {
+                let effect = json!(["access-check",{"entity":"Note","action":action,"row":{"ownerId":"owner"},"viewer":viewer},{"emit":{"success":"CHECKED","failure":"FAILED"}}]);
+                let mut control = program(
+                    "Control",
+                    "ControlOrbital",
+                    "ControlRow",
+                    "ControlTrait",
+                    effect,
+                );
+                control.os_grants =
+                    Some(serde_json::from_value(json!({"exec":["child-only"]})).unwrap());
+                let child = parent.fork_program(control).unwrap();
+                let ServerProgress::Done(response) = child
+                    .start("ControlOrbital", request("ControlTrait"))
+                    .unwrap()
+                else {
+                    panic!("access-check must not ask host")
+                };
+                let checked = response
+                    .emitted_events
+                    .iter()
+                    .find(|e| e.event == "CHECKED")
+                    .unwrap();
+                assert_eq!(
+                    serde_json::to_value(&checked.payload).unwrap(),
+                    json!({"allowed":allowed})
+                );
+                assert!(child.kernel.os_grants().exec_allows("child-only"));
+                assert!(!child.kernel.os_grants().exec_allows("parent-only"));
+                assert!(child.kernel.egress().is_empty());
+                assert!(child.kernel.get_orbital("AppOrbital").is_none());
+                assert!(child.kernel.get_initial_state("AppTrait").is_none());
+            }
+        }
+        assert!(parent.kernel.os_grants().exec_allows("parent-only"));
+        assert!(!parent.kernel.os_grants().exec_allows("child-only"));
+        assert!(parent.kernel.get_orbital("ControlOrbital").is_none());
+        assert_eq!(parent.get_state("AppTrait", None), "idle");
+        assert_eq!(parent.in_flight(), 0);
+        assert!(parent.dispatch_stream.lock().is_empty());
+    }
+
+    #[test]
+    fn collisions_are_refused_without_mutating_parent() {
+        let parent = app();
+        let plain = || {
+            program(
+                "Control",
+                "ControlOrbital",
+                "ControlRow",
+                "ControlTrait",
+                json!(["emit", "DONE", {}]),
+            )
+        };
+        let mut cases = Vec::new();
+        let mut schema = plain();
+        schema.name = "App".to_string();
+        cases.push((schema, "schema"));
+        let mut schema = plain();
+        schema.orbitals[0].name = "AppOrbital".to_string();
+        cases.push((schema, "orbital"));
+        let mut schema = plain();
+        let orbital_core_base::schema::types::TraitReference::Inline(def) =
+            &mut schema.orbitals[0].traits[0]
+        else {
+            panic!("inline trait")
+        };
+        def.name = "AppTrait".to_string();
+        cases.push((schema, "trait"));
+        let mut schema = plain();
+        let orbital_core_base::schema::types::EntityRef::Inline(def) =
+            &mut schema.orbitals[0].entity
+        else {
+            panic!("inline entity")
+        };
+        def.name = "Note".to_string();
+        cases.push((schema, "entity"));
+        let mut schema = plain();
+        let orbital_core_base::schema::types::EntityRef::Inline(def) =
+            &mut schema.orbitals[0].entity
+        else {
+            panic!("inline entity")
+        };
+        def.collection = Some("notes".to_string());
+        cases.push((schema, "collection"));
+        for (schema, kind) in cases {
+            let error = match parent.fork_program(schema) {
+                Ok(_) => panic!("collision accepted"),
+                Err(error) => error,
+            };
+            assert!(error.contains(&format!("{kind} collision")), "{error}");
+            assert!(parent.kernel.get_orbital("ControlOrbital").is_none());
+            assert_eq!(parent.get_state("AppTrait", None), "idle");
+        }
+        assert!(parent.fork_program(plain()).is_ok());
+    }
+
+    #[test]
+    fn plain_fork_keeps_existing_program_and_resets_session() {
+        let parent = app();
+        let ServerProgress::Done(_) = parent.start("AppOrbital", request("AppTrait")).unwrap()
+        else {
+            panic!("emit is local")
+        };
+        assert_eq!(parent.get_state("AppTrait", None), "done");
+        let child = parent.fork_session().unwrap();
+        assert_eq!(child.get_state("AppTrait", None), "idle");
+        assert!(child.kernel.get_orbital("AppOrbital").is_some());
+        assert!(child.kernel.os_grants().exec_allows("parent-only"));
+        assert_eq!(parent.get_state("AppTrait", None), "done");
+    }
 }

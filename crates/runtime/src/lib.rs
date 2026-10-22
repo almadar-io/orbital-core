@@ -14,6 +14,7 @@ pub mod credential_admin;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod credential_store;
 pub mod dispatch_memory;
+pub mod dispatch_trace;
 #[cfg(feature = "wire-drivers")]
 pub mod byte_stream;
 pub mod driver;

@@ -365,12 +365,9 @@ pub(super) fn wait_later(
         ));
     }
     let completions = host.handles.completions.clone();
-    if !completions.begin(key) {
-        return Err(invalid(
-            op,
-            format!("key {key} already has a completion pending"),
-        ));
-    }
+    let Some(lease) = completions.begin_lease(key) else {
+        return Err(invalid(op, format!("key {key} already has a completion pending")));
+    };
     let (key, site) = (key.to_string(), site.clone());
     let watcher = {
         let (completions, key) = (completions.clone(), key.clone());
@@ -378,7 +375,7 @@ pub(super) fn wait_later(
             .name(format!("os-wait-{pid}"))
             .spawn(move || {
                 let awaited = await_exit(pid).map_err(|e| io_error(op, &e));
-                if !completions.claim(&key) {
+                if !completions.claim_current(&key, lease) {
                     return;
                 }
                 let outcome = awaited.and_then(|()| reap(pid, &table));
@@ -386,7 +383,7 @@ pub(super) fn wait_later(
             })
     };
     watcher.map(drop).map_err(|e| {
-        completions.cancel(&key);
+        completions.cancel_current(&key, lease);
         io_error(op, &e)
     })
 }
@@ -638,10 +635,7 @@ fn read_once(reader: &mut impl Read, count: usize) -> Result<Value, OsError> {
     }
 }
 
-/// `os/stdin-read` keyed under a route when the host has a completion sink: the call is answered deferred and stdin
-/// is read on a thread of its own. Each chunk (at most `count` bytes) goes to the `onMessage` route as `{ data }`, one
-/// dispatch at a time, and the end of stdin to the success route as `{ eof: true }`. Cancelling the key ends the
-/// stream; a read already blocked drops the chunk it returns.
+/// Keyed stdin reads defer once; an explicit onMessage route opts into streaming.
 pub(super) fn stdin_later(
     args: &[Value],
     key: &str,
@@ -649,13 +643,21 @@ pub(super) fn stdin_later(
     host: &OsHost<'_>,
 ) -> Result<(), OsError> {
     let count = stdin_count(args, host)?;
-    stream_stdin(
-        std::io::stdin(),
-        count,
-        key,
-        site,
-        &host.handles.completions,
-    )
+    route_stdin(std::io::stdin(), count, key, site, &host.handles.completions)
+}
+
+fn route_stdin<R: Read + Send + 'static>(
+    mut reader: R,
+    count: usize,
+    key: &str,
+    site: &CallSite,
+    completions: &Arc<super::completion::Completions>,
+) -> Result<(), OsError> {
+    if site.emit.on_message.is_none() {
+        return super::completion::Completions::run_later(completions, key, site, move || read_once(&mut reader, count))
+            .map_err(|error| super::net::later_error(OsOp::StdinRead, error, key));
+    }
+    stream_stdin(reader, count, key, site, completions)
 }
 
 fn stream_stdin<R: Read + Send + 'static>(
@@ -666,9 +668,9 @@ fn stream_stdin<R: Read + Send + 'static>(
     completions: &Arc<super::completion::Completions>,
 ) -> Result<(), OsError> {
     let op = OsOp::StdinRead;
-    if !completions.begin(key) {
+    let Some(lease) = completions.begin_lease(key) else {
         return Err(invalid(op, format!("key {key} already has a stream open")));
-    }
+    };
     let (owned_key, owned_site) = (key.to_string(), site.clone());
     let started = std::thread::Builder::new()
         .name(format!("os-stdin-{key}"))
@@ -678,14 +680,14 @@ fn stream_stdin<R: Read + Send + 'static>(
                 let (key, site) = (owned_key, owned_site);
                 let mut buf = vec![0u8; count.min(STDIN_CAP)];
                 loop {
-                    if !completions.is_live(&key) {
+                    if !completions.is_current(&key, lease) {
                         return;
                     }
                     let outcome = match reader.read(&mut buf) {
                         Ok(0) => Ok(object(vec![("eof", Value::Bool(true))])),
                         Ok(n) => {
                             let chunk = object(vec![("data", bytes_value(&buf[..n]))]);
-                            if completions.message(&key, &site, chunk) {
+                            if completions.message(&key, lease, &site, chunk) {
                                 continue;
                             }
                             return;
@@ -693,7 +695,7 @@ fn stream_stdin<R: Read + Send + 'static>(
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(e) => Err(io_error(op, &e)),
                     };
-                    if completions.claim(&key) {
+                    if completions.claim_current(&key, lease) {
                         completions.deliver(&key, &site, outcome);
                     }
                     return;
@@ -701,7 +703,7 @@ fn stream_stdin<R: Read + Send + 'static>(
             }
         });
     started.map(drop).map_err(|e| {
-        completions.cancel(key);
+        completions.cancel_current(key, lease);
         io_error(op, &e)
     })
 }
@@ -911,6 +913,19 @@ mod tests {
         let done = call(&g, &h, OsOp::Wait, vec![pid]).expect("wait");
         assert_eq!(field(&done, "signal"), Value::Number(15.0));
         assert_eq!(field(&done, "code"), Value::Null);
+        use orbital_core_base::emit_contract::{success_payload, CallVariant, ProducedPayload};
+        let ProducedPayload::Shape(shape) = success_payload("os/wait", CallVariant::Plain) else {
+            panic!("os/wait must declare its success shape");
+        };
+        let actual_type = match field(&done, "signal") {
+            Value::Number(_) => "number",
+            Value::String(_) => "string",
+            other => panic!("unexpected signal value: {other:?}"),
+        };
+        assert_eq!(
+            shape.iter().find(|field| field.name == "signal").unwrap().field_type,
+            actual_type
+        );
     }
 
     #[test]
@@ -1491,6 +1506,32 @@ mod tests {
         events
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("an event")
+    }
+
+    #[test]
+    fn stdin_without_message_route_completes_one_read_while_message_route_streams() {
+        for streamed in [false, true] {
+            let h = OsHandles::default();
+            let (tx, events) = std::sync::mpsc::channel();
+            h.completions.set_sink(Arc::new(Replier(Mutex::new(tx))));
+            let mut site = stdin_site();
+            if !streamed {
+                site.emit.on_message = None;
+            }
+            route_stdin(std::io::Cursor::new(b"ab".to_vec()), 1, "input", &site, &h.completions).unwrap();
+            if streamed {
+                for byte in [b"a", b"b"] {
+                    assert_eq!(next(&events), ("CHUNK".to_string(), object(vec![("data", bytes_value(byte))])));
+                    assert_eq!(next(&events).0, "REPLY");
+                }
+                assert_eq!(next(&events), ("EOF".to_string(), object(vec![("eof", Value::Bool(true))])));
+            } else {
+                assert_eq!(next(&events), ("EOF".to_string(), object(vec![
+                    ("data", bytes_value(b"a")), ("eof", Value::Bool(false)),
+                ])));
+            }
+            assert!(events.recv_timeout(std::time::Duration::from_millis(50)).is_err());
+        }
     }
 
     #[test]

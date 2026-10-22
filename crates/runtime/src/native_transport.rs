@@ -125,23 +125,8 @@ fn collect_headers(response: &ureq::Response) -> Vec<(String, String)> {
         .collect()
 }
 
-fn read_response(response: ureq::Response) -> Result<HttpResponse, TransportError> {
-    let status = response.status();
-    let headers = collect_headers(&response);
-    let mut body = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut body)
-        .map_err(|e| TransportError::Failed(e.to_string()))?;
-    Ok(HttpResponse {
-        status,
-        headers,
-        body,
-    })
-}
-
-impl Transport for UreqTransport {
-    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, TransportError> {
+impl UreqTransport {
+    fn request(&self, request: &HttpRequest) -> Result<ureq::Response, TransportError> {
         let mut call = self.agent.request(&request.method, &request.url);
         if let Some(timeout) = request.timeout {
             call = call.timeout(timeout);
@@ -165,7 +150,44 @@ impl Transport for UreqTransport {
                 return Err(TransportError::Failed(format!("{}: {detail}", t.kind())));
             }
         };
-        read_response(response)
+        Ok(response)
+    }
+}
+
+impl Transport for UreqTransport {
+    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, TransportError> {
+        let mut body = Vec::new();
+        let mut reply = self.stream(request, &mut |chunk| {
+            body.extend_from_slice(chunk);
+            Ok(())
+        })?;
+        reply.body = body;
+        Ok(reply)
+    }
+
+    fn stream(
+        &self,
+        request: &HttpRequest,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), TransportError>,
+    ) -> Result<HttpResponse, TransportError> {
+        let response = self.request(request)?;
+        let reply = HttpResponse {
+            status: response.status(),
+            headers: collect_headers(&response),
+            body: Vec::new(),
+        };
+        let mut reader = response.into_reader();
+        let mut bytes = [0u8; 8192];
+        loop {
+            let count = match reader.read(&mut bytes) {
+                Ok(0) => return Ok(reply),
+                Ok(count) => count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => return Err(TransportError::TimedOut),
+                Err(error) => return Err(TransportError::Failed(error.to_string())),
+            };
+            on_chunk(&bytes[..count])?;
+        }
     }
 }
 
@@ -229,6 +251,127 @@ mod tests {
             served
         });
         (port, handle)
+    }
+
+    #[test]
+    fn http_stream_routes_a_frame_before_the_server_closes() {
+        use crate::http_request::StreamFraming;
+        use crate::resumable::{answer_http, HttpHost, IoAnswer, IoRequest};
+        use std::sync::mpsc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let origin = format!("http://{}", listener.local_addr().expect("addr"));
+        let (seen, receive) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0; 2048];
+            stream.read(&mut request).expect("request");
+            stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\nD\r\ndata: first\n\n\r\n").expect("first frame");
+            let before_eof = receive.recv_timeout(Duration::from_secs(2)).is_ok();
+            stream.write_all(b"B\r\ndata: final\r\n0\r\n\r\n").expect("tail");
+            before_eof
+        });
+        let transport = UreqTransport::unchecked();
+        let secrets = crate::credentials::Credentials::default();
+        let egress = vec![origin.clone()];
+        let events = Mutex::new(Vec::new());
+        let on_event = |_: Option<&crate::resumable::CallSite>, event| {
+            events.lock().expect("events").push(event);
+            let _ = seen.send(());
+        };
+        let host = HttpHost { transport: &transport, secrets: &secrets, egress: &egress, on_event: &on_event, os: None };
+        let ask = IoRequest::HttpStream { request: get(&origin), key: Some("trace".into()), framing: StreamFraming::Sse, site: None, continuation: None };
+        let IoAnswer::Http(Ok(reply)) = answer_http(Some(&host), &ask) else { panic!("expected response") };
+        assert!(server.join().expect("server"), "the first frame must be delivered before EOF");
+        assert_eq!(reply.status, 200);
+        assert_eq!(reply.header("content-type"), Some("text/event-stream"));
+        assert!(reply.body.is_empty());
+        let events = events.lock().expect("events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(serde_json::to_value(&events[0]).expect("event"), serde_json::json!({"data": "first", "event": null, "id": null, "key": "trace"}));
+        assert_eq!(serde_json::to_value(&events[1]).expect("event"), serde_json::json!({"data": "final", "event": null, "id": null, "key": "trace"}));
+    }
+
+    #[test]
+    fn native_stream_defers_dispatch_and_cancel_closes_on_the_next_heartbeat() {
+        use crate::driver::{DriverAsk, DriverStep};
+        use crate::http_request::{parse_http_call, HttpCallDriver, HttpMethod, StreamFraming};
+        use crate::native_host::NativeHost;
+        use crate::os_host::{OsGrants, OsHandles};
+        use crate::os_host::completion::OsCompletionSink;
+        use crate::resumable::{CallRoutes, CallSite, IoAnswer, IoRequest};
+        use orbital_core_base::value::Value;
+        use std::sync::mpsc;
+
+        struct Sink(Mutex<mpsc::Sender<&'static str>>);
+        impl OsCompletionSink for Sink {
+            fn complete(&self, _: &CallSite, _: &str, _: Result<Value, orbital_core_base::os::OsError>) {}
+            fn message(&self, _: &CallSite, _: &str, _: Value) { self.0.lock().expect("sink").send("message").expect("message"); }
+            fn settle(&self, _: &CallSite, _: &str, _: Result<Value, Value>) { self.0.lock().expect("sink").send("settled").expect("settled"); }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let origin = format!("http://{}", listener.local_addr().expect("addr"));
+        let (heartbeat, wait) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream.set_read_timeout(Some(Duration::from_secs(2))).expect("timeout");
+            let mut buffer = [0; 2048];
+            stream.read(&mut buffer).expect("request");
+            stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: first\n\n").expect("frame");
+            wait.recv_timeout(Duration::from_secs(2)).expect("cancel before heartbeat");
+            stream.write_all(b": hb\n\n").expect("heartbeat");
+            matches!(stream.read(&mut buffer), Ok(0))
+        });
+        let handles = Arc::new(OsHandles::default());
+        let (message, events) = mpsc::channel();
+        handles.completions.set_sink(Arc::new(Sink(Mutex::new(message))));
+        let egress = vec![origin.clone()];
+        let host = NativeHost::new(Arc::new(crate::entity_source::InMemoryEntityCache::new()), Arc::new(UreqTransport::unchecked()), Arc::new(crate::credentials::Credentials::default()), egress.clone(), OsGrants::default(), handles, Arc::new(|_, _| {}));
+        let spec: Value = serde_json::from_value(serde_json::json!({"stream": "sse"})).expect("spec");
+        let spec = parse_http_call(HttpMethod::Get, &origin, "/trace", &spec).expect("parse");
+        let (driver, step) = HttpCallDriver::start(spec, egress, Some("live".into()));
+        let DriverStep::Ask(DriverAsk::HttpStream { request, .. }) = step else { panic!("stream") };
+        let site = CallSite { orbital: None, trait_name: "Viewer".into(), follow_on: false, entity_id: "singleton".into(), emit: CallRoutes { on_message: Some("FRAME".into()), success: Some("DONE".into()), ..Default::default() } };
+        let ask = IoRequest::HttpStream { request, key: Some("live".into()), framing: StreamFraming::Sse, site: Some(site), continuation: Some(Box::new(driver)) };
+        assert!(matches!(host.answer(&ask), IoAnswer::ServiceDeferred));
+        assert_eq!(events.recv_timeout(Duration::from_secs(2)).expect("first frame"), "message");
+        assert!(matches!(host.answer(&IoRequest::CancelCall { key: "live".into() }), IoAnswer::Cancelled(Ok(()))));
+        heartbeat.send(()).expect("heartbeat");
+        assert!(server.join().expect("server"), "the reader must close the socket on the next heartbeat");
+        assert!(events.try_recv().is_err(), "cancelled streams emit neither another message nor success");
+    }
+
+    #[test]
+    fn stream_consumer_error_stops_the_reader_without_waiting_for_eof() {
+        use std::sync::mpsc;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}", listener.local_addr().expect("addr"));
+        let (finished, receive) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0; 2048];
+            stream.read(&mut request).expect("request");
+            stream.write_all(b"HTTP/1.1 200 OK\r\nconnection: close\r\n\r\nfirst").expect("body");
+            receive.recv_timeout(Duration::from_secs(2)).is_ok()
+        });
+        let expected = TransportError::Failed("consumer closed".into());
+        let outcome = UreqTransport::unchecked().stream(&get(&url), &mut |_| Err(expected.clone()));
+        finished.send(()).expect("finished");
+        assert!(matches!(outcome, Err(error) if error == expected));
+        assert!(server.join().expect("server"));
+    }
+
+    #[test]
+    fn stream_read_error_is_reported_after_delivering_received_bytes() {
+        let (port, server) = serve("HTTP/1.1 200 OK\r\ncontent-length: 100\r\nconnection: close\r\n\r\npartial", 1);
+        let mut body = Vec::new();
+        let outcome = UreqTransport::unchecked().stream(&get(&format!("http://127.0.0.1:{port}")), &mut |bytes| {
+            body.extend_from_slice(bytes);
+            Ok(())
+        });
+        assert_eq!(body, b"partial");
+        assert!(matches!(outcome, Err(TransportError::Failed(_))), "{outcome:?}");
+        server.join().expect("server");
     }
 
     const REDIRECT: &str = "HTTP/1.1 302 Found\r\nlocation: /elsewhere\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";

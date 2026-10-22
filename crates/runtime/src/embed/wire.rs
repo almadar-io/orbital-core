@@ -880,6 +880,7 @@ impl From<IoRequestWire> for IoRequest {
                 key,
                 framing: framing.into(),
                 site: site.map(CallSite::from),
+                continuation: None,
             },
             IoRequestWire::HttpBeacon { request, key, site } => Self::HttpBeacon {
                 request: request.into(),
@@ -1019,6 +1020,7 @@ impl From<&IoRequest> for IoRequestWire {
                 key,
                 framing,
                 site,
+                ..
             } => Self::HttpStream {
                 request: HttpRequestWire::from(request),
                 key: key.clone(),

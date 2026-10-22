@@ -277,6 +277,16 @@ impl<'a> Signature<'a> {
         )
     }
 
+    pub fn bind_declared_node(&self, bindings: &mut CallBindings, index: usize, ty: OirType) {
+        use crate::language::registry::OperatorTypeRefKind as K;
+        let Some(OperatorTypeRef::Tagged(K::Fn { params, .. })) = self.formal(index) else { return; };
+        for param in params {
+            if let OperatorTypeRef::Tagged(K::ChildrenOf { of, .. }) = param {
+                bindings.vars.insert(of.clone(), vec![ty.clone()]);
+            }
+        }
+    }
+
     /// Whether any parameter declares a type a call is checked against. A signature of nominal std types and
     /// unevaluated expressions checks nothing, so a call to it needs no binding.
     pub fn checks_anything(&self) -> bool {
@@ -295,6 +305,16 @@ impl<'a> Signature<'a> {
         let Some(formal) = self.formal(index) else {
             return Ok(());
         };
+        if self.semantics == Some("branch-union") {
+            if let (OperatorTypeRef::Tagged(OperatorTypeRefKind::Var { name, .. }), Some(Known::Type(actual))) = (formal, &actual.known) {
+                if let Some(prior) = bindings.bound(name) {
+                    if let Some(merged) = unify_structs(&[prior.clone(), actual.clone()]) {
+                        bindings.vars.insert(name.clone(), vec![merged]);
+                        return Ok(());
+                    }
+                }
+            }
+        }
         // A runtime mismatch fails the whole call and its bindings are dropped with it, so the binding is made in place.
         // A static check goes on to the next argument after a mismatch, so it binds a copy and keeps it only on success.
         if mode == Mode::Runtime {
@@ -1397,6 +1417,18 @@ fn unify_structs(all: &[OirType]) -> Option<OirType> {
             .filter(|t| matches!(unwrap_optional(t), OirType::Struct { fields } if fields.iter().any(|f| f.name == m.name)))
             .count();
         m.required = have == total;
+        let mut types = Vec::new();
+        for ty in all {
+            if let OirType::Struct { fields } = unwrap_optional(ty) {
+                if let Some(field) = fields.iter().find(|field| field.name == m.name) {
+                    if !types.contains(&field.field_type) { types.push(field.field_type.clone()); }
+                }
+            }
+        }
+        if types.len() > 1 {
+            m.field_type = OirType::Union { variants: types.into_iter().enumerate()
+                .map(|(index, ty)| OirField::new(index.to_string(), ty)).collect() };
+        }
     }
     Some(OirType::Struct { fields: merged })
 }
@@ -1444,7 +1476,9 @@ fn children_of(ty: &OirType, shape: &str, result: &OirType) -> Option<OirType> {
                 })
                 .collect::<Option<Vec<_>>>()?,
         }),
-        _ => None,
+        OirType::Array { inner } if is_shape(inner) => Some(OirType::array(result.clone())),
+        OirType::Map { key, value } if is_shape(value) => Some(OirType::map((**key).clone(), result.clone())),
+        _ => Some(OirType::Struct { fields: Vec::new() }),
     }
 }
 

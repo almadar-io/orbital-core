@@ -11,7 +11,7 @@ use crate::resumable::{
 use orbital_core_base::os::OsError;
 use orbital_core_base::value::Value;
 use parking_lot::{Condvar, Mutex};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Receives the outcome of a deferred keyed `os/` call, on the host's watcher thread.
@@ -39,7 +39,8 @@ pub trait OsCompletionSink: Send + Sync {
 #[derive(Default)]
 pub struct Completions {
     sink: Mutex<Option<Arc<dyn OsCompletionSink>>>,
-    live: Mutex<HashSet<String>>,
+    live: Mutex<HashMap<String, u64>>,
+    next: std::sync::atomic::AtomicU64,
     /// Claimed completions still being delivered: open until their dispatch (and any call it starts) has run.
     delivering: Mutex<HashMap<String, usize>>,
 }
@@ -53,30 +54,34 @@ impl Completions {
         self.sink.lock().clone()
     }
 
-    /// `false` when `key` already has a completion pending.
-    pub(super) fn begin(&self, key: &str) -> bool {
-        self.live.lock().insert(key.to_string())
+    pub(super) fn begin_lease(&self, key: &str) -> Option<u64> {
+        let mut live = self.live.lock();
+        if live.contains_key(key) { return None; }
+        let lease = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        live.insert(key.to_string(), lease);
+        Some(lease)
     }
 
-    pub(super) fn is_live(&self, key: &str) -> bool {
-        self.live.lock().contains(key)
+    #[cfg(test)]
+    pub(super) fn begin(&self, key: &str) -> bool { self.begin_lease(key).is_some() }
+
+    #[cfg(test)]
+    pub(super) fn is_live(&self, key: &str) -> bool { self.live.lock().contains_key(key) }
+
+    pub(crate) fn is_current(&self, key: &str, lease: u64) -> bool {
+        self.live.lock().get(key).is_some_and(|current| *current == lease)
     }
 
-    /// Hand one event of the live stream `key` to the sink; `false` when the stream was cancelled or ended.
-    pub(super) fn message(&self, key: &str, site: &CallSite, event: Value) -> bool {
-        if !self.is_live(key) {
-            return false;
-        }
-        if let Some(sink) = self.sink() {
-            sink.message(site, key, event);
-        }
+    pub(crate) fn message(&self, key: &str, lease: u64, site: &CallSite, event: Value) -> bool {
+        if !self.is_current(key, lease) { return false; }
+        if let Some(sink) = self.sink() { sink.message(site, key, event); }
         true
     }
 
     /// The keys of every open call, sorted: completions still wanted (streams, pending deferred answers) and claimed
     /// completions whose delivery has not finished.
     pub fn live_keys(&self) -> Vec<String> {
-        let mut keys: Vec<String> = self.live.lock().iter().cloned().collect();
+        let mut keys: Vec<String> = self.live.lock().keys().cloned().collect();
         keys.extend(self.delivering.lock().keys().cloned());
         keys.sort();
         keys.dedup();
@@ -85,7 +90,14 @@ impl Completions {
 
     /// Drop the pending completion of `key`: its outcome is never delivered. `false` when none is pending.
     pub fn cancel(&self, key: &str) -> bool {
-        self.live.lock().remove(key)
+        self.live.lock().remove(key).is_some()
+    }
+
+    pub(super) fn cancel_current(&self, key: &str, lease: u64) -> bool {
+        let mut live = self.live.lock();
+        if live.get(key) != Some(&lease) { return false; }
+        live.remove(key);
+        true
     }
 
     pub(super) fn clear(&self) {
@@ -95,11 +107,16 @@ impl Completions {
 
     /// Take the right to deliver `key`'s completion: `false` when it was cancelled first. Once claimed, a late
     /// `cancel` finds nothing pending, so the host can reap its child and still deliver the outcome.
+    #[cfg(test)]
     pub(super) fn claim(&self, key: &str) -> bool {
+        let lease = self.live.lock().get(key).copied();
+        lease.is_some_and(|lease| self.claim_current(key, lease))
+    }
+
+    pub(super) fn claim_current(&self, key: &str, lease: u64) -> bool {
         let mut live = self.live.lock();
-        if !live.remove(key) {
-            return false;
-        }
+        if live.get(key) != Some(&lease) { return false; }
+        live.remove(key);
         *self.delivering.lock().entry(key.to_string()).or_default() += 1;
         true
     }
@@ -130,7 +147,7 @@ impl Completions {
         site: &CallSite,
         work: impl FnOnce() -> Result<Value, OsError> + Send + 'static,
     ) -> Result<(), RunLaterError> {
-        Self::spawn_later(this, key, site, work, |completions, key, site, outcome| {
+        Self::spawn_later(this, key, site, move |_| work(), |completions, key, site, outcome| {
             completions.deliver(key, site, outcome)
         })
     }
@@ -143,25 +160,25 @@ impl Completions {
         site: &CallSite,
         mut next: impl FnMut() -> StreamPoll + Send + 'static,
     ) -> IoAnswer {
-        if !this.begin(key) {
+        let Some(lease) = this.begin_lease(key) else {
             return IoAnswer::Substrate(Err(SubstrateFailure {
                 message: format!("key {key} already has a stream open"),
                 errors: Vec::new(),
             }));
-        }
+        };
         let (completions, owned_key, owned_site) = (this.clone(), key.to_string(), site.clone());
         let started = std::thread::Builder::new().name(format!("substrate-stream-{key}")).spawn(move || {
             let (key, site) = (owned_key, owned_site);
-            while completions.is_live(&key) {
+            while completions.is_current(&key, lease) {
                 match next() {
                     StreamPoll::Item(item) => {
-                        if !completions.message(&key, &site, item) {
+                        if !completions.message(&key, lease, &site, item) {
                             return;
                         }
                     }
                     StreamPoll::Idle => std::thread::sleep(STREAM_IDLE),
                     StreamPoll::Ended => {
-                        completions.cancel(&key);
+                        completions.cancel_current(&key, lease);
                         return;
                     }
                 }
@@ -170,7 +187,7 @@ impl Completions {
         match started {
             Ok(_) => IoAnswer::ServiceDeferred,
             Err(error) => {
-                this.cancel(key);
+                this.cancel_current(key, lease);
                 IoAnswer::Substrate(Err(SubstrateFailure { message: error.to_string(), errors: Vec::new() }))
             }
         }
@@ -190,7 +207,7 @@ impl Completions {
             this,
             key,
             site,
-            move || {
+            move |_| {
                 work()
                     .map(|value| crate::agent_ports::completion_result(&op, value))
                     .map_err(|failure| crate::agent_ports::failure_payload(&failure))
@@ -212,28 +229,48 @@ impl Completions {
         }
     }
 
+    pub(crate) fn defer_http(
+        this: &Arc<Self>,
+        key: &str,
+        site: &CallSite,
+        work: impl FnOnce(u64) -> Result<Value, Value> + Send + 'static,
+    ) -> IoAnswer {
+        match Self::spawn_later(this, key, site, work, |completions, key, site, outcome| {
+            completions.deliver_with(key, |sink| sink.settle(site, key, outcome))
+        }) {
+            Ok(()) => IoAnswer::ServiceDeferred,
+            Err(error) => {
+                let message = match error {
+                    RunLaterError::KeyPending => format!("key {key} already has a completion pending"),
+                    RunLaterError::Spawn(error) => error.to_string(),
+                };
+                IoAnswer::Http(Err(crate::http_service::TransportError::Failed(message)))
+            }
+        }
+    }
+
     fn spawn_later<T: Send + 'static>(
         this: &Arc<Self>,
         key: &str,
         site: &CallSite,
-        work: impl FnOnce() -> T + Send + 'static,
+        work: impl FnOnce(u64) -> T + Send + 'static,
         deliver: fn(&Completions, &str, &CallSite, T),
     ) -> Result<(), RunLaterError> {
-        if !this.begin(key) {
+        let Some(lease) = this.begin_lease(key) else {
             return Err(RunLaterError::KeyPending);
-        }
+        };
         let (completions, key, site) = (this.clone(), key.to_string(), site.clone());
         let started = std::thread::Builder::new().name(format!("os-later-{key}")).spawn({
             let (completions, key) = (completions.clone(), key.clone());
             move || {
-                let outcome = work();
-                if completions.claim(&key) {
+                let outcome = work(lease);
+                if completions.claim_current(&key, lease) {
                     deliver(&completions, &key, &site, outcome);
                 }
             }
         });
         started.map(drop).map_err(|e| {
-            completions.cancel(&key);
+            completions.cancel_current(&key, lease);
             RunLaterError::Spawn(e)
         })
     }
@@ -308,7 +345,8 @@ impl DispatchScope {
     pub fn answer(&self, inner: &dyn Fn(&IoRequest) -> IoAnswer, request: &IoRequest) -> IoAnswer {
         let (key, stream) = match request {
             IoRequest::Os { op, key: Some(key), .. } if op.defers_completion() || op.is_stream() => (key, op.is_stream()),
-            IoRequest::Substrate { key: Some(key), site: Some(_), .. } => (key, false),
+            IoRequest::Substrate { key: Some(key), site: Some(_), .. }
+            | IoRequest::HttpStream { key: Some(key), site: Some(_), .. } => (key, false),
             _ => return inner(request),
         };
         self.owners.lock().insert(key.clone(), self.ended.clone());
@@ -695,6 +733,32 @@ mod tests {
         complete_on_a_thread(&sink, "k1", "NOW").join().expect("k1");
         assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).as_deref(), Ok("NOW"));
         drop(open);
+    }
+
+    #[test]
+    fn a_cancelled_worker_cannot_message_cancel_or_claim_a_reopened_key() {
+        struct Count(Mutex<Vec<Value>>);
+        impl OsCompletionSink for Count {
+            fn complete(&self, _: &CallSite, _: &str, outcome: Result<Value, OsError>) {
+                self.0.lock().push(outcome.expect("success"));
+            }
+        }
+        let completions = Completions::default();
+        let sink = Arc::new(Count(Mutex::new(vec![])));
+        completions.set_sink(sink.clone());
+        let site = site(Some("OK"), Some("BAD"));
+        let old = completions.begin_lease("reused").expect("first call");
+        assert!(completions.cancel("reused"));
+        let current = completions.begin_lease("reused").expect("second call");
+        assert_ne!(old, current);
+        assert!(!completions.is_current("reused", old));
+        assert!(!completions.message("reused", old, &site, exited(1.0)));
+        assert!(!completions.cancel_current("reused", old));
+        assert!(!completions.claim_current("reused", old));
+        assert!(completions.message("reused", current, &site, exited(2.0)));
+        assert!(completions.claim_current("reused", current));
+        completions.deliver("reused", &site, Ok(exited(3.0)));
+        assert_eq!(*sink.0.lock(), vec![exited(2.0), exited(3.0)]);
     }
 
     #[test]

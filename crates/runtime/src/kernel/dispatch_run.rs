@@ -89,6 +89,7 @@ struct SeedRun {
 }
 
 pub(crate) struct DispatchRun {
+    trace_seeds: Vec<crate::dispatch_trace::TraceSeed>,
     plans: VecDeque<SeedPlan>,
     seed: Option<SeedRun>,
     outcomes: DispatchOutcomes,
@@ -101,6 +102,8 @@ pub(crate) struct DispatchRun {
 }
 
 impl DispatchRun {
+    pub(crate) fn dispatch_id(&self) -> u64 { self.origin.seq }
+
     /// The event of the seed in flight, which names a dispatch parked on its ask.
     fn parked_event(&self) -> String {
         self.seed.as_ref().map(|seed| seed.event_name.clone()).unwrap_or_default()
@@ -475,6 +478,7 @@ impl RuntimeKernel {
 
     fn run_of(&self, plans: Vec<SeedPlan>) -> DispatchRun {
         DispatchRun {
+            trace_seeds: plans.iter().map(|p| crate::dispatch_trace::TraceSeed { trait_name: p.trait_name.clone(), entity_id: p.entity_id.clone(), event: p.event_name.clone() }).collect(),
             plans: plans.into(),
             seed: None,
             outcomes: Vec::new(),
@@ -485,13 +489,48 @@ impl RuntimeKernel {
         }
     }
 
+    fn observe_dispatch(&self, run: &DispatchRun, error: Option<String>) {
+        let Some(observer) = self.dispatch_observer.read().clone() else { return };
+        if !(observer.enabled)() { return; }
+        let defs = self.trait_definitions.read();
+        let outcomes = run.outcomes.iter().map(|(name, result)| {
+            let observed_state = self.state_manager.read()
+                .get_state(name, Some(&result.state_entity_id))
+                .map(|state| state.current_state.clone());
+            let mut trace = crate::dispatch_trace::transition_of(name, result, observed_state);
+            let source = self.emit_source(name);
+            trace.trait_id = source.trait_id;
+            trace.orbital_id = source.orbital_id;
+            if let Some(def) = defs.get(name) {
+                trace.definition_fingerprint = Some(
+                    orbital_core_base::schema::trait_execution_fingerprint(def)
+                        .expect("registered trait definition serializes"),
+                );
+                if let Some(metadata) = def.source_declaration.as_ref() {
+                    trace.source_trait_id = Some(metadata.trait_id.clone());
+                    trace.source_declaration_fingerprint = Some(metadata.fingerprint.clone());
+                }
+            }
+            trace
+        }).collect();
+        drop(defs);
+        (observer.completed)(crate::dispatch_trace::DispatchTraceRecord { dispatch_id: run.origin.seq, seeds: run.trace_seeds.clone(), outcomes, error });
+    }
+
     /// Run every unit with the host's handlers answering at the I/O point: no suspension, no replay.
     fn run_straight_through(&self, mut run: DispatchRun) -> Result<DispatchOutcomes, KernelError> {
         loop {
             match self.unit(&mut run) {
                 Ok(Flow::More) => {}
-                Ok(Flow::Done) => return Ok(std::mem::take(&mut run.outcomes)),
-                Err(fault) => return Err(fault.into_kernel()),
+                Ok(Flow::Done) => {
+                    self.observe_dispatch(&run, None);
+                    return Ok(std::mem::take(&mut run.outcomes));
+                }
+                Err(fault) => {
+                    let error = fault.into_kernel();
+                    self.observe_dispatch(&run, Some(error.to_string()));
+                    return Err(error);
+                }
             }
         }
     }
@@ -511,7 +550,14 @@ impl RuntimeKernel {
             }
             if let Some(leg) = c.store.take() {
                 let StoreLeg { ask, driver, seed } = *leg;
-                match self.drive_resumable(driver)? {
+                let driven = match self.drive_resumable(driver) {
+                    Ok(progress) => progress,
+                    Err(error) => {
+                        self.observe_dispatch(&c.run, Some(error.to_string()));
+                        return Err(error);
+                    }
+                };
+                match driven {
                     Progress::Await { continuation, requests } => {
                         c.pending = requests.clone();
                         c.store = Some(Box::new(StoreLeg { ask, driver: continuation, seed }));
@@ -560,13 +606,16 @@ impl RuntimeKernel {
             }
             c.reads = end.reads;
             if let Some(diverged) = end.diverged {
+                self.observe_dispatch(&c.run, Some(diverged.to_string()));
                 return Err(DispatchError::Resume(diverged));
             }
             if suspended {
                 if result.is_ok() {
-                    return Err(DispatchError::Kernel(KernelError::Internal(
+                    let error = DispatchError::Kernel(KernelError::Internal(
                         "a dispatch step committed while it awaited host I/O".to_string(),
-                    )));
+                    ));
+                    self.observe_dispatch(&c.run, Some(error.to_string()));
+                    return Err(error);
                 }
                 c.journal = end.journal;
                 if let Some(ask) = end.store_asks.into_iter().next() {
@@ -588,8 +637,15 @@ impl RuntimeKernel {
             }
             match result {
                 Ok(Flow::More) => {}
-                Ok(Flow::Done) => return Ok(Progress::Done(std::mem::take(&mut c.run.outcomes))),
-                Err(fault) => return Err(DispatchError::Kernel(fault.into_kernel())),
+                Ok(Flow::Done) => {
+                    self.observe_dispatch(&c.run, None);
+                    return Ok(Progress::Done(std::mem::take(&mut c.run.outcomes)));
+                }
+                Err(fault) => {
+                    let error = fault.into_kernel();
+                    self.observe_dispatch(&c.run, Some(error.to_string()));
+                    return Err(DispatchError::Kernel(error));
+                }
             }
         }
     }

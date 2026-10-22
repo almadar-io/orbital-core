@@ -8,6 +8,7 @@ use orbital_core_base::ir::expr::{OirBinaryOp, OirBinding, OirBindingRoot, OirEx
 use orbital_core_base::ir::types::{OirPattern, OirValue};
 use orbital_core_base::schema::sexpr::SExpression;
 use thiserror::Error;
+use std::{borrow::Cow, cell::RefCell, collections::HashMap, rc::Rc};
 
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum LowerError {
@@ -84,8 +85,133 @@ fn lower_raw_callback(op: &str, args: &[SExpression], resolved: &mut [OirExpr]) 
 
 pub struct ExprLowerer;
 
+type Lowered = Result<OirExpr, LowerError>;
+
+enum LowerChild {
+    Input(usize),
+    Owned(SExpression),
+}
+
+struct InputLocation {
+    parent: Option<usize>,
+    index: usize,
+}
+
+struct LowerInput<'a> {
+    expression: Rc<Cow<'a, SExpression>>,
+    locations: Vec<InputLocation>,
+    positions: HashMap<usize, usize>,
+}
+
+impl<'a> LowerInput<'a> {
+    fn new(expression: Cow<'a, SExpression>) -> Rc<Self> {
+        let expression = Rc::new(expression);
+        let mut locations = vec![InputLocation { parent: None, index: 0 }];
+        let mut positions = HashMap::new();
+        let mut pending = vec![(expression.as_ref().as_ref(), 0)];
+        while let Some((node, location)) = pending.pop() {
+            positions.insert(node as *const SExpression as usize, location);
+            let children: Box<dyn Iterator<Item = &SExpression> + '_> = match node {
+                SExpression::Array(items) => Box::new(items.iter()),
+                SExpression::Object(fields) => Box::new(fields.values()),
+                _ => continue,
+            };
+            for (index, child) in children.enumerate() {
+                let child_location = locations.len();
+                locations.push(InputLocation { parent: Some(location), index });
+                pending.push((child, child_location));
+            }
+        }
+        Rc::new(Self { expression, locations, positions })
+    }
+
+    fn expression(&self, mut location: usize) -> &SExpression {
+        let mut path = Vec::new();
+        while let Some(parent) = self.locations[location].parent {
+            path.push(self.locations[location].index);
+            location = parent;
+        }
+        let mut node = self.expression.as_ref().as_ref();
+        for index in path.into_iter().rev() {
+            node = match node {
+                SExpression::Array(items) => &items[index],
+                SExpression::Object(fields) => fields.get_index(index).expect("indexed field").1,
+                _ => unreachable!("indexed expression container"),
+            };
+        }
+        node
+    }
+}
+
+struct NodeLowerer {
+    children: RefCell<Vec<LowerChild>>,
+    answers: Option<RefCell<std::vec::IntoIter<Lowered>>>,
+}
+
 impl ExprLowerer {
-    pub fn resolve_sexpr(&self, sexpr: &SExpression) -> Result<OirExpr, LowerError> {
+    pub fn resolve_sexpr(&self, sexpr: &SExpression) -> Lowered {
+        enum Work<'a> {
+            Visit(Rc<LowerInput<'a>>, usize),
+            Assemble(Rc<LowerInput<'a>>, usize, usize),
+        }
+        let mut work = vec![Work::Visit(LowerInput::new(Cow::Borrowed(sexpr)), 0)];
+        let mut results = Vec::new();
+        while let Some(next) = work.pop() {
+            match next {
+                Work::Visit(input, location) => {
+                    let discover = NodeLowerer { children: RefCell::new(Vec::new()), answers: None };
+                    // The canonical rules request only semantic children; syntax and ignored operands stay untouched.
+                    let _ = discover.resolve_node(input.expression(location));
+                    let children = discover.children.into_inner();
+                    work.push(Work::Assemble(Rc::clone(&input), location, children.len()));
+                    for child in children.into_iter().rev() {
+                        match child {
+                            LowerChild::Input(address) => {
+                                let location = input.positions[&address];
+                                work.push(Work::Visit(Rc::clone(&input), location));
+                            }
+                            LowerChild::Owned(expression) => {
+                                work.push(Work::Visit(LowerInput::new(Cow::Owned(expression)), 0));
+                            }
+                        }
+                    }
+                }
+                Work::Assemble(input, location, count) => {
+                    let children = results.split_off(results.len() - count);
+                    let assemble = NodeLowerer {
+                        children: RefCell::new(Vec::new()),
+                        answers: Some(RefCell::new(children.into_iter())),
+                    };
+                    results.push(assemble.resolve_node(input.expression(location)));
+                }
+            }
+        }
+        results.pop().expect("root expression result")
+    }
+}
+
+impl NodeLowerer {
+    fn resolve_sexpr(&self, sexpr: &SExpression) -> Lowered {
+        if let Some(answers) = &self.answers {
+            return answers.borrow_mut().next().expect("requested child result");
+        }
+        self.children.borrow_mut().push(LowerChild::Input(sexpr as *const SExpression as usize));
+        Ok(OirExpr::Null)
+    }
+
+    fn resolve_owned(&self, sexpr: SExpression) -> Lowered {
+        if let Some(answers) = &self.answers {
+            return answers.borrow_mut().next().expect("requested owned child result");
+        }
+        self.children.borrow_mut().push(LowerChild::Owned(sexpr));
+        Ok(OirExpr::Null)
+    }
+
+    fn sexpr_to_value(&self, sexpr: &SExpression) -> OirValue {
+        ExprLowerer.sexpr_to_value(sexpr)
+    }
+
+    fn resolve_node(&self, sexpr: &SExpression) -> Lowered {
         match sexpr {
             SExpression::Null => Ok(OirExpr::null()),
             SExpression::Bool(b) => Ok(OirExpr::bool(*b)),
@@ -426,10 +552,10 @@ impl ExprLowerer {
                 let mut key = None;
                 if let SExpression::Object(fields) = &mut request {
                     if let Some(k) = fields.shift_remove("key") {
-                        key = Some(self.resolve_sexpr(&k)?);
+                        key = Some(self.resolve_owned(k)?);
                     }
                 }
-                let request = self.resolve_sexpr(&request)?;
+                let request = self.resolve_owned(request)?;
                 let emit_cfg = match args.get(2) {
                     Some(SExpression::Object(options)) => {
                         if let Some(k) = options.get("key") {
@@ -760,7 +886,7 @@ impl ExprLowerer {
                 BatchOps::Expression => {}
             }
         }
-        let ops_oir = self.resolve_sexpr(&ops_expr)?;
+        let ops_oir = self.resolve_owned(ops_expr)?;
 
         let mut emit_cfg: Option<OirEmitConfig> = None;
         if let Some(SExpression::Object(obj)) = args.get(2) {
@@ -1397,7 +1523,7 @@ impl ExprLowerer {
         let options = if options.is_empty() {
             None
         } else {
-            Some(self.resolve_sexpr(&SExpression::Object(options))?)
+            Some(self.resolve_owned(SExpression::Object(options))?)
         };
         Ok(OirExpr::effect(OirEffect::Postgres {
             origin: self.resolve_sexpr(&args[0])?,
@@ -1446,7 +1572,7 @@ impl ExprLowerer {
         let options = if options.is_empty() {
             None
         } else {
-            Some(self.resolve_sexpr(&SExpression::Object(options))?)
+            Some(self.resolve_owned(SExpression::Object(options))?)
         };
         Ok(OirExpr::effect(OirEffect::Redis {
             origin: self.resolve_sexpr(&args[0])?,
@@ -1477,7 +1603,7 @@ impl ExprLowerer {
         }
         let mut fields = fields.clone();
         fields.insert("paginate".to_string(), SExpression::Object(held));
-        self.resolve_sexpr(&SExpression::Object(fields))
+        self.resolve_owned(SExpression::Object(fields))
     }
 
     /// The `{ emit }` options object a one-argument effect may carry.
@@ -1994,6 +2120,9 @@ impl ExprLowerer {
         }
     }
 
+}
+
+impl ExprLowerer {
     pub fn sexpr_to_value(&self, sexpr: &SExpression) -> OirValue {
         match sexpr {
             SExpression::Null => OirValue::Null,
@@ -2015,6 +2144,122 @@ impl ExprLowerer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_sampler_lowering_fits_an_ordinary_worker_stack() {
+        let mut expr = SExpression::Number(1.0);
+        let mut expected = OirExpr::number(1.0);
+        for _ in 0..128 {
+            expr = call("if", vec![
+                SExpression::Bool(true),
+                call("+", vec![SExpression::Number(2.0), expr]),
+                SExpression::Number(0.0),
+            ]);
+            expected = OirExpr::if_then_else(
+                OirExpr::bool(true), OirExpr::add(OirExpr::number(2.0), expected),
+                OirExpr::number(0.0),
+            );
+        }
+        let lowered = std::thread::Builder::new()
+            .name("lowering-ordinary-stack".into())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || lower_sexpr_keeping_typed(&expr))
+            .expect("ordinary worker starts")
+            .join().expect("ordinary worker finishes")
+            .expect("sampler expression lowers");
+        assert_eq!(lowered, expected);
+    }
+
+    #[test]
+    fn syntax_names_and_discarded_type_metadata_are_not_lowered_as_children() {
+        let expr = call("let", vec![
+            SExpression::Array(vec![SExpression::Array(vec![
+                SExpression::String("if".into()), SExpression::Number(7.0),
+            ])]),
+            call("typed", vec![
+                SExpression::String("@local.if".into()), call("if", vec![]),
+            ]),
+        ]);
+        let expected = OirExpr::call("let", vec![
+            OirExpr::array(vec![OirExpr::array(vec![OirExpr::string("if"), OirExpr::number(7.0)])]),
+            OirExpr::binding(OirBinding::parse("@local.if").expect("local binding")),
+        ]);
+        assert_eq!(lower_sexpr(&expr), Ok(expected));
+        assert!(lower_sexpr_keeping_typed(&expr).is_err());
+    }
+
+    #[test]
+    fn child_failures_keep_the_canonical_argument_order() {
+        let left = call("if", vec![SExpression::Bool(true)]);
+        let right = call("not", vec![]);
+        let first = lower_sexpr(&left).expect_err("left child is malformed");
+        assert_eq!(lower_sexpr(&call("+", vec![left, right])), Err(first));
+    }
+
+    #[test]
+    fn synthesized_beacon_and_batch_requests_keep_their_lowered_contracts() {
+        let beacon: SExpression = serde_json::from_value(serde_json::json!([
+            "browser/beacon", "https://example.com/e",
+            {"text":"@entity.text", "key":"@entity.key"},
+            {"key":"@payload.key", "emit":{"success":"SENT"}}
+        ])).expect("beacon input");
+        let OirExpr::Effect { effect } = lower_sexpr(&beacon).expect("beacon lowers") else {
+            panic!("beacon effect");
+        };
+        let OirEffect::BrowserBeacon { request, key, emit, .. } = *effect else {
+            panic!("beacon effect");
+        };
+        let mut fields = orbital_core_base::ir::expr::OirFields::new();
+        fields.insert("text".into(), OirExpr::binding(OirBinding::parse("@entity.text").unwrap()));
+        assert_eq!(request, OirExpr::object(fields));
+        assert_eq!(key, Some(OirExpr::binding(OirBinding::parse("@payload.key").unwrap())));
+        assert_eq!(emit.and_then(|routes| routes.success), Some("SENT".into()));
+
+        let batch: SExpression = serde_json::from_value(serde_json::json!([
+            "persist", "batch", [["create", "Task", {"id":"@entity.id"}]]
+        ])).expect("batch input");
+        let OirExpr::Effect { effect } = lower_sexpr(&batch).expect("batch lowers") else {
+            panic!("batch effect");
+        };
+        let OirEffect::PersistBatch { ops, entities, .. } = *effect else {
+            panic!("batch effect");
+        };
+        assert_eq!(entities, vec!["Task"]);
+        let mut row = orbital_core_base::ir::expr::OirFields::new();
+        row.insert("id".into(), OirExpr::binding(OirBinding::parse("@entity.id").unwrap()));
+        assert_eq!(ops, OirExpr::array(vec![OirExpr::call("list", vec![
+            OirExpr::string("create"), OirExpr::string("Task"), OirExpr::object(row),
+        ])]));
+    }
+
+    #[test]
+    fn synthesized_http_pagination_keeps_quoted_callbacks_and_request_fields() {
+        let raw: SExpression = serde_json::from_value(serde_json::json!([
+            "http", "GET", "https://example.com", "/items",
+            {"headers":{"x-id":"@entity.id"}, "paginate":{
+                "next":["get", "@response", "next"],
+                "collect":["quote", "[]"], "maxPages":3
+            }}
+        ])).expect("http input");
+        let OirExpr::Effect { effect } = lower_sexpr(&raw).expect("http lowers") else {
+            panic!("http effect");
+        };
+        let OirEffect::Http { request: Some(OirExpr::Object { fields }), .. } = *effect else {
+            panic!("http request object");
+        };
+        let OirExpr::Object { fields: paginate } = &fields["paginate"] else {
+            panic!("pagination object");
+        };
+        assert_eq!(paginate["next"], OirExpr::call("quote", vec![
+            OirExpr::string(r#"["get","\u0040response","next"]"#),
+        ]));
+        assert_eq!(paginate["collect"], OirExpr::call("quote", vec![OirExpr::string("[]")]));
+        assert_eq!(paginate["maxPages"], OirExpr::number(3.0));
+        let OirExpr::Object { fields: headers } = &fields["headers"] else {
+            panic!("headers object");
+        };
+        assert_eq!(headers["x-id"], OirExpr::binding(OirBinding::parse("@entity.id").unwrap()));
+    }
 
     fn call(op: &str, args: Vec<SExpression>) -> SExpression {
         let mut items = vec![SExpression::String(op.into())];

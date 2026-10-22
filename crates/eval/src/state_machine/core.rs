@@ -135,6 +135,7 @@ impl StateMachineCore {
                     TransitionEffects::None,
                 );
                 result.fired_arm = Some(arm);
+                result.transition_index = Some(*index);
                 result.guards = guards;
                 return Ok((result, Some(*index)));
             };
@@ -177,6 +178,7 @@ impl StateMachineCore {
                 passed,
             );
             result.fired_arm = Some(arm);
+                result.transition_index = Some(*index);
             result.guards = guards;
             return Ok((result, Some(*index)));
         }

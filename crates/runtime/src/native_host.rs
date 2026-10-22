@@ -14,6 +14,39 @@ use std::sync::Arc;
 /// Receives each event of a stream, with the call site whose `onMessage` route it belongs to.
 pub type StreamEvents = dyn Fn(Option<&CallSite>, Value) + Send + Sync;
 
+struct LiveHttpStream {
+    inner: Arc<dyn Transport>,
+    completions: Arc<crate::os_host::completion::Completions>,
+    key: String,
+    lease: u64,
+}
+
+impl LiveHttpStream {
+    fn check(&self) -> Result<(), crate::http_service::TransportError> {
+        self.completions.is_current(&self.key, self.lease).then_some(()).ok_or_else(|| {
+            crate::http_service::TransportError::Failed("HTTP stream cancelled".into())
+        })
+    }
+}
+
+impl Transport for LiveHttpStream {
+    fn send(&self, request: &crate::http_service::HttpRequest) -> Result<crate::http_service::HttpResponse, crate::http_service::TransportError> {
+        self.check()?;
+        let reply = self.inner.send(request)?;
+        self.check()?;
+        Ok(reply)
+    }
+
+    fn stream(&self, request: &crate::http_service::HttpRequest, on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), crate::http_service::TransportError>) -> Result<crate::http_service::HttpResponse, crate::http_service::TransportError> {
+        self.check()?;
+        self.inner.stream(request, &mut |bytes| {
+            self.check()?;
+            on_chunk(bytes)?;
+            self.check()
+        })
+    }
+}
+
 /// The work of one keyed substrate op answered as a dispatch of its own (R-a), built on the asking thread and run off
 /// it; a host that serves the op as the asking viewer captures that viewer when it builds the work.
 pub type SubstrateWork = Box<dyn FnOnce() -> Result<Value, SubstrateFailure> + Send>;
@@ -42,8 +75,10 @@ impl ServiceHandler for NoProviders {
     }
 }
 
+#[derive(Clone)]
 pub struct NativeHost {
     source: Arc<dyn EntitySource>,
+    inline_http: bool,
     transport: Arc<dyn Transport>,
     secrets: Arc<dyn SecretSource>,
     egress: Vec<String>,
@@ -71,6 +106,7 @@ impl NativeHost {
         }
         Self {
             source,
+            inline_http: false,
             transport,
             secrets,
             egress,
@@ -124,7 +160,64 @@ impl NativeHost {
         Some(crate::os_host::completion::Completions::defer_substrate(&self.handles.completions, key, site, op, work))
     }
 
+    fn defer_http(&self, request: &IoRequest) -> Option<IoAnswer> {
+        use crate::driver::{drive, DriveContext, DriveEnd, DriverAnswer};
+        use crate::resumable::{Exchange, IoPort};
+        let IoRequest::HttpStream { key: Some(key), site: Some(site), continuation: Some(driver), .. } = request else {
+            return None;
+        };
+        if self.inline_http || self.handles.completions.sink().is_none() {
+            return None;
+        }
+        let completions = self.handles.completions.clone();
+        let (key, site, driver, request) = (key.clone(), site.clone(), driver.clone(), request.clone());
+        let mut worker = self.clone();
+        worker.inline_http = true;
+        let (route_key, route_site) = (key.clone(), site.clone());
+        let completions_for_work = completions.clone();
+        Some(crate::os_host::completion::Completions::defer_http(&completions, &route_key, &route_site, move |lease| {
+            worker.transport = Arc::new(LiveHttpStream { inner: worker.transport.clone(), completions: completions_for_work.clone(), key: key.clone(), lease });
+            worker.on_event = Arc::new({
+                let (completions, key, site) = (completions_for_work.clone(), key.clone(), site.clone());
+                move |_, event| { completions.message(&key, lease, &site, event); }
+            });
+            let first = match worker.answer(&request) {
+                IoAnswer::Http(reply) => DriverAnswer::Http(reply),
+                _ => return Err(Value::String("native HTTP stream did not return an HTTP answer".into())),
+            };
+            let port = IoPort::new(worker.source.clone(), None, worker.substrate.clone());
+            port.set_call_site(Some(site));
+            let mut journal = Vec::new();
+            loop {
+                let mut resumed = driver.clone();
+                let principal = resumed.principal().map(str::to_string);
+                let step = resumed.resume(first.clone());
+                let (outcome, end) = port.run_step(journal, || {
+                    drive(&port, &mut *resumed, step, DriveContext { principal: principal.as_deref(), key: Some(&key) })
+                });
+                if let Some(error) = end.diverged {
+                    return Err(Value::String(error.to_string()));
+                }
+                journal = end.journal;
+                if !end.pending.is_empty() {
+                    for ask in end.pending {
+                        let answer = worker.answer(&ask);
+                        journal.push(Exchange::new(ask, answer));
+                    }
+                    continue;
+                }
+                return match outcome {
+                    DriveEnd::Done(result) => result,
+                    _ => Err(Value::String("native HTTP continuation has an unanswered host request".into())),
+                };
+            }
+        }))
+    }
+
     pub fn answer(&self, request: &IoRequest) -> IoAnswer {
+        if let Some(deferred) = self.defer_http(request) {
+            return deferred;
+        }
         if let Some(deferred) = self.defer_substrate(request) {
             return deferred;
         }
@@ -186,6 +279,51 @@ mod tests {
 
     fn ask(host: &NativeHost) -> IoAnswer {
         host.answer(&IoRequest::Substrate { op: "program/read".to_string(), args: vec![Value::Null], key: None, site: None })
+    }
+
+    #[test]
+    fn a_deferred_http_stream_resumes_the_canonical_driver_for_401_refresh() {
+        use crate::driver::{DriverAnswer, DriverAsk, DriverStep};
+        use crate::http_request::{parse_http_call, HttpCallDriver, HttpMethod, StreamFraming};
+        use crate::http_service::SecretSource;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct RefreshTransport(AtomicUsize);
+        impl Transport for RefreshTransport {
+            fn send(&self, request: &HttpRequest) -> Result<HttpResponse, TransportError> {
+                assert_eq!(request.url, "https://8.8.4.4/token");
+                Ok(HttpResponse { status: 200, headers: vec![], body: br#"{"access_token":"FRESH","expires_in":3600}"#.to_vec() })
+            }
+            fn stream(&self, request: &HttpRequest, on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), TransportError>) -> Result<HttpResponse, TransportError> {
+                let call = self.0.fetch_add(1, Ordering::SeqCst);
+                let expected = if call == 0 { "Bearer OLD" } else { "Bearer FRESH" };
+                assert!(request.headers.iter().any(|(name, value)| name.eq_ignore_ascii_case("authorization") && value == expected));
+                if call == 1 { on_chunk(b"data: live\n\n")?; }
+                Ok(HttpResponse { status: if call == 0 { 401 } else { 200 }, headers: vec![], body: vec![] })
+            }
+        }
+        struct Secrets;
+        impl SecretSource for Secrets {
+            fn secret(&self, _: &str) -> Result<Option<String>, String> { Ok(Some("credential".into())) }
+            fn store_secret(&self, _: &str, _: &str, _: u64) -> Result<(), String> { Ok(()) }
+        }
+        let spec: Value = serde_json::from_value(serde_json::json!({"stream": "sse", "auth": {"scheme": "oauth2-client", "tokenUrl": "https://8.8.4.4/token", "clientId": "CID", "clientSecret": "CSEC", "onUnauthorized": "refresh"}})).expect("spec");
+        let spec = parse_http_call(HttpMethod::Get, "https://8.8.8.8", "/trace", &spec).expect("parse");
+        let egress = vec!["https://8.8.8.8".into(), "https://8.8.4.4".into()];
+        let (mut driver, _) = HttpCallDriver::start(spec, egress.clone(), Some("trace".into()));
+        let DriverStep::Ask(DriverAsk::HttpStream { request, .. }) = driver.resume(DriverAnswer::Secret(Ok(Some("OLD".into())))) else { panic!("stream ask") };
+        let (mut host, settled) = sinking_host(true);
+        let transport = Arc::new(RefreshTransport(AtomicUsize::new(0)));
+        host.transport = transport.clone();
+        host.secrets = Arc::new(Secrets);
+        host.egress = egress;
+        let site = match keyed("unused", Some("trace")) { IoRequest::Substrate { site, .. } => site, _ => unreachable!() };
+        let ask = IoRequest::HttpStream { request, key: Some("trace".into()), site, framing: StreamFraming::Sse, continuation: Some(Box::new(driver)) };
+        assert!(matches!(host.answer(&ask), IoAnswer::ServiceDeferred));
+        let (_, outcome) = settled.recv_timeout(std::time::Duration::from_secs(3)).expect("settled");
+        let payload = outcome.expect("success");
+        assert_eq!(payload.get_path("status"), Some(&Value::Number(200.0)));
+        assert_eq!(transport.0.load(Ordering::SeqCst), 2);
     }
 
     #[test]

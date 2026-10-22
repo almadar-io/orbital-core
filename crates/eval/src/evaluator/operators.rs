@@ -28,7 +28,7 @@ pub mod arg_types;
 pub mod kind;
 pub mod macros;
 pub use arg_types::{actual_of, operator_signature};
-pub use kind::OperatorKind;
+pub use kind::{OperatorKind, TypePredicate};
 pub mod anim;
 pub mod array;
 pub mod bit;

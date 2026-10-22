@@ -13,6 +13,33 @@ use crate::evaluator::context::BindingContext;
 use crate::evaluator::operators::*;
 use orbital_core_base::schema::sexpr::SExpression;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypePredicate { String, Number, Boolean, Array, Object }
+
+impl TypePredicate {
+    pub fn matches_value(self, value: &orbital_core_base::value::Value) -> bool {
+        use orbital_core_base::value::Value;
+        matches!((self, value),
+            (Self::String, Value::String(_)) | (Self::Number, Value::Number(_)) |
+            (Self::Boolean, Value::Bool(_)) | (Self::Array, Value::Array(_)) |
+            (Self::Object, Value::Object(_)))
+    }
+
+    pub fn matches_type(self, ty: &orbital_core_base::ir::OirType) -> Option<bool> {
+        use orbital_core_base::ir::OirType as T;
+        let kind = match ty {
+            T::String | T::Enum { .. } | T::Trait | T::CallKey | T::Bytes |
+            T::Email | T::Url | T::Phone | T::Uuid | T::Image | T::Reference { .. } => Self::String,
+            T::Number | T::Integer | T::Money => Self::Number,
+            T::Boolean => Self::Boolean,
+            T::Array { .. } | T::Tuple { .. } => Self::Array,
+            T::Struct { .. } | T::Map { .. } | T::Row { .. } => Self::Object,
+            _ => return None,
+        };
+        Some(kind == self)
+    }
+}
+
 /// Generates the `OperatorKind` enum and its `evaluate` dispatch from a list of
 /// `Variant => StructPath` entries. Each operator struct is zero-sized, so the
 /// dispatch constructs a fresh value and forwards to `Operator::evaluate`.
@@ -376,6 +403,17 @@ operator_kind! {
 }
 
 impl OperatorKind {
+    pub fn type_predicate(&self) -> Option<TypePredicate> {
+        match self {
+            Self::ValidateStringOp => Some(TypePredicate::String),
+            Self::ValidateNumberOp => Some(TypePredicate::Number),
+            Self::ValidateBooleanOp => Some(TypePredicate::Boolean),
+            Self::ValidateArrayOp => Some(TypePredicate::Array),
+            Self::ValidateObjectOp => Some(TypePredicate::Object),
+            _ => None,
+        }
+    }
+
     /// The names a raw-body callback (one written without `(fn …)`) is evaluated with, in
     /// argument order, or `None` when the operator accepts only a real lambda (or none).
     /// The compiler lowers a raw body to `(fn <these> body)`, so both paths bind the same names.

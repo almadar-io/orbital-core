@@ -1879,6 +1879,56 @@ fn json_line(line: &str) -> Option<Value> {
     }
 }
 
+/// Incremental UTF-8 decoding and the shared stream framer, retaining incomplete code points between reads.
+pub struct StreamDecoder {
+    framing: StreamFraming,
+    key: Option<String>,
+    bytes: Vec<u8>,
+    carry: String,
+}
+
+impl StreamDecoder {
+    pub fn new(framing: StreamFraming, key: Option<&str>) -> Self {
+        Self { framing, key: key.map(str::to_string), bytes: Vec::new(), carry: String::new() }
+    }
+
+    pub fn push(&mut self, bytes: &[u8]) -> Vec<Value> {
+        self.bytes.extend_from_slice(bytes);
+        let mut text = String::new();
+        loop {
+            match std::str::from_utf8(&self.bytes) {
+                Ok(valid) => {
+                    text.push_str(valid);
+                    self.bytes.clear();
+                    break;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    text.push_str(&String::from_utf8_lossy(&self.bytes[..valid]));
+                    match error.error_len() {
+                        Some(invalid) => {
+                            text.push('\u{fffd}');
+                            self.bytes.drain(..valid + invalid);
+                        }
+                        None => {
+                            self.bytes.drain(..valid);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        frame_stream(self.framing, self.key.as_deref(), &text, &mut self.carry)
+    }
+
+    pub fn finish(&mut self) -> Vec<Value> {
+        let tail = String::from_utf8_lossy(&std::mem::take(&mut self.bytes)).into_owned();
+        let mut events = frame_stream(self.framing, self.key.as_deref(), &tail, &mut self.carry);
+        events.extend(frame_stream_finish(self.framing, self.key.as_deref(), &mut self.carry));
+        events
+    }
+}
+
 /// Frames `chunk` appended to `carry`; whatever is not yet a whole frame stays in `carry`.
 pub fn stream_events(framing: StreamFraming, chunk: &str, carry: &mut String) -> Vec<Value> {
     carry.push_str(chunk);
@@ -2053,9 +2103,17 @@ impl crate::driver::Driver for HttpCallDriver {
     fn resume(&mut self, answer: HttpAnswer) -> HttpStep {
         HttpCallDriver::resume(self, answer)
     }
+
+    fn http_continuation(&self) -> Option<Box<HttpCallDriver>> {
+        Some(Box::new(self.clone()))
+    }
 }
 
 impl HttpCallDriver {
+    pub(crate) fn principal(&self) -> Option<&str> {
+        self.principal.as_deref()
+    }
+
     pub fn start(spec: HttpCallSpec, egress: Vec<String>, key: Option<String>) -> (HttpCallDriver, HttpStep) {
         Self::start_stamped(spec, egress, key, None)
     }

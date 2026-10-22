@@ -71,7 +71,7 @@ pub enum CallVariant<'a> {
     /// The operator has one contract, or the call site carries no literal
     /// action (the legacy 3-element `persist`).
     Plain,
-    /// A keyed stdin read completes after streaming its chunks.
+    /// A keyed stdin read with an onMessage route completes after streaming its chunks.
     StdinStream,
     /// `persist`'s literal action keyword (`create`, `update`, `delete`, ...).
     PersistAction(&'a str),
@@ -485,7 +485,7 @@ const OS_SPAWNED: &[ShapeField] = &[
     field("stdout", "number"),
     field("stderr", "number"),
 ];
-const OS_EXIT: &[ShapeField] = &[field("code", "number"), field("signal", "string")];
+const OS_EXIT: &[ShapeField] = &[field("code", "number"), field("signal", "number")];
 const OS_PID: &[ShapeField] = &[field("pid", "number")];
 const KV_STORED_KEY: &[ShapeField] = &[field("storedKey", "string")];
 const KV_EXISTED: &[ShapeField] = &[field("existed", "boolean")];

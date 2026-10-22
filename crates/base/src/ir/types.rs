@@ -911,10 +911,28 @@ pub fn payload_type_shape(field_type: &str) -> OirType {
     }
 }
 
+/// Structurally carried tuple slots in index order; the tuple's text remains the legacy primitive-only form.
+pub fn payload_tuple_slots(
+    field: &crate::schema::types::PayloadField,
+) -> Option<Vec<&crate::schema::types::PayloadField>> {
+    crate::type_compat::tuple_type_slots(&field.field_type)?;
+    let mut slots = field
+        .properties
+        .as_ref()?
+        .iter()
+        .map(|slot| slot.name.parse::<usize>().ok().map(|index| (index, slot)))
+        .collect::<Option<Vec<_>>>()?;
+    slots.sort_by_key(|(index, _)| *index);
+    Some(slots.into_iter().map(|(_, slot)| slot).collect())
+}
+
 /// The type a `.orb` payload field declares, read structurally: a by-name back-reference (`properties: []`) is the
 /// `TypeRef` it names, `properties` are a union's variants or a record's members (`[object]` a list of it), `items`
 /// a list's or map's element; an alias or entity name stays the `Reference` [`payload_type_shape`] makes of it.
 pub fn payload_field_shape(field: &crate::schema::types::PayloadField) -> OirType {
+    if let Some(slots) = payload_tuple_slots(field) {
+        return OirType::Tuple { items: slots.into_iter().map(payload_field_shape).collect() };
+    }
     if let (true, Some(item)) = (field.field_type == "array", field.items.as_deref()) {
         return OirType::array(payload_field_shape(item));
     }

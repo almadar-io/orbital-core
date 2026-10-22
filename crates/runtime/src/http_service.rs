@@ -98,6 +98,19 @@ pub enum TransportError {
 pub trait Transport: Send + Sync {
     /// A non-2xx status is a response, not an error.
     fn send(&self, request: &HttpRequest) -> Result<HttpResponse, TransportError>;
+
+    /// Deliver body bytes as they arrive; the returned response retains status and headers, with no body.
+    /// In-memory transports may deliver their canned body as one chunk.
+    fn stream(
+        &self,
+        request: &HttpRequest,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), TransportError>,
+    ) -> Result<HttpResponse, TransportError> {
+        let mut response = self.send(request)?;
+        on_chunk(&response.body)?;
+        response.body.clear();
+        Ok(response)
+    }
 }
 
 /// The standard reason phrase (`Response.statusText` in fetch) for a status code.

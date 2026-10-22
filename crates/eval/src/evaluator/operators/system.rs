@@ -526,7 +526,7 @@ impl Operator for ValidateStringOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/string", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(matches!(val, Value::String(_))))
+        Ok(Value::Bool(TypePredicate::String.matches_value(&val)))
     }
 }
 
@@ -536,7 +536,7 @@ impl Operator for ValidateNumberOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/number", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(matches!(val, Value::Number(_))))
+        Ok(Value::Bool(TypePredicate::Number.matches_value(&val)))
     }
 }
 
@@ -546,7 +546,7 @@ impl Operator for ValidateBooleanOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/boolean", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(matches!(val, Value::Bool(_))))
+        Ok(Value::Bool(TypePredicate::Boolean.matches_value(&val)))
     }
 }
 
@@ -556,7 +556,7 @@ impl Operator for ValidateArrayOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/array", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(matches!(val, Value::Array(_))))
+        Ok(Value::Bool(TypePredicate::Array.matches_value(&val)))
     }
 }
 
@@ -566,7 +566,7 @@ impl Operator for ValidateObjectOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/object", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(matches!(val, Value::Object(_))))
+        Ok(Value::Bool(TypePredicate::Object.matches_value(&val)))
     }
 }
 

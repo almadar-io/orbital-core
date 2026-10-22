@@ -233,6 +233,7 @@ pub struct RuntimeKernel {
     /// Trait name to the schema and orbital index that declare it, rebuilt on every registration.
     trait_homes: Arc<RwLock<HashMap<String, (String, usize)>>>,
     trait_definitions: Arc<RwLock<HashMap<String, Arc<TraitDefinition>>>>,
+    dispatch_observer: RwLock<Option<Arc<crate::dispatch_trace::DispatchObserver>>>,
     entity_source: Arc<dyn EntitySource>,
     /// The door every read, write, service call and substrate operator goes through; `entity_source` is it.
     io: Arc<IoPort>,
@@ -1068,6 +1069,7 @@ impl RuntimeKernel {
             schemas: Arc::new(RwLock::new(HashMap::new())),
             trait_homes: Arc::new(RwLock::new(HashMap::new())),
             trait_definitions: Arc::new(RwLock::new(HashMap::new())),
+            dispatch_observer: RwLock::new(None),
             entity_source,
             io,
             rows: entity_handler,
@@ -1457,6 +1459,62 @@ impl RuntimeKernel {
         }
     }
 
+    /// A fresh control program with this app's entity metadata, and only the control program's executable routes and grants.
+    pub fn program_context(
+        &self,
+        entity_source: Arc<dyn EntitySource>,
+        config: KernelConfig,
+        schema: OrbitalSchema,
+    ) -> Result<Self, KernelError> {
+        let existing = self.schemas.read().clone();
+        let definitions = self.entity_definitions.read().clone();
+        let traits = self.trait_definitions.read();
+        let collision = |kind: &str, name: &str| {
+            KernelError::Internal(format!("program context {kind} collision: `{name}`"))
+        };
+        if existing.contains_key(&schema.name) {
+            return Err(collision("schema", &schema.name));
+        }
+        for orbital in &schema.orbitals {
+            if existing
+                .values()
+                .any(|program| program.orbitals.iter().any(|o| o.name == orbital.name))
+            {
+                return Err(collision("orbital", &orbital.name));
+            }
+            for trait_name in orbital.traits.iter().filter_map(|t| t.trait_name()) {
+                if traits.contains_key(trait_name) {
+                    return Err(collision("trait", trait_name));
+                }
+            }
+            for entity in
+                std::iter::once(&orbital.entity).chain(orbital.auxiliary_entities.iter().flatten())
+            {
+                if let EntityRef::Inline(def) = entity {
+                    if definitions.contains_key(&def.name) {
+                        return Err(collision("entity", &def.name));
+                    }
+                    if let Some(collection) = &def.collection {
+                        if definitions
+                            .values()
+                            .any(|old| old.collection.as_ref() == Some(collection))
+                        {
+                            return Err(collision("collection", collection));
+                        }
+                    }
+                }
+            }
+        }
+        drop(traits);
+        let child = Self::new(config.environment, entity_source, config);
+        *child.entity_policies.write() = self.entity_policies.read().clone();
+        *child.entity_definitions.write() = definitions;
+        *child.entity_defaults.write() = self.entity_defaults.read().clone();
+        child.set_current_user(self.get_current_user());
+        child.register_schema(schema)?;
+        Ok(child)
+    }
+
     /// A kernel holding this one's registered program and none of its session: every trait at its initial state,
     /// no frames, rows, deliveries or renders, and the program's declared instances seeded again. A stateless host
     /// registers a program once and serves each request a fork (EXEC-DIST-5).
@@ -1806,6 +1864,9 @@ impl RuntimeKernel {
                     view: view.cloned().unwrap_or_default(),
                 }),
                 fired_arm: result.fired_arm,
+                transition_index: result.transition_index,
+                entity_id: entity_id.to_string(),
+                state_entity_id: entity_id.to_string(),
                 guards: result.guards.clone(),
                 effect_runs,
                 cascade_dropped: Vec::new(),
@@ -1880,6 +1941,9 @@ impl RuntimeKernel {
                 payload: payload.clone(),
                 entry: None,
                 fired_arm: None,
+                transition_index: None,
+                entity_id: entity_id.to_string(),
+                state_entity_id: entity_id.to_string(),
                 guards: result.guards.clone(),
                 effect_runs: Vec::new(),
                 cascade_dropped: Vec::new(),
@@ -2072,6 +2136,9 @@ impl RuntimeKernel {
                 payload: Value::Null,
                 entry: None,
                 fired_arm: None,
+                transition_index: None,
+                entity_id: entity_id.to_string(),
+                state_entity_id: state_entity.to_string(),
                 guards: Vec::new(),
                 effect_runs: Vec::new(),
                 cascade_dropped: Vec::new(),
@@ -2127,6 +2194,9 @@ impl RuntimeKernel {
                     payload: Value::Null,
                     entry: None,
                     fired_arm: None,
+                    transition_index: None,
+                    entity_id: entity_id.to_string(),
+                    state_entity_id: state_entity.to_string(),
                     guards: Vec::new(),
                     effect_runs: Vec::new(),
                     cascade_dropped: Vec::new(),
@@ -2180,6 +2250,9 @@ impl RuntimeKernel {
             payload: Value::Null,
             entry: None,
             fired_arm: None,
+            transition_index: None,
+            entity_id: entity_id.to_string(),
+            state_entity_id: state_entity.to_string(),
             guards: Vec::new(),
             effect_runs: Vec::new(),
             cascade_dropped: Vec::new(),
@@ -4632,7 +4705,7 @@ impl RuntimeKernel {
             Ok(key) => key,
             Err(error) => return os_failure(effect, &OsError::new(OsErrorKind::Invalid, error.to_string())),
         };
-        if op.is_stream() && key.is_none() {
+        if op.is_stream() && *op != orbital_core_base::os::OsOp::StdinRead && key.is_none() {
             return os_failure(
                 effect,
                 &OsError::new(OsErrorKind::Invalid, format!("{}: a stream needs a key", op.name())),
@@ -5114,6 +5187,10 @@ impl RuntimeKernel {
     pub fn set_host_fans_out(&self, fans_out: bool) {
         self.host_fans_out
             .store(fans_out, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn set_dispatch_observer(&self, observer: Option<Arc<crate::dispatch_trace::DispatchObserver>>) {
+        *self.dispatch_observer.write() = observer;
     }
 
     /// Record every step's `@entity` after its effects next to the one it read at its start (propositions are judged
@@ -8118,6 +8195,9 @@ mod client_dispatch_tests {
             payload: Value::Null,
             entry: None,
             fired_arm: None,
+            transition_index: None,
+            entity_id: "singleton".into(),
+            state_entity_id: "singleton".into(),
             guards: Vec::new(),
             effect_runs: Vec::new(),
             cascade_dropped: Vec::new(),
@@ -9563,5 +9643,49 @@ mod fork_shares_program_tests {
         let fork = fork_of(&template);
         fork.seed_runtime_mock(Some("viewer-1".to_string()));
         assert!(Arc::ptr_eq(&template.schemas.read()["Notes"], &fork.schemas.read()["Notes"]));
+    }
+}
+
+#[cfg(test)]
+mod program_context_metadata_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn program_context_and_its_session_fork_exclude_app_credential_catalog_and_schemas() {
+        let schema = |name: &str| -> OrbitalSchema {
+            serde_json::from_value(json!({"name":name,"orbitals":[{"name":name,"entity":{"name":name,"persistence":"runtime","fields":[]},"traits":[{
+                "name":name,"config":{"apiKey":{"type":"secret","default":format!("{name}_CREDENTIAL")}},
+                "stateMachine":{"states":[{"name":"idle","isInitial":true}],"transitions":[{"from":"idle","to":"idle","event":"CHECK","effects":[["credential-status","@config.apiKey",{"emit":{"success":"OK"}}]]}]}
+            }]}]})).unwrap()
+        };
+        let source =
+            || Arc::new(crate::entity_source::InMemoryEntityCache::new()) as Arc<dyn EntitySource>;
+        let parent = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            source(),
+            KernelConfig::default(),
+        );
+        parent.register_schema(schema("App")).unwrap();
+        parent.set_managed_program(&serde_json::to_value(schema("Managed")).unwrap());
+        assert_eq!(parent.program_credentials().unwrap().len(), 2);
+        let child = parent
+            .program_context(source(), KernelConfig::default(), schema("Control"))
+            .unwrap();
+        let credentials = child.program_credentials().unwrap();
+        assert_eq!(credentials.len(), 1);
+        assert_eq!(credentials[0].env_var, "Control_CREDENTIAL");
+        assert!(!child.schemas.read().contains_key("App"));
+        assert!(child.managed_credentials.read().is_empty());
+        assert!(child.entity_policies.read().contains_key("App"));
+        let fork = child
+            .fork_session(source(), KernelConfig::default())
+            .unwrap();
+        let credentials = fork.program_credentials().unwrap();
+        assert_eq!(credentials.len(), 1);
+        assert_eq!(credentials[0].env_var, "Control_CREDENTIAL");
+        assert!(fork.entity_policies.read().contains_key("App"));
+        assert!(!fork.schemas.read().contains_key("App"));
+        assert_eq!(parent.program_credentials().unwrap().len(), 2);
     }
 }

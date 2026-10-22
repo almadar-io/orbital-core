@@ -106,6 +106,7 @@ pub struct TransitionResult {
 
     /// Position of the arm that fired among the state's `from --event-->` arms, in declaration order.
     pub fired_arm: Option<usize>,
+    pub transition_index: Option<usize>,
 
     /// Every guarded arm evaluated while choosing the arm, in order.
     pub guards: Vec<ArmGuard>,
@@ -163,6 +164,7 @@ impl TransitionResult {
             guard_result: None,
             reason: None,
             fired_arm: None,
+            transition_index: None,
             guards: Vec::new(),
         }
     }
@@ -182,6 +184,7 @@ impl TransitionResult {
             guard_result: Some(guard_result),
             reason: None,
             fired_arm: None,
+            transition_index: None,
             guards: Vec::new(),
         }
     }
@@ -199,6 +202,7 @@ impl TransitionResult {
                 event: event.to_string(),
             }),
             fired_arm: None,
+            transition_index: None,
             guards: Vec::new(),
         }
     }
@@ -222,6 +226,7 @@ impl TransitionResult {
                 event: event.to_string(),
             }),
             fired_arm: None,
+            transition_index: None,
             guards: Vec::new(),
         }
     }
