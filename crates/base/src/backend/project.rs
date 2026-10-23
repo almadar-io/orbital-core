@@ -324,6 +324,28 @@ pub fn resolve_public_dir(source_path: &Path, public_dir: &str) -> Result<PathBu
     Ok(dir)
 }
 
+/// Copy `{source_dir}/locales/*.json` into `{output}/locales/` (a generated app reads `locales/{locale}.json`), with an empty catalog for
+/// each built-in locale the project does not provide.
+pub fn copy_locales(source_path: &Path, output: &Path) -> std::io::Result<()> {
+    let destination = output.join("locales");
+    std::fs::create_dir_all(&destination)?;
+    if let Some(source_locales) = source_path.parent().map(|d| d.join("locales")).filter(|d| d.is_dir()) {
+        for entry in std::fs::read_dir(source_locales)?.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                std::fs::copy(&path, destination.join(entry.file_name()))?;
+            }
+        }
+    }
+    for lang in ["en", "ar", "sl"] {
+        let path = destination.join(format!("{lang}.json"));
+        if !path.exists() {
+            std::fs::write(path, "{}")?;
+        }
+    }
+    Ok(())
+}
+
 /// Copies `from` into `to`, recursively, byte for byte.
 pub fn copy_public(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;

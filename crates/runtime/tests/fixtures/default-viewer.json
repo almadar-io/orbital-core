@@ -1,4 +1,0 @@
-{
-  "note": "The viewer a host presents when nothing named one and the app declares no [identity] roster: @almadar/core DEFAULT_VIEWER, mirrored by orbital-core runtime persona::DEFAULT_VIEWER_JSON.",
-  "viewer": { "id": "viewer-1", "name": "Dev Viewer", "email": "viewer@example.com", "role": "" }
-}

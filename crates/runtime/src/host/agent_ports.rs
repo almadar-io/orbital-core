@@ -83,6 +83,22 @@ pub fn dispatch_outcome(response: &EventResponse) -> Value {
     Value::Object(map)
 }
 
+/// A `program/*` answer as its asker reads it, answered in place or deferred alike: a `program/dispatch` declared
+/// input or event request answers the dispatch outcome ([`dispatch_outcome`]); a `wire` request and an inbound
+/// delivery answer what the host answered, as does every other op. `args` is the ask the host was given.
+pub fn program_answer(op: &str, args: &[Value], answer: Value) -> Result<Value, crate::effects::executor::SubstrateFailure> {
+    let raw = op != "program/dispatch"
+        || matches!(args, [Value::Object(_)])
+        || matches!(args.get(2), Some(Value::Object(options)) if options.get("wire") == Some(&Value::Bool(true)));
+    if raw {
+        return Ok(answer);
+    }
+    let response: EventResponse = serde_json::to_value(&answer).and_then(serde_json::from_value).map_err(|e| {
+        crate::effects::executor::SubstrateFailure { message: format!("program/dispatch: the host answered no event response: {e}"), errors: Vec::new() }
+    })?;
+    Ok(dispatch_outcome(&response))
+}
+
 /// The success payload of a substrate or program op's completion, in place or deferred: `{ result }`, plus `text` (the
 /// result as JSON text) for an agent-port op.
 pub fn completion_result(op: &str, value: Value) -> Value {
@@ -111,7 +127,7 @@ mod tests {
     use super::*;
     use serde_json::Value as Json;
 
-    const VECTORS: &str = include_str!("../tests/fixtures/agent-ports/vectors.json");
+    const VECTORS: &str = include_str!("../../tests/fixtures/agent-ports/vectors.json");
 
     fn norm(json: Json) -> Json {
         match json {
@@ -143,6 +159,24 @@ mod tests {
                 norm(serde_json::to_value(dispatch_outcome(&response)).expect("serializes"));
             assert_eq!(outcome, norm(vector["outcome"].clone()), "{name}");
         }
+    }
+
+    #[test]
+    fn a_dispatch_answer_is_shaped_by_its_ask_whether_answered_in_place_or_deferred() {
+        let response = || serde_json::from_value::<Value>(serde_json::to_value(EventResponse { success: true, transitioned: true, ..EventResponse::default() }).unwrap()).unwrap();
+        let text = |s: &str| Value::String(s.to_string());
+        let object = |json: Json| serde_json::from_value::<Value>(json).unwrap();
+        let shaped = |args: Vec<Value>| program_answer("program/dispatch", &args, response()).map(|v| norm(serde_json::to_value(&v).unwrap()));
+        let outcome = serde_json::json!({ "ok": true, "emitted": [] });
+        assert_eq!(shaped(vec![text("O.T.GO"), object(serde_json::json!({})), object(serde_json::json!({ "orbital": "O", "event": "GO", "viewer": null }))]).unwrap(), outcome, "an event request");
+        assert_eq!(shaped(vec![text("O.T.GO"), object(serde_json::json!({}))]).unwrap(), outcome, "a declared input");
+        let raw = norm(serde_json::to_value(response()).unwrap());
+        assert_eq!(shaped(vec![text("O.T.GO"), object(serde_json::json!({})), object(serde_json::json!({ "orbital": "O", "event": "GO", "wire": true }))]).unwrap(), raw, "control: a wire request answers the whole response");
+        let hook = object(serde_json::json!({ "status": 200, "body": "{}" }));
+        let inbound = program_answer("program/dispatch", &[object(serde_json::json!({ "inbound": "h", "body": "", "headers": {} }))], hook.clone()).unwrap();
+        assert_eq!(inbound, hook, "control: an inbound delivery answers the handler's status and body");
+        assert_eq!(program_answer("program/read", &[text("x")], text("y")).unwrap(), text("y"), "control: another op is not reshaped");
+        assert!(program_answer("program/dispatch", &[text("O.T.GO"), object(serde_json::json!({}))], text("no response")).is_err(), "edge: a host that answers no event response fails");
     }
 
     #[test]

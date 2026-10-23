@@ -15,6 +15,7 @@ use orbital_core_base::value::Value;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// What a host is asked for: whole rows, or only the ids of the window.
@@ -239,6 +240,10 @@ pub struct WriteCapabilities {
     pub atomic_batch: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rekey: Option<bool>,
+    /// The host commits rows the kernel decided, compare-and-commit in one transaction (EXEC-STORE-5); it then
+    /// holds no write semantics and the kernel runs every write form itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_rows: Option<bool>,
 }
 
 impl WriteCapabilities {
@@ -256,6 +261,7 @@ impl WriteCapabilities {
             stop_runs: true,
             atomic_batch: true,
             rekey: None,
+            commit_rows: None,
         }
     }
 }
@@ -948,6 +954,73 @@ pub fn apply_write(
             }
         }
     }
+}
+
+/// What a compare-and-commit does to one row the kernel read (EXEC-STORE-5).
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RowCommitWrite {
+    /// Left as it is; it is still checked against the version read.
+    Keep,
+    Put {
+        #[cfg_attr(test, ts(type = "EntityRow"))]
+        row: Value,
+    },
+    Delete,
+}
+
+/// One row of a compare-and-commit: the version the kernel read (`null` when absent) and what it writes.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RowCommit {
+    pub entity_type: String,
+    pub id: String,
+    #[cfg_attr(test, ts(type = "EntityRow | null"))]
+    pub expected: Option<Value>,
+    pub write: RowCommitWrite,
+}
+
+/// The ids of rows `op` reads or writes.
+pub fn touched_ids(op: &RowWriteOp) -> Vec<String> {
+    let given = |data: &Value| data.as_object().and_then(|o| o.get("id")).and_then(|v| v.as_str()).map(str::to_string);
+    match op {
+        RowWriteOp::Create { data, .. } | RowWriteOp::Upsert { data, .. } => given(data).into_iter().collect(),
+        RowWriteOp::Update { id, .. } | RowWriteOp::Delete { id, .. } => vec![id.clone()],
+        RowWriteOp::Rekey { id, new_id, .. } => vec![id.clone(), new_id.clone()],
+    }
+}
+
+/// [`apply_write_batch`] over one table per entity type: ops in order, each seeing the earlier ones; `atomic`
+/// restores every table on a failure.
+pub fn apply_write_batch_across(
+    tables: &mut HashMap<String, RowTable>,
+    batch: &RowWriteBatch,
+    ids: &mut dyn FnMut(&str) -> CreateIds<'static>,
+) -> Vec<RowWriteOutcome> {
+    let snapshot = (batch.on_failure == RowWriteFailureMode::Atomic && batch.ops.len() > 1)
+        .then(|| tables.clone());
+    let mut outcomes: Vec<RowWriteOutcome> = Vec::with_capacity(batch.ops.len());
+    for op in &batch.ops {
+        let table = tables.entry(op.entity_type().to_string()).or_default();
+        let outcome = apply_write(table, op, &mut ids(op.entity_type()));
+        let applied = outcome.applied();
+        outcomes.push(outcome);
+        if !applied {
+            if batch.on_failure == RowWriteFailureMode::Atomic {
+                if let Some(snapshot) = snapshot {
+                    *tables = snapshot;
+                }
+                let failing = outcomes.pop().unwrap_or(RowWriteOutcome::RolledBack);
+                let mut undone: Vec<RowWriteOutcome> = outcomes.iter().map(|_| RowWriteOutcome::RolledBack).collect();
+                undone.push(failing);
+                return undone;
+            }
+            break;
+        }
+    }
+    outcomes
 }
 
 /// Apply a batch: ops in order, each seeing the earlier ones. `Stop` ends at the first failure and keeps what

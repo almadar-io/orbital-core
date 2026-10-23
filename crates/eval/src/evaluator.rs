@@ -3057,6 +3057,23 @@ mod tests {
     }
 
     #[test]
+    fn tree_fold_child_results_keep_a_single_child_single_and_a_list_child_a_list() {
+        let step = serde_json::json!(["fn", ["n", "k"], "@k"]);
+        let not_leaf = serde_json::json!({ "kind": "not", "of": { "kind": "compare", "field": "a", "op": "==", "value": "1" } });
+        assert_eq!(
+            fold_with(not_leaf, step.clone(), "RowPredicate", &predicate_definition()).unwrap(),
+            json_value(serde_json::json!({ "of": {} })),
+            "a single child field holds one result, not a list"
+        );
+        let empty_all = serde_json::json!({ "kind": "all", "of": [] });
+        assert_eq!(
+            fold_with(empty_all, step, "RowPredicate", &predicate_definition()).unwrap(),
+            json_value(serde_json::json!({ "of": [] })),
+            "control: a list child field holds the list of results"
+        );
+    }
+
+    #[test]
     fn tree_fold_calls_the_step_once_on_a_leaf() {
         let step = serde_json::json!(["fn", ["n", "k"], { "kind": "@n.kind", "k": "@k" }]);
         let leaf = serde_json::json!({ "kind": "compare", "field": "a", "op": "==", "value": "1" });

@@ -9,7 +9,7 @@ pub mod server;
 pub mod wire;
 
 pub use server::{
-    substrate_completion_event_json, os_completion_event_json, os_deferring_ops_json, os_glob_matches, tab_url_matches,
+    substrate_completion_event_json, os_completion_event_json, os_deferring_ops_json, os_stream_ops_json, os_glob_matches, tab_url_matches,
     EmbeddedServer, ServerProgress, ServerResolve,
 };
 
@@ -112,6 +112,7 @@ pub fn mount_leg_request(
         entity_id,
         client_id: Some(client_id.to_string()),
         mount: Some(seeds),
+        residence: carried.first().and_then(|leg| leg.residence),
         traits: (!traits.is_empty()).then_some(traits),
         entity_by_trait: (!entity_by_trait.is_empty()).then_some(entity_by_trait),
         ..Default::default()
@@ -738,6 +739,20 @@ impl EmbeddedKernel {
     /// Restart the tick clock; the paused span is never counted.
     pub fn frame_resume(&self) {
         self.ticks.lock().resume();
+    }
+
+    /// The kernel's dispatch mode for a registered trait (the client reads it, never derives it).
+    pub fn dispatch_mode(&self, trait_name: &str) -> Result<DispatchMode, String> {
+        self.kernel
+            .trait_dispatch_mode(trait_name)
+            .ok_or_else(|| format!("dispatch mode: '{trait_name}' is not a registered trait"))
+    }
+
+    /// The config the kernel binds as `@config` for a registered trait (render markers resolve against it).
+    pub fn trait_config(&self, trait_name: &str) -> Result<Value, String> {
+        self.kernel
+            .trait_config(trait_name)
+            .ok_or_else(|| format!("trait config: '{trait_name}' is not a registered trait"))
     }
 
     /// How many `(trait, tick)` pairs the schema declares.

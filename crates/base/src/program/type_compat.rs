@@ -88,6 +88,15 @@ pub enum Coercion {
 
 impl Coercion {
     /// True when the conversion, or one nested in it, is legal only through `as`.
+    pub fn is_explicit(&self) -> bool {
+        match self {
+            Coercion::Explicit => true,
+            Coercion::Wrap(inner) | Coercion::Element(inner) | Coercion::Unwrap { inner, .. } => inner.is_explicit(),
+            _ => false,
+        }
+    }
+
+    /// True when plain assignment refuses the conversion: one legal only through `as`, or an unchecked unwrap.
     pub fn requires_cast(&self) -> bool {
         match self {
             Coercion::Explicit => true,
@@ -1090,6 +1099,17 @@ pub fn oir_type_satisfies(inferred: &OirType, declared: &OirType) -> bool {
     is_unknowable(inferred) || assignable(inferred, declared)
 }
 
+/// [`oir_type_satisfies`] with declared aliases resolved through `resolve`, so a
+/// `TypeRef` on either side compares by the shape it names instead of by spelling.
+pub fn oir_type_satisfies_with_named(
+    inferred: &OirType,
+    declared: &OirType,
+    resolve: &dyn Fn(&str) -> Option<OirType>,
+) -> bool {
+    is_unknowable(inferred)
+        || sub_with_named(inferred, declared, resolve).is_some_and(|c| !c.requires_cast())
+}
+
 /// Structured sibling of [`set_value_type_compatible`]: `declared` is a real
 /// `OirType`, `actual_kind` stays the legacy marker-string vocabulary parsed
 /// through [`parse_compat_type`]. An erased-element actual (a bracket
@@ -1204,6 +1224,26 @@ mod tests {
         let call_keys = ty(serde_json::json!({"kind":"struct","fields":[],"additional":{"kind":"callkey"}}));
         assert!(!super::assignable(&record("extra", "string"), &call_keys));
         assert!(super::castable(&record("extra", "string"), &call_keys));
+    }
+    #[test]
+    fn a_list_of_an_alias_satisfies_the_same_list_spelled_through_its_expansion() {
+        use crate::ir::OirField;
+        let member = OirType::Struct {
+            additional: None,
+            fields: vec![OirField::new("content", OirType::String)],
+        };
+        let resolve = |name: &str| (name == "M").then(|| member.clone());
+        let by_name = OirType::array(OirType::TypeRef { name: "M".into() });
+        let expanded = OirType::array(member.clone());
+        assert!(super::oir_type_satisfies_with_named(&by_name, &expanded, &resolve));
+        assert!(super::oir_type_satisfies_with_named(&expanded, &by_name, &resolve));
+        assert!(super::oir_type_satisfies_with_named(&by_name, &by_name, &resolve));
+        let other = OirType::array(OirType::Struct {
+            additional: None,
+            fields: vec![OirField::new("content", OirType::Number)],
+        });
+        assert!(!super::oir_type_satisfies_with_named(&by_name, &other, &resolve));
+        assert!(!super::oir_type_satisfies_with_named(&other, &by_name, &resolve));
     }
     #[test]
     fn checked_assignment_requires_known_identity_preserving_evidence() {

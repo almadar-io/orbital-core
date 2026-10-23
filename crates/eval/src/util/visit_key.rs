@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde_json::{Map, Number, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use orbital_core_base::value::Value as EvalValue;
 
@@ -58,26 +59,38 @@ pub fn dispatch_visit_key(
     format!("{trait_name}\u{0}{event}\u{0}{from}\u{0}{payload}\u{0}{frame}")
 }
 
+/// A trait's frame as the cycle check reads it: none, its fields as the kernel holds them (each behind its own `Arc`),
+/// or another value.
+pub enum VisitFrame<'a> {
+    Null,
+    Fields(Vec<(&'a str, &'a Arc<EvalValue>)>),
+    Value(&'a EvalValue),
+}
+
 /// A set of deliveries under the `dispatch_visit_key` identity. Steps are filed by
 /// `(trait, event, from)` and each visit keeps only the SHA-256 of its canonical payload and
 /// frame, so a long loop over a large entity does not retain a copy of every frame it passed.
+/// A frame field's digest is kept for the value the field holds, so a field a step left
+/// unchanged is not digested again.
 #[derive(Debug, Default)]
 pub struct DispatchVisits {
     steps: HashMap<String, HashSet<[u8; 32]>>,
+    fields: HashMap<String, (Arc<EvalValue>, [u8; 32])>,
 }
 
 impl DispatchVisits {
     pub fn contains(
-        &self,
+        &mut self,
         trait_name: &str,
         event: &str,
         from: &str,
         payload: &EvalValue,
-        frame: &EvalValue,
+        frame: &VisitFrame<'_>,
     ) -> bool {
+        let digest = self.visit_digest(payload, frame);
         self.steps
             .get(&format!("{trait_name}\u{0}{event}\u{0}{from}"))
-            .is_some_and(|seen| seen.contains(&visit_digest(payload, frame)))
+            .is_some_and(|seen| seen.contains(&digest))
     }
 
     /// `true` when the step was not visited before (as `HashSet::insert`).
@@ -86,22 +99,53 @@ impl DispatchVisits {
         trait_name: &str,
         event: &str,
         from: &str,
-        payload: EvalValue,
-        frame: EvalValue,
+        payload: &EvalValue,
+        frame: &VisitFrame<'_>,
     ) -> bool {
+        let digest = self.visit_digest(payload, frame);
         self.steps
             .entry(format!("{trait_name}\u{0}{event}\u{0}{from}"))
             .or_default()
-            .insert(visit_digest(&payload, &frame))
+            .insert(digest)
     }
-}
 
-/// SHA-256 over an injective encoding of `canonical_json(payload)` and `canonical_json(frame)`.
-fn visit_digest(payload: &EvalValue, frame: &EvalValue) -> [u8; 32] {
-    let mut h = Sha256::new();
-    digest_value(&mut h, payload);
-    digest_value(&mut h, frame);
-    h.finalize().into()
+    /// SHA-256 over an injective encoding of the canonical payload and the frame: a field enters as the digest of
+    /// its canonical value, so equal frames still digest equal and differing ones differ.
+    fn visit_digest(&mut self, payload: &EvalValue, frame: &VisitFrame<'_>) -> [u8; 32] {
+        let mut h = Sha256::new();
+        digest_value(&mut h, payload);
+        match frame {
+            VisitFrame::Null => h.update(b"n"),
+            VisitFrame::Value(value) => {
+                h.update(b"v");
+                digest_value(&mut h, value);
+            }
+            VisitFrame::Fields(fields) => {
+                h.update(b"o");
+                digest_len(&mut h, fields.len());
+                let mut sorted: Vec<&(&str, &Arc<EvalValue>)> = fields.iter().collect();
+                sorted.sort_by(|a, b| a.0.cmp(b.0));
+                for (name, value) in sorted {
+                    digest_str(&mut h, name);
+                    h.update(self.field_digest(name, value));
+                }
+            }
+        }
+        h.finalize().into()
+    }
+
+    fn field_digest(&mut self, name: &str, value: &Arc<EvalValue>) -> [u8; 32] {
+        if let Some((held, digest)) = self.fields.get(name) {
+            if Arc::ptr_eq(held, value) {
+                return *digest;
+            }
+        }
+        let mut h = Sha256::new();
+        digest_value(&mut h, value);
+        let digest: [u8; 32] = h.finalize().into();
+        self.fields.insert(name.to_string(), (Arc::clone(value), digest));
+        digest
+    }
 }
 
 fn digest_len(h: &mut Sha256, n: usize) {
@@ -352,9 +396,9 @@ mod tests {
         for a in corpus() {
             for b in corpus() {
                 let mut visits = DispatchVisits::default();
-                visits.insert("T", "E", "s", a.clone(), EValue::Null);
+                visits.insert("T", "E", "s", &a, &frame(&EValue::Null));
                 assert_eq!(
-                    visits.contains("T", "E", "s", &b, &EValue::Null),
+                    visits.contains("T", "E", "s", &b, &frame(&EValue::Null)),
                     dispatch_visit_key("T", "E", "s", &a, &EValue::Null)
                         == dispatch_visit_key("T", "E", "s", &b, &EValue::Null),
                     "{a:?} vs {b:?}"
@@ -368,9 +412,9 @@ mod tests {
         for a in corpus() {
             for b in corpus() {
                 let mut visits = DispatchVisits::default();
-                visits.insert("T", "E", "s", EValue::Null, a.clone());
+                visits.insert("T", "E", "s", &EValue::Null, &frame(&a));
                 assert_eq!(
-                    visits.contains("T", "E", "s", &EValue::Null, &b),
+                    visits.contains("T", "E", "s", &EValue::Null, &frame(&b)),
                     dispatch_visit_key("T", "E", "s", &EValue::Null, &a)
                         == dispatch_visit_key("T", "E", "s", &EValue::Null, &b),
                     "{a:?} vs {b:?}"
@@ -382,25 +426,25 @@ mod tests {
     #[test]
     fn visits_keep_trait_event_and_from_in_the_identity() {
         let mut visits = DispatchVisits::default();
-        assert!(visits.insert("T", "E", "s", EValue::Null, EValue::Null));
-        assert!(!visits.contains("U", "E", "s", &EValue::Null, &EValue::Null));
-        assert!(!visits.contains("T", "F", "s", &EValue::Null, &EValue::Null));
-        assert!(!visits.contains("T", "E", "t", &EValue::Null, &EValue::Null));
-        assert!(!visits.contains("a\u{0}b", "c", "s", &EValue::Null, &EValue::Null));
+        assert!(visits.insert("T", "E", "s", &EValue::Null, &frame(&EValue::Null)));
+        assert!(!visits.contains("U", "E", "s", &EValue::Null, &frame(&EValue::Null)));
+        assert!(!visits.contains("T", "F", "s", &EValue::Null, &frame(&EValue::Null)));
+        assert!(!visits.contains("T", "E", "t", &EValue::Null, &frame(&EValue::Null)));
+        assert!(!visits.contains("a\u{0}b", "c", "s", &EValue::Null, &frame(&EValue::Null)));
     }
 
     #[test]
     fn visits_report_the_identical_step_as_a_repeat() {
         let mut visits = DispatchVisits::default();
-        assert!(visits.insert("T", "E", "s", ev(json!({ "k": 1 })), ev(json!({ "n": 1 }))));
+        assert!(visits.insert("T", "E", "s", &ev(json!({ "k": 1 })), &frame(&ev(json!({ "n": 1 })))));
         assert!(visits.contains(
             "T",
             "E",
             "s",
             &ev(json!({ "k": 1 })),
-            &ev(json!({ "n": 1 }))
+            &frame(&ev(json!({ "n": 1 })))
         ));
-        assert!(!visits.insert("T", "E", "s", ev(json!({ "k": 1 })), ev(json!({ "n": 1 }))));
+        assert!(!visits.insert("T", "E", "s", &ev(json!({ "k": 1 })), &frame(&ev(json!({ "n": 1 })))));
     }
 
     #[test]
@@ -411,18 +455,49 @@ mod tests {
             body: Arc::clone(&body),
         };
         let mut visits = DispatchVisits::default();
-        assert!(visits.insert("T", "E", "s", held(), EValue::Array(vec![held(), held()])));
+        assert!(visits.insert("T", "E", "s", &held(), &frame(&EValue::Array(vec![held(), held()]))));
         assert_eq!(Arc::strong_count(&body), 1);
-        assert!(visits.contains("T", "E", "s", &held(), &EValue::Array(vec![held(), held()])));
+        assert!(visits.contains("T", "E", "s", &held(), &frame(&EValue::Array(vec![held(), held()]))));
     }
 
     #[test]
     fn visits_remember_every_distinct_frame_of_one_step() {
         let mut visits = DispatchVisits::default();
-        assert!(visits.insert("T", "E", "s", EValue::Null, ev(json!({ "n": 1 }))));
-        assert!(visits.insert("T", "E", "s", EValue::Null, ev(json!({ "n": 2 }))));
-        assert!(visits.contains("T", "E", "s", &EValue::Null, &ev(json!({ "n": 1 }))));
-        assert!(visits.contains("T", "E", "s", &EValue::Null, &ev(json!({ "n": 2 }))));
-        assert!(!visits.contains("T", "E", "s", &EValue::Null, &ev(json!({ "n": 3 }))));
+        assert!(visits.insert("T", "E", "s", &EValue::Null, &frame(&ev(json!({ "n": 1 })))));
+        assert!(visits.insert("T", "E", "s", &EValue::Null, &frame(&ev(json!({ "n": 2 })))));
+        assert!(visits.contains("T", "E", "s", &EValue::Null, &frame(&ev(json!({ "n": 1 })))));
+        assert!(visits.contains("T", "E", "s", &EValue::Null, &frame(&ev(json!({ "n": 2 })))));
+        assert!(!visits.contains("T", "E", "s", &EValue::Null, &frame(&ev(json!({ "n": 3 })))));
+    }
+
+    fn frame(value: &EValue) -> VisitFrame<'_> {
+        VisitFrame::Value(value)
+    }
+
+    fn fields<'a>(pairs: &'a [(&'a str, Arc<EValue>)]) -> VisitFrame<'a> {
+        VisitFrame::Fields(pairs.iter().map(|(k, v)| (*k, v)).collect())
+    }
+
+    #[test]
+    fn a_fields_frame_is_one_visit_whatever_holds_its_equal_values() {
+        let mut visits = DispatchVisits::default();
+        let first = [("a", Arc::new(ev(json!([1, 2])))), ("b", Arc::new(ev(json!("x"))))];
+        let again = [("b", Arc::new(ev(json!("x")))), ("a", Arc::new(ev(json!([1, 2]))))];
+        assert!(visits.insert("T", "E", "s", &EValue::Null, &fields(&first)));
+        assert!(visits.contains("T", "E", "s", &EValue::Null, &fields(&again)), "equal fields in new Arcs and another order");
+        let moved = [("a", Arc::new(ev(json!([1, 2, 3])))), ("b", Arc::clone(&first[1].1))];
+        assert!(!visits.contains("T", "E", "s", &EValue::Null, &fields(&moved)), "control: a changed field is a new frame");
+    }
+
+    #[test]
+    fn edge_a_field_keeps_its_digest_only_for_the_value_it_holds() {
+        let mut visits = DispatchVisits::default();
+        let large = Arc::new(ev(json!({ "rows": [1, 2, 3] })));
+        let step = |n: i64| [("large", Arc::clone(&large)), ("n", Arc::new(ev(json!(n))))];
+        assert!(visits.insert("T", "E", "s", &EValue::Null, &fields(&step(1))));
+        assert!(visits.insert("T", "E", "s", &EValue::Null, &fields(&step(2))));
+        assert_eq!(Arc::strong_count(&large), 2, "the digest cache holds the one value it digested, no copy per step");
+        assert!(visits.contains("T", "E", "s", &EValue::Null, &fields(&step(1))));
+        assert!(!visits.contains("T", "E", "s", &EValue::Null, &frame(&EValue::Null)), "control: no fields is another frame");
     }
 }

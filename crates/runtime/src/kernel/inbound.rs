@@ -6,7 +6,7 @@
 use super::*;
 use crate::resumable::{DispatchError, DispatchOutcomes, Progress};
 use orbital_core_base::inbound::{
-    answer_of, cascade_capped, dispatch_failed, find_inbound, inbound_payload, inbound_unanswered,
+    answer_of, cascade_capped, credential_unset, dispatch_failed, find_inbound, inbound_payload, inbound_unanswered,
     unknown_hook, InboundAnswer, InboundRoute,
 };
 
@@ -24,16 +24,18 @@ impl RuntimeKernel {
     }
 
     /// The credential a route's `verifies` names, as the host holds it: `Ok(None)` when the route verifies
-    /// nothing or the host holds no value (the channel is then unchecked). A lookup that fails is the answer.
+    /// nothing. A route that verifies a credential the host holds no value for is refused with 401
+    /// ([`credential_unset`]); a lookup that fails is the answer.
     pub fn inbound_credential(
         route: &InboundRoute,
         secrets: &dyn crate::http_service::SecretSource,
     ) -> Result<Option<String>, InboundAnswer> {
-        match &route.verifies {
-            None => Ok(None),
-            Some(v) => secrets
-                .secret(&v.credential)
-                .map_err(|message| dispatch_failed(&message)),
+        let Some(v) = &route.verifies else {
+            return Ok(None);
+        };
+        match secrets.secret(&v.credential).map_err(|message| dispatch_failed(&message))? {
+            Some(value) if !value.is_empty() => Ok(Some(value)),
+            _ => Err(credential_unset(&v.credential)),
         }
     }
 

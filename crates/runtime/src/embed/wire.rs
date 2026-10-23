@@ -12,7 +12,7 @@ use crate::http_service::{HttpRequest, HttpResponse, TransportError};
 use orbital_core_base::os::{OsError, OsOp};
 use orbital_core_base::tab::{TabAsk, TabFailure};
 use base64::Engine;
-use crate::row_query::{RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteOutcome};
+use crate::row_query::{RowCommit, RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteOutcome};
 use orbital_core_base::row_set::RowQuery;
 use crate::kernel::{AwaitingTrait, TraitSnapshot};
 use orbital_core_base::dispatch_mode::DispatchMode;
@@ -288,6 +288,8 @@ pub enum IoRequestWire {
     },
     #[serde(rename_all = "camelCase")]
     WriteRows { batch: RowWriteBatch },
+    #[serde(rename_all = "camelCase")]
+    CommitRows { rows: Vec<RowCommit> },
     #[serde(rename_all = "camelCase")]
     CreateRow { entity_type: String, data: Value },
     #[serde(rename_all = "camelCase")]
@@ -618,6 +620,10 @@ pub enum IoAnswerWire {
     WriteUnsupported {
         reason: String,
     },
+    /// `true` when every row was committed; `false` on a conflict, when nothing was.
+    Committed {
+        result: Settled<bool, String>,
+    },
     Deleted {
         result: Settled<(), String>,
     },
@@ -826,6 +832,7 @@ impl From<IoRequestWire> for IoRequest {
                 project,
             },
             IoRequestWire::WriteRows { batch } => Self::WriteRows { batch },
+            IoRequestWire::CommitRows { rows } => Self::CommitRows { rows },
             IoRequestWire::CreateRow { entity_type, data } => Self::CreateRow { entity_type, data },
             IoRequestWire::WriteRow {
                 entity_type,
@@ -965,6 +972,7 @@ impl From<&IoRequest> for IoRequestWire {
             IoRequest::WriteRows { batch } => Self::WriteRows {
                 batch: batch.clone(),
             },
+            IoRequest::CommitRows { rows } => Self::CommitRows { rows: rows.clone() },
             IoRequest::CreateRow { entity_type, data } => Self::CreateRow {
                 entity_type: entity_type.clone(),
                 data: data.clone(),
@@ -1142,6 +1150,9 @@ impl From<&IoAnswer> for IoAnswerWire {
             IoAnswer::WriteUnsupported(reason) => Self::WriteUnsupported {
                 reason: reason.clone(),
             },
+            IoAnswer::Committed(r) => Self::Committed {
+                result: r.clone().into(),
+            },
             IoAnswer::Deleted(r) => Self::Deleted {
                 result: r.clone().into(),
             },
@@ -1249,6 +1260,7 @@ impl From<IoAnswerWire> for IoAnswer {
             IoAnswerWire::QueryUnsupported { reason } => Self::QueryUnsupported(reason),
             IoAnswerWire::Wrote { result } => Self::Wrote(result.into()),
             IoAnswerWire::WriteUnsupported { reason } => Self::WriteUnsupported(reason),
+            IoAnswerWire::Committed { result } => Self::Committed(result.into()),
             IoAnswerWire::Deleted { result } => Self::Deleted(result.into()),
             IoAnswerWire::Service { result } => Self::Service(result.into()),
             IoAnswerWire::ServiceCancelled => Self::ServiceCancelled,

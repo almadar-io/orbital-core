@@ -328,7 +328,7 @@ impl ServiceAccountToken {
         let response = self
             .transport
             .send(&request)
-            .map_err(|e| format!("{e:?}"))?;
+            .map_err(|e| e.to_string())?;
         if !response.is_success() {
             return Err(format!(
                 "the token endpoint answered {}: {}",
@@ -442,7 +442,7 @@ impl FirestoreClient {
         let response = self
             .transport
             .send(&request)
-            .map_err(|e| FirestoreError::plain(format!("{e:?}")))?;
+            .map_err(|e| FirestoreError::plain(e.to_string()))?;
         if !response.is_success() {
             let text = response.text().into_owned();
             let status = serde_json::from_str::<Json>(&text).ok().and_then(|j| {
@@ -455,9 +455,8 @@ impl FirestoreClient {
                 message: text,
             });
         }
-        serde_json::from_str(&response.text()).map_err(|e| {
-            FirestoreError::plain(format!("Firestore answered an unreadable reply: {e}"))
-        })
+        serde_json::from_str(&response.text())
+            .map_err(|_| FirestoreError::plain("Firestore answered an unreadable reply".to_string()))
     }
 
     pub fn batch_get(&self, paths: &[&str], new_transaction: bool) -> FirestoreResult<BatchGet> {
@@ -1985,5 +1984,195 @@ mod tests {
         }
         assert!(script.urls().is_empty());
         assert_eq!(rows.write_capabilities().rekey, None);
+    }
+
+    struct TwinWire {
+        replies: Mutex<VecDeque<Result<(u16, String), String>>>,
+        sent: Mutex<Vec<HttpRequest>>,
+    }
+
+    impl Transport for TwinWire {
+        fn send(&self, request: &HttpRequest) -> Result<HttpResponse, TransportError> {
+            self.sent.lock().unwrap().push(request.clone());
+            match self.replies.lock().unwrap().pop_front() {
+                Some(Ok((status, body))) => Ok(HttpResponse {
+                    status,
+                    headers: Vec::new(),
+                    body: body.into_bytes(),
+                }),
+                Some(Err(message)) => Err(TransportError::Failed(message)),
+                None => Err(TransportError::Failed("script exhausted".into())),
+            }
+        }
+    }
+
+    fn subset(actual: &Json, expected: &Json) -> bool {
+        match (actual, expected) {
+            (Json::Object(a), Json::Object(e)) => e
+                .iter()
+                .all(|(k, v)| a.get(k).is_some_and(|x| subset(x, v)) || (v.is_null() && !a.contains_key(k))),
+            (Json::Array(a), Json::Array(e)) => {
+                a.len() == e.len() && a.iter().zip(e).all(|(x, y)| subset(x, y))
+            }
+            (Json::Number(a), Json::Number(e)) => a.as_f64() == e.as_f64(),
+            _ => actual == expected,
+        }
+    }
+
+    fn twin_answer(rows: &FirestoreRows, event: &str, payload: &Json, sent: usize) -> Json {
+        let key = payload["key"].clone();
+        let failed = |message: String| json!({ "event": "STORE_FAILED", "payload": { "key": key, "message": message } });
+        match event {
+            "ROW_READ" => match rows.find(payload["entityType"].as_str().unwrap(), payload["id"].as_str().unwrap()) {
+                Ok(row) => json!({ "event": "ROW_FOUND", "payload": { "key": key, "row": row.map_or(Json::Null, |r| to_json(&r)) } }),
+                Err(message) => failed(message),
+            },
+            "ROW_LIST" => match rows.list(payload["entityType"].as_str().unwrap()) {
+                Ok(list) => json!({ "event": "ROWS_LISTED", "payload": { "key": key, "rows": list.iter().map(|r| to_json(r)).collect::<Vec<_>>() } }),
+                Err(message) => failed(message),
+            },
+            "ROWS_QUERY" => {
+                let query: RowQuery = serde_json::from_value(payload["query"].clone()).unwrap();
+                let entity = payload["entityType"].as_str().unwrap();
+                let ids = payload["project"] == "ids";
+                let planned = plan_query(&query, &[], ids);
+                let unsupported = |reason: String| json!({ "event": "STORE_UNSUPPORTED", "payload": { "key": key, "reason": reason } });
+                if let Some(reason) = crate::row_query::query_unsupported_reason(&query_capabilities(), &query) {
+                    unsupported(reason.as_str().to_string())
+                } else if ids {
+                    match rows.query_ids(entity, &query) {
+                        None => match planned {
+                            Planned::Declined(word) => unsupported(word.to_string()),
+                            _ => unsupported(String::new()),
+                        },
+                        Some(Ok(page)) => json!({ "event": "ROWS_IDS", "payload": { "key": key, "ids": page.ids, "total": page.total } }),
+                        Some(Err(message)) => failed(message),
+                    }
+                } else {
+                    match rows.query_page(entity, &query) {
+                        None => match planned {
+                            Planned::Declined(word) => unsupported(word.to_string()),
+                            _ => unsupported(String::new()),
+                        },
+                        Some(Ok(page)) => json!({ "event": "ROWS_PAGE", "payload": { "key": key, "rows": page.rows.iter().map(to_json).collect::<Vec<_>>(), "total": page.total } }),
+                        Some(Err(message)) => failed(message),
+                    }
+                }
+            }
+            "ROWS_WRITE" => {
+                let batch: RowWriteBatch = serde_json::from_value(payload["batch"].clone()).unwrap();
+                match rows.write_batch(&batch).unwrap() {
+                    Ok(outcomes) => json!({ "event": "ROWS_WRITTEN", "payload": { "key": key, "outcomes": serde_json::to_value(&outcomes).unwrap() } }),
+                    Err(message) => failed(message),
+                }
+            }
+            other => panic!("unknown verb {other} after {sent} requests"),
+        }
+    }
+
+    #[test]
+    fn the_std_twin_replay_cases_run_over_the_same_scripted_wire() {
+        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+            .join("tests/baked/store/firestore-twin.replay.goldens.json");
+        let file: Json = serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json");
+        let mut ran = 0;
+        let mut failures: Vec<String> = Vec::new();
+        for case in file["cases"].as_array().unwrap() {
+            let id = case["id"].as_str().unwrap();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let steps = case["steps"].as_array().unwrap();
+            let transport = Arc::new(TwinWire {
+                replies: Mutex::new(VecDeque::new()),
+                sent: Mutex::new(Vec::new()),
+            });
+            let rows = FirestoreRows::new(
+                FirestoreConfig::emulator("127.0.0.1:8080", "demo-almadar"),
+                transport.clone(),
+                "",
+                vec![],
+            )
+            .unwrap();
+            let is_reply = |s: &Json| matches!(s["event"].as_str().unwrap(), "FS_REPLIED" | "FS_UNREACHABLE");
+            let mut at = 0;
+            while at < steps.len() {
+                assert!(!is_reply(&steps[at]), "{id}: reply step {at} with no verb before it");
+                let mut stop = at + 1;
+                while stop < steps.len() && is_reply(&steps[stop]) {
+                    stop += 1;
+                }
+                let segment = &steps[at..stop];
+                let replies: VecDeque<Result<(u16, String), String>> = segment[1..]
+                    .iter()
+                    .map(|s| match s["event"].as_str().unwrap() {
+                        "FS_REPLIED" => Ok((
+                            s["payload"]["status"].as_u64().unwrap() as u16,
+                            s["payload"]["body"].as_str().unwrap().to_string(),
+                        )),
+                        _ => Err(s["payload"]["error"].as_str().unwrap().to_string()),
+                    })
+                    .collect();
+                *transport.replies.lock().unwrap() = replies;
+                let before = transport.sent.lock().unwrap().len();
+                let answer = twin_answer(&rows, segment[0]["event"].as_str().unwrap(), &segment[0]["payload"], before);
+                let sent: Vec<HttpRequest> = transport.sent.lock().unwrap()[before..].to_vec();
+                let taps: Vec<&Json> = segment
+                    .iter()
+                    .flat_map(|s| s["expect"]["emits"].as_array().into_iter().flatten())
+                    .filter(|e| e["event"] == "FS_WIRE")
+                    .collect();
+                for (n, tap) in taps.iter().enumerate() {
+                    let request = sent.get(n).unwrap_or_else(|| panic!("{id}: request {n} was not sent"));
+                    if let Some(suffix) = tap["payload"]["path"].as_str() {
+                        assert!(
+                            request.url.ends_with(&format!("/documents{suffix}?$alt=json%3Benum-encoding=int")),
+                            "{id}: request {n} went to {}",
+                            request.url
+                        );
+                    }
+                    if !tap["payload"]["body"].is_null() {
+                        let body: Json = serde_json::from_slice(&request.body).unwrap();
+                        assert_eq!(body, tap["payload"]["body"], "{id}: request {n} body");
+                    }
+                    assert!(request.headers.contains(&("authorization".into(), "Bearer owner".into())), "{id}");
+                }
+                let last = segment.last().unwrap()["expect"]["emits"].as_array();
+                let terminal = last.and_then(|emits| emits.iter().find(|e| e["event"] != "FS_WIRE"));
+                if let Some(expected) = terminal {
+                    assert_eq!(answer["event"], expected["event"], "{id}: {answer}");
+                    let got = answer["payload"].clone();
+                    let want = expected["payload"].clone();
+                    assert!(subset(&got, &want), "{id}: {got} vs {want}");
+                } else {
+                    assert!(
+                        sent.len() >= taps.len(),
+                        "{id}: {} requests sent, {} expected",
+                        sent.len(),
+                        taps.len()
+                    );
+                }
+                let no_more_requests = segment
+                    .iter()
+                    .flat_map(|s| s["expect"]["neverEmits"].as_array().into_iter().flatten())
+                    .any(|e| e.as_str() == Some("FS_WIRE"));
+                if no_more_requests {
+                    assert_eq!(sent.len(), taps.len(), "{id}: no request beyond the expected ones");
+                }
+                at = stop;
+            }
+            }));
+            match outcome {
+                Ok(()) => ran += 1,
+                Err(panic) => {
+                    let text = panic
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .unwrap_or_default();
+                    failures.push(format!("{id}: {text}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{} failing cases:\n{}", failures.len(), failures.join("\n"));
+        assert!(ran > 60, "ran {ran} cases");
     }
 }

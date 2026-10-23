@@ -61,6 +61,26 @@ impl Operator for BytesToStringOp {
     }
 }
 
+/// bytes/from-base64 - standard padded base64 text as the bytes it encodes; other text is an `invalid` error
+pub struct BytesFromBase64Op;
+impl Operator for BytesFromBase64Op {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "bytes/from-base64", == 1);
+        let data = bytes_arg(&args[0], ctx, "bytes/from-base64")?;
+        Ok(Value::String(codec::base64_encode(&data)))
+    }
+}
+
+/// bytes/to-base64 - the bytes as their standard padded base64 text
+pub struct BytesToBase64Op;
+impl Operator for BytesToBase64Op {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "bytes/to-base64", == 1);
+        let data = bytes_arg(&args[0], ctx, "bytes/to-base64")?;
+        Ok(Value::String(codec::base64_encode(&data)))
+    }
+}
+
 /// bytes/length - decoded byte count
 pub struct BytesLengthOp;
 impl Operator for BytesLengthOp {
@@ -303,6 +323,23 @@ mod tests {
     fn to_string_rejects_bad_base64_and_bad_utf8() {
         fails_invalid(serde_json::json!(["bytes/to-string", "!!notbase64"]));
         fails_invalid(serde_json::json!(["bytes/to-string", "/w=="]));
+    }
+
+    #[test]
+    fn base64_text_and_bytes_convert_both_ways_unchanged() {
+        assert_eq!(text(serde_json::json!(["bytes/from-base64", "aGVsbG8="])), "aGVsbG8=");
+        assert_eq!(text(serde_json::json!(["bytes/to-base64", ["bytes/from-string", "hello"]])), "aGVsbG8=");
+        assert_eq!(text(serde_json::json!(["bytes/from-base64", ""])), "");
+        assert_eq!(
+            text(serde_json::json!(["bytes/to-string", ["bytes/from-base64", ["bytes/to-base64", ["bytes/from-string", "é"]]]])),
+            "é"
+        );
+    }
+
+    #[test]
+    fn from_base64_rejects_text_that_is_not_standard_base64() {
+        fails_invalid(serde_json::json!(["bytes/from-base64", "!!notbase64"]));
+        fails_invalid(serde_json::json!(["bytes/from-base64", "aGVsbG8"]));
     }
 
     #[test]

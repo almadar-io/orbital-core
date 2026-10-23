@@ -134,6 +134,10 @@ impl RuntimeKernel {
                 }
             }
             "persist/read-named" => self.run_read_named(effect, &resolved, ctx),
+            "program/self" => match self.running_program() {
+                Ok(program) => EffectResult::executed_with_value(effect.clone(), program),
+                Err(error) => EffectResult::failed(effect.clone(), &error),
+            },
             "program/dispatch" => self.run_dispatch(effect, &resolved),
             other => EffectResult::noop(
                 effect.clone(),
@@ -224,6 +228,20 @@ impl RuntimeKernel {
         Ok(Value::Object(answer))
     }
 
+    /// `program/self`: the resolved program the calling orbital belongs to, as a value.
+    fn running_program(&self) -> Result<Value, String> {
+        let (caller_orbital, _) = self.caller_position();
+        let orbital = caller_orbital.ok_or("program/self: no orbital is running")?;
+        let schemas = self.schemas.read();
+        let schema = schemas
+            .values()
+            .find(|schema| schema.orbitals.iter().any(|o| o.name == orbital))
+            .ok_or_else(|| format!("program/self: '{orbital}' belongs to no registered program"))?;
+        serde_json::to_value(schema.as_ref())
+            .and_then(serde_json::from_value)
+            .map_err(|e| format!("program/self: the program does not serialize: {e}"))
+    }
+
     fn run_read_named(
         &self,
         effect: &Effect,
@@ -279,52 +297,31 @@ impl RuntimeKernel {
             caller_orbital.as_deref(),
             &caller_trait,
         );
-        let (input, payload) = match plan {
+        let ask = match plan {
             DispatchPlan::Failed(failure) => return failure_result(effect, failure),
             DispatchPlan::Refused(answer) => {
                 return EffectResult::executed_with_value(effect.clone(), answer)
             }
-            DispatchPlan::Dispatch { input, payload } => (input, payload),
+            DispatchPlan::Dispatch { input, payload } => vec![
+                Value::String(format!("{}.{}.{}", input.orbital, input.trait_name, input.event)),
+                payload,
+            ],
             DispatchPlan::Request { payload, options } => {
-                let address = args.first().cloned().unwrap_or(Value::Null);
-                return match self.io.run(
-                    "program/dispatch",
-                    &[address, payload, Value::Object(options)],
-                ) {
-                    Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
-                    Err(failure) => failure_result(
-                        effect,
-                        AgentPortFailure {
-                            error: failure.message,
-                            errors: failure.errors,
-                        },
-                    ),
-                };
+                vec![args.first().cloned().unwrap_or(Value::Null), payload, Value::Object(options)]
             }
-            DispatchPlan::Inbound {
-                name,
-                body,
-                headers,
-            } => {
+            DispatchPlan::Inbound { name, body, headers } => {
                 let mut ask = ValueMap::new();
                 ask.insert("inbound".to_string(), Value::String(name));
                 ask.insert("body".to_string(), Value::String(body));
                 ask.insert("headers".to_string(), Value::Object(headers));
-                return match self.io.run("program/dispatch", &[Value::Object(ask)]) {
-                    Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
-                    Err(failure) => failure_result(
-                        effect,
-                        AgentPortFailure {
-                            error: failure.message,
-                            errors: failure.errors,
-                        },
-                    ),
-                };
+                vec![Value::Object(ask)]
             }
         };
-        let address = format!("{}.{}.{}", input.orbital, input.trait_name, input.event);
-        let ask = [Value::String(address), payload];
-        match self.io.run("program/dispatch", &ask) {
+        match self
+            .io
+            .run("program/dispatch", &ask)
+            .and_then(|answer| crate::agent_ports::program_answer("program/dispatch", &ask, answer))
+        {
             Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
             Err(failure) => failure_result(
                 effect,
@@ -336,6 +333,7 @@ impl RuntimeKernel {
         }
     }
 }
+
 
 /// An agent-port effect's declared completion: `emit.success` carries `{ result, text }` (`text` is `result` as
 /// JSON text, the one writing both paths share), `emit.failure` `{ error, errors? }`.

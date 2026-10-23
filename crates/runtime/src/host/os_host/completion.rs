@@ -211,21 +211,23 @@ impl Completions {
     }
 
     /// Answer a keyed substrate op (R-a) by running `work` on a thread of its own and settling its completion through
-    /// the sink, `op` shaping the success payload as an in-place completion would.
+    /// the sink, `op` and its `args` shaping the success payload as an in-place completion would.
     pub fn defer_substrate(
         this: &Arc<Self>,
         key: &str,
         site: &CallSite,
         op: &str,
+        args: &[Value],
         work: impl FnOnce() -> Result<Value, SubstrateFailure> + Send + 'static,
     ) -> IoAnswer {
-        let op = op.to_string();
+        let (op, args) = (op.to_string(), args.to_vec());
         let started = Self::spawn_later(
             this,
             key,
             site,
             move |_| {
                 work()
+                    .and_then(|value| crate::agent_ports::program_answer(&op, &args, value))
                     .map(|value| crate::agent_ports::completion_result(&op, value))
                     .map_err(|failure| crate::agent_ports::failure_payload(&failure))
             },

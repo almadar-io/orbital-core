@@ -730,28 +730,37 @@ fn walk_path(ty: &OirType, path: &str) -> Path {
                     None => return Path::Missing,
                 }
             }
-            // A tagged union's member read: the field of every variant that declares it, one type when they agree.
+            // A tagged union's member read: the field of every variant that declares it. One type when they
+            // agree; otherwise the union of the distinct types, so a read as one of them needs a guard.
             OirType::Union { variants } => {
-                let declared: Vec<&OirType> = variants
+                let declared: Vec<(&str, &OirType)> = variants
                     .iter()
                     .filter_map(|v| match &v.field_type {
                         OirType::Struct { fields, .. } => fields
                             .iter()
                             .find(|f| f.name == segment)
-                            .map(|f| &f.field_type),
+                            .map(|f| (v.name.as_str(), &f.field_type)),
                         _ => None,
                     })
                     .collect();
-                let Some((first, rest)) = declared.split_first() else {
+                let Some(((_, first), rest)) = declared.split_first() else {
                     return Path::Missing;
                 };
-                if !rest.iter().all(|t| agrees(first, t)) {
-                    return Path::Opaque;
-                }
-                current = if declared.len() == variants.len() {
+                let joined = if rest.iter().all(|(_, t)| agrees(first, t)) {
                     (*first).clone()
                 } else {
-                    OirType::optional((*first).clone())
+                    let mut distinct: Vec<OirField> = Vec::new();
+                    for (name, ty) in &declared {
+                        if !distinct.iter().any(|d| &d.field_type == *ty) {
+                            distinct.push(OirField::new((*name).to_string(), (*ty).clone()));
+                        }
+                    }
+                    OirType::Union { variants: distinct }
+                };
+                current = if declared.len() == variants.len() {
+                    joined
+                } else {
+                    OirType::optional(joined)
                 };
             }
             OirType::Row { .. }
@@ -1113,6 +1122,16 @@ fn bind_type(
         }
         OperatorTypeRef::Tagged(kind) => match kind {
             K::Union { of } => {
+                if let Known::Type(OirType::Union { variants }) = known {
+                    if !variants.is_empty() {
+                        let mut trial = b.clone();
+                        for variant in variants {
+                            bind_type(formal, &element(&variant.field_type), &mut trial, mode)?;
+                        }
+                        *b = trial;
+                        return Ok(());
+                    }
+                }
                 let mut undetermined = None;
                 for member in of {
                     let mut trial = b.clone();
@@ -1818,7 +1837,22 @@ fn children_of(
         None
     };
     let shape_identity = identity(shape).map(|(name, _)| name);
+    let variant_names = |variants: &[OirField]| {
+        let mut names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
+        names.sort_unstable();
+        names
+    };
+    // The `types` section expands a recursive alias one level, so a field of the shape can arrive as the shape's own
+    // tagged union written out: the same named variants.
+    let shape_variants = shape_identity
+        .as_ref()
+        .and_then(|name| bindings.named_types.get(name))
+        .and_then(|declared| match unwrap_optional(declared) {
+            OirType::Union { variants } => Some(variant_names(variants)),
+            _ => None,
+        });
     let is_shape = |t: &OirType| match unwrap_optional(t) {
+        OirType::Union { variants } => shape_variants.as_ref().is_some_and(|names| *names == variant_names(variants)),
         OirType::TypeRef { name } => {
             shape_identity.is_some() && identity(name).map(|(name, _)| name) == shape_identity
         }
@@ -3223,6 +3257,38 @@ mod tests {
         assert_eq!(last.borrow().clone(), Some(expected));
     }
 
+    fn pred_children() -> OirType {
+        OirType::Union {
+            variants: vec![
+                OirField::new("All", struct_of(&[("of", s_arr(OirType::String))])),
+                OirField::new("Not", struct_of(&[("of", OirType::String)])),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_union_member_read_whose_variants_differ_is_their_union_not_one_variants_type() {
+        let Path::Found(OirType::Union { variants }) = walk_path(&pred_children(), "of") else {
+            panic!("a member declared with different types reads as the union of them")
+        };
+        let types: Vec<_> = variants.iter().map(|v| v.field_type.clone()).collect();
+        assert_eq!(types, vec![s_arr(OirType::String), OirType::String]);
+    }
+
+    #[test]
+    fn control_a_union_member_read_whose_variants_agree_is_one_type() {
+        let alike = OirType::Union {
+            variants: vec![
+                OirField::new("A", struct_of(&[("of", s_arr(OirType::String))])),
+                OirField::new("B", struct_of(&[("of", s_arr(OirType::String))])),
+            ],
+        };
+        let Path::Found(found) = walk_path(&alike, "of") else {
+            panic!("agreeing variants read as one type")
+        };
+        assert_eq!(found, s_arr(OirType::String));
+    }
+
     #[test]
     fn control_without_the_shape_the_children_stay_untyped() {
         let seen = std::cell::RefCell::new(Vec::new());
@@ -3495,7 +3561,13 @@ mod tests {
         .unwrap();
         assert_eq!(
             type_at_path(&joined, &["cells".into(), "0".into(), "kids".into()]),
-            Some(s_arr(OirType::String))
+            Some(OirType::optional(s_arr(OirType::String))),
+            "a member only one element shape declares may be absent, so its read is optional"
+        );
+        assert_eq!(
+            type_at_path(&joined, &["cells".into(), "0".into(), "kind".into()]),
+            Some(OirType::String),
+            "control: a member both shapes require reads non-optional"
         );
         let optional = optional_fields(&[("note", OirType::String)]);
         let joined = call(
@@ -4151,6 +4223,39 @@ mod tests {
                 actual: "number".into()
             })
         );
+    }
+
+    #[test]
+    fn a_union_argument_binds_when_every_variant_fits_a_union_parameter() {
+        let spawn = op(
+            json!([p("command", json!({ "kind": "union", "of": ["string", "object"] }))]),
+            json!("boolean"),
+            Some(1),
+        );
+        let config = struct_of(&[("cmd", OirType::String)]);
+        let string_or_config = OirType::Union {
+            variants: vec![
+                OirField::new("string", OirType::String),
+                OirField::new("config", config),
+            ],
+        };
+        assert!(call(&spawn, &[ty(string_or_config)], Mode::Static).is_ok());
+    }
+
+    #[test]
+    fn control_a_union_argument_with_a_variant_no_member_fits_is_refused() {
+        let show = op(
+            json!([p("v", json!({ "kind": "union", "of": ["string", "number"] }))]),
+            json!("boolean"),
+            Some(1),
+        );
+        let string_or_boolean = OirType::Union {
+            variants: vec![
+                OirField::new("string", OirType::String),
+                OirField::new("boolean", OirType::Boolean),
+            ],
+        };
+        assert!(call(&show, &[ty(string_or_boolean)], Mode::Static).is_err());
     }
 
     #[test]
@@ -4815,7 +4920,11 @@ mod tests {
         );
         assert_eq!(
             read(OirType::Orbital, "pages"),
-            Ok(Some(OirType::map(OirType::String, OirType::String)))
+            Ok(Some(OirType::optional(OirType::map(
+                OirType::String,
+                OirType::String
+            )))),
+            "pages is declared optional, so it may be absent"
         );
         assert_eq!(read(OirType::Trait, "trait"), Ok(Some(OirType::String)));
         assert_eq!(
@@ -4854,7 +4963,10 @@ mod tests {
     #[test]
     fn a_member_of_a_value_that_is_program_data_is_held_as_such() {
         let app = call(&get(), &[ty(OirType::Orbital), text("app")], Mode::Static).unwrap();
-        assert_eq!(app, Some(OirType::map(OirType::String, OirType::SExpr)));
+        assert_eq!(
+            app,
+            Some(OirType::optional(OirType::map(OirType::String, OirType::SExpr)))
+        );
     }
 
     mod field_projection_contract {

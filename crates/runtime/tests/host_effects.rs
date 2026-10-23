@@ -2058,6 +2058,9 @@ mod os_completion {
                             { "from": "idle", "to": "slurping", "event": "SLURP", "effects": [
                                 ["os/read-file", path, keyed("f2", "SLURPED")]
                             ] },
+                            { "from": "idle", "to": "slurping", "event": "SLURP_NOW", "effects": [
+                                ["os/read-file", path, { "emit": routes("SLURPED") }]
+                            ] },
                             { "from": "slurping", "to": "slurped", "event": "SLURPED", "effects": [
                                 ["set", "@entity.data", "@payload.data"],
                                 ["set", "@entity.key", "@payload.key"]
@@ -2105,16 +2108,32 @@ mod os_completion {
     }
 
     #[test]
-    fn control_a_keyed_read_file_stays_inline() {
+    fn control_an_unkeyed_read_file_is_answered_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (wired, _) = wired_file(dir.path());
+        let progress = wired.kernel.start_dispatch("Sup", None, "SLURP_NOW", Value::Null, None, None).unwrap();
+        wired.sink.drive(progress).unwrap();
+        let held = wired.kernel.snapshot_trait("Sup", None);
+        assert_eq!(held.state, "slurped", "answered within the SLURP_NOW dispatch");
+        assert_eq!(held.entity.get_path("data"), Some(&Value::String("aGVsbG8=".to_string())));
+        assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "no completion dispatch without a key");
+    }
+
+    #[test]
+    fn a_keyed_routed_read_file_is_delivered_as_its_own_dispatch() {
         let dir = tempfile::tempdir().unwrap();
         let (wired, _) = wired_file(dir.path());
         let progress = wired.kernel.start_dispatch("Sup", None, "SLURP", Value::Null, None, None).unwrap();
         wired.sink.drive(progress).unwrap();
+        assert_eq!(wired.kernel.snapshot_trait("Sup", None).state, "slurping", "the SLURP dispatch does not take the read in place");
+        let (event, summary) = wired.done.recv_timeout(Duration::from_secs(10)).expect("one completion dispatch");
+        assert_eq!(event, "SLURPED");
+        assert!(summary.is_ok(), "{summary:?}");
         let held = wired.kernel.snapshot_trait("Sup", None);
-        assert_eq!(held.state, "slurped", "answered within the SLURP dispatch");
+        assert_eq!(held.state, "slurped");
         assert_eq!(held.entity.get_path("data"), Some(&Value::String("aGVsbG8=".to_string())));
         assert_eq!(held.entity.get_path("key"), Some(&Value::String("f2".to_string())));
-        assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "no completion dispatch for os/read-file");
+        assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "exactly one completion");
     }
 
     #[test]
@@ -2140,6 +2159,157 @@ mod os_completion {
         wired.handles.close_all();
         assert!(wired.done.recv_timeout(Duration::from_millis(500)).is_err(), "a cancelled key completed");
         assert_eq!(wired.kernel.snapshot_trait("Sup", None).state, "waiting");
+    }
+
+    const CHAIN_LIMIT: usize = 2100;
+
+    fn stat_chain(path: &str, key: Option<&str>, limit: usize) -> OrbitalSchema {
+        let mut options = json!({ "emit": { "success": "STEP", "failure": "BAD" } });
+        if let Some(key) = key {
+            options["key"] = json!(key);
+        }
+        let ask = json!(["os/stat", path, options]);
+        serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "n", "type": "number", "default": 0 }
+                ] },
+                "traits": [{ "name": "Sup", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "looping" }, { "name": "done" }, { "name": "bad" }],
+                        "transitions": [
+                            { "from": "idle", "to": "looping", "event": "GO", "effects": [["set", "@entity.n", 0], ask.clone()] },
+                            { "from": "looping", "to": "looping", "event": "STEP", "guard": ["<", "@entity.n", limit],
+                              "effects": [["set", "@entity.n", ["+", "@entity.n", 1]], ask] },
+                            { "from": "looping", "to": "done", "event": "STEP", "effects": [["set", "@entity.got", "@payload"]] },
+                            { "from": "looping", "to": "bad", "event": "BAD", "effects": [["set", "@entity.got", "@payload"]] }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn all_modes() -> Vec<orbital_core_base::os_grants::FsMode> {
+        use orbital_core_base::os_grants::FsMode::*;
+        vec![Read, Write, Create, Remove, Meta]
+    }
+
+    fn chain_wired(dir: &std::path::Path, key: Option<&str>, limit: usize) -> Wired {
+        let dir = dir.canonicalize().unwrap();
+        let file = dir.join("probe.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let grants = OsGrants {
+            fs: vec![orbital_core_base::os_grants::FsGrant { glob: format!("{}/**", dir.to_str().unwrap()), modes: all_modes() }],
+            ..OsGrants::default()
+        };
+        wired_granted(stat_chain(file.to_str().unwrap(), key, limit), grants)
+    }
+
+    fn number_of(wired: &Wired, field: &str) -> f64 {
+        match wired.kernel.snapshot_trait("Sup", None).entity.get_path(field) {
+            Some(Value::Number(n)) => *n,
+            other => panic!("{field}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_keyed_read_only_fs_chain_past_the_step_cap_finishes_across_dispatches() {
+        let dir = tempfile::tempdir().unwrap();
+        let wired = chain_wired(dir.path(), Some("k"), CHAIN_LIMIT);
+        go_sup(&wired);
+        let mut completions = 0usize;
+        while wired.kernel.snapshot_trait("Sup", None).state != "done" {
+            let (event, summary) = wired.done.recv_timeout(Duration::from_secs(20)).expect("the chain stalled");
+            assert!(summary.is_ok(), "{event}: {summary:?}");
+            completions += 1;
+        }
+        assert_eq!(number_of(&wired, "n"), CHAIN_LIMIT as f64);
+        assert!(completions > 2000, "each ask completes as a dispatch of its own: {completions}");
+        assert!(wired.handles.completions.live_keys().is_empty());
+    }
+
+    #[test]
+    fn control_the_same_chain_answered_inline_is_still_cut_at_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let wired = chain_wired(dir.path(), None, CHAIN_LIMIT);
+        let progress = wired.kernel.start_dispatch("Sup", None, "GO", Value::Null, None, None).unwrap();
+        let outcomes = wired.sink.drive(progress).unwrap();
+        assert!(outcomes.iter().any(|(_, result)| result.cascade_cut.is_some()), "an inline chain must hit CROSS_TRAIT_CASCADE_CAP");
+        assert_ne!(wired.kernel.snapshot_trait("Sup", None).state, "done");
+        assert!(number_of(&wired, "n") < CHAIN_LIMIT as f64);
+    }
+
+    #[test]
+    fn control_a_grant_refusal_carries_the_same_error_deferred_as_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let refused = |key: Option<&str>| {
+            let grants = OsGrants::default();
+            let wired = wired_granted(stat_chain(dir.path().join("denied").to_str().unwrap(), key, 0), grants);
+            go_sup(&wired);
+            if key.is_some() {
+                let (event, summary) = wired.done.recv_timeout(Duration::from_secs(10)).expect("deferred refusal");
+                assert_eq!((event.as_str(), summary.is_ok()), ("BAD", true));
+            }
+            let held = wired.kernel.snapshot_trait("Sup", None);
+            assert_eq!(held.state, "bad");
+            let mut got = serde_json::to_value(&held.entity).unwrap()["got"].clone();
+            got.as_object_mut().unwrap().remove("key");
+            got
+        };
+        let inline = refused(None);
+        assert_eq!(inline["kind"], "denied");
+        assert_eq!(refused(Some("k")), inline);
+    }
+
+    #[test]
+    fn a_rename_issued_from_the_write_success_route_runs_after_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path().canonicalize().unwrap();
+        let (tmp, out) = (dir.join("a.tmp"), dir.join("a.txt"));
+        let ask = |op: &str, args: Vec<Json>, key: &str, ok: &str| {
+            let mut call = vec![json!(op)];
+            call.extend(args);
+            call.push(json!({ "key": key, "emit": { "success": ok, "failure": "BAD" } }));
+            Json::Array(call)
+        };
+        let (tmp_s, out_s) = (tmp.to_str().unwrap(), out.to_str().unwrap());
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Sup", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "writing" }, { "name": "renaming" }, { "name": "done" }, { "name": "bad" }],
+                        "transitions": [
+                            { "from": "idle", "to": "writing", "event": "GO", "effects": [ask("os/write-file", vec![json!(tmp_s), json!("ZGF0YQ==")], "w", "WROTE")] },
+                            { "from": "writing", "to": "renaming", "event": "WROTE", "effects": [ask("os/rename", vec![json!(tmp_s), json!(out_s)], "r", "RENAMED")] },
+                            { "from": "renaming", "to": "done", "event": "RENAMED" },
+                            { "from": "writing", "to": "bad", "event": "BAD" },
+                            { "from": "renaming", "to": "bad", "event": "BAD" }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap();
+        let grants = OsGrants {
+            fs: vec![orbital_core_base::os_grants::FsGrant { glob: format!("{}/**", dir.to_str().unwrap()), modes: all_modes() }],
+            ..OsGrants::default()
+        };
+        let wired = wired_granted(schema, grants);
+        go_sup(&wired);
+        for expected in ["WROTE", "RENAMED"] {
+            let (event, summary) = wired.done.recv_timeout(Duration::from_secs(10)).expect("chained completion");
+            assert_eq!(event, expected);
+            assert!(summary.is_ok(), "{event}: {summary:?}");
+        }
+        assert_eq!(wired.kernel.snapshot_trait("Sup", None).state, "done");
+        assert_eq!(std::fs::read(&out).unwrap(), b"data");
+        assert!(!tmp.exists());
     }
 }
 

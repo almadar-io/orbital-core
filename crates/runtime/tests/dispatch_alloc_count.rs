@@ -18,11 +18,13 @@ use {
 
 struct Counting;
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+static BYTES: AtomicUsize = AtomicUsize::new(0);
 static LIVE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(layout.size(), Ordering::Relaxed);
         LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed);
         System.alloc(layout)
     }
@@ -32,6 +34,7 @@ unsafe impl GlobalAlloc for Counting {
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(new_size, Ordering::Relaxed);
         LIVE.fetch_add(
             new_size as isize - layout.size() as isize,
             Ordering::Relaxed,
@@ -456,5 +459,116 @@ fn a_long_cascade_retains_linear_memory_per_step() {
     assert!(
         long * 10 < short * 25,
         "retention grows faster than the step count: {short} bytes at 300 steps, {long} at 600"
+    );
+}
+
+/// Bytes a single self-emitting dispatch of `steps` steps allocates, freed or not.
+fn allocated_by_loop(blob: &str, steps: usize) -> usize {
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(scanner_schema(blob)).unwrap();
+    let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
+    let before = BYTES.load(Ordering::SeqCst);
+    let out = k.dispatch("Scanner", None, "SCAN", payload).unwrap();
+    let spent = BYTES.load(Ordering::SeqCst) - before;
+    assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), steps);
+    spent
+}
+
+/// The bytes a 30-step loop over a 64 KiB unchanged field allocates beyond the same loop over a small one. The cycle check
+/// reads the frame as the kernel holds it (no copy, an unchanged field's digest reused): 7995270 before. What remains is
+/// the step's binding context and its pending-set view, each a whole-entity copy per step (G-ORBITAL-CORE-049).
+const PINNED_LARGE_FIELD_BYTES: usize = 5_963_685;
+
+#[test]
+fn an_unchanged_large_field_allocation_per_step_is_pinned() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    const STEPS: usize = 30;
+    const BLOB: usize = 64 * 1024;
+    allocated_by_loop("x", 1);
+    let large = allocated_by_loop(&"x".repeat(BLOB), STEPS);
+    let small = allocated_by_loop("x", STEPS);
+    let extra = large.saturating_sub(small);
+    println!("ALLOCATED_LARGE_FIELD {extra} over {STEPS} steps");
+    assert!(
+        extra <= PINNED_LARGE_FIELD_BYTES,
+        "allocations over an unchanged {BLOB}-byte field rose: {extra} > {PINNED_LARGE_FIELD_BYTES}"
+    );
+}
+
+#[test]
+fn control_a_large_field_rewritten_each_step_is_still_a_new_frame() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(scanner_schema(&"x".repeat(1024))).unwrap();
+    let payload = serde_json::from_value::<Value>(json!({ "left": 5 })).unwrap();
+    let out = k.dispatch("Scanner", None, "SCAN", payload).unwrap();
+    assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 5, "each step's frame differs, so none is a repeat");
+}
+
+fn rewriter_schema(blob: &str) -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "alloc-rewrite",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Doc", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "blob", "type": "string", "default": blob }
+            ] },
+            "traits": [{
+                "name": "Rewriter", "linkedEntity": "Doc",
+                "listens": [{ "event": "REWRITE_NEXT", "triggers": "REWRITE", "source": { "kind": "trait", "trait": "Rewriter" } }],
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "REWRITE",
+                        "guard": [">", "@payload.left", 0],
+                        "effects": [
+                            ["set", "@entity.blob", ["str/concat", "@entity.blob", ""]],
+                            ["emit", "REWRITE_NEXT", { "left": ["-", "@payload.left", 1] }]
+                        ] }]
+                }
+            }]
+        }]
+    }))
+    .unwrap()
+}
+
+/// Bytes a self-rewriting dispatch of `steps` steps still holds once it returns.
+fn retained_by_rewrites(blob: &str, steps: usize) -> isize {
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(rewriter_schema(blob)).unwrap();
+    let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
+    let before = LIVE.load(Ordering::SeqCst);
+    let out = k.dispatch("Rewriter", None, "REWRITE", payload).unwrap();
+    let held = LIVE.load(Ordering::SeqCst) - before;
+    assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), steps);
+    held
+}
+
+/// A field a long cascade rewrites every step is held once per step's frame, not again by the step's recorded `set`.
+#[test]
+fn a_large_field_set_every_step_is_not_retained_per_step() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    const STEPS: usize = 30;
+    const BLOB: usize = 64 * 1024;
+    retained_by_rewrites("x", 1);
+    let large = retained_by_rewrites(&"x".repeat(BLOB), STEPS);
+    let small = retained_by_rewrites("x", STEPS);
+    let extra = large - small;
+    println!("RETAINED_REWRITTEN_FIELD {extra} over {STEPS} steps");
+    assert!(
+        extra < (STEPS * BLOB * 3 / 2) as isize,
+        "a step keeps more than its frame's copy of the {BLOB}-byte field: {extra} extra bytes over {STEPS} steps"
     );
 }

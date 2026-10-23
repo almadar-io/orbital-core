@@ -1,7 +1,7 @@
 //! The program's `os/` grants (`docs/Almadar_OS_Operators.md` §4): closed by default, matched by pure
 //! total functions. The native answerer re-checks them after `realpath`; the validator reads the same data.
 
-use crate::os::OsOp;
+use crate::os::{OsError, OsErrorKind, OsOp};
 use crate::schema::sexpr::SExpression;
 use crate::value::Value;
 use serde::{Deserialize, Serialize};
@@ -1488,6 +1488,64 @@ pub fn anchored_net_args(op: OsOp) -> Option<(usize, usize)> {
         Sendto => Some((2, 3)),
         _ => None,
     }
+}
+
+/// The call's arguments with every anchored path (`{ anchor, path }`) at a path or command position, the anchored
+/// `cwd` of `os/spawn`, and every `env`-anchored host or port replaced by what it names on this host. The grant
+/// check then runs on the plain value against the boot-resolved grants.
+pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> Result<Vec<Value>, OsError> {
+    let refuse = |why: String| OsError::new(OsErrorKind::Denied, format!("{}: {why}", op.name()));
+    // An `env` anchor that is unset or empty names nothing: the target is absent, not refused.
+    let unset = |anchor: &GrantAnchor| match anchor {
+        GrantAnchor::Env(name) if anchors.env.get(name).is_none_or(str::is_empty) => {
+            Some(OsError::new(OsErrorKind::NotFound, format!("{}: env {name} is unset", op.name())))
+        }
+        _ => None,
+    };
+    let path = |value: &Value| -> Result<Option<Value>, OsError> {
+        match AnchoredPath::from_value(value) {
+            Some(anchored) => match unset(&anchored.anchor) {
+                Some(absent) => Err(absent),
+                None => anchors.resolve_path(&anchored).map(|p| Some(Value::String(p))).map_err(refuse),
+            },
+            None => Ok(None),
+        }
+    };
+    let mut out = args.to_vec();
+    for &at in anchored_arg_positions(op) {
+        if let Some(value) = out.get(at) {
+            if let Some(resolved) = path(value)? {
+                out[at] = resolved;
+            }
+        }
+    }
+    if op == OsOp::Spawn {
+        if let Some(Value::Object(options)) = out.get_mut(2) {
+            if let Some(cwd) = options.get("cwd") {
+                if let Some(resolved) = path(cwd)? {
+                    options.insert("cwd".to_string(), resolved);
+                }
+            }
+        }
+    }
+    if let Some((host_at, port_at)) = anchored_net_args(op) {
+        for (at, is_port) in [(host_at, false), (port_at, true)] {
+            let Some(AnchoredPath { anchor, path: None }) = out.get(at).and_then(AnchoredPath::from_value) else {
+                continue;
+            };
+            if let Some(absent) = unset(&anchor) {
+                return Err(absent);
+            }
+            let text = anchors.net_part(&NetPart::Anchor(anchor)).map_err(refuse)?;
+            out[at] = if is_port {
+                let port: u16 = text.parse().map_err(|_| refuse(format!("the port {text:?} is not a port number")))?;
+                Value::Number(f64::from(port))
+            } else {
+                Value::String(text)
+            };
+        }
+    }
+    Ok(out)
 }
 
 fn kv_need(args: &[SExpression], mode: KvMode, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {

@@ -168,6 +168,16 @@ pub struct RunTick {
     pub tick: String,
 }
 
+/// Where a leg runs (EXEC-DIST-2): the browser store when every row it touches is browser-stored, else the server.
+/// The kernel decides it from the effects the leg carries; a host routes by it and decides nothing.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LegResidence {
+    Browser,
+    Server,
+}
+
 /// Client → server event dispatch request. Mirror of `OrbitalEventRequest` (`bus.ts`).
 #[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -218,6 +228,9 @@ pub struct EventRequest {
     /// with the shared `payload` (`bus.ts` `OrbitalEventRequest.mount`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount: Option<Vec<MountSeed>>,
+    /// Where this leg runs, set by the kernel on every leg it builds (EXEC-DIST-6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residence: Option<LegResidence>,
 }
 
 /// One trait of a mount batch and the lifecycle event (`INIT`/`LOAD`/`$MOUNT`) it runs.
@@ -725,7 +738,7 @@ impl EventResponse {
         };
         let mut data: HashMap<String, Vec<Value>> = HashMap::new();
         let mut data_refs: HashMap<String, orbital_core_base::row_set::RowSetRef> = HashMap::new();
-        let mut entity_by_trait: ValueMap = ValueMap::new();
+        let mut entity_by_trait: indexmap::IndexMap<String, &crate::shared_entity::SharedEntity> = indexmap::IndexMap::new();
         let mut client_effects: Vec<ClientEffect> = Vec::new();
         let mut client_effects_by_trait: Vec<ClientEffectByTrait> = Vec::new();
         let mut effect_results: Vec<ServerEffectResult> = Vec::new();
@@ -766,7 +779,7 @@ impl EventResponse {
 
             let is_empty_obj = result.entity_data.fields().is_some_and(|o| o.is_empty());
             if !result.entity_data.is_null() && !is_empty_obj {
-                entity_by_trait.insert(trait_name.to_string(), result.entity_data.to_value());
+                entity_by_trait.insert(trait_name.to_string(), &result.entity_data);
             }
 
             for (index, er) in result.effect_results.iter().enumerate() {
@@ -846,6 +859,7 @@ impl EventResponse {
         } else {
             Some(data_refs)
         };
+        let entity_by_trait: ValueMap = entity_by_trait.into_iter().map(|(name, entity)| (name, entity.to_value())).collect();
         merged.entity_by_trait = if entity_by_trait.is_empty() {
             None
         } else {

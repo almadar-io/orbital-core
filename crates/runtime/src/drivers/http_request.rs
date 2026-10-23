@@ -1769,7 +1769,7 @@ pub fn unavailable_payload(message: &str) -> Value {
 
 pub fn failure_payload(err: &TransportError) -> Value {
     match err {
-        TransportError::TimedOut => failure_value("request timed out".to_string(), "timeout", None),
+        TransportError::TimedOut => failure_value(TransportError::TimedOut.to_string(), "timeout", None),
         TransportError::Failed(message) => failure_value(message.clone(), "failed", None),
         TransportError::Refused(message) => failure_value(message.clone(), "refused", None),
     }

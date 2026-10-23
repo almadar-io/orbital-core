@@ -31,7 +31,7 @@ use crate::effects::executor::page_ordered_rows;
 use crate::effects::executor::ServiceCaller;
 use crate::effects::executor::{EffectExecutor, FetchHandler, FetchPage, PersistenceHandler};
 use crate::effects::response::{delivery_record_value, DeliveryRecord, DispatchLog};
-use crate::effects::response::{EventRequest, EventResponse, TraitFrom};
+use crate::effects::response::{EventRequest, EventResponse, LegResidence, TraitFrom};
 use orbital_core_base::bus_event::BusEventSource;
 use orbital_core_base::codec;
 use orbital_core_base::effect_types::PersistOperation;
@@ -2500,6 +2500,14 @@ impl RuntimeKernel {
             response,
         } = seed;
         let (drained, delegating_traits) = self.drain_server_leg_collector();
+        let (residence, mixed) = self.leg_residence(&drained);
+        let mut response = response;
+        if mixed {
+            response.success = false;
+            response.error = Some(format!(
+                "residence: one dispatch of {trait_name} on {event} reaches browser-stored data and server data; split it with an emit and a listen"
+            ));
+        }
         let hybrid = matches!(mode, DispatchMode::HybridClientOnly);
         // A local seed never needs the server for its OWN effects, but the
         // traits its cascade reached (a persistor, a refetching list) may.
@@ -2519,7 +2527,9 @@ impl RuntimeKernel {
             )]))),
             other => Some(other),
         };
-        let server_legs = if self.effect_executor.environment().is_client() && !drained.is_empty() {
+        let mut server_legs = if mixed {
+            Vec::new()
+        } else if self.effect_executor.environment().is_client() && !drained.is_empty() {
             if hybrid && !downstream_needs_server && !self.all_browser_data(&drained) {
                 // A `local` trait's OWN effects should be client-only by construction;
                 // a server-only effect the seed itself delegated is a validator bug
@@ -2634,6 +2644,9 @@ impl RuntimeKernel {
         } else {
             Vec::new()
         };
+        for leg in &mut server_legs {
+            leg.residence = Some(residence);
+        }
 
         // The host holds the circuit state but not a client-side write into a `[shared]` frame: the leg carries the
         // frame the host replays the event from (G-CROSS-260).
@@ -2763,6 +2776,17 @@ impl RuntimeKernel {
     }
 
     /// Whether every effect is a data effect on a browser-stored entity (the host's store holds the data).
+    /// Where a leg carrying `effects` runs, and whether it mixes browser-stored rows with server work (refused).
+    fn leg_residence(&self, effects: &[Effect]) -> (LegResidence, bool) {
+        let residence = orbital_core_base::runs_on::Residence::of_entities(self.entity_definitions.read().values());
+        let browser_rows = effects
+            .iter()
+            .any(|e| matches!(e, Effect::Persist { .. } | Effect::Fetch { .. }) && browser_data_effect(e, &residence));
+        let server_work = effects.iter().any(|e| !browser_data_effect(e, &residence));
+        let at = if server_work { LegResidence::Server } else { LegResidence::Browser };
+        (at, browser_rows && server_work)
+    }
+
     fn all_browser_data(&self, effects: &[Effect]) -> bool {
         let residence = orbital_core_base::runs_on::Residence::of_entities(
             self.entity_definitions.read().values(),
@@ -3066,6 +3090,11 @@ impl RuntimeKernel {
 
     /// The `@entity` a step of `trait_name` would read now, for the cascade's visit key.
     fn step_entity_view(&self, trait_name: &str, entity_id: &str) -> Value {
+        self.step_frame(trait_name, entity_id).to_value()
+    }
+
+    /// The trait's `@entity` as the step about to run reads it, as the kernel holds it.
+    fn step_frame(&self, trait_name: &str, entity_id: &str) -> SharedEntity {
         let entity_type = self
             .trait_definitions
             .read()
@@ -3073,7 +3102,6 @@ impl RuntimeKernel {
             .and_then(|d| d.linked_entity.clone())
             .unwrap_or_else(|| trait_name.to_string());
         self.read_trait_entity(trait_name, &entity_type, entity_id)
-            .to_value()
     }
 
     /// Merge `set` writes into a trait's frame; the row store is never touched.
@@ -5622,6 +5650,23 @@ impl RuntimeKernel {
             .and_then(|name| defs.get(name));
         let residence = orbital_core_base::runs_on::Residence::of_entities(defs.values());
         trait_def.dispatch_mode(entity_def, &residence)
+    }
+
+    /// The dispatch mode of the registered trait `trait_name`; `None` when no such trait is registered.
+    pub fn trait_dispatch_mode(&self, trait_name: &str) -> Option<DispatchMode> {
+        let def = self.trait_definitions.read().get(trait_name).cloned()?;
+        Some(self.dispatch_mode_of(&def))
+    }
+
+    /// The config a registered trait's steps bind as `@config` (declared defaults, call-site values, `@user`
+    /// forwards bound to the current viewer); `None` when no such trait is registered.
+    pub fn trait_config(&self, trait_name: &str) -> Option<Value> {
+        let defs = self.trait_definitions.read();
+        let def = defs.get(trait_name)?.clone();
+        Some(bind_user_forwards(
+            config_defaults_value(&def, &defs),
+            &self.current_user.read(),
+        ))
     }
 
     /// Every registered trait's state (its initial one while untouched) and derived dispatch mode.

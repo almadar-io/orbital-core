@@ -613,7 +613,10 @@ impl Nested {
             None => kernel.dispatch("Target", None, &event, args[1].clone()),
         };
         dispatched
-            .map(|_| Value::Object([("ok".to_string(), Value::Bool(true))].into_iter().collect()))
+            .map(|outcomes| {
+                let response = orbital_core_runtime::effects::response::EventResponse::from_process_results(&outcomes, "Target", &event);
+                serde_json::from_value(serde_json::to_value(&response).expect("a response serializes")).expect("a response is a value")
+            })
             .map_err(|e| orbital_core_runtime::effects::SubstrateFailure { message: e.to_string(), errors: Vec::new() })
     }
 }

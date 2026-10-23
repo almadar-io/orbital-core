@@ -112,10 +112,18 @@ fn the_embedded_stream_preserves_effect_order_and_does_not_replay_the_previous_d
 fn substrate_completion_export_uses_the_native_result_and_failure_envelopes() {
     use orbital_core_runtime::embed::substrate_completion_event_json;
     let site = json!({ "trait": "Worker", "followOn": true, "emit": { "success": "DONE", "failure": "FAILED" } }).to_string();
-    let success: serde_json::Value = serde_json::from_str(&substrate_completion_event_json(&site, "job", "program/dispatch", &json!({ "ok": { "answer": 42 } }).to_string()).unwrap()).unwrap();
-    assert_eq!(success, json!({ "event": "DONE", "payload": { "result": { "answer": 42 }, "text": "{\"answer\":42}", "key": "job" } }));
-    let failure: serde_json::Value = serde_json::from_str(&substrate_completion_event_json(&site, "job", "program/dispatch", &json!({ "error": { "message": "missing", "errors": [{ "code": "NOT_FOUND", "status": 404 }] } }).to_string()).unwrap()).unwrap();
-    assert_eq!(failure, json!({ "event": "FAILED", "payload": { "error": "missing", "errors": [{ "code": "NOT_FOUND", "status": 404 }], "key": "job" } }));
+    let response = json!({ "success": true, "transitioned": true, "states": {}, "emittedEvents": [{ "event": "SAID", "payload": { "n": 1 } }] });
+    let request = json!(["O.Worker.GO", {}, { "orbital": "O", "event": "GO", "viewer": null }]).to_string();
+    let success: serde_json::Value = serde_json::from_str(&substrate_completion_event_json(&site, "job", "program/dispatch", &request, &json!({ "ok": response }).to_string()).unwrap()).unwrap();
+    assert_eq!(success["payload"]["result"], json!({ "ok": true, "emitted": [{ "event": "SAID", "payload": { "n": 1.0 } }] }), "a deferred event request answers the dispatch outcome, as in place: {success}");
+    let wire = json!(["O.Worker.GO", {}, { "orbital": "O", "event": "GO", "wire": true }]).to_string();
+    let raw: serde_json::Value = serde_json::from_str(&substrate_completion_event_json(&site, "job", "program/dispatch", &wire, &json!({ "ok": response }).to_string()).unwrap()).unwrap();
+    assert_eq!(raw["payload"]["result"]["transitioned"], json!(true), "control: a wire request answers the whole response: {raw}");
+    let failure: serde_json::Value = serde_json::from_str(&substrate_completion_event_json(&site, "job", "program/dispatch", &request, &json!({ "error": { "message": "missing", "errors": [{ "code": "NOT_FOUND", "status": 404 }] } }).to_string()).unwrap()).unwrap();
+    assert_eq!((&failure["event"], &failure["payload"]["error"], &failure["payload"]["key"]), (&json!("FAILED"), &json!("missing"), &json!("job")), "{failure}");
+    assert_eq!((failure["payload"]["errors"][0]["code"].as_str(), failure["payload"]["errors"][0]["status"].as_f64()), (Some("NOT_FOUND"), Some(404.0)), "{failure}");
+    let read: serde_json::Value = serde_json::from_str(&substrate_completion_event_json(&site, "job", "program/read", "[\"x\"]", &json!({ "ok": { "answer": 42 } }).to_string()).unwrap()).unwrap();
+    assert_eq!((&read["event"], read["payload"]["result"]["answer"].as_f64(), &read["payload"]["key"]), (&json!("DONE"), Some(42.0), &json!("job")), "control: another op answers what the host answered: {read}");
     let inert_site = json!({ "trait": "Worker", "followOn": true, "emit": {} }).to_string();
-    assert_eq!(substrate_completion_event_json(&inert_site, "job", "program/read", "{\"ok\":1}").unwrap(), "null");
+    assert_eq!(substrate_completion_event_json(&inert_site, "job", "program/read", "[]", "{\"ok\":1}").unwrap(), "null");
 }

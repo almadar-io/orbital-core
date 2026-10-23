@@ -48,6 +48,16 @@ impl SharedEntity {
         }
     }
 
+    /// The frame as the cycle check reads it: its fields as held, never copied.
+    pub fn visit_frame(&self) -> orbital_core_eval::util::visit_key::VisitFrame<'_> {
+        use orbital_core_eval::util::visit_key::VisitFrame;
+        match &self.0 {
+            Repr::Null => VisitFrame::Null,
+            Repr::Object(fields) => VisitFrame::Fields(fields.iter().map(|(k, v)| (k.as_str(), v)).collect()),
+            Repr::Other(v) => VisitFrame::Value(v),
+        }
+    }
+
     pub fn to_value(&self) -> Value {
         match &self.0 {
             Repr::Null => Value::Null,

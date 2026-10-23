@@ -214,6 +214,7 @@ pub fn failed_answer(request: &IoRequest, message: String) -> Option<IoAnswer> {
         IoRequest::QueryRows { project: RowProjection::Rows, .. } => IoAnswer::Page(Err(message)),
         IoRequest::QueryRows { project: RowProjection::Ids, .. } => IoAnswer::IdPage(Err(message)),
         IoRequest::WriteRows { .. } => IoAnswer::Wrote(Err(message)),
+        IoRequest::CommitRows { .. } => IoAnswer::Committed(Err(message)),
         IoRequest::DeleteRow { .. } => IoAnswer::Deleted(Err(message)),
         _ => return None,
     })

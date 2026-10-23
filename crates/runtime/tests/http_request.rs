@@ -192,7 +192,7 @@ fn invalid_header_names_and_multiline_values_never_become_requests() {
 #[test]
 fn jwt_bearer_signs_credential_issuer_and_authored_claims() {
     use {orbital_core_runtime::jwt::compact, orbital_core_base::jwt_alg::JwtAlg};
-    let pem = include_str!("../../../src/codec/fixtures/rs256-pkcs8.pem");
+    let pem = include_str!("fixtures/jwt/rs256-pkcs8.pem");
     let credential = json!({"client_email":"service@example.com","private_key":pem}).to_string();
     let claims = json!({"scope":"calendar","aud":"https://tokens.example.com/token","exp":4600,"iat":1000});
     let s = spec(json!({"auth":{
@@ -233,8 +233,8 @@ fn jwt_bearer_rejects_claim_issuer_and_invalid_algorithm() {
 #[test]
 fn jwt_bearer_reuses_token_exchange_cache_margin_and_user_scope() {
     for (alg, pem) in [
-        ("RS256", include_str!("../../../src/codec/fixtures/rs256-pkcs8.pem")),
-        ("ES256", include_str!("../../../src/codec/fixtures/es256-pkcs8.pem")),
+        ("RS256", include_str!("fixtures/jwt/rs256-pkcs8.pem")),
+        ("ES256", include_str!("fixtures/jwt/es256-pkcs8.pem")),
     ] {
         let credential = json!({"client_email":"service@example.com","private_key":pem}).to_string();
         for encoded in [false, true] {
@@ -1747,7 +1747,7 @@ mod grant_request_contract {
     #[test]
     fn grant_request_headers_deadlines_and_old_defaults_reach_each_token_lowering() {
         let credential = json!({"client_email":"service@example.com",
-            "private_key":include_str!("../../../src/codec/fixtures/rs256-pkcs8.pem")}).to_string();
+            "private_key":include_str!("fixtures/jwt/rs256-pkcs8.pem")}).to_string();
         let secrets = |slot: &CredentialSlot| {
             if slot.name == "SERVICE_ACCOUNT" { Some(credential.clone()) } else { vault(slot) }
         };
@@ -2149,8 +2149,8 @@ mod grant_request_contract {
     #[test]
     fn jwt_grant_retries_preserve_assertion_headers_dispatch_stamp_and_secret_privacy() {
         for (alg, pem) in [
-            ("RS256", include_str!("../../../src/codec/fixtures/rs256-pkcs8.pem")),
-            ("ES256", include_str!("../../../src/codec/fixtures/es256-pkcs8.pem")),
+            ("RS256", include_str!("fixtures/jwt/rs256-pkcs8.pem")),
+            ("ES256", include_str!("fixtures/jwt/es256-pkcs8.pem")),
         ] {
             let credential = json!({"client_email":"private-service@example.com","private_key":pem}).to_string();
             let call = spec(json!({"auth":{"scheme":"jwt-bearer",
@@ -2414,7 +2414,7 @@ mod grant_request_contract {
     #[test]
     fn retry_schedule_and_grant_options_roundtrip_while_driver_secrets_stay_private() {
         let credential = json!({"client_email":"private-roundtrip@example.com",
-            "private_key":include_str!("../../../src/codec/fixtures/rs256-pkcs8.pem")}).to_string();
+            "private_key":include_str!("fixtures/jwt/rs256-pkcs8.pem")}).to_string();
         let secrets = |slot: &CredentialSlot| {
             if slot.name == "SERVICE_ACCOUNT" { Some(credential.clone()) } else { vault(slot) }
         };

@@ -250,6 +250,8 @@ operator_kind! {
     BitRotrOp => BitRotrOp,
     BytesFromStringOp => BytesFromStringOp,
     BytesToStringOp => BytesToStringOp,
+    BytesFromBase64Op => BytesFromBase64Op,
+    BytesToBase64Op => BytesToBase64Op,
     BytesLengthOp => BytesLengthOp,
     BytesSliceOp => BytesSliceOp,
     BytesConcatOp => BytesConcatOp,

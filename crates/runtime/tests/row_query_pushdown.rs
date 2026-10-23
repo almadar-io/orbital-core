@@ -5,7 +5,7 @@
 use orbital_core_eval::evaluator::BindingContext;
 use orbital_core_runtime::entity_access::apply_read_access;
 use orbital_core_runtime::resumable::{BlockingHost, DispatchOutcomes, HostAnswered, IoAnswer, IoReply, IoRequest, Progress};
-use {orbital_core_runtime::row_query::{apply_write, apply_write_batch, compile_predicate, query_unsupported_reason, resolve_row_set, run_ids, run_query, CreateIds, NotExpressible, PredicateRole, QueryCapabilities, RowPage, RowProjection, RowTable, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome, WriteCapabilities}, orbital_core_base::row_set::{RowPredicate, RowQuery, RowSetRef}};
+use {orbital_core_runtime::row_query::{apply_write, apply_write_batch, compile_predicate, query_unsupported_reason, resolve_row_set, run_ids, run_query, CreateIds, NotExpressible, PredicateRole, QueryCapabilities, RowCommitWrite, RowPage, RowProjection, RowTable, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome, WriteCapabilities}, orbital_core_base::row_set::{RowPredicate, RowQuery, RowSetRef}};
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::config::KernelConfig, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
@@ -1102,6 +1102,66 @@ fn a_host_that_declines_the_write_falls_back_to_the_one_row_path() {
         .iter()
         .flat_map(|(_, r)| r.effect_results.iter())
         .any(|er| er.is_failed()));
+}
+
+fn committing_kernel() -> RuntimeKernel {
+    let k = host_kernel();
+    k.set_write_capabilities("Ticket", WriteCapabilities { commit_rows: Some(true), ..WriteCapabilities::full() });
+    k
+}
+
+fn commits(log: &[&IoRequest]) -> usize {
+    log.iter().filter(|r| matches!(r, IoRequest::CommitRows { .. })).count()
+}
+
+#[test]
+fn a_host_that_commits_gets_the_kernels_rows_as_one_compare_and_commit() {
+    let k = committing_kernel();
+    let host = seeded();
+    let (log, out) = fly(&k, "MAKE_BATCH", &host, &|_| None);
+    let log = data_requests(&log);
+    assert!(log.iter().all(|r| !matches!(r, IoRequest::WriteRows { .. })), "{log:?}");
+    assert_eq!(commits(&log), 1, "{log:?}");
+    let Some(IoRequest::CommitRows { rows }) = log.iter().find(|r| matches!(r, IoRequest::CommitRows { .. })) else { panic!("{log:?}") };
+    let t1 = rows.iter().find(|r| r.id == "t1").unwrap();
+    assert!(t1.expected.is_some() && matches!(t1.write, RowCommitWrite::Put { .. }));
+    let t6 = rows.iter().find(|r| r.id == "t6").unwrap();
+    assert!(t6.expected.is_none() && matches!(t6.write, RowCommitWrite::Put { .. }));
+    assert_eq!(failed_effects(&out.unwrap()), 0);
+    assert_eq!(host.read("Ticket", "t1").unwrap().as_object().unwrap()["score"], Value::Number(7.0));
+    assert!(host.find("Ticket", "t6").unwrap().is_some());
+}
+
+#[test]
+fn control_a_failing_atomic_batch_commits_nothing() {
+    let k = committing_kernel();
+    let host = seeded();
+    let (log, out) = fly(&k, "BATCH_TAKEN_AFTER_OK", &host, &|_| None);
+    let log = data_requests(&log);
+    if let Some(IoRequest::CommitRows { rows }) = log.iter().find(|r| matches!(r, IoRequest::CommitRows { .. })) {
+        assert!(rows.iter().all(|r| matches!(r.write, RowCommitWrite::Keep)), "{rows:?}");
+    }
+    assert_eq!(failed_effects(&out.unwrap()), 1);
+    assert_eq!(host.read("Ticket", "t1").unwrap().as_object().unwrap()["score"], Value::Number(3.0));
+}
+
+#[test]
+fn a_conflict_re_reads_and_re_runs_the_batch() {
+    let k = committing_kernel();
+    let host = seeded();
+    let conflicts = std::cell::Cell::new(0);
+    let (log, out) = fly(&k, "BUMP_ONE", &host, &|r| match r {
+        IoRequest::CommitRows { .. } if conflicts.get() == 0 => {
+            conflicts.set(1);
+            Some(IoAnswer::Committed(Ok(false)))
+        }
+        _ => None,
+    });
+    let log = data_requests(&log);
+    assert_eq!(commits(&log), 2, "{log:?}");
+    assert!(log.iter().filter(|r| matches!(r, IoRequest::ReadRow { .. })).count() >= 2, "{log:?}");
+    assert_eq!(failed_effects(&out.unwrap()), 0);
+    assert_eq!(host.read("Ticket", "t1").unwrap().as_object().unwrap()["score"], Value::Number(7.0));
 }
 
 #[test]

@@ -343,6 +343,8 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "bit/rotr" => K::BitRotrOp,
         "bytes/from-string" => K::BytesFromStringOp,
         "bytes/to-string" => K::BytesToStringOp,
+        "bytes/from-base64" => K::BytesFromBase64Op,
+        "bytes/to-base64" => K::BytesToBase64Op,
         "bytes/length" => K::BytesLengthOp,
         "bytes/slice" => K::BytesSliceOp,
         "bytes/concat" => K::BytesConcatOp,

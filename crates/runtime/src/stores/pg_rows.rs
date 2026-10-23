@@ -2052,4 +2052,292 @@ mod tests {
         assert_eq!(port.0.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(rows.write_capabilities().rekey, None);
     }
+
+    mod twin {
+        use super::super::*;
+        use crate::firestore::to_json;
+        use serde_json::{json, Value as Json};
+        use std::collections::VecDeque;
+
+        struct Wire {
+            replies: VecDeque<Result<Vec<u8>, String>>,
+            sent: Vec<Vec<u8>>,
+            connect_error: Option<String>,
+            connects: Vec<String>,
+        }
+
+        struct ScriptedPort(Arc<Mutex<Wire>>);
+        struct ScriptedConn(Arc<Mutex<Wire>>);
+
+        impl PgPort for ScriptedPort {
+            fn connect(&self, host: &str, port: u16) -> Result<Box<dyn PgConn>, String> {
+                if let Some(error) = self.0.lock().connect_error.take() {
+                    return Err(format!("cannot connect to {host}:{port}: {error}"));
+                }
+                self.0.lock().connects.push(format!("{host}:{port}"));
+                Ok(Box::new(ScriptedConn(self.0.clone())))
+            }
+        }
+
+        impl PgConn for ScriptedConn {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), String> {
+                self.0.lock().sent.push(bytes.to_vec());
+                Ok(())
+            }
+            fn recv(&mut self) -> Result<Vec<u8>, String> {
+                self.0
+                    .lock()
+                    .replies
+                    .pop_front()
+                    .unwrap_or_else(|| Err("script exhausted".into()))
+            }
+        }
+
+        fn panic_text(id: &str, panic: &Box<dyn std::any::Any + Send>) -> String {
+            let text = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            format!("{id}: {text}")
+        }
+
+        fn subset(actual: &Json, expected: &Json) -> bool {
+            match (actual, expected) {
+                (Json::Object(a), Json::Object(e)) => e.iter().all(|(k, v)| {
+                    a.get(k).is_some_and(|x| subset(x, v)) || (v.is_null() && !a.contains_key(k))
+                }),
+                (Json::Array(a), Json::Array(e)) => {
+                    a.len() == e.len() && a.iter().zip(e).all(|(x, y)| subset(x, y))
+                }
+                (Json::Number(a), Json::Number(e)) => a.as_f64() == e.as_f64(),
+                _ => actual == expected,
+            }
+        }
+
+        fn kind_named(word: &str) -> ColumnKind {
+            match word {
+                "text" => ColumnKind::Text,
+                "jsonb" => ColumnKind::Jsonb,
+                "array" => ColumnKind::Array,
+                "other" => ColumnKind::Other,
+                other => panic!("column kind {other}"),
+            }
+        }
+
+        fn answer(rows: &PostgresRows, event: &str, payload: &Json) -> Json {
+            let key = payload["key"].clone();
+            let failed = |message: String| json!({ "event": "STORE_FAILED", "payload": { "key": key, "message": message } });
+            let unsupported = || json!({ "event": "STORE_UNSUPPORTED", "payload": { "key": key, "reason": "" } });
+            let entity = payload["entityType"].as_str().unwrap_or_default();
+            match event {
+                "ROW_READ" => match rows.find(entity, payload["id"].as_str().unwrap()) {
+                    Ok(row) => json!({ "event": "ROW_FOUND", "payload": { "key": key, "row": row.map_or(Json::Null, |r| to_json(&r)) } }),
+                    Err(message) => failed(message),
+                },
+                "ROW_LIST" => match rows.list(entity) {
+                    Ok(list) => json!({ "event": "ROWS_LISTED", "payload": { "key": key, "rows": list.iter().map(|r| to_json(r)).collect::<Vec<_>>() } }),
+                    Err(message) => failed(message),
+                },
+                "ROWS_QUERY" => {
+                    let query: RowQuery = serde_json::from_value(payload["query"].clone()).unwrap();
+                    if payload["project"] == "ids" {
+                        match rows.query_ids(entity, &query) {
+                            None => unsupported(),
+                            Some(Ok(page)) => json!({ "event": "ROWS_IDS", "payload": { "key": key, "ids": page.ids, "total": page.total } }),
+                            Some(Err(message)) => failed(message),
+                        }
+                    } else {
+                        match rows.query_page(entity, &query) {
+                            None => unsupported(),
+                            Some(Ok(page)) => json!({ "event": "ROWS_PAGE", "payload": { "key": key, "rows": page.rows.iter().map(to_json).collect::<Vec<_>>(), "total": page.total } }),
+                            Some(Err(message)) => failed(message),
+                        }
+                    }
+                }
+                "ROWS_WRITE" => {
+                    let batch: RowWriteBatch =
+                        serde_json::from_value(payload["batch"].clone()).unwrap();
+                    match rows.write_batch(&batch) {
+                        None => unsupported(),
+                        Some(Ok(outcomes)) => json!({ "event": "ROWS_WRITTEN", "payload": { "key": key, "outcomes": serde_json::to_value(&outcomes).unwrap() } }),
+                        Some(Err(message)) => failed(message),
+                    }
+                }
+                other => panic!("unknown verb {other}"),
+            }
+        }
+
+        fn params_of(tap: &Json) -> Vec<Option<String>> {
+            tap["payload"]["params"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| match p["kind"].as_str().unwrap() {
+                    "null" => None,
+                    _ => Some(p["text"].as_str().unwrap().to_string()),
+                })
+                .collect()
+        }
+
+        #[test]
+        fn the_std_twin_replay_cases_run_over_the_same_scripted_postgres_wire() {
+            let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+                .join("tests/baked/store/postgres-twin.replay.goldens.json");
+            let file: Json =
+                serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json");
+            let mut ran = 0;
+            let mut skipped = 0;
+            let mut failures: Vec<String> = Vec::new();
+            for case in file["cases"].as_array().unwrap() {
+                let id = case["id"].as_str().unwrap();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> bool {
+                // the std atom has no case-level config here (G-ORB-460), Rust draws its SCRAM client nonce from
+                // getrandom with no seam to pin it, and Rust upgrades to TLS on an S answer where std refuses
+                if case.get("skip").is_some()
+                    || id.contains("scram")
+                    || id == "bad-tls-answer-s-is-refused-because-no-tls-over-os-sockets"
+                {
+                    return false;
+                }
+                let steps = case["steps"].as_array().unwrap();
+                let verb = &steps[0];
+                let entity = &verb["entity"];
+                let wire = Arc::new(Mutex::new(Wire {
+                    replies: VecDeque::new(),
+                    sent: Vec::new(),
+                    connect_error: None,
+                    connects: Vec::new(),
+                }));
+                let rows = PostgresRows::new(
+                    PgConfig::from_url("postgres://app:secret@postgres.example.test:5432/app")
+                        .unwrap(),
+                    Arc::new(ScriptedPort(wire.clone())),
+                );
+                if let Some(schema) = entity["schema"].as_object() {
+                    for (table, columns) in schema {
+                        let kinds: Kinds = columns
+                            .as_object()
+                            .unwrap()
+                            .iter()
+                            .map(|(column, word)| (column.clone(), kind_named(word.as_str().unwrap())))
+                            .collect();
+                        rows.kinds.lock().insert(table.clone(), kinds);
+                    }
+                }
+                for (entity_type, table) in entity["collections"].as_object().into_iter().flatten() {
+                    rows.bind_collection(entity_type, table.as_str().unwrap());
+                }
+                let mut base = 0;
+                if entity["sock"].as_i64().is_some_and(|sock| sock >= 0) {
+                    let mut login = message(b'R', &0u32.to_be_bytes());
+                    login.extend(message(b'Z', b"I"));
+                    {
+                        let mut script = wire.lock();
+                        script.replies.push_back(Ok(b"N".to_vec()));
+                        script.replies.push_back(Ok(login));
+                    }
+                    drop(rows.lease().unwrap_or_else(|e| panic!("{id}: {}", e.message)));
+                    base = wire.lock().sent.len();
+                }
+                let mut connected = entity["sock"].as_i64().is_some_and(|sock| sock >= 0);
+                for step in &steps[1..] {
+                    let mut script = wire.lock();
+                    match step["event"].as_str().unwrap() {
+                        "PG_CONNECTED" => connected = true,
+                        "PG_RECEIVED" => {
+                            let payload = &step["payload"];
+                            script.replies.push_back(Ok(if payload["eof"] == true {
+                                Vec::new()
+                            } else {
+                                codec::base64_decode(payload["data"].as_str().unwrap()).unwrap()
+                            }));
+                        }
+                        "PG_IO_FAILED" => {
+                            let error = step["payload"]["error"].as_str().unwrap().to_string();
+                            if connected {
+                                script.replies.push_back(Err(error));
+                            } else {
+                                script.connect_error = Some(error);
+                            }
+                        }
+                        other => panic!("{id}: unexpected {other}"),
+                    }
+                }
+                let got = answer(&rows, verb["event"].as_str().unwrap(), &verb["payload"]);
+                let sent: Vec<Vec<u8>> = wire.lock().sent[base..].to_vec();
+                let has_terminal = steps.iter().any(|s| {
+                    s["expect"]["emits"]
+                        .as_array()
+                        .is_some_and(|emits| emits.iter().any(|e| e["event"] != "PG_WIRE_SENT"))
+                });
+                if !has_terminal {
+                    let origins: Vec<String> = steps
+                        .iter()
+                        .flat_map(|s| s["expect"]["effects"].as_array().into_iter().flatten())
+                        .filter(|effect| effect["type"] == "os/tcp-connect")
+                        .map(|effect| format!("{}:{}", effect["arg0"].as_str().unwrap(), effect["arg1"]))
+                        .collect();
+                    let made = wire.lock().connects.clone();
+                    assert!(made.len() >= origins.len(), "{id}: connect origins {origins:?} vs {made:?}");
+                    assert_eq!(&made[..origins.len()], &origins[..], "{id}: connect origin");
+                }
+                let taps: Vec<&Json> = steps
+                    .iter()
+                    .flat_map(|s| s["expect"]["emits"].as_array().into_iter().flatten())
+                    .filter(|e| e["event"] == "PG_WIRE_SENT")
+                    .collect();
+                for (n, tap) in taps.iter().enumerate() {
+                    let bytes = sent
+                        .get(n)
+                        .unwrap_or_else(|| panic!("{id}: send {n} ({}) was not made", tap["payload"]["stage"]));
+                    let want = codec::base64_decode(tap["payload"]["frame"].as_str().unwrap()).unwrap();
+                    assert_eq!(bytes, &want, "{id}: send {n} ({}) frame", tap["payload"]["stage"]);
+                    if matches!(
+                        tap["payload"]["stage"].as_str().unwrap(),
+                        "statement" | "discover" | "begin" | "count" | "commit" | "rollback"
+                    ) {
+                        let sql = tap["payload"]["sql"].as_str().unwrap();
+                        assert_eq!(
+                            bytes,
+                            &crate::postgres::query_messages(sql, &params_of(tap)),
+                            "{id}: send {n} sql {sql} and its binds"
+                        );
+                    }
+                }
+                let last = steps.last().unwrap();
+                let exhausted = !has_terminal
+                    && got["event"] == "STORE_FAILED"
+                    && got["payload"]["message"] == "script exhausted";
+                let terminal = last["expect"]["emits"]
+                    .as_array()
+                    .and_then(|emits| emits.iter().find(|e| e["event"] != "PG_WIRE_SENT"));
+                if let Some(expected) = terminal {
+                    assert_eq!(got["event"], expected["event"], "{id}: {got}");
+                    let mut have = got["payload"].clone();
+                    let mut want = expected["payload"].clone();
+                    if expected["event"] == "STORE_UNSUPPORTED" {
+                        have.as_object_mut().unwrap().remove("reason");
+                        want.as_object_mut().unwrap().remove("reason");
+                    }
+                    assert!(subset(&have, &want), "{id}: {have} vs {want}");
+                    assert_eq!(sent.len(), taps.len(), "{id}: no send beyond the expected ones");
+                }
+                if !exhausted {
+                    for never in last["expect"]["neverEmits"].as_array().into_iter().flatten() {
+                        assert_ne!(got["event"], *never, "{id}: {got}");
+                    }
+                }
+                true
+                }));
+                match outcome {
+                    Ok(true) => ran += 1,
+                    Ok(false) => skipped += 1,
+                    Err(panic) => failures.push(panic_text(id, &panic)),
+                }
+            }
+            assert!(failures.is_empty(), "{} failing cases:\n{}", failures.len(), failures.join("\n"));
+            assert!(ran > 60, "ran {ran} cases, skipped {skipped}");
+        }
+    }
 }

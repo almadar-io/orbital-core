@@ -2,7 +2,7 @@
 
 use super::dispatch_memory::DispatchView;
 use super::shared_entity::SharedEntity;
-use orbital_core_base::effect_types::EffectResult;
+use orbital_core_base::effect_types::{Effect, EffectResult};
 use orbital_core_base::value::Value;
 use orbital_core_base::schema::types::{FieldDefinition, PageRef};
 use orbital_core_base::schema::sexpr::SExpression;
@@ -72,6 +72,19 @@ pub struct ProcessEventResult {
 
     /// The payload this trait's `@callsitePayload` read during the step (its composer's), when it has one.
     pub callsite_payload: Option<Value>,
+}
+
+impl ProcessEventResult {
+    /// The result as a dispatch keeps it among its outcomes: each `set` names its path, and the value it wrote is the one
+    /// in `entity_data`, so a long cascade does not hold a second copy of every value it set.
+    pub fn released(mut self) -> Self {
+        for result in &mut self.effect_results {
+            if let Effect::Set { value, .. } = &mut result.effect {
+                *value = Value::Null;
+            }
+        }
+        self
+    }
 }
 
 /// How one authored effect ran: failed when any effect it expanded to failed, executed when

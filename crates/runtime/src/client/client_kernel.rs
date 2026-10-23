@@ -384,13 +384,15 @@ impl ClientKernel {
         };
         let mut groups: Vec<(
             &str,
+            Option<crate::effects::response::LegResidence>,
             Vec<&(crate::effects::response::MountSeed, BegunDispatch)>,
         )> = Vec::new();
         for posted in begun.seeds.iter().filter(|(_, b)| b.has_legs()) {
             let orbital = self.owning_orbital(&posted.0.r#trait)?;
-            match groups.iter_mut().find(|(o, _)| *o == orbital) {
-                Some((_, group)) => group.push(posted),
-                None => groups.push((orbital, vec![posted])),
+            let residence = posted.1.dispatch.server_legs.first().and_then(|leg| leg.residence);
+            match groups.iter_mut().find(|(o, r, _)| *o == orbital && *r == residence) {
+                Some((_, _, group)) => group.push(posted),
+                None => groups.push((orbital, residence, vec![posted])),
             }
         }
         if groups.is_empty() {
@@ -404,7 +406,7 @@ impl ClientKernel {
             );
             return Ok(settled);
         };
-        for (orbital, group) in groups {
+        for (orbital, _, group) in groups {
             let request = mount_request(&group, self.embedded.client_id());
             let rollback = || {
                 for (seed, b) in &group {

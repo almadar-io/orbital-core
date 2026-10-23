@@ -105,6 +105,7 @@ pub fn write_capabilities() -> WriteCapabilities {
         stop_runs: true,
         atomic_batch: false,
         rekey: None,
+        commit_rows: None,
     }
 }
 
@@ -428,7 +429,7 @@ impl CouchRows {
         let response = self
             .transport
             .send(&request)
-            .map_err(|e| format!("{e:?}"))?;
+            .map_err(|e| e.to_string())?;
         let body = serde_json::from_slice(&response.body).unwrap_or(Json::Null);
         Ok(Reply {
             status: response.status,
@@ -1163,5 +1164,721 @@ mod tests {
         }
         assert!(script.sent().is_empty());
         assert_eq!(rows.write_capabilities().rekey, None);
+    }
+    fn sel_sort() -> (Json, Json) {
+        mango_query_for(&q(json!({ "order": { "field": "id", "direction": "asc" } }))).unwrap()
+    }
+
+    fn rows_json(rows: &[Value]) -> Json {
+        Json::Array(rows.iter().map(to_json).collect())
+    }
+
+    fn created_row(outcome: RowWriteOutcome) -> Json {
+        match outcome {
+            RowWriteOutcome::Created { row } | RowWriteOutcome::Updated { row, .. } => to_json(&row),
+            other => panic!("expected a written row, got {other:?}"),
+        }
+    }
+
+    fn failed(outcome: RowWriteOutcome) -> String {
+        match outcome {
+            RowWriteOutcome::Failed { message } => message,
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn std_twin_wire_sequence_matches_the_std_couchdb_atom() {
+        let (sel, sort) = sel_sort();
+        let current = |rev: &str, stock: u32| {
+            json!({ "_id": "s1", "_rev": rev, "id": "s1", "stock": stock, "createdAt": "c0" })
+        };
+        let script = Script::new(&[
+            (201, json!({ "ok": true })),
+            (201, json!({ "ok": true })),
+            (200, current("1-x", 1)),
+            (200, current("1-x", 1)),
+            (201, json!({ "ok": true })),
+            (200, current("2-x", 0)),
+            (201, json!({ "ok": true })),
+            (200, json!({ "rows": [{ "id": "s1", "doc": current("3-x", 5) }] })),
+            (200, json!({ "docs": [current("3-x", 5)], "bookmark": "bm" })),
+            (200, json!({ "docs": [{ "_id": "s1" }], "bookmark": "bm" })),
+            (200, current("3-x", 5)),
+            (200, json!({ "ok": true })),
+        ]);
+        let rows = CouchRows::new("http://c:5984", script.clone()).unwrap();
+        let created = rows
+            .write_where(&RowWriteOp::Create {
+                entity_type: "Stock".into(),
+                data: from_json(&json!({ "id": "s1", "stock": 1, "createdAt": "c0" })),
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            created_row(created),
+            json!({ "id": "s1", "stock": 1, "createdAt": "c0" })
+        );
+        assert_eq!(
+            to_json(&rows.find("Stock", "s1").unwrap().unwrap()),
+            json!({ "id": "s1", "stock": 1, "createdAt": "c0" })
+        );
+        let update: RowWriteOp = serde_json::from_value(json!({
+            "kind": "update", "entityType": "Stock", "id": "s1",
+            "data": { "id": "zz", "stock": 0 }, "guard": null
+        }))
+        .unwrap();
+        assert_eq!(
+            created_row(rows.write_where(&update).unwrap().unwrap()),
+            json!({ "id": "s1", "stock": 0, "createdAt": "c0" })
+        );
+        let upsert = RowWriteOp::Upsert {
+            entity_type: "Stock".into(),
+            data: from_json(&json!({ "id": "s1", "stock": 5 })),
+        };
+        assert_eq!(
+            created_row(rows.write_where(&upsert).unwrap().unwrap()),
+            json!({ "id": "s1", "stock": 5, "createdAt": "c0" })
+        );
+        assert_eq!(
+            rows_json(
+                &rows
+                    .list("Stock")
+                    .unwrap()
+                    .iter()
+                    .map(|r| (**r).clone())
+                    .collect::<Vec<_>>()
+            ),
+            json!([{ "id": "s1", "stock": 5, "createdAt": "c0" }])
+        );
+        let page = rows
+            .query_page(
+                "Stock",
+                &q(json!({ "order": { "field": "id", "direction": "asc" }, "limit": 1 })),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (rows_json(&page.rows), page.total),
+            (json!([{ "id": "s1", "stock": 5, "createdAt": "c0" }]), 1)
+        );
+        let deleted = RowWriteOp::Delete {
+            entity_type: "Stock".into(),
+            id: "s1".into(),
+            guard: None,
+        };
+        assert_eq!(
+            rows.write_where(&deleted).unwrap().unwrap(),
+            RowWriteOutcome::Deleted { before: None }
+        );
+        let db = "http://c:5984/stocks";
+        let doc = format!("{db}/s1");
+        let expected: Vec<(&str, String, Json)> = vec![
+            ("PUT", db.to_string(), Json::Null),
+            ("PUT", doc.clone(), json!({ "stock": 1, "createdAt": "c0", "_id": "s1", "id": "s1" })),
+            ("GET", doc.clone(), Json::Null),
+            ("GET", doc.clone(), Json::Null),
+            ("PUT", doc.clone(), json!({ "stock": 0, "createdAt": "c0", "_id": "s1", "id": "s1", "_rev": "1-x" })),
+            ("GET", doc.clone(), Json::Null),
+            ("PUT", doc.clone(), json!({ "id": "s1", "stock": 5, "createdAt": "c0", "_rev": "2-x", "_id": "s1" })),
+            ("GET", format!("{db}/_all_docs?include_docs=true"), Json::Null),
+            ("POST", format!("{db}/_find"), json!({ "selector": sel, "sort": sort, "skip": 0, "limit": 1 })),
+            ("POST", format!("{db}/_find"), json!({ "selector": sel, "fields": ["_id"], "limit": 1000 })),
+            ("GET", doc.clone(), Json::Null),
+            ("DELETE", format!("{doc}?rev=3-x"), Json::Null),
+        ];
+        let sent = script.sent();
+        assert_eq!(sent.len(), expected.len());
+        for (got, want) in sent.iter().zip(&expected) {
+            assert_eq!((got.0.as_str(), &got.1, &got.2), (want.0, &want.1, &want.2));
+        }
+        let requests = script.sent.lock();
+        let content_type = |i: usize| {
+            requests[i]
+                .headers
+                .iter()
+                .any(|(k, v)| k == "content-type" && v == "application/json")
+        };
+        assert!(!content_type(0) && content_type(1) && !content_type(2));
+        assert!(requests.iter().all(|r| r
+            .headers
+            .iter()
+            .any(|(k, v)| k == "accept" && v == "application/json")));
+    }
+
+    #[test]
+    fn std_twin_error_texts_match_the_std_couchdb_atom() {
+        let unauth = json!({ "error": "unauthorized", "reason": "Name or password is incorrect." });
+        let nope = json!({ "error": "x", "reason": "nope" });
+        let doc = json!({ "_id": "s1", "_rev": "1-a", "id": "s1", "stock": 1 });
+        let rows = |replies: &[(u16, Json)]| {
+            CouchRows::new("http://c:5984", Script::new(replies)).unwrap()
+        };
+        let create = |id: Json| RowWriteOp::Create {
+            entity_type: "Stock".into(),
+            data: from_json(&json!({ "id": id, "stock": 1 })),
+        };
+        assert_eq!(
+            rows(&[(401, unauth.clone())]).find("Stock", "s1").unwrap_err(),
+            "CouchDB get answered 401: Name or password is incorrect."
+        );
+        assert_eq!(
+            rows(&[(500, json!("upstream down"))]).find("Stock", "s1").unwrap_err(),
+            "CouchDB get answered 500: "
+        );
+        assert_eq!(
+            rows(&[(500, nope.clone())]).list("Stock").unwrap_err(),
+            "CouchDB list answered 500: nope"
+        );
+        assert!(rows(&[(404, json!({ "error": "not_found" }))]).list("Stock").unwrap().is_empty());
+        assert_eq!(
+            failed(rows(&[(401, unauth.clone())]).write_where(&create(json!("s1"))).unwrap().unwrap()),
+            "CouchDB create database answered 401: Name or password is incorrect."
+        );
+        assert_eq!(
+            failed(rows(&[(200, json!({ "ok": true }))]).write_where(&create(json!("s1"))).unwrap().unwrap()),
+            "CouchDB create database answered 200: "
+        );
+        for made in [201, 202, 409, 412] {
+            let outcome = rows(&[(made, json!({ "ok": true })), (201, json!({ "ok": true }))])
+                .write_where(&create(json!("s1")))
+                .unwrap()
+                .unwrap();
+            assert!(matches!(outcome, RowWriteOutcome::Created { .. }), "database answer {made}");
+        }
+        assert_eq!(
+            failed(
+                rows(&[(201, json!({ "ok": true })), (500, json!({ "error": "x", "reason": "disk full" }))])
+                    .write_where(&create(json!("s1")))
+                    .unwrap()
+                    .unwrap()
+            ),
+            "CouchDB write answered 500: disk full"
+        );
+        let script = Script::new(&[]);
+        let idless = CouchRows::new("http://c:5984", script.clone()).unwrap();
+        assert_eq!(
+            failed(idless.write_where(&create(json!(""))).unwrap().unwrap()),
+            "create needs a string id"
+        );
+        let upsert = RowWriteOp::Upsert {
+            entity_type: "Stock".into(),
+            data: from_json(&json!({ "stock": 1 })),
+        };
+        assert_eq!(
+            failed(idless.write_where(&upsert).unwrap().unwrap()),
+            "upsert needs a string id"
+        );
+        assert!(script.sent().is_empty(), "an id-less write sends nothing");
+        let delete = RowWriteOp::Delete {
+            entity_type: "Stock".into(),
+            id: "s1".into(),
+            guard: None,
+        };
+        assert_eq!(
+            failed(rows(&[(200, doc.clone()), (500, nope.clone())]).write_where(&delete).unwrap().unwrap()),
+            "CouchDB delete answered 500: nope"
+        );
+        assert_eq!(
+            failed(rows(&[(500, nope.clone())]).write_where(&delete).unwrap().unwrap()),
+            "CouchDB get answered 500: nope"
+        );
+        assert_eq!(
+            rows(&[(404, nope.clone())]).write_where(&delete).unwrap().unwrap(),
+            RowWriteOutcome::NotFound
+        );
+        let update: RowWriteOp = serde_json::from_value(json!({
+            "kind": "update", "entityType": "Stock", "id": "s1", "data": { "stock": 0 }, "guard": null
+        }))
+        .unwrap();
+        assert_eq!(
+            rows(&[(404, nope.clone())]).write_where(&update).unwrap().unwrap(),
+            RowWriteOutcome::NotFound
+        );
+        let racing: Vec<(u16, Json)> = (0..5)
+            .flat_map(|_| [(200, doc.clone()), (409, json!({ "error": "conflict" }))])
+            .collect();
+        assert_eq!(
+            failed(rows(&racing).write_where(&update).unwrap().unwrap()),
+            "Stock s1 changed concurrently 5 times"
+        );
+        let racing_delete: Vec<(u16, Json)> = (0..5)
+            .flat_map(|_| [(200, doc.clone()), (409, json!({ "error": "conflict" }))])
+            .collect();
+        assert_eq!(
+            failed(rows(&racing_delete).write_where(&delete).unwrap().unwrap()),
+            "Stock s1 changed concurrently 5 times"
+        );
+        let four_then_won: Vec<(u16, Json)> = (0..4)
+            .flat_map(|_| [(200, doc.clone()), (409, json!({ "error": "conflict" }))])
+            .chain([(200, doc.clone()), (201, json!({ "ok": true }))])
+            .collect();
+        assert!(matches!(
+            rows(&four_then_won).write_where(&update).unwrap().unwrap(),
+            RowWriteOutcome::Updated { .. }
+        ));
+    }
+
+    #[test]
+    fn std_twin_upsert_keeps_the_stored_created_at_and_reports_created_or_replaced() {
+        let upsert = |data: Json| RowWriteOp::Upsert {
+            entity_type: "Stock".into(),
+            data: from_json(&data),
+        };
+        let found = json!({ "_id": "s1", "_rev": "3-c", "id": "s1", "stock": 9, "createdAt": "2026-01-01T00:00:00.000Z", "old": true });
+        let replaced = CouchRows::new(
+            "http://c:5984",
+            Script::new(&[(201, json!({ "ok": true })), (200, found), (201, json!({ "ok": true }))]),
+        )
+        .unwrap()
+        .write_where(&upsert(json!({ "id": "s1", "stock": 1, "createdAt": "2099-01-01T00:00:00.000Z" })))
+        .unwrap()
+        .unwrap();
+        assert!(matches!(replaced, RowWriteOutcome::Updated { .. }));
+        assert_eq!(
+            created_row(replaced),
+            json!({ "id": "s1", "stock": 1, "createdAt": "2026-01-01T00:00:00.000Z" })
+        );
+        let inserted = CouchRows::new(
+            "http://c:5984",
+            Script::new(&[
+                (201, json!({ "ok": true })),
+                (404, json!({ "error": "not_found" })),
+                (201, json!({ "ok": true })),
+            ]),
+        )
+        .unwrap()
+        .write_where(&upsert(json!({ "id": "s1", "stock": 1 })))
+        .unwrap()
+        .unwrap();
+        assert!(matches!(inserted, RowWriteOutcome::Created { .. }));
+        assert_eq!(created_row(inserted), json!({ "id": "s1", "stock": 1 }));
+    }
+
+    #[test]
+    fn std_twin_list_skips_a_row_without_a_doc() {
+        let rows = CouchRows::new(
+            "http://c:5984",
+            Script::new(&[(
+                200,
+                json!({ "rows": [
+                    { "id": "a", "doc": { "_id": "a", "_rev": "1-x", "id": "a" } },
+                    { "id": "b", "key": "b" } ] }),
+            )]),
+        )
+        .unwrap();
+        let listed: Vec<Value> = rows.list("Stock").unwrap().iter().map(|r| (**r).clone()).collect();
+        assert_eq!(rows_json(&listed), json!([{ "id": "a" }]));
+    }
+
+    #[test]
+    fn std_twin_find_windows_totals_and_pages_match_the_std_couchdb_atom() {
+        let d = |n: usize| json!({ "_id": format!("d{n}"), "_rev": "1-x", "id": format!("d{n}") });
+        let r = |n: usize| json!({ "id": format!("d{n}") });
+        let ids = |n: usize| -> Vec<Json> { (0..n).map(|i| json!({ "_id": format!("d{i}") })).collect() };
+        let ordered = |extra: Json| {
+            let mut query = json!({ "order": { "field": "id", "direction": "asc" } });
+            for (k, v) in extra.as_object().unwrap() {
+                query[k] = v.clone();
+            }
+            q(query)
+        };
+        let page = |rows: &CouchRows, query: &RowQuery| {
+            let page = rows.query_page("Stock", query).unwrap().unwrap();
+            (rows_json(&page.rows), page.total)
+        };
+        let make = |replies: &[(u16, Json)]| {
+            let script = Script::new(replies);
+            (CouchRows::new("http://c:5984", script.clone()).unwrap().with_page_size(2), script)
+        };
+
+        let (rows, script) = make(&[(200, json!({ "docs": [d(1), d(2)], "bookmark": "b1" })), (200, json!({ "docs": [d(3)], "bookmark": "b2" }))]);
+        assert_eq!(page(&rows, &ordered(json!({ "offset": 2 }))), (json!([r(1), r(2), r(3)]), 5));
+        let sent = script.sent();
+        assert_eq!(sent[0].2["skip"], 2);
+        assert_eq!(sent[1].2["bookmark"], "b1");
+        assert!(sent[1].2.get("skip").is_none(), "a bookmark page carries no skip");
+
+        let (rows, _) = make(&[(200, json!({ "docs": [d(1)], "bookmark": "n" }))]);
+        assert_eq!(page(&rows, &ordered(json!({ "limit": 3, "offset": 2 }))), (json!([r(1)]), 3));
+
+        let (rows, script) = make(&[(200, json!({ "docs": [], "bookmark": "n" }))]);
+        assert_eq!(page(&rows, &ordered(json!({ "limit": 3 }))), (json!([]), 0));
+        assert_eq!(script.sent().len(), 1);
+
+        let (rows, script) = make(&[(200, json!({ "docs": [] })), (200, json!({ "docs": [] }))]);
+        assert_eq!(page(&rows, &ordered(json!({ "limit": 3, "offset": 4 }))), (json!([]), 0));
+        assert_eq!(script.sent().len(), 2, "an empty window past the offset is counted");
+
+        let (rows, script) = make(&[(200, json!({ "docs": ids(1) }))]);
+        assert_eq!(page(&rows, &ordered(json!({ "limit": 0 }))), (json!([]), 1));
+        assert_eq!(script.sent().len(), 1, "limit 0 sends no window request");
+        assert_eq!(script.sent()[0].2["fields"], json!(["_id"]));
+
+        let (rows, _) = make(&[(200, json!({ "docs": [d(1), d(2)], "bookmark": "b" })), (200, json!({ "docs": ids(2), "bookmark": "c1" })), (200, json!({ "docs": ids(1), "bookmark": "c2" }))]);
+        assert_eq!(page(&rows, &ordered(json!({ "limit": 2 }))), (json!([r(1), r(2)]), 3));
+
+        let (rows, _) = make(&[(200, json!({ "docs": [d(1), d(2)], "bookmark": "b" })), (404, json!({ "error": "not_found" }))]);
+        assert_eq!(page(&rows, &ordered(json!({}))), (json!([r(1), r(2)]), 2));
+
+        let (rows, _) = make(&[(200, json!({ "docs": [d(1), d(2)], "bookmark": "b" })), (200, json!({ "docs": ids(2), "bookmark": "c1" })), (404, json!({ "error": "not_found" }))]);
+        assert_eq!(page(&rows, &ordered(json!({ "limit": 2 }))), (json!([r(1), r(2)]), 2));
+
+        let (rows, _) = make(&[(404, json!({ "error": "not_found" })), (404, json!({ "error": "not_found" }))]);
+        assert_eq!(page(&rows, &ordered(json!({ "limit": 3, "offset": 5 }))), (json!([]), 0));
+
+        let (rows, _) = make(&[(400, json!({ "error": "bad_request", "reason": "invalid selector" }))]);
+        assert_eq!(
+            rows.query_page("Stock", &ordered(json!({}))).unwrap().unwrap_err(),
+            "CouchDB _find answered 400: invalid selector"
+        );
+
+        let (rows, _) = make(&[(200, json!({ "docs": [d(1), d(2)] }))]);
+        assert_eq!(
+            rows.query_page("Stock", &ordered(json!({}))).unwrap().unwrap_err(),
+            "CouchDB _find returned a full page without a bookmark, so the next page cannot be requested"
+        );
+
+        let (rows, _) = make(&[(200, json!({ "docs": [d(1), d(2)], "bookmark": "b" })), (200, json!({ "docs": ids(2) }))]);
+        assert_eq!(
+            rows.query_page("Stock", &ordered(json!({ "limit": 2 }))).unwrap().unwrap_err(),
+            "CouchDB _find returned a full page without a bookmark, so the next page cannot be requested"
+        );
+    }
+
+    const STD_TWIN_SUPPORTED: &[(&str, &str, &str, &str)] = &[
+        ("filter-and-desc-order-is-an-id-anchored-selector", r#"{"filter":{"kind":"all","of":[{"kind":"compare","field":"priority","op":">=","value":3},{"kind":"compare","field":"status","op":"!=","value":"done"}]},"order":{"field":"id","direction":"desc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"$and":[{"priority":{"$gte":3,"$type":"number"}},{"$or":[{"status":{"$exists":false}},{"status":{"$ne":"done"}}]}]}]}"#, r#"[{"_id":"desc"}]"#),
+        ("not-over-an-ordering-leaf-includes-documents-lacking-the-field", r#"{"filter":{"kind":"not","of":{"kind":"compare","field":"p","op":">","value":3}},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"$or":[{"p":{"$exists":false}},{"p":{"$not":{"$type":"number"}}},{"p":{"$lte":3,"$type":"number"}}]}]}"#, r#"[{"_id":"asc"}]"#),
+        ("policy-then-filter-are-two-parts", r#"{"policy":{"kind":"compare","field":"owner","op":"==","value":"u1"},"filter":{"kind":"compare","field":"n","op":"==","value":5},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"owner":{"$eq":"u1"}},{"n":{"$eq":5}}]}"#, r#"[{"_id":"asc"}]"#),
+        ("no-predicate-is-the-id-anchor-alone", r#"{"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}}]}"#, r#"[{"_id":"asc"}]"#),
+        ("equality-of-null-or-a-non-scalar-matches-nothing", r#"{"filter":{"kind":"all","of":[{"kind":"compare","field":"a","op":"==","value":null},{"kind":"compare","field":"b","op":"==","value":[1]}]},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"$and":[{"_id":{"$exists":false}},{"_id":{"$exists":false}}]}]}"#, r#"[{"_id":"asc"}]"#),
+        ("inequality-of-null-needs-the-field-present-and-non-null", r#"{"filter":{"kind":"compare","field":"a","op":"!=","value":null},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"$and":[{"a":{"$exists":true}},{"a":{"$ne":null}}]}]}"#, r#"[{"_id":"asc"}]"#),
+        ("inequality-of-a-non-scalar-matches-everything", r#"{"filter":{"kind":"compare","field":"a","op":"!=","value":{"k":1}},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"_id":{"$exists":true}}]}"#, r#"[{"_id":"asc"}]"#),
+        ("ordering-compare-of-a-non-scalar-matches-nothing", r#"{"filter":{"kind":"compare","field":"a","op":"<","value":[1]},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"_id":{"$exists":false}}]}"#, r#"[{"_id":"asc"}]"#),
+        ("ordering-on-a-boolean-pins-the-type", r#"{"filter":{"kind":"compare","field":"a","op":"<=","value":true},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"a":{"$lte":true,"$type":"boolean"}}]}"#, r#"[{"_id":"asc"}]"#),
+        ("not-over-equality-is-the-complement-and-not-over-null-ordering-matches-all", r#"{"filter":{"kind":"all","of":[{"kind":"not","of":{"kind":"compare","field":"a","op":"==","value":"x"}},{"kind":"not","of":{"kind":"compare","field":"b","op":"<","value":null}}]},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"$and":[{"$or":[{"a":{"$exists":false}},{"a":{"$ne":"x"}}]},{"_id":{"$exists":true}}]}]}"#, r#"[{"_id":"asc"}]"#),
+        ("member-keeps-only-scalars-and-empty-matches-nothing", r#"{"filter":{"kind":"all","of":[{"kind":"member","field":"s","values":["a",1,true,null,[2]]},{"kind":"member","field":"t","values":[null]}]},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"$and":[{"s":{"$in":["a",1,true]}},{"_id":{"$exists":false}}]}]}"#, r#"[{"_id":"asc"}]"#),
+        ("not-over-member-leads-with-missing", r#"{"filter":{"kind":"all","of":[{"kind":"not","of":{"kind":"member","field":"s","values":["a",2]}},{"kind":"not","of":{"kind":"member","field":"t","values":[]}}]},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"$and":[{"$or":[{"s":{"$exists":false}},{"s":{"$nin":["a",2]}}]},{"_id":{"$exists":true}}]}]}"#, r#"[{"_id":"asc"}]"#),
+        ("has-element-and-its-negation", r#"{"filter":{"kind":"all","of":[{"kind":"hasElement","field":"tags","value":"x"},{"kind":"not","of":{"kind":"hasElement","field":"tags","value":"y"}},{"kind":"hasElement","field":"tags","value":null},{"kind":"not","of":{"kind":"hasElement","field":"tags","value":{"k":1}}}]},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"$and":[{"tags":{"$elemMatch":{"$eq":"x"}}},{"$or":[{"tags":{"$exists":false}},{"tags":{"$not":{"$elemMatch":{"$eq":"y"}}}}]},{"_id":{"$exists":false}},{"_id":{"$exists":true}}]}]}"#, r#"[{"_id":"asc"}]"#),
+        ("is-null-and-its-negation", r#"{"filter":{"kind":"all","of":[{"kind":"isNull","field":"a","isNull":true},{"kind":"isNull","field":"b","isNull":false},{"kind":"not","of":{"kind":"isNull","field":"c","isNull":true}}]},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"$and":[{"$or":[{"a":{"$exists":false}},{"a":{"$eq":null}}]},{"$and":[{"b":{"$exists":true}},{"b":{"$ne":null}}]},{"$and":[{"c":{"$exists":true}},{"c":{"$ne":null}}]}]}]}"#, r#"[{"_id":"asc"}]"#),
+        ("constants-and-empty-combinators", r#"{"filter":{"kind":"all","of":[{"kind":"const","value":true},{"kind":"const","value":false},{"kind":"all","of":[]},{"kind":"any","of":[]},{"kind":"not","of":{"kind":"const","value":true}},{"kind":"not","of":{"kind":"all","of":[]}},{"kind":"not","of":{"kind":"any","of":[]}}]},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"$and":[{"_id":{"$exists":true}},{"_id":{"$exists":false}},{"_id":{"$exists":true}},{"_id":{"$exists":false}},{"_id":{"$exists":false}},{"_id":{"$exists":false}},{"_id":{"$exists":true}}]}]}"#, r#"[{"_id":"asc"}]"#),
+        ("de-morgan-pushes-not-through-all-and-any", r#"{"filter":{"kind":"all","of":[{"kind":"not","of":{"kind":"all","of":[{"kind":"compare","field":"a","op":"==","value":1},{"kind":"compare","field":"b","op":"==","value":2}]}},{"kind":"not","of":{"kind":"any","of":[{"kind":"compare","field":"a","op":"==","value":1},{"kind":"compare","field":"b","op":"==","value":2}]}},{"kind":"not","of":{"kind":"not","of":{"kind":"compare","field":"c","op":"==","value":3}}}]},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"$and":[{"$or":[{"$or":[{"a":{"$exists":false}},{"a":{"$ne":1}}]},{"$or":[{"b":{"$exists":false}},{"b":{"$ne":2}}]}]},{"$and":[{"$or":[{"a":{"$exists":false}},{"a":{"$ne":1}}]},{"$or":[{"b":{"$exists":false}},{"b":{"$ne":2}}]}]},{"c":{"$eq":3}}]}]}"#, r#"[{"_id":"asc"}]"#),
+        ("an-ids-query-and-a-window-and-no-total", r#"{"filter":{"kind":"compare","field":"n","op":"==","value":1},"order":{"field":"id","direction":"asc"},"offset":2,"limit":5,"total":"none"}"#, r#"{"$and":[{"_id":{"$gt":null}},{"n":{"$eq":1}}]}"#, r#"[{"_id":"asc"}]"#),
+        ("a-string-equality-is-supported", r#"{"filter":{"kind":"compare","field":"t","op":"==","value":"m"},"order":{"field":"id","direction":"asc"}}"#, r#"{"$and":[{"_id":{"$gt":null}},{"t":{"$eq":"m"}}]}"#, r#"[{"_id":"asc"}]"#),
+    ];
+
+    const STD_TWIN_DECLINED: &[(&str, &str, &str)] = &[
+        ("declined-contains-leaf", r#"{"filter":{"kind":"contains","field":"t","text":"x","caseSensitive":true},"order":{"field":"id","direction":"asc"}}"#, "leaf-unsupported"),
+        ("declined-contains-leaf-under-not-and-any", r#"{"filter":{"kind":"any","of":[{"kind":"const","value":true},{"kind":"not","of":{"kind":"contains","field":"t","text":"x","caseSensitive":true}}]},"order":{"field":"id","direction":"asc"}}"#, "leaf-unsupported"),
+        ("declined-contains-leaf-in-the-policy", r#"{"policy":{"kind":"contains","field":"t","text":"x","caseSensitive":true},"order":{"field":"id","direction":"asc"}}"#, "leaf-unsupported"),
+        ("declined-string-lt", r#"{"filter":{"kind":"compare","field":"t","op":"<","value":"m"},"order":{"field":"id","direction":"asc"}}"#, "value-kind-unsupported"),
+        ("declined-string-le", r#"{"filter":{"kind":"compare","field":"t","op":"<=","value":"m"},"order":{"field":"id","direction":"asc"}}"#, "value-kind-unsupported"),
+        ("declined-string-gt", r#"{"filter":{"kind":"compare","field":"t","op":">","value":"m"},"order":{"field":"id","direction":"asc"}}"#, "value-kind-unsupported"),
+        ("declined-string-ge", r#"{"filter":{"kind":"compare","field":"t","op":">=","value":"m"},"order":{"field":"id","direction":"asc"}}"#, "value-kind-unsupported"),
+        ("declined-string-ordering-under-not", r#"{"filter":{"kind":"not","of":{"kind":"compare","field":"t","op":"<","value":"m"}},"order":{"field":"id","direction":"asc"}}"#, "value-kind-unsupported"),
+        ("declined-leaf-before-value-kind", r#"{"filter":{"kind":"all","of":[{"kind":"compare","field":"t","op":"<","value":"m"},{"kind":"contains","field":"t","text":"x","caseSensitive":true}]},"order":{"field":"id","direction":"asc"}}"#, "leaf-unsupported"),
+        ("declined-value-kind-before-nearest", r#"{"filter":{"kind":"compare","field":"t","op":"<","value":"m"},"order":{"field":"id","direction":"asc"},"nearest":{"field":"v","vector":[1],"k":2}}"#, "value-kind-unsupported"),
+        ("declined-nearest", r#"{"order":{"field":"id","direction":"asc"},"nearest":{"field":"v","vector":[1],"k":2}}"#, "nearest"),
+        ("declined-nearest-before-order-field", r#"{"order":{"field":"title","direction":"asc"},"nearest":{"field":"v","vector":[1],"k":2}}"#, "nearest"),
+        ("declined-order-by-another-field", r#"{"order":{"field":"title","direction":"asc"}}"#, "order-field"),
+        ("declined-no-order-means-created-at", r#"{}"#, "order-field"),
+    ];
+
+    #[test]
+    fn std_twin_mango_selectors_and_declines_match_the_std_couchdb_atom() {
+        for (id, query, selector, sort) in STD_TWIN_SUPPORTED {
+            let query = q(serde_json::from_str(query).unwrap());
+            assert_eq!(
+                query_unsupported_reason(&query_capabilities(), &query).map(|r| r.as_str()),
+                None,
+                "{id}"
+            );
+            let (got_selector, got_sort) = mango_query_for(&query).unwrap();
+            assert_eq!(
+                got_selector,
+                serde_json::from_str::<Json>(selector).unwrap(),
+                "{id}"
+            );
+            assert_eq!(got_sort, serde_json::from_str::<Json>(sort).unwrap(), "{id}");
+        }
+        for (id, query, reason) in STD_TWIN_DECLINED {
+            let query = q(serde_json::from_str(query).unwrap());
+            assert_eq!(
+                query_unsupported_reason(&query_capabilities(), &query).map(|r| r.as_str()),
+                Some(*reason),
+                "{id}"
+            );
+            assert!(mango_query_for(&query).is_none(), "{id}");
+        }
+    }
+
+    fn std_twin_rows(replies: &[(u16, Json)]) -> (CouchRows, Arc<Script>) {
+        let script = Script::new(replies);
+        (
+            CouchRows::new("http://c:5984", script.clone()).unwrap(),
+            script,
+        )
+    }
+
+    fn std_twin_op(json: Json) -> RowWriteOp {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn std_twin_a_database_is_named_from_the_entity_type_or_its_last_declared_collection() {
+        for (entity_type, database) in [
+            ("TimeEntry", "time_entries"),
+            ("Stock", "stocks"),
+            ("Class", "classes"),
+            ("Category", "categories"),
+            ("Person", "persons"),
+            ("Item2Name", "item2_names"),
+            ("XMLHttp", "xmlhttps"),
+            ("Day", "daies"),
+            ("Bus", "buses"),
+        ] {
+            let (rows, script) = std_twin_rows(&[(404, json!({ "error": "not_found" }))]);
+            assert!(rows.find(entity_type, "a b").unwrap().is_none());
+            assert_eq!(
+                script.sent()[0].1,
+                format!("http://c:5984/{database}/a%20b"),
+                "{entity_type}"
+            );
+        }
+        let (rows, script) = std_twin_rows(&[
+            (404, json!({ "error": "not_found" })),
+            (404, json!({ "error": "not_found" })),
+        ]);
+        rows.bind_collection("TimeEntry", "first");
+        rows.bind_collection("TimeEntry", "second");
+        assert!(rows.find("TimeEntry", "a").unwrap().is_none());
+        assert!(rows.find("Stock", "a").unwrap().is_none());
+        let sent = script.sent();
+        assert_eq!(sent[0].1, "http://c:5984/second/a");
+        assert_eq!(sent[1].1, "http://c:5984/stocks/a");
+    }
+
+    #[test]
+    fn std_twin_find_request_bodies_totals_and_ids_match_the_std_couchdb_atom() {
+        let ordered = |extra: Json| {
+            let mut query = json!({ "order": { "field": "id", "direction": "asc" } });
+            for (k, v) in extra.as_object().unwrap() {
+                query[k] = v.clone();
+            }
+            q(query)
+        };
+        let (selector, sort) = sel_sort();
+        let doc = |n: usize| json!({ "_id": format!("d{n}"), "_rev": "1-x", "id": format!("d{n}") });
+
+        let (rows, script) = std_twin_rows(&[(200, json!({ "docs": [] }))]);
+        rows.query_page("Stock", &ordered(json!({}))).unwrap().unwrap();
+        assert_eq!(
+            script.sent()[0].2,
+            json!({ "selector": selector, "sort": sort, "limit": 1000 }),
+            "an unlimited read without an offset sends no skip"
+        );
+
+        let (rows, script) = std_twin_rows(&[(200, json!({ "docs": [] })), (200, json!({ "docs": [] }))]);
+        rows.query_page("Stock", &ordered(json!({ "offset": 2 }))).unwrap().unwrap();
+        let sent = script.sent();
+        assert_eq!(
+            sent[0].2,
+            json!({ "selector": selector, "sort": sort, "skip": 2, "limit": 1000 })
+        );
+        assert_eq!(
+            sent[1].2,
+            json!({ "selector": selector, "fields": ["_id"], "limit": 1000 }),
+            "an empty page past the offset is counted"
+        );
+
+        let (rows, script) = std_twin_rows(&[(200, json!({ "docs": [{ "_id": "d1" }] }))]);
+        let ids = rows
+            .query_ids("Stock", &ordered(json!({ "limit": 5 })))
+            .unwrap()
+            .unwrap();
+        assert_eq!((ids.ids, ids.total), (vec!["d1".to_string()], 1));
+        assert_eq!(
+            script.sent()[0].2,
+            json!({ "selector": selector, "sort": sort, "fields": ["_id"], "skip": 0, "limit": 5 })
+        );
+
+        let (rows, script) = std_twin_rows(&[]);
+        let page = rows
+            .query_page("Stock", &ordered(json!({ "limit": 0, "total": "none" })))
+            .unwrap()
+            .unwrap();
+        assert_eq!((rows_json(&page.rows), page.total), (json!([]), 0));
+        assert!(script.sent().is_empty(), "limit 0 with no total sends nothing");
+
+        let (rows, script) = std_twin_rows(&[(200, json!({ "docs": [doc(1), doc(2)] }))]);
+        let page = rows
+            .query_page("Stock", &ordered(json!({ "offset": 3, "total": "none" })))
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.total, 2, "a total of none is the number of rows read");
+        assert_eq!(script.sent().len(), 1);
+
+        let (rows, script) = std_twin_rows(&[(200, json!({ "docs": [doc(1), doc(2), doc(3)], "bookmark": "b" }))]);
+        let page = rows
+            .query_page("Stock", &ordered(json!({ "limit": 3, "total": "none" })))
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.total, 3);
+        assert_eq!(script.sent().len(), 1, "a full window with no total is not counted");
+
+        let (rows, script) = std_twin_rows(&[(200, json!({ "docs": [] }))]);
+        let page = rows
+            .query_page("Stock", &ordered(json!({ "limit": 3, "offset": 4, "total": "none" })))
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.total, 0);
+        assert_eq!(script.sent().len(), 1, "an empty window past the offset with no total is not counted");
+    }
+
+    #[test]
+    fn std_twin_guards_refuse_report_the_row_before_and_run_on_the_row_read() {
+        let doc = |stock: u32| json!({ "_id": "s1", "_rev": "1-a", "id": "s1", "stock": stock });
+        let guarded_update = |guard: Json| {
+            std_twin_op(json!({
+                "kind": "update", "entityType": "Stock", "id": "s1", "data": { "stock": 0 }, "guard": guard
+            }))
+        };
+        let holds = json!({ "kind": "compare", "field": "stock", "op": ">", "value": 0 });
+
+        let (rows, script) = std_twin_rows(&[(200, doc(1)), (201, json!({ "ok": true }))]);
+        match rows.write_where(&guarded_update(holds.clone())).unwrap().unwrap() {
+            RowWriteOutcome::Updated { row, before } => {
+                assert_eq!(to_json(&row), json!({ "id": "s1", "stock": 0 }));
+                assert_eq!(
+                    to_json(&before.expect("a guarded update reports the row as it was")),
+                    json!({ "id": "s1", "stock": 1 })
+                );
+            }
+            other => panic!("expected an update, got {other:?}"),
+        }
+        assert_eq!(script.sent()[1].2["_rev"], "1-a");
+
+        let (rows, _) = std_twin_rows(&[(200, doc(1)), (201, json!({ "ok": true }))]);
+        let unguarded = std_twin_op(json!({
+            "kind": "update", "entityType": "Stock", "id": "s1", "data": { "stock": 0 }, "guard": null
+        }));
+        assert!(matches!(
+            rows.write_where(&unguarded).unwrap().unwrap(),
+            RowWriteOutcome::Updated { before: None, .. }
+        ));
+
+        let (rows, script) = std_twin_rows(&[(200, doc(0))]);
+        assert_eq!(
+            rows.write_where(&guarded_update(holds.clone())).unwrap().unwrap(),
+            RowWriteOutcome::Refused
+        );
+        assert_eq!(script.sent().len(), 1, "a refused update writes nothing");
+
+        let delete = |guard: Json| {
+            std_twin_op(json!({ "kind": "delete", "entityType": "Stock", "id": "s1", "guard": guard }))
+        };
+        let (rows, _) = std_twin_rows(&[(200, doc(1)), (200, json!({ "ok": true }))]);
+        match rows.write_where(&delete(holds.clone())).unwrap().unwrap() {
+            RowWriteOutcome::Deleted { before } => assert_eq!(
+                to_json(&before.expect("a guarded delete reports the row as it was")),
+                json!({ "id": "s1", "stock": 1 })
+            ),
+            other => panic!("expected a delete, got {other:?}"),
+        }
+        let (rows, _) = std_twin_rows(&[(200, doc(0))]);
+        assert_eq!(
+            rows.write_where(&delete(holds)).unwrap().unwrap(),
+            RowWriteOutcome::Refused
+        );
+        let (rows, _) = std_twin_rows(&[(200, doc(1)), (200, json!({ "ok": true }))]);
+        assert_eq!(
+            rows.write_where(&delete(Json::Null)).unwrap().unwrap(),
+            RowWriteOutcome::Deleted { before: None }
+        );
+
+        let row = json!({ "_id": "s1", "_rev": "1-a", "id": "s1", "t": "hello", "tags": ["a", "b"], "n": null, "stock": 1 });
+        for (guard, holds) in [
+            (json!({ "kind": "contains", "field": "t", "text": "ELL", "caseSensitive": false }), true),
+            (json!({ "kind": "contains", "field": "t", "text": "ELL", "caseSensitive": true }), false),
+            (json!({ "kind": "hasElement", "field": "tags", "value": "b" }), true),
+            (json!({ "kind": "member", "field": "t", "values": ["x", "hello"] }), true),
+            (json!({ "kind": "isNull", "field": "n", "isNull": true }), true),
+            (json!({ "kind": "not", "of": { "kind": "compare", "field": "t", "op": "<", "value": "a" } }), true),
+            (json!({ "kind": "any", "of": [
+                { "kind": "const", "value": false },
+                { "kind": "compare", "field": "stock", "op": "==", "value": 1 } ] }), true),
+            (json!({ "kind": "all", "of": [
+                { "kind": "compare", "field": "stock", "op": "==", "value": 1 },
+                { "kind": "const", "value": false } ] }), false),
+        ] {
+            let (rows, _) = std_twin_rows(&[(200, row.clone()), (201, json!({ "ok": true }))]);
+            let outcome = rows.write_where(&guarded_update(guard.clone())).unwrap().unwrap();
+            assert_eq!(
+                matches!(outcome, RowWriteOutcome::Updated { .. }),
+                holds,
+                "{guard}"
+            );
+        }
+    }
+
+    #[test]
+    fn std_twin_a_stop_batch_reports_the_applied_prefix_and_the_failure_and_runs_across_entity_types() {
+        let (rows, script) = std_twin_rows(&[
+            (201, json!({ "ok": true })),
+            (201, json!({ "ok": true })),
+            (404, json!({ "error": "not_found" })),
+        ]);
+        let batch = RowWriteBatch {
+            ops: vec![
+                std_twin_op(json!({ "kind": "create", "entityType": "Stock", "data": { "id": "s1" } })),
+                std_twin_op(json!({ "kind": "delete", "entityType": "TimeEntry", "id": "nope" })),
+                std_twin_op(json!({ "kind": "create", "entityType": "Stock", "data": { "id": "s2" } })),
+            ],
+            on_failure: RowWriteFailureMode::Stop,
+        };
+        let outcomes = rows.write_batch(&batch).unwrap().unwrap();
+        assert_eq!(outcomes.len(), 2);
+        assert!(matches!(outcomes[0], RowWriteOutcome::Created { .. }));
+        assert_eq!(outcomes[1], RowWriteOutcome::NotFound);
+        let sent = script.sent();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[2].1, "http://c:5984/time_entries/nope");
+    }
+
+    #[test]
+    fn std_twin_a_create_or_upsert_needs_a_string_id_and_a_row_keeps_nested_values() {
+        let (rows, script) = std_twin_rows(&[]);
+        for data in [json!({ "stock": 1 }), json!({ "id": 5, "stock": 1 }), json!({ "id": "", "stock": 1 })] {
+            let create = RowWriteOp::Create {
+                entity_type: "Stock".into(),
+                data: from_json(&data),
+            };
+            assert_eq!(failed(rows.write_where(&create).unwrap().unwrap()), "create needs a string id");
+            let upsert = RowWriteOp::Upsert {
+                entity_type: "Stock".into(),
+                data: from_json(&data),
+            };
+            assert_eq!(failed(rows.write_where(&upsert).unwrap().unwrap()), "upsert needs a string id");
+        }
+        assert!(script.sent().is_empty());
+
+        let nested = json!({ "id": "s1", "meta": { "tags": ["a", 1, true, { "k": [1, "x"] }], "deep": { "n": null } }, "mixed": ["a", { "k": 1 }] });
+        let (rows, _) = std_twin_rows(&[(
+            200,
+            json!({ "rows": [{ "id": "s1", "doc": { "_id": "s1", "_rev": "1-a", "id": "s1",
+                "meta": nested["meta"].clone(), "mixed": nested["mixed"].clone() } }] }),
+        )]);
+        let listed: Vec<Value> = rows.list("Stock").unwrap().iter().map(|r| (**r).clone()).collect();
+        assert_eq!(rows_json(&listed), json!([nested]));
+    }
+
+    #[test]
+    fn std_twin_entity_source_read_answers_null_and_create_mints_an_id() {
+        let (rows, _) = std_twin_rows(&[(404, json!({ "error": "not_found" }))]);
+        assert_eq!(*rows.read("Stock", "gone").unwrap(), Value::Null);
+        let (rows, _) = std_twin_rows(&[(201, json!({ "ok": true })), (201, json!({ "ok": true }))]);
+        let made = rows.create("Stock", &from_json(&json!({ "stock": 1 }))).unwrap();
+        let id = made.as_object().and_then(|o| o.get("id")).and_then(Value::as_str).unwrap().to_string();
+        assert_eq!(id.len(), 36, "a UUID v4");
     }
 }

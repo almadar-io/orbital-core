@@ -16,7 +16,7 @@ use crate::effects::response::{EventRequest, EventResponse};
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::os::{OsError, OsOp};
-use orbital_core_base::os_grants::{FsMode, OsGrants, OsRequirement};
+use orbital_core_base::os_grants::{resolve_anchored_args, EnvSnapshot, FsMode, OsAnchors, OsGrants, OsRequirement};
 use orbital_core_base::value::Value;
 use parking_lot::Mutex;
 use std::collections::{BTreeSet, HashMap};
@@ -104,6 +104,23 @@ pub struct EmbeddedServer {
     resolves: Mutex<HashMap<u64, ResolveContinuation>>,
     next_flight: Mutex<u64>,
     dispatch_stream: Mutex<Vec<crate::effects::live_push::StreamItem>>,
+    /// Where the host places the program's anchored grants and arguments; none until it says.
+    os_anchors: Mutex<OsAnchors>,
+}
+
+/// A host's anchors as it sends them: its home and start directories, its executable's directory and its boot
+/// environment.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OsAnchorsWire {
+    #[serde(default)]
+    home: Option<std::path::PathBuf>,
+    #[serde(default)]
+    start: Option<std::path::PathBuf>,
+    #[serde(default)]
+    exe_dir: Option<std::path::PathBuf>,
+    #[serde(default)]
+    env: std::collections::BTreeMap<String, String>,
 }
 
 /// The row source and config of a server-role kernel whose host answers every ask.
@@ -152,6 +169,7 @@ impl EmbeddedServer {
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
+            os_anchors: Mutex::new(OsAnchors::default()),
         })
     }
 
@@ -169,6 +187,7 @@ impl EmbeddedServer {
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
+            os_anchors: Mutex::new(OsAnchors::default()),
         })
     }
 
@@ -205,6 +224,7 @@ impl EmbeddedServer {
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
+            os_anchors: Mutex::new(OsAnchors::default()),
         })
     }
 
@@ -639,8 +659,30 @@ impl EmbeddedServer {
     }
 
     /// The program's `os/` grants the kernel holds.
+    /// The program's grants with every anchored entry resolved under the host's anchors.
     pub fn os_grants(&self) -> OsGrants {
-        self.kernel.os_grants()
+        self.kernel.os_grants().resolve_anchors(&self.os_anchors.lock()).0
+    }
+
+    /// Place the program's anchored grants and arguments under the host's anchors (`OsAnchorsWire` JSON); answers the
+    /// entries that grant nothing under them, as `[{ path, message }]`.
+    pub fn set_os_anchors_json(&self, anchors_json: &str) -> Result<String, String> {
+        let wire: OsAnchorsWire = serde_json::from_str(anchors_json).map_err(|e| format!("parse anchors_json: {e}"))?;
+        let anchors = OsAnchors { home: wire.home, start: wire.start, exe_dir: wire.exe_dir, env: EnvSnapshot::from_pairs(wire.env) };
+        let (_, problems) = self.kernel.os_grants().resolve_anchors(&anchors);
+        *self.os_anchors.lock() = anchors;
+        let problems: Vec<serde_json::Value> =
+            problems.into_iter().map(|p| serde_json::json!({ "path": p.path, "message": p.message })).collect();
+        serde_json::to_string(&problems).map_err(|e| format!("serialize: {e}"))
+    }
+
+    /// The `op` call's arguments with every anchored path, `cwd` and `env` host or port replaced by what it names under
+    /// the host's anchors, as `Settled<args, OsError>` JSON.
+    pub fn os_resolve_args_json(&self, op: &str, args_json: &str) -> Result<String, String> {
+        let op = OsOp::from_name(op).ok_or_else(|| format!("{op} is not an os operation"))?;
+        let args: Vec<Value> = serde_json::from_str(args_json).map_err(|e| format!("parse args_json: {e}"))?;
+        let resolved: Settled<Vec<Value>, OsError> = resolve_anchored_args(op, &args, &self.os_anchors.lock()).into();
+        serde_json::to_string(&resolved).map_err(|e| format!("serialize: {e}"))
     }
 
     /// Whether the program's grants cover `requirement_json` (an `OsRequirement`).
@@ -775,6 +817,13 @@ pub fn os_deferring_ops_json() -> Result<String, String> {
     serde_json::to_string(&names).map_err(|e| format!("serialize: {e}"))
 }
 
+/// The `os/` operations whose keyed call is a stream (`OsOp::is_stream`): answered once in place, then each message
+/// delivered to its call site's `onMessage` route (EXEC-QUEUE-12), as a JSON array of names.
+pub fn os_stream_ops_json() -> Result<String, String> {
+    let names: Vec<&str> = OsOp::ALL.iter().filter(|op| op.is_stream()).map(|op| op.name()).collect();
+    serde_json::to_string(&names).map_err(|e| format!("serialize: {e}"))
+}
+
 /// The event a deferred keyed `os/` call's outcome fires on its call site (`completion_event`), as `{ event, payload }`
 /// JSON, or `null` when the site declares no route for the outcome. `outcome_json` is a `Settled<_, OsError>`.
 pub fn os_completion_event_json(site_json: &str, key: &str, outcome_json: &str) -> Result<String, String> {
@@ -788,10 +837,15 @@ pub fn os_completion_event_json(site_json: &str, key: &str, outcome_json: &str) 
     serde_json::to_string(&fired).map_err(|e| format!("serialize: {e}"))
 }
 
-pub fn substrate_completion_event_json(site_json: &str, key: &str, op: &str, outcome_json: &str) -> Result<String, String> {
+pub fn substrate_completion_event_json(site_json: &str, key: &str, op: &str, args_json: &str, outcome_json: &str) -> Result<String, String> {
     let site: CallSite = serde_json::from_str::<CallSiteWire>(site_json).map_err(|e| format!("parse site_json: {e}"))?.into();
+    let args: Vec<Value> = serde_json::from_str(args_json).map_err(|e| format!("parse args_json: {e}"))?;
     let outcome: Result<Value, super::wire::SubstrateFailureWire> = serde_json::from_str::<Settled<Value, super::wire::SubstrateFailureWire>>(outcome_json).map_err(|e| format!("parse outcome_json: {e}"))?.into();
-    let outcome = outcome.map(|value| crate::agent_ports::completion_result(op, value)).map_err(|failure| crate::agent_ports::failure_payload(&crate::effects::executor::SubstrateFailure { message: failure.message, errors: failure.errors }));
+    let outcome = outcome
+        .map_err(|failure| crate::effects::executor::SubstrateFailure { message: failure.message, errors: failure.errors })
+        .and_then(|value| crate::agent_ports::program_answer(op, &args, value))
+        .map(|value| crate::agent_ports::completion_result(op, value))
+        .map_err(|failure| crate::agent_ports::failure_payload(&failure));
     let fired = crate::resumable::substrate_completion_event(&site, key, outcome).map(|(event, payload)| EventFired { event, payload });
     serde_json::to_string(&fired).map_err(|e| format!("serialize: {e}"))
 }
@@ -984,5 +1038,83 @@ mod program_context_tests {
         assert!(child.kernel.get_orbital("AppOrbital").is_some());
         assert!(child.kernel.os_grants().exec_allows("parent-only"));
         assert_eq!(parent.get_state("AppTrait", None), "done");
+    }
+}
+
+#[cfg(test)]
+mod os_anchor_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_stream_ops_are_the_kernel_s_streams_and_no_single_answer_op() {
+        let streams: Vec<String> = serde_json::from_str(&os_stream_ops_json().unwrap()).unwrap();
+        assert!(streams.contains(&"os/tcp-listen".to_string()), "{streams:?}");
+        assert!(!streams.contains(&"os/read-file".to_string()), "control: a single answer is no stream");
+        assert!(streams.iter().all(|name| OsOp::from_name(name).is_some_and(OsOp::is_stream)));
+    }
+
+    fn listener() -> EmbeddedServer {
+        let mut schema: OrbitalSchema = serde_json::from_value(json!({
+            "name":"L", "orbitals":[{"name":"L","entity":{"name":"S","persistence":"runtime","fields":[{"name":"id","type":"string"}]},
+            "traits":[{"name":"T","linkedEntity":"S","stateMachine":{"states":[{"name":"idle","isInitial":true}],"transitions":[]}}]}]
+        }))
+        .unwrap();
+        schema.os_grants = Some(
+            serde_json::from_value(json!({
+                "net": [{ "target": "127.0.0.1:3000", "kinds": ["listen"] }],
+                "anchored": {
+                    "net": [{ "host": { "literal": "127.0.0.1" }, "port": { "anchor": { "env": "PORT" } }, "kinds": ["listen"] }],
+                    "fs": [{ "anchor": "cwd", "glob": "dist/**", "modes": ["read"] }]
+                }
+            }))
+            .unwrap(),
+        );
+        EmbeddedServer::new(schema).unwrap()
+    }
+
+    fn listen_on(port: u16) -> String {
+        json!({ "need": "net", "host": "127.0.0.1", "port": port, "kinds": ["listen"] }).to_string()
+    }
+
+    fn read(path: &str) -> String {
+        json!({ "need": "fs", "path": path, "mode": "read" }).to_string()
+    }
+
+    #[test]
+    fn a_host_s_anchors_resolve_the_anchored_grants_and_arguments() {
+        let server = listener();
+        let problems = server
+            .set_os_anchors_json(&json!({ "start": "/srv/app", "env": { "PORT": "8080" } }).to_string())
+            .unwrap();
+        assert_eq!(problems, "[]");
+        assert!(server.os_allows_json(&listen_on(8080)).unwrap(), "the env PORT grant resolves");
+        assert!(server.os_allows_json(&read("/srv/app/dist/index.html")).unwrap(), "the cwd grant resolves under start");
+        assert!(server.os_allows_json(&listen_on(3000)).unwrap(), "control: the literal grant stays");
+        assert!(!server.os_allows_json(&listen_on(8081)).unwrap(), "control: another port");
+        let args = server
+            .os_resolve_args_json("os/tcp-listen", &json!(["127.0.0.1", { "anchor": { "env": "PORT" } }]).to_string())
+            .unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&args).unwrap(), json!({ "ok": ["127.0.0.1", 8080.0] }));
+    }
+
+    #[test]
+    fn control_without_anchors_an_anchored_grant_grants_nothing() {
+        let server = listener();
+        assert!(!server.os_allows_json(&listen_on(8080)).unwrap());
+        assert!(server.os_allows_json(&listen_on(3000)).unwrap());
+    }
+
+    #[test]
+    fn edge_an_unset_env_anchor_is_reported_and_its_argument_is_absent() {
+        let server = listener();
+        let problems = server.set_os_anchors_json(&json!({ "start": "/srv/app", "env": {} }).to_string()).unwrap();
+        assert!(problems.contains("PORT is unset"), "{problems}");
+        let args = server
+            .os_resolve_args_json("os/tcp-listen", &json!(["127.0.0.1", { "anchor": { "env": "PORT" } }]).to_string())
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&args).unwrap();
+        assert_eq!(answer["error"]["kind"], "not-found", "{answer}");
+        assert!(server.os_resolve_args_json("os/nope", "[]").is_err(), "an unknown op is refused");
     }
 }

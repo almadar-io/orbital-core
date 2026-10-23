@@ -19,8 +19,6 @@ pub mod dispatch_memory;
 pub mod dispatch_trace;
 #[path = "kernel/listener.rs"]
 pub mod listener;
-#[path = "kernel/mock_answer.rs"]
-pub mod mock_answer;
 #[path = "kernel/mock_random.rs"]
 pub mod mock_random;
 #[path = "kernel/payload_validation.rs"]

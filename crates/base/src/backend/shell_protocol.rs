@@ -68,6 +68,9 @@ pub struct ShellDescription {
     /// Whether the shell needs the resolved program alongside the IR.
     #[serde(default)]
     pub needs_resolved: bool,
+    /// Whether the shell hosts a server and needs the program composed with `std-http-server` alongside the IR.
+    #[serde(default)]
+    pub needs_served: bool,
     /// A prebuilt web client this shell ships that serves any program from the runtime files a client-mode generate
     /// writes beside it (`orb serve`); `None` when the shell ships none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,6 +85,10 @@ pub struct GenerateRequest {
     /// The resolved program, sent when the shell declares `needsResolved`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved: Option<OrbitalSchema>,
+    /// The resolved program composed with `std-http-server`, sent when the shell declares `needsServed` and the mode
+    /// generates a server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub served: Option<OrbitalSchema>,
     /// The program's source file; project files (locales, `public/`, component
     /// mappings) are found relative to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -141,6 +148,7 @@ pub fn description(name: &str, version: &str, needs_resolved: bool, options: Vec
         ir_versions: IrVersions { min: IR_VERSION, max: IR_VERSION },
         options,
         needs_resolved,
+        needs_served: false,
         web_client: None,
     }
 }
@@ -428,6 +436,7 @@ mod tests {
                 ir_versions: IrVersions { min: 1, max: 1 },
                 options: vec![],
                 needs_resolved: false,
+                needs_served: false,
                 web_client: None,
             }
         }
@@ -441,6 +450,7 @@ mod tests {
             ir_version,
             module: OirModule::new("App", "1.0.0"),
             resolved: None,
+            served: None,
             source_path: None,
             write: WriteOptions::default(),
             options: BTreeMap::new(),

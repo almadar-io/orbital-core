@@ -1120,11 +1120,11 @@ impl RuntimeKernel {
                     return Ok(Flow::More);
                 };
                 let from = self.current_state_name(scope, Some(eid));
-                let frame = self.step_entity_view(scope, eid);
+                let frame = self.step_frame(scope, eid);
                 if self.io.suspended() {
                     return Err(Fault::Suspended);
                 }
-                if visited.contains(scope, event_name, &from, payload, &frame) {
+                if visited.contains(scope, event_name, &from, payload, &frame.visit_frame()) {
                     *idx += 1;
                     return Ok(Flow::More);
                 }
@@ -1147,7 +1147,7 @@ impl RuntimeKernel {
                     Err(Fault::Kernel(KernelError::TraitNotFound(_))) => None,
                     Err(fault) => return Err(fault),
                 };
-                visited.insert(scope, event_name, &from, payload.clone(), frame);
+                visited.insert(scope, event_name, &from, payload, &frame.visit_frame());
                 if result.is_some() {
                     fanned.extend(self.mount.write().release_after(scope, event_name));
                 }
@@ -1172,7 +1172,7 @@ impl RuntimeKernel {
                     }
                 }
                 if let Some(result) = result {
-                    outcomes.push((scope.clone(), result));
+                    outcomes.push((scope.clone(), result.released()));
                 }
                 *idx += 1;
                 Ok(Flow::More)
@@ -1308,7 +1308,7 @@ impl RuntimeKernel {
             ));
         }
         if let Some(result) = result {
-            outcomes.push((child, result));
+            outcomes.push((child, result.released()));
         }
         Ok(())
     }
@@ -1344,13 +1344,13 @@ impl RuntimeKernel {
             }
         }
         let from = self.current_state_name(&item.trait_name, Some(eid));
-        let frame = self.step_entity_view(&item.trait_name, eid);
+        let frame = self.step_frame(&item.trait_name, eid);
         if self.io.suspended() {
             cascade.queue.push_front(item);
             return Err(Fault::Suspended);
         }
         if !item.completion
-            && visited.contains(&item.trait_name, &item.event, &from, &item.payload, &frame)
+            && visited.contains(&item.trait_name, &item.event, &from, &item.payload, &frame.visit_frame())
         {
             return Ok(true);
         }
@@ -1368,13 +1368,7 @@ impl RuntimeKernel {
             }
         }
         if cascade.steps >= CROSS_TRAIT_CASCADE_CAP {
-            visited.insert(
-                &item.trait_name,
-                &item.event,
-                &from,
-                item.payload.clone(),
-                frame,
-            );
+            visited.insert(&item.trait_name, &item.event, &from, &item.payload, &frame.visit_frame());
             let cut = crate::process_result::CascadeCut {
                 cap: CROSS_TRAIT_CASCADE_CAP,
                 trait_name: item.trait_name.clone(),
@@ -1422,13 +1416,7 @@ impl RuntimeKernel {
         };
         cascade.steps += 1;
         if !item.completion {
-            visited.insert(
-                &item.trait_name,
-                &item.event,
-                &from,
-                item.payload.clone(),
-                frame,
-            );
+            visited.insert(&item.trait_name, &item.event, &from, &item.payload, &frame.visit_frame());
         }
         let CascadeItem {
             trait_name: t,
@@ -1460,7 +1448,7 @@ impl RuntimeKernel {
             cascade
                 .queue
                 .extend(self.mount.write().release_after(&t, &ev));
-            outcomes.push((t, result));
+            outcomes.push((t, result.released()));
         }
         for item in own.into_iter().rev() {
             cascade.queue.push_front(item);

@@ -157,7 +157,7 @@ impl NativeHost {
             }
             (None, None) => return None,
         };
-        Some(crate::os_host::completion::Completions::defer_substrate(&self.handles.completions, key, site, op, work))
+        Some(crate::os_host::completion::Completions::defer_substrate(&self.handles.completions, key, site, op, args, work))
     }
 
     fn defer_http(&self, request: &IoRequest) -> Option<IoAnswer> {
@@ -415,7 +415,11 @@ pub(crate) mod tests {
     #[test]
     fn edge_a_deferred_agent_port_op_settles_the_payload_an_in_place_completion_carries() {
         let (host, settled) = sinking_host(true);
-        assert!(matches!(host.answer(&keyed("program/dispatch", Some("k1"))), IoAnswer::ServiceDeferred));
+        let mut ask = keyed("program/dispatch", Some("k1"));
+        if let IoRequest::Substrate { args, .. } = &mut ask {
+            *args = vec![object(&[("inbound", Value::String("hook".to_string())), ("body", Value::String(String::new())), ("headers", object(&[]))])];
+        }
+        assert!(matches!(host.answer(&ask), IoAnswer::ServiceDeferred));
         let (_, outcome) = settled.recv_timeout(std::time::Duration::from_secs(2)).expect("the deferred op settles");
         let answer = Value::String("program/dispatch/1".to_string());
         assert_eq!(outcome, Ok(object(&[("result", answer), ("text", Value::String("\"program/dispatch/1\"".to_string()))])));

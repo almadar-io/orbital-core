@@ -14,8 +14,8 @@ use crate::schema::types::{
 };
 use crate::value::{Value, ValueMap};
 
-pub const AGENT_PORT_OPERATORS: [&str; 3] =
-    ["program/inputs", "program/dispatch", "persist/read-named"];
+pub const AGENT_PORT_OPERATORS: [&str; 4] =
+    ["program/inputs", "program/dispatch", "persist/read-named", "program/self"];
 
 /// The `errors[].code` of a `persist/read-named` for a name the program does not persist.
 pub const UNKNOWN_ENTITY_CODE: &str = "unknown-entity";
@@ -658,6 +658,23 @@ pub const DISPATCH_REQUEST_OPTIONS: [&str; 14] = [
     "delivery", "dispatchLog", "viewer",
 ];
 
+/// The request options that name a dispatch's target; a request naming none of them is addressed at the calling trait.
+pub const REQUEST_TARGET_OPTIONS: [&str; 3] = ["orbital", "targetTrait", "event"];
+
+/// The event a `program/dispatch` fires on its own calling trait: a bare event address whose options carry a request
+/// option and name no target. The kernel plans it so and the validator counts it as fired.
+pub fn calling_trait_event<'a, 'k>(address: &'a str, mut option_keys: impl Iterator<Item = &'k str>) -> Option<&'a str> {
+    let bare = !address.is_empty() && !address.contains('.') && !address.starts_with('@');
+    let mut requested = false;
+    for key in option_keys.by_ref() {
+        if REQUEST_TARGET_OPTIONS.contains(&key) {
+            return None;
+        }
+        requested |= key != "schema";
+    }
+    (bare && requested).then_some(address)
+}
+
 fn list_of_records(value: &Value, required: &[&str], optional: &[&str]) -> bool {
     let Value::Array(items) = value else { return false };
     items.iter().all(|item| {
@@ -703,9 +720,6 @@ fn schema_option(raw: Option<&Value>) -> Result<DispatchOptions, String> {
     if request.get("stream") == Some(&Value::Bool(true)) && request.get("wire") != Some(&Value::Bool(true)) {
         return Err("program/dispatch: stream items are part of the wire answer: stream needs wire".to_string());
     }
-    if !request.is_empty() && !(request.contains_key("orbital") && request.contains_key("event")) {
-        return Err("program/dispatch: an event request names its orbital and event".to_string());
-    }
     let Some(schema) = options.get("schema") else {
         return Ok((None, request));
     };
@@ -747,9 +761,25 @@ pub fn plan_dispatch(
         Err(message) => return failed(message),
     };
     if !request.is_empty() {
+        let mut request = request;
+        let mut address = address.clone();
+        if REQUEST_TARGET_OPTIONS.iter().all(|key| !request.contains_key(*key)) {
+            if address.contains('.') {
+                return failed("program/dispatch: a request addressed at the calling trait names a bare event".to_string());
+            }
+            let Some(orbital) = caller_orbital else {
+                return failed("program/dispatch: a request addressed at the calling trait needs the trait's orbital".to_string());
+            };
+            request.insert("orbital".to_string(), Value::String(orbital.to_string()));
+            request.insert("targetTrait".to_string(), Value::String(caller_trait.to_string()));
+            request.insert("event".to_string(), Value::String(address.clone()));
+            address = format!("{orbital}.{caller_trait}.{address}");
+        } else if !(request.contains_key("orbital") && request.contains_key("event")) {
+            return failed("program/dispatch: an event request names its orbital and event".to_string());
+        }
         let text = |key: &str| request.get(key).and_then(Value::as_str).unwrap_or_default();
         let named = format!("{}.{}.{}", text("orbital"), text("targetTrait"), text("event"));
-        if address != &named {
+        if address != named {
             return failed(format!("program/dispatch: the address '{address}' is not the request's '{named}'"));
         }
         let Arguments::Payload(payload) = parsed else {
@@ -1123,5 +1153,31 @@ mod tests {
             assert!(matches!(&plan, DispatchPlan::Failed(f) if f.error.contains(why)), "{bad}: {plan:?}");
         }
         assert!(matches!(plan_request(request(serde_json::json!({ "traits": null }))), DispatchPlan::Request { .. }), "control: null traits is discovery");
+    }
+
+    #[test]
+    fn an_event_request_naming_no_target_is_addressed_at_the_calling_trait() {
+        let inputs = external_inputs_of(&schema_of(&fixture()));
+        let viewer = serde_json::json!({ "viewer": { "id": "u1" } });
+        let plan = plan_dispatch(&[text("ADD_NOTE"), value(serde_json::json!({ "title": "x" })), value(viewer.clone())], &inputs, Some("Desk"), "Chat");
+        let DispatchPlan::Request { payload, options } = &plan else { panic!("{plan:?}") };
+        assert_eq!(as_json(payload), serde_json::json!({ "title": "x" }));
+        for (key, expected) in [("orbital", "Desk"), ("targetTrait", "Chat"), ("event", "ADD_NOTE")] {
+            assert_eq!(options.get(key).and_then(Value::as_str), Some(expected), "{key}");
+        }
+        assert_eq!(options.get("viewer").map(as_json), Some(serde_json::json!({ "id": "u1" })));
+        let undeclared = plan_dispatch(&[text("NOT_AN_INPUT"), value(serde_json::json!({})), value(viewer.clone())], &inputs, Some("Desk"), "Chat");
+        assert!(matches!(&undeclared, DispatchPlan::Request { options, .. } if options.get("event").and_then(Value::as_str) == Some("NOT_AN_INPUT")), "the calling trait's own event needs no input declaration: {undeclared:?}");
+        for (address, orbital, why) in [
+            ("Chat.ADD_NOTE", Some("Desk"), "a request addressed at the calling trait names a bare event"),
+            ("ADD_NOTE", None, "a request addressed at the calling trait needs the trait's orbital"),
+        ] {
+            let plan = plan_dispatch(&[text(address), value(serde_json::json!({})), value(viewer.clone())], &inputs, orbital, "Chat");
+            assert!(matches!(&plan, DispatchPlan::Failed(f) if f.error.contains(why)), "{address}: {plan:?}");
+        }
+        let partial = plan_dispatch(&[text("ADD_NOTE"), value(serde_json::json!({})), value(serde_json::json!({ "event": "ADD_NOTE", "wire": true }))], &inputs, Some("Desk"), "Chat");
+        assert!(matches!(&partial, DispatchPlan::Failed(f) if f.error.contains("names its orbital and event")), "control: a partly named target is still refused: {partial:?}");
+        let control = plan_dispatch(&[text("ADD_NOTE"), value(serde_json::json!({ "title": "x" }))], &inputs, Some("Desk"), "Chat");
+        assert!(matches!(control, DispatchPlan::Dispatch { .. }), "control: no request option is the declared-input dispatch: {control:?}");
     }
 }

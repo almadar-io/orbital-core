@@ -134,7 +134,6 @@ pub mod runtime {
         pub use orbital_core_base::listen_match::matches_listen_source;
         pub use orbital_core_runtime::listener::*;
     }
-    pub use orbital_core_runtime::mock_answer;
     pub use orbital_core_runtime::mock_random;
     pub use orbital_core_runtime::motion;
     pub use orbital_core_runtime::payload_validation;
@@ -213,14 +212,12 @@ pub mod runtime {
     pub use orbital_core_runtime::persona::default_probe_persona;
     pub use orbital_core_runtime::persona::find_persona_in_roster;
     pub use orbital_core_runtime::persona::host_default_viewer;
-    pub use orbital_core_runtime::persona::resolve_default_viewer;
     pub use orbital_core_runtime::persona::identity_roster;
     pub use orbital_core_runtime::persona::persona_from_env_for_schema;
     pub use orbital_core_runtime::persona::persona_from_env_spec;
     pub use orbital_core_runtime::persona::resolve_persona_spec;
     pub use orbital_core_runtime::persona::EnvPersona;
     pub use orbital_core_runtime::persona::DEFAULT_IDENTITY_ROSTER_COUNT;
-    pub use orbital_core_runtime::persona::DEFAULT_VIEWER_JSON;
     pub use orbital_core_runtime::persona::PERSONA_ENV;
     pub use orbital_core_runtime::process_result::DeliveryEntry;
     pub use orbital_core_runtime::process_result::EffectRun;

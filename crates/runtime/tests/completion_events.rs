@@ -146,7 +146,6 @@ fn edge_a_substrate_op_on_a_server_with_no_host_fails_loudly() {
 // same emitted trace as the JS twin (`almadar-runtime/test/agent-ports-effects.test.ts`).
 mod agent_ports {
     use super::*;
-    use orbital_core_runtime::agent_ports::dispatch_outcome;
     use orbital_core_runtime::effects::response::EventResponse;
     use parking_lot::Mutex;
     use serde_json::Value as Json;
@@ -169,7 +168,7 @@ mod agent_ports {
         serde_json::from_value::<Value>(json.clone()).expect("a value")
     }
 
-    /// Plays the host of a `program/dispatch`: a scripted response per event, answered as the host answers.
+    /// Plays the host of a `program/dispatch`: a scripted response per event, answered raw as the host answers (the kernel shapes it).
     struct Dispatching {
         asked: Mutex<Vec<Vec<Value>>>,
         scripted: Json,
@@ -183,7 +182,7 @@ mod agent_ports {
             let event = address.rsplit('.').next().expect("an event");
             let response: EventResponse =
                 serde_json::from_value(self.scripted[event].clone()).expect("a scripted response");
-            Ok(dispatch_outcome(&response))
+            Ok(as_value(&serde_json::to_value(&response).expect("serializes")))
         }
     }
 
@@ -416,7 +415,9 @@ mod agent_ports {
 
     #[test]
     fn control_a_keyed_ask_answered_in_place_completes_inside_the_dispatch() {
-        let answer = orbital_core_runtime::resumable::IoAnswer::Substrate(Ok(as_value(&json!({ "ok": true, "emitted": [] }))));
+        let mut response = EventResponse::from_process_results(&[], "Notes", "ADD_NOTE");
+        response.transitioned = true;
+        let answer = orbital_core_runtime::resumable::IoAnswer::Substrate(Ok(as_value(&serde_json::to_value(&response).unwrap())));
         let (_, _, state, got) = keyed_dispatch_answered(answer);
         assert_eq!(state, "done");
         assert_eq!(got["key"], json!("k1"));

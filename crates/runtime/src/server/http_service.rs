@@ -95,6 +95,15 @@ pub enum TransportError {
     Refused(String),
 }
 
+impl std::fmt::Display for TransportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TimedOut => f.write_str("request timed out"),
+            Self::Failed(message) | Self::Refused(message) => f.write_str(message),
+        }
+    }
+}
+
 pub trait Transport: Send + Sync {
     /// A non-2xx status is a response, not an error.
     fn send(&self, request: &HttpRequest) -> Result<HttpResponse, TransportError>;

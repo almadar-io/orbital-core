@@ -1,0 +1,5962 @@
+{
+ "atom": "store/atoms/std-firestore.lolo",
+ "trait": "RowStoreDriver",
+ "cases": [
+  {
+   "id": "good-read-decodes-every-firestore-value-and-stamps-the-id",
+   "steps": [
+    {
+     "event": "ROW_READ",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "id": "t1"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "read",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ]
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/t1\",\"fields\":{\"title\":{\"stringValue\":\"A\"},\"n\":{\"integerValue\":\"3\"},\"ratio\":{\"doubleValue\":1.5},\"whole\":{\"doubleValue\":2.0},\"done\":{\"booleanValue\":true},\"gone\":{\"nullValue\":null},\"tags\":{\"arrayValue\":{\"values\":[{\"stringValue\":\"x\"},{\"integerValue\":\"1\"}]}},\"none\":{\"arrayValue\":{}},\"meta\":{\"mapValue\":{\"fields\":{\"inner\":{\"mapValue\":{\"fields\":{\"deep\":{\"stringValue\":\"y\"}}}},\"e\":{\"mapValue\":{}},\"stringValue\":{\"stringValue\":\"shadow\"},\"mapValue\":{\"stringValue\":\"x\"}}}},\"at\":{\"timestampValue\":\"2026-01-01T00:00:00Z\"},\"ref\":{\"referenceValue\":\"projects/p/databases/d/documents/Task/x\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROW_FOUND",
+        "payload": {
+         "key": "k",
+         "row": {
+          "title": "A",
+          "n": 3,
+          "ratio": 1.5,
+          "whole": 2,
+          "done": true,
+          "gone": null,
+          "tags": [
+           "x",
+           1
+          ],
+          "none": [],
+          "meta": {
+           "inner": {
+            "deep": "y"
+           },
+           "e": {},
+           "stringValue": "shadow",
+           "mapValue": "x"
+          },
+          "at": "2026-01-01T00:00:00Z",
+          "ref": "projects/p/databases/d/documents/Task/x",
+          "id": "t1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "batchGet for the document name, typed values decoded as from_wire does; a user field named stringValue or mapValue stays a field The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "control-read-of-a-missing-document-answers-no-row",
+   "steps": [
+    {
+     "event": "ROW_READ",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "id": "t1"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "read",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ]
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"missing\":\"projects/demo-almadar/databases/(default)/documents/Task/t1\"}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROW_FOUND",
+        "payload": {
+         "key": "k",
+         "row": null
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "control-read-ignores-a-found-document-with-another-name",
+   "steps": [
+    {
+     "event": "ROW_READ",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "id": "t1"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "read",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ]
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/other\",\"fields\":{\"title\":{\"stringValue\":\"B\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROW_FOUND",
+        "payload": {
+         "key": "k",
+         "row": null
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-read-non-2xx-fails-with-the-reply-text",
+   "steps": [
+    {
+     "event": "ROW_READ",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "id": "t1"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "read",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ]
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 403,
+      "headers": {},
+      "body": "{\"error\":{\"code\":403,\"status\":\"PERMISSION_DENIED\",\"message\":\"no\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_FAILED",
+        "payload": {
+         "key": "k",
+         "message": "{\"error\":{\"code\":403,\"status\":\"PERMISSION_DENIED\",\"message\":\"no\"}}"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "bad-read-unreadable-reply",
+   "steps": [
+    {
+     "event": "ROW_READ",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "id": "t1"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "read",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ]
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "not json",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_FAILED",
+        "payload": {
+         "key": "k",
+         "message": "Firestore answered an unreadable reply"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "bad-read-transport-failure-carries-the-transport-text",
+   "steps": [
+    {
+     "event": "ROW_READ",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "id": "t1"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "read",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ]
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_UNREACHABLE",
+     "payload": {
+      "error": "connection refused",
+      "kind": "failed",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_FAILED",
+        "payload": {
+         "key": "k",
+         "message": "connection refused"
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-list-reads-every-document-and-skips-elements-without-one",
+   "steps": [
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k",
+      "entityType": "Task"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"document\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/a\",\"fields\":{\"title\":{\"stringValue\":\"A\"}}}},{\"readTime\":\"2026-01-01T00:00:00Z\"},{\"document\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/b\",\"fields\":{}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_LISTED",
+        "payload": {
+         "key": "k",
+         "rows": [
+          {
+           "title": "A",
+           "id": "a"
+          },
+          {
+           "id": "b"
+          }
+         ]
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "control-list-of-an-empty-collection",
+   "steps": [
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k",
+      "entityType": "Task"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"readTime\":\"2026-01-01T00:00:00Z\"}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_LISTED",
+        "payload": {
+         "key": "k",
+         "rows": []
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-query-full-window-counts-the-total",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       },
+       "limit": 2
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ],
+           "limit": 2
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"document\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/a\",\"fields\":{}}},{\"document\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/b\",\"fields\":{}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "count",
+         "path": ":runAggregationQuery",
+         "body": {
+          "structuredAggregationQuery": {
+           "structuredQuery": {
+            "from": [
+             {
+              "collectionId": "Task"
+             }
+            ]
+           },
+           "aggregations": [
+            {
+             "alias": "count",
+             "count": {}
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"result\":{\"aggregateFields\":{\"count\":{\"integerValue\":\"9\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_PAGE",
+        "payload": {
+         "key": "k",
+         "rows": [
+          {
+           "id": "a"
+          },
+          {
+           "id": "b"
+          }
+         ],
+         "total": 9
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "control-query-window-that-ends-before-its-limit-needs-no-count",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       },
+       "limit": 5
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ],
+           "limit": 5
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"document\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/a\",\"fields\":{}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_PAGE",
+        "payload": {
+         "key": "k",
+         "rows": [
+          {
+           "id": "a"
+          }
+         ],
+         "total": 1
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "good-query-offset-window-total-is-offset-plus-returned",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       },
+       "offset": 4,
+       "limit": 3
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ],
+           "offset": 4,
+           "limit": 3
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"document\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/a\",\"fields\":{}}},{\"document\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/b\",\"fields\":{}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_PAGE",
+        "payload": {
+         "key": "k",
+         "total": 6
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-query-empty-first-page-means-no-match-and-an-empty-later-page-counts",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_PAGE",
+        "payload": {
+         "key": "k",
+         "rows": [],
+         "total": 0
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-query-empty-page-past-the-first-counts",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       },
+       "offset": 5
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ],
+           "offset": 5
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "count",
+         "path": ":runAggregationQuery",
+         "body": {
+          "structuredAggregationQuery": {
+           "structuredQuery": {
+            "from": [
+             {
+              "collectionId": "Task"
+             }
+            ]
+           },
+           "aggregations": [
+            {
+             "alias": "count",
+             "count": {}
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"result\":{\"aggregateFields\":{\"count\":{\"integerValue\":\"3\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_PAGE",
+        "payload": {
+         "key": "k",
+         "rows": [],
+         "total": 3
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-query-total-none-answers-the-window-size-without-a-count",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       },
+       "offset": 4,
+       "limit": 2,
+       "total": "none"
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ],
+           "offset": 4,
+           "limit": 2
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"document\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/a\",\"fields\":{}}},{\"document\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/b\",\"fields\":{}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_PAGE",
+        "payload": {
+         "key": "k",
+         "total": 2
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-query-limit-zero-counts-and-answers-no-rows",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       },
+       "limit": 0
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "count",
+         "path": ":runAggregationQuery",
+         "body": {
+          "structuredAggregationQuery": {
+           "structuredQuery": {
+            "from": [
+             {
+              "collectionId": "Task"
+             }
+            ]
+           },
+           "aggregations": [
+            {
+             "alias": "count",
+             "count": {}
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"result\":{\"aggregateFields\":{\"count\":{\"integerValue\":\"7\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_PAGE",
+        "payload": {
+         "key": "k",
+         "rows": [],
+         "total": 7
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-query-limit-zero-with-total-none-reads-nothing",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       },
+       "limit": 0,
+       "total": "none"
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_PAGE",
+        "payload": {
+         "key": "k",
+         "rows": [],
+         "total": 0
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-no-count-result-fails",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       },
+       "limit": 0
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "count",
+         "path": ":runAggregationQuery",
+         "body": {
+          "structuredAggregationQuery": {
+           "structuredQuery": {
+            "from": [
+             {
+              "collectionId": "Task"
+             }
+            ]
+           },
+           "aggregations": [
+            {
+             "alias": "count",
+             "count": {}
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"readTime\":\"t\"}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_FAILED",
+        "payload": {
+         "key": "k",
+         "message": "Firestore answered a count with no result"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "good-query-document-id-comparison-sends-a-reference-value-and-ids-only-selects-the-name",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "compare",
+        "field": "id",
+        "op": ">=",
+        "value": "t10"
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "ids"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "where": {
+            "fieldFilter": {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "op": "GREATER_THAN_OR_EQUAL",
+             "value": {
+              "referenceValue": "projects/demo-almadar/databases/(default)/documents/Task/t10"
+             }
+            }
+           },
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ],
+           "select": {
+            "fields": [
+             {
+              "fieldPath": "__name__"
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"document\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/t10\",\"fields\":{}}},{\"document\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/t11\",\"fields\":{}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_IDS",
+        "payload": {
+         "key": "k",
+         "ids": [
+          "t10",
+          "t11"
+         ],
+         "total": 2
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-query-all-of-two-leaves-is-a-composite-and-a-range-sorts-on-its-field",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "all",
+        "of": [
+         {
+          "kind": "compare",
+          "field": "status",
+          "op": "==",
+          "value": "open"
+         },
+         {
+          "kind": "compare",
+          "field": "score",
+          "op": ">=",
+          "value": 10
+         }
+        ]
+       },
+       "order": {
+        "field": "score",
+        "direction": "desc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "where": {
+            "compositeFilter": {
+             "op": "AND",
+             "filters": [
+              {
+               "fieldFilter": {
+                "field": {
+                 "fieldPath": "status"
+                },
+                "op": "EQUAL",
+                "value": {
+                 "stringValue": "open"
+                }
+               }
+              },
+              {
+               "fieldFilter": {
+                "field": {
+                 "fieldPath": "score"
+                },
+                "op": "GREATER_THAN_OR_EQUAL",
+                "value": {
+                 "integerValue": "10"
+                }
+               }
+              }
+             ]
+            }
+           },
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "score"
+             },
+             "direction": "DESCENDING"
+            },
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_PAGE",
+        "payload": {
+         "key": "k",
+         "rows": [],
+         "total": 0
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-query-policy-and-filter-clauses-join-in-order",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "policy": {
+        "kind": "compare",
+        "field": "owner",
+        "op": "==",
+        "value": "u1"
+       },
+       "filter": {
+        "kind": "member",
+        "field": "status",
+        "values": [
+         "open",
+         "wip"
+        ]
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "where": {
+            "compositeFilter": {
+             "op": "AND",
+             "filters": [
+              {
+               "fieldFilter": {
+                "field": {
+                 "fieldPath": "owner"
+                },
+                "op": "EQUAL",
+                "value": {
+                 "stringValue": "u1"
+                }
+               }
+              },
+              {
+               "fieldFilter": {
+                "field": {
+                 "fieldPath": "status"
+                },
+                "op": "IN",
+                "value": {
+                 "arrayValue": {
+                  "values": [
+                   {
+                    "stringValue": "open"
+                   },
+                   {
+                    "stringValue": "wip"
+                   }
+                  ]
+                 }
+                }
+               }
+              }
+             ]
+            }
+           },
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-query-hasElement-is-array-contains",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "hasElement",
+        "field": "tags",
+        "value": "x"
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "where": {
+            "fieldFilter": {
+             "field": {
+              "fieldPath": "tags"
+             },
+             "op": "ARRAY_CONTAINS",
+             "value": {
+              "stringValue": "x"
+             }
+            }
+           },
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-query-any-over-one-field-is-an-in-clause",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "any",
+        "of": [
+         {
+          "kind": "compare",
+          "field": "p",
+          "op": "==",
+          "value": 1
+         },
+         {
+          "kind": "compare",
+          "field": "p",
+          "op": "==",
+          "value": 2
+         }
+        ]
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "where": {
+            "fieldFilter": {
+             "field": {
+              "fieldPath": "p"
+             },
+             "op": "IN",
+             "value": {
+              "arrayValue": {
+               "values": [
+                {
+                 "integerValue": "1"
+                },
+                {
+                 "integerValue": "2"
+                }
+               ]
+              }
+             }
+            }
+           },
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-any-over-two-fields-is-declined",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "any",
+        "of": [
+         {
+          "kind": "compare",
+          "field": "p",
+          "op": "==",
+          "value": 1
+         },
+         {
+          "kind": "compare",
+          "field": "q",
+          "op": "==",
+          "value": 2
+         }
+        ]
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "combinator-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-not-is-declined",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "not",
+        "of": {
+         "kind": "compare",
+         "field": "a",
+         "op": "==",
+         "value": 1
+        }
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "combinator-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "bad-query-not-wrapping-contains-is-leaf-unsupported",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "not",
+        "of": {
+         "kind": "contains",
+         "field": "a",
+         "text": "x",
+         "caseSensitive": false
+        }
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "leaf-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "A leaf failure anywhere outranks a combinator failure."
+  },
+  {
+   "id": "bad-query-not-wrapping-not-equal-is-leaf-unsupported",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "not",
+        "of": {
+         "kind": "compare",
+         "field": "a",
+         "op": "!=",
+         "value": 1
+        }
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "leaf-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "A leaf failure anywhere outranks a combinator failure."
+  },
+  {
+   "id": "bad-query-not-inside-all-is-combinator-unsupported",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "all",
+        "of": [
+         {
+          "kind": "compare",
+          "field": "a",
+          "op": "==",
+          "value": 1
+         },
+         {
+          "kind": "not",
+          "of": {
+           "kind": "compare",
+           "field": "b",
+           "op": "==",
+           "value": 2
+          }
+         }
+        ]
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "combinator-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "A not nested in an all is still an unsupported combinator."
+  },
+  {
+   "id": "bad-query-not-outranks-range-over-null",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "all",
+        "of": [
+         {
+          "kind": "not",
+          "of": {
+           "kind": "compare",
+           "field": "b",
+           "op": "==",
+           "value": 2
+          }
+         },
+         {
+          "kind": "compare",
+          "field": "c",
+          "op": "<",
+          "value": null
+         }
+        ]
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "combinator-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The combinator check precedes the value-kind check."
+  },
+  {
+   "id": "bad-query-range-over-null-outranks-nothing-else",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "all",
+        "of": [
+         {
+          "kind": "compare",
+          "field": "c",
+          "op": "<",
+          "value": null
+         },
+         {
+          "kind": "compare",
+          "field": "d",
+          "op": "!=",
+          "value": 1
+         }
+        ]
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "leaf-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "A leaf failure outranks a value-kind failure."
+  },
+  {
+   "id": "bad-query-contains-is-declined",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "contains",
+        "field": "a",
+        "text": "x",
+        "caseSensitive": true
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "leaf-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-isNull-is-declined",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "isNull",
+        "field": "a",
+        "isNull": true
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "leaf-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-not-equal-is-declined",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "compare",
+        "field": "a",
+        "op": "!=",
+        "value": 1
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "leaf-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-range-over-null-is-declined",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "compare",
+        "field": "a",
+        "op": "<",
+        "value": null
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "value-kind-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-more-than-30-in-values-is-declined",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "member",
+        "field": "a",
+        "values": [
+         0,
+         1,
+         2,
+         3,
+         4,
+         5,
+         6,
+         7,
+         8,
+         9,
+         10,
+         11,
+         12,
+         13,
+         14,
+         15,
+         16,
+         17,
+         18,
+         19,
+         20,
+         21,
+         22,
+         23,
+         24,
+         25,
+         26,
+         27,
+         28,
+         29,
+         30
+        ]
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "value-kind-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-query-exactly-30-in-values-runs",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "member",
+        "field": "a",
+        "values": [
+         0,
+         1,
+         2,
+         3,
+         4,
+         5,
+         6,
+         7,
+         8,
+         9,
+         10,
+         11,
+         12,
+         13,
+         14,
+         15,
+         16,
+         17,
+         18,
+         19,
+         20,
+         21,
+         22,
+         23,
+         24,
+         25,
+         26,
+         27,
+         28,
+         29
+        ]
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-order-on-a-field-that-may-be-missing-is-declined",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "rank",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "order-field"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-query-order-on-a-field-the-filter-requires-runs",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "compare",
+        "field": "score",
+        "op": ">=",
+        "value": 10
+       },
+       "order": {
+        "field": "score",
+        "direction": "desc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query"
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-an-inequality-forces-the-first-sort-onto-its-field",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "compare",
+        "field": "score",
+        "op": ">=",
+        "value": 10
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "order-field"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-inequalities-on-two-fields-are-declined",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "all",
+        "of": [
+         {
+          "kind": "compare",
+          "field": "a",
+          "op": ">",
+          "value": 1
+         },
+         {
+          "kind": "compare",
+          "field": "b",
+          "op": "<",
+          "value": 5
+         }
+        ]
+       },
+       "order": {
+        "field": "a",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "leaf-unsupported"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-nearest-is-declined",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "nearest": {
+        "field": "v",
+        "vector": [
+         1,
+         2
+        ],
+        "k": 3
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "nearest"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-query-that-can-match-nothing-reads-nothing",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "policy": {
+        "kind": "const",
+        "value": false
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_PAGE",
+        "payload": {
+         "key": "k",
+         "rows": [],
+         "total": 0
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "control-query-a-true-predicate-runs",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "const",
+        "value": true
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-query-a-non-scalar-compare-value-matches-nothing",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "filter": {
+        "kind": "compare",
+        "field": "a",
+        "op": "==",
+        "value": [
+         1
+        ]
+       },
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_PAGE",
+        "payload": {
+         "key": "k",
+         "rows": [],
+         "total": 0
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-firestore-refusal-failed-precondition-declines-the-query",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 400,
+      "headers": {},
+      "body": "{\"error\":{\"code\":400,\"status\":\"FAILED_PRECONDITION\",\"message\":\"no index\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "FAILED_PRECONDITION"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "bad-query-firestore-refusal-invalid-argument-declines-the-query",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 400,
+      "headers": {},
+      "body": "{\"error\":{\"code\":400,\"status\":\"INVALID_ARGUMENT\",\"message\":\"no index\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "INVALID_ARGUMENT"
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-query-another-firestore-failure-stays-a-failure",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       }
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "query",
+         "path": ":runQuery",
+         "body": {
+          "structuredQuery": {
+           "from": [
+            {
+             "collectionId": "Task"
+            }
+           ],
+           "orderBy": [
+            {
+             "field": {
+              "fieldPath": "__name__"
+             },
+             "direction": "ASCENDING"
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 503,
+      "headers": {},
+      "body": "{\"error\":{\"code\":400,\"status\":\"UNAVAILABLE\",\"message\":\"no index\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_FAILED",
+        "payload": {
+         "key": "k",
+         "message": "{\"error\":{\"code\":400,\"status\":\"UNAVAILABLE\",\"message\":\"no index\"}}"
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-query-a-count-the-store-refuses-declines-the-query",
+   "steps": [
+    {
+     "event": "ROWS_QUERY",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "query": {
+       "order": {
+        "field": "id",
+        "direction": "asc"
+       },
+       "limit": 0
+      },
+      "project": "rows"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "count",
+         "path": ":runAggregationQuery",
+         "body": {
+          "structuredAggregationQuery": {
+           "structuredQuery": {
+            "from": [
+             {
+              "collectionId": "Task"
+             }
+            ]
+           },
+           "aggregations": [
+            {
+             "alias": "count",
+             "count": {}
+            }
+           ]
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 400,
+      "headers": {},
+      "body": "{\"error\":{\"code\":400,\"status\":\"FAILED_PRECONDITION\",\"message\":\"no index\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_UNSUPPORTED",
+        "payload": {
+         "key": "k",
+         "reason": "FAILED_PRECONDITION"
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-write-reads-in-a-transaction-and-commits-the-net-change",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "atomic",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 6
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "{}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "updated",
+           "row": {
+            "stock": 6,
+            "id": "s1"
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "neverEmits": [
+       "STORE_FAILED"
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "good-write-without-a-transaction-id-commits-without-one",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "atomic",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 6
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ]
+         }
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-write-atomic-batch-that-fails-commits-nothing",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "atomic",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 6
+         }
+        },
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 7
+         },
+         "guard": {
+          "kind": "compare",
+          "field": "stock",
+          "op": "==",
+          "value": 99
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "rolled-back"
+          },
+          {
+           "kind": "refused"
+          }
+         ]
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE",
+       "STORE_FAILED"
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "control-write-stop-batch-commits-what-was-applied",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 6
+         }
+        },
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 7
+         },
+         "guard": {
+          "kind": "compare",
+          "field": "stock",
+          "op": "==",
+          "value": 99
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "{}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "updated",
+           "row": {
+            "stock": 6,
+            "id": "s1"
+           }
+          },
+          {
+           "kind": "refused"
+          }
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-write-atomic-single-op-that-fails-reports-only-the-failure",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "atomic",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s9",
+         "data": {
+          "stock": 1
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s9"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"missing\":\"projects/demo-almadar/databases/(default)/documents/Stock/s9\"}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "not-found"
+          }
+         ]
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-write-atomic-not-found-after-an-applied-op-rolls-the-first-back",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "atomic",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 6
+         }
+        },
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s9",
+         "data": {
+          "stock": 1
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1",
+           "projects/demo-almadar/databases/(default)/documents/Stock/s9"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}},{\"missing\":\"projects/demo-almadar/databases/(default)/documents/Stock/s9\"}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "rolled-back"
+          },
+          {
+           "kind": "not-found"
+          }
+         ]
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-write-stop-batch-keeps-the-prefix-before-a-missing-delete",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 6
+         }
+        },
+        {
+         "kind": "delete",
+         "entityType": "Stock",
+         "id": "s9"
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1",
+           "projects/demo-almadar/databases/(default)/documents/Stock/s9"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}},{\"missing\":\"projects/demo-almadar/databases/(default)/documents/Stock/s9\"}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "{}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "updated",
+           "row": {
+            "stock": 6,
+            "id": "s1"
+           }
+          },
+          {
+           "kind": "not-found"
+          }
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-write-an-aborted-transaction-repeats-from-its-read",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 6
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 409,
+      "headers": {},
+      "body": "{\"error\":{\"code\":409,\"status\":\"ABORTED\",\"message\":\"contention\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "{}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "updated",
+           "row": {
+            "stock": 6,
+            "id": "s1"
+           }
+          }
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-write-a-transaction-that-keeps-aborting-fails-after-five-attempts",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 6
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 409,
+      "headers": {},
+      "body": "{\"error\":{\"code\":409,\"status\":\"ABORTED\",\"message\":\"contention\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 409,
+      "headers": {},
+      "body": "{\"error\":{\"code\":409,\"status\":\"ABORTED\",\"message\":\"contention\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 409,
+      "headers": {},
+      "body": "{\"error\":{\"code\":409,\"status\":\"ABORTED\",\"message\":\"contention\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 409,
+      "headers": {},
+      "body": "{\"error\":{\"code\":409,\"status\":\"ABORTED\",\"message\":\"contention\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 409,
+      "headers": {},
+      "body": "{\"error\":{\"code\":409,\"status\":\"ABORTED\",\"message\":\"contention\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_FAILED",
+        "payload": {
+         "key": "k",
+         "message": "the Firestore transaction kept aborting: {\"error\":{\"code\":409,\"status\":\"ABORTED\",\"message\":\"contention\"}}"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "bad-write-a-commit-failure-other-than-contention-is-not-repeated",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 6
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "6"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 403,
+      "headers": {},
+      "body": "{\"error\":{\"code\":403,\"status\":\"PERMISSION_DENIED\",\"message\":\"no\"}}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_FAILED",
+        "payload": {
+         "key": "k",
+         "message": "{\"error\":{\"code\":403,\"status\":\"PERMISSION_DENIED\",\"message\":\"no\"}}"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    },
+    {
+     "event": "ROW_LIST",
+     "payload": {
+      "key": "k2",
+      "entityType": "Task"
+     },
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "list",
+         "path": ":runQuery"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "note": "The driver is ready again: the closing ROW_LIST fires from the state the case left it in."
+  },
+  {
+   "id": "bad-write-a-transactional-read-failure-fails",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 6
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 500,
+      "headers": {},
+      "body": "boom",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_FAILED",
+        "payload": {
+         "key": "k",
+         "message": "boom"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-write-create-and-delete-write-deletes-before-sets",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "create",
+         "entityType": "Task",
+         "data": {
+          "id": "n1",
+          "title": "New"
+         }
+        },
+        {
+         "kind": "delete",
+         "entityType": "Task",
+         "id": "d1"
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/n1",
+           "projects/demo-almadar/databases/(default)/documents/Task/d1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"missing\":\"projects/demo-almadar/databases/(default)/documents/Task/n1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/d1\",\"fields\":{\"title\":{\"stringValue\":\"Old\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "delete": "projects/demo-almadar/databases/(default)/documents/Task/d1"
+           },
+           {
+            "update": {
+             "fields": {
+              "id": {
+               "stringValue": "n1"
+              },
+              "title": {
+               "stringValue": "New"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Task/n1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "{}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "created",
+           "row": {
+            "id": "n1",
+            "title": "New"
+           }
+          },
+          {
+           "kind": "deleted"
+          }
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-write-create-on-a-taken-id-is-a-duplicate-and-writes-nothing",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "create",
+         "entityType": "Task",
+         "data": {
+          "id": "t1",
+          "title": "x"
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/t1\",\"fields\":{\"title\":{\"stringValue\":\"Old\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "duplicate-id"
+          }
+         ]
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-write-create-without-an-id-fails-before-any-read",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "create",
+         "entityType": "Task",
+         "data": {
+          "title": "x"
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "failed",
+           "message": "create needs a string id"
+          }
+         ]
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-write-upsert-without-an-id-fails-before-any-read",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "upsert",
+         "entityType": "Task",
+         "data": {
+          "title": "x"
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "failed",
+           "message": "upsert needs a string id"
+          }
+         ]
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-write-upsert-of-a-stored-row-keeps-its-created-at",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "upsert",
+         "entityType": "Task",
+         "data": {
+          "id": "t1",
+          "title": "New",
+          "createdAt": "later"
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/t1\",\"fields\":{\"title\":{\"stringValue\":\"Old\"},\"createdAt\":{\"stringValue\":\"c0\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "id": {
+               "stringValue": "t1"
+              },
+              "title": {
+               "stringValue": "New"
+              },
+              "createdAt": {
+               "stringValue": "c0"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Task/t1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "{}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "updated",
+           "row": {
+            "id": "t1",
+            "title": "New",
+            "createdAt": "c0"
+           }
+          }
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-write-upsert-of-a-new-id-creates",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "upsert",
+         "entityType": "Task",
+         "data": {
+          "id": "t2",
+          "title": "New"
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t2"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"missing\":\"projects/demo-almadar/databases/(default)/documents/Task/t2\"}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "id": {
+               "stringValue": "t2"
+              },
+              "title": {
+               "stringValue": "New"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Task/t2"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "{}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "created",
+           "row": {
+            "id": "t2",
+            "title": "New"
+           }
+          }
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-write-a-guarded-update-reports-the-row-as-it-was",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Task",
+         "id": "t1",
+         "data": {
+          "n": 2
+         },
+         "guard": {
+          "kind": "compare",
+          "field": "n",
+          "op": "==",
+          "value": 1
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/t1\",\"fields\":{\"n\":{\"integerValue\":\"1\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "n": {
+               "integerValue": "2"
+              },
+              "id": {
+               "stringValue": "t1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Task/t1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "{}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "updated",
+           "row": {
+            "n": 2,
+            "id": "t1"
+           },
+           "before": {
+            "n": 1,
+            "id": "t1"
+           }
+          }
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-write-a-guarded-delete-reports-the-row-as-it-was",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "delete",
+         "entityType": "Task",
+         "id": "t1",
+         "guard": {
+          "kind": "compare",
+          "field": "n",
+          "op": "==",
+          "value": 1
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/t1\",\"fields\":{\"n\":{\"integerValue\":\"1\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "delete": "projects/demo-almadar/databases/(default)/documents/Task/t1"
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "{}",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "deleted",
+           "before": {
+            "n": 1,
+            "id": "t1"
+           }
+          }
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-write-a-guard-that-does-not-hold-is-refused",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "delete",
+         "entityType": "Task",
+         "id": "t1",
+         "guard": {
+          "kind": "compare",
+          "field": "n",
+          "op": "==",
+          "value": 2
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/t1\",\"fields\":{\"n\":{\"integerValue\":\"1\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "refused"
+          }
+         ]
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-write-a-row-that-ends-unchanged-is-not-written",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 5
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": [
+          {
+           "kind": "updated",
+           "row": {
+            "stock": 5,
+            "id": "s1"
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-write-batch-over-two-entity-types-writes-per-entity-in-first-use-order",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "create",
+         "entityType": "B",
+         "data": {
+          "id": "b1",
+          "v": 1
+         }
+        },
+        {
+         "kind": "create",
+         "entityType": "A",
+         "data": {
+          "id": "a1",
+          "v": 2
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/B/b1",
+           "projects/demo-almadar/databases/(default)/documents/A/a1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"missing\":\"projects/demo-almadar/databases/(default)/documents/B/b1\"},{\"missing\":\"projects/demo-almadar/databases/(default)/documents/A/a1\"}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "id": {
+               "stringValue": "b1"
+              },
+              "v": {
+               "integerValue": "1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/B/b1"
+            }
+           },
+           {
+            "update": {
+             "fields": {
+              "id": {
+               "stringValue": "a1"
+              },
+              "v": {
+               "integerValue": "2"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/A/a1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-write-the-same-document-touched-twice-is-read-once-and-sees-the-earlier-op",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 6
+         }
+        },
+        {
+         "kind": "update",
+         "entityType": "Stock",
+         "id": "s1",
+         "data": {
+          "stock": 7
+         },
+         "guard": {
+          "kind": "compare",
+          "field": "stock",
+          "op": "==",
+          "value": 6
+         }
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "txread",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+          ],
+          "newTransaction": {
+           "readWrite": {}
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"transaction\":\"tx1\"},{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Stock/s1\",\"fields\":{\"stock\":{\"integerValue\":\"5\"}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "commit",
+         "path": ":commit",
+         "body": {
+          "writes": [
+           {
+            "update": {
+             "fields": {
+              "stock": {
+               "integerValue": "7"
+              },
+              "id": {
+               "stringValue": "s1"
+              }
+             },
+             "name": "projects/demo-almadar/databases/(default)/documents/Stock/s1"
+            }
+           }
+          ],
+          "transaction": "tx1"
+         }
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "control-empty-batch-answers-no-outcomes-without-a-request",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "atomic",
+       "ops": []
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROWS_WRITTEN",
+        "payload": {
+         "key": "k",
+         "outcomes": []
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-write-rekey-is-refused-before-any-request-or-applied-prefix",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "stop",
+       "ops": [
+        {
+         "kind": "create",
+         "entityType": "Item",
+         "data": {
+          "id": "new"
+         }
+        },
+        {
+         "kind": "rekey",
+         "entityType": "Item",
+         "target": {
+          "kind": "key",
+          "key": "a"
+         },
+         "newId": "b"
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_FAILED",
+        "payload": {
+         "key": "k",
+         "message": "rekey is unsupported by this store"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "bad-write-rekey-is-refused-in-an-atomic-batch-too",
+   "steps": [
+    {
+     "event": "ROWS_WRITE",
+     "payload": {
+      "key": "k",
+      "batch": {
+       "onFailure": "atomic",
+       "ops": [
+        {
+         "kind": "create",
+         "entityType": "Item",
+         "data": {
+          "id": "new"
+         }
+        },
+        {
+         "kind": "rekey",
+         "entityType": "Item",
+         "target": {
+          "kind": "key",
+          "key": "a"
+         },
+         "newId": "b"
+        }
+       ]
+      }
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "STORE_FAILED",
+        "payload": {
+         "key": "k",
+         "message": "rekey is unsupported by this store"
+        }
+       }
+      ],
+      "neverEmits": [
+       "FS_WIRE"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "good-read-decodes-nested-arrays-maps-and-fields-named-like-wire-keys",
+   "steps": [
+    {
+     "event": "ROW_READ",
+     "payload": {
+      "key": "k",
+      "entityType": "Task",
+      "id": "t1"
+     },
+     "from": "ready",
+     "expect": {
+      "emits": [
+       {
+        "event": "FS_WIRE",
+        "payload": {
+         "phase": "read",
+         "path": ":batchGet",
+         "body": {
+          "documents": [
+           "projects/demo-almadar/databases/(default)/documents/Task/t1"
+          ]
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "event": "FS_REPLIED",
+     "payload": {
+      "status": 200,
+      "headers": {},
+      "body": "[{\"found\":{\"name\":\"projects/demo-almadar/databases/(default)/documents/Task/t1\",\"fields\":{\"rows\":{\"arrayValue\":{\"values\":[{\"mapValue\":{\"fields\":{\"a\":{\"integerValue\":\"1\"},\"b\":{\"arrayValue\":{\"values\":[{\"arrayValue\":{\"values\":[{\"stringValue\":\"deep\"}]}}]}}}}},{\"mapValue\":{}},{\"stringValue\":\"tail\"}]}},\"big\":{\"integerValue\":\"9007199254740993\"},\"neg\":{\"integerValue\":\"-7\"},\"geo\":{\"geoPointValue\":{\"latitude\":1.0,\"longitude\":2.0}},\"bytes\":{\"bytesValue\":\"AAEC\"},\"empty\":{\"stringValue\":\"\"},\"fields\":{\"mapValue\":{\"fields\":{\"fields\":{\"mapValue\":{\"fields\":{\"values\":{\"arrayValue\":{\"values\":[{\"integerValue\":\"1\"}]}}}}}}}}}}}]",
+      "key": "k"
+     },
+     "from": "busy",
+     "expect": {
+      "emits": [
+       {
+        "event": "ROW_FOUND",
+        "payload": {
+         "key": "k",
+         "row": {
+          "rows": [
+           {
+            "a": 1,
+            "b": [
+             [
+              "deep"
+             ]
+            ]
+           },
+           {},
+           "tail"
+          ],
+          "big": 9007199254740992,
+          "neg": -7,
+          "geo": null,
+          "bytes": null,
+          "empty": "",
+          "fields": {
+           "fields": {
+            "values": [
+             1
+            ]
+           }
+          },
+          "id": "t1"
+         }
+        }
+       }
+      ],
+      "neverEmits": [
+       "STORE_FAILED"
+      ]
+     }
+    }
+   ],
+   "note": "integerValue past 2^53 reads as the nearest f64 like the Rust parse; geoPointValue and bytesValue read as null like from_wire"
+  }
+ ]
+}

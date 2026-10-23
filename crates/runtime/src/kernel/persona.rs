@@ -153,27 +153,11 @@ pub fn default_probe_persona(schema: &OrbitalSchema) -> Option<Value> {
         .cloned()
 }
 
-/// `@almadar/core`'s `DEFAULT_VIEWER`: who a host presents when nothing named a viewer and the app declares no `[identity]`
-/// roster. The `role` is empty on purpose (no guard literal matches it). Pinned to the TS constant by the shared fixture
-/// `packages/almadar-core/__tests__/fixtures/default-viewer.json`.
-pub const DEFAULT_VIEWER_JSON: &str = r#"{"id":"viewer-1","name":"Dev Viewer","email":"viewer@example.com","role":""}"#;
-
-/// The viewer to present when nothing named one: the first member of the app's declared roster, else the default viewer
-/// (the Rust twin of `@almadar/core` `resolveDefaultViewer`).
-pub fn resolve_default_viewer(roster: &[Value]) -> Value {
-    roster.first().cloned().unwrap_or_else(|| {
-        serde_json::from_str(DEFAULT_VIEWER_JSON).unwrap_or(Value::Null)
-    })
-}
-
-/// Who `@user` is for a host with no sign-in: the `ALMADAR_PERSONA` viewer when set, else [`resolve_default_viewer`] over the
-/// schema's declared roster. A malformed `ALMADAR_PERSONA` is an error.
+/// Who `@user` is for a host with no sign-in: the viewer `ALMADAR_PERSONA` names when set, else the unauthenticated
+/// viewer. A host never picks one (EXEC-BOUND-2). A malformed `ALMADAR_PERSONA` is an error.
 pub fn host_default_viewer(schema: &OrbitalSchema) -> Result<Value, String> {
     match persona_from_env_for_schema(schema)? {
-        Value::Null => Ok(resolve_default_viewer(&identity_roster(
-            schema,
-            DEFAULT_IDENTITY_ROSTER_COUNT,
-        ))),
+        Value::Null => Ok(crate::auth::anonymous_user()),
         named => Ok(named),
     }
 }
@@ -195,16 +179,6 @@ pub fn persona_from_env_for_schema(schema: &OrbitalSchema) -> Result<Value, Stri
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_default_viewer_is_the_one_core_pins_and_a_declared_roster_overrides_it() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/default-viewer.json");
-        let raw = std::fs::read_to_string(path).expect("the twin of @almadar/core's default-viewer fixture");
-        let fixture: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        let expected: Value = serde_json::from_value(fixture["viewer"].clone()).unwrap();
-        assert_eq!(resolve_default_viewer(&[]), expected);
-        let member: Value = serde_json::from_value(serde_json::json!({ "id": "Person Id 1", "role": "member" })).unwrap();
-        assert_eq!(resolve_default_viewer(&[member.clone()]), member, "control: the first member of a declared roster");
-    }
     use orbital_core_base::value::ValueMap;
     use serde_json::json;
 

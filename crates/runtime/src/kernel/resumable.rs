@@ -23,7 +23,7 @@ use crate::kernel::KernelError;
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::tab::{TabAsk, TabFailure, TabFailureKind};
 use crate::process_result::ProcessEventResult;
-use crate::row_query::{guard_unsupported_reason, query_unsupported_reason, QueryCapabilities, QueryRun, RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome, ScanControl, WriteCapabilities};
+use crate::row_query::{apply_write_batch_across, guard_unsupported_reason, query_unsupported_reason, touched_ids, CreateIds, QueryCapabilities, RowCommit, RowCommitWrite, RowTable, QueryRun, RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome, ScanControl, WriteCapabilities};
 use orbital_core_base::row_set::{RowQuery, RowSetRef};
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use std::collections::{HashMap, HashSet};
@@ -70,6 +70,11 @@ pub enum IoRequest {
     /// `stop` (a run of plain persists). Sent only to a host that declared write capabilities covering it.
     WriteRows {
         batch: RowWriteBatch,
+    },
+    /// Rows the kernel decided, committed together only if every one still equals the version read
+    /// (EXEC-STORE-5). Sent only to a host that declared `commitRows`.
+    CommitRows {
+        rows: Vec<RowCommit>,
     },
     CreateRow {
         entity_type: String,
@@ -323,6 +328,8 @@ pub enum IoAnswer {
     Wrote(Result<Vec<RowWriteOutcome>, String>),
     /// The host cannot run the writes it was sent; nothing was written. The kernel takes the one-row path.
     WriteUnsupported(String),
+    /// `true` when every row was committed; `false` on a conflict, when nothing was.
+    Committed(Result<bool, String>),
     Deleted(Result<(), String>),
     Service(Result<Value, String>),
     /// The call was aborted by `cancel-call` while it ran.
@@ -428,6 +435,7 @@ impl std::fmt::Debug for IoRequest {
                 .field("project", project)
                 .finish(),
             Self::WriteRows { batch } => f.debug_struct("WriteRows").field("batch", batch).finish(),
+            Self::CommitRows { rows } => f.debug_struct("CommitRows").field("rows", rows).finish(),
             Self::CreateRow { entity_type, data } => f
                 .debug_struct("CreateRow")
                 .field("entity_type", entity_type)
@@ -587,6 +595,7 @@ impl std::fmt::Debug for IoAnswer {
             Self::QueryUnsupported(m) => f.debug_tuple("QueryUnsupported").field(m).finish(),
             Self::Wrote(r) => f.debug_tuple("Wrote").field(r).finish(),
             Self::WriteUnsupported(m) => f.debug_tuple("WriteUnsupported").field(m).finish(),
+            Self::Committed(r) => f.debug_tuple("Committed").field(r).finish(),
             Self::Deleted(r) => f.debug_tuple("Deleted").field(r).finish(),
             Self::Service(r) => f.debug_tuple("Service").field(r).finish(),
             Self::ServiceCancelled => f.write_str("ServiceCancelled"),
@@ -681,6 +690,7 @@ impl IoAnswer {
                     IoRequest::WriteRows { .. },
                     IoAnswer::Wrote(_) | IoAnswer::WriteUnsupported(_)
                 )
+                | (IoRequest::CommitRows { .. }, IoAnswer::Committed(_))
                 | (IoRequest::DeleteRow { .. }, IoAnswer::Deleted(_))
                 | (
                     IoRequest::CallService { .. },
@@ -975,6 +985,7 @@ fn request_entity(request: &IoRequest) -> Option<&str> {
         | IoRequest::WriteRow { entity_type, .. }
         | IoRequest::DeleteRow { entity_type, .. } => Some(entity_type),
         IoRequest::WriteRows { batch } => batch.ops.first().map(RowWriteOp::entity_type),
+        IoRequest::CommitRows { rows } => rows.first().map(|row| row.entity_type.as_str()),
         _ => None,
     }
 }
@@ -1803,9 +1814,63 @@ impl EntitySource for IoPort {
 }
 
 impl IoPort {
+    /// Run `batch` here and send its rows as one compare-and-commit (EXEC-STORE-5); a conflict re-reads and
+    /// re-runs, at most three times.
+    fn commit_writes(&self, batch: &RowWriteBatch) -> Result<Vec<RowWriteOutcome>, String> {
+        for _ in 0..3 {
+            let mut tables: HashMap<String, RowTable> = HashMap::new();
+            let mut read: Vec<(String, String, Option<Arc<Value>>)> = Vec::new();
+            for op in &batch.ops {
+                let entity = op.entity_type();
+                for id in touched_ids(op) {
+                    if read.iter().any(|(e, i, _)| e == entity && *i == id) {
+                        continue;
+                    }
+                    let row = self.find(entity, &id)?;
+                    if let Some(row) = &row {
+                        tables.entry(entity.to_string()).or_default().insert(id.clone(), row.clone());
+                    }
+                    read.push((entity.to_string(), id, row));
+                }
+            }
+            let outcomes = apply_write_batch_across(&mut tables, batch, &mut |_| CreateIds::Strict);
+            let rows: Vec<RowCommit> = read
+                .iter()
+                .map(|(entity, id, before)| {
+                    let after = tables.get(entity).and_then(|t| t.get(id));
+                    let write = match (before, after) {
+                        (Some(_), None) => RowCommitWrite::Delete,
+                        (Some(b), Some(a)) if b == a => RowCommitWrite::Keep,
+                        (_, Some(a)) => RowCommitWrite::Put { row: (**a).clone() },
+                        (None, None) => RowCommitWrite::Keep,
+                    };
+                    RowCommit { entity_type: entity.clone(), id: id.clone(), expected: before.as_ref().map(|b| (**b).clone()), write }
+                })
+                .collect();
+            for (entity, _, _) in &read {
+                self.forget_reads(entity);
+            }
+            match self.ask(|| IoRequest::CommitRows { rows: rows.clone() }) {
+                Asked::Answer(IoAnswer::Committed(Ok(true))) => return Ok(outcomes),
+                Asked::Answer(IoAnswer::Committed(Ok(false))) => continue,
+                Asked::Answer(IoAnswer::Committed(Err(error))) => return Err(error),
+                Asked::Direct | Asked::Answer(_) | Asked::Withheld => return Err(AWAITING_HOST.to_string()),
+            }
+        }
+        Err("the rows kept changing".to_string())
+    }
+
     /// Send `batch` as one `WriteRows` when the host declared capabilities covering every op; `None` when it
     /// did not (or declined) and nothing was written.
     fn push_writes(&self, batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
+        let commits = {
+            let declared = self.write_capabilities.read();
+            !batch.ops.is_empty()
+                && batch.ops.iter().all(|op| declared.get(op.entity_type()).and_then(|c| c.commit_rows) == Some(true))
+        };
+        if commits {
+            return Some(self.commit_writes(batch));
+        }
         let rekey = batch
             .ops
             .iter()
@@ -2422,6 +2487,7 @@ impl BlockingHost<'_> {
                 Some(page) => IoAnswer::IdPage(page),
                 None => IoAnswer::QueryUnsupported("the source has no query push-down".to_string()),
             },
+            IoRequest::CommitRows { rows } => IoAnswer::Committed(commit_on(self.source, rows)),
             IoRequest::WriteRows { batch } => match self.source.write_batch(batch) {
                 Some(outcomes) => IoAnswer::Wrote(outcomes),
                 None => {
@@ -2836,6 +2902,35 @@ pub(crate) fn accept_replies(
             None => Err(ResumeError::Unanswered(p.id)),
         })
         .collect()
+}
+
+
+/// A compare-and-commit over `source` (EXEC-STORE-5): every row must still equal the version the kernel read, then the
+/// puts and deletes apply as one atomic batch.
+fn commit_on(source: &dyn EntitySource, rows: &[RowCommit]) -> Result<bool, String> {
+    for row in rows {
+        let current = source.find(&row.entity_type, &row.id)?.map(|r| (*r).clone());
+        if current != row.expected {
+            return Ok(false);
+        }
+    }
+    let ops: Vec<RowWriteOp> = rows
+        .iter()
+        .filter_map(|row| match &row.write {
+            RowCommitWrite::Keep => None,
+            RowCommitWrite::Put { row: data } => Some(RowWriteOp::Upsert { entity_type: row.entity_type.clone(), data: data.clone() }),
+            RowCommitWrite::Delete => Some(RowWriteOp::Delete { entity_type: row.entity_type.clone(), id: row.id.clone(), guard: None }),
+        })
+        .collect();
+    if ops.is_empty() {
+        return Ok(true);
+    }
+    match source.write_batch(&RowWriteBatch { ops, on_failure: RowWriteFailureMode::Atomic }) {
+        Some(Ok(outcomes)) if outcomes.iter().all(RowWriteOutcome::applied) => Ok(true),
+        Some(Ok(outcomes)) => Err(format!("the commit did not apply: {outcomes:?}")),
+        Some(Err(error)) => Err(error),
+        None => Err("this source cannot commit rows atomically".to_string()),
+    }
 }
 
 #[cfg(test)]

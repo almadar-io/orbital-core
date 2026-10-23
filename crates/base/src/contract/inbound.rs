@@ -141,13 +141,23 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
 }
 
 /// Whether the sender passed the route's `verifies` check. `None` when the route declares none. An
-/// unset or empty credential means the channel is unchecked: it passes, as the retired provider did.
+/// unset or empty credential never passes: a declared check with no secret is refused before delivery
+/// ([`credential_unset`]).
 pub fn sender_verified(route: &InboundRoute, header_value: &str, credential: Option<&str>) -> Option<bool> {
     route.verifies.as_ref()?;
     Some(match credential {
-        None | Some("") => true,
+        None | Some("") => false,
         Some(expected) => constant_time_eq(header_value, expected),
     })
+}
+
+/// The answer for a route whose `verifies` names a credential the host holds no value for: nothing runs.
+pub fn credential_unset(credential: &str) -> InboundAnswer {
+    InboundAnswer {
+        status: 401,
+        body: error_body(&format!("credential {credential} is not set")),
+        stderr: None,
+    }
 }
 
 /// The payload an inbound event is delivered with: `headers` (names lower-cased; a name given twice
@@ -378,9 +388,17 @@ mod tests {
     }
 
     #[test]
-    fn an_unset_or_empty_credential_means_unchecked() {
-        assert_eq!(verified(&verifying_route(), Some("anything"), None), Some(true));
-        assert_eq!(verified(&verifying_route(), None, Some("")), Some(true));
+    fn an_unset_or_empty_credential_never_verifies() {
+        assert_eq!(verified(&verifying_route(), Some("anything"), None), Some(false));
+        assert_eq!(verified(&verifying_route(), None, Some("")), Some(false));
+        assert_eq!(verified(&verifying_route(), Some(""), Some("")), Some(false), "an empty header never matches an empty secret");
+    }
+
+    #[test]
+    fn an_unset_credential_is_a_401_naming_it() {
+        let answer = credential_unset("GOOGLE_CALENDAR_CHANNEL_TOKEN");
+        assert_eq!(answer.status, 401);
+        assert_eq!(answer.body, r#"{"error":"credential GOOGLE_CALENDAR_CHANNEL_TOKEN is not set"}"#);
     }
 
     #[test]
