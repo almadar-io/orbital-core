@@ -44,6 +44,10 @@ pub const OVERLAY_SLOTS: &[&str] = &["modal", "drawer", "dock", "overlay"];
 /// Inline content slots rendered in the central region.
 pub const MAIN_SLOTS: &[&str] = &["main", "content", "screen"];
 
+/// Transient overlays sibling traits may share: one opens at a time by user action and toasts stack, so they
+/// are not slot contention (owner ruling, P-009).
+pub const SHARED_OVERLAY_SLOTS: &[&str] = &["modal", "toast"];
+
 /// Pattern TYPES that self-manage their own overlay chrome (slide-over/dialog
 /// framing baked into the pattern itself), so the generic `CompiledPortal`
 /// shell wrapping an overlay slot must NOT wrap them again — doing so
