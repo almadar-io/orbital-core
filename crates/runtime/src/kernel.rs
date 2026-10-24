@@ -287,9 +287,8 @@ pub struct RuntimeKernel {
     /// Every registered inline `EntityDefinition`, keyed by entity name —
     /// populated additively alongside `entity_policies` in `register_schema`
     /// (same loop, same inline-only/additive-across-registrations contract).
-    /// `dispatch_with_server_leg`/`TraitDefinition::dispatch_mode` reads a
-    /// trait's linked entity here to decide `DispatchMode` (declared
-    /// `[runtime]` persistence, never inferred).
+    /// Policy and residence readers resolve a trait's linked entity here;
+    /// `DispatchMode` never does (it is the trait's declared `dispatch`).
     entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
     /// Each entity type's declared field defaults as one object (`Null` when none), built when the
     /// schema registers; `read_trait_entity` layers a row and a frame over it.
@@ -1525,7 +1524,7 @@ impl RuntimeKernel {
                     if def.persistence == Some(Persistence::Runtime) {
                         self.io.claim_runtime(&def.name);
                     }
-                    if def.persistence != Some(Persistence::Runtime) && !def.local {
+                    if def.persistence != Some(Persistence::Runtime) && !def.browser {
                         if let Some(driver) = def.store.as_ref().or(schema.store.as_ref()) {
                             self.io.bind_store(&def.name, driver);
                             self.declare_store_capabilities(schema, &def.name, driver);
@@ -5641,15 +5640,9 @@ impl RuntimeKernel {
             .unwrap_or_default()
     }
 
-    /// A registered trait's derived dispatch mode (`dispatch_mode::compute`).
+    /// A registered trait's declared dispatch mode (`dispatch_mode::compute`).
     pub fn dispatch_mode_of(&self, trait_def: &TraitDefinition) -> DispatchMode {
-        let defs = self.entity_definitions.read();
-        let entity_def = trait_def
-            .linked_entity
-            .as_deref()
-            .and_then(|name| defs.get(name));
-        let residence = orbital_core_base::runs_on::Residence::of_entities(defs.values());
-        trait_def.dispatch_mode(entity_def, &residence)
+        trait_def.dispatch_mode(None, &orbital_core_base::runs_on::Residence::none())
     }
 
     /// The dispatch mode of the registered trait `trait_name`; `None` when no such trait is registered.
@@ -8057,7 +8050,7 @@ mod client_dispatch_tests {
         orbital_core_base::client_effect::ClientEffect,
     };
 
-    /// `Persistor` (PersistedAwaited: not `local`, linked entity `Persistent`)
+    /// `Persistor` (PersistedAwaited: no declared `dispatch`)
     /// transitions `idle -[CREATE]-> created` via a real `persist` effect —
     /// the server-only effect that must reach the `ServerLegCollector`.
     fn persisted_awaited_schema() -> OrbitalSchema {
@@ -8091,10 +8084,10 @@ mod client_dispatch_tests {
         .unwrap()
     }
 
-    /// `LocalToggle` declares `local: true` on a Persistent (non-runtime)
-    /// entity but STILL carries a `persist` effect — a schema no validator
-    /// should ever let through (§7: `local` is only legal where nothing needs
-    /// the server), reproduced here deliberately to prove the kernel's
+    /// `LocalToggle` declares `dispatch: "client"` but STILL carries a
+    /// `persist` effect — a schema no validator should ever let through
+    /// (`[client]` is only legal where nothing needs the server),
+    /// reproduced here deliberately to prove the kernel's
     /// defensive drop holds even when the collector has something to drain.
     fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
         serde_json::from_value(serde_json::json!({
@@ -8105,7 +8098,7 @@ mod client_dispatch_tests {
                 "traits": [{
                     "name": "LocalToggle",
                     "linkedEntity": "Note",
-                    "local": true,
+                    "dispatch": "client",
                     "stateMachine": {
                         "states": [
                             { "name": "idle", "isInitial": true },
@@ -8125,8 +8118,7 @@ mod client_dispatch_tests {
         .unwrap()
     }
 
-    /// `Move` is linked to `Cursor`, a `[runtime]`-persistence entity —
-    /// RuntimeOptimistic. Its `MOVE` transition is a plain `Set`, no
+    /// `Move` declares `dispatch: "optimistic"` — RuntimeOptimistic. Its `MOVE` transition is a plain `Set`, no
     /// server-only effect, so it never produces a leg either (nothing to
     /// delegate) but DOES snapshot for optimistic rollback.
     fn runtime_optimistic_schema() -> OrbitalSchema {
@@ -8141,6 +8133,7 @@ mod client_dispatch_tests {
                 "traits": [{
                     "name": "Move",
                     "linkedEntity": "Cursor",
+                    "dispatch": "optimistic",
                     "stateMachine": {
                         "states": [
                             { "name": "idle", "isInitial": true },
@@ -8150,8 +8143,6 @@ mod client_dispatch_tests {
                             { "from": "idle", "to": "idle", "event": "INIT" },
                             {
                                 "from": "idle", "to": "moved", "event": "MOVE",
-                                // Its own server effect makes it optimistic
-                                // (a `[runtime]` trait with none is client-only).
                                 "effects": [["set", "@entity.x", 5], ["call-service", "telemetry", "move", {}]]
                             }
                         ]
@@ -8299,7 +8290,7 @@ mod client_dispatch_tests {
                 "name": "Main",
                 "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [
-                    { "name": "Composer", "local": true, "linkedEntity": "Note", "stateMachine": {
+                    { "name": "Composer", "dispatch": "client", "linkedEntity": "Note", "stateMachine": {
                         "states": [{ "name": "ready", "isInitial": true }],
                         "transitions": [{ "from": "ready", "to": "ready", "event": "SEND", "effects": [["emit", "SAVE", {}]] }] } },
                     { "name": "Persistor", "linkedEntity": "Note",
@@ -8340,7 +8331,7 @@ mod client_dispatch_tests {
                 "name": "Main",
                 "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [
-                    { "name": "Composer", "local": true, "linkedEntity": "Note", "stateMachine": {
+                    { "name": "Composer", "dispatch": "client", "linkedEntity": "Note", "stateMachine": {
                         "states": [{ "name": "ready", "isInitial": true }],
                         "transitions": [{ "from": "ready", "to": "ready", "event": "SEND", "effects": [["emit", "SAVE", {}]] }] } },
                     { "name": "Persistor", "linkedEntity": "Note",
@@ -9040,7 +9031,7 @@ mod client_dispatch_tests {
                     {
                         "name": "Composer",
                         "linkedEntity": "Message",
-                        "local": true,
+                        "dispatch": "client",
                         "stateMachine": {
                             "states": [{ "name": "ready", "isInitial": true }],
                             "transitions": [
@@ -9114,7 +9105,7 @@ mod client_dispatch_tests {
                 ] },
                 "traits": [
                     {
-                        "name": "Ticker", "linkedEntity": "Note", "local": true,
+                        "name": "Ticker", "linkedEntity": "Note", "dispatch": "client",
                         "stateMachine": {
                             "states": [{ "name": "running", "isInitial": true }],
                             "transitions": ticker_transitions
@@ -9132,7 +9123,7 @@ mod client_dispatch_tests {
                         ]
                     },
                     {
-                        "name": "Listener", "linkedEntity": "Note", "local": true,
+                        "name": "Listener", "linkedEntity": "Note", "dispatch": "client",
                         "listens": [{ "event": "BEAT", "triggers": "HEARD", "source": { "kind": "trait", "trait": "Ticker" } }],
                         "stateMachine": {
                             "states": [{ "name": "idle", "isInitial": true }, { "name": "heard" }],
@@ -9701,8 +9692,8 @@ mod mount_lifecycle_tests {
 
 #[cfg(test)]
 mod host_entity_tests {
-    //! A schema registered straight into the kernel (no compiler resolve) binds
-    //! an unlinked trait to its host orbital's entity, as the JS runtime does.
+    //! A schema registered straight into the kernel (no compiler resolve): the
+    //! host orbital's entity never decides a trait's dispatch mode.
     use super::*;
     use crate::entity_source::InMemoryEntityCache;
 
@@ -9744,11 +9735,19 @@ mod host_entity_tests {
     }
 
     #[test]
-    fn an_unlinked_trait_on_a_runtime_orbital_is_client_only() {
+    fn an_undeclared_trait_on_a_runtime_orbital_awaits_the_server() {
         assert_eq!(
             mode(&kernel_with("runtime", None)),
-            DispatchMode::HybridClientOnly
+            DispatchMode::PersistedAwaited
         );
+    }
+
+    #[test]
+    fn a_client_trait_on_a_persisted_orbital_is_client_only() {
+        let kernel = kernel_with("persistent", None);
+        let mut def = kernel.trait_definitions.read()["Pure"].clone();
+        def.dispatch = Some(orbital_core_base::schema::types::DispatchMode::Client);
+        assert_eq!(kernel.dispatch_mode_of(&def), DispatchMode::HybridClientOnly);
     }
 
     #[test]

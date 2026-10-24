@@ -665,7 +665,7 @@ fn asking_kernel(keyed: bool) -> Asking {
                 "name": "Target", "linkedEntity": "Tally",
                 "stateMachine": {
                     "states": [{ "name": "idle", "isInitial": true }],
-                    "events": [{ "key": "HIT", "name": "Hit", "external": true }],
+                    "events": [{ "key": "HIT", "name": "Hit", "input": true }],
                     "transitions": [{ "from": "idle", "to": "idle", "event": "HIT", "effects": [["set", "@entity.n", ["+", "@entity.n", 1]]] }]
                 }
             }]

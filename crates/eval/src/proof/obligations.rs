@@ -1477,7 +1477,7 @@ fn default_of(def: &EntityDefinition, field: &str) -> SExpression {
 
 pub fn field_sort(f: &FieldDefinition) -> Option<Sort> {
     match f.field_type {
-        FieldType::Number | FieldType::Money => Some(Sort::Num),
+        FieldType::Number | FieldType::Int | FieldType::Money => Some(Sort::Num),
         FieldType::Boolean => Some(Sort::Bool),
         FieldType::Enum => Some(Sort::Str(f.values.clone())),
         FieldType::String

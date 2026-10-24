@@ -76,7 +76,7 @@ pub trait Backend: Send + Sync {
     fn name(&self) -> &'static str;
 
     /// Whether this backend generates browser-side `fetch`/`persist` for
-    /// `[persistent: x, local]` entities. A backend that does not is refused a
+    /// `[persistent: x, browser]` entities. A backend that does not is refused a
     /// program declaring one (`ORB_SHELL_LOCAL_ENTITY_UNSUPPORTED`).
     fn supports_browser_stored_entities(&self) -> bool {
         false

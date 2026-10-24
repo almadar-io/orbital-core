@@ -718,7 +718,7 @@ mod tests {
         // Fired event key "REGISTER" carries id "evt-register".
         sm.events = Some(vec![orbital_core_base::schema::types::EventDefinition {
             payload_entity: None,
-            external: None,
+            input: None,
             listened: None,
             inbound: None,
             key: "REGISTER".to_string(),

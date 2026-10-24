@@ -92,7 +92,7 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
 /// `entityArgPosition`; `runs_on_drift.rs` fails the build when they disagree.
 pub const ENTITY_ARGS: &[(&str, usize)] = &[("fetch", 0), ("persist", 1)];
 
-/// The program's browser-stored entities (`[persistent: x, local]`), by name: the
+/// The program's browser-stored entities (`[persistent: x, browser]`), by name: the
 /// one input every "where does this data effect run" question needs. A
 /// `[runtime]` entity's frame lives in the client, but its rows stay in the
 /// server's per-session store (Runtime Spec 9.2), so it is not listed here.
@@ -116,7 +116,7 @@ impl Residence {
         Self {
             client: entities
                 .into_iter()
-                .filter(|e| e.local)
+                .filter(|e| e.browser)
                 .map(|e| e.name.clone())
                 .collect(),
             browser_services: Default::default(),
@@ -129,7 +129,7 @@ impl Residence {
             client: module
                 .entities
                 .iter()
-                .filter(|e| e.local)
+                .filter(|e| e.browser)
                 .map(|e| e.name.clone())
                 .collect(),
             browser_services: module.browser_services.iter().cloned().collect(),

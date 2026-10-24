@@ -106,24 +106,25 @@ impl Operator for CountOp {
         }
 
         // Regular array count, with an optional predicate
-        let val = eval_expr(&args[0], ctx)?;
-        if let (Value::Array(arr), Some(predicate)) = (&val, args.get(1)) {
-            let mut count = 0usize;
-            for (i, item) in arr.iter().enumerate() {
-                if apply_callback(predicate, &[item.clone(), Value::Number(i as f64)], ctx)?
-                    .is_truthy()
-                {
-                    count += 1;
+        super::with_operand(&args[0], ctx, |val| {
+            if let (Value::Array(arr), Some(predicate)) = (val, args.get(1)) {
+                let mut count = 0usize;
+                for (i, item) in arr.iter().enumerate() {
+                    if apply_callback(predicate, &[item.clone(), Value::Number(i as f64)], ctx)?
+                        .is_truthy()
+                    {
+                        count += 1;
+                    }
                 }
+                return Ok(Value::Number(count as f64));
             }
-            return Ok(Value::Number(count as f64));
-        }
-        match val {
-            Value::Array(arr) => Ok(Value::Number(arr.len() as f64)),
-            Value::String(s) => Ok(Value::Number(s.len() as f64)),
-            Value::Object(obj) => Ok(Value::Number(obj.len() as f64)),
-            _ => Ok(Value::Number(0.0)),
-        }
+            Ok(match val {
+                Value::Array(arr) => Value::Number(arr.len() as f64),
+                Value::String(s) => Value::Number(s.len() as f64),
+                Value::Object(obj) => Value::Number(obj.len() as f64),
+                _ => Value::Number(0.0),
+            })
+        })
     }
 }
 
@@ -138,14 +139,13 @@ pub struct FirstOp;
 impl Operator for FirstOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "first", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        match val {
-            Value::Array(arr) => Ok(arr.into_iter().next().unwrap_or(Value::Null)),
+        super::with_operand(&args[0], ctx, |val| match val {
+            Value::Array(arr) => Ok(arr.first().cloned().unwrap_or(Value::Null)),
             _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "array".to_string(),
                 actual: val.type_name().to_string(),
             })),
-        }
+        })
     }
 }
 
@@ -153,14 +153,13 @@ pub struct LastOp;
 impl Operator for LastOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "last", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        match val {
-            Value::Array(arr) => Ok(arr.into_iter().last().unwrap_or(Value::Null)),
+        super::with_operand(&args[0], ctx, |val| match val {
+            Value::Array(arr) => Ok(arr.last().cloned().unwrap_or(Value::Null)),
             _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "array".to_string(),
                 actual: val.type_name().to_string(),
             })),
-        }
+        })
     }
 }
 
@@ -168,27 +167,22 @@ pub struct NthOp;
 impl Operator for NthOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "nth", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let idx = eval_expr(&args[1], ctx)?;
-
-        let array = match arr {
-            Value::Array(a) => a,
-            _ => {
+        super::with_operand(&args[0], ctx, |arr| {
+            let idx = eval_expr(&args[1], ctx)?;
+            let Value::Array(array) = arr else {
                 return Err(OrbitalError::Eval(EvalError::TypeMismatch {
                     expected: "array".to_string(),
                     actual: arr.type_name().to_string(),
-                }))
-            }
-        };
-
-        let index = idx.to_number().ok_or_else(|| {
-            OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "number".to_string(),
-                actual: idx.type_name().to_string(),
-            })
-        })? as usize;
-
-        Ok(array.get(index).cloned().unwrap_or(Value::Null))
+                }));
+            };
+            let index = idx.to_number().ok_or_else(|| {
+                OrbitalError::Eval(EvalError::TypeMismatch {
+                    expected: "number".to_string(),
+                    actual: idx.type_name().to_string(),
+                })
+            })? as usize;
+            Ok(array.get(index).cloned().unwrap_or(Value::Null))
+        })
     }
 }
 
@@ -196,20 +190,20 @@ pub struct IncludesOp;
 impl Operator for IncludesOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "includes", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let item = eval_expr(&args[1], ctx)?;
-
-        match arr {
-            Value::Array(a) => Ok(Value::Bool(a.iter().any(|v| v.loose_eq(&item)))),
-            Value::String(s) => {
-                let needle = item.to_string_value();
-                Ok(Value::Bool(s.contains(&needle)))
+        super::with_operand(&args[0], ctx, |arr| {
+            let item = eval_expr(&args[1], ctx)?;
+            match arr {
+                Value::Array(a) => Ok(Value::Bool(a.iter().any(|v| v.loose_eq(&item)))),
+                Value::String(s) => {
+                    let needle = item.to_string_value();
+                    Ok(Value::Bool(s.contains(&needle)))
+                }
+                _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+                    expected: "array or string".to_string(),
+                    actual: arr.type_name().to_string(),
+                })),
             }
-            _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "array or string".to_string(),
-                actual: arr.type_name().to_string(),
-            })),
-        }
+        })
     }
 }
 
@@ -1049,7 +1043,7 @@ impl Operator for ReduceOp {
 
                 // Bind parameters: first param is accumulator, second is current item
                 if !params.is_empty() {
-                    child_ctx.set_local(&params[0], accumulator.clone());
+                    child_ctx.set_local(&params[0], std::mem::replace(&mut accumulator, Value::Null));
                 }
                 if params.len() >= 2 {
                     child_ctx.set_local(&params[1], item);
@@ -1067,7 +1061,7 @@ impl Operator for ReduceOp {
         let mut accumulator = initial;
         for item in array {
             let mut child_ctx = ctx.child();
-            child_ctx.set_local("acc", accumulator.clone());
+            child_ctx.set_local("acc", std::mem::replace(&mut accumulator, Value::Null));
             child_ctx.set_local("item", item);
             accumulator = eval_expr(reducer, &child_ctx)?;
         }

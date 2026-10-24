@@ -1138,6 +1138,21 @@ pub fn compat_kind_oir(kind: &str) -> OirType {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn an_int_entity_field_fits_an_int_slot_widens_to_number_and_a_number_field_does_not_narrow() {
+        use crate::ir::types::{field_shape, OirType};
+        let field = |ty: &str| -> crate::schema::FieldDefinition {
+            serde_json::from_value(serde_json::json!({ "name": "f", "type": ty })).unwrap()
+        };
+        let int_field = field_shape(&field("int"));
+        let number_field = field_shape(&field("number"));
+        assert_eq!(int_field, OirType::Integer);
+        assert!(super::sub(&int_field, &OirType::Integer).is_some());
+        assert!(super::sub(&int_field, &OirType::Number).is_some());
+        assert!(super::sub(&number_field, &OirType::Integer).is_none());
+        assert!(!super::set_value_type_compatible("number", "int"));
+    }
+
+    #[test]
     fn known_closed_enum_assignments_reject_members_outside_the_declared_set() {
         let closed = |values: &[&str]| crate::ir::types::OirType::enum_type(
             super::literal_union_text(&values.iter().map(|value| value.to_string()).collect::<Vec<_>>()).unwrap()

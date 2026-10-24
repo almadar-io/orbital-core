@@ -431,7 +431,7 @@ fn sample_value(
         ))),
         // No declared min/max: `.lolo` cannot declare a field range, so
         // `FieldDefinition` carries none and the JS owner's fallback bounds apply.
-        FieldType::Number => Some(Value::Number(match entropy {
+        FieldType::Number | FieldType::Int => Some(Value::Number(match entropy {
             Entropy::Seeded(rng) => rng.int(1.0, 250.0),
             Entropy::Index => (index as f64) * 10.0,
         })),
@@ -648,6 +648,10 @@ fn typed_mock_value(field: &FieldDefinition, literal: String) -> Value {
             Ok(n) if n.is_finite() => Value::Number(n),
             _ => Value::String(literal),
         },
+        FieldType::Int => match literal.trim().parse::<i64>() {
+            Ok(n) => Value::Number(n as f64),
+            _ => Value::String(literal),
+        },
         FieldType::Boolean => match literal.as_str() {
             "true" => Value::Bool(true),
             "false" => Value::Bool(false),
@@ -822,9 +826,9 @@ fn seed_order(schema: &OrbitalSchema) -> Vec<(&EntityDefinition, bool)> {
     out
 }
 
-/// A browser-stored entity takes mock rows only when it declares `mock`.
+/// A browser-stored entity is never mock-seeded; its rows come from `instances`.
 fn mock_seeds(def: &EntityDefinition) -> bool {
-    !def.local || def.seed_mock
+    !def.browser
 }
 
 fn has_instances(def: &EntityDefinition) -> bool {

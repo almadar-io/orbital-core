@@ -33,7 +33,7 @@ const ORBITAL_MAP_KEYS: [&str; 10] = [
 /// §8b field lists merged by field name.
 const ORBITAL_FIELD_LIST_KEYS: [&str; 2] = ["extend", "retype"];
 /// §8b keys that replace wholesale (`name` is the orbital's name in the importer).
-const ORBITAL_REPLACE_KEYS: [&str; 11] = [
+const ORBITAL_REPLACE_KEYS: [&str; 10] = [
     "name",
     "entity",
     "persistence",
@@ -43,8 +43,7 @@ const ORBITAL_REPLACE_KEYS: [&str; 11] = [
     "listens",
     "shared",
     "identity",
-    "local",
-    "seedMock",
+    "browser",
 ];
 
 /// The identity of a trait value, without overrides.

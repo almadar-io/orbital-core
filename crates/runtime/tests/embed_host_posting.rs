@@ -28,7 +28,7 @@ fn schema() -> OrbitalSchema {
                   "stateMachine": {
                     "states": [{ "name": "idle", "isInitial": true }, { "name": "ready" }],
                     "transitions": [{ "from": "idle", "to": "ready", "event": "INIT", "effects": [["fetch", "Item", {}]] }] } },
-                { "name": "Badge", "linkedEntity": "Scratch",
+                { "name": "Badge", "linkedEntity": "Scratch", "dispatch": "client",
                   "stateMachine": {
                     "states": [{ "name": "off", "isInitial": true }, { "name": "on" }],
                     "transitions": [{ "from": "off", "to": "on", "event": "INIT", "effects": [] }] } }
@@ -439,7 +439,7 @@ fn composer_schema_with(thread_init: serde_json::Value) -> OrbitalSchema {
             "traits": [
                 { "name": "Thread", "linkedEntity": "Message", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
                     "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": thread_init }] } },
-                { "name": "Composer", "linkedEntity": "Message", "local": true, "stateMachine": { "states": [{ "name": "ready", "isInitial": true }],
+                { "name": "Composer", "linkedEntity": "Message", "dispatch": "client", "stateMachine": { "states": [{ "name": "ready", "isInitial": true }],
                     "transitions": [{ "from": "ready", "to": "ready", "event": "INIT", "effects": [["set", "@entity.activeChannel", "general"]] }] } }
             ]
         }]

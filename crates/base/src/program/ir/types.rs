@@ -333,18 +333,10 @@ pub struct OirEntity {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub identity: bool,
 
-    /// `[persistent: x, local]` — rows live in the browser. See
-    /// `schema::EntityDefinition::local`.
+    /// `[persistent: x, browser]` — rows live in the browser. See
+    /// `schema::EntityDefinition::browser`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub local: bool,
-
-    /// `[persistent: x, local, mock]` — see `schema::EntityDefinition::seed_mock`.
-    #[serde(
-        default,
-        rename = "seedMock",
-        skip_serializing_if = "std::ops::Not::not"
-    )]
-    pub seed_mock: bool,
+    pub browser: bool,
 
     /// `@read` — see `schema::EntityDefinition::read_policy`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -361,9 +353,9 @@ pub struct OirEntity {
 }
 
 impl OirEntity {
-    /// Rows live in the client: `[runtime]` or `[persistent: x, local]`.
+    /// Rows live in the client: `[runtime]` or `[persistent: x, browser]`.
     pub fn is_client_resident(&self) -> bool {
-        self.local || self.persistence == OirPersistence::Runtime
+        self.browser || self.persistence == OirPersistence::Runtime
     }
 
     /// Create a new entity
@@ -383,8 +375,7 @@ impl OirEntity {
             used_by_pages: vec![],
             shared: false,
             identity: false,
-            local: false,
-            seed_mock: false,
+            browser: false,
             read_policy: None,
             create_policy: None,
             update_policy: None,
@@ -837,6 +828,7 @@ fn field_shape_inner(field: &FieldDefinition) -> OirType {
     match &field.field_type {
         FieldType::String => OirType::String,
         FieldType::Number => OirType::Number,
+        FieldType::Int => OirType::Integer,
         FieldType::Boolean => OirType::Boolean,
         FieldType::Date => OirType::Date,
         FieldType::Datetime | FieldType::Timestamp => OirType::DateTime,
@@ -1271,15 +1263,6 @@ pub struct OirTrait {
     /// Where this trait came from
     #[serde(default)]
     pub source: OirTraitSource,
-    /// Category for organization
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub category: Option<String>,
-    /// Author-supplied capability tags lifted from the `.lolo` trait header's
-    /// bracket list. Free-form strings; matched as exact set membership by
-    /// the Phase 4 translator overlay in `@almadar/core`. Empty when no
-    /// capabilities were declared. See `docs/Almadar_Domain_Language.md` Phase 3.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<String>,
     /// Entity this trait is linked to
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked_entity: Option<String>,
@@ -1361,11 +1344,11 @@ pub struct OirTrait {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_trait: Option<String>,
 
-    /// `local` trait-header flag — declares client-only dispatch. See
-    /// `docs/Almadar_LOLO.md` §7 and [`OirTrait::dispatch_mode`]. Undeclared
-    /// (`false`) means server-gated dispatch. Never inferred from effects.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub local: bool,
+    /// Declared dispatch mode (`[client]` / `[optimistic]`). See
+    /// [`OirTrait::dispatch_mode`]. Absent means server-gated dispatch.
+    /// Never inferred from effects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<crate::schema::types::DispatchMode>,
 }
 
 /// Client dispatch strategy for a trait's transitions. A pure lookup over
@@ -1388,7 +1371,6 @@ impl OirTrait {
             orbital_name: String::new(),
             description: None,
             source: OirTraitSource::Schema,
-            category: None,
             linked_entity: None,
             linked_entity_id: None,
             entity_ref_ids: None,
@@ -1405,9 +1387,8 @@ impl OirTrait {
             emits: vec![],
             data_entities: vec![],
             slots_used: vec![],
-            capabilities: vec![],
             host_trait: None,
-            local: false,
+            dispatch: None,
         }
     }
 
@@ -1444,21 +1425,13 @@ impl OirTrait {
     }
 
     /// Client dispatch strategy for this trait's transitions — a pure LOOKUP
-    /// over declared facts (the trait's own declared `local` flag + linked-entity
-    /// persistence), never effect inspection. Per §7, a declared `local` trait is
-    /// always client-only regardless of entity persistence; otherwise a `[runtime]`
-    /// linked entity is RuntimeOptimistic; `entity` is `None` when unlinked/unresolved.
+    /// of the trait's declared `dispatch`: `client`, `optimistic`, else server.
     pub fn dispatch_mode(
         &self,
-        entity: Option<&OirEntity>,
-        residence: &crate::runs_on::Residence,
+        _entity: Option<&OirEntity>,
+        _residence: &crate::runs_on::Residence,
     ) -> OirDispatchMode {
-        let entity_is_client = entity.is_some_and(OirEntity::is_client_resident);
-        crate::dispatch_mode::compute(
-            self.local,
-            entity_is_client,
-            self.touches_server(residence),
-        )
+        crate::dispatch_mode::compute(self.dispatch)
     }
 
     /// Where `tick` runs: on the server when it is `[background]` or this trait is
@@ -1631,7 +1604,7 @@ pub struct OirEvent {
     /// kind of asymmetry the validator is meant to close.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub payload_required_fields: std::collections::BTreeSet<String>,
-    /// The declared external input record (`listens { EVENT -> external { … } }`)
+    /// The declared external input record (`listens { EVENT -> input { … } }`)
     /// when outside clients may send this event on the input channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external: Option<crate::external_inputs::ExternalInput>,
@@ -2817,6 +2790,15 @@ mod tests {
     }
 
     #[test]
+    fn field_shape_int_is_integer_and_number_stays_number() {
+        assert_eq!(field_shape(&bare_field(FieldType::Int)), OirType::Integer);
+        let mut nullable = bare_field(FieldType::Int);
+        nullable.nullable = Some(true);
+        assert_eq!(field_shape(&nullable), OirType::optional(OirType::Integer));
+        assert_eq!(field_shape(&bare_field(FieldType::Number)), OirType::Number);
+    }
+
+    #[test]
     fn field_shape_array_recurses_into_items() {
         let mut f = bare_field(FieldType::Array);
         f.items = Some(Box::new(bare_field(FieldType::String)));
@@ -3128,72 +3110,70 @@ mod tests {
     }
 
     #[test]
-    fn test_oir_trait_local_round_trips_true() {
+    fn test_oir_trait_dispatch_round_trips_declared_mode() {
         let mut t = OirTrait::new("Toggle");
-        t.local = true;
+        t.dispatch = Some(crate::schema::types::DispatchMode::Client);
         let serialized = serde_json::to_string(&t).unwrap();
-        assert!(serialized.contains("\"local\":true"));
+        assert!(serialized.contains("\"dispatch\":\"client\""));
         let deserialized: OirTrait = serde_json::from_str(&serialized).unwrap();
-        assert!(deserialized.local);
+        assert_eq!(deserialized.dispatch, Some(crate::schema::types::DispatchMode::Client));
     }
 
     #[test]
-    fn test_oir_trait_local_defaults_false_when_absent() {
+    fn test_oir_trait_dispatch_defaults_absent() {
         let t = OirTrait::new("Toggle");
-        assert!(!t.local);
+        assert_eq!(t.dispatch, None);
         let serialized = serde_json::to_string(&t).unwrap();
-        assert!(!serialized.contains("\"local\""));
+        assert!(!serialized.contains("\"dispatch\""));
         let deserialized: OirTrait = serde_json::from_str(&serialized).unwrap();
-        assert!(!deserialized.local);
+        assert_eq!(deserialized.dispatch, None);
     }
 
     #[test]
-    fn test_dispatch_mode_runtime_entity_is_client_only_without_server_effects() {
-        // 2026-09-24 ruling: a `[runtime]` entity lives in the client; its
-        // traits go optimistic only when their own effects reach the server
-        // (`runtime::dispatch_mode` tests cover that side).
+    fn test_dispatch_mode_runtime_entity_without_declaration_is_server() {
         let mut entity = OirEntity::new("Cursor");
         entity.persistence = OirPersistence::Runtime;
         let t = OirTrait::new("Move");
         assert_eq!(
             t.dispatch_mode(Some(&entity), &crate::runs_on::Residence::none()),
-            OirDispatchMode::HybridClientOnly
+            OirDispatchMode::PersistedAwaited
         );
     }
 
     #[test]
-    fn test_dispatch_mode_local_wins_over_runtime_entity() {
-        let mut entity = OirEntity::new("Cursor");
-        entity.persistence = OirPersistence::Runtime;
+    fn test_dispatch_mode_client_is_client_only_whatever_the_entity() {
+        let mut runtime = OirEntity::new("Cursor");
+        runtime.persistence = OirPersistence::Runtime;
+        let persistent = OirEntity::new("Draft");
         let mut t = OirTrait::new("Move");
-        t.local = true;
-        // §7: declared `local` is client-only regardless of entity persistence
-        assert_eq!(
-            t.dispatch_mode(Some(&entity), &crate::runs_on::Residence::none()),
-            OirDispatchMode::HybridClientOnly
-        );
+        t.dispatch = Some(crate::schema::types::DispatchMode::Client);
+        for entity in [Some(&runtime), Some(&persistent), None] {
+            assert_eq!(
+                t.dispatch_mode(entity, &crate::runs_on::Residence::none()),
+                OirDispatchMode::HybridClientOnly
+            );
+        }
     }
 
     #[test]
-    fn test_dispatch_mode_hybrid_client_only_when_local_and_not_runtime() {
-        let entity = OirEntity::new("Draft"); // defaults to Persistent
+    fn test_dispatch_mode_optimistic_is_declared() {
+        let entity = OirEntity::new("Draft");
         let mut t = OirTrait::new("Edit");
-        t.local = true;
+        t.dispatch = Some(crate::schema::types::DispatchMode::Optimistic);
         assert_eq!(
             t.dispatch_mode(Some(&entity), &crate::runs_on::Residence::none()),
-            OirDispatchMode::HybridClientOnly
+            OirDispatchMode::RuntimeOptimistic
         );
     }
 
     #[test]
     fn test_dispatch_mode_persisted_awaited_by_default() {
-        let entity = OirEntity::new("Order"); // Persistent, not local
+        let entity = OirEntity::new("Order");
         let t = OirTrait::new("Checkout");
         assert_eq!(
             t.dispatch_mode(Some(&entity), &crate::runs_on::Residence::none()),
             OirDispatchMode::PersistedAwaited
         );
-        // Unresolved entity falls through the same way a non-runtime one does.
         assert_eq!(
             t.dispatch_mode(None, &crate::runs_on::Residence::none()),
             OirDispatchMode::PersistedAwaited

@@ -20,9 +20,9 @@ fn kernel(effects: serde_json::Value, local: bool) -> RuntimeKernel {
         "name": "books",
         "orbitals": [{
             "name": "Books",
-            "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices", "local": local,
+            "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices", "browser": local,
                 "fields": [{ "name": "id", "type": "string" }] },
-            "traits": [{ "name": "InvoiceList", "linkedEntity": "Invoice",
+            "traits": [{ "name": "InvoiceList", "linkedEntity": "Invoice", "dispatch": if local { json!("client") } else { json!(null) },
                 "stateMachine": {
                     "states": [{ "name": "idle", "isInitial": true }],
                     "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": effects }] } }]
@@ -90,9 +90,9 @@ fn cascade_kernel() -> RuntimeKernel {
         "name": "books",
         "orbitals": [{
             "name": "Books",
-            "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices", "local": true,
+            "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices", "browser": true,
                 "fields": [{ "name": "id", "type": "string" }] },
-            "traits": [{ "name": "InvoiceList", "linkedEntity": "Invoice",
+            "traits": [{ "name": "InvoiceList", "linkedEntity": "Invoice", "dispatch": "client",
                 "stateMachine": {
                     "states": [{ "name": "loading", "isInitial": true }, { "name": "browsing" }],
                     "transitions": [

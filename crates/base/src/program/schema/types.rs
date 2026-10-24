@@ -1556,9 +1556,9 @@ pub enum ExpectDeclaration {
         /// `[shared]`: the provider must be a shared entity.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         shared: bool,
-        /// `[local]`: the provider's rows must live in the browser.
+        /// `[browser]`: the provider's rows must live in the browser.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        local: bool,
+        browser: bool,
         /// `@read|@create|@update|@delete <expr>`: the provider's policy must be this expression, structurally.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         read_policy: Option<SExpression>,
@@ -1812,6 +1812,10 @@ pub struct PageRefObject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 
+    /// Call-site address override for a protocol page (`page http { … } = Alias.pages.X`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<SExpression>,
+
     /// Phase F: rebind the page's entity to the caller-supplied entity.
     /// The identifier-substitution pass rewrites references to the original
     /// entity inside the imported page.
@@ -2022,20 +2026,14 @@ pub struct OrbitalRefObject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection: Option<String>,
 
-    /// Entity-header flags of the rebind line (`[shared]`, `[identity]`, `[local]`,
-    /// `[mock]`); each one switches the flag ON for the materialized primary entity.
+    /// Entity-header flags of the rebind line (`[shared]`, `[identity]`, `[browser]`);
+    /// each one switches the flag ON for the materialized primary entity.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shared: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub identity: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub local: bool,
-    #[serde(
-        rename = "seedMock",
-        default,
-        skip_serializing_if = "std::ops::Not::not"
-    )]
-    pub seed_mock: bool,
+    pub browser: bool,
 
     /// `traits { UpstreamTrait { ... } }`: per-imported-trait call-site overrides,
     /// keyed by the trait's UPSTREAM name. Same surface as a trait reference's body.
@@ -2271,20 +2269,11 @@ pub struct EntityDefinition {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub identity: bool,
 
-    /// `[persistent: x, local]` — the rows live in the browser (IndexedDB), so
+    /// `[persistent: x, browser]` — the rows live in the browser (IndexedDB), so
     /// data effects on this entity run client-side. Twin of `@almadar/core`
-    /// `OrbitalEntity.local`.
+    /// `OrbitalEntity.browser`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub local: bool,
-
-    /// `[persistent: x, local, mock]` — an empty browser store is seeded from the
-    /// shared mock seeder on first open (the other seed source is `instances`).
-    #[serde(
-        default,
-        rename = "seedMock",
-        skip_serializing_if = "std::ops::Not::not"
-    )]
-    pub seed_mock: bool,
+    pub browser: bool,
 
     /// A browser-stored entity's first rows per declared locale (`instances ar [ … ]`);
     /// a locale with no block takes `instances`.
@@ -2412,10 +2401,10 @@ impl EntityDefinition {
             .unwrap_or(&[])
     }
 
-    /// Rows live in the client: `[runtime]` (in memory) or `[persistent: x, local]`
+    /// Rows live in the client: `[runtime]` (in memory) or `[persistent: x, browser]`
     /// (the browser's IndexedDB). Twin of `@almadar/core` `isClientResident`.
     pub fn is_client_resident(&self) -> bool {
-        self.local || matches!(self.persistence, Some(Persistence::Runtime))
+        self.browser || matches!(self.persistence, Some(Persistence::Runtime))
     }
 }
 
@@ -2727,6 +2716,9 @@ fn deserialize_projected_field<'de, D: serde::Deserializer<'de>>(deserializer: D
 pub enum FieldType {
     String,
     Number,
+    /// Whole number. Distinct from `Number` in the type relation: a number does
+    /// not narrow into an `int` slot. `float` stays `Number`.
+    Int,
     Boolean,
     Date,
     Datetime,
@@ -2887,7 +2879,8 @@ impl FieldType {
             // `render-ui` are being ELIMINATED, not re-typed — Gate C tracks them)
             // while still rejecting genuine typos.
             "json" | "render-ui" | "relation" => FieldType::String,
-            "int" | "float" | "number" | "duration" => FieldType::Number,
+            "int" => FieldType::Int,
+            "float" | "number" | "duration" => FieldType::Number,
             "bool" | "boolean" => FieldType::Boolean,
             "date" => FieldType::Date,
             "datetime" => FieldType::Datetime,
@@ -3103,10 +3096,9 @@ pub enum TraitReference {
         /// `"$<param>"` payload sentinel; unconsumed keys (source declares no
         /// matching param) are a harmless no-op.
         type_args: Option<HashMap<String, String>>,
-        /// Call-site `[local]` (`trait X = Alias.traits.Y -> E [local]`): the
-        /// resolved trait dispatches client-only (`hybridClientOnly`) whatever
-        /// the atom declared. Resolved local = call-site OR atom.
-        local: bool,
+        /// Call-site dispatch mode (`trait X = Alias.traits.Y -> E [client]`):
+        /// replaces the mode the atom declared when present.
+        dispatch: Option<DispatchMode>,
     },
 }
 
@@ -3173,7 +3165,7 @@ struct TraitReferenceFields {
     #[serde(rename = "typeArgs", default)]
     type_args: Option<HashMap<String, String>>,
     #[serde(default)]
-    local: bool,
+    dispatch: Option<DispatchMode>,
 }
 
 /// Borrowing mirror of the `Reference` variant used only by the hand-written
@@ -3209,12 +3201,8 @@ struct TraitReferenceFieldsRef<'a> {
     emits_scope: &'a Option<EventScope>,
     #[serde(rename = "typeArgs", skip_serializing_if = "Option::is_none")]
     type_args: &'a Option<HashMap<String, String>>,
-    #[serde(skip_serializing_if = "is_false")]
-    local: &'a bool,
-}
-
-fn is_false(b: &&bool) -> bool {
-    !**b
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dispatch: &'a Option<DispatchMode>,
 }
 
 impl Serialize for TraitReference {
@@ -3242,7 +3230,7 @@ impl Serialize for TraitReference {
                 listens,
                 emits_scope,
                 type_args,
-                local,
+                dispatch,
             } => TraitReferenceFieldsRef {
                 reference,
                 ref_id,
@@ -3257,7 +3245,7 @@ impl Serialize for TraitReference {
                 listens,
                 emits_scope,
                 type_args,
-                local,
+                dispatch,
             }
             .serialize(serializer),
         }
@@ -3302,7 +3290,7 @@ impl<'de> Deserialize<'de> for TraitReference {
                 listens: f.listens,
                 emits_scope: f.emits_scope,
                 type_args: f.type_args,
-                local: f.local,
+                dispatch: f.dispatch,
             })
         } else {
             let td: TraitDefinition = serde_json::from_value(value).map_err(D::Error::custom)?;
@@ -3370,17 +3358,6 @@ pub struct TraitDefinition {
     #[serde(rename = "effectRow", default, skip_serializing_if = "Option::is_none")]
     pub effect_row: Option<EffectRow>,
 
-    /// Trait category
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub category: Option<TraitCategory>,
-
-    /// Author-supplied capability tags lifted from the `.lolo` trait header
-    /// bracket list (anything beyond the scope marker + the first category
-    /// identifier). Free-form strings — no closed enum. Empty when none
-    /// were declared. See `docs/Almadar_Domain_Language.md` Phase 3.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<String>,
-
     /// Description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -3447,22 +3424,11 @@ pub struct TraitDefinition {
     #[serde(rename = "dataEntities", skip_serializing_if = "Option::is_none")]
     pub data_entities: Option<Vec<EntityDefinition>>,
 
-    /// Trait scope (V2): `instance` = one record at a time, `collection` =
-    /// many-records view. Parsed from the `[instance]` / `[collection]` marker
-    /// in a `.lolo` trait header. Optional during the V2 migration; Phase 6
-    /// makes it required.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<TraitScope>,
-
-    /// `local` trait-header flag, parsed from the same `.lolo` bracket list
-    /// as `scope`/`category`/capabilities. Declares client-only dispatch —
-    /// a local trait's transitions never await a server round trip.
-    /// Undeclared (`false`, the default) means server-gated dispatch;
-    /// nothing about dispatch is inferred from effects. Only legal on a
-    /// `[shared]` or `[runtime]` entity (Wave 2 enforces). See
-    /// `docs/Almadar_LOLO.md` §7 and `OirTrait::dispatch_mode`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub local: bool,
+    /// Declared dispatch mode (`[client]` / `[optimistic]` in the `.lolo` trait
+    /// header). Absent = server: transitions await the server round trip.
+    /// Nothing about dispatch is inferred from effects or entity residence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<DispatchMode>,
 
     /// Set by the inline phase when this trait was cloned from a `uses[]`
     /// import. Absent for traits authored directly on the orbital.
@@ -3526,21 +3492,15 @@ impl TraitDefinition {
 
 impl TraitDefinition {
     /// Client dispatch strategy for this trait — the schema-side entry point
-    /// to the same [`crate::runtime::dispatch_mode::compute`] rule
+    /// to the same [`crate::dispatch_mode::compute`] rule
     /// `ir::types::OirTrait::dispatch_mode` calls, so the compiled path and
-    /// the runtime kernel can never disagree. `entity` is this trait's
-    /// resolved `linked_entity`; `None` when unlinked/unresolved.
+    /// the runtime kernel can never disagree.
     pub fn dispatch_mode(
         &self,
-        entity: Option<&EntityDefinition>,
-        residence: &crate::runs_on::Residence,
+        _entity: Option<&EntityDefinition>,
+        _residence: &crate::runs_on::Residence,
     ) -> crate::dispatch_mode::DispatchMode {
-        let entity_is_client = entity.is_some_and(EntityDefinition::is_client_resident);
-        crate::dispatch_mode::compute(
-            self.local,
-            entity_is_client,
-            self.touches_server(residence),
-        )
+        crate::dispatch_mode::compute(self.dispatch)
     }
 
     /// Whether this trait's own effects reach the server: any transition, or
@@ -3637,26 +3597,14 @@ pub struct SourceDeclarationMetadata {
     pub fingerprint: String,
 }
 
-/// Trait category
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum TraitCategory {
-    Interaction,
-    Integration,
-    Lifecycle,
-    GameCore,
-    GameEntity,
-    GameUi,
-}
-
-/// Trait scope (V2 entity migration). A trait operates over either a single
-/// record (`instance`) or a group (`collection`). Drives payload inference
-/// in the typed emit grammar and later phases of the V2 plan.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Declared client dispatch mode of a trait. Absent on the trait = server.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum TraitScope {
-    Instance,
-    Collection,
+pub enum DispatchMode {
+    /// Transitions run client-side with no server round trip.
+    Client,
+    /// Transitions commit locally, then post to the server and fold its reply.
+    Optimistic,
 }
 
 /// Configuration field definition
@@ -4446,11 +4394,11 @@ pub struct EventDefinition {
     )]
     pub payload_entity: Option<String>,
 
-    /// A declared external input (`listens { EVENT -> external { … } }`): a
+    /// A declared input (`listens { EVENT -> input { … } }`): a
     /// client outside the program (an API, an agent, an MCP client) may send
     /// this event to the trait. Absent = not an input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub external: Option<bool>,
+    pub input: Option<bool>,
 
     /// Declared in the trait's own `listens { EVENT … }` block (the local form,
     /// external or not): an input the author offers to the program.
@@ -4656,8 +4604,16 @@ pub struct PageDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 
-    /// Route path
+    /// Route path. A protocol page has an empty path; its `address` carries where it is reached.
     pub path: String,
+
+    /// Endpoint protocol (`http`, `stdio`, `boot`); absent = a route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+
+    /// The protocol's address record (`page http { host: …, port: … }`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<SExpression>,
 
     /// View type
     #[serde(rename = "viewType", skip_serializing_if = "Option::is_none")]
@@ -4724,6 +4680,16 @@ pub struct PageDefinition {
         skip_serializing_if = "Option::is_none"
     )]
     pub translation_of: Option<String>,
+}
+
+impl PageDefinition {
+    pub fn is_route(&self) -> bool {
+        self.protocol.is_none()
+    }
+
+    pub fn protocol_name(&self) -> &str {
+        self.protocol.as_deref().unwrap_or("route")
+    }
 }
 
 /// Who may open a page: `public` admits anonymous viewers; `authenticated`
@@ -4891,6 +4857,27 @@ pub struct DesignHints {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_int_entity_field_is_int_on_the_wire_and_float_number_duration_stay_number() {
+        use super::FieldType;
+        use serde_json::json;
+        assert_eq!(FieldType::from_primitive_name("int"), Some(FieldType::Int));
+        for name in ["float", "number", "duration"] {
+            assert_eq!(FieldType::from_primitive_name(name), Some(FieldType::Number), "{name}");
+        }
+        let field: super::FieldDefinition =
+            serde_json::from_value(json!({ "name": "count", "type": "int", "default": 3 })).unwrap();
+        assert_eq!(field.field_type, FieldType::Int);
+        let wire = serde_json::to_value(&field).unwrap();
+        assert_eq!(wire["type"], json!("int"));
+        let back: super::FieldDefinition = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.field_type, FieldType::Int);
+        assert_eq!(back.default, Some(super::SExpression::Number(3.0)));
+        let number: super::FieldDefinition =
+            serde_json::from_value(json!({ "name": "price", "type": "number" })).unwrap();
+        assert_eq!(serde_json::to_value(&number).unwrap()["type"], json!("number"));
+    }
+
     #[test]
     fn generic_substitution_composes_nullable_without_changing_field_presence() {
         use serde_json::json;
@@ -5502,8 +5489,7 @@ mod tests {
             instances: None,
             shared: false,
             identity: false,
-            local: false,
-            seed_mock: false,
+            browser: false,
             locale_instances: None,
             read_policy: None,
             create_policy: None,

@@ -13,14 +13,14 @@ fn kernel() -> RuntimeKernel {
         "orbitals": [
             { "name": "SearchOrbital",
               "entity": { "name": "Query", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
-              "traits": [{ "name": "Searcher", "linkedEntity": "Query",
+              "traits": [{ "name": "Searcher", "linkedEntity": "Query", "dispatch": "client",
                   "emits": [{ "event": "REQUESTED", "scope": "external" }],
                   "stateMachine": {
                       "states": [{ "name": "idle", "isInitial": true }, { "name": "searching" }],
                       "transitions": [{ "from": "idle", "to": "searching", "event": "GO", "effects": [["emit", "REQUESTED", {}]] }] } }] },
             { "name": "TaskOrbital",
               "entity": { "name": "Task", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
-              "traits": [{ "name": "Responder", "linkedEntity": "Task",
+              "traits": [{ "name": "Responder", "linkedEntity": "Task", "dispatch": "optimistic",
                   "stateMachine": {
                       "states": [{ "name": "idle", "isInitial": true }, { "name": "answering" }],
                       "transitions": [{ "from": "idle", "to": "answering", "event": "ASK", "effects": [["fetch", "Task", {}]] }] } }] }

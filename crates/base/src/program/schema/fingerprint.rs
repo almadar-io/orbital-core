@@ -9,8 +9,6 @@ pub fn trait_execution_fingerprint(
             "id",
             "name",
             "description",
-            "capabilities",
-            "category",
             "sourceBehavior",
             "sourceDeclaration",
             "sourceEntityDefinition",

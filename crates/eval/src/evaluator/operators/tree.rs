@@ -131,6 +131,7 @@ fn kind_variant<'d>(
         .filter(|(_, v)| match (value, &v.field_type) {
             (Value::Array(_), FieldType::Array) => true,
             (Value::Number(_), FieldType::Number) => true,
+            (Value::Number(n), FieldType::Int) => n.fract() == 0.0,
             (Value::Bool(_), FieldType::Boolean) => true,
             (Value::String(s), FieldType::String) => v.values.as_ref().is_none_or(|allowed| allowed.contains(s)),
             _ => false,

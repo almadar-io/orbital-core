@@ -35,7 +35,7 @@ fn policy_waivers_and_persistence_overrides_reject_unknown_keys() {
 fn declared_policy_and_entity_keys_round_trip() {
     let value = json!({
         "name": "Record", "fields": [], "collection": "records", "persistence": "persistent",
-        "store": "Store", "shared": true, "identity": true, "local": true, "seedMock": true,
+        "store": "Store", "shared": true, "identity": true, "browser": true,
         "instances": [], "localeInstances": {"en": []},
         "read_policy": false, "create_policy": true, "update_policy": false, "delete_policy": true,
         "access_waivers": {"read": "public", "create": "external", "update": "external", "delete": "external"},

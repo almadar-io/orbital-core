@@ -16,7 +16,7 @@ fn text(content: &str) -> Json {
 
 fn trait_of(name: &str, entity: &str, arms: Json, ticks: Json) -> Json {
     json!({
-        "name": name, "linkedEntity": entity, "local": true, "ticks": ticks,
+        "name": name, "linkedEntity": entity, "dispatch": "client", "ticks": ticks,
         "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": arms }
     })
 }
@@ -49,7 +49,7 @@ fn schema(persistence: &str, shared: bool) -> OrbitalSchema {
                         { "name": "step", "interval": 100, "effects": [["set", "@entity.score", ["+", "@entity.score", 1]]] }
                     ])),
                     {
-                        "name": "Second", "linkedEntity": "Board", "local": true,
+                        "name": "Second", "linkedEntity": "Board", "dispatch": "client",
                         "listens": [{ "event": "HAND_OFF", "triggers": "ADD", "source": { "kind": "trait", "trait": "Driver" } }],
                         "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
                             arm("ADD", json!([["set", "@entity.score", ["+", "@entity.score", 100]]]))
@@ -64,7 +64,7 @@ fn schema(persistence: &str, shared: bool) -> OrbitalSchema {
                         arm("INIT", json!([render("banner", text("static"))]))
                     ]), json!([])),
                     {
-                        "name": "Painted", "linkedEntity": "Board", "local": true,
+                        "name": "Painted", "linkedEntity": "Board", "dispatch": "client",
                         "listens": [{ "event": "HUD_PAINTED", "triggers": "COUNT", "source": { "kind": "trait", "trait": "Hud" } }],
                         "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
                             arm("COUNT", json!([["set", "@entity.painted", ["+", "@entity.painted", 1]]]))
@@ -407,7 +407,7 @@ fn host_backed_kernel() -> RuntimeKernel {
             "entity": { "name": "Board", "persistence": "runtime",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "score", "type": "number", "default": 0 }] },
             "traits": [{
-                "name": "Hud", "linkedEntity": "Board",
+                "name": "Hud", "linkedEntity": "Board", "dispatch": "optimistic",
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
                     arm("INIT", json!([render("hud", text("@entity.score"))])),
                     arm("LOAD", json!([["fetch", "Board", {}]]))

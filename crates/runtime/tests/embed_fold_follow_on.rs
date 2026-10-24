@@ -6,14 +6,15 @@ use serde_json::json;
 use std::collections::HashSet;
 
 fn kernel(local: bool) -> EmbeddedKernel {
+    let dispatch = if local { json!("client") } else { json!(null) };
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "books",
         "orbitals": [{
             "name": "Books",
-            "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices", "local": local,
+            "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices", "browser": local,
                 "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
-                { "name": "InvoiceList", "linkedEntity": "Invoice",
+                { "name": "InvoiceList", "linkedEntity": "Invoice", "dispatch": dispatch,
                   "emits": [{ "event": "ADDED", "scope": "external" }],
                   "stateMachine": {
                     "states": [{ "name": "browsing", "isInitial": true }, { "name": "loading" }],
@@ -21,7 +22,7 @@ fn kernel(local: bool) -> EmbeddedKernel {
                         { "from": "browsing", "to": "browsing", "event": "ADD", "effects": [["persist", "create", "Invoice", {}, { "emit": { "success": "ADDED" } }]] },
                         { "from": "browsing", "to": "loading", "event": "ADDED", "effects": [["fetch", "Invoice", {}]] },
                         { "from": "loading", "to": "loading", "event": "NOTE", "effects": [] }] } },
-                { "name": "Tally", "linkedEntity": "Invoice",
+                { "name": "Tally", "linkedEntity": "Invoice", "dispatch": dispatch,
                   "listens": [{ "event": "ADDED", "source": { "kind": "trait", "trait": "InvoiceList" }, "triggers": "COUNT" }],
                   "stateMachine": {
                     "states": [{ "name": "idle", "isInitial": true }, { "name": "counting" }],
@@ -30,7 +31,7 @@ fn kernel(local: bool) -> EmbeddedKernel {
         }, {
             "name": "Desk",
             "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
-            "traits": [{ "name": "Badge", "linkedEntity": "Note",
+            "traits": [{ "name": "Badge", "linkedEntity": "Note", "dispatch": "client",
                 "stateMachine": {
                     "states": [{ "name": "off", "isInitial": true }, { "name": "on" }],
                     "transitions": [{ "from": "off", "to": "on", "event": "FLIP", "effects": [] }] } }]

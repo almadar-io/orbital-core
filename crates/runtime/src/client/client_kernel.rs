@@ -10,11 +10,11 @@
 //! in-process FULL-dispatch path for headless verification and the wasm preview —
 //! see the module doc there for why it is not routed through this kernel.
 //!
-//! Mode semantics (the ONE rule, `crate::DispatchMode::compute`):
-//! - `HybridClientOnly` (`local` trait): the seed's own effects never post (`orbital-core`
+//! Mode semantics (the ONE rule, `crate::DispatchMode::compute`, the trait's declared `dispatch`):
+//! - `HybridClientOnly` (`[client]` trait): the seed's own effects never post (`orbital-core`
 //!   drops a bug-case leg and logs an error). A leg that remains belongs to a downstream
 //!   listener that needs the server, and is posted and folded like `PersistedAwaited`.
-//! - `RuntimeOptimistic` ([runtime] linked entity): the local commit already
+//! - `RuntimeOptimistic` (`[optimistic]` trait): the local commit already
 //!   happened inside `dispatch_with_server_leg`. The leg (if any server-only
 //!   effect fired anyway, e.g. a `call-service` sync call) is posted; on a
 //!   `success:false` or transport error the pre-dispatch snapshot is restored.
@@ -555,10 +555,10 @@ mod tests {
                 "name": "Level",
                 "entity": { "name": "World", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [
-                    { "name": "Seeder", "local": true, "stateMachine": {
+                    { "name": "Seeder", "dispatch": "client", "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }],
                         "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["emit", "SEED", {}]] }] } },
-                    { "name": "Body", "local": true,
+                    { "name": "Body", "dispatch": "client",
                       "listens": [{ "event": "SEED", "triggers": "SET", "source": { "kind": "trait", "trait": "Seeder" } }],
                       "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }, { "name": "ready" }, { "name": "seeded" }],
@@ -635,7 +635,7 @@ mod tests {
         .unwrap()
     }
 
-    /// `LocalToggle` is `local: true` on a Persistent (non-runtime) entity but still
+    /// `LocalToggle` declares `dispatch: "client"` but still
     /// carries a `persist` effect — same deliberately-malformed fixture
     /// `orbital-core`'s own `client_env_hybrid_local_trait_never_produces_server_leg`
     /// uses, reproduced here so the ClientKernel-level test proves the bridge is
@@ -649,7 +649,7 @@ mod tests {
                 "traits": [{
                     "name": "LocalToggle",
                     "linkedEntity": "Note",
-                    "local": true,
+                    "dispatch": "client",
                     "stateMachine": {
                         "states": [
                             { "name": "idle", "isInitial": true },
@@ -669,7 +669,7 @@ mod tests {
         .unwrap()
     }
 
-    /// `Move` is linked to `Cursor`, a `[runtime]`-persistence entity (RuntimeOptimistic).
+    /// `Move` declares `dispatch: "optimistic"` (RuntimeOptimistic).
     /// Its `MOVE` transition carries a `call-service` alongside the `set`, so it DOES
     /// still produce a server leg despite the entity being runtime-only (e.g. a
     /// multiplayer sync call) — the scenario `RuntimeOptimistic` rollback exists for.
@@ -685,6 +685,7 @@ mod tests {
                 "traits": [{
                     "name": "Move",
                     "linkedEntity": "Cursor",
+                    "dispatch": "optimistic",
                     "stateMachine": {
                         "states": [
                             { "name": "idle", "isInitial": true },
@@ -791,7 +792,7 @@ mod tests {
                 "name": "Main",
                 "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
                 "traits": [
-                    { "name": "Composer", "local": true, "stateMachine": {
+                    { "name": "Composer", "dispatch": "client", "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }],
                         "transitions": [
                             { "from": "idle", "to": "idle", "event": "INIT" },
@@ -1010,7 +1011,7 @@ mod tests {
                 },
                 "traits": [
                     {
-                        "name": "Move", "linkedEntity": "Cursor",
+                        "name": "Move", "linkedEntity": "Cursor", "dispatch": "optimistic",
                         "stateMachine": {
                             "states": [{ "name": "idle", "isInitial": true }, { "name": "moved" }],
                             "transitions": [
@@ -1023,7 +1024,7 @@ mod tests {
                         }
                     },
                     {
-                        "name": "Hud", "linkedEntity": "Cursor", "local": true,
+                        "name": "Hud", "linkedEntity": "Cursor", "dispatch": "client",
                         "stateMachine": {
                             "states": [{ "name": "idle", "isInitial": true }],
                             "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
@@ -1151,7 +1152,7 @@ mod tests {
 
     fn ticker_trait(ticks: serde_json::Value) -> serde_json::Value {
         serde_json::json!({
-            "name": "Ticker", "local": true,
+            "name": "Ticker", "dispatch": "client",
             "stateMachine": {
                 "states": [{ "name": "idle", "isInitial": true }, { "name": "active" }],
                 "transitions": [
@@ -1165,7 +1166,7 @@ mod tests {
 
     fn listener_trait() -> serde_json::Value {
         serde_json::json!({
-            "name": "Listener", "local": true,
+            "name": "Listener", "dispatch": "client",
             "listens": [{ "event": "BEAT", "triggers": "HEARD", "source": { "kind": "trait", "trait": "Ticker" } }],
             "stateMachine": {
                 "states": [{ "name": "idle", "isInitial": true }, { "name": "heard" }],
@@ -1317,7 +1318,7 @@ mod tests {
                 "Alpha",
                 "Note",
                 vec![serde_json::json!({
-                    "name": "Ticker", "local": true,
+                    "name": "Ticker", "dispatch": "client",
                     "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }],
                         "transitions": [

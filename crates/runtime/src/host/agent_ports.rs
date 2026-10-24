@@ -93,7 +93,7 @@ pub fn program_answer(op: &str, args: &[Value], answer: Value) -> Result<Value, 
     if raw {
         return Ok(answer);
     }
-    let response: EventResponse = serde_json::to_value(&answer).and_then(serde_json::from_value).map_err(|e| {
+    let response: EventResponse = serde_json::from_value(orbital_core_base::json_value::value_to_json(&answer)).map_err(|e| {
         crate::effects::executor::SubstrateFailure { message: format!("program/dispatch: the host answered no event response: {e}"), errors: Vec::new() }
     })?;
     Ok(dispatch_outcome(&response))
@@ -167,6 +167,7 @@ mod tests {
         let text = |s: &str| Value::String(s.to_string());
         let object = |json: Json| serde_json::from_value::<Value>(json).unwrap();
         let shaped = |args: Vec<Value>| program_answer("program/dispatch", &args, response()).map(|v| norm(serde_json::to_value(&v).unwrap()));
+        let shaped_from = |answer: Result<Value, crate::effects::executor::SubstrateFailure>| norm(serde_json::to_value(answer.expect("shaped")).unwrap());
         let outcome = serde_json::json!({ "ok": true, "emitted": [] });
         assert_eq!(shaped(vec![text("O.T.GO"), object(serde_json::json!({})), object(serde_json::json!({ "orbital": "O", "event": "GO", "viewer": null }))]).unwrap(), outcome, "an event request");
         assert_eq!(shaped(vec![text("O.T.GO"), object(serde_json::json!({}))]).unwrap(), outcome, "a declared input");
@@ -177,6 +178,20 @@ mod tests {
         assert_eq!(inbound, hook, "control: an inbound delivery answers the handler's status and body");
         assert_eq!(program_answer("program/read", &[text("x")], text("y")).unwrap(), text("y"), "control: another op is not reshaped");
         assert!(program_answer("program/dispatch", &[text("O.T.GO"), object(serde_json::json!({}))], text("no response")).is_err(), "edge: a host that answers no event response fails");
+        let mut counted = ValueMap::new();
+        counted.insert("trait".to_string(), text("T"));
+        counted.insert("from".to_string(), text("idle"));
+        counted.insert("to".to_string(), text("idle"));
+        counted.insert("event".to_string(), text("GO"));
+        counted.insert("firedArm".to_string(), Value::Number(1.0));
+        counted.insert("effects".to_string(), Value::Array(Vec::new()));
+        let Value::Object(mut with_arm) = response() else { panic!("a response is a record") };
+        with_arm.insert("transitions".to_string(), Value::Array(vec![Value::Object(counted)]));
+        assert_eq!(
+            shaped_from(program_answer("program/dispatch", &[text("O.T.GO"), object(serde_json::json!({}))], Value::Object(with_arm))),
+            outcome,
+            "edge: a whole number the host answers as the kernel holds numbers (1.0) still reads as an event response"
+        );
     }
 
     #[test]

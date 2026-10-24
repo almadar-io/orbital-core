@@ -55,6 +55,8 @@ pub mod i18n;
 pub mod language_data;
 #[path = "lang/behavior_index.rs"]
 pub mod behavior_index;
+#[path = "lang/protocols.rs"]
+pub mod protocols;
 #[path = "lang/behavior_packages.rs"]
 pub mod behavior_packages;
 #[path = "lang/renderer_packs.rs"]

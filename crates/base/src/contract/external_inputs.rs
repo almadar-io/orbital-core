@@ -1,7 +1,7 @@
 //! Declared external inputs — the events a client outside the program (an API
 //! caller, an agent acting as the user, an MCP client) may send a trait.
-//! Authored as `listens { EVENT -> external { … } }`, lowered onto the trait's
-//! own `stateMachine.events[]` entry as `external: true`. Hosts gate their input
+//! Authored as `listens { EVENT -> input { … } }`, lowered onto the trait's
+//! own `stateMachine.events[]` entry as `input: true`. Hosts gate their input
 //! channel with this list and clients build tool lists from it. Mirrors
 //! `@almadar/core` `src/access/externalInputs.ts`.
 
@@ -32,7 +32,7 @@ pub fn external_input_of(
     trait_name: &str,
     ev: &EventDefinition,
 ) -> Option<ExternalInput> {
-    if ev.external != Some(true) {
+    if ev.input != Some(true) {
         return None;
     }
     Some(ExternalInput {
@@ -95,7 +95,7 @@ mod tests {
                         "states": [{ "name": "idle", "isInitial": true }],
                         "events": [
                             { "key": "INIT", "name": "Init" },
-                            { "key": "DO_CREATE", "name": "Do create", "external": true,
+                            { "key": "DO_CREATE", "name": "Do create", "input": true,
                               "description": "Create a task",
                               "payloadSchema": [{ "name": "title", "type": "string", "required": true }] },
                             { "key": "SAVE", "name": "Save" }

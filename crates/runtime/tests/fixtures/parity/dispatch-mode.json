@@ -1,6 +1,6 @@
 {
   "name": "dispatch-mode",
-  "description": "LOLO 7 dispatch rule: `local` is client-only; a [runtime] entity is client-only unless its fold-aware effect row reaches the server (then runtimeOptimistic); anything else awaits the server",
+  "description": "Dispatch rule: the mode is the trait's declared `dispatch` (`client` -> hybridClientOnly, `optimistic` -> runtimeOptimistic); an undeclared trait awaits the server whatever its entity or effects",
   "schema": {
     "name": "dispatch-mode",
     "version": "1.0.0",
@@ -53,10 +53,44 @@
                   ]
                 }
               ]
-            }
+            },
+            "dispatch": "client"
           },
           {
             "name": "RuntimeSaves",
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "idle",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "GO",
+                  "name": "GO"
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "idle",
+                  "to": "idle",
+                  "event": "GO",
+                  "effects": [
+                    [
+                      "persist",
+                      "update",
+                      "Frame",
+                      "@entity"
+                    ]
+                  ]
+                }
+              ]
+            },
+            "dispatch": "optimistic"
+          },
+          {
+            "name": "RuntimeUndeclared",
             "stateMachine": {
               "states": [
                 {
@@ -126,7 +160,8 @@
                   ]
                 }
               ]
-            }
+            },
+            "dispatch": "optimistic"
           },
           {
             "name": "RuntimeDeadThen",
@@ -167,7 +202,8 @@
                   ]
                 }
               ]
-            }
+            },
+            "dispatch": "client"
           },
           {
             "name": "RuntimeDeadWhen",
@@ -203,7 +239,8 @@
                   ]
                 }
               ]
-            }
+            },
+            "dispatch": "client"
           },
           {
             "name": "RuntimeDeadGuard",
@@ -236,7 +273,8 @@
                   "guard": false
                 }
               ]
-            }
+            },
+            "dispatch": "client"
           },
           {
             "name": "RuntimeConfigOff",
@@ -278,7 +316,8 @@
                 "type": "boolean",
                 "default": false
               }
-            }
+            },
+            "dispatch": "client"
           },
           {
             "name": "LocalSaves",
@@ -311,7 +350,7 @@
                 }
               ]
             },
-            "local": true
+            "dispatch": "client"
           }
         ]
       },
@@ -395,7 +434,7 @@
                 }
               ]
             },
-            "local": true
+            "dispatch": "client"
           }
         ]
       }
@@ -411,7 +450,8 @@
     "RuntimeConfigOff": "hybridClientOnly",
     "LocalSaves": "hybridClientOnly",
     "PersistedPure": "persistedAwaited",
-    "PersistedLocal": "hybridClientOnly"
+    "PersistedLocal": "hybridClientOnly",
+    "RuntimeUndeclared": "persistedAwaited"
   },
   "scenarios": []
 }

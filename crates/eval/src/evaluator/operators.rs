@@ -585,6 +585,23 @@ fn eval_checked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
     Ok(value)
 }
 
+/// `f` over an operand's value: a plain binding (`@entity.x`, a `let` name) is read where it is bound, so a reader
+/// that needs part of it copies only that part; any other operand, or a binding [`BindingContext::resolve_borrowed`]
+/// cannot read in place, is evaluated as [`eval_expr`] would.
+pub(crate) fn with_operand<R>(
+    expr: &SExpression,
+    ctx: &BindingContext,
+    f: impl FnOnce(&Value) -> Result<R, OrbitalError>,
+) -> Result<R, OrbitalError> {
+    if let SExpression::String(s) = expr {
+        if let Some(value) = s.strip_prefix('@').and_then(|path| ctx.resolve_borrowed(path)) {
+            return f(value);
+        }
+    }
+    let value = eval_expr(expr, ctx)?;
+    f(&value)
+}
+
 fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
     match expr {
         // Primitives

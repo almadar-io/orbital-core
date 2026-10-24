@@ -1256,7 +1256,7 @@ mod tab_effects {
                 "traits": [{ "name": "Probe", "linkedEntity": "Job",
                     "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }, { "name": "failed" }, { "name": "stopped" }],
-                        "events": [{ "key": "ITEM_SEEN", "name": "Item seen", "external": true }],
+                        "events": [{ "key": "ITEM_SEEN", "name": "Item seen", "input": true }],
                         "transitions": [
                             { "from": "idle", "to": "idle", "event": "GO", "effects": [effect] },
                             { "from": "idle", "to": "idle", "event": "CANCEL", "effects": [["cancel-call", "job"]] },

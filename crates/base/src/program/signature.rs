@@ -827,6 +827,57 @@ fn type_mismatch(formal: &OperatorTypeRef, actual: &Actual<'_>) -> Mismatch {
     }
 }
 
+/// A type as a finding names it: the kind at run time, where values carry no declared shape, and the shape
+/// (`[{ id: string, text?: string }]`) over expression types, so two lists that differ only in their items read
+/// as different.
+fn type_label(ty: &OirType, mode: Mode) -> String {
+    match mode {
+        Mode::Runtime => oir_type_kind(ty),
+        Mode::Static => describe_type(ty),
+    }
+}
+
+fn describe_type(ty: &OirType) -> String {
+    if is_absent_slot(ty) {
+        return "_".to_string();
+    }
+    match ty {
+        OirType::Array { inner } => format!("[{}]", describe_type(inner)),
+        OirType::Tuple { items } => format!(
+            "[{}]",
+            items.iter().map(describe_type).collect::<Vec<_>>().join(", ")
+        ),
+        OirType::Optional { inner } => format!("{}?", describe_type(inner)),
+        OirType::Struct { fields, additional } => {
+            let mut parts: Vec<String> = fields
+                .iter()
+                .map(|field| {
+                    format!(
+                        "{}{}: {}",
+                        field.name,
+                        if field.required { "" } else { "?" },
+                        describe_type(&field.field_type)
+                    )
+                })
+                .collect();
+            if let Some(additional) = additional {
+                parts.push(format!("*: {}", describe_type(additional)));
+            }
+            format!("{{ {} }}", parts.join(", "))
+        }
+        OirType::Map { key, value } => {
+            format!("Map {} {}", describe_type(key), describe_type(value))
+        }
+        OirType::Union { variants } => variants
+            .iter()
+            .map(|variant| describe_type(&variant.field_type))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        OirType::TypeRef { name } => name.clone(),
+        other => oir_type_kind(other),
+    }
+}
+
 fn agrees(a: &OirType, b: &OirType) -> bool {
     sub(a, b).is_some() || sub(b, a).is_some()
 }
@@ -1349,8 +1400,8 @@ fn bind_type(
                 }
                 match b.bound(name) {
                     Some(prior) if !b.agrees(prior, ty) => Err(Mismatch::Conflict {
-                        expected: oir_type_kind(prior),
-                        actual: oir_type_kind(ty),
+                        expected: type_label(prior, mode),
+                        actual: type_label(ty, mode),
                     }),
                     // A list that turns out to have elements types the empty list a variable first held.
                     Some(prior) if is_empty_list(prior) && !is_empty => {
@@ -1409,8 +1460,8 @@ fn bind_type(
                         && !fits(ty, &declared, b)
                     {
                         return Err(Mismatch::Type {
-                            expected: oir_type_kind(&declared),
-                            actual: oir_type_kind(ty),
+                            expected: type_label(&declared, mode),
+                            actual: type_label(ty, mode),
                         });
                     }
                 }

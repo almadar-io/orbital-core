@@ -617,13 +617,9 @@ pub fn program_credentials(program: &Value) -> Vec<ProgramCredential> {
             let read_slots = effect_credential_slots(trait_def);
             for slot in http_credential_slots(trait_def).into_iter().map(|(_, slot)| slot).chain(read_slots) {
                 let Some(credential) = slot_credential(slot) else { continue };
-                let field = match config_knob(credential) {
-                    Some(knob) => config.get(knob).filter(|f| is_secret(f)),
-                    None => config
-                        .values()
-                        .find(|f| is_secret(f) && f.get("default").and_then(Value::as_str) == Some(credential)),
+                let Some(field) = config_knob(credential).and_then(|knob| config.get(knob)).filter(|f| is_secret(f)) else {
+                    continue;
                 };
-                let Some(field) = field else { continue };
                 let Some(env_var) = field.get("default").and_then(Value::as_str).filter(|d| !d.is_empty()) else { continue };
                 if out.iter().any(|c| c.group == group && c.env_var == env_var) {
                     continue;
@@ -984,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn program_credentials_reads_the_inlined_form_through_the_knob_that_declared_the_literal() {
+    fn program_credentials_never_match_a_literal_to_a_knob_default_since_resolve_keeps_secret_reads() {
         let inlined = json!({ "orbitals": [{ "name": "TinyOrbital", "traits": [{
             "config": {
                 "token": { "type": "secret", "default": "MY_GH_TOKEN", "description": "The token." },
@@ -995,8 +991,6 @@ mod tests {
                 ["http", "GET", "https://a.example", "/b", { "auth": { "scheme": "bearer", "credential": "LITERAL_ONLY" } }, { "emit": { "success": "OK" } }]
             ] }] }
         }] }] });
-        let found = program_credentials(&inlined);
-        let named: Vec<(&str, &str, &str)> = found.iter().map(|c| (c.group.as_str(), c.env_var.as_str(), c.description.as_str())).collect();
-        assert_eq!(named, vec![("TinyOrbital", "MY_GH_TOKEN", "The token.")]);
+        assert!(program_credentials(&inlined).is_empty());
     }
 }

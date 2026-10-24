@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 fn kernel() -> EmbeddedKernel {
     let listener = |name: &str, entity: &str| {
-        json!({ "name": name, "linkedEntity": entity,
+        json!({ "name": name, "linkedEntity": entity, "dispatch": "client",
             "listens": [{ "event": "LOADED", "source": { "kind": "orbital", "orbital": "Chat", "trait": "Loader" }, "triggers": "SHOW" }],
             "stateMachine": {
                 "states": [{ "name": "idle", "isInitial": true }, { "name": "shown" }],

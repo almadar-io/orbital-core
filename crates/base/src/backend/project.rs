@@ -205,12 +205,12 @@ where
 /// generates their client-side data effects; any other backend is refused
 /// before it writes a file.
 fn ensure_backend_supports<B: Backend>(oir: &OirModule, backend: &B) -> Result<(), WriteError> {
-    let local: Vec<&str> = oir.entities.iter().filter(|e| e.local).map(|e| e.name.as_str()).collect();
+    let local: Vec<&str> = oir.entities.iter().filter(|e| e.browser).map(|e| e.name.as_str()).collect();
     if local.is_empty() || backend.supports_browser_stored_entities() {
         return Ok(());
     }
     Err(WriteError::Backend(format!(
-        "ORB_SHELL_LOCAL_ENTITY_UNSUPPORTED: the {} shell does not generate browser-stored entities; {} declare `local`. Compile with --shell typescript, or drop `local`.",
+        "ORB_SHELL_LOCAL_ENTITY_UNSUPPORTED: the {} shell does not generate browser-stored entities; {} declare `browser`. Compile with --shell typescript, or drop `browser`.",
         backend.name(),
         local.join(", ")
     )))

@@ -54,7 +54,7 @@
                 {
                   "key": "ADD_NOTE",
                   "name": "Add note",
-                  "external": true,
+                  "input": true,
                   "description": "Add a note",
                   "payloadSchema": [
                     {
@@ -67,7 +67,7 @@
                 {
                   "key": "CLEAR",
                   "name": "Clear",
-                  "external": true
+                  "input": true
                 },
                 {
                   "key": "SECRET",
@@ -132,7 +132,7 @@
                 {
                   "key": "RUN",
                   "name": "Run",
-                  "external": true,
+                  "input": true,
                   "description": "Run a probe",
                   "payloadSchema": [
                     {

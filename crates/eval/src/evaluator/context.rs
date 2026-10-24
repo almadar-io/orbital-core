@@ -414,6 +414,35 @@ impl BindingContext {
         }
     }
 
+    /// [`Self::resolve`] by reference, for a reader that needs part of the bound value: `None` for `@now`, the
+    /// dispatch logs and states (computed, not held), and for a path the borrowed walk cannot finish (a virtual
+    /// `length`/`count`), where the caller reads the owned value as [`Self::resolve`] gives it.
+    pub fn resolve_borrowed(&self, path: &str) -> Option<&Value> {
+        let (root, rest) = match path.find('.') {
+            Some(idx) => (&path[..idx], Some(&path[idx + 1..])),
+            None => (path, None),
+        };
+        let root_value: &Value = match root {
+            "now" | "prevEvents" | "prevStates" | "fromState" | "toState" => return None,
+            "entity" => &self.entity,
+            "payload" => &self.payload,
+            "state" => &self.state,
+            "config" => &self.config,
+            "user" => &self.user,
+            "currentTheme" => &self.current_theme,
+            "pages" if self.pages.is_null() => return None,
+            "pages" => &self.pages,
+            "locale" => &self.locale,
+            "event" => &self.event,
+            "callsitePayload" => &self.callsite_payload,
+            _ => self.locals.get(root)?,
+        };
+        match rest {
+            Some(rest_path) => root_value.get_path(rest_path),
+            None => Some(root_value),
+        }
+    }
+
     /// Resolve a binding reference string (starting with @)
     ///
     /// E.g., "@payload.data.email" -> resolve("payload.data.email")

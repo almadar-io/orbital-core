@@ -1,4 +1,4 @@
-//! Browser-stored entities: `[persistent: x, local]` rows live in the client, so a
+//! Browser-stored entities: `[persistent: x, browser]` rows live in the client, so a
 //! data effect (`fetch`/`persist`) on them runs on the client and a trait whose
 //! data is all client-resident never touches the server. Twin of
 //! `@almadar/std` `effectSiteFor` + `@almadar/core` `isClientResident`.
@@ -14,7 +14,7 @@ fn entity(value: serde_json::Value) -> EntityDefinition {
 
 fn residence() -> Residence {
     Residence::of_entities([
-        &entity(json!({ "name": "LocalInvoice", "persistence": "persistent", "collection": "invoices", "local": true, "fields": [] })),
+        &entity(json!({ "name": "LocalInvoice", "persistence": "persistent", "collection": "invoices", "browser": true, "fields": [] })),
         &entity(json!({ "name": "Scene", "persistence": "runtime", "fields": [] })),
         &entity(json!({ "name": "Invoice", "persistence": "persistent", "collection": "invoices", "fields": [] })),
     ])
@@ -25,23 +25,30 @@ fn sexpr(value: serde_json::Value) -> orbital_core_base::schema::SExpression {
 }
 
 #[test]
-fn local_and_seed_mock_round_trip_through_serde() {
-    let e = entity(json!({ "name": "LocalInvoice", "persistence": "persistent", "collection": "invoices", "local": true, "seedMock": true, "fields": [] }));
-    assert!(e.local && e.seed_mock);
+fn browser_round_trips_through_serde() {
+    let e = entity(json!({ "name": "LocalInvoice", "persistence": "persistent", "collection": "invoices", "browser": true, "fields": [] }));
+    assert!(e.browser);
     let back = serde_json::to_value(&e).unwrap();
-    assert_eq!(back["local"], json!(true));
-    assert_eq!(back["seedMock"], json!(true));
+    assert_eq!(back["browser"], json!(true));
 }
 
 #[test]
-fn control_an_entity_without_the_flags_serializes_without_them() {
+fn control_an_entity_without_the_flag_serializes_without_it() {
     let e = entity(json!({ "name": "Invoice", "persistence": "persistent", "collection": "invoices", "fields": [] }));
     let back = serde_json::to_value(&e).unwrap();
-    assert!(back.get("local").is_none() && back.get("seedMock").is_none(), "{back}");
+    assert!(back.get("browser").is_none(), "{back}");
 }
 
 #[test]
-fn only_local_entities_store_rows_in_the_browser() {
+fn the_retired_entity_flags_are_refused() {
+    for retired in ["local", "seedMock"] {
+        let value = json!({ "name": "Invoice", "persistence": "persistent", "collection": "invoices", retired: true, "fields": [] });
+        assert!(serde_json::from_value::<EntityDefinition>(value).is_err(), "{retired}");
+    }
+}
+
+#[test]
+fn only_browser_entities_store_rows_in_the_browser() {
     let r = residence();
     assert!(r.is_client("LocalInvoice"));
     assert!(!r.is_client("Invoice"));
@@ -83,45 +90,56 @@ fn the_server_effect_predicate_follows_residence() {
     assert!(sexpr_runs_server_effect(&sexpr(json!(["fetch", "LocalInvoice", {}])), &Residence::none()));
 }
 
-fn trait_on(entity: &str, local: bool, effects: serde_json::Value) -> TraitDefinition {
-    serde_json::from_value(json!({
-        "name": "T", "linkedEntity": entity, "local": local,
+fn trait_on(entity: &str, dispatch: Option<&str>, effects: serde_json::Value) -> TraitDefinition {
+    let mut value = json!({
+        "name": "T", "linkedEntity": entity,
         "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
             "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": effects }] }
-    }))
-    .expect("trait")
+    });
+    if let Some(mode) = dispatch {
+        value["dispatch"] = json!(mode);
+    }
+    serde_json::from_value(value).expect("trait")
+}
+
+fn browser_invoice() -> EntityDefinition {
+    entity(json!({ "name": "LocalInvoice", "persistence": "persistent", "collection": "invoices", "browser": true, "fields": [] }))
 }
 
 #[test]
-fn a_trait_on_a_local_entity_fetching_it_is_client_only() {
-    let r = residence();
-    let e = entity(json!({ "name": "LocalInvoice", "persistence": "persistent", "collection": "invoices", "local": true, "fields": [] }));
-    let t = trait_on("LocalInvoice", false, json!([["fetch", "LocalInvoice", {}]]));
-    assert_eq!(t.dispatch_mode(Some(&e), &r), DispatchMode::HybridClientOnly);
+fn a_client_trait_on_a_browser_entity_is_client_only() {
+    let t = trait_on("LocalInvoice", Some("client"), json!([["fetch", "LocalInvoice", {}]]));
+    assert_eq!(t.dispatch_mode(Some(&browser_invoice()), &residence()), DispatchMode::HybridClientOnly);
+}
+
+#[test]
+fn control_an_undeclared_trait_on_a_browser_entity_awaits_the_server() {
+    let t = trait_on("LocalInvoice", None, json!([["fetch", "LocalInvoice", {}]]));
+    assert_eq!(t.dispatch_mode(Some(&browser_invoice()), &residence()), DispatchMode::PersistedAwaited);
 }
 
 #[test]
 fn control_a_trait_on_a_server_entity_fetching_it_awaits_the_server() {
     let r = residence();
     let e = entity(json!({ "name": "Invoice", "persistence": "persistent", "collection": "invoices", "fields": [] }));
-    let t = trait_on("Invoice", false, json!([["fetch", "Invoice", {}]]));
+    let t = trait_on("Invoice", None, json!([["fetch", "Invoice", {}]]));
     assert_eq!(t.dispatch_mode(Some(&e), &r), DispatchMode::PersistedAwaited);
 }
 
 #[test]
-fn control_a_runtime_trait_fetching_a_server_entity_stays_optimistic() {
+fn an_optimistic_trait_on_a_runtime_entity_is_optimistic_and_an_undeclared_one_is_server() {
     let r = residence();
     let e = entity(json!({ "name": "Scene", "persistence": "runtime", "fields": [] }));
-    let t = trait_on("Scene", false, json!([["fetch", "Invoice", {}]]));
-    assert_eq!(t.dispatch_mode(Some(&e), &r), DispatchMode::RuntimeOptimistic);
+    let declared = trait_on("Scene", Some("optimistic"), json!([["fetch", "Invoice", {}]]));
+    let undeclared = trait_on("Scene", None, json!([["fetch", "Invoice", {}]]));
+    assert_eq!(declared.dispatch_mode(Some(&e), &r), DispatchMode::RuntimeOptimistic);
+    assert_eq!(undeclared.dispatch_mode(Some(&e), &r), DispatchMode::PersistedAwaited);
 }
 
 #[test]
-fn a_local_entity_trait_calling_a_service_is_optimistic() {
-    let r = residence();
-    let e = entity(json!({ "name": "LocalInvoice", "persistence": "persistent", "collection": "invoices", "local": true, "fields": [] }));
-    let t = trait_on("LocalInvoice", false, json!([["call-service", "test-svc", "run", {}]]));
-    assert_eq!(t.dispatch_mode(Some(&e), &r), DispatchMode::RuntimeOptimistic);
+fn an_optimistic_trait_on_a_browser_entity_calling_a_service_is_optimistic() {
+    let t = trait_on("LocalInvoice", Some("optimistic"), json!([["call-service", "test-svc", "run", {}]]));
+    assert_eq!(t.dispatch_mode(Some(&browser_invoice()), &residence()), DispatchMode::RuntimeOptimistic);
 }
 
 fn ir_trait() -> orbital_core_base::ir::OirTrait {
@@ -191,7 +209,7 @@ fn control_with_no_browser_stored_entity_no_tick_takes_a_browser_leg() {
 
 fn localized_invoice() -> EntityDefinition {
     entity(json!({
-        "name": "LocalInvoice", "persistence": "persistent", "collection": "invoices", "local": true,
+        "name": "LocalInvoice", "persistence": "persistent", "collection": "invoices", "browser": true,
         "fields": [],
         "instances": [{ "id": "C-1", "client": "Noor Logistics" }],
         "localeInstances": { "ar": [{ "id": "C-1", "client": "نور للخدمات اللوجستية" }] }
@@ -251,28 +269,33 @@ fn a_batch_of_browser_rows_is_not_server_work() {
     assert!(sexpr_runs_server_effect(&sexpr(json!(["persist", "batch", [["create", "Invoice", {}]]])), &r));
 }
 
-fn oir_entity(name: &str, persistence: orbital_core_base::ir::OirPersistence, local: bool) -> orbital_core_base::ir::OirEntity {
+fn oir_entity(name: &str, persistence: orbital_core_base::ir::OirPersistence, browser: bool) -> orbital_core_base::ir::OirEntity {
     let mut e = orbital_core_base::ir::OirEntity::new(name);
     e.persistence = persistence;
-    e.local = local;
+    e.browser = browser;
     e
 }
 
 /// Where a tick runs (drift D-1): on the server when it is `[background]` or its trait is
 /// server-awaited, in the client otherwise. One rule for the validator, the kernel and every shell.
+/// The trait's declared mode decides; the entity it links never does.
 #[test]
 fn a_tick_runs_on_the_server_only_when_background_or_server_awaited() {
     use orbital_core_base::ir::{OirInterval, OirPersistence, OirTick, OirTrait};
+    use orbital_core_base::schema::types::DispatchMode as Declared;
     let r = residence();
-    let t = OirTrait::new("T");
+    let undeclared = OirTrait::new("T");
+    let mut client = OirTrait::new("T");
+    client.dispatch = Some(Declared::Client);
     let tick = OirTick::new("beat", OirInterval::Milliseconds { value: 1000 });
     let mut background = tick.clone();
     background.background = true;
     let runtime = oir_entity("Scene", OirPersistence::Runtime, false);
     let browser = oir_entity("LocalInvoice", OirPersistence::Persistent, true);
     let server = oir_entity("Invoice", OirPersistence::Persistent, false);
-    assert!(t.tick_runs_on_client(&tick, Some(&runtime), &r));
-    assert!(t.tick_runs_on_client(&tick, Some(&browser), &r), "browser-stored rows tick in the browser");
-    assert!(!t.tick_runs_on_client(&tick, Some(&server), &r), "a server-awaited trait ticks on the server");
-    assert!(!t.tick_runs_on_client(&background, Some(&runtime), &r), "[background] runs with no tab open");
+    for entity in [&runtime, &browser, &server] {
+        assert!(client.tick_runs_on_client(&tick, Some(entity), &r), "a [client] trait ticks in the client");
+        assert!(!undeclared.tick_runs_on_client(&tick, Some(entity), &r), "an undeclared trait ticks on the server");
+        assert!(!client.tick_runs_on_client(&background, Some(entity), &r), "[background] runs with no tab open");
+    }
 }

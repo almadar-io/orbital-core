@@ -20,7 +20,7 @@ fn kernel() -> RuntimeKernel {
                     "transitions": [
                         { "from": "idle", "to": "open", "event": "OPEN", "effects": [] },
                         { "from": "open", "to": "open", "event": "LOAD", "effects": [["fetch", "Item", {}]] }] } },
-                { "name": "Badge", "linkedEntity": "Scratch",
+                { "name": "Badge", "linkedEntity": "Scratch", "dispatch": "client",
                   "stateMachine": {
                     "states": [{ "name": "off", "isInitial": true }, { "name": "on" }],
                     "transitions": [{ "from": "off", "to": "on", "event": "FLIP", "effects": [] }] } }

@@ -572,3 +572,193 @@ fn a_large_field_set_every_step_is_not_retained_per_step() {
         "a step keeps more than its frame's copy of the {BLOB}-byte field: {extra} extra bytes over {STEPS} steps"
     );
 }
+
+fn reader_schema(big: &serde_json::Value, through_let: bool) -> OrbitalSchema {
+    let read = if through_let {
+        json!(["let", [["b", "@entity.big"]], ["array/map", ["array/range", 50], ["fn", "i", ["object/get", "@b", "k1"]]]])
+    } else {
+        json!(["array/map", ["array/range", 50], ["fn", "i", ["object/get", "@entity.big", "k1"]]])
+    };
+    serde_json::from_value(json!({
+        "name": "alloc-read",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Reader", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "big", "type": "object", "default": big },
+                { "name": "out", "type": "array", "default": [] }
+            ] },
+            "traits": [{
+                "name": "Read", "linkedEntity": "Reader",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "READ", "effects": [["set", "@entity.out", read]] }]
+                }
+            }]
+        }]
+    }))
+    .unwrap()
+}
+
+/// Bytes one READ dispatch allocates while it reads `k1` out of `big` 50 times.
+fn allocated_by_reads(big: &serde_json::Value, through_let: bool) -> usize {
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(reader_schema(big, through_let)).unwrap();
+    let before = BYTES.load(Ordering::SeqCst);
+    let out = k.dispatch("Read", None, "READ", Value::Null).unwrap();
+    let spent = BYTES.load(Ordering::SeqCst) - before;
+    assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 1);
+    spent
+}
+
+fn map_of(entries: usize, width: usize) -> serde_json::Value {
+    serde_json::Value::Object((0..entries).map(|i| (format!("k{i}"), json!("v".repeat(width)))).collect())
+}
+
+/// `object/get` on a binding reads the field it names out of the bound value instead of copying the whole value first.
+#[test]
+fn reading_one_key_of_a_bound_map_does_not_copy_the_map() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    allocated_by_reads(&map_of(2, 4), false);
+    let large = map_of(1024, 64);
+    let small = map_of(2, 4);
+    let as_value = serde_json::from_value::<Value>(large.clone()).unwrap();
+    let before = BYTES.load(Ordering::SeqCst);
+    let copy = as_value.clone();
+    let one_copy = BYTES.load(Ordering::SeqCst) - before;
+    drop(copy);
+    for through_let in [false, true] {
+        let extra = allocated_by_reads(&large, through_let).saturating_sub(allocated_by_reads(&small, through_let));
+        println!("ALLOCATED_BY_50_READS through_let={through_let}: {extra} (one copy of the map: {one_copy})");
+        assert!(extra < 6 * one_copy, "50 reads of one key copy the map per read: {extra} extra bytes, one copy is {one_copy} (through_let={through_let})");
+    }
+}
+
+fn part_reader_schema(list: &serde_json::Value, big: &serde_json::Value, read: serde_json::Value) -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "alloc-part-read",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Reader", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "list", "type": "array", "default": list },
+                { "name": "big", "type": "object", "default": big },
+                { "name": "out", "type": "array", "default": [] }
+            ] },
+            "traits": [{
+                "name": "Read", "linkedEntity": "Reader",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "READ",
+                        "effects": [["set", "@entity.out", ["array/map", ["array/range", 50], ["fn", "i", read]]]] }]
+                }
+            }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn allocated_by_part_reads(list: &serde_json::Value, big: &serde_json::Value, read: &serde_json::Value) -> usize {
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(part_reader_schema(list, big, read.clone())).unwrap();
+    let before = BYTES.load(Ordering::SeqCst);
+    let out = k.dispatch("Read", None, "READ", Value::Null).unwrap();
+    let spent = BYTES.load(Ordering::SeqCst) - before;
+    assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 1, "{read}");
+    spent
+}
+
+/// The read-only array and object readers read a bound value in place: 50 reads of part of a large bound list or map
+/// cost a few copies (the dispatch's own), not one per read.
+#[test]
+fn reading_part_of_a_bound_list_or_map_does_not_copy_it() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let list = |n: usize| serde_json::Value::Array((0..n).map(|i| json!(format!("{i}{}", "v".repeat(64)))).collect());
+    let (large_list, small_list) = (list(1024), list(2));
+    let (large_map, small_map) = (map_of(1024, 64), map_of(2, 4));
+    let one_copy = |value: &serde_json::Value| {
+        let as_value = serde_json::from_value::<Value>(value.clone()).unwrap();
+        let before = BYTES.load(Ordering::SeqCst);
+        let copy = as_value.clone();
+        let spent = BYTES.load(Ordering::SeqCst) - before;
+        drop(copy);
+        spent
+    };
+    let reads = [
+        json!(["array/first", "@entity.list"]),
+        json!(["array/last", "@entity.list"]),
+        json!(["array/nth", "@entity.list", 1]),
+        json!(["array/len", "@entity.list"]),
+        json!(["count", "@entity.list"]),
+        json!(["array/includes", "@entity.list", "absent"]),
+        json!(["object/has", "@entity.big", "k1"]),
+    ];
+    allocated_by_part_reads(&small_list, &small_map, &reads[0]);
+    for read in &reads {
+        let copy = one_copy(&large_list).max(one_copy(&large_map));
+        let extra = allocated_by_part_reads(&large_list, &large_map, read)
+            .saturating_sub(allocated_by_part_reads(&small_list, &small_map, read));
+        println!("ALLOCATED_BY_50_PART_READS {read}: {extra} (one copy: {copy})");
+        assert!(extra < 12 * copy, "{read}: 50 reads copy the bound value per read: {extra} extra bytes, one copy is {copy}");
+    }
+}
+
+/// `array/reduce` hands the accumulator to each step instead of copying it: a step whose body returns the bound
+/// accumulator costs the one copy that reading it makes, not a second one for binding it.
+#[test]
+fn a_reduce_binds_its_accumulator_without_copying_it() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let read = |_: ()| json!(["array/reduce", ["array/range", 50], "@entity.big", ["fn", ["acc", "i"], "@acc"]]);
+    let schema = |big: &serde_json::Value| -> OrbitalSchema {
+        serde_json::from_value(json!({
+            "name": "alloc-reduce",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Folder", "persistence": "runtime", "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "big", "type": "object", "default": big },
+                    { "name": "out", "type": "object", "default": {} }
+                ] },
+                "traits": [{
+                    "name": "Fold", "linkedEntity": "Folder",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "FOLD", "effects": [["set", "@entity.out", read(())]] }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap()
+    };
+    let spent = |big: &serde_json::Value| {
+        let k = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            Default::default(),
+        );
+        k.register_schema(schema(big)).unwrap();
+        let before = BYTES.load(Ordering::SeqCst);
+        let out = k.dispatch("Fold", None, "FOLD", Value::Null).unwrap();
+        let spent = BYTES.load(Ordering::SeqCst) - before;
+        assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 1);
+        spent
+    };
+    spent(&map_of(2, 4));
+    let large = map_of(1024, 64);
+    let as_value = serde_json::from_value::<Value>(large.clone()).unwrap();
+    let before = BYTES.load(Ordering::SeqCst);
+    let copy = as_value.clone();
+    let one_copy = BYTES.load(Ordering::SeqCst) - before;
+    drop(copy);
+    let extra = spent(&large).saturating_sub(spent(&map_of(2, 4)));
+    println!("ALLOCATED_BY_50_STEP_REDUCE {extra} (one copy: {one_copy})");
+    assert!(extra < 70 * one_copy, "a 50-step reduce copies its accumulator twice a step: {extra} extra bytes, one copy is {one_copy}");
+}

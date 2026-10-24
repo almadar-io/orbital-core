@@ -94,20 +94,17 @@ impl Operator for ObjectHasOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "object/has", >= 2);
 
-        let obj = eval_expr(&args[0], ctx)?;
-        let path = eval_expr(&args[1], ctx)?.to_string_value();
-
-        match obj {
-            Value::Object(_) => {
-                // Use get_path to check existence
-                Ok(Value::Bool(obj.get_path(&path).is_some()))
+        super::with_operand(&args[0], ctx, |obj| {
+            let path = eval_expr(&args[1], ctx)?.to_string_value();
+            match obj {
+                Value::Object(_) => Ok(Value::Bool(obj.get_path(&path).is_some())),
+                Value::Null => Ok(Value::Bool(false)),
+                _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+                    expected: "object".to_string(),
+                    actual: obj.type_name().to_string(),
+                })),
             }
-            Value::Null => Ok(Value::Bool(false)),
-            _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "object".to_string(),
-                actual: obj.type_name().to_string(),
-            })),
-        }
+        })
     }
 }
 
@@ -524,11 +521,13 @@ impl Operator for ObjectGetOp {
         // ["object/get", obj, "path.to.key", default?]
         require_arity!(args, "object/get", >= 2);
 
-        let obj = eval_expr(&args[0], ctx)?;
-        let path = eval_expr(&args[1], ctx)?.to_string_value();
+        let found = super::with_operand(&args[0], ctx, |obj| {
+            let path = eval_expr(&args[1], ctx)?.to_string_value();
+            Ok(obj.get_path(&path).cloned())
+        })?;
 
-        match obj.get_path(&path) {
-            Some(v) => Ok(v.clone()),
+        match found {
+            Some(v) => Ok(v),
             None => match args.get(2) {
                 Some(default) => eval_expr(default, ctx),
                 None => Ok(Value::Null),

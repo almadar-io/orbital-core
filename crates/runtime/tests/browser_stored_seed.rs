@@ -1,6 +1,5 @@
-//! A browser-stored entity (`[persistent: x, local]`) seeds by the browser store's
-//! rule in the mock dataset too: its `instances`, else mock rows only when it
-//! declares `mock`. Twin of `@almadar/runtime` `server-seeds-browser-stored.test.ts`.
+//! A browser-stored entity (`[persistent: x, browser]`) seeds by the browser store's
+//! rule in the mock dataset too: its `instances` only, never mock rows. Twin of `@almadar/runtime` `server-seeds-browser-stored.test.ts`.
 
 use {orbital_core_runtime::seed::seed_mock_dataset, orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}};
 use orbital_core_base::schema::OrbitalSchema;
@@ -29,13 +28,17 @@ fn invoice(extra: serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
-fn a_local_entity_with_neither_source_starts_empty() {
-    assert_eq!(rows(invoice(json!({ "local": true }))), 0);
+fn a_browser_entity_with_no_instances_starts_empty() {
+    assert_eq!(rows(invoice(json!({ "browser": true }))), 0);
 }
 
 #[test]
-fn a_local_entity_declaring_mock_gets_mock_rows() {
-    assert!(rows(invoice(json!({ "local": true, "seedMock": true }))) > 0);
+fn the_retired_seed_mock_flag_is_refused() {
+    let schema = serde_json::from_value::<OrbitalSchema>(json!({
+        "name": "seed",
+        "orbitals": [{ "name": "Books", "entity": invoice(json!({ "browser": true, "seedMock": true })), "traits": [], "pages": [] }]
+    }));
+    assert!(schema.is_err());
 }
 
 #[test]
@@ -44,7 +47,7 @@ fn control_a_server_entity_with_neither_source_is_mock_seeded() {
 }
 
 #[test]
-fn an_auxiliary_local_entity_follows_the_same_rule() {
+fn an_auxiliary_browser_entity_follows_the_same_rule() {
     let field = json!([{ "name": "id", "type": "string", "required": true }]);
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "seed-aux",
@@ -52,8 +55,8 @@ fn an_auxiliary_local_entity_follows_the_same_rule() {
             "name": "Books",
             "entity": { "name": "Ledger", "persistence": "persistent", "collection": "ledgers", "fields": field },
             "auxiliaryEntities": [
-                { "name": "Draft", "persistence": "persistent", "collection": "drafts", "local": true, "fields": field },
-                { "name": "Sample", "persistence": "persistent", "collection": "samples", "local": true, "seedMock": true, "fields": field }
+                { "name": "Draft", "persistence": "persistent", "collection": "drafts", "browser": true, "fields": field },
+                { "name": "Plain", "persistence": "persistent", "collection": "plains", "fields": field }
             ],
             "traits": [], "pages": []
         }]
@@ -62,5 +65,5 @@ fn an_auxiliary_local_entity_follows_the_same_rule() {
     let store = InMemoryEntityCache::default();
     seed_mock_dataset(&store, &schema, 4, None, 0.0);
     assert_eq!(store.list("Draft").unwrap_or_default().len(), 0);
-    assert!(!store.list("Sample").unwrap_or_default().is_empty());
+    assert!(!store.list("Plain").unwrap_or_default().is_empty());
 }
