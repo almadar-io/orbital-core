@@ -298,6 +298,16 @@ impl EmbeddedServer {
         *self.tick_mount.lock() = traits.into_iter().collect();
     }
 
+    /// The kernel's mounts for a host start on `side` (EXEC-ENDPOINT-3).
+    pub fn boot_mounts(&self, side: orbital_core_base::protocols::ProtocolSide) -> Vec<crate::effects::response::MountSeed> {
+        self.kernel.boot_mounts(side)
+    }
+
+    /// The kernel's mounts for a client opening `route_path` (EXEC-ENDPOINT-3).
+    pub fn route_mounts(&self, route_path: &str) -> Vec<crate::effects::response::MountSeed> {
+        self.kernel.route_mounts(route_path)
+    }
+
     /// Add traits to the current mount without dropping those already mounted.
     pub fn mount(&self, traits: Vec<String>) {
         self.kernel.mount_traits(traits);

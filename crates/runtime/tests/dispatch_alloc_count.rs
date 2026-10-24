@@ -93,7 +93,7 @@ fn schema() -> OrbitalSchema {
             "name": "Main",
             "entity": { "name": "SearchQuery", "persistence": "runtime", "fields": fields },
             "traits": [{
-                "name": "Finder", "linkedEntity": "SearchQuery", "local": true,
+                "name": "Finder", "linkedEntity": "SearchQuery", "dispatch": "client",
                 "stateMachine": {
                     "states": [{ "name": "idle", "isInitial": true }],
                     "transitions": [

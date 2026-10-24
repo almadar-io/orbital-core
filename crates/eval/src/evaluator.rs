@@ -866,6 +866,29 @@ mod tests {
     }
 
     #[test]
+    fn json_stringify_sorted_and_pretty_options() {
+        let text = |src: &str| match eval(src) {
+            Value::String(s) => s,
+            other => panic!("expected string, got {other:?}"),
+        };
+        assert_eq!(text(r#"["json/stringify", {"b": 1, "a": {"d": 2, "c": [3]}}, {"sorted": true}]"#), r#"{"a":{"c":[3],"d":2},"b":1}"#);
+        assert_eq!(text(r#"["json/stringify", {"a": [1, 2.5]}, {"pretty": true}]"#), "{\n  \"a\": [\n    1,\n    2.5\n  ]\n}");
+        assert_eq!(text(r#"["json/stringify", {"b": 1, "a": 2}, {"pretty": true, "sorted": true}]"#), "{\n  \"a\": 2,\n  \"b\": 1\n}");
+    }
+
+    #[test]
+    fn control_json_stringify_without_options_keeps_insertion_order_compact() {
+        assert_eq!(eval(r#"["json/stringify", {"b": 1, "a": 2}]"#), Value::String(r#"{"b":1,"a":2}"#.to_string()));
+        assert_eq!(eval(r#"["json/stringify", {"b": 1}, {"pretty": false}]"#), Value::String(r#"{"b":1}"#.to_string()));
+    }
+
+    #[test]
+    fn json_stringify_refuses_an_option_that_is_not_a_boolean() {
+        let err = eval_err(r#"["json/stringify", {"a": 1}, {"pretty": 2}]"#);
+        assert!(err.contains("options.pretty must be a boolean"), "{err}");
+    }
+
+    #[test]
     fn json_stringify_round_trip() {
         assert_eq!(
             eval(r#"["json/stringify", {"a": 1}]"#),

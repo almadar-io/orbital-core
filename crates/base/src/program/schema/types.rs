@@ -1607,7 +1607,11 @@ pub enum ExpectDeclaration {
     /// emits the matched pattern when it belongs to a sibling. A target that
     /// matches no page derives nothing, so a genuine typo stays an error.
     Page {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         path: String,
+        /// `expects page boot -> A`: a protocol endpoint instead of a route (`path` empty); absent = route.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        protocol: Option<String>,
         /// `expects page "/p" -> A, B`: the traits the provider page must mount.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         traits: Option<Vec<String>>,
@@ -1811,6 +1815,10 @@ pub struct PageRefObject {
     /// Optional path override
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+
+    /// The call site's protocol word; it must equal the referenced page's protocol.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
 
     /// Call-site address override for a protocol page (`page http { … } = Alias.pages.X`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2079,6 +2087,11 @@ pub struct OrbitalRefTraitOverride {
         skip_serializing_if = "Option::is_none"
     )]
     pub emits_scope: Option<EventScope>,
+
+    /// `traits { Up [client|optimistic|server] }`: replaces the imported trait's
+    /// declared dispatch mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<DispatchMode>,
 }
 
 /// One `listens { Source.EVENT -> Target.TRIGGER }` entry of an orbital
@@ -3597,7 +3610,8 @@ pub struct SourceDeclarationMetadata {
     pub fingerprint: String,
 }
 
-/// Declared client dispatch mode of a trait. Absent on the trait = server.
+/// Declared dispatch mode of a trait. Absent on the trait = server; `Server`
+/// is the explicit spelling, so a call site can override an atom's mode.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DispatchMode {
@@ -3605,6 +3619,8 @@ pub enum DispatchMode {
     Client,
     /// Transitions commit locally, then post to the server and fold its reply.
     Optimistic,
+    /// Transitions await the server round trip (`[server]`).
+    Server,
 }
 
 /// Configuration field definition
@@ -4688,7 +4704,7 @@ impl PageDefinition {
     }
 
     pub fn protocol_name(&self) -> &str {
-        self.protocol.as_deref().unwrap_or("route")
+        self.protocol.as_deref().unwrap_or(crate::protocols::ROUTE)
     }
 }
 

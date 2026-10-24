@@ -78,35 +78,41 @@ pub struct DispatchVisits {
     fields: HashMap<String, (Arc<EvalValue>, [u8; 32])>,
 }
 
+/// One step's identity, computed once: its `(trait, event, from)` and the digest of its payload and frame. A step asks
+/// [`DispatchVisits::seen`] before it runs and [`DispatchVisits::record`]s itself after, with the same `Visit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Visit {
+    step: String,
+    digest: [u8; 32],
+}
+
 impl DispatchVisits {
-    pub fn contains(
-        &mut self,
-        trait_name: &str,
-        event: &str,
-        from: &str,
-        payload: &EvalValue,
-        frame: &VisitFrame<'_>,
-    ) -> bool {
-        let digest = self.visit_digest(payload, frame);
-        self.steps
-            .get(&format!("{trait_name}\u{0}{event}\u{0}{from}"))
-            .is_some_and(|seen| seen.contains(&digest))
+    /// The identity of a step, digesting its payload and frame once.
+    pub fn visit(&mut self, trait_name: &str, event: &str, from: &str, payload: &EvalValue, frame: &VisitFrame<'_>) -> Visit {
+        Visit {
+            step: format!("{trait_name}\u{0}{event}\u{0}{from}"),
+            digest: self.visit_digest(payload, frame),
+        }
+    }
+
+    pub fn seen(&self, visit: &Visit) -> bool {
+        self.steps.get(&visit.step).is_some_and(|seen| seen.contains(&visit.digest))
     }
 
     /// `true` when the step was not visited before (as `HashSet::insert`).
-    pub fn insert(
-        &mut self,
-        trait_name: &str,
-        event: &str,
-        from: &str,
-        payload: &EvalValue,
-        frame: &VisitFrame<'_>,
-    ) -> bool {
-        let digest = self.visit_digest(payload, frame);
-        self.steps
-            .entry(format!("{trait_name}\u{0}{event}\u{0}{from}"))
-            .or_default()
-            .insert(digest)
+    pub fn record(&mut self, visit: Visit) -> bool {
+        self.steps.entry(visit.step).or_default().insert(visit.digest)
+    }
+
+    pub fn contains(&mut self, trait_name: &str, event: &str, from: &str, payload: &EvalValue, frame: &VisitFrame<'_>) -> bool {
+        let visit = self.visit(trait_name, event, from, payload, frame);
+        self.seen(&visit)
+    }
+
+    /// `true` when the step was not visited before (as `HashSet::insert`).
+    pub fn insert(&mut self, trait_name: &str, event: &str, from: &str, payload: &EvalValue, frame: &VisitFrame<'_>) -> bool {
+        let visit = self.visit(trait_name, event, from, payload, frame);
+        self.record(visit)
     }
 
     /// SHA-256 over an injective encoding of the canonical payload and the frame: a field enters as the digest of

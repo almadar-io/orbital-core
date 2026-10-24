@@ -3755,6 +3755,7 @@ impl RuntimeKernel {
 
         let mut run_results: HashMap<usize, EffectResult> = HashMap::new();
         for (index, effect_expr) in effects.iter().enumerate() {
+            let _effect = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, "effect", op = ?effect_expr.operator()).entered();
             if failure.is_some() {
                 runs.push(EffectRun {
                     effect: effect_expr.clone(),
@@ -6084,6 +6085,65 @@ impl RuntimeKernel {
             .values()
             .flat_map(|schema| orbital_core_base::external_inputs::external_inputs_of(schema))
             .collect()
+    }
+
+    /// INIT seeds for the traits listed on the pages of every registered program, in program
+    /// then page then trait order, each trait once. `keep` selects the pages.
+    fn mounts_of(&self, keep: impl Fn(&orbital_core_base::schema::types::PageDefinition) -> bool) -> Vec<crate::effects::response::MountSeed> {
+        let schemas = self.schemas.read();
+        let mut names: Vec<&String> = schemas.keys().collect();
+        names.sort();
+        let mut out: Vec<crate::effects::response::MountSeed> = Vec::new();
+        for name in names {
+            for orbital in &schemas[name].orbitals {
+                for page in orbital.pages.iter().flatten().filter_map(|p| p.as_inline()).filter(|p| keep(p)) {
+                    for trait_name in page.traits.iter().flatten().filter_map(|t| t.trait_name()) {
+                        if out.iter().any(|seed| seed.r#trait == trait_name) {
+                            continue;
+                        }
+                        if let Some(event) = self.lifecycle_event_of(trait_name) {
+                            out.push(crate::effects::response::MountSeed { r#trait: trait_name.to_string(), event });
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The first lifecycle event (`INIT`, `LOAD`, `$MOUNT`) the trait handles from its current state, or its
+    /// initial state when it has none yet; `None` when it handles none, so it is not seeded.
+    fn lifecycle_event_of(&self, trait_name: &str) -> Option<crate::effects::response::LifecycleEvent> {
+        use crate::effects::response::LifecycleEvent;
+        let def = self.trait_definitions.read().get(trait_name).cloned()?;
+        let state = self
+            .get_state(trait_name, None)
+            .map(|s| s.current_state)
+            .or_else(|| self.get_initial_state(trait_name))?;
+        [LifecycleEvent::Init, LifecycleEvent::Load, LifecycleEvent::Mount].into_iter().find(|event| {
+            def.state_machine.transitions.iter().any(|t| t.event == event.as_str() && t.from.matches(&state))
+        })
+    }
+
+    /// What mounts when a host starts (EXEC-ENDPOINT-3): the traits of every endpoint whose
+    /// protocol is served by `side`, plus every `boot` endpoint. The client side has no start mounts.
+    pub fn boot_mounts(&self, side: orbital_core_base::protocols::ProtocolSide) -> Vec<crate::effects::response::MountSeed> {
+        use orbital_core_base::protocols::{protocol, ProtocolSide};
+        if side == ProtocolSide::Client {
+            return Vec::new();
+        }
+        self.mounts_of(|page| {
+            protocol(page.protocol_name())
+                .is_some_and(|spec| spec.side == side || spec.side == ProtocolSide::Start)
+        })
+    }
+
+    /// What mounts when a client opens `route_path`: the traits of the route pages whose path
+    /// matches, and nothing from protocol endpoints.
+    pub fn route_mounts(&self, route_path: &str) -> Vec<crate::effects::response::MountSeed> {
+        self.mounts_of(|page| {
+            page.is_route() && orbital_core_base::route::path_matches_pattern(route_path, &page.path)
+        })
     }
 
     /// Get the initial state for a trait.
@@ -9745,7 +9805,7 @@ mod host_entity_tests {
     #[test]
     fn a_client_trait_on_a_persisted_orbital_is_client_only() {
         let kernel = kernel_with("persistent", None);
-        let mut def = kernel.trait_definitions.read()["Pure"].clone();
+        let mut def = orbital_core_base::schema::TraitDefinition::clone(&kernel.trait_definitions.read()["Pure"]);
         def.dispatch = Some(orbital_core_base::schema::types::DispatchMode::Client);
         assert_eq!(kernel.dispatch_mode_of(&def), DispatchMode::HybridClientOnly);
     }
@@ -10511,5 +10571,152 @@ mod program_context_metadata_tests {
         assert!(fork.entity_policies.read().contains_key("App"));
         assert!(!fork.schemas.read().contains_key("App"));
         assert_eq!(parent.program_credentials().unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod endpoint_mount_tests {
+    use super::*;
+    use crate::entity_source::InMemoryEntityCache;
+    use orbital_core_base::protocols::ProtocolSide;
+
+    fn trait_json(name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [] }]
+            }
+        })
+    }
+
+    fn kernel(pages: serde_json::Value, traits: &[&str]) -> RuntimeKernel {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": traits.iter().map(|t| trait_json(t)).collect::<Vec<_>>(),
+                "pages": pages
+            }]
+        }))
+        .unwrap();
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    fn names(seeds: Vec<crate::effects::response::MountSeed>) -> Vec<String> {
+        assert!(seeds.iter().all(|s| s.event == crate::effects::response::LifecycleEvent::Init));
+        seeds.into_iter().map(|s| s.r#trait).collect()
+    }
+
+    fn app() -> RuntimeKernel {
+        kernel(
+            serde_json::json!([
+                { "name": "Home", "path": "/", "traits": [{ "ref": "RouteT" }] },
+                { "name": "Other", "path": "/other", "traits": [{ "ref": "OtherT" }] },
+                { "name": "Api", "path": "", "protocol": "http", "traits": [{ "ref": "HttpT" }] },
+                { "name": "Mcp", "path": "", "protocol": "stdio", "traits": [{ "ref": "StdioT" }] },
+                { "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "BootT" }] }
+            ]),
+            &["RouteT", "OtherT", "HttpT", "StdioT", "BootT", "Orphan"],
+        )
+    }
+
+    fn lifecycle_kernel() -> RuntimeKernel {
+        let with = |name: &str, event: &str| serde_json::json!({
+            "name": name,
+            "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": event, "effects": [] }]
+            }
+        });
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [with("Inits", "INIT"), with("Loads", "LOAD"), with("Mounts", "$MOUNT"), with("Deaf", "GO")],
+                "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Inits" }, { "ref": "Loads" }, { "ref": "Mounts" }, { "ref": "Deaf" }] }]
+            }]
+        }))
+        .unwrap();
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    #[test]
+    fn each_mount_seed_carries_the_first_lifecycle_event_its_trait_handles() {
+        use crate::effects::response::LifecycleEvent;
+        let seeds: Vec<(String, LifecycleEvent)> =
+            lifecycle_kernel().route_mounts("/").into_iter().map(|s| (s.r#trait, s.event)).collect();
+        assert_eq!(
+            seeds,
+            [
+                ("Inits".to_string(), LifecycleEvent::Init),
+                ("Loads".to_string(), LifecycleEvent::Load),
+                ("Mounts".to_string(), LifecycleEvent::Mount),
+            ],
+            "a trait that handles no lifecycle event is not seeded"
+        );
+    }
+
+    #[test]
+    fn the_server_host_boots_the_http_and_boot_traits() {
+        assert_eq!(names(app().boot_mounts(ProtocolSide::Server)), ["HttpT", "BootT"]);
+    }
+
+    #[test]
+    fn the_process_host_boots_the_stdio_and_boot_traits() {
+        assert_eq!(names(app().boot_mounts(ProtocolSide::Process)), ["StdioT", "BootT"]);
+    }
+
+    #[test]
+    fn a_route_trait_never_boots_and_the_client_side_has_no_start_mounts() {
+        let k = app();
+        for side in [ProtocolSide::Server, ProtocolSide::Process, ProtocolSide::Start] {
+            assert!(!names(k.boot_mounts(side)).contains(&"RouteT".to_string()), "{side:?}");
+        }
+        assert!(k.boot_mounts(ProtocolSide::Client).is_empty());
+    }
+
+    #[test]
+    fn a_route_mounts_only_that_routes_traits() {
+        let k = app();
+        assert_eq!(names(k.route_mounts("/")), ["RouteT"]);
+        assert_eq!(names(k.route_mounts("/other")), ["OtherT"]);
+        assert!(k.route_mounts("/missing").is_empty());
+    }
+
+    #[test]
+    fn a_trait_on_no_page_is_in_neither() {
+        let k = app();
+        let mut all = names(k.boot_mounts(ProtocolSide::Server));
+        all.extend(names(k.boot_mounts(ProtocolSide::Process)));
+        all.extend(names(k.route_mounts("/")));
+        all.extend(names(k.route_mounts("/other")));
+        assert!(!all.contains(&"Orphan".to_string()));
+    }
+
+    #[test]
+    fn a_trait_listed_on_two_boot_pages_mounts_once() {
+        let k = kernel(
+            serde_json::json!([
+                { "name": "A", "path": "", "protocol": "boot", "traits": [{ "ref": "T" }] },
+                { "name": "B", "path": "", "protocol": "http", "traits": [{ "ref": "T" }] }
+            ]),
+            &["T"],
+        );
+        assert_eq!(names(k.boot_mounts(ProtocolSide::Server)), ["T"]);
     }
 }

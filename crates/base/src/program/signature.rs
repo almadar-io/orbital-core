@@ -251,6 +251,11 @@ impl<'a> Signature<'a> {
         self.returns
     }
 
+    /// The declared `returnSemantics` kind, when the operator has one.
+    pub fn semantics(&self) -> Option<&'a str> {
+        self.semantics
+    }
+
     pub fn field_projection(&self) -> Option<FieldProjection> {
         use crate::language::registry::OperatorTypeRefKind as K;
 
@@ -701,11 +706,27 @@ enum Path {
 
 /// The type at a dot path through `ty`.
 fn walk_path(ty: &OirType, path: &str) -> Path {
+    walk_path_in(ty, path, &|_| None)
+}
+
+/// [`walk_path`] where a segment's owner may be a declared name, read through `resolve`.
+fn walk_path_in(ty: &OirType, path: &str, resolve: &dyn Fn(&str) -> Option<OirType>) -> Path {
     let mut current = ty.clone();
     let mut may_be_absent = false;
     let segments = crate::value::split_path(path);
     for segment in segments.iter().map(|s| s.as_ref()) {
-        let here = language_value(unwrap_optional(&current)).clone();
+        let mut here = language_value(unwrap_optional(&current)).clone();
+        let mut hops = 0;
+        while let OirType::TypeRef { name } | OirType::Reference { entity: name } = &here {
+            let Some(next) = resolve(name) else { break };
+            hops += 1;
+            if hops > 16 {
+                break;
+            }
+            may_be_absent |= next.is_optional();
+            here = language_value(unwrap_optional(&next)).clone();
+            current = next;
+        }
         match &here {
             OirType::Struct { fields, additional } => match fields.iter().find(|f| f.name == segment) {
                 Some(field) => {
@@ -1743,7 +1764,8 @@ fn bind_key(
     }
     for path in paths {
         if mode == Mode::Static {
-            if let Path::Missing = walk_path(&record, path) {
+            let walked = walk_path_in(&record, path, &|name| b.named_types.get(name).cloned());
+            if let Path::Missing = walked {
                 b.absent
                     .insert(record_var.to_string(), (b.index, path.clone()));
             }
@@ -2104,7 +2126,7 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                         _ => None,
                     };
                 };
-                match walk_path(record, key) {
+                match walk_path_in(record, key, &|name| b.named_types.get(name).cloned()) {
                     Path::Found(found) => Some(found),
                     Path::Missing => b.defaults.get(of).cloned(),
                     Path::Opaque => None,
@@ -3410,6 +3432,35 @@ mod tests {
                 record: "object".into()
             })
         );
+    }
+
+    #[test]
+    fn a_dotted_key_reads_through_a_declared_name_between_its_segments() {
+        let density = struct_of(&[("h", OirType::String)]);
+        let outer = struct_of(&[
+            ("density", OirType::optional(OirType::TypeRef { name: "D".into() })),
+            ("name", OirType::String),
+        ]);
+        let get_op = get();
+        let sig = Signature::of(&get_op);
+        let read = |names: &[(&str, OirType)], path: &str| {
+            let mut b = CallBindings::new();
+            b.use_named_types(std::sync::Arc::new(
+                names.iter().map(|(n, t)| ((*n).to_string(), t.clone())).collect(),
+            ));
+            sig.bind(&mut b, 0, &ty(outer.clone()), Mode::Static)?;
+            sig.bind(&mut b, 1, &text(path), Mode::Static)?;
+            Ok::<_, Mismatch>(sig.result(&b))
+        };
+        assert_eq!(
+            read(&[("D", density.clone())], "density.h"),
+            Ok(Some(OirType::String))
+        );
+        assert!(
+            matches!(read(&[("D", density)], "density.zzz"), Err(Mismatch::NoField { .. }) | Ok(None)),
+            "control: a segment the named type does not declare is not a field"
+        );
+        assert_eq!(read(&[], "density.h"), Ok(None), "control: an undeclared name stays opaque");
     }
 
     fn get_of_record_or_list() -> EmbeddedOperator {

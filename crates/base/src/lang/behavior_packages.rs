@@ -303,7 +303,73 @@ pub fn discover(
 }
 
 /// `discover` with an explicit sidecar cache directory. Never downloads.
+///
+/// Memoized per process for each `(start_dir, user_store, cache_dir)`: a repeat call answers the remembered packages
+/// while every directory the walk listed and every manifest it kept still has the modification time it had (see
+/// [`DiscoveryStamp`]), so a long-lived host still sees a package added, removed or re-declared.
 pub fn discover_with_cache(
+    start_dir: &Path,
+    user_store: &Path,
+    cache_dir: &Path,
+) -> Result<Vec<BehaviorPackage>, DiscoverError> {
+    use std::sync::{Mutex, OnceLock};
+    type Key = (PathBuf, PathBuf, PathBuf);
+    static MEMO: OnceLock<Mutex<HashMap<Key, (DiscoveryStamp, Vec<BehaviorPackage>)>>> = OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    let key = (start_dir.to_path_buf(), user_store.to_path_buf(), cache_dir.to_path_buf());
+    if let Some((stamp, packages)) = memo.lock().ok().and_then(|m| m.get(&key).cloned()) {
+        if stamp.is_current() {
+            return Ok(packages);
+        }
+    }
+    let packages = discover_uncached(start_dir, user_store, cache_dir)?;
+    let stamp = DiscoveryStamp::of(start_dir, user_store, &packages);
+    if let Ok(mut m) = memo.lock() {
+        m.insert(key, (stamp, packages.clone()));
+    }
+    Ok(packages)
+}
+
+/// The modification times a discovery depended on: each `node_modules` rung, each `@scope` directory in it, and each
+/// kept package's `package.json` and `sidecars.lock.json` (`None` while absent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryStamp(Vec<(PathBuf, Option<std::time::SystemTime>)>);
+
+impl DiscoveryStamp {
+    fn modified(path: &Path) -> Option<std::time::SystemTime> {
+        fs::metadata(path).and_then(|m| m.modified()).ok()
+    }
+
+    pub fn of(start_dir: &Path, user_store: &Path, packages: &[BehaviorPackage]) -> Self {
+        let mut entries = Vec::new();
+        for rung in node_modules_dirs(start_dir, user_store) {
+            if let Ok(listing) = fs::read_dir(&rung) {
+                for entry in listing.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with('@') {
+                        let scope = entry.path();
+                        entries.push((scope.clone(), Self::modified(&scope)));
+                    }
+                }
+            }
+            let modified = Self::modified(&rung);
+            entries.push((rung, modified));
+        }
+        for package in packages {
+            for file in ["package.json", "sidecars.lock.json"] {
+                let path = package.root.join(file);
+                let modified = Self::modified(&path);
+                entries.push((path, modified));
+            }
+        }
+        DiscoveryStamp(entries)
+    }
+
+    pub fn is_current(&self) -> bool {
+        self.0.iter().all(|(path, modified)| Self::modified(path) == *modified)
+    }
+}
+
+fn discover_uncached(
     start_dir: &Path,
     user_store: &Path,
     cache_dir: &Path,

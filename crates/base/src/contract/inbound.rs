@@ -31,6 +31,10 @@ pub struct InboundAnswer {
     pub body: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
+    /// Response headers the answer declares (`headers: Map string string`); an HTTP host writes them, a terminal host
+    /// reads its own (`orb-run` hands a composed program back to the bootloader).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// Every inbound handler the program declares, in schema order.
@@ -85,6 +89,7 @@ pub fn unknown_hook(name: &str) -> InboundAnswer {
         status: 404,
         body: error_body(&format!("Unknown hook provider: {name}")),
         stderr: None,
+        headers: None,
     }
 }
 
@@ -94,6 +99,7 @@ pub fn dispatch_failed(message: &str) -> InboundAnswer {
         status: 500,
         body: error_body(message),
         stderr: None,
+        headers: None,
     }
 }
 
@@ -111,6 +117,7 @@ pub fn cascade_capped(cap: usize, trait_name: &str, event: &str) -> InboundAnswe
         })
         .to_string(),
         stderr: None,
+        headers: None,
     }
 }
 
@@ -127,6 +134,7 @@ pub fn inbound_unanswered(trait_name: &str, event: &str) -> InboundAnswer {
         })
         .to_string(),
         stderr: None,
+        headers: None,
     }
 }
 
@@ -157,6 +165,7 @@ pub fn credential_unset(credential: &str) -> InboundAnswer {
         status: 401,
         body: error_body(&format!("credential {credential} is not set")),
         stderr: None,
+        headers: None,
     }
 }
 
@@ -228,11 +237,21 @@ pub fn answer_of<'a>(route: &InboundRoute, emits: impl IntoIterator<Item = (&'a 
         Some(Value::String(text)) => Ok(Some(text.clone())),
         Some(_) => Err(()),
     };
-    match (status, body, stderr) {
-        (Some(s), Some(b), Ok(stderr)) if s.fract() == 0.0 && (100.0..=599.0).contains(&s) => InboundAnswer {
+    let headers = match payload.get_path("headers") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(map)) => map
+            .iter()
+            .map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())).ok_or(()))
+            .collect::<Result<_, _>>()
+            .map(Some),
+        Some(_) => Err(()),
+    };
+    match (status, body, stderr, headers) {
+        (Some(s), Some(b), Ok(stderr), Ok(headers)) if s.fract() == 0.0 && (100.0..=599.0).contains(&s) => InboundAnswer {
             status: s as u16,
             body: b.to_string(),
             stderr,
+            headers,
         },
         _ => dispatch_failed("inbound-answer-invalid"),
     }
@@ -455,7 +474,8 @@ mod tests {
             InboundAnswer {
                 status: 400,
                 body: "{\"error\":\"bad-token\"}".into(),
-                stderr: None
+                stderr: None,
+                headers: None,
             }
         );
     }
@@ -480,7 +500,8 @@ mod tests {
             InboundAnswer {
                 status: 500,
                 body: String::new(),
-                stderr: Some("orb x: failed".into())
+                stderr: Some("orb x: failed".into()),
+                headers: None,
             }
         );
         let null: Value = serde_json::from_value(json!({ "status": 200, "body": "ok", "stderr": null })).unwrap();
@@ -491,7 +512,8 @@ mod tests {
             InboundAnswer {
                 status: 200,
                 body: "ok".into(),
-                stderr: None
+                stderr: None,
+                headers: None,
             }
         );
     }
@@ -531,7 +553,7 @@ mod tests {
         let answer: Value = serde_json::from_value(answer).unwrap();
         let other: Value = serde_json::from_value(other).unwrap();
         let emitted = [("NOISE", &other), ("PUSH_ANSWERED", &answer)];
-        assert_eq!(answer_of_response(&calendar_route(), emitted, Some("ignored")), InboundAnswer { status: 202, body: "ok".into(), stderr: None });
+        assert_eq!(answer_of_response(&calendar_route(), emitted, Some("ignored")), InboundAnswer { status: 202, body: "ok".into(), stderr: None, headers: None });
     }
 
     #[test]

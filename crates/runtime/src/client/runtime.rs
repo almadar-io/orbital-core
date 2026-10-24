@@ -213,7 +213,7 @@ mod tests {
                                         "to": "counting",
                                         "event": "INCREMENT",
                                         "effects": [
-                                            ["log", "info", "Counter incremented"]
+                                            ["log", "Counter incremented", "info"]
                                         ]
                                     },
                                     {

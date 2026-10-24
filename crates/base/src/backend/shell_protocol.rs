@@ -233,6 +233,8 @@ pub fn reply_exit<T: Serialize>(reply: &T, ok: bool) -> ExitCode {
 
 /// The `main` of a shell executable.
 pub fn run(program: &dyn ShellProgram) -> ExitCode {
+    // stdout carries the protocol; logs go to stderr under the config `orb` exported.
+    crate::logging::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [cmd] if cmd == "describe" => {

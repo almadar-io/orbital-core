@@ -46,7 +46,7 @@ fn schema(extra_fetch: Json, persistence: &str) -> OrbitalSchema {
                 "read_policy": ["=", ["object/get", "@entity", "owner"], "@user.id"]
             },
             "traits": [{
-                "name": "Tickets", "linkedEntity": "Ticket",
+                "name": "Tickets", "linkedEntity": "Ticket", "dispatch": if persistence == "runtime" { json!("client") } else { json!(null) },
                 "stateMachine": {
                     "states": [{ "name": "idle", "isInitial": true }],
                     "transitions": [

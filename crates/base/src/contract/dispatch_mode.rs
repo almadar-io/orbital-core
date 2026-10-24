@@ -31,7 +31,7 @@ pub fn compute(declared: Option<Declared>) -> DispatchMode {
     match declared {
         Some(Declared::Client) => DispatchMode::HybridClientOnly,
         Some(Declared::Optimistic) => DispatchMode::RuntimeOptimistic,
-        None => DispatchMode::PersistedAwaited,
+        Some(Declared::Server) | None => DispatchMode::PersistedAwaited,
     }
 }
 
@@ -46,7 +46,17 @@ mod tests {
     fn dispatch_mode_rule_table() {
         assert_eq!(compute(Some(Declared::Client)), DispatchMode::HybridClientOnly);
         assert_eq!(compute(Some(Declared::Optimistic)), DispatchMode::RuntimeOptimistic);
+        assert_eq!(compute(Some(Declared::Server)), DispatchMode::PersistedAwaited);
         assert_eq!(compute(None), DispatchMode::PersistedAwaited);
+    }
+
+    #[test]
+    fn server_is_server_whatever_the_entity_or_effects() {
+        for effects in [serde_json::json!([["set", "@entity.x", 1]]), serde_json::json!([["fetch", "Row", {}]])] {
+            let t = schema_trait(Some("server"), effects);
+            assert_eq!(mode_of(&t, true), DispatchMode::PersistedAwaited);
+            assert_eq!(mode_of(&t, false), DispatchMode::PersistedAwaited);
+        }
     }
 
     fn entity(runtime: bool) -> EntityDefinition {
@@ -128,7 +138,7 @@ mod tests {
 
     #[test]
     fn dispatch_mode_ir_and_schema_agree() {
-        for dispatch in [None, Some(Declared::Client), Some(Declared::Optimistic)] {
+        for dispatch in [None, Some(Declared::Client), Some(Declared::Optimistic), Some(Declared::Server)] {
             for entity_is_runtime in [true, false] {
                 let mut oir_trait = OirTrait::new("T");
                 oir_trait.dispatch = dispatch;

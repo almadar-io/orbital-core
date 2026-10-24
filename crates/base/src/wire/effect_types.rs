@@ -903,6 +903,17 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
                 .and_then(Value::as_object)
                 .and_then(|o| o.get("key"))
                 .cloned();
+            // The op's own options written beside `emit`/`key` (`{ file: true emit: … }`) stay its last argument.
+            if let Some(map) = options.as_ref().and_then(Value::as_object) {
+                let rest: crate::value::ValueMap = map
+                    .iter()
+                    .filter(|(k, _)| k.as_str() != "emit" && k.as_str() != "key")
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                if !rest.is_empty() {
+                    values.push(Value::Object(rest));
+                }
+            }
             Some(Effect::Custom {
                 name: op.to_string(),
                 args: values,
@@ -1558,52 +1569,81 @@ fn parse_despawn(args: &[SExpression]) -> Option<Effect> {
 }
 
 fn parse_log(args: &[SExpression]) -> Option<Effect> {
-    if args.is_empty() {
-        return None;
-    }
-
-    // Check if first arg is a level
-    let (level, message, data) = if let Some(level_str) = args[0].as_str() {
-        match level_str {
-            "debug" | "info" | "warn" | "error" => {
-                let level = match level_str {
-                    "debug" => LogLevel::Debug,
-                    "info" => LogLevel::Info,
-                    "warn" => LogLevel::Warn,
-                    "error" => LogLevel::Error,
-                    _ => LogLevel::Info,
-                };
-                let message = args
-                    .get(1)
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let data = args.get(2).map(|e| Value::from(e.clone()));
-                (level, message, data)
-            }
-            _ => {
-                // First arg is the message
-                (
-                    LogLevel::Info,
-                    level_str.to_string(),
-                    args.get(1).map(|e| Value::from(e.clone())),
-                )
-            }
-        }
-    } else {
-        return None;
+    let message = args.first()?.as_str()?.to_string();
+    let level = match args.get(1) {
+        None => LogLevel::Info,
+        Some(level) => match level.as_str()? {
+            "debug" => LogLevel::Debug,
+            "info" => LogLevel::Info,
+            "warn" => LogLevel::Warn,
+            "error" => LogLevel::Error,
+            _ => return None,
+        },
     };
-
     Some(Effect::Log {
         level,
         message,
-        data,
+        data: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn log_of(src: &str) -> Option<(LogLevel, String)> {
+        match parse_effect(&serde_json::from_str::<SExpression>(src).unwrap())? {
+            Effect::Log { level, message, .. } => Some((level, message)),
+            _ => None,
+        }
+    }
+
+    fn custom_of(src: &str) -> (Vec<Value>, bool) {
+        match parse_effect(&serde_json::from_str::<SExpression>(src).unwrap()) {
+            Some(Effect::Custom { args, emit, .. }) => (args, emit.is_some()),
+            other => panic!("not a custom effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn options_written_beside_emit_reach_the_op_as_its_last_argument() {
+        let (args, routed) = custom_of(r#"["behavior/source", {"behavior": "x"}, {"file": true, "emit": {"success": "A", "failure": "B"}}]"#);
+        assert!(routed);
+        assert_eq!(args.len(), 2, "{args:?}");
+        assert_eq!(args[1].as_object().and_then(|o| o.get("file")), Some(&Value::Bool(true)));
+        assert!(args[1].as_object().is_some_and(|o| !o.contains_key("emit")), "{args:?}");
+    }
+
+    #[test]
+    fn control_an_emit_only_record_leaves_the_arguments_as_written() {
+        let (args, routed) = custom_of(r#"["behavior/source", {"behavior": "x"}, {"key": "k", "emit": {"success": "A", "failure": "B"}}]"#);
+        assert!(routed);
+        assert_eq!(args.len(), 1, "{args:?}");
+        let (args, _) = custom_of(r#"["program/step", "p", [], {"report": "raw"}, {"emit": {"success": "A", "failure": "B"}}]"#);
+        assert_eq!(args.len(), 3, "a separate options record stays where it was: {args:?}");
+    }
+
+    #[test]
+    fn a_trailing_level_sets_the_log_level() {
+        assert_eq!(log_of(r#"["log", "store retry", "warn"]"#), Some((LogLevel::Warn, "store retry".into())));
+        assert_eq!(log_of(r#"["log", "miss", "debug"]"#), Some((LogLevel::Debug, "miss".into())));
+        assert_eq!(log_of(r#"["log", "down", "error"]"#), Some((LogLevel::Error, "down".into())));
+    }
+
+    #[test]
+    fn control_a_log_without_a_level_is_info() {
+        assert_eq!(log_of(r#"["log", "seeded"]"#), Some((LogLevel::Info, "seeded".into())));
+    }
+
+    #[test]
+    fn control_a_level_word_alone_is_the_message() {
+        assert_eq!(log_of(r#"["log", "info"]"#), Some((LogLevel::Info, "info".into())));
+    }
+
+    #[test]
+    fn an_unknown_log_level_is_not_a_log_effect() {
+        assert_eq!(log_of(r#"["log", "msg", "loud"]"#), None);
+    }
 
     fn failed_with(src: &str) -> EffectResult {
         EffectResult::failed(parse_effect(&serde_json::from_str::<SExpression>(src).unwrap()).unwrap(), "no row")

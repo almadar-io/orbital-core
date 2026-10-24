@@ -36,7 +36,7 @@ fn kernel(ticking: usize) -> EmbeddedKernel {
         .map(|i| {
             json!({
                 "id": format!("trt_bench_{i}"), "name": format!("FrameTicker{i}"),
-                "linkedEntity": "Counter", "local": true, "scope": "instance",
+                "linkedEntity": "Counter", "dispatch": "client",
                 "stateMachine": {
                     "states": [{ "name": "running", "isInitial": true }, { "name": "stopped" }],
                     "transitions": [{ "from": "running", "to": "running", "event": "INIT", "effects": [

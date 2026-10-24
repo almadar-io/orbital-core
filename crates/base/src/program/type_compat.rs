@@ -49,6 +49,8 @@ pub enum WidenKind {
     NumericToDateTime,
     /// Any scalar renders as a node ("any rendered value is a ReactNode").
     ScalarToNode,
+    /// A semantic string domain (email, url, phone, uuid, image) is a string.
+    SemanticToString,
 }
 
 /// The witness for an accepted assignment `sub(src, dst) = Some(c)`: WHAT the
@@ -504,6 +506,7 @@ impl Relation<'_> {
             OirType::Behavior => None,
             OirType::String => match src {
                 _ if is_string_kind(src) => Some(Coercion::Identity),
+                _ if semantic_kind(src).is_some() => Some(Coercion::Widen(WidenKind::SemanticToString)),
                 _ => None,
             },
             OirType::Number => match src {
@@ -2229,8 +2232,8 @@ mod compat_tests {
             Some(C::Refine(SemanticStringKind::Email))
         );
         assert_eq!(sub(&status, &Url), Some(C::Refine(SemanticStringKind::Url)));
-        // …but semantic domains do not escape to string or inter-assign.
-        assert_eq!(sub(&Email, &String), None);
+        // …a semantic domain is a string, but domains do not inter-assign.
+        assert_eq!(sub(&Email, &String), Some(C::Widen(WidenKind::SemanticToString)));
         assert_eq!(sub(&Email, &Url), None);
         assert_eq!(sub(&Email, &Email), Some(C::Identity));
     }
@@ -2492,6 +2495,22 @@ mod compat_tests {
         assert_eq!(sub(&row, &String), None);
         assert_eq!(sub(&revision_ref, &row), None);
         assert_eq!(crate::type_compat::oir_type_kind(&row), "object");
+    }
+
+    #[test]
+    fn a_semantic_string_domain_widens_to_string_and_never_back_unchecked() {
+        use super::sub;
+        for domain in [Email, Url, Phone, Uuid, Image] {
+            assert_eq!(
+                sub(&domain, &String),
+                Some(C::Widen(WidenKind::SemanticToString)),
+                "{domain:?}"
+            );
+            assert!(sub(&String, &domain).is_some_and(|c| matches!(c, C::Refine(_))));
+            assert_eq!(sub(&domain, &Number), None, "control: a domain is not a number");
+        }
+        assert_eq!(sub(&Email, &Url), None, "control: domains are not interchangeable");
+        assert_eq!(sub(&Email, &Email), Some(C::Identity));
     }
 
     #[test]

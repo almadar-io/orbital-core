@@ -1376,11 +1376,21 @@ impl NodeLowerer {
         if args.is_empty() {
             return Err(LowerError::InvalidSExpr("log requires message".to_string()));
         }
+        use orbital_core_base::ir::effects::OirLogLevel;
         let message = self.resolve_sexpr(&args[0])?;
-        Ok(OirExpr::effect(OirEffect::log(
-            orbital_core_base::ir::effects::OirLogLevel::Info,
-            message,
-        )))
+        let level = match args.get(1) {
+            None => OirLogLevel::Info,
+            Some(SExpression::String(level)) if level == "debug" => OirLogLevel::Debug,
+            Some(SExpression::String(level)) if level == "info" => OirLogLevel::Info,
+            Some(SExpression::String(level)) if level == "warn" => OirLogLevel::Warn,
+            Some(SExpression::String(level)) if level == "error" => OirLogLevel::Error,
+            Some(other) => {
+                return Err(LowerError::InvalidSExpr(format!(
+                    "(log …) argument 2, the level, must be \"debug\", \"info\", \"warn\" or \"error\"; got {other:?}"
+                )))
+            }
+        };
+        Ok(OirExpr::effect(OirEffect::log(level, message)))
     }
 
     fn resolve_call_service_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
@@ -2265,6 +2275,37 @@ mod tests {
         let mut items = vec![SExpression::String(op.into())];
         items.extend(args);
         SExpression::Array(items)
+    }
+
+    fn lowered_log_level(args: Vec<SExpression>) -> Result<orbital_core_base::ir::effects::OirLogLevel, LowerError> {
+        match lower_sexpr(&call("log", args))? {
+            OirExpr::Effect { effect } => match *effect {
+                OirEffect::Log { level, .. } => Ok(level),
+                other => panic!("not a log effect: {other:?}"),
+            },
+            other => panic!("not an effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_log_lowers_its_trailing_level() {
+        use orbital_core_base::ir::effects::OirLogLevel;
+        let level = |l: &str| lowered_log_level(vec![SExpression::String("m".into()), SExpression::String(l.into())]).unwrap();
+        assert_eq!(level("debug"), OirLogLevel::Debug);
+        assert_eq!(level("warn"), OirLogLevel::Warn);
+        assert_eq!(level("error"), OirLogLevel::Error);
+    }
+
+    #[test]
+    fn control_a_log_without_a_level_lowers_as_info() {
+        let level = lowered_log_level(vec![SExpression::String("m".into())]).unwrap();
+        assert_eq!(level, orbital_core_base::ir::effects::OirLogLevel::Info);
+    }
+
+    #[test]
+    fn a_log_level_outside_the_four_is_refused() {
+        assert!(lowered_log_level(vec![SExpression::String("m".into()), SExpression::String("loud".into())]).is_err());
+        assert!(lowered_log_level(vec![SExpression::String("m".into()), SExpression::Number(1.0)]).is_err());
     }
 
     #[test]

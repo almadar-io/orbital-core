@@ -283,6 +283,16 @@ impl EmbeddedKernel {
         self.dispatch_wire(orbital, dispatch)
     }
 
+    /// The kernel's mounts for a host start on `side` (EXEC-ENDPOINT-3).
+    pub fn boot_mounts(&self, side: orbital_core_base::protocols::ProtocolSide) -> Vec<MountSeed> {
+        self.kernel.boot_mounts(side)
+    }
+
+    /// The kernel's mounts for a client opening `route_path` (EXEC-ENDPOINT-3).
+    pub fn route_mounts(&self, route_path: &str) -> Vec<MountSeed> {
+        self.kernel.route_mounts(route_path)
+    }
+
     /// Dispatch a mount batch: every seed's lifecycle event runs locally, in order, and the legs to
     /// post are one `mount` leg per owning orbital (JS twin: `postMountLeg`). `legs` is for a host
     /// that carries the circuit state; `stateful_legs` for one that holds it, which is also posted the

@@ -191,6 +191,7 @@ pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
     let Some(host) = host else {
         return IoAnswer::Os(Err(args::denied(*op, "no os host configured")));
     };
+    let _span = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_OS, "os ask", op = ?op, keyed = key.is_some()).entered();
     let resolved = match resolve_anchored_args(*op, args, &host.handles.anchors) {
         Ok(resolved) => resolved,
         Err(error) => return IoAnswer::Os(Err(error)),

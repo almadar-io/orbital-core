@@ -15,7 +15,6 @@ pub struct WriteOptions {
     pub copy_template: bool,
     /// Remove existing generated files first.
     pub clean: bool,
-    pub verbose: bool,
     /// Full, client or server.
     pub mode: ShellMode,
     /// Service id -> runtimes it runs on; `None` reads the installed services registry.
@@ -77,37 +76,32 @@ where
     S: Shell,
     B: Backend,
 {
+    use crate::logging::ns;
     let output_dir = output_dir.as_ref();
-
-    if options.verbose {
-        eprintln!("Output: {}", output_dir.display());
-        eprintln!("Shell: {}", shell.name());
-        eprintln!("Backend: {}", backend.name());
-    }
+    let _span = tracing::info_span!(
+        target: ns::SHELL,
+        "write project",
+        shell = shell.name(),
+        backend = backend.name(),
+        output = %output_dir.display(),
+    )
+    .entered();
 
     // Step 2: Copy shell template if requested
     if options.copy_template {
-        if options.verbose {
-            eprintln!("Copying shell template...");
-        }
-        shell.init_project(output_dir, &oir.name)?;
+        tracing::info_span!(target: ns::SHELL, "copy template").in_scope(|| shell.init_project(output_dir, &oir.name))?;
     }
 
     // Step 3: Clean existing generated files if requested
     if options.clean {
-        if options.verbose {
-            eprintln!("Cleaning generated directory...");
-        }
-        shell.clean_generated(output_dir)?;
+        tracing::info_span!(target: ns::SHELL, "clean generated").in_scope(|| shell.clean_generated(output_dir))?;
     }
 
     // Step 4: Generate code
-    if options.verbose {
-        eprintln!("Generating code (mode: {:?})...", options.mode);
-    }
     ensure_backend_supports(oir, backend)?;
     ensure_services_hostable(oir, backend, options)?;
-    let output = backend.generate_with_mode(oir, options.mode);
+    let output = tracing::info_span!(target: ns::SHELL, "generate code", mode = ?options.mode)
+        .in_scope(|| backend.generate_with_mode(oir, options.mode));
 
     // Cross-shell operator-completeness backstop: no emitted file may carry the
     // shared unsupported-operator marker (Python emits it in a `#` comment, TS
@@ -166,10 +160,7 @@ where
         }
 
         std::fs::write(&file_path, &file.content)?;
-
-        if options.verbose {
-            eprintln!("  Written: {}", file.path);
-        }
+        tracing::debug!(target: ns::SHELL, path = %file.path, "written");
     }
 
     let new_manifest: std::collections::BTreeSet<String> =
@@ -179,9 +170,7 @@ where
             let stale_path = resolve_manifest_path(output_dir, &generated_dir, stale);
             if stale_path.exists() {
                 std::fs::remove_file(&stale_path)?;
-                if options.verbose {
-                    eprintln!("  Pruned stale: {stale}");
-                }
+                tracing::info!(target: ns::SHELL, path = %stale, "pruned stale");
                 if let Some(parent) = stale_path.parent() {
                     prune_empty_dirs(parent, output_dir);
                 }
@@ -190,13 +179,7 @@ where
     }
     write_orb_manifest(output_dir, &new_manifest)?;
 
-    if options.verbose {
-        eprintln!(
-            "Generated {} files to {}",
-            output.files.len(),
-            generated_dir.display()
-        );
-    }
+    tracing::info!(target: ns::SHELL, files = output.files.len(), dir = %generated_dir.display(), "generated");
 
     Ok(output)
 }

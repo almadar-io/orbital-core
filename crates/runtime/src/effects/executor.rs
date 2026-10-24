@@ -635,6 +635,7 @@ impl EffectExecutor {
 
     /// Execute an effect
     pub fn execute(&self, effect: &Effect, ctx: &BindingContext) -> EffectResult {
+        let _span = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, "effect", op = effect.operator()).entered();
         if self.environment.is_client() && runs_on(effect.operator()) == RunsOn::Server {
             return self.delegate_to_server(effect.clone());
         }
@@ -2383,12 +2384,13 @@ impl EffectExecutor {
             data: data.cloned(),
         };
 
-        // Log works in both environments
+        // Log works in both environments; a program's `(log …)` lines share one namespace.
+        use orbital_core_base::logging::ns::PROGRAM;
         match level {
-            LogLevel::Debug => debug!(message = message, data = ?data, "Log effect"),
-            LogLevel::Info => info!(message = message, data = ?data, "Log effect"),
-            LogLevel::Warn => warn!(message = message, data = ?data, "Log effect"),
-            LogLevel::Error => error!(message = message, data = ?data, "Log effect"),
+            LogLevel::Debug => debug!(target: PROGRAM, data = ?data, "{message}"),
+            LogLevel::Info => info!(target: PROGRAM, data = ?data, "{message}"),
+            LogLevel::Warn => warn!(target: PROGRAM, data = ?data, "{message}"),
+            LogLevel::Error => error!(target: PROGRAM, data = ?data, "{message}"),
         }
 
         EffectResult::executed(effect)
@@ -3082,7 +3084,7 @@ mod tests {
 
         let effects: Vec<SExpression> = vec![
             serde_json::from_str(r#"["emit", "EVENT_1", null]"#).unwrap(),
-            serde_json::from_str(r#"["log", "info", "Test message"]"#).unwrap(),
+            serde_json::from_str(r#"["log", "Test message", "info"]"#).unwrap(),
         ];
 
         let ctx = BindingContext::new();

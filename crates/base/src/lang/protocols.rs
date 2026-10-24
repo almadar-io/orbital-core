@@ -3,9 +3,9 @@
 //! whether a viewer exists, the grant it needs and the side that serves it.
 //! A protocol's behavior is std `.lolo`; a row only declares it.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProtocolSide {
     Client,
@@ -44,8 +44,11 @@ const HTTP_ADDRESS: &[AddressField] = &[
     AddressField { name: "path", ty: "string", required: false },
 ];
 
+/// A browser route: a page written with a `"/…"` path literal and no protocol word.
+pub const ROUTE: &str = "route";
+
 pub const PROTOCOLS: &[ProtocolSpec] = &[
-    ProtocolSpec { name: "route", address: None, viewer: true, grant: None, side: ProtocolSide::Client },
+    ProtocolSpec { name: ROUTE, address: None, viewer: true, grant: None, side: ProtocolSide::Client },
     ProtocolSpec { name: "http", address: Some(HTTP_ADDRESS), viewer: false, grant: Some(GrantKind::NetListen), side: ProtocolSide::Server },
     ProtocolSpec { name: "stdio", address: None, viewer: false, grant: Some(GrantKind::Stdio), side: ProtocolSide::Process },
     ProtocolSpec { name: "boot", address: None, viewer: false, grant: None, side: ProtocolSide::Start },

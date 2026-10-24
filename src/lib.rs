@@ -60,6 +60,7 @@ pub mod oauth {
     pub use orbital_core_runtime::oauth::*;
 }
 pub use orbital_core_base::renderer_packs;
+pub use orbital_core_base::protocols;
 pub use orbital_core_base::route;
 pub mod runtime {
     pub use orbital_core_base::dispatch_mode;

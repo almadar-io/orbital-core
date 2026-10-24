@@ -80,7 +80,10 @@
     "sys": "sys",
     "desktop": "desktop",
     "kv": "kv",
-    "deployment": "deployment"
+    "deployment": "deployment",
+    "input": "input",
+    "http": "http",
+    "boot": "boot"
   },
   "shapes": {
     "Entity": "Entity",
@@ -93,23 +96,16 @@
     "persistent": "persistent",
     "runtime": "runtime",
     "shared": "shared",
-    "local": "local",
+    "client": "client",
+    "optimistic": "optimistic",
+    "server": "server",
+    "browser": "browser",
     "identity": "identity",
-    "instance": "instance",
-    "collection": "collection",
     "background": "background",
     "visible": "visible",
-    "mock": "mock",
     "store": "store"
   },
-  "categories": {
-    "interaction": "interaction",
-    "integration": "integration",
-    "lifecycle": "lifecycle",
-    "game-core": "game-core",
-    "game-entity": "game-entity",
-    "game-ui": "game-ui"
-  },
+  "categories": {},
   "capabilities": {
     "read": "read",
     "write": "write",
@@ -566,7 +562,12 @@
     "store": "store",
     "themes": "themes",
     "osGrants": "osGrants",
-    "deployment": "deployment"
+    "deployment": "deployment",
+    "address": "address",
+    "browser": "browser",
+    "dispatch": "dispatch",
+    "protocol": "protocol",
+    "input": "input"
   },
   "operators": {
     "!=": "!=",

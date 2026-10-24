@@ -86,6 +86,8 @@ struct SeedRun {
     memory: DispatchMemory,
     stage: Stage,
     tick: Option<TickSeed>,
+    /// One event's delivery to one trait, open until its step is done.
+    span: tracing::Span,
 }
 
 pub(crate) struct DispatchRun {
@@ -99,6 +101,8 @@ pub(crate) struct DispatchRun {
     origin: Origin,
     /// The transition the step in flight committed when it suspended (G-CROSS-259).
     provisional: Option<Box<ProvisionalCommit>>,
+    /// Open from the run's start to its end, across every ask it parks on.
+    span: tracing::Span,
 }
 
 impl DispatchRun {
@@ -498,6 +502,16 @@ impl RuntimeKernel {
     }
 
     fn run_of(&self, plans: Vec<SeedPlan>) -> DispatchRun {
+        let span = match plans.first() {
+            Some(first) => tracing::debug_span!(
+                target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
+                "dispatch",
+                event = %first.event_name,
+                target_trait = %first.trait_name,
+                targets = plans.len(),
+            ),
+            None => tracing::debug_span!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, "dispatch", targets = 0),
+        };
         DispatchRun {
             trace_seeds: plans
                 .iter()
@@ -514,6 +528,7 @@ impl RuntimeKernel {
             user: self.thread_viewer(),
             origin: self.next_dispatch_origin(),
             provisional: None,
+            span,
         }
     }
 
@@ -583,6 +598,7 @@ impl RuntimeKernel {
         &self,
         mut c: DispatchContinuation,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        let _dispatch = c.run.span.clone().entered();
         loop {
             let seeds = c.seeds.get_or_insert_with(|| self.pending_store_seeds());
             if c.store.is_none() {
@@ -692,6 +708,7 @@ impl RuntimeKernel {
                     continue;
                 }
                 c.pending = number_requests(&mut c.next_id, end.pending);
+                tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, asks = c.pending.len(), "parked on host asks");
                 let requests = c.pending.clone();
                 return Ok(Progress::Await {
                     continuation: c,
@@ -885,6 +902,7 @@ impl RuntimeKernel {
         let _user = self.hold_user(user.as_deref());
         let committed_from = origin.emits;
         self.hold_origin(origin);
+        let _deliver = in_flight.span.clone().entered();
         let stepped = self.step_seed(in_flight, outcomes);
         self.release_origin(origin, committed_from, stepped.is_ok());
         match stepped? {
@@ -1067,6 +1085,12 @@ impl RuntimeKernel {
                 steps: 0,
             })
         };
+        let span = tracing::trace_span!(
+            target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
+            "deliver",
+            event = %event_name,
+            entity = %eid,
+        );
         SeedRun {
             eid,
             event_name,
@@ -1078,6 +1102,7 @@ impl RuntimeKernel {
             memory,
             stage,
             tick,
+            span,
         }
     }
 
@@ -1124,7 +1149,8 @@ impl RuntimeKernel {
                 if self.io.suspended() {
                     return Err(Fault::Suspended);
                 }
-                if visited.contains(scope, event_name, &from, payload, &frame.visit_frame()) {
+                let visit = visited.visit(scope, event_name, &from, payload, &frame.visit_frame());
+                if visited.seen(&visit) {
                     *idx += 1;
                     return Ok(Flow::More);
                 }
@@ -1147,7 +1173,7 @@ impl RuntimeKernel {
                     Err(Fault::Kernel(KernelError::TraitNotFound(_))) => None,
                     Err(fault) => return Err(fault),
                 };
-                visited.insert(scope, event_name, &from, payload, &frame.visit_frame());
+                visited.record(visit);
                 if result.is_some() {
                     fanned.extend(self.mount.write().release_after(scope, event_name));
                 }
@@ -1349,9 +1375,9 @@ impl RuntimeKernel {
             cascade.queue.push_front(item);
             return Err(Fault::Suspended);
         }
-        if !item.completion
-            && visited.contains(&item.trait_name, &item.event, &from, &item.payload, &frame.visit_frame())
-        {
+        let visit = (!item.completion)
+            .then(|| visited.visit(&item.trait_name, &item.event, &from, &item.payload, &frame.visit_frame()));
+        if visit.as_ref().is_some_and(|v| visited.seen(v)) {
             return Ok(true);
         }
         let view = memory.view(&item.trait_name, &item.delivery);
@@ -1368,7 +1394,11 @@ impl RuntimeKernel {
             }
         }
         if cascade.steps >= CROSS_TRAIT_CASCADE_CAP {
-            visited.insert(&item.trait_name, &item.event, &from, &item.payload, &frame.visit_frame());
+            let at_cap = match visit {
+                Some(v) => v,
+                None => visited.visit(&item.trait_name, &item.event, &from, &item.payload, &frame.visit_frame()),
+            };
+            visited.record(at_cap);
             let cut = crate::process_result::CascadeCut {
                 cap: CROSS_TRAIT_CASCADE_CAP,
                 trait_name: item.trait_name.clone(),
@@ -1415,8 +1445,8 @@ impl RuntimeKernel {
             Err(fault) => return Err(fault),
         };
         cascade.steps += 1;
-        if !item.completion {
-            visited.insert(&item.trait_name, &item.event, &from, &item.payload, &frame.visit_frame());
+        if let Some(v) = visit {
+            visited.record(v);
         }
         let CascadeItem {
             trait_name: t,

@@ -11,11 +11,11 @@ fn kernel(effects: Value) -> EmbeddedKernel {
             "name": "Main",
             "entity": { "name": "Draft", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "saved", "type": "number" }] },
             "auxiliaryEntities": [
-                { "name": "Notes", "persistence": "persistent", "collection": "notes", "local": true,
+                { "name": "Notes", "persistence": "persistent", "collection": "notes", "browser": true,
                   "fields": [{ "name": "id", "type": "string" }, { "name": "text", "type": "string" }] }
             ],
             "traits": [{
-                "name": "Editor", "linkedEntity": "Draft",
+                "name": "Editor", "linkedEntity": "Draft", "dispatch": "client",
                 "stateMachine": { "states": [{ "name": "editing", "isInitial": true }], "transitions": [] },
                 "ticks": [{ "name": "autosave", "interval": 0, "effects": effects }]
             }]

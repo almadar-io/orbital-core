@@ -454,6 +454,7 @@ mod tests {
             status: 200,
             body: "late".to_string(),
             stderr: None,
+            headers: None,
         }
     }
 

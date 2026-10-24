@@ -7,7 +7,7 @@ use serde_json::json;
 fn kernel() -> EmbeddedKernel {
     let tick = |trait_name: &str| {
         json!({
-            "name": trait_name, "linkedEntity": "E",
+            "name": trait_name, "linkedEntity": "E", "dispatch": "client",
             "stateMachine": { "states": [{ "name": "on", "isInitial": true }], "transitions": [] },
             "ticks": [{ "name": "beat", "interval": 0, "effects": [["set", "@entity.n", 1]] }]
         })

@@ -127,7 +127,30 @@ impl Operator for JsonStringifyOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "json/stringify", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::String(orbital_core_base::json_value::js_json_string(&value_to_json(&val))))
+        let flag = |options: &Value, key: &str| -> Result<bool, OrbitalError> {
+            match options {
+                Value::Object(map) => match map.get(key) {
+                    None | Some(Value::Null) => Ok(false),
+                    Some(Value::Bool(b)) => Ok(*b),
+                    Some(other) => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("json/stringify: options.{key} must be a boolean, not {}", other.type_name())))),
+                },
+                other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("json/stringify: options must be a record, not {}", other.type_name())))),
+            }
+        };
+        let (pretty, sorted) = match args.get(1) {
+            None => (false, false),
+            Some(options) => {
+                let options = eval_expr(options, ctx)?;
+                (flag(&options, "pretty")?, flag(&options, "sorted")?)
+            }
+        };
+        let json = value_to_json(&val);
+        let json = if sorted { crate::util::canonical_json::canonical_json(&json) } else { json };
+        Ok(Value::String(if pretty {
+            orbital_core_base::json_value::js_json_string_pretty(&json)
+        } else {
+            orbital_core_base::json_value::js_json_string(&json)
+        }))
     }
 }
 

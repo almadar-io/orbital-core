@@ -41,6 +41,56 @@ pub fn js_json_string<T: serde::Serialize + ?Sized>(value: &T) -> String {
     String::from_utf8(out).expect("serde_json writes UTF-8")
 }
 
+/// [`js_json_string`] with two-space indentation, as `JSON.stringify(v, null, 2)` writes it.
+pub fn js_json_string_pretty<T: serde::Serialize + ?Sized>(value: &T) -> String {
+    let mut out = Vec::new();
+    value
+        .serialize(&mut serde_json::Serializer::with_formatter(
+            &mut out,
+            JsPrettyFormatter(serde_json::ser::PrettyFormatter::new()),
+        ))
+        .expect("JSON text of an in-memory value always writes");
+    String::from_utf8(out).expect("serde_json writes UTF-8")
+}
+
+struct JsPrettyFormatter(serde_json::ser::PrettyFormatter<'static>);
+
+impl serde_json::ser::Formatter for JsPrettyFormatter {
+    fn write_f64<W: ?Sized + std::io::Write>(&mut self, writer: &mut W, value: f64) -> std::io::Result<()> {
+        writer.write_all(js_number_string(value).as_bytes())
+    }
+    fn write_f32<W: ?Sized + std::io::Write>(&mut self, writer: &mut W, value: f32) -> std::io::Result<()> {
+        self.write_f64(writer, f64::from(value))
+    }
+    fn begin_array<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+        self.0.begin_array(writer)
+    }
+    fn end_array<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+        self.0.end_array(writer)
+    }
+    fn begin_array_value<W: ?Sized + std::io::Write>(&mut self, writer: &mut W, first: bool) -> std::io::Result<()> {
+        self.0.begin_array_value(writer, first)
+    }
+    fn end_array_value<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+        self.0.end_array_value(writer)
+    }
+    fn begin_object<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+        self.0.begin_object(writer)
+    }
+    fn end_object<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+        self.0.end_object(writer)
+    }
+    fn begin_object_key<W: ?Sized + std::io::Write>(&mut self, writer: &mut W, first: bool) -> std::io::Result<()> {
+        self.0.begin_object_key(writer, first)
+    }
+    fn begin_object_value<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+        self.0.begin_object_value(writer)
+    }
+    fn end_object_value<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+        self.0.end_object_value(writer)
+    }
+}
+
 struct JsNumberFormatter;
 
 impl serde_json::ser::Formatter for JsNumberFormatter {

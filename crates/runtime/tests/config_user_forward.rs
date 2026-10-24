@@ -10,7 +10,7 @@ fn kernel() -> EmbeddedKernel {
         "orbitals": [{
             "name": "Gw",
             "entity": { "name": "Route", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
-            "traits": [{ "name": "Header", "linkedEntity": "Route",
+            "traits": [{ "name": "Header", "linkedEntity": "Route", "dispatch": "client",
                 "config": {
                     "viewerRole": { "type": "string", "default": "@user.role" },
                     "tier": { "type": "number", "default": "@user.profile.tier" },
