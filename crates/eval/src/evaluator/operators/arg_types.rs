@@ -452,6 +452,7 @@ pub fn declared_text(ty: &OirType) -> String {
         OirType::Map { key, value } => format!("Map {} {}", declared_text(key), declared_text(value)),
         OirType::Tuple { items } => format!("[{}]", items.iter().map(declared_text).collect::<Vec<_>>().join(", ")),
         OirType::SExpr => "SExpr".to_string(),
+        OirType::FieldRef { .. } => "string".to_string(),
         OirType::Struct { .. } | OirType::File => "object".to_string(),
         OirType::Row { entity } | OirType::Reference { entity } => entity.clone(),
         OirType::TypeRef { name } | OirType::Enum { name } | OirType::Var { name } => name.clone(),

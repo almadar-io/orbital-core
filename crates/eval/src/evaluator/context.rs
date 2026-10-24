@@ -136,7 +136,7 @@ pub struct BindingContext {
     /// `@event`: the delivery being processed (`delivery_record_value`, Runtime Spec Clause 5.5).
     pub event: Arc<Value>,
     /// `@prevEvents`: deliveries this trait already received this dispatch.
-    pub prev_events: crate::util::SharedLog<Value>,
+    pub prev_events: crate::util::SharedLog<std::sync::Arc<Value>>,
     /// `@prevStates`: states this trait left this dispatch.
     pub prev_states: crate::util::SharedLog<String>,
     /// `@callsitePayload`: the payload of the transition that composed this trait into its embedder
@@ -385,7 +385,7 @@ impl BindingContext {
             "locale" => &self.locale,
             "event" => &self.event,
             "callsitePayload" => &self.callsite_payload,
-            "prevEvents" if rest.is_none() => return Some(Value::Array(self.prev_events.to_vec())),
+            "prevEvents" if rest.is_none() => return Some(Value::Array(self.prev_events.iter().map(|d| Value::clone(d)).collect())),
             "prevStates" if rest.is_none() => {
                 return Some(Value::Array(
                     self.prev_states

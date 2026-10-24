@@ -20,12 +20,14 @@ struct Counting;
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
 static LIVE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static PEAK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
         BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed);
+        let live = LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed) + layout.size() as isize;
+        PEAK.fetch_max(live, Ordering::Relaxed);
         System.alloc(layout)
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -35,10 +37,9 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
         BYTES.fetch_add(new_size, Ordering::Relaxed);
-        LIVE.fetch_add(
-            new_size as isize - layout.size() as isize,
-            Ordering::Relaxed,
-        );
+        let grow = new_size as isize - layout.size() as isize;
+        let live = LIVE.fetch_add(grow, Ordering::Relaxed) + grow;
+        PEAK.fetch_max(live, Ordering::Relaxed);
         System.realloc(ptr, layout, new_size)
     }
 }
@@ -761,4 +762,69 @@ fn a_reduce_binds_its_accumulator_without_copying_it() {
     let extra = spent(&large).saturating_sub(spent(&map_of(2, 4)));
     println!("ALLOCATED_BY_50_STEP_REDUCE {extra} (one copy: {one_copy})");
     assert!(extra < 70 * one_copy, "a 50-step reduce copies its accumulator twice a step: {extra} extra bytes, one copy is {one_copy}");
+}
+
+fn fanout_schema(listeners: usize) -> OrbitalSchema {
+    let mut traits = vec![json!({
+        "name": "Source", "linkedEntity": "Blob",
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "GO",
+                "effects": [["emit", "BIG", { "rows": "@payload.rows" }]] }]
+        }
+    })];
+    for i in 0..listeners {
+        traits.push(json!({
+            "name": format!("L{i}"), "linkedEntity": "Blob",
+            "listens": [{ "event": "BIG", "triggers": "GOT", "source": { "kind": "trait", "trait": "Source" } }],
+            "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "GOT", "effects": [] }]
+            }
+        }));
+    }
+    serde_json::from_value(json!({
+        "name": "fanout",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Blob", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": traits
+        }]
+    }))
+    .unwrap()
+}
+
+/// Peak live bytes of one `GO` whose emit carries a large payload to `listeners` listening traits, as a multiple of
+/// the payload's own size (G-ORBITAL-CORE-051).
+fn fanout_peak_ratio(listeners: usize) -> f64 {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        cache as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(fanout_schema(listeners)).unwrap();
+    let rows: Vec<serde_json::Value> = (0..2000).map(|i| json!({ "label": "x".repeat(64), "n": i })).collect();
+    let before = LIVE.load(Ordering::SeqCst);
+    let payload = serde_json::from_value::<Value>(json!({ "rows": rows })).unwrap();
+    let size = (LIVE.load(Ordering::SeqCst) - before) as f64;
+    let base = LIVE.load(Ordering::SeqCst);
+    PEAK.store(base, Ordering::SeqCst);
+    k.dispatch("Source", None, "GO", payload).unwrap();
+    (PEAK.load(Ordering::SeqCst) - base) as f64 / size
+}
+
+/// A fan-out shares the emitted payload across its listeners: peak memory does not grow with the listener count.
+#[test]
+fn a_fan_out_does_not_copy_the_payload_once_per_listener() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let none = fanout_peak_ratio(0);
+    let one = fanout_peak_ratio(1);
+    let many = fanout_peak_ratio(24);
+    println!("FANOUT_PEAK none={none:.1} one={one:.1} many={many:.1}");
+    // Each listener still adds one copy: its step result's payload, which the response's transition record carries
+    // (the wire contract); the queued item, delivery record and @prevEvents entry are shared (G-ORBITAL-CORE-051).
+    let per_listener = (many - one) / 23.0;
+    assert!(one < none + 4.0, "control: one listener adds at most a few payload copies: {none:.1}x -> {one:.1}x");
+    assert!(per_listener < 1.5, "each listener holds {per_listener:.2} payload copies at peak (was 3.8 before sharing)");
 }

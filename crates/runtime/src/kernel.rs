@@ -103,10 +103,11 @@ pub const CROSS_TRAIT_CASCADE_CAP: usize = 2000;
 struct CascadeItem {
     trait_name: String,
     event: String,
-    payload: Value,
-    delivery: Value,
+    /// Shared across one fan-out's targets (G-ORBITAL-CORE-051); a delivery copies it only when processed.
+    payload: Arc<Value>,
+    delivery: Arc<Value>,
     /// The emit's own payload, which a listens `when` reads as `@payload`.
-    source_payload: Value,
+    source_payload: Arc<Value>,
     /// Evaluated when the delivery is processed, so it sees the listener's log.
     listen_guard: Option<SExpression>,
     /// Whether processing this item offers its event to the listeners of that event. A listener's
@@ -3359,11 +3360,12 @@ impl RuntimeKernel {
                     &ev.event,
                 )
             {
+                let payload = Arc::new(payload);
                 fanned.push(CascadeItem {
                     trait_name: source_trait.clone(),
                     event: ev.event.clone(),
-                    delivery: delivery_record_value(&ev.event, &payload, &source),
-                    source_payload: payload.clone(),
+                    delivery: Arc::new(delivery_record_value(&ev.event, &payload, &source)),
+                    source_payload: Arc::clone(&payload),
                     payload,
                     listen_guard: None,
                     fans_out: true,
@@ -3519,9 +3521,9 @@ impl RuntimeKernel {
         CascadeItem {
             trait_name: child,
             event: String::new(),
-            payload: Value::Null,
-            delivery: Value::Null,
-            source_payload: Value::Null,
+            payload: Arc::new(Value::Null),
+            delivery: Arc::new(Value::Null),
+            source_payload: Arc::new(Value::Null),
             listen_guard: None,
             fans_out: false,
             repaint: Some(job),
@@ -3544,12 +3546,13 @@ impl RuntimeKernel {
         fanned: &mut Vec<CascadeItem>,
     ) {
         if handled {
+            let shared = Arc::new(payload.clone());
             own.push(CascadeItem {
                 trait_name: trait_name.to_string(),
                 event: emitted.to_string(),
-                payload: payload.clone(),
-                delivery: delivery_record_value(emitted, payload, source),
-                source_payload: payload.clone(),
+                payload: Arc::clone(&shared),
+                delivery: Arc::new(delivery_record_value(emitted, payload, source)),
+                source_payload: shared,
                 listen_guard: None,
                 fans_out: false,
                 repaint: None,
@@ -3601,22 +3604,27 @@ impl RuntimeKernel {
             return;
         }
         let evaluator = Evaluator::new();
-        let ctx = BindingContextBuilder::new()
-            .payload(source_payload.clone())
-            .build();
-        let delivery = delivery_record_value(event, source_payload, source);
+        let shared = Arc::new(source_payload.clone());
+        let ctx = listeners
+            .iter()
+            .any(|l| l.payload_mapping.is_some())
+            .then(|| BindingContextBuilder::new().payload(source_payload.clone()).build());
+        let delivery = Arc::new(delivery_record_value(event, source_payload, source));
         for l in listeners {
             // `direct_scopes` already received this very event as a seed scope on the embed
             // chain; a same-name route back to one of them is that delivery again.
             if l.triggers == event && direct_scopes.contains(&l.trait_name) {
                 continue;
             }
-            let mapped = envelope::mapped_listen_payload(
-                &evaluator,
-                &ctx,
-                &l.payload_mapping,
-                source_payload,
-            );
+            let mapped = match (&l.payload_mapping, &ctx) {
+                (Some(_), Some(ctx)) => Arc::new(envelope::mapped_listen_payload(
+                    &evaluator,
+                    ctx,
+                    &l.payload_mapping,
+                    source_payload,
+                )),
+                _ => Arc::clone(&shared),
+            };
             debug!(
                 source_trait = %source_trait, event = %event,
                 listener_trait = %l.trait_name, triggers = %l.triggers,
@@ -3626,8 +3634,8 @@ impl RuntimeKernel {
                 trait_name: l.trait_name,
                 event: l.triggers,
                 payload: mapped,
-                delivery: delivery.clone(),
-                source_payload: source_payload.clone(),
+                delivery: Arc::clone(&delivery),
+                source_payload: Arc::clone(&shared),
                 listen_guard: l.guard,
                 fans_out: false,
                 repaint: None,
@@ -6514,7 +6522,7 @@ fn dispatch_log_of(entry: &DeliveryEntry) -> Option<DispatchLog> {
                 .view
                 .prev_events
                 .iter()
-                .filter_map(DeliveryRecord::from_value)
+                .filter_map(|d| DeliveryRecord::from_value(d))
                 .collect(),
             prev_states: entry.view.prev_states.to_vec(),
         }

@@ -858,7 +858,8 @@ fn type_label(ty: &OirType, mode: Mode) -> String {
     }
 }
 
-fn describe_type(ty: &OirType) -> String {
+/// A type as a reader writes it: `[{ id: string, text?: string }]`, `Map string number`, `string?`.
+pub fn describe_type(ty: &OirType) -> String {
     if is_absent_slot(ty) {
         return "_".to_string();
     }
@@ -895,6 +896,13 @@ fn describe_type(ty: &OirType) -> String {
             .collect::<Vec<_>>()
             .join(" | "),
         OirType::TypeRef { name } => name.clone(),
+        OirType::Enum { name } => crate::type_compat::literal_union_members(name)
+            .map(|members| members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(" | "))
+            .unwrap_or_else(|| oir_type_kind(ty)),
+        OirType::FieldRef { record, value: Some(value) } => {
+            format!("field {} {}", describe_type(record), describe_type(value))
+        }
+        OirType::FieldRef { record, value: None } => format!("field {}", describe_type(record)),
         other => oir_type_kind(other),
     }
 }
@@ -1737,7 +1745,10 @@ fn bind_key(
         .chain(actual.texts.iter().flatten())
         .collect();
     if let Some(Known::Type(ty)) = &actual.known {
-        let known_text = !matches!(unwrap_optional(ty), OirType::String | OirType::Enum { .. });
+        let known_text = !matches!(
+            unwrap_optional(ty),
+            OirType::String | OirType::Enum { .. } | OirType::FieldRef { .. }
+        );
         if known_text && !is_uninformative(ty) && paths.is_empty() {
             return Err(Mismatch::Type {
                 expected: "string".to_string(),

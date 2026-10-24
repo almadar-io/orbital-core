@@ -6,8 +6,8 @@
 //! `component-mapping.json` under `phases/validation/sync/`. pattern-sync wrote
 //! them to 6 destinations, so a partial sync drifted codegen and the validator
 //! against each other silently. They now live ONCE here and every consumer
-//! imports this module (the shells re-export it; the validator reads the
-//! component names from `component_names()`). `registry.json` is the same data
+//! imports this module (the shells re-export it; the std lint reads the
+//! component names from the installed mapping). `registry.json` is the same data
 //! as the patterns registry — reused, not re-read. All of it comes from the
 //! installed `@almadar/core` (`crate::language_data`), not the binary.
 
@@ -305,13 +305,6 @@ pub fn get_props_schema(pattern_type: &str) -> Option<&'static HashMap<String, P
         .map(|p| &p.props_schema)
 }
 
-/// All component identifiers in the mapping (e.g. `StatCard`, `EntityTable`).
-/// The validator uses this to reserve names that would collide with generated
-/// entity types — replacing its former private read of `component-mapping.json`.
-pub fn component_names() -> impl Iterator<Item = &'static str> {
-    component_mappings().values().map(|m| m.component.as_str())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,10 +338,9 @@ mod tests {
     }
 
     #[test]
-    fn props_schema_and_component_names() {
+    fn props_schema_of_a_pattern() {
         let schema = get_props_schema("table-view").unwrap();
         assert!(schema.contains_key("columns"));
         assert!(schema.contains_key("entity"));
-        assert!(component_names().any(|n| n == "StatCard"));
     }
 }

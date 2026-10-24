@@ -196,6 +196,7 @@
   },
   "types": {
     "string": "string",
+    "field": "field",
     "number": "number",
     "int": "int",
     "float": "float",

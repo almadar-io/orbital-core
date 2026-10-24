@@ -12,7 +12,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Default)]
 pub struct DispatchView {
     pub event: Arc<Value>,
-    pub prev_events: SharedLog<Value>,
+    pub prev_events: SharedLog<Arc<Value>>,
     pub prev_states: SharedLog<String>,
 }
 
@@ -26,14 +26,14 @@ impl DispatchView {
 
 #[derive(Debug, Default)]
 pub struct DispatchMemory {
-    deliveries: HashMap<String, SharedLog<Value>>,
+    deliveries: HashMap<String, SharedLog<Arc<Value>>>,
     left: HashMap<String, SharedLog<String>>,
 }
 
 impl DispatchMemory {
-    pub fn view(&self, trait_name: &str, delivery: &Value) -> DispatchView {
+    pub fn view(&self, trait_name: &str, delivery: &Arc<Value>) -> DispatchView {
         DispatchView {
-            event: Arc::new(delivery.clone()),
+            event: Arc::clone(delivery),
             prev_events: self.deliveries.get(trait_name).cloned().unwrap_or_default(),
             prev_states: self.left.get(trait_name).cloned().unwrap_or_default(),
         }
@@ -43,7 +43,7 @@ impl DispatchMemory {
     pub fn seed(&mut self, trait_name: &str, log: &DispatchLog) {
         self.deliveries.insert(
             trait_name.to_string(),
-            log.prev_events.iter().map(|d| d.value()).collect(),
+            log.prev_events.iter().map(|d| Arc::new(d.value())).collect(),
         );
         self.left.insert(
             trait_name.to_string(),
@@ -51,12 +51,12 @@ impl DispatchMemory {
         );
     }
 
-    pub fn record_delivery(&mut self, trait_name: &str, delivery: &Value, view: DispatchView) {
+    pub fn record_delivery(&mut self, trait_name: &str, delivery: &Arc<Value>, view: DispatchView) {
         drop(view);
         self.deliveries
             .entry(trait_name.to_string())
             .or_default()
-            .push(delivery.clone());
+            .push(Arc::clone(delivery));
     }
 
     pub fn record_transition(&mut self, trait_name: &str, from: &str, to: &str) {
@@ -77,19 +77,20 @@ mod tests {
     #[test]
     fn recording_a_delivery_never_deep_copies_the_log_a_view_shares() {
         let body = Arc::new(SExpression::String("x".to_string()));
-        let held = Value::Lambda {
+        let held = Arc::new(Value::Lambda {
             params: vec!["x".to_string()],
             body: Arc::clone(&body),
-        };
+        });
+        let null = Arc::new(Value::Null);
         let mut memory = DispatchMemory::default();
         let first = memory.view("T", &held);
         memory.record_delivery("T", &held, first);
-        assert_eq!(Arc::strong_count(&body), 3);
-        let view = memory.view("T", &Value::Null);
+        assert_eq!(Arc::strong_count(&body), 2, "the view and the record share the one delivery");
+        let view = memory.view("T", &null);
         assert_eq!(view.prev_events.len(), 1);
-        memory.record_delivery("T", &Value::Null, view);
-        assert_eq!(Arc::strong_count(&body), 3);
-        assert_eq!(memory.view("T", &Value::Null).prev_events.len(), 2);
+        memory.record_delivery("T", &null, view);
+        assert_eq!(Arc::strong_count(&body), 2, "the view and the record share the one delivery");
+        assert_eq!(memory.view("T", &null).prev_events.len(), 2);
     }
 
     /// A step's recorded view (`DeliveryEntry::view`) outlives the record: it keeps its own prefix and the append
@@ -97,18 +98,19 @@ mod tests {
     #[test]
     fn a_view_kept_past_the_record_keeps_its_prefix_without_a_copy() {
         let body = Arc::new(SExpression::String("x".to_string()));
-        let held = Value::Lambda {
+        let held = Arc::new(Value::Lambda {
             params: vec!["x".to_string()],
             body: Arc::clone(&body),
-        };
+        });
+        let null = Arc::new(Value::Null);
         let mut memory = DispatchMemory::default();
         let first = memory.view("T", &held);
         memory.record_delivery("T", &held, first);
-        let view = memory.view("T", &Value::Null);
+        let view = memory.view("T", &null);
         let kept = view.clone();
-        memory.record_delivery("T", &Value::Null, view);
-        assert_eq!(Arc::strong_count(&body), 3);
+        memory.record_delivery("T", &null, view);
+        assert_eq!(Arc::strong_count(&body), 2, "the view and the record share the one delivery");
         assert_eq!(kept.prev_events.len(), 1);
-        assert_eq!(memory.view("T", &Value::Null).prev_events.len(), 2);
+        assert_eq!(memory.view("T", &null).prev_events.len(), 2);
     }
 }

@@ -240,7 +240,7 @@ fn json_type_of(field_type: &str) -> Option<&'static str> {
     match field_type {
         "string" | "date" | "timestamp" | "datetime" | "email" | "url" | "phone" | "uuid"
         | "image" | "bytes" | "callkey" | "CallKey" | "enum" | "trait" | "slot" | "pattern" | "secret" | "event"
-        | "EventAddress" => Some("string"),
+        | "EventAddress" | "field" => Some("string"),
         "number" => Some("number"),
         "boolean" => Some("boolean"),
         "array" => Some("array"),

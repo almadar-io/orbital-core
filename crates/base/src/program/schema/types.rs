@@ -2451,6 +2451,10 @@ pub enum Persistence {
 /// Field definition within an entity
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldDefinition {
+    /// `field R T`: the record `R` as a type string (`@entity`, `@entity(<knob>)`, `@payload(<knob>)`, an entity or
+    /// alias name, `$r`). A record alias carries its shape in `properties`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
     #[serde(default, rename = "additionalProperties", skip_serializing_if = "Option::is_none")]
@@ -2801,6 +2805,9 @@ pub enum FieldType {
     /// A fixed-length tuple (`.lolo` `[T1, T2, …]`). Its slots ride `properties`, keyed
     /// by slot index (`"0"`, `"1"`, …).
     Tuple,
+    /// The name of a field of a record (`.lolo` `field R T`): a string at rest. `record` is `R`, `items` the type the
+    /// named field must have (absent: any field). Config-only.
+    Field,
     /// An S-expression as data — an atom (string/number/boolean/null), a list
     /// of S-expressions, or an options object: what a transition's guard and
     /// effect arguments are. `SExpr`-typed struct members (`args : [SExpr]`)
@@ -3626,6 +3633,10 @@ pub enum DispatchMode {
 /// Configuration field definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigField {
+    /// `field R T`: the record `R` as a type string (`@entity`, `@entity(<knob>)`, `@payload(<knob>)`, an entity or
+    /// alias name, `$r`). A record alias carries its shape in `properties`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
     #[serde(default, rename = "additionalProperties", skip_serializing_if = "Option::is_none")]
@@ -5226,6 +5237,7 @@ mod tests {
             nested_forwarded_from: Vec::new(),
             payload_for: None,
             projected_from: None,
+            record: None,
         };
         let unbound = ConfigField {
             default: Some(SExpression::Null),
@@ -5271,6 +5283,7 @@ mod tests {
                 nested_forwarded_from: Vec::new(),
                 payload_for: None,
                 projected_from: None,
+                record: None,
             }
         })
         .expect("serializes to value");
@@ -5579,6 +5592,7 @@ mod tests {
                 nested_forwarded_from: Vec::new(),
                 payload_for: None,
                 projected_from: None,
+                record: None,
             },
         );
 

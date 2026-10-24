@@ -600,6 +600,14 @@ pub enum OirType {
     /// the explicit cast (`Coercion::Explicit`). Distinct from the semantic string
     /// domains, whose `String` source is refined implicitly.
     CallKey,
+    /// The name of a field of the record `record`, a string at run time; `value` is the type that field must have,
+    /// when declared. Read through `object/get` of a record that is an `R`, it types the read.
+    #[serde(rename_all = "camelCase")]
+    FieldRef {
+        record: Box<OirType>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<Box<OirType>>,
+    },
     Json,
     /// Renderable UI content (a `node`-typed field/knob): a pattern node or
     /// array of them. Distinct from `Json` so codegen can emit the canonical
@@ -717,6 +725,13 @@ impl OirType {
                 for field in fields { changed |= field.field_type.rewrite(replace); }
                 if let Some(additional) = additional { changed |= additional.rewrite(replace); }
                 changed
+            }
+            Self::FieldRef { record, value } => {
+                let record_changed = record.rewrite(replace);
+                match value {
+                    Some(value) => value.rewrite(replace) | record_changed,
+                    None => record_changed,
+                }
             }
             Self::Union { variants: fields } => {
                 let mut changed = false;
@@ -885,6 +900,10 @@ fn field_shape_inner(field: &FieldDefinition) -> OirType {
         FieldType::Slot | FieldType::Pattern | FieldType::Event | FieldType::EventAddress => {
             OirType::String
         }
+        FieldType::Field => OirType::FieldRef {
+            record: Box::new(record_shape(field.record.as_deref(), field.properties.as_ref())),
+            value: field.items.as_deref().map(|item| Box::new(field_shape(item))),
+        },
         FieldType::Node => OirType::Node,
         FieldType::SExpr => OirType::SExpr,
         FieldType::Union => match (field.by_name_reference(), &field.properties) {
@@ -900,6 +919,31 @@ fn field_shape_inner(field: &FieldDefinition) -> OirType {
             (None, _) => OirType::Json,
         },
         FieldType::TypeVar(v) => OirType::Var { name: v.0.clone() },
+    }
+}
+
+/// The record `R` of a `field R T`: a record alias is its `properties` as a struct; a type variable (`$r`) is a
+/// variable; any other spelling (`@entity`, `@entity(<knob>)`, `@payload(<knob>)`, an entity name) is a reference
+/// the consumer resolves where it knows the binding.
+pub fn record_shape(record: Option<&str>, properties: Option<&HashMap<String, FieldDefinition>>) -> OirType {
+    if let Some(properties) = properties.filter(|p| !p.is_empty()) {
+        let mut fields: Vec<OirField> = properties
+            .iter()
+            .map(|(name, def)| {
+                let mut f = OirField::new(name.clone(), field_shape(def));
+                f.required = def.required.unwrap_or(false);
+                f
+            })
+            .collect();
+        fields.sort_by(|a, b| a.name.cmp(&b.name));
+        return OirType::Struct { fields, additional: None };
+    }
+    match record {
+        Some(text) => match text.strip_prefix('$') {
+            Some(name) => OirType::Var { name: name.to_string() },
+            None => OirType::Reference { entity: text.to_string() },
+        },
+        None => OirType::Json,
     }
 }
 
@@ -952,6 +996,9 @@ pub fn payload_type_shape(field_type: &str) -> OirType {
         "json" | "tensor" => return OirType::Json,
         "sexpr" => return OirType::SExpr,
         "node" => return OirType::Node,
+        "orbital" => return OirType::Orbital,
+        "behavior" => return OirType::Behavior,
+        "trait" => return OirType::Trait,
         // UI scalar and name-reference brands travel as strings.
         "slot" | "icon" | "asset" | "component" | "pattern" | "event" => return OirType::String,
         _ => {}
@@ -2405,6 +2452,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_payload_field_of_a_std_value_type_has_the_type_an_entity_field_of_it_has() {
+        for (word, ty) in [("orbital", OirType::Orbital), ("behavior", OirType::Behavior), ("trait", OirType::Trait)] {
+            assert_eq!(payload_type_shape(word), ty, "{word}");
+            assert_eq!(payload_type_shape(&format!("[{word}]")), OirType::array(ty.clone()), "[{word}]");
+            let field: crate::schema::FieldDefinition =
+                serde_json::from_value(serde_json::json!({ "name": "f", "type": word })).unwrap();
+            assert_eq!(payload_type_shape(word), field_shape(&field), "payload and entity agree on {word}");
+        }
+        assert_eq!(
+            payload_type_shape("Order"),
+            OirType::Reference { entity: "Order".to_string() },
+            "control: a program name stays a reference"
+        );
+    }
+
+    #[test]
     fn payload_array_item_type_distinguishes_lists_from_tuples() {
         assert_eq!(payload_array_item_type(" [ string ] "), Some(" string "));
         assert_eq!(payload_array_item_type("[Map<string,number>]"), Some("Map<string,number>"));
@@ -2722,6 +2785,7 @@ mod tests {
             mock: None,
             merged_from: None,
             projected_from: None,
+            record: None,
         }
     }
 
@@ -2745,6 +2809,39 @@ mod tests {
         m.entities.push(OirEntity::new("B"));
         assert_eq!(m.distinct_entities().len(), 2);
         assert_eq!(m.entities.len(), 2);
+    }
+
+    #[test]
+    fn a_field_knob_shapes_as_a_field_ref_of_its_value_type() {
+        let mut typed = bare_field(FieldType::Field);
+        typed.record = Some("@entity".to_string());
+        typed.items = Some(Box::new(bare_field(FieldType::String)));
+        let entity = OirType::Reference { entity: "@entity".to_string() };
+        assert_eq!(
+            field_shape(&typed),
+            OirType::FieldRef { record: Box::new(entity.clone()), value: Some(Box::new(OirType::String)) }
+        );
+        // control: a field knob that names any field has no value type.
+        typed.items = None;
+        assert_eq!(
+            field_shape(&typed),
+            OirType::FieldRef { record: Box::new(entity), value: None }
+        );
+        // a type variable record is a variable; an alias record is its shape.
+        typed.record = Some("$r".to_string());
+        assert_eq!(
+            field_shape(&typed),
+            OirType::FieldRef { record: Box::new(OirType::Var { name: "r".to_string() }), value: None }
+        );
+        let mut alias = bare_field(FieldType::Field);
+        alias.record = Some("Point".to_string());
+        alias.properties = Some(HashMap::from([("x".to_string(), bare_field(FieldType::Number))]));
+        let OirType::FieldRef { record, .. } = field_shape(&alias) else { panic!("a field reference") };
+        assert!(matches!(*record, OirType::Struct { ref fields, .. } if fields.len() == 1 && fields[0].name == "x"));
+        assert_eq!(serde_json::to_string(&FieldType::Field).unwrap(), "\"field\"");
+        assert_eq!(serde_json::from_str::<FieldType>("\"field\"").unwrap(), FieldType::Field);
+        // control: the neighbouring name-carrying tag keeps its own spelling.
+        assert_eq!(serde_json::to_string(&FieldType::Event).unwrap(), "\"event\"");
     }
 
     #[test]

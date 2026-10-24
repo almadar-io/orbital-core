@@ -81,7 +81,7 @@ struct SeedRun {
     payload: Value,
     now: f64,
     seed_scopes: Vec<String>,
-    seed_delivery: Value,
+    seed_delivery: Arc<Value>,
     visited: DispatchVisits,
     memory: DispatchMemory,
     stage: Stage,
@@ -1069,10 +1069,10 @@ impl RuntimeKernel {
         if let Some(log) = &log {
             memory.seed(&trait_name, log);
         }
-        let seed_delivery = match &delivery {
+        let seed_delivery = Arc::new(match &delivery {
             Some(d) => d.value(),
             None => delivery_record_value(&event_name, &payload, &BusEventSource::default()),
-        };
+        });
         let stage = if released.is_empty() {
             Stage::Scopes {
                 idx: 0,
@@ -1432,7 +1432,7 @@ impl RuntimeKernel {
             &item.trait_name,
             Some(eid),
             &item.event,
-            item.payload.clone(),
+            Value::clone(&item.payload),
             Some(&view),
             true,
         ) {

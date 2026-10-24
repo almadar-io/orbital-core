@@ -835,7 +835,7 @@ fn plan_value_sources(
             };
             (first_branch..arg_count).map(ValueSlot::Arg).collect()
         }
-        "union-of-args" => (0..arg_count).map(ValueSlot::Arg).collect(),
+        "union-of-args" | "coalesce" => (0..arg_count).map(ValueSlot::Arg).collect(),
         "last-of-args" => arg_count
             .checked_sub(1)
             .map(ValueSlot::Arg)

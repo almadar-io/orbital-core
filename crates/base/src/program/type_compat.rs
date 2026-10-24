@@ -369,6 +369,24 @@ impl Relation<'_> {
                 return explicit.then_some(Coercion::Explicit);
             }
         }
+        // A field reference is a string at run time. The call site decides which name it holds.
+        match (src, dst) {
+            (
+                OirType::FieldRef { record: source_record, value: source },
+                OirType::FieldRef { record: target_record, value: target },
+            ) => {
+                self.sub(source_record, target_record, progress + 1)?;
+                return match (source, target) {
+                    (_, None) => Some(Coercion::Identity),
+                    (Some(source), Some(target)) => self.sub(source, target, progress + 1),
+                    (None, Some(_)) => None,
+                };
+            }
+            (OirType::FieldRef { .. }, OirType::String) | (OirType::String, OirType::FieldRef { .. }) => {
+                return Some(Coercion::Identity);
+            }
+            _ => {}
+        }
         match (src, dst) {
             (
                 OirType::Struct { fields: actual, additional: actual_additional },
@@ -547,6 +565,8 @@ impl Relation<'_> {
                 _ if is_string_kind(src) => Some(Coercion::Explicit),
                 _ => None,
             },
+            // Field names meet strings and each other before this match; nothing else is a field name.
+            OirType::FieldRef { .. } => None,
             // The object family (Struct/Union/Map/File/TypeRef) and the json family
             // (Json/SExpr) are mutually compatible.
             OirType::Struct { .. }
@@ -1043,6 +1063,8 @@ pub fn oir_type_kind(t: &crate::ir::types::OirType) -> String {
         OirType::Image => "image".to_string(),
         OirType::Bytes => "bytes".to_string(),
         OirType::CallKey => "callkey".to_string(),
+        // A field name is a string at run time.
+        OirType::FieldRef { .. } => "string".to_string(),
         // Money is numeric at rest; File is the canonical struct value.
         OirType::Money => "number".to_string(),
         OirType::File => "object".to_string(),
@@ -1140,6 +1162,28 @@ pub fn compat_kind_oir(kind: &str) -> OirType {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_field_ref_is_string_kind_at_run_time() {
+        use crate::ir::types::OirType;
+        let of = |record: &str, value: Option<OirType>| OirType::FieldRef {
+            record: Box::new(OirType::reference(record)),
+            value: value.map(Box::new),
+        };
+        let field_ref = of("@entity", Some(OirType::String));
+        assert!(super::assignable(&field_ref, &OirType::String));
+        assert!(super::assignable(&OirType::String, &field_ref));
+        assert_eq!(super::oir_type_kind(&field_ref), "string");
+        // control: a field name is not a number.
+        assert!(!super::assignable(&field_ref, &OirType::Number));
+        assert!(!super::assignable(&OirType::Number, &field_ref));
+        // control: a field of any type is not a field of a given type; the other way round it is.
+        let any = of("@entity", None);
+        assert!(super::assignable(&field_ref, &any));
+        assert!(!super::assignable(&any, &field_ref));
+        // control: fields of different records are different types.
+        assert!(!super::assignable(&field_ref, &of("Other", Some(OirType::String))));
+    }
+
     #[test]
     fn an_int_entity_field_fits_an_int_slot_widens_to_number_and_a_number_field_does_not_narrow() {
         use crate::ir::types::{field_shape, OirType};
@@ -2101,9 +2145,9 @@ mod compat_tests {
         assert!(set_value_type_compatible("uuid", "string"));
         assert!(set_value_type_compatible("image", "string"));
         assert!(!set_value_type_compatible("email", "number"));
-        // Semantic domains do not inter-assign or escape to string.
+        // Semantic domains do not inter-assign; a semantic value widens to string (owner ruling, P-009).
         assert!(!set_value_type_compatible("email", "url"));
-        assert!(!set_value_type_compatible("string", "email"));
+        assert!(set_value_type_compatible("string", "email"));
         assert!(set_value_type_compatible("money", "number"));
         assert!(!set_value_type_compatible("number", "money"));
         assert!(set_value_type_compatible("file", "object"));

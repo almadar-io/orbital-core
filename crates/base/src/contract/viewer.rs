@@ -22,9 +22,12 @@ pub struct Claim {
 pub struct Viewer {
     /// Stable subject identifier: the ownership key.
     pub id: String,
+    /// A token may carry no email or name, or carry it as null (owner ruling 2026-10-24).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
     pub email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
     pub name: Option<String>,
     /// Compared against a policy's allowed roles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
