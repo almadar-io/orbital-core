@@ -41,8 +41,10 @@ pub mod projected_payload;
 pub mod relations;
 #[path = "kernel/resumable.rs"]
 pub mod resumable;
-#[path = "kernel/seed.rs"]
-pub mod seed;
+#[path = "kernel/instances.rs"]
+pub mod instances;
+#[path = "kernel/synth.rs"]
+pub mod synth;
 #[path = "kernel/server_leg.rs"]
 pub mod server_leg;
 pub use orbital_core_base::shared_entity;
@@ -76,27 +78,15 @@ pub mod http_service;
 pub mod stream_ticket;
 
 // stores — row stores: kernel drivers over raw ports (EXEC-STORE)
-#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-#[path = "stores/couchdb.rs"]
-pub mod couchdb;
 #[path = "stores/entity_access.rs"]
 pub mod entity_access;
 #[path = "stores/entity_source.rs"]
 pub mod entity_source;
-#[cfg(feature = "std")]
-#[path = "stores/firestore.rs"]
-pub mod firestore;
-#[cfg(all(feature = "wire-drivers", not(target_arch = "wasm32")))]
-#[path = "stores/pg_rows.rs"]
-pub mod pg_rows;
 #[path = "stores/row_query.rs"]
 pub mod row_query;
 #[cfg(feature = "std")]
 #[path = "stores/sidecar_store.rs"]
 pub mod sidecar_store;
-#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-#[path = "stores/store_config.rs"]
-pub mod store_config;
 #[path = "stores/store_driver.rs"]
 pub mod store_driver;
 #[cfg(feature = "std")]
@@ -126,7 +116,7 @@ pub mod tls;
 // security — auth, tokens and secrets (the kernel signs; hosts verify)
 #[path = "security/credential_admin.rs"]
 pub mod credential_admin;
-#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+#[cfg(feature = "std")]
 #[path = "security/credential_store.rs"]
 pub mod credential_store;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
@@ -177,7 +167,7 @@ pub use orbital_core_base::dispatch_mode::{compute as compute_dispatch_mode, Dis
 pub use embed_index::EmbedIndex;
 pub use entity_access::{apply_read_access, check_mutation_access, collect_user_field_literals, role_satisfying_policy, AccessDenied, scope_fetched_rows, EntityAccessPolicies, EntityAccessTable};
 pub use orbital_core_base::entity_vocabulary::{identity_field, user_field_of, vocabulary, EQUALITY_OPS};
-pub use entity_source::{EntitySource, InMemoryEntityCache};
+pub use entity_source::{EntitySource, InMemoryEntityCache, QueryAnswer};
 pub use kernel::{
     already_delivered_from, AwaitingTrait, ClientDispatch, KernelError, Rerender, RuntimeKernel,
     StatefulLeg, TickDispatch, TickEmit, TraitSnapshot, CROSS_TRAIT_CASCADE_CAP,
@@ -185,7 +175,7 @@ pub use kernel::{
 pub use listener::{ListenerInfo, ListenerManager, TriggerCallback};
 pub use persona::{
     default_probe_persona, find_persona_in_roster, identity_roster, persona_from_env_for_schema,
-    persona_from_env_spec, resolve_persona_spec, EnvPersona, DEFAULT_IDENTITY_ROSTER_COUNT,
+    persona_from_env_spec, resolve_persona_spec, EnvPersona,
     PERSONA_ENV,
 };
 pub use process_result::{
@@ -193,7 +183,8 @@ pub use process_result::{
     RuntimeStats,
 };
 pub use projected_payload::projected_payload;
-pub use seed::{cross_relation_value, identity_roster_rows, instance_rows, mock_row_id, sample_rows, seed_mock_dataset, seed_sample_data, seed_sample_data_as};
+pub use instances::{instance_rows, mock_row_id};
+pub use synth::sample_rows;
 pub use orbital_core_base::policy::{identity_entity_def, identity_entity_name, owner_columns_from_policy, owner_fields_from_schema, stamp_owner};
 pub use server_leg::ServerLegCollector;
 pub use orbital_core_base::theme::{resolve_theme, ResolvedTheme, ThemeError, ThemeMode, ThemePresets};

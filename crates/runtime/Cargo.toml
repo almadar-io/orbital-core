@@ -70,6 +70,8 @@ orbital-core-eval = { path = "../eval", features = ["ts-export"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
+# The browser kernel draws its own AES-GCM IVs from the host's `crypto.getRandomValues`.
+getrandom = { version = "0.2", features = ["js"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 getrandom = { version = "0.2", optional = true }

@@ -1,6 +1,6 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
-use crate::entity_source::{EntitySource, InMemoryEntityCache};
+use crate::entity_source::{EntitySource, InMemoryEntityCache, QueryAnswer};
 use crate::row_query::{QueryCapabilities, RowWriteOp, WriteCapabilities};
 use orbital_core_base::value::Value;
 use serde::{de::DeserializeOwned, Serialize};
@@ -89,20 +89,22 @@ impl MemoryStoreApi {
         self.source.delete(entity_type, id)
     }
     pub fn query_page(&self, entity_type: &str, query_json: &str) -> Result<String, String> {
-        json(
-            &self
-                .source
-                .query_page(entity_type, &parse(query_json)?)
-                .ok_or("memory store does not support row queries")??,
-        )
+        match self.source.query_page(entity_type, &parse(query_json)?) {
+            QueryAnswer::Rows(page) => json(&page),
+            QueryAnswer::Declined(reason) => {
+                Err(format!("memory store does not support row queries: {reason}"))
+            }
+            QueryAnswer::Failed(message) => Err(message),
+        }
     }
     pub fn query_ids(&self, entity_type: &str, query_json: &str) -> Result<String, String> {
-        json(
-            &self
-                .source
-                .query_ids(entity_type, &parse(query_json)?)
-                .ok_or("memory store does not support id queries")??,
-        )
+        match self.source.query_ids(entity_type, &parse(query_json)?) {
+            QueryAnswer::Rows(page) => json(&page),
+            QueryAnswer::Declined(reason) => {
+                Err(format!("memory store does not support id queries: {reason}"))
+            }
+            QueryAnswer::Failed(message) => Err(message),
+        }
     }
     pub fn write_where(&self, op_json: &str) -> Result<String, String> {
         json(

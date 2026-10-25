@@ -16,6 +16,67 @@ use orbital_core_base::sync::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// What a store answers to a pushed-down row query.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QueryAnswer<T> {
+    /// The store ran the query.
+    Rows(T),
+    /// The store cannot carry this query, so the kernel reads rows instead. The reason is the word the std
+    /// row-store drivers answer in `STORE_UNSUPPORTED`: the store's status word or the planner's decline word.
+    Declined(String),
+    /// The store tried and failed.
+    Failed(String),
+}
+
+/// The decline reason of a store that pushes no query down.
+pub const NO_QUERY_PUSHDOWN: &str = "the store pushes no query down";
+
+impl<T> QueryAnswer<T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> QueryAnswer<U> {
+        match self {
+            QueryAnswer::Rows(rows) => QueryAnswer::Rows(f(rows)),
+            QueryAnswer::Declined(reason) => QueryAnswer::Declined(reason),
+            QueryAnswer::Failed(message) => QueryAnswer::Failed(message),
+        }
+    }
+
+    /// The rows. Panics on a decline or a failure; for tests that expect the store to run the query.
+    pub fn unwrap_rows(self) -> T {
+        match self {
+            QueryAnswer::Rows(rows) => rows,
+            QueryAnswer::Declined(reason) => panic!("the query was declined: {reason}"),
+            QueryAnswer::Failed(message) => panic!("the query failed: {message}"),
+        }
+    }
+
+    /// The failure message. Panics on rows or a decline; for tests that expect a failure.
+    pub fn unwrap_failure(self) -> String {
+        match self {
+            QueryAnswer::Failed(message) => message,
+            QueryAnswer::Rows(_) => panic!("the query ran, expected a failure"),
+            QueryAnswer::Declined(reason) => panic!("the query was declined: {reason}"),
+        }
+    }
+
+    /// The decline reason. Panics on rows or a failure; for tests that expect a decline.
+    pub fn unwrap_declined(self) -> String {
+        match self {
+            QueryAnswer::Declined(reason) => reason,
+            QueryAnswer::Rows(_) => panic!("the query ran, expected a decline"),
+            QueryAnswer::Failed(message) => panic!("the query failed: {message}"),
+        }
+    }
+}
+
+impl<T> From<Result<T, String>> for QueryAnswer<T> {
+    fn from(run: Result<T, String>) -> Self {
+        match run {
+            Ok(rows) => QueryAnswer::Rows(rows),
+            Err(message) => QueryAnswer::Failed(message),
+        }
+    }
+}
+
 /// Abstract source for entity data. Rows travel as `Arc<Value>`, so a read hands out a pointer, not a copy.
 pub trait EntitySource: Send + Sync {
     /// Read an entity by type and ID.
@@ -62,22 +123,22 @@ pub trait EntitySource: Send + Sync {
     }
 
     /// The page of rows matching `query.policy AND query.filter`, ordered and windowed. The default runs the
-    /// query over [`Self::scan`]; a store with a native query overrides it. `None` = this source cannot answer.
-    fn query_page(&self, entity_type: &str, query: &RowQuery) -> Option<Result<RowPage, String>> {
+    /// query over [`Self::scan`]; a store with a native query overrides it. A source that cannot answer declines with its reason.
+    fn query_page(&self, entity_type: &str, query: &RowQuery) -> QueryAnswer<RowPage> {
         let mut run = QueryRun::new(query);
         if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
-            return Some(Err(e));
+            return QueryAnswer::Failed(e);
         }
-        Some(run.finish())
+        run.finish().into()
     }
 
     /// The ids of the page `query_page` would return, no row cloned.
-    fn query_ids(&self, entity_type: &str, query: &RowQuery) -> Option<Result<RowIdPage, String>> {
+    fn query_ids(&self, entity_type: &str, query: &RowQuery) -> QueryAnswer<RowIdPage> {
         let mut run = QueryRun::new(query);
         if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
-            return Some(Err(e));
+            return QueryAnswer::Failed(e);
         }
-        Some(run.finish_ids())
+        run.finish_ids().into()
     }
 
     /// One conditional write (the row is tested and written in one step). `None` = not supported here.

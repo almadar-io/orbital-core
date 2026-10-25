@@ -11,7 +11,7 @@
 //! - **trait_bindings_resolved**: every `@trait.X` reference resolves to indexed
 //!   trait content, against the union of every orbital's initialised content.
 //! - **entity_data_bound**: every `table-view`/`data-list`/`data-grid` names an
-//!   entity with rows after a seeded INIT.
+//!   entity with rows after INIT.
 //! - **game_canvas_renders**: every game-canvas pattern paints a non-empty frame
 //!   (the renderer's probe; skipped when it has none or no GPU).
 //! - **overlay_slots_render**: every modal/drawer open transition fills its slot
@@ -65,21 +65,13 @@ fn dedup_sorted(mut v: Vec<String>) -> Vec<String> {
     v
 }
 
-/// A fresh in-process kernel for `schema`, seeded the way every headless probe
-/// is: the default probe persona bound (so `@read` sees a viewer) and the
-/// identity roster seeded as it, else one sample row per entity.
-pub fn seeded_kernel(schema: &OrbitalSchema) -> Result<Arc<dyn ServerBridge>, String> {
+/// A fresh in-process kernel for `schema` with the default probe persona bound, so `@read` sees a
+/// viewer. It holds only the rows the program writes itself.
+pub fn probe_kernel(schema: &OrbitalSchema) -> Result<Arc<dyn ServerBridge>, String> {
     let bridge =
         Arc::new(KernelBridge::new(schema.clone()).map_err(|e| format!("kernel bridge: {e}"))?);
-    match crate::persona::default_probe_persona(schema) {
-        Some(user) => {
-            let id = user
-                .get_path("id")
-                .and_then(|v| v.as_str().map(str::to_string));
-            bridge.set_current_user(user);
-            bridge.seed_sample_as(schema, crate::persona::DEFAULT_IDENTITY_ROSTER_COUNT, id);
-        }
-        None => bridge.seed_sample(schema, 1),
+    if let Some(user) = crate::persona::default_probe_persona(schema) {
+        bridge.set_current_user(user);
     }
     Ok(bridge)
 }
@@ -91,7 +83,7 @@ pub fn probe(
     traits: Option<&[String]>,
     target: &dyn RenderTarget,
 ) -> Result<RenderReport, String> {
-    probe_with(item, schema, traits, target, |s, _idx| seeded_kernel(s))
+    probe_with(item, schema, traits, target, |s, _idx| probe_kernel(s))
 }
 
 /// Probe `schema`, driving each orbital through a fresh bridge from
@@ -384,7 +376,7 @@ impl ProgramFacts {
     }
 }
 
-/// The render facts of one played request: the client circuit after a seeded INIT of the trait's orbital, then
+/// The render facts of one played request: the client circuit after INIT of the trait's orbital, then
 /// `event` driven from `trait_name` unless it is INIT, reporting each non-`system` slot that trait filled. The
 /// request's `from` state is not restored: a slot its event does not reach after INIT is simply not reported.
 pub fn played_render_facts<F>(
@@ -453,7 +445,7 @@ where
     Ok(slots)
 }
 
-/// Patterns whose `props["entity"]` must map to a populated row set after a seeded INIT.
+/// Patterns whose `props["entity"]` must map to a populated row set after INIT.
 /// Every renderer that reads `ctx.entity_data(props["entity"])` belongs here, so a
 /// `@payload.data` binding that fails to resolve to a concrete type (RS-G16) is caught.
 const ENTITY_BOUND_PATTERNS: &[&str] = &["data-grid", "table-view", "data-list"];
@@ -597,7 +589,7 @@ fn node_facts(
 }
 
 /// One node's facts. A `type` that is itself a binding (`@config.viewPattern`) is resolved at run time from config
-/// the headless seed does not synthesize: a dynamic node, not a missing renderer, and not entity-bound.
+/// the probe does not synthesize: a dynamic node, not a missing renderer, and not entity-bound.
 fn node_fact(
     pattern: Option<&str>,
     obj: &ValueMap,
@@ -1044,7 +1036,13 @@ mod tests {
             "INIT",
             Value::Null,
             &target,
-            |s, _| seeded_kernel(s),
+            |s, _| {
+                let bridge = KernelBridge::new(s.clone()).map_err(|e| format!("kernel bridge: {e}"))?;
+                let note: Value = serde_json::from_value(serde_json::json!({ "id": "n1", "title": "Note 1" }))
+                    .map_err(|e| e.to_string())?;
+                bridge.seed("Note", vec![note]);
+                Ok(Arc::new(bridge) as Arc<dyn ServerBridge>)
+            },
         )
         .unwrap();
         assert_eq!(slots.len(), 1, "{slots:?}");
@@ -1064,7 +1062,7 @@ mod tests {
         assert_eq!(list.binding.kind, EntityBindingKind::Named);
         assert!(
             list.binding.rows >= 1,
-            "the seeded INIT loaded rows: {list:?}"
+            "the INIT fetch loaded the stored row: {list:?}"
         );
         assert!(slots[0]
             .nodes
@@ -1076,7 +1074,7 @@ mod tests {
             "INIT",
             Value::Null,
             &target,
-            |s, _| seeded_kernel(s),
+            |s, _| probe_kernel(s),
         );
         assert!(
             other.unwrap_err().contains("no trait \"Elsewhere\""),

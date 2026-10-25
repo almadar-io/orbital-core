@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn the_kernel_checks_the_sender_against_the_credential_and_an_unset_credential_is_unchecked() {
+    fn the_kernel_checks_the_sender_against_the_credential_and_an_unset_credential_is_refused() {
         let k = kernel(json!(["google-calendar"]));
         let ok = deliver_with(
             &k,
@@ -367,8 +367,8 @@ mod tests {
             (bad.status, bad.body.as_str()),
             (400, r#"{"error":"bad-token"}"#)
         );
-        let unchecked = deliver_with(&k, "google-calendar", "exists", "anything", &Vault(None));
-        assert_eq!(unchecked.status, 200);
+        let unset = deliver_with(&k, "google-calendar", "exists", "anything", &Vault(None));
+        assert_eq!(unset.status, 401, "a route verifying a credential the host holds no value for runs nothing: {}", unset.body);
     }
 
     #[test]

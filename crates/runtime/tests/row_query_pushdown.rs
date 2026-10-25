@@ -121,7 +121,7 @@ fn every_query_case_runs_to_its_recorded_page_and_round_trips_its_json() {
                 .write("Ticket", r.as_object().unwrap()["id"].as_str().unwrap(), r)
                 .unwrap();
         }
-        let via_source = cache.query_page("Ticket", &query).unwrap().unwrap();
+        let via_source = cache.query_page("Ticket", &query).unwrap_rows();
         assert_eq!(via_source, page, "{name}: source query_page");
     }
 }
@@ -815,7 +815,7 @@ fn an_unordered_fetch_is_pushed_down_without_an_order() {
 
 fn host_page(_entity: &str, query: &RowQuery) -> Result<RowPage, String> {
     let host = seeded();
-    Ok(host.query_page("Ticket", query).unwrap().unwrap())
+    Ok(host.query_page("Ticket", query).unwrap_rows())
 }
 
 #[test]
@@ -870,8 +870,7 @@ fn a_host_that_ignores_the_read_policy_is_caught() {
                         ..leaky
                     },
                 )
-                .unwrap()
-                .unwrap();
+                .unwrap_rows();
             Some(IoAnswer::Page(Ok(page)))
         }
         _ => None,
@@ -1376,7 +1375,7 @@ fn nearest_error_cases_fail_with_their_reason_and_the_paired_valid_cases_do_not(
         for r in &rows {
             cache.write("Ticket", r.as_object().unwrap()["id"].as_str().unwrap(), r).unwrap();
         }
-        assert!(cache.query_page("Ticket", &query).unwrap().unwrap_err().contains(want), "{name}: source");
+        assert!(cache.query_page("Ticket", &query).unwrap_failure().contains(want), "{name}: source");
         // control: the same filter with a well-formed vector answers
         let mut valid = query.clone();
         if let Some(n) = valid.nearest.as_mut() {
@@ -1436,8 +1435,7 @@ fn a_store_with_the_nearest_capability_gets_the_query_and_only_the_page_crosses(
             ..
         } => Some(IoAnswer::Page(Ok(seeded_vectors()
             .query_page("Ticket", query)
-            .unwrap()
-            .unwrap()))),
+            .unwrap_rows()))),
         _ => None,
     });
     let data = data_requests(&log);

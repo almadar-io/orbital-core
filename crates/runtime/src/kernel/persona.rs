@@ -6,8 +6,8 @@
 //! nothing — silently, and identically to a genuinely-broken gate. `ALMADAR_PERSONA`
 //! names the viewer so a behavior can be verified per persona.
 //!
-//! There is no global persona roster: personas are declared PER APP as the seeded
-//! rows of its `[identity]` entity (`Almadar_LOLO_Identity.md` §4.3), derived by
+//! There is no global persona roster: personas are declared PER APP as the authored
+//! `instances` of its `[identity]` entity (`Almadar_LOLO_Identity.md` §4.3), derived by
 //! [`identity_roster`]. A bare id/role spec therefore resolves only once a schema
 //! is in hand; the self-contained JSON form resolves anywhere.
 //!
@@ -20,17 +20,12 @@ use std::prelude::v1::*;
 
 use super::mock_random::iso_from_ms;
 use orbital_core_base::policy::identity_entity_def;
-use super::seed::{identity_roster_rows, instance_rows};
+use super::instances::instance_rows;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::Value;
 
 /// The env var naming the viewer, shared with the interpreter path.
 pub const PERSONA_ENV: &str = "ALMADAR_PERSONA";
-
-/// Roster rows derived when a host names no seed count. Mirrors the interpreter
-/// path's `MockPersistenceAdapter` default (`defaultSeedCount: 6`) — enough rows
-/// for the union cycler to cover every declared role of a typical entity.
-pub const DEFAULT_IDENTITY_ROSTER_COUNT: usize = 6;
 
 /// The `ALMADAR_PERSONA` spec, classified by what it needs to resolve.
 pub enum EnvPersona {
@@ -82,22 +77,18 @@ pub fn find_persona_in_roster<'a>(roster: &'a [Value], id_or_role: &str) -> Opti
         })
 }
 
-/// The app's declared persona roster: the seeded rows of its `[identity]` entity.
-///
-/// Authored `instances` ARE the roster (materialized as the kernel stores them);
-/// otherwise the rows are the identity entity's seeded rows, the first rows of every
-/// seeded mock store ([`identity_roster_rows`]), so each persona id is a real row.
-/// Empty when the schema declares no `[identity]` entity — there is no global
-/// fallback roster by design.
-pub fn identity_roster(schema: &OrbitalSchema, count: usize) -> Vec<Value> {
+/// The app's declared persona roster: the authored `instances` of its `[identity]` entity,
+/// materialized as the kernel stores them. Empty when the schema declares no `[identity]`
+/// entity or no instances of it — there is no global fallback roster by design.
+pub fn identity_roster(schema: &OrbitalSchema) -> Vec<Value> {
     let Some(def) = identity_entity_def(schema) else {
         return Vec::new();
     };
     let now = orbital_core_base::time_util::now_millis_f64();
-    if let Some(instances) = def.instances.as_ref().filter(|list| !list.is_empty()) {
-        return instance_rows(&def.name, instances, &iso_from_ms(now));
+    match def.instances.as_ref().filter(|list| !list.is_empty()) {
+        Some(instances) => instance_rows(&def.name, instances, &iso_from_ms(now)),
+        None => Vec::new(),
     }
-    identity_roster_rows(schema, count, now)
 }
 
 /// Resolve a persona spec — a bare declared id/role, or a full JSON user object —
@@ -157,18 +148,9 @@ pub fn default_probe_persona(schema: &OrbitalSchema) -> Option<Value> {
     if !matches!(persona_from_env_spec(), Ok(EnvPersona::None)) {
         return None;
     }
-    identity_roster(schema, DEFAULT_IDENTITY_ROSTER_COUNT)
+    identity_roster(schema)
         .first()
         .cloned()
-}
-
-/// Who `@user` is for a host with no sign-in: the viewer `ALMADAR_PERSONA` names when set, else the unauthenticated
-/// viewer. A host never picks one (EXEC-BOUND-2). A malformed `ALMADAR_PERSONA` is an error.
-pub fn host_default_viewer(schema: &OrbitalSchema) -> Result<Value, String> {
-    match persona_from_env_for_schema(schema)? {
-        Value::Null => Ok(crate::auth::anonymous_user()),
-        named => Ok(named),
-    }
 }
 
 /// The viewer named by `ALMADAR_PERSONA` resolved against `schema`'s declared
@@ -179,7 +161,7 @@ pub fn persona_from_env_for_schema(schema: &OrbitalSchema) -> Result<Value, Stri
         EnvPersona::Resolved(user) => Ok(user),
         EnvPersona::Bare(spec) => resolve_persona_spec(
             &spec,
-            &identity_roster(schema, DEFAULT_IDENTITY_ROSTER_COUNT),
+            &identity_roster(schema),
         ),
     }
 }
@@ -252,34 +234,17 @@ mod tests {
     }
 
     #[test]
-    fn derives_the_roster_from_the_identity_entity() {
+    fn control_an_identity_entity_without_instances_has_an_empty_roster() {
         let schema = identity_schema(json!({
             "name": "Person",
             "identity": true,
             "persistence": "persistent",
             "fields": [
                 { "name": "id", "type": "string", "required": true },
-                { "name": "name", "type": "string" },
                 { "name": "role", "type": "string", "values": ["member", "moderator", "admin"] }
             ]
         }));
-        let roster = identity_roster(&schema, 3);
-        assert_eq!(roster.len(), 3);
-        // Every persona carries its role: an optional field on the `[identity]` entity is
-        // never left unset, so each declared role is a real, selectable viewer.
-        let roles: Vec<_> = roster.iter().map(|p| p.get_path("role").cloned()).collect();
-        assert_eq!(
-            roles,
-            vec![
-                Some(Value::String("member".to_string())),
-                Some(Value::String("moderator".to_string())),
-                Some(Value::String("admin".to_string())),
-            ]
-        );
-        assert_eq!(
-            roster[0].get_path("id"),
-            Some(&Value::String("Person Id 1".to_string()))
-        );
+        assert!(identity_roster(&schema).is_empty());
     }
 
     #[test]
@@ -298,7 +263,7 @@ mod tests {
                 { "name": "Sam", "role": "member" }
             ]
         }));
-        let roster = identity_roster(&schema, 6);
+        let roster = identity_roster(&schema);
         assert_eq!(roster.len(), 2);
         assert_eq!(
             roster[0].get_path("id"),
@@ -319,6 +284,6 @@ mod tests {
             "persistence": "persistent",
             "fields": [{ "name": "id", "type": "string", "required": true }]
         }));
-        assert!(identity_roster(&schema, 6).is_empty());
+        assert!(identity_roster(&schema).is_empty());
     }
 }

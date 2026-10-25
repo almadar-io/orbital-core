@@ -23,6 +23,9 @@ struct UserSlots {
 
 const POISONED: &str = "credential cache lock poisoned";
 
+/// The service label a kernel-persisted credential (an OAuth connection) carries in the encrypted store.
+const PERSISTED_SERVICE: &str = "kernel";
+
 #[derive(Clone, Default)]
 pub struct Credentials {
     env: HashMap<String, String>,
@@ -416,6 +419,70 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_oauth_grant_survives_a_host_restart_when_the_store_is_enabled_and_is_taken_once() {
+        use crate::credential_store::MemoryCredentialRows;
+        use orbital_core_base::oauth_ask::PendingTake;
+        use orbital_core_base::oauth_wire::Pending;
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let host = || Credentials::default().with_encrypted_store(encrypted(rows.clone())).unwrap();
+        let grant = Pending {
+            provider: "google".into(),
+            redirect_uri: "https://app/cb".into(),
+            verifier: "VERIFIER-SECRET".into(),
+            subject: None,
+            scopes: Vec::new(),
+        };
+        let put = OAuthAsk::PendingPut { state: "s".into(), grant: grant.clone(), ttl_ms: 600_000 };
+        assert_eq!(host().oauth_of(&put, Some("alice")), Ok(OAuthReply::Done));
+        let kept = crate::credential_store::CredentialRows::list(rows.as_ref()).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert!(!kept[0].to_string().contains("VERIFIER-SECRET"), "the held grant is sealed in the rows");
+        let take = OAuthAsk::PendingTake { state: "s".into() };
+        let restarted = host();
+        assert_eq!(
+            restarted.oauth_of(&take, Some("bob")),
+            Ok(OAuthReply::Taken { taken: PendingTake::Grant { grant } })
+        );
+        assert_eq!(host().oauth_of(&take, Some("alice")), Ok(OAuthReply::Taken { taken: PendingTake::Missing }), "a take consumes it on every host");
+        assert!(crate::credential_store::CredentialRows::list(rows.as_ref()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn control_a_held_value_that_expired_is_not_taken_and_a_host_without_a_store_holds_in_memory() {
+        use crate::credential_store::MemoryCredentialRows;
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let stored = Credentials::default().with_encrypted_store(encrypted(rows.clone())).unwrap();
+        stored.hold_secret_of("grant", "v", 1, None).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(stored.take_secret_of("grant", None), Ok(None));
+        assert!(crate::credential_store::CredentialRows::list(rows.as_ref()).unwrap().is_empty());
+        let bare = Credentials::default();
+        bare.hold_secret_of("grant", "v", 60_000, Some("alice")).unwrap();
+        assert_eq!(bare.take_secret_of("grant", Some("alice")), Ok(Some("v".to_string())));
+        stored.store_secret_of("ticket", "t", 60_000, None).unwrap();
+        assert_eq!(stored.take_secret_of("ticket", None), Ok(Some("t".to_string())), "a minted one-use value is still taken from memory");
+    }
+
+    #[test]
+    fn a_persisted_credential_is_sealed_in_the_store_survives_a_restart_and_forget_drops_the_row() {
+        use crate::credential_store::{CredentialRows, MemoryCredentialRows};
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let host = || Credentials::default().with_encrypted_store(encrypted(rows.clone())).unwrap();
+        let before = host();
+        before.persist_secret_of("TOKEN", "alice-SECRET-0001", Some("alice")).unwrap();
+        before.persist_secret_of("APP_TOKEN", "app-SECRET-0002", None).unwrap();
+        assert!(!rows.list().unwrap().iter().any(|row| row.to_string().contains("SECRET")), "the rows hold ciphertext only");
+        let restarted = host();
+        assert_eq!(restarted.secret_of("TOKEN", Some("alice")), Ok(Some("alice-SECRET-0001".to_string())));
+        assert_eq!(restarted.secret_of("TOKEN", Some("bob")), Ok(None));
+        assert_eq!(restarted.secret_of("APP_TOKEN", None), Ok(Some("app-SECRET-0002".to_string())));
+        restarted.forget_of("TOKEN", Some("alice")).unwrap();
+        restarted.forget_of("APP_TOKEN", None).unwrap();
+        assert!(rows.list().unwrap().is_empty());
+        assert_eq!(host().secret_of("TOKEN", Some("alice")), Ok(None));
+    }
+
+    #[test]
     fn debug_never_exposes_credential_values() {
         let creds = Credentials::from_env(map(&[("KEY", "env-secret")]))
             .with_store(map(&[("KEY", "stored-secret")]));
@@ -550,12 +617,33 @@ impl SecretSource for Credentials {
         Ok(())
     }
 
+    fn hold_secret_of(
+        &self,
+        name: &str,
+        value: &str,
+        ttl_ms: u64,
+        principal: Option<&str>,
+    ) -> Result<(), String> {
+        let Some(store) = self.encrypted.as_ref().filter(|store| store.enabled()) else {
+            return self.store_secret_of(name, value, ttl_ms, principal);
+        };
+        let now = orbital_core_base::time_util::now_millis();
+        if ttl_ms == 0 {
+            return store.take(name, now, principal).map(|_| ());
+        }
+        let expires_at = now.saturating_add(i64::try_from(ttl_ms).unwrap_or(i64::MAX));
+        store.hold(name, value, expires_at, now, principal)
+    }
+
     fn persist_secret_of(
         &self,
         name: &str,
         value: &str,
         principal: Option<&str>,
     ) -> Result<(), String> {
+        if let Some(store) = self.encrypted.as_ref().filter(|store| store.enabled()) {
+            return store.set(PERSISTED_SERVICE, name, value, principal).map(|_| ());
+        }
         let Some(who) = principal else {
             return Err("this host keeps no app-wide durable credentials".to_string());
         };
@@ -572,6 +660,12 @@ impl SecretSource for Credentials {
         name: &str,
         principal: Option<&str>,
     ) -> Result<Option<String>, String> {
+        if let Some(store) = self.encrypted.as_ref().filter(|store| store.enabled()) {
+            let held = store.take(name, orbital_core_base::time_util::now_millis(), principal)?;
+            if held.is_some() {
+                return Ok(held);
+            }
+        }
         let now = Instant::now();
         let taken = match principal {
             None => self.minted.lock().map_err(|_| POISONED)?.remove(name),
@@ -588,6 +682,9 @@ impl SecretSource for Credentials {
     }
 
     fn forget_of(&self, name: &str, principal: Option<&str>) -> Result<(), String> {
+        if let Some(store) = self.encrypted.as_ref().filter(|store| store.enabled()) {
+            store.remove(name, principal)?;
+        }
         match principal {
             None => {
                 self.minted.lock().map_err(|_| POISONED)?.remove(name);

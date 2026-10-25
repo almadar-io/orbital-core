@@ -241,12 +241,6 @@ impl EmbeddedServer {
         &self.kernel
     }
 
-
-    /// Mock-seed the `[runtime]` entities this kernel holds itself, owner columns stamped with `viewer_id`
-    /// ([`RuntimeKernel::seed_runtime_mock`]). A preview host calls it on a fresh kernel.
-    pub fn seed_runtime_mock(&self, viewer_id: Option<String>) {
-        self.kernel.seed_runtime_mock(viewer_id);
-    }
     /// Name the program whose declared credentials this server's credential effects manage
     /// ([`RuntimeKernel::set_managed_program`]).
     pub fn set_managed_program(&self, program: &serde_json::Value) {

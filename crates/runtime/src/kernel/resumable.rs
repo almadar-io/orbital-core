@@ -13,7 +13,7 @@ use std::prelude::v1::*;
 use crate::effects::executor::{ServiceCaller, ServiceHandler, SubstrateFailure, SubstrateHandler};
 use orbital_core_base::value::{Value, ValueMap};
 use crate::credential_admin::{RotateCounts, StoreListing};
-use crate::entity_source::EntitySource;
+use crate::entity_source::{EntitySource, QueryAnswer};
 use orbital_core_base::ir::effects::PageFactField;
 use orbital_core_base::envelope::{Accepted, DeliverRefusal, DeliverRefusalKind, Envelope};
 use orbital_core_base::oauth_ask::{OAuthAsk, OAuthReply};
@@ -1175,11 +1175,6 @@ impl IoPort {
         }
     }
 
-    /// Whether this kernel holds the rows of `entity_type` itself (a claimed `[runtime]` entity).
-    pub(crate) fn holds_runtime(&self, entity_type: &str) -> bool {
-        self.local(entity_type)
-    }
-
     fn local(&self, entity_type: &str) -> bool {
         self.runtime_in_kernel && self.runtime_types.read().contains(entity_type)
     }
@@ -1671,10 +1666,10 @@ impl EntitySource for IoPort {
         Ok(())
     }
 
-    fn query_page(&self, entity_type: &str, query: &RowQuery) -> Option<Result<RowPage, String>> {
+    fn query_page(&self, entity_type: &str, query: &RowQuery) -> QueryAnswer<RowPage> {
         if self.direct() {
             if self.store_bound(entity_type) {
-                return Some(Err(self.store_off_path(entity_type)));
+                return QueryAnswer::Failed(self.store_off_path(entity_type));
             }
             return self.source_for(entity_type).query_page(entity_type, query);
         }
@@ -1694,10 +1689,12 @@ impl EntitySource for IoPort {
                 }) {
                     Asked::Direct => return self.source_for(entity_type).query_page(entity_type, query),
                     Asked::Answer(IoAnswer::Page(page)) => {
-                        return Some(page.and_then(|page| {
-                            echo_checked(entity_type, query, &page)?;
-                            Ok(page)
-                        }))
+                        return page
+                            .and_then(|page| {
+                                echo_checked(entity_type, query, &page)?;
+                                Ok(page)
+                            })
+                            .into()
                     }
                     Asked::Answer(IoAnswer::QueryUnsupported(detail)) => self.notice(
                         "kernel.fetch.pushdown-fallback",
@@ -1706,22 +1703,22 @@ impl EntitySource for IoPort {
                         &detail,
                     ),
                     Asked::Answer(_) | Asked::Withheld => {
-                        return Some(Err(AWAITING_HOST.to_string()))
+                        return QueryAnswer::Failed(AWAITING_HOST.to_string())
                     }
                 },
             }
         }
         let mut run = QueryRun::new(query);
         if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
-            return Some(Err(e));
+            return QueryAnswer::Failed(e);
         }
-        Some(run.finish())
+        run.finish().into()
     }
 
-    fn query_ids(&self, entity_type: &str, query: &RowQuery) -> Option<Result<RowIdPage, String>> {
+    fn query_ids(&self, entity_type: &str, query: &RowQuery) -> QueryAnswer<RowIdPage> {
         if self.direct() {
             if self.store_bound(entity_type) {
-                return Some(Err(self.store_off_path(entity_type)));
+                return QueryAnswer::Failed(self.store_off_path(entity_type));
             }
             return self.source_for(entity_type).query_ids(entity_type, query);
         }
@@ -1742,7 +1739,7 @@ impl EntitySource for IoPort {
                     project: RowProjection::Ids,
                 }) {
                     Asked::Direct => return self.source_for(entity_type).query_ids(entity_type, query),
-                    Asked::Answer(IoAnswer::IdPage(page)) => return Some(page),
+                    Asked::Answer(IoAnswer::IdPage(page)) => return page.into(),
                     Asked::Answer(IoAnswer::QueryUnsupported(detail)) => self.notice(
                         "kernel.fetch.pushdown-fallback",
                         entity_type,
@@ -1750,16 +1747,16 @@ impl EntitySource for IoPort {
                         &detail,
                     ),
                     Asked::Answer(_) | Asked::Withheld => {
-                        return Some(Err(AWAITING_HOST.to_string()))
+                        return QueryAnswer::Failed(AWAITING_HOST.to_string())
                     }
                 },
             }
         }
         let mut run = QueryRun::new(query);
         if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
-            return Some(Err(e));
+            return QueryAnswer::Failed(e);
         }
-        Some(run.finish_ids())
+        run.finish_ids().into()
     }
 
     fn write_where(&self, op: &RowWriteOp) -> Option<Result<RowWriteOutcome, String>> {
@@ -2478,16 +2475,18 @@ impl BlockingHost<'_> {
                 query,
                 project: RowProjection::Rows,
             } => match self.source.query_page(entity_type, query) {
-                Some(page) => IoAnswer::Page(page),
-                None => IoAnswer::QueryUnsupported("the source has no query push-down".to_string()),
+                QueryAnswer::Rows(page) => IoAnswer::Page(Ok(page)),
+                QueryAnswer::Declined(reason) => IoAnswer::QueryUnsupported(reason),
+                QueryAnswer::Failed(message) => IoAnswer::Page(Err(message)),
             },
             IoRequest::QueryRows {
                 entity_type,
                 query,
                 project: RowProjection::Ids,
             } => match self.source.query_ids(entity_type, query) {
-                Some(page) => IoAnswer::IdPage(page),
-                None => IoAnswer::QueryUnsupported("the source has no query push-down".to_string()),
+                QueryAnswer::Rows(page) => IoAnswer::IdPage(Ok(page)),
+                QueryAnswer::Declined(reason) => IoAnswer::QueryUnsupported(reason),
+                QueryAnswer::Failed(message) => IoAnswer::IdPage(Err(message)),
             },
             IoRequest::CommitRows { rows } => IoAnswer::Committed(commit_on(self.source, rows)),
             IoRequest::WriteRows { batch } => match self.source.write_batch(batch) {
@@ -2863,7 +2862,12 @@ pub fn answer_batch(
                     Some(handle) => handle
                         .join()
                         .unwrap_or_else(|_| IoAnswer::Service(Err("the call-service answerer panicked".to_string()))),
-                    None => answer(&p.request),
+                    None => {
+                        let started = std::time::Instant::now();
+                        let answered = answer(&p.request);
+                        tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, request = ?std::mem::discriminant(&p.request), ms = started.elapsed().as_millis() as u64, deferred = matches!(answered, IoAnswer::ServiceDeferred), "host ask answered");
+                        answered
+                    }
                 },
             })
             .collect()

@@ -1,7 +1,10 @@
-//! The encrypted credential store, the native twin of `CredentialStore` in `@almadar/runtime`: one AES-256-GCM row per
-//! (credential name, principal) kept through a row port, the master key held alone in `ALMADAR_CREDENTIAL_MASTER_KEY`. The rows
-//! are the same bytes the JS store writes (`service`, `envVar`, hex `ciphertext` / `iv` / `authTag`, `keyId`, `updatedAt`,
-//! `principal`), so one store file is read and written by both hosts. A stored value shadows its environment counterpart.
+//! The encrypted credential store: one AES-256-GCM row per (credential name, principal) kept through a row port, the master
+//! key held alone in `ALMADAR_CREDENTIAL_MASTER_KEY`. A row carries `service`, `envVar`, hex `ciphertext` / `iv` / `authTag`,
+//! `keyId`, `updatedAt`, `principal` and an optional clear `label`. A stored value shadows its environment counterpart.
+//! A one-use value (a pending OAuth grant) is a row of kind `derived` in the same rows: sealed the same way, with an
+//! `expiresAt`, consumed by [`EncryptedCredentialStore::take`]. A row that cannot be read is a failure, never an absence.
+//! Everything here compiles on wasm32 except the file medium; a host whose rows answer asynchronously keeps the store over
+//! [`RecordedCredentialRows`] and applies the recorded writes itself.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -12,6 +15,7 @@ use orbital_core_base::sync::Mutex;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -21,8 +25,12 @@ pub const CREDENTIAL_ENTITY_TYPE: &str = "AlmadarIntegrationCredential";
 pub const CREDENTIAL_MASTER_KEY_ENV: &str = "ALMADAR_CREDENTIAL_MASTER_KEY";
 pub const CREDENTIAL_PREVIOUS_MASTER_KEY_ENV: &str = "ALMADAR_CREDENTIAL_MASTER_KEY_PREVIOUS";
 /// Where the file-backed rows live when no path is named.
+#[cfg(not(target_arch = "wasm32"))]
 pub const CREDENTIALS_FILE_ENV: &str = "ALMADAR_CREDENTIALS_FILE";
+#[cfg(not(target_arch = "wasm32"))]
 pub const DEFAULT_CREDENTIALS_FILE: &str = ".almadar/dev-credentials.json";
+/// The `kind` of a row holding a one-use value; a credential row carries no `kind`.
+pub const DERIVED_KIND: &str = "derived";
 
 /// The persistence the store uses: whole rows, as JSON objects carrying their `id`.
 pub trait CredentialRows: Send + Sync {
@@ -31,7 +39,8 @@ pub trait CredentialRows: Send + Sync {
     fn create(&self, data: &Value) -> Result<String, String>;
     /// Merge `data` over the row `id`; a missing row is left missing.
     fn update(&self, id: &str, data: &Value) -> Result<(), String>;
-    fn delete(&self, id: &str) -> Result<(), String>;
+    /// Delete the row `id`; whether this call removed it (false when another taker or writer already had).
+    fn delete(&self, id: &str) -> Result<bool, String>;
 }
 
 /// Rows kept in memory.
@@ -41,13 +50,21 @@ pub struct MemoryCredentialRows {
     counter: AtomicU64,
 }
 
+impl MemoryCredentialRows {
+    /// Replace every row with `rows`, as read from a medium.
+    pub fn load(&self, rows: Vec<Value>) {
+        *self.rows.lock() = rows;
+    }
+}
+
 impl CredentialRows for MemoryCredentialRows {
     fn list(&self) -> Result<Vec<Value>, String> {
         Ok(self.rows.lock().clone())
     }
     fn create(&self, data: &Value) -> Result<String, String> {
         let id = format!(
-            "{CREDENTIAL_ENTITY_TYPE}-{}",
+            "{CREDENTIAL_ENTITY_TYPE}-{}-{}",
+            chrono_free_now_ms(),
             self.counter.fetch_add(1, Ordering::SeqCst) + 1
         );
         self.rows.lock().push(with_id(data, &id));
@@ -60,9 +77,63 @@ impl CredentialRows for MemoryCredentialRows {
         }
         Ok(())
     }
-    fn delete(&self, id: &str) -> Result<(), String> {
-        self.rows.lock().retain(|row| row["id"] != id);
+    fn delete(&self, id: &str) -> Result<bool, String> {
+        let mut rows = self.rows.lock();
+        let before = rows.len();
+        rows.retain(|row| row["id"] != id);
+        Ok(rows.len() != before)
+    }
+}
+
+/// Rows kept in memory that also record every change as `{ write: "create" | "update" | "delete", id, data? }`, in order.
+/// A host whose medium answers asynchronously loads the rows it listed, runs the store, then applies
+/// [`Self::take_writes`] to its medium: a created row carries the id the store gave it, an update is a merge.
+#[derive(Default)]
+pub struct RecordedCredentialRows {
+    memory: MemoryCredentialRows,
+    writes: Mutex<Vec<Value>>,
+}
+
+impl RecordedCredentialRows {
+    /// Replace every row with `rows` read from the medium; changes not yet taken are dropped, for they were not applied.
+    pub fn load(&self, rows: Vec<Value>) {
+        self.memory.load(rows);
+        self.writes.lock().clear();
+    }
+
+    pub fn take_writes(&self) -> Vec<Value> {
+        std::mem::take(&mut *self.writes.lock())
+    }
+}
+
+impl CredentialRows for RecordedCredentialRows {
+    fn list(&self) -> Result<Vec<Value>, String> {
+        self.memory.list()
+    }
+    fn create(&self, data: &Value) -> Result<String, String> {
+        let id = self.memory.create(data)?;
+        self.writes
+            .lock()
+            .push(json!({ "write": "create", "id": id, "data": with_id(data, &id) }));
+        Ok(id)
+    }
+    fn update(&self, id: &str, data: &Value) -> Result<(), String> {
+        if self.memory.list()?.iter().any(|row| row["id"] == id) {
+            self.memory.update(id, data)?;
+            self.writes
+                .lock()
+                .push(json!({ "write": "update", "id": id, "data": data }));
+        }
         Ok(())
+    }
+    fn delete(&self, id: &str) -> Result<bool, String> {
+        let removed = self.memory.delete(id)?;
+        if removed {
+            self.writes
+                .lock()
+                .push(json!({ "write": "delete", "id": id }));
+        }
+        Ok(removed)
     }
 }
 
@@ -82,12 +153,15 @@ fn merged(existing: &Value, data: &Value, id: &str) -> Value {
 }
 
 /// The dev credential file of `@almadar/db` (`FileCredentialPersistence`): a JSON array of rows, written atomically
-/// (a temporary file, then a rename). A missing or unreadable file reads as no rows.
+/// (a temporary file, then a rename). A missing file is no rows; an unreadable one, or one that is not an array of
+/// rows each carrying an `id`, is a failure.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct FileCredentialRows {
     path: PathBuf,
     counter: AtomicU64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl FileCredentialRows {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
@@ -112,17 +186,34 @@ impl FileCredentialRows {
         &self.path
     }
 
-    fn load(&self) -> Vec<Value> {
-        let Ok(text) = std::fs::read_to_string(&self.path) else {
-            return Vec::new();
+    fn load(&self) -> Result<Vec<Value>, String> {
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(format!("credential file {}: {error}", self.path.display())),
         };
-        match serde_json::from_str::<Value>(&text) {
-            Ok(Value::Array(rows)) => rows
-                .into_iter()
-                .filter(|row| row["id"].is_string())
-                .collect(),
-            _ => Vec::new(),
+        let rows = match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Array(rows)) => rows,
+            Ok(_) => {
+                return Err(format!(
+                    "credential file {} is not an array of rows",
+                    self.path.display()
+                ))
+            }
+            Err(error) => {
+                return Err(format!(
+                    "credential file {} is not JSON: {error}",
+                    self.path.display()
+                ))
+            }
+        };
+        if let Some(position) = rows.iter().position(|row| !row["id"].is_string()) {
+            return Err(format!(
+                "credential file {}: row {position} carries no id",
+                self.path.display()
+            ));
         }
+        Ok(rows)
     }
 
     fn save(&self, rows: &[Value]) -> Result<(), String> {
@@ -139,12 +230,13 @@ impl FileCredentialRows {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl CredentialRows for FileCredentialRows {
     fn list(&self) -> Result<Vec<Value>, String> {
-        Ok(self.load())
+        self.load()
     }
     fn create(&self, data: &Value) -> Result<String, String> {
-        let mut rows = self.load();
+        let mut rows = self.load()?;
         let now = chrono_free_now_ms();
         let id = format!(
             "{CREDENTIAL_ENTITY_TYPE}-{now}-{}",
@@ -155,21 +247,22 @@ impl CredentialRows for FileCredentialRows {
         Ok(id)
     }
     fn update(&self, id: &str, data: &Value) -> Result<(), String> {
-        let mut rows = self.load();
+        let mut rows = self.load()?;
         if let Some(row) = rows.iter_mut().find(|row| row["id"] == id) {
             *row = merged(row, data, id);
             self.save(&rows)?;
         }
         Ok(())
     }
-    fn delete(&self, id: &str) -> Result<(), String> {
-        let mut rows = self.load();
+    fn delete(&self, id: &str) -> Result<bool, String> {
+        let mut rows = self.load()?;
         let before = rows.len();
         rows.retain(|row| row["id"] != id);
-        if rows.len() != before {
+        let removed = rows.len() != before;
+        if removed {
             self.save(&rows)?;
         }
-        Ok(())
+        Ok(removed)
     }
 }
 
@@ -189,20 +282,32 @@ impl StoreCredentialRows {
 
 impl CredentialRows for StoreCredentialRows {
     fn list(&self) -> Result<Vec<Value>, String> {
-        self.0.list(CREDENTIAL_ENTITY_TYPE)?.into_iter().map(Self::json).collect()
+        self.0
+            .list(CREDENTIAL_ENTITY_TYPE)?
+            .into_iter()
+            .map(Self::json)
+            .collect()
     }
     fn create(&self, data: &Value) -> Result<String, String> {
         let row = Self::json(self.0.create(CREDENTIAL_ENTITY_TYPE, &Self::value(data)?)?)?;
-        row["id"].as_str().map(str::to_string).ok_or_else(|| "the store created a credential row without an id".to_string())
+        row["id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "the store created a credential row without an id".to_string())
     }
     fn update(&self, id: &str, data: &Value) -> Result<(), String> {
         if self.0.find(CREDENTIAL_ENTITY_TYPE, id)?.is_none() {
             return Ok(());
         }
-        self.0.update(CREDENTIAL_ENTITY_TYPE, id, &Self::value(data)?).map(|_| ())
+        self.0
+            .update(CREDENTIAL_ENTITY_TYPE, id, &Self::value(data)?)
+            .map(|_| ())
     }
-    fn delete(&self, id: &str) -> Result<(), String> {
-        self.0.delete(CREDENTIAL_ENTITY_TYPE, id)
+    fn delete(&self, id: &str) -> Result<bool, String> {
+        if self.0.find(CREDENTIAL_ENTITY_TYPE, id)?.is_none() {
+            return Ok(false);
+        }
+        self.0.delete(CREDENTIAL_ENTITY_TYPE, id).map(|()| true)
     }
 }
 
@@ -228,6 +333,11 @@ impl Key {
     fn id(&self) -> String {
         hex(&Sha256::digest(self.bytes))[..16].to_string()
     }
+}
+
+/// Whether `hex` is a master key: 64 hex digits.
+pub fn is_master_key(hex: &str) -> bool {
+    Key::parse(hex).is_some()
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -300,6 +410,17 @@ pub struct EncryptedCredentialStore {
 struct State {
     warmed: bool,
     by_identity: HashMap<String, Stored>,
+    /// Held one-use rows found by [`EncryptedCredentialStore::take_begin`] whose delete the taker has not yet answered,
+    /// by ticket: two takers of one row each hold their own.
+    taking: HashMap<u64, Value>,
+    tickets: u64,
+}
+
+/// A held one-use row [`EncryptedCredentialStore::take_begin`] found: the row to delete, and the ticket to finish or cancel with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldTake {
+    pub ticket: u64,
+    pub id: String,
 }
 
 impl std::fmt::Debug for EncryptedCredentialStore {
@@ -451,25 +572,35 @@ impl EncryptedCredentialStore {
         ))
     }
 
-    /// Load and decrypt every stored row; the number of readable credentials. Without a master key nothing decrypts.
-    pub fn warm(&self) -> Result<usize, String> {
-        let mut state = self.state.lock();
-        state.by_identity.clear();
-        state.warmed = true;
-        if !self.enabled() {
-            return Ok(0);
-        }
-        for row in self.rows.list()? {
+    /// The rows that cannot be read, as `rows` holds them: a row that is malformed, of an unknown kind, or that no held key opens.
+    /// A row of kind `derived` is a one-use value, read when it is taken, not here.
+    fn scan(&self, rows: &[Value]) -> (HashMap<String, Stored>, Vec<String>) {
+        let mut found = HashMap::new();
+        let mut unreadable = Vec::new();
+        for (position, row) in rows.iter().enumerate() {
+            let label = || {
+                text_of(row, "id")
+                    .map_or_else(|| format!("(row {position}, no id)"), str::to_string)
+            };
+            match row.get("kind") {
+                None => {}
+                Some(kind) if kind.as_str() == Some(DERIVED_KIND) => continue,
+                Some(_) => {
+                    unreadable.push(label());
+                    continue;
+                }
+            }
             let (Some((id, service, env_var, principal)), Some(sealed)) =
-                (Self::identity_of(&row), Self::sealed_of(&row))
+                (Self::identity_of(row), Self::sealed_of(row))
             else {
+                unreadable.push(label());
                 continue;
             };
-            let key_id = text_of(&row, "keyId");
-            let Some(value) = self.open(&sealed, key_id, env_var, principal) else {
+            let Some(value) = self.open(&sealed, text_of(row, "keyId"), env_var, principal) else {
+                unreadable.push(label());
                 continue;
             };
-            state.by_identity.insert(
+            found.insert(
                 storage_key(env_var, principal),
                 Stored {
                     id: id.to_string(),
@@ -481,15 +612,47 @@ impl EncryptedCredentialStore {
                         principal: principal.map(str::to_string),
                     },
                     value,
-                    label: text_of(&row, "label").map(str::to_string),
+                    label: text_of(row, "label").map(str::to_string),
                 },
             );
         }
+        (found, unreadable)
+    }
+
+    fn unreadable_failure(ids: &[String]) -> String {
+        format!(
+            "{} credential row(s) cannot be read (malformed, or no held master key opens them): {}",
+            ids.len(),
+            ids.join(", ")
+        )
+    }
+
+    /// Load and decrypt every stored row; the number of readable credentials. A row that cannot be read fails the load, naming
+    /// the row ids, and leaves the store unwarmed. Without a master key nothing decrypts and the rows are left alone.
+    pub fn warm(&self) -> Result<usize, String> {
+        let mut state = self.state.lock();
+        state.by_identity.clear();
+        state.warmed = false;
+        if !self.enabled() {
+            state.warmed = true;
+            return Ok(0);
+        }
+        let (found, unreadable) = self.scan(&self.rows.list()?);
+        if !unreadable.is_empty() {
+            return Err(Self::unreadable_failure(&unreadable));
+        }
+        state.by_identity = found;
+        state.warmed = true;
         Ok(state.by_identity.len())
     }
 
+    /// Whether the rows have been read; the reads below answer nothing before that.
+    pub fn warmed(&self) -> bool {
+        self.state.lock().warmed
+    }
+
     fn ensure_warm(&self) -> Result<(), String> {
-        if self.state.lock().warmed {
+        if self.warmed() {
             return Ok(());
         }
         self.warm().map(|_| ())
@@ -628,7 +791,8 @@ impl EncryptedCredentialStore {
         Ok(true)
     }
 
-    /// Re-encrypt every readable row under the current master key. A row no held key opens is counted, never dropped.
+    /// Re-encrypt every row under the current master key. A row that cannot be read fails the rotation, naming the row ids,
+    /// before any row is touched; `unreadable` in the counts is therefore always 0.
     pub fn rotate(&self) -> Result<RotateCounts, String> {
         let Some(master) = &self.master else {
             return Err(format!(
@@ -636,18 +800,24 @@ impl EncryptedCredentialStore {
             ));
         };
         let current = master.id();
-        let (mut rotated, mut already_current, mut unreadable) = (0u64, 0u64, 0u64);
-        for row in self.rows.list()? {
+        let rows = self.rows.list()?;
+        let (_, unreadable) = self.scan(&rows);
+        if !unreadable.is_empty() {
+            return Err(Self::unreadable_failure(&unreadable));
+        }
+        let (mut rotated, mut already_current) = (0u64, 0u64);
+        for row in rows {
+            if row.get("kind").is_some() {
+                continue;
+            }
             let (Some((id, service, env_var, principal)), Some(sealed)) =
                 (Self::identity_of(&row), Self::sealed_of(&row))
             else {
-                unreadable += 1;
-                continue;
+                return Err("a credential row changed while it was rotated".to_string());
             };
             let row_key_id = text_of(&row, "keyId");
             let Some(value) = self.open(&sealed, row_key_id, env_var, principal) else {
-                unreadable += 1;
-                continue;
+                return Err("a credential row changed while it was rotated".to_string());
             };
             if row_key_id == Some(current.as_str()) {
                 already_current += 1;
@@ -686,8 +856,145 @@ impl EncryptedCredentialStore {
         Ok(RotateCounts {
             rotated,
             already_current,
-            unreadable,
+            unreadable: 0,
         })
+    }
+
+    fn held_row(rows: &[Value], name: &str, principal: Option<&str>) -> Option<Value> {
+        rows.iter()
+            .find(|row| {
+                row.get("kind").and_then(Value::as_str) == Some(DERIVED_KIND)
+                    && row["envVar"].as_str() == Some(name)
+                    && row.get("principal").and_then(Value::as_str) == principal
+            })
+            .cloned()
+    }
+
+    /// Keep `value` sealed in the rows as a one-use value of `name` (for `principal`) until `expires_at` (epoch ms),
+    /// replacing one already held. Held values that expired by `now` are deleted on the way.
+    pub fn hold(
+        &self,
+        name: &str,
+        value: &str,
+        expires_at: i64,
+        now: i64,
+        principal: Option<&str>,
+    ) -> Result<(), String> {
+        if principal.is_some_and(str::is_empty) {
+            return Err("credential principal must be a nonempty string".to_string());
+        }
+        let sealed = self.seal(value, name, principal)?;
+        let mut live = Vec::new();
+        for row in self.rows.list()? {
+            let expired = row.get("kind").and_then(Value::as_str) == Some(DERIVED_KIND)
+                && row["expiresAt"]
+                    .as_f64()
+                    .is_some_and(|at| (at as i64) <= now);
+            let id = text_of(&row, "id").map(str::to_string);
+            match (expired, id) {
+                (true, Some(id)) => {
+                    self.rows.delete(&id)?;
+                }
+                _ => live.push(row),
+            }
+        }
+        let mut data = Map::new();
+        data.insert("kind".into(), json!(DERIVED_KIND));
+        data.insert("envVar".into(), json!(name));
+        data.insert("ciphertext".into(), json!(sealed.ciphertext));
+        data.insert("iv".into(), json!(sealed.iv));
+        data.insert("authTag".into(), json!(sealed.auth_tag));
+        data.insert("keyId".into(), json!(sealed.key_id));
+        data.insert("expiresAt".into(), json!(expires_at));
+        if let Some(who) = principal {
+            data.insert("principal".into(), json!(who));
+        }
+        let data = Value::Object(data);
+        match Self::held_row(&live, name, principal)
+            .as_ref()
+            .and_then(|row| text_of(row, "id"))
+        {
+            Some(id) => self.rows.update(id, &data),
+            None => self.rows.create(&data).map(|_| ()),
+        }
+    }
+
+    /// Find the one-use value held for `name` (for `principal`) and answer its row id and a ticket, without opening it. The
+    /// taker then deletes that row, and only the delete that removes it goes on to [`Self::take_finish`]; one that finds it
+    /// gone calls [`Self::take_cancel`]. Without a master key nothing is held.
+    pub fn take_begin(
+        &self,
+        name: &str,
+        principal: Option<&str>,
+    ) -> Result<Option<HeldTake>, String> {
+        if !self.enabled() {
+            return Ok(None);
+        }
+        let Some(row) = Self::held_row(&self.rows.list()?, name, principal) else {
+            return Ok(None);
+        };
+        let id = text_of(&row, "id")
+            .ok_or_else(|| format!("a held one-use credential row of {name} carries no id"))?
+            .to_string();
+        let mut state = self.state.lock();
+        state.tickets += 1;
+        let ticket = state.tickets;
+        state.taking.insert(ticket, row);
+        Ok(Some(HeldTake { ticket, id }))
+    }
+
+    /// Open the row [`Self::take_begin`] found, after the taker's delete removed it. A value that expired by `now` is
+    /// consumed and not returned; a row that cannot be read is a failure.
+    pub fn take_finish(&self, ticket: u64, now: i64) -> Result<Option<String>, String> {
+        let row = self.state.lock().taking.remove(&ticket).ok_or_else(|| {
+            format!("no held one-use credential row is being taken under ticket {ticket}")
+        })?;
+        let id = text_of(&row, "id").unwrap_or_default();
+        let expires_at = row["expiresAt"]
+            .as_f64()
+            .ok_or_else(|| format!("held one-use credential row {id} carries no expiry"))?;
+        if (expires_at as i64) <= now {
+            return Ok(None);
+        }
+        let name = text_of(&row, "envVar")
+            .ok_or_else(|| format!("held one-use credential row {id} carries no name"))?;
+        let principal = row.get("principal").and_then(Value::as_str);
+        let sealed = Self::sealed_of(&row)
+            .ok_or_else(|| format!("held one-use credential row {id} is malformed"))?;
+        self.open(&sealed, text_of(&row, "keyId"), name, principal)
+            .map(Some)
+            .ok_or_else(|| {
+                format!("held one-use credential row {id} cannot be opened by the held keys")
+            })
+    }
+
+    /// Forget a row [`Self::take_begin`] found whose delete another taker won.
+    pub fn take_cancel(&self, ticket: u64) {
+        self.state.lock().taking.remove(&ticket);
+    }
+
+    /// Remove and return the one-use value held for `name` (for `principal`): the single read of it, over this store's own
+    /// rows. Of several takers racing for one row only the one whose delete removes it gets the value.
+    pub fn take(
+        &self,
+        name: &str,
+        now: i64,
+        principal: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        let Some(held) = self.take_begin(name, principal)? else {
+            return Ok(None);
+        };
+        match self.rows.delete(&held.id) {
+            Ok(true) => self.take_finish(held.ticket, now),
+            Ok(false) => {
+                self.take_cancel(held.ticket);
+                Ok(None)
+            }
+            Err(error) => {
+                self.take_cancel(held.ticket);
+                Err(error)
+            }
+        }
     }
 
     /// The store's state for the kernel's `credentialStoreList` ask: whether it can encrypt and the service and name of every
@@ -713,7 +1020,10 @@ mod tests {
     use super::*;
 
     fn fixture() -> Value {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/credential-store.json");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/credential-store.json"
+        );
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture"))
             .expect("fixture json")
     }
@@ -730,7 +1040,7 @@ mod tests {
         fn update(&self, _: &str, _: &Value) -> Result<(), String> {
             Err("read only".to_string())
         }
-        fn delete(&self, _: &str) -> Result<(), String> {
+        fn delete(&self, _: &str) -> Result<bool, String> {
             Err("read only".to_string())
         }
     }
@@ -792,18 +1102,42 @@ mod tests {
         let store = EncryptedCredentialStore::new(rows.clone(), fx["masterKey"].as_str(), None);
         let secret = "1//refresh-token-SECRET-4242";
         store
-            .set_labeled("kflow", "KNOWLEDGE_REFRESH_TOKEN", secret, None, Some("ada@example.com"))
+            .set_labeled(
+                "kflow",
+                "KNOWLEDGE_REFRESH_TOKEN",
+                secret,
+                None,
+                Some("ada@example.com"),
+            )
             .expect("set");
-        assert_eq!(store.label("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(), Some("ada@example.com"));
-        assert_eq!(store.resolve("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(), Some(secret));
+        assert_eq!(
+            store.label("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(),
+            Some("ada@example.com")
+        );
+        assert_eq!(
+            store.resolve("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(),
+            Some(secret)
+        );
         let row = rows.list().expect("rows").pop().expect("row");
         assert_eq!(row["label"], "ada@example.com");
-        assert!(!row.to_string().contains(secret), "the stored row never carries the secret in the clear");
-        assert!(!row["ciphertext"].as_str().expect("ciphertext").contains("ada@example.com"));
+        assert!(
+            !row.to_string().contains(secret),
+            "the stored row never carries the secret in the clear"
+        );
+        assert!(!row["ciphertext"]
+            .as_str()
+            .expect("ciphertext")
+            .contains("ada@example.com"));
         let reopened = EncryptedCredentialStore::new(rows.clone(), fx["masterKey"].as_str(), None);
         reopened.warm().expect("warm");
-        assert_eq!(reopened.label("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(), Some("ada@example.com"));
-        assert_ne!(reopened.label("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(), Some(secret));
+        assert_eq!(
+            reopened.label("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(),
+            Some("ada@example.com")
+        );
+        assert_ne!(
+            reopened.label("KNOWLEDGE_REFRESH_TOKEN", None).as_deref(),
+            Some(secret)
+        );
     }
 
     #[test]
@@ -811,17 +1145,36 @@ mod tests {
         let fx = fixture();
         let rows = Arc::new(MemoryCredentialRows::default());
         let store = EncryptedCredentialStore::new(rows.clone(), fx["masterKey"].as_str(), None);
-        store.set_labeled("kflow", "T", "first", Some("u1"), Some("ada@example.com")).expect("set");
-        store.set("kflow", "T", "second", Some("u1")).expect("rotate the value");
+        store
+            .set_labeled("kflow", "T", "first", Some("u1"), Some("ada@example.com"))
+            .expect("set");
+        store
+            .set("kflow", "T", "second", Some("u1"))
+            .expect("rotate the value");
         assert_eq!(store.resolve("T", Some("u1")).as_deref(), Some("second"));
-        assert_eq!(store.label("T", Some("u1")).as_deref(), Some("ada@example.com"));
+        assert_eq!(
+            store.label("T", Some("u1")).as_deref(),
+            Some("ada@example.com")
+        );
         store.rotate().expect("rotate keys");
         let again = EncryptedCredentialStore::new(rows.clone(), fx["masterKey"].as_str(), None);
         again.warm().expect("warm");
-        assert_eq!(again.label("T", Some("u1")).as_deref(), Some("ada@example.com"));
-        assert_eq!(again.label("T", None), None, "a user row has no app-wide label");
-        store.set_labeled("kflow", "T", "third", Some("u1"), Some("grace@example.com")).expect("relabel");
-        assert_eq!(store.label("T", Some("u1")).as_deref(), Some("grace@example.com"));
+        assert_eq!(
+            again.label("T", Some("u1")).as_deref(),
+            Some("ada@example.com")
+        );
+        assert_eq!(
+            again.label("T", None),
+            None,
+            "a user row has no app-wide label"
+        );
+        store
+            .set_labeled("kflow", "T", "third", Some("u1"), Some("grace@example.com"))
+            .expect("relabel");
+        assert_eq!(
+            store.label("T", Some("u1")).as_deref(),
+            Some("grace@example.com")
+        );
         assert!(store.remove("T", Some("u1")).expect("remove"));
         assert_eq!(store.label("T", Some("u1")), None);
     }
@@ -836,29 +1189,112 @@ mod tests {
         );
         store.set("kflow", "K", "v", None).expect("set");
         assert_eq!(store.label("K", None), None);
-        assert!(store.set_labeled("kflow", "K", "v", None, Some("")).is_err());
+        assert!(store
+            .set_labeled("kflow", "K", "v", None, Some(""))
+            .is_err());
+    }
+
+    fn row_id(fx: &Value, env_var: &str) -> String {
+        fx["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .chain(fx["unreadableRows"].as_array().expect("unreadable rows"))
+            .find(|row| row["envVar"] == env_var)
+            .expect("row")["id"]
+            .as_str()
+            .expect("id")
+            .to_string()
+    }
+
+    fn rows_with_unreadable(fx: &Value) -> Vec<Value> {
+        let mut rows = fx["rows"].as_array().expect("rows").clone();
+        rows.extend(
+            fx["unreadableRows"]
+                .as_array()
+                .expect("unreadable rows")
+                .clone(),
+        );
+        rows
     }
 
     #[test]
-    fn control_a_row_no_held_key_opens_is_unreadable_and_a_missing_previous_key_hides_its_rows() {
+    fn a_row_no_held_key_opens_fails_the_warm_naming_its_id_and_the_store_reads_nothing() {
         let fx = fixture();
-        let store = js_store(&fx);
-        store.warm().expect("warm");
-        for name in fx["unreadable"].as_array().expect("unreadable") {
-            assert_eq!(store.resolve(name.as_str().expect("name"), None), None);
-        }
-        let without_previous = EncryptedCredentialStore::new(
+        let store = EncryptedCredentialStore::new(
+            Arc::new(Fixed(rows_with_unreadable(&fx))),
+            fx["masterKey"].as_str(),
+            fx["previousKey"].as_str(),
+        );
+        let failure = store.warm().expect_err("an unreadable row fails the warm");
+        assert!(failure.contains(&row_id(&fx, "TWILIO_TOKEN")), "{failure}");
+        assert!(!failure.contains(&row_id(&fx, "STRIPE_KEY")), "{failure}");
+        assert!(!store.warmed());
+        assert_eq!(
+            store.resolve("STRIPE_KEY", None),
+            None,
+            "a failed warm leaves nothing to resolve"
+        );
+        assert!(
+            store.set("stripe", "K", "v", None).is_err(),
+            "a write waits on a good warm"
+        );
+    }
+
+    #[test]
+    fn a_missing_previous_key_fails_the_warm_naming_the_rows_it_hides() {
+        let fx = fixture();
+        let store = EncryptedCredentialStore::new(
             Arc::new(Fixed(fx["rows"].as_array().expect("rows").clone())),
             fx["masterKey"].as_str(),
             None,
         );
-        without_previous.warm().expect("warm");
-        assert_eq!(without_previous.resolve("GITHUB_TOKEN", None), None);
-        assert!(without_previous.resolve("STRIPE_KEY", None).is_some());
+        let failure = store
+            .warm()
+            .expect_err("a row under the retired key is unreadable");
+        assert!(failure.contains(&row_id(&fx, "GITHUB_TOKEN")), "{failure}");
+        assert!(!failure.contains(&row_id(&fx, "STRIPE_KEY")), "{failure}");
     }
 
     #[test]
-    fn control_a_user_row_is_bound_to_its_principal_and_never_opens_as_the_app_credential() {
+    fn control_malformed_and_unknown_kind_rows_fail_the_warm_and_a_derived_row_is_not_one() {
+        let fx = fixture();
+        let readable = fx["rows"].as_array().expect("rows").clone();
+        let with = |change: &dyn Fn(&mut Value)| {
+            let mut rows = readable.clone();
+            change(&mut rows[0]);
+            let id = rows[0]["id"].as_str().expect("id").to_string();
+            let store = EncryptedCredentialStore::new(
+                Arc::new(Fixed(rows)),
+                fx["masterKey"].as_str(),
+                fx["previousKey"].as_str(),
+            );
+            (store.warm(), id)
+        };
+        for change in [
+            (&|row: &mut Value| row["iv"] = json!("")) as &dyn Fn(&mut Value),
+            &|row: &mut Value| row["authTag"] = json!("zz"),
+            &|row: &mut Value| row["ciphertext"] = json!(7),
+            &|row: &mut Value| row["principal"] = json!(""),
+            &|row: &mut Value| row["kind"] = json!("mystery"),
+            &|row: &mut Value| row["id"] = json!(""),
+        ] {
+            let (warm, id) = with(change);
+            let failure = warm.expect_err("a malformed row fails the warm");
+            assert!(failure.contains("1 credential row(s)"), "{failure}");
+            if !id.is_empty() {
+                assert!(failure.contains(&id), "{failure}");
+            }
+        }
+        let (derived, _) = with(&|row: &mut Value| row["kind"] = json!(DERIVED_KIND));
+        assert_eq!(
+            derived.expect("a derived row is a one-use value, not a credential"),
+            readable.len() - 1
+        );
+    }
+
+    #[test]
+    fn control_a_user_row_is_bound_to_its_principal_and_stripped_of_it_it_fails_the_warm() {
         let fx = fixture();
         let mut rows = fx["rows"].as_array().expect("rows").clone();
         let mine = rows
@@ -866,11 +1302,15 @@ mod tests {
             .position(|r| r["envVar"] == "OPENAI_KEY")
             .expect("row");
         rows[mine].as_object_mut().expect("row").remove("principal");
-        let store =
-            EncryptedCredentialStore::new(Arc::new(Fixed(rows)), fx["masterKey"].as_str(), None);
-        store.warm().expect("warm");
-        assert_eq!(store.resolve("OPENAI_KEY", None), None);
-        assert_eq!(store.resolve("OPENAI_KEY", Some("user-7")), None);
+        let store = EncryptedCredentialStore::new(
+            Arc::new(Fixed(rows)),
+            fx["masterKey"].as_str(),
+            fx["previousKey"].as_str(),
+        );
+        let failure = store
+            .warm()
+            .expect_err("the row no longer opens as the app credential");
+        assert!(failure.contains(&row_id(&fx, "OPENAI_KEY")), "{failure}");
     }
 
     #[test]
@@ -970,9 +1410,7 @@ mod tests {
     fn rotation_re_encrypts_rows_under_the_previous_key_and_counts_the_rest() {
         let fx = fixture();
         let rows = Arc::new(MemoryCredentialRows::default());
-        for row in fx["rows"].as_array().expect("rows") {
-            rows.rows.lock().push(row.clone());
-        }
+        rows.load(fx["rows"].as_array().expect("rows").clone());
         let store = EncryptedCredentialStore::new(
             rows.clone(),
             fx["masterKey"].as_str(),
@@ -984,7 +1422,7 @@ mod tests {
             RotateCounts {
                 rotated: 1,
                 already_current: 3,
-                unreadable: 1
+                unreadable: 0
             }
         );
         let retired = EncryptedCredentialStore::new(rows, fx["masterKey"].as_str(), None);
@@ -992,6 +1430,28 @@ mod tests {
         assert_eq!(
             retired.resolve("GITHUB_TOKEN", None).as_deref(),
             Some("fake-github-5555")
+        );
+    }
+
+    #[test]
+    fn control_a_rotation_over_an_unreadable_row_fails_naming_it_and_touches_no_row() {
+        let fx = fixture();
+        let rows = Arc::new(MemoryCredentialRows::default());
+        rows.load(rows_with_unreadable(&fx));
+        let before = rows.list().expect("rows");
+        let store = EncryptedCredentialStore::new(
+            rows.clone(),
+            fx["masterKey"].as_str(),
+            fx["previousKey"].as_str(),
+        );
+        let failure = store
+            .rotate()
+            .expect_err("an unreadable row fails the rotation");
+        assert!(failure.contains(&row_id(&fx, "TWILIO_TOKEN")), "{failure}");
+        assert_eq!(
+            rows.list().expect("rows"),
+            before,
+            "no row was re-encrypted before the failure"
         );
     }
 
@@ -1018,22 +1478,302 @@ mod tests {
         let persistence = Arc::new(crate::effects::executor::InMemoryPersistence::new());
         let rows = || Arc::new(StoreCredentialRows(persistence.clone())) as Arc<dyn CredentialRows>;
         let store = EncryptedCredentialStore::new(rows(), fx["masterKey"].as_str(), None);
-        store.set("stripe", "STRIPE_KEY", "sk_live_1234", None).expect("set");
+        store
+            .set("stripe", "STRIPE_KEY", "sk_live_1234", None)
+            .expect("set");
         let reopened = EncryptedCredentialStore::new(rows(), fx["masterKey"].as_str(), None);
         reopened.warm().expect("warm");
-        assert_eq!(reopened.resolve("STRIPE_KEY", None).as_deref(), Some("sk_live_1234"));
-        let kept = crate::effects::executor::PersistenceHandler::list(persistence.as_ref(), CREDENTIAL_ENTITY_TYPE).unwrap();
+        assert_eq!(
+            reopened.resolve("STRIPE_KEY", None).as_deref(),
+            Some("sk_live_1234")
+        );
+        let kept = crate::effects::executor::PersistenceHandler::list(
+            persistence.as_ref(),
+            CREDENTIAL_ENTITY_TYPE,
+        )
+        .unwrap();
         let row = serde_json::to_value(&kept[0]).unwrap();
-        assert!(row["ciphertext"].is_string() && row.get("value").is_none(), "the store keeps ciphertext, never the value: {row}");
+        assert!(
+            row["ciphertext"].is_string() && row.get("value").is_none(),
+            "the store keeps ciphertext, never the value: {row}"
+        );
         assert!(reopened.remove("STRIPE_KEY", None).expect("remove"));
-        assert!(crate::effects::executor::PersistenceHandler::list(persistence.as_ref(), CREDENTIAL_ENTITY_TYPE).unwrap().is_empty());
+        assert!(crate::effects::executor::PersistenceHandler::list(
+            persistence.as_ref(),
+            CREDENTIAL_ENTITY_TYPE
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]
     fn control_an_update_of_a_missing_row_leaves_it_missing() {
         let persistence = Arc::new(crate::effects::executor::InMemoryPersistence::new());
         let rows = StoreCredentialRows(persistence.clone());
-        rows.update("absent", &json!({ "envVar": "X" })).expect("a missing row is not an error");
+        rows.update("absent", &json!({ "envVar": "X" }))
+            .expect("a missing row is not an error");
         assert!(rows.list().unwrap().is_empty());
+    }
+
+    fn store_over(rows: Arc<dyn CredentialRows>) -> EncryptedCredentialStore {
+        EncryptedCredentialStore::new(rows, fixture()["masterKey"].as_str(), None)
+    }
+
+    #[test]
+    fn a_held_one_use_value_is_sealed_in_the_rows_survives_a_new_store_and_is_taken_once() {
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let store = store_over(rows.clone());
+        store
+            .hold("oauth:grant:S1", "GRANT-SECRET", 2_000, 1_000, None)
+            .expect("hold");
+        let kept = rows.list().expect("rows");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["kind"], DERIVED_KIND);
+        assert!(
+            !kept[0].to_string().contains("GRANT-SECRET"),
+            "the row never carries the value in the clear"
+        );
+        let restarted = store_over(rows.clone());
+        assert_eq!(
+            restarted.warm().expect("a derived row is not a credential"),
+            0
+        );
+        assert_eq!(
+            restarted
+                .take("oauth:grant:S1", 1_500, None)
+                .expect("take")
+                .as_deref(),
+            Some("GRANT-SECRET")
+        );
+        assert!(
+            rows.list().expect("rows").is_empty(),
+            "a take consumes the row"
+        );
+        assert_eq!(
+            restarted
+                .take("oauth:grant:S1", 1_500, None)
+                .expect("take again"),
+            None
+        );
+    }
+
+    #[test]
+    fn control_an_expired_value_is_consumed_and_not_returned_and_a_held_value_is_scoped_to_its_principal(
+    ) {
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let store = store_over(rows.clone());
+        store
+            .hold("grant", "late", 2_000, 1_000, None)
+            .expect("hold");
+        assert_eq!(store.take("grant", 2_000, None).expect("take"), None);
+        assert!(
+            rows.list().expect("rows").is_empty(),
+            "an expired value is gone"
+        );
+
+        store
+            .hold("grant", "alice-value", 9_000, 1_000, Some("alice"))
+            .expect("hold");
+        assert_eq!(store.take("grant", 2_000, Some("bob")).expect("take"), None);
+        assert_eq!(store.take("grant", 2_000, None).expect("take"), None);
+        assert_eq!(
+            rows.list().expect("rows").len(),
+            1,
+            "another scope does not consume it"
+        );
+        assert_eq!(
+            store
+                .take("grant", 2_000, Some("alice"))
+                .expect("take")
+                .as_deref(),
+            Some("alice-value")
+        );
+    }
+
+    #[test]
+    fn holding_again_replaces_the_value_and_sweeps_the_expired_ones() {
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let store = store_over(rows.clone());
+        store.hold("old", "x", 1_500, 1_000, None).expect("hold");
+        store
+            .hold("grant", "first", 9_000, 1_000, None)
+            .expect("hold");
+        store
+            .hold("grant", "second", 9_000, 2_000, None)
+            .expect("hold again");
+        let kept = rows.list().expect("rows");
+        assert_eq!(
+            kept.len(),
+            1,
+            "the expired row was swept and the replaced one is a single row"
+        );
+        assert_eq!(
+            store.take("grant", 3_000, None).expect("take").as_deref(),
+            Some("second")
+        );
+    }
+
+    #[test]
+    fn control_a_held_row_that_cannot_be_opened_fails_the_take_and_is_consumed() {
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let store = store_over(rows.clone());
+        store.hold("grant", "v", 9_000, 1_000, None).expect("hold");
+        let id = rows.list().expect("rows")[0]["id"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        rows.update(&id, &json!({ "authTag": "00".repeat(16) }))
+            .expect("tamper");
+        let failure = store
+            .take("grant", 2_000, None)
+            .expect_err("a tampered row is a failure, not an absence");
+        assert!(failure.contains(&id), "{failure}");
+        assert!(rows.list().expect("rows").is_empty());
+    }
+
+    #[test]
+    fn control_without_a_master_key_nothing_is_held_and_nothing_is_taken() {
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let store = EncryptedCredentialStore::new(rows.clone(), None, None);
+        assert!(store.hold("grant", "v", 9_000, 1_000, None).is_err());
+        assert_eq!(store.take("grant", 2_000, None).expect("take"), None);
+        assert!(store.hold("grant", "v", 9_000, 1_000, Some("")).is_err());
+    }
+
+    #[test]
+    fn recorded_rows_hand_a_host_the_writes_to_apply_and_a_second_store_over_them_reads_the_same_credentials(
+    ) {
+        let recorded = Arc::new(RecordedCredentialRows::default());
+        let store = store_over(recorded.clone());
+        store.warm().expect("warm");
+        store
+            .set("stripe", "STRIPE_KEY", "sk-1111", None)
+            .expect("set");
+        store
+            .set("stripe", "STRIPE_KEY", "sk-2222", None)
+            .expect("rotate the value");
+        store
+            .set("openai", "OPENAI_KEY", "per-user-0001", Some("u1"))
+            .expect("set user");
+        assert!(store.remove("OPENAI_KEY", Some("u1")).expect("remove"));
+        let writes = recorded.take_writes();
+        let kinds: Vec<&str> = writes
+            .iter()
+            .map(|w| w["write"].as_str().expect("write"))
+            .collect();
+        assert_eq!(kinds, ["create", "update", "create", "delete"]);
+        let medium = Arc::new(MemoryCredentialRows::default());
+        for write in &writes {
+            let id = write["id"].as_str().expect("id");
+            match write["write"].as_str().expect("write") {
+                "create" => {
+                    medium.load({
+                        let mut held = medium.list().expect("rows");
+                        held.push(write["data"].clone());
+                        held
+                    });
+                }
+                "update" => medium.update(id, &write["data"]).expect("update"),
+                _ => {
+                    medium.delete(id).expect("delete");
+                }
+            }
+        }
+        let reopened = store_over(medium);
+        assert_eq!(reopened.warm().expect("warm"), 1);
+        assert_eq!(
+            reopened.resolve("STRIPE_KEY", None).as_deref(),
+            Some("sk-2222")
+        );
+        assert!(
+            recorded.take_writes().is_empty(),
+            "taking the writes empties the record"
+        );
+    }
+
+    #[test]
+    fn control_loading_rows_drops_writes_the_host_never_applied_and_an_update_of_a_missing_row_records_nothing(
+    ) {
+        let recorded = Arc::new(RecordedCredentialRows::default());
+        recorded.create(&json!({ "envVar": "A" })).expect("create");
+        recorded.load(Vec::new());
+        assert!(recorded.take_writes().is_empty());
+        recorded
+            .update("absent", &json!({ "envVar": "B" }))
+            .expect("update");
+        assert!(!recorded.delete("absent").expect("delete"));
+        assert!(recorded.take_writes().is_empty());
+    }
+
+    #[test]
+    fn two_takers_racing_for_one_held_row_get_exactly_one_value_and_a_lone_taker_gets_it() {
+        for _ in 0..100 {
+            let rows = Arc::new(MemoryCredentialRows::default());
+            let store = Arc::new(store_over(rows.clone()));
+            store.hold("grant", "v", 9_000, 1_000, None).expect("hold");
+            let taken: Vec<Option<String>> = std::thread::scope(|scope| {
+                let takers: Vec<_> = (0..2)
+                    .map(|_| {
+                        let store = store.clone();
+                        scope.spawn(move || store.take("grant", 2_000, None).expect("take"))
+                    })
+                    .collect();
+                takers
+                    .into_iter()
+                    .map(|taker| taker.join().expect("taker"))
+                    .collect()
+            });
+            assert_eq!(
+                taken.iter().filter(|value| value.is_some()).count(),
+                1,
+                "{taken:?}"
+            );
+            assert!(taken.contains(&Some("v".to_string())));
+            assert!(rows.list().expect("rows").is_empty());
+        }
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let store = store_over(rows);
+        store.hold("grant", "v", 9_000, 1_000, None).expect("hold");
+        assert_eq!(
+            store.take("grant", 2_000, None).expect("take").as_deref(),
+            Some("v")
+        );
+    }
+
+    #[test]
+    fn a_taker_whose_delete_lost_gets_nothing_and_each_ticket_is_its_own() {
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let store = store_over(rows.clone());
+        store.hold("grant", "v", 9_000, 1_000, None).expect("hold");
+        let first = store
+            .take_begin("grant", None)
+            .expect("begin")
+            .expect("held");
+        let second = store
+            .take_begin("grant", None)
+            .expect("begin")
+            .expect("held");
+        assert_eq!(first.id, second.id);
+        assert_ne!(first.ticket, second.ticket);
+        assert_eq!(
+            rows.list().expect("rows").len(),
+            1,
+            "begin deletes nothing and opens nothing"
+        );
+        assert!(rows.delete(&first.id).expect("delete"));
+        assert!(!rows.delete(&second.id).expect("delete"));
+        store.take_cancel(second.ticket);
+        assert_eq!(
+            store
+                .take_finish(first.ticket, 2_000)
+                .expect("finish")
+                .as_deref(),
+            Some("v")
+        );
+        assert!(
+            store.take_finish(second.ticket, 2_000).is_err(),
+            "a cancelled ticket opens nothing"
+        );
+        assert_eq!(store.take_begin("grant", None).expect("begin"), None);
     }
 }

@@ -1,6 +1,6 @@
 //! The one answerer of every [`OAuthAsk`]. Pending grants and provider connections live in the host's
 //! credentials, never in a store of their own: a pending grant is a derived secret under the authorizing
-//! principal (`oauth:grant:<state>`, consumed once through [`SecretSource::take_secret_of`]) and a connection is a
+//! principal (`oauth:grant:<state>`, held through [`SecretSource::hold_secret_of`] and consumed once through [`SecretSource::take_secret_of`]) and a connection is a
 //! durable credential of its signed-in owner (`oauth:connection:<provider>`, tokens included, never read back
 //! whole). Only the subject index, discovered metadata and the mock token table stay process-local.
 //! [`MemoryOAuthStore`] is the same answerer over an in-memory credential set, for a native or test host.
@@ -122,7 +122,7 @@ impl CredentialOAuthStore {
                     expires_at: now.saturating_add(i64::try_from(*ttl_ms).unwrap_or(i64::MAX)),
                 };
                 let text = serde_json::to_string(&record).map_err(|_| UNREADABLE.to_string())?;
-                self.credentials.store_secret_of(
+                self.credentials.hold_secret_of(
                     &pending_name(state),
                     &text,
                     ttl_ms.saturating_add(PENDING_GRACE_MS),

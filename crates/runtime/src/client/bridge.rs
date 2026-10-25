@@ -206,33 +206,6 @@ impl KernelBridge {
         seed_into(&self.entities, entity_type, &rows);
     }
 
-    /// Seed synthesized sample rows for every inline entity lacking authored `instances`,
-    /// via the canonical `crate::runtime::seed_sample_data` (the kernel already
-    /// materialized entities that declare `instances`). Used by the headless verifiers
-    /// and the screenshot probe so tables/grids render real columns + data.
-    pub fn seed_sample(&self, schema: &orbital_core_base::schema::types::OrbitalSchema, count: usize) {
-        crate::seed::seed_sample_data(self.entities.as_ref(), schema, count);
-    }
-
-    /// [`seed_sample`](Self::seed_sample) stamping owner columns with an explicitly
-    /// supplied viewer instead of `ALMADAR_PERSONA`. Pairs with
-    /// [`set_current_user`](Self::set_current_user): a harness that binds a viewer
-    /// programmatically must seed rows that viewer actually owns, or an
-    /// ownership-scoped `@read` matches nothing and a correct app probes as empty.
-    pub fn seed_sample_as(
-        &self,
-        schema: &orbital_core_base::schema::types::OrbitalSchema,
-        count: usize,
-        viewer_id: Option<String>,
-    ) {
-        crate::seed::seed_sample_data_as(
-            self.entities.as_ref(),
-            schema,
-            count,
-            viewer_id,
-        );
-    }
-
     /// Bind `@user` for every subsequent event this bridge dispatches.
     pub fn set_current_user(&self, user: Value) {
         self.kernel.set_current_user(user);

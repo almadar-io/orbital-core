@@ -20,7 +20,7 @@ mod source_provenance_tests {
         }]})).unwrap();
         let ctx = EntityCtx { schema: &schema, owner_fields: &[], viewer_id: None };
         let mut field = serde_json::from_value(serde_json::json!({"name":"count","type":"number",
-            "projectedFrom":{"typeName":"Thing"}})).unwrap();
+            "projectedFrom":{"type":"Thing"}})).unwrap();
         assert!(synth_field(&field, None, &ctx).is_number());
         field.projected_from.as_mut().unwrap().field = Some("id".into());
         assert!(synth_field(&field, None, &ctx).is_string());
@@ -553,7 +553,7 @@ pub(crate) fn synth_entity_row(ctx: &EntityCtx<'_>, entity_name: &str) -> serde_
         // placeholder a caller can act on.
         return serde_json::json!({ "id": seed_id });
     };
-    let mut rows = crate::seed::sample_rows(def, 1);
+    let mut rows = crate::synth::sample_rows(def, 1);
     let Some(row) = rows.first_mut() else {
         return serde_json::json!({ "id": seed_id });
     };

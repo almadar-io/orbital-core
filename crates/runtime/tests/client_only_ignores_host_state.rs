@@ -246,3 +246,54 @@ fn control_a_host_state_outside_the_clients_own_dispatch_is_folded() {
     k.apply_server_response(&echoed_answer(vec![persistor_hop()]), &Default::default()).unwrap();
     assert_eq!(k.get_state("Delete", None).map(|s| s.current_state).as_deref(), Some("confirming"));
 }
+
+fn server_kernel(view_dispatch: &str, view_page: serde_json::Value) -> RuntimeKernel {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "loader",
+        "orbitals": [{ "name": "Play",
+            "entity": { "name": "Load", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Loader", "linkedEntity": "Load",
+                  "emits": [{ "event": "LOADED", "scope": "external" }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [["emit", "LOADED", {}]] }] } },
+                { "name": "View", "linkedEntity": "Load", "dispatch": view_dispatch,
+                  "listens": [{ "event": "LOADED", "triggers": "LOADED", "source": { "kind": "trait", "trait": "Loader" } }],
+                  "stateMachine": { "states": [{ "name": "opening", "isInitial": true }, { "name": "open" }],
+                      "transitions": [{ "from": "opening", "to": "open", "event": "LOADED" }] } }
+            ],
+            "pages": [view_page, { "name": "Work", "path": "", "protocol": "boot", "traits": [{ "ref": "Loader" }] }] }]
+    }))
+    .unwrap();
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig { environment: RuntimeEnvironment::Server, ..KernelConfig::default() },
+    );
+    k.register_schema(schema).unwrap();
+    k
+}
+
+#[test]
+fn a_server_never_runs_a_client_only_listener_a_route_page_places() {
+    let k = server_kernel("client", json!({ "name": "Home", "path": "/", "traits": [{ "ref": "View" }] }));
+    let outcomes = k.dispatch("Loader", None, "GO", Value::Null).unwrap();
+    assert!(outcomes.iter().all(|(t, _)| t != "View"), "the browser runs View's steps (EXEC-ENDPOINT-3a)");
+    let response = EventResponse::from_process_results(&outcomes, "Loader", "GO");
+    let loaded = response.emitted_events.iter().find(|e| e.event == "LOADED").expect("LOADED is answered");
+    assert_ne!(loaded.source.as_ref().and_then(|s| s.dispatched), Some(true), "no listener ran it on the host, so the client delivers it");
+}
+
+#[test]
+fn control_a_server_runs_an_optimistic_listener_of_its_emit() {
+    let k = server_kernel("optimistic", json!({ "name": "Home", "path": "/", "traits": [{ "ref": "View" }] }));
+    let outcomes = k.dispatch("Loader", None, "GO", Value::Null).unwrap();
+    assert!(outcomes.iter().any(|(t, r)| t == "View" && r.new_state == "open"), "{outcomes:?}");
+}
+
+#[test]
+fn control_a_host_runs_a_client_only_listener_no_route_places_as_a_cli_host_runs_std_args() {
+    let k = server_kernel("client", json!({ "name": "Cli", "path": "", "protocol": "boot", "traits": [{ "ref": "View" }] }));
+    let outcomes = k.dispatch("Loader", None, "GO", Value::Null).unwrap();
+    assert!(outcomes.iter().any(|(t, r)| t == "View" && r.new_state == "open"), "no browser runs it, so the host does: {outcomes:?}");
+}

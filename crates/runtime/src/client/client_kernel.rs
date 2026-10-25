@@ -137,18 +137,6 @@ impl ClientKernel {
         seed_into(self.embedded.entities().as_ref(), entity_type, &rows);
     }
 
-    /// Seed synthesized sample rows via the canonical `crate::seed_sample_data`
-    /// (mirrors `KernelBridge::seed_sample`).
-    pub fn seed_sample(&self, schema: &OrbitalSchema, count: usize) {
-        crate::seed::seed_sample_data(self.embedded.entities().as_ref(), schema, count);
-    }
-
-    /// [`seed_sample`](Self::seed_sample) stamping owner columns with an explicit
-    /// viewer (mirrors `KernelBridge::seed_sample_as`).
-    pub fn seed_sample_as(&self, schema: &OrbitalSchema, count: usize, viewer_id: Option<String>) {
-        crate::seed::seed_sample_data_as(self.embedded.entities().as_ref(), schema, count, viewer_id);
-    }
-
     /// Bind `@user` for every subsequent dispatch.
     pub fn set_current_user(&self, user: Value) {
         self.embedded.kernel().set_current_user(user);

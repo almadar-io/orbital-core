@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn named_source_provenance_does_not_read_rows_but_real_projection_does() {
         let mut field: PayloadField = serde_json::from_value(serde_json::json!({
-            "name":"row","type":"object","projectedFrom":{"typeName":"Shared"}
+            "name":"row","type":"object","projectedFrom":{"type":"Shared"}
         })).unwrap();
         assert!(projected_payload(&[field.clone()], |_| panic!("Named source is not a row projection")).is_empty());
         field.projected_from.as_mut().unwrap().field = Some("label".into());

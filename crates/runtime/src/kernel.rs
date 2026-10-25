@@ -7,7 +7,7 @@ use super::embed_index::EmbedIndex;
 use super::entity_access::{
     apply_read_access, scope_fetched_rows, EntityAccessPolicies, EntityAccessTable,
 };
-use super::entity_source::EntitySource;
+use super::entity_source::{EntitySource, QueryAnswer};
 use super::http_request;
 use super::listener::{ListenerManager, TriggerCallback};
 use super::process_result::{
@@ -65,7 +65,7 @@ use orbital_core_eval::util::visit_key::DispatchVisits;
 use orbital_core_base::sync::RwLock;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// The most bytes one `random-bytes` may ask for.
 const RANDOM_BYTES_MAX: f64 = 1024.0;
@@ -655,17 +655,25 @@ impl EntitySourceHandler {
             limit: Some(0),
             ..RowQuery::default()
         };
-        let Some(rows) = self.source.query_page(entity_type, &wanted) else {
-            return self.resolve_rows_interpreted(reference, policy.as_ref(), ctx);
+        let rows = match self.source.query_page(entity_type, &wanted) {
+            QueryAnswer::Rows(rows) => rows,
+            QueryAnswer::Declined(reason) => {
+                log_store_declined(entity_type, &reason);
+                return self.resolve_rows_interpreted(reference, policy.as_ref(), ctx);
+            }
+            QueryAnswer::Failed(message) => return Err(message),
         };
-        let rows = rows?;
         let total = if uncounted {
             None
         } else {
-            let Some(counted) = self.source.query_page(entity_type, &count) else {
-                return self.resolve_rows_interpreted(reference, policy.as_ref(), ctx);
-            };
-            Some(counted?.total)
+            match self.source.query_page(entity_type, &count) {
+                QueryAnswer::Rows(counted) => Some(counted.total),
+                QueryAnswer::Declined(reason) => {
+                    log_store_declined(entity_type, &reason);
+                    return self.resolve_rows_interpreted(reference, policy.as_ref(), ctx);
+                }
+                QueryAnswer::Failed(message) => return Err(message),
+            }
         };
         let by_id: HashMap<String, &Value> = rows
             .rows
@@ -758,14 +766,18 @@ impl EntitySourceHandler {
                         Some(caps) if query_unsupported_reason(&caps, &query).is_none() => "pushed",
                         _ => "compiled",
                     };
-                    if let Some(page) = self.source.query_page(entity_type, &query) {
-                        let page = page?;
-                        compiled = Some(FetchPage {
-                            rows: page.rows,
-                            total: page.total,
-                        });
-                    } else {
-                        tier = "interpreted";
+                    match self.source.query_page(entity_type, &query) {
+                        QueryAnswer::Rows(page) => {
+                            compiled = Some(FetchPage {
+                                rows: page.rows,
+                                total: page.total,
+                            });
+                        }
+                        QueryAnswer::Declined(reason) => {
+                            log_store_declined(entity_type, &reason);
+                            tier = "interpreted";
+                        }
+                        QueryAnswer::Failed(message) => return Err(message),
                     }
                 }
                 Err(why) => {
@@ -969,9 +981,16 @@ impl FetchHandler for EntitySourceHandler {
             },
             "kernel.fetch.tier",
         );
-        let page = self.source.query_ids(entity_type, &query).ok_or_else(|| {
-            format!("{entity_type}: the store cannot answer a fetch by reference")
-        })??;
+        let page = match self.source.query_ids(entity_type, &query) {
+            QueryAnswer::Rows(page) => page,
+            QueryAnswer::Declined(reason) => {
+                log_store_declined(entity_type, &reason);
+                return Err(format!(
+                    "{entity_type}: the store cannot answer a fetch by reference ({reason})"
+                ));
+            }
+            QueryAnswer::Failed(message) => return Err(message),
+        };
         Ok(RowSetRef {
             entity_type: entity_type.to_string(),
             ids: page.ids,
@@ -979,6 +998,15 @@ impl FetchHandler for EntitySourceHandler {
             query,
         })
     }
+}
+
+fn log_store_declined(entity_type: &str, reason: &str) {
+    tracing::debug!(
+        target: orbital_core_base::logging::ns::RUNTIME_FETCH,
+        entity = %entity_type,
+        reason = %reason,
+        "kernel.fetch.store-declined",
+    );
 }
 
 /// Clears the dispatch stamp when the outermost entry that set it returns (or unwinds).
@@ -1313,16 +1341,13 @@ impl RuntimeKernel {
         }
 
         // A bare `ALMADAR_PERSONA` (id/role) resolves against this app's declared
-        // roster — its [identity] entity's seeded rows — which construction could
+        // roster — its [identity] entity's authored instances — which construction could
         // not see. Only fills a still-unset viewer: a later registration must not
         // clobber a viewer somebody already resolved or set.
         if let Ok(crate::persona::EnvPersona::Bare(spec)) = crate::persona::persona_from_env_spec()
         {
             if matches!(self.get_current_user(), Value::Null) {
-                let roster = crate::persona::identity_roster(
-                    &schema,
-                    crate::persona::DEFAULT_IDENTITY_ROSTER_COUNT,
-                );
+                let roster = crate::persona::identity_roster(&schema);
                 let user = crate::persona::resolve_persona_spec(&spec, &roster)
                     .map_err(KernelError::Internal)?;
                 self.set_current_user(user);
@@ -1552,7 +1577,7 @@ impl RuntimeKernel {
             if let EntityRef::Inline(entity_def) = &orbital.entity {
                 if let Some(instances) = &entity_def.instances {
                     let now = crate::mock_random::iso_from_ms(self.clock_now());
-                    let rows = crate::seed::instance_rows(&entity_def.name, instances, &now);
+                    let rows = crate::instances::instance_rows(&entity_def.name, instances, &now);
                     if let Some(seed) = self.io.store_seed(&entity_def.name, rows.clone()) {
                         self.store_seeds.lock().push_back(seed);
                         continue;
@@ -3614,6 +3639,7 @@ impl RuntimeKernel {
         out: &mut Vec<CascadeItem>,
     ) {
         let listeners = self.local_only(self.listener_manager.matching(event, source));
+        let listeners = self.without_browser_listeners(listeners);
         if listeners.is_empty() {
             return;
         }
@@ -6111,6 +6137,38 @@ impl RuntimeKernel {
 
     /// INIT seeds for the traits listed on the pages of every registered program, in program
     /// then page then trait order, each trait once. `keep` selects the pages.
+    /// On a host, the listeners a browser runs itself are left to it (EXEC-ENDPOINT-3a): a `[client]` trait a route
+    /// page places. A `[client]` trait on no route (a `boot` or `stdio` endpoint) has no browser, so the host runs it.
+    fn without_browser_listeners(&self, listeners: Vec<crate::listener::ListenerInfo>) -> Vec<crate::listener::ListenerInfo> {
+        if self.effect_executor.environment().is_client() {
+            return listeners;
+        }
+        let client_only: HashSet<String> = {
+            let defs = self.trait_definitions.read();
+            listeners
+                .iter()
+                .filter(|l| defs.get(&l.trait_name).is_some_and(|d| self.dispatch_mode_of(d) == DispatchMode::HybridClientOnly))
+                .map(|l| l.trait_name.clone())
+                .collect()
+        };
+        if client_only.is_empty() {
+            return listeners;
+        }
+        let routed = self.route_page_traits();
+        listeners.into_iter().filter(|l| !(client_only.contains(&l.trait_name) && routed.contains(&l.trait_name))).collect()
+    }
+
+    /// Every trait a route page places, whatever it handles.
+    fn route_page_traits(&self) -> HashSet<String> {
+        let schemas = self.schemas.read();
+        schemas
+            .values()
+            .flat_map(|schema| schema.orbitals.iter())
+            .flat_map(|orbital| orbital.pages.iter().flatten().filter_map(|p| p.as_inline()).filter(|p| p.is_route()))
+            .flat_map(|page| page.traits.iter().flatten().filter_map(|t| t.trait_name()).map(str::to_string))
+            .collect()
+    }
+
     fn mounts_of(&self, keep: impl Fn(&orbital_core_base::schema::types::PageDefinition) -> bool) -> Vec<crate::effects::response::MountSeed> {
         let schemas = self.schemas.read();
         let mut names: Vec<&String> = schemas.keys().collect();
@@ -6228,50 +6286,6 @@ impl RuntimeKernel {
     /// Access the entity source.
     pub fn entity_source(&self) -> &Arc<dyn EntitySource> {
         &self.entity_source
-    }
-
-    /// Mock-seed the `[runtime]` entities whose rows this kernel holds itself: each gets the one row the
-    /// canonical seeder ([`crate::seed::seed_sample_data_as`]) gives it, owner columns stamped with
-    /// `viewer_id`, at the `"singleton"` address its frame uses. A store the host answers is never written.
-    pub fn seed_runtime_mock(&self, viewer_id: Option<String>) {
-        let schemas: Vec<Arc<OrbitalSchema>> = self.schemas.read().values().cloned().collect();
-        for schema in &schemas {
-            let scratch = crate::entity_source::InMemoryEntityCache::new();
-            crate::seed::seed_sample_data_as(
-                &scratch,
-                schema,
-                crate::seed::MOCK_SEED_COUNT,
-                viewer_id.clone(),
-            );
-            for orbital in &schema.orbitals {
-                for entity_ref in std::iter::once(&orbital.entity)
-                    .chain(orbital.auxiliary_entities.iter().flatten())
-                {
-                    let EntityRef::Inline(def) = entity_ref else {
-                        continue;
-                    };
-                    if def.persistence != Some(Persistence::Runtime)
-                        || !self.io.holds_runtime(&def.name)
-                    {
-                        continue;
-                    }
-                    let Some(row) = scratch
-                        .list(&def.name)
-                        .ok()
-                        .and_then(|rows| rows.into_iter().next())
-                    else {
-                        continue;
-                    };
-                    let mut row = (*row).clone();
-                    if let Some(fields) = row.as_object_mut() {
-                        fields.insert("id".to_string(), Value::String("singleton".to_string()));
-                    }
-                    if let Err(error) = self.io.write(&def.name, "singleton", &row) {
-                        warn!(target: "almadar::kernel", entity = %def.name, %error, "kernel: runtime mock seed not written");
-                    }
-                }
-            }
-        }
     }
 
     /// Access the effect executor.
@@ -10535,17 +10549,6 @@ mod fork_shares_program_tests {
         fork.register_schema(other).expect("registers on the fork");
         assert!(fork.schemas.read().contains_key("Other"));
         assert!(!template.schemas.read().contains_key("Other"));
-    }
-
-    #[test]
-    fn edge_mock_seeding_a_fork_reads_the_shared_program() {
-        let template = kernel_with_program();
-        let fork = fork_of(&template);
-        fork.seed_runtime_mock(Some("viewer-1".to_string()));
-        assert!(Arc::ptr_eq(
-            &template.schemas.read()["Notes"],
-            &fork.schemas.read()["Notes"]
-        ));
     }
 }
 

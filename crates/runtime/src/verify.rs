@@ -49,10 +49,7 @@ pub fn verify_schema_scoped(
         crate::persona::persona_from_env_spec(),
         Ok(crate::persona::EnvPersona::None)
     ) {
-        let roster = crate::persona::identity_roster(
-            &schema,
-            crate::persona::DEFAULT_IDENTITY_ROSTER_COUNT,
-        );
+        let roster = crate::persona::identity_roster(&schema);
         if let Some(first) = roster.first() {
             harness.set_persona(first.clone());
         }
