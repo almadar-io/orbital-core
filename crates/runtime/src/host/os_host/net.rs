@@ -124,7 +124,8 @@ struct WriteTurn {
 }
 
 impl WriteTurn {
-    fn run<R>(mut self, write: impl FnOnce() -> R) -> R {
+    /// Write in this turn and keep it: the next write waits until the turn is dropped.
+    fn write<R>(&mut self, write: impl FnOnce() -> R) -> R {
         if let Some(prior) = &self.prior {
             prior.wait();
         }
@@ -302,8 +303,12 @@ fn tcp_connect(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     ))
 }
 
-fn send_on(mut stream: TcpStream, data: &[u8], turn: WriteTurn) -> Result<Value, OsError> {
-    turn.run(|| stream.write_all(data)).map_err(|e| io_error(OsOp::Send, &e))?;
+fn send_on(stream: TcpStream, data: &[u8], mut turn: WriteTurn) -> Result<Value, OsError> {
+    send_in_turn(stream, data, &mut turn)
+}
+
+fn send_in_turn(mut stream: TcpStream, data: &[u8], turn: &mut WriteTurn) -> Result<Value, OsError> {
+    turn.write(|| stream.write_all(data)).map_err(|e| io_error(OsOp::Send, &e))?;
     Ok(object([("bytes", count(data.len()))]))
 }
 
@@ -322,9 +327,19 @@ pub(super) fn send_later(args: &[Value], key: &str, site: &CallSite, host: &OsHo
     let id = arg_i64(args, 0, op)?;
     let data = arg_bytes(args, 1, op)?;
     let stream = stream_of(&host.handles.net.socks, id, op)?;
-    let turn = host.handles.net.take_turn(id);
-    Completions::run_later(&host.handles.completions, key, site, move || send_on(stream, &data, turn))
-        .map_err(|e| later_error(op, e, key))
+    let mut turn = host.handles.net.take_turn(id);
+    // The turn ends after the completion is posted, so completions follow the write order too.
+    Completions::spawn_later(
+        &host.handles.completions,
+        key,
+        site,
+        move |_| (send_in_turn(stream, &data, &mut turn), turn),
+        |completions, key, site, (outcome, turn)| {
+            completions.deliver(key, site, outcome);
+            drop(turn);
+        },
+    )
+    .map_err(|e| later_error(op, e, key))
 }
 
 fn recv_on(mut stream: TcpStream, want: usize) -> Result<Value, OsError> {

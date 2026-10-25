@@ -334,9 +334,10 @@ pub(super) enum RunLaterError {
 /// How a [`KernelCompletionSink`] answers the host asks of the completion's own dispatch.
 pub type CompletionAnswerer = dyn Fn(&IoRequest) -> IoAnswer + Send + Sync;
 
-/// Told how each completion dispatch ended: the call site, the event dispatched, its outcomes or error.
+/// Told how each completion dispatch ended: the call site, the event dispatched, the client whose request deferred
+/// the key (EXEC-QUEUE-10: where the completion's emits go), and its outcomes or error.
 pub type CompletionDone =
-    dyn Fn(&CallSite, &str, Result<DispatchOutcomes, DispatchError>) + Send + Sync;
+    dyn Fn(&CallSite, &str, Option<&str>, Result<DispatchOutcomes, DispatchError>) + Send + Sync;
 
 /// Dispatches a completion into a kernel as the event of the call's route: `emit.success` with the result
 /// merged with `key`, `emit.failure` with `{ error, kind, key }`. A call that declared no route for the
@@ -350,7 +351,18 @@ pub struct KernelCompletionSink {
     answer: Arc<CompletionAnswerer>,
     done: Arc<CompletionDone>,
     owners: Arc<Mutex<HashMap<String, Arc<Ended>>>>,
+    requesters: Requesters,
 }
+
+/// Who asked for a deferred key: the viewer and client of the dispatch that deferred it.
+#[derive(Debug, Clone, Default)]
+pub struct Requester {
+    pub viewer: Option<Arc<Value>>,
+    pub client_id: Option<String>,
+}
+
+/// Each deferred key's requester, and whether the key is a stream (kept until a new ask reuses the key).
+type Requesters = Arc<Mutex<HashMap<String, (Arc<Requester>, bool)>>>;
 
 /// Whether a dispatch has ended, and the keys it deferred.
 #[derive(Default)]
@@ -365,6 +377,8 @@ struct Ended {
 pub struct DispatchScope {
     ended: Arc<Ended>,
     owners: Arc<Mutex<HashMap<String, Arc<Ended>>>>,
+    requester: Arc<Requester>,
+    requesters: Requesters,
 }
 
 impl DispatchScope {
@@ -386,7 +400,9 @@ impl DispatchScope {
             IoAnswer::Os(Ok(_)) => stream,
             _ => false,
         };
-        if !open {
+        if open {
+            self.requesters.lock().insert(key.clone(), (self.requester.clone(), stream));
+        } else {
             self.release(key);
         }
         answered
@@ -422,14 +438,39 @@ impl KernelCompletionSink {
             answer,
             done,
             owners: Arc::default(),
+            requesters: Arc::default(),
         }
     }
 
-    /// Start tracking one dispatch. Hold the scope until the dispatch has committed.
+    /// Start tracking one dispatch with no client. Hold the scope until the dispatch has committed.
     pub fn begin_dispatch(&self) -> DispatchScope {
+        self.begin_dispatch_for(None)
+    }
+
+    /// Start tracking one dispatch serving `client_id`; the viewer this thread entered is its requester's.
+    pub fn begin_dispatch_for(&self, client_id: Option<&str>) -> DispatchScope {
+        self.scope(Arc::new(Requester {
+            viewer: self.kernel.thread_viewer(),
+            client_id: client_id.map(str::to_string),
+        }))
+    }
+
+    fn scope(&self, requester: Arc<Requester>) -> DispatchScope {
         DispatchScope {
             ended: Arc::default(),
             owners: self.owners.clone(),
+            requester,
+            requesters: self.requesters.clone(),
+        }
+    }
+
+    /// The requester of `key`: taken for a finite ask, kept for a stream's later items.
+    fn requester_of(&self, key: &str) -> Arc<Requester> {
+        let mut requesters = self.requesters.lock();
+        match requesters.get(key) {
+            Some((requester, true)) => requester.clone(),
+            Some(_) => requesters.remove(key).map(|(requester, _)| requester).unwrap_or_default(),
+            None => Arc::default(),
         }
     }
 
@@ -470,9 +511,12 @@ impl OsCompletionSink for KernelCompletionSink {
 }
 
 impl KernelCompletionSink {
+    /// EXEC-QUEUE-10: the completion runs as the viewer that asked, and a key it defers again keeps that requester.
     fn dispatch_completion(&self, site: &CallSite, key: &str, event: String, payload: Value) {
         self.wait_for_owner(key);
-        let scope = self.begin_dispatch();
+        let requester = self.requester_of(key);
+        let _viewer = requester.viewer.as_ref().map(|viewer| self.kernel.enter_viewer((**viewer).clone()));
+        let scope = self.scope(requester.clone());
         let answer = |request: &IoRequest| scope.answer(&*self.answer, request);
         let result = self
             .kernel
@@ -485,7 +529,7 @@ impl KernelCompletionSink {
                 None,
             )
             .and_then(|progress| drive_blocking(&self.kernel, progress, &answer));
-        (self.done)(site, &event, result);
+        (self.done)(site, &event, requester.client_id.as_deref(), result);
     }
 }
 
@@ -621,7 +665,7 @@ mod tests {
             _ => IoAnswer::Service(Err("no host".to_string())),
         });
         let done: Arc<CompletionDone> =
-            Arc::new(|_, _, result| assert!(result.is_ok(), "{result:?}"));
+            Arc::new(|_, _, _, result| assert!(result.is_ok(), "{result:?}"));
         let sink = KernelCompletionSink::new(kernel.clone(), answer, done);
         let mut at_row = site(Some("OK"), None);
         at_row.trait_name = "Host".to_string();
@@ -654,10 +698,81 @@ mod tests {
         let answer: Arc<CompletionAnswerer> = Arc::new(|_| IoAnswer::Service(Err("no host".to_string())));
         let (told, ran) = std::sync::mpsc::channel();
         let told = Mutex::new(told);
-        let done: Arc<CompletionDone> = Arc::new(move |_, event, _| {
+        let done: Arc<CompletionDone> = Arc::new(move |_, event, _, _| {
             let _ = told.lock().send(event.to_string());
         });
         (Arc::new(KernelCompletionSink::new(kernel, answer, done)), ran)
+    }
+
+    type Asked = std::sync::mpsc::Receiver<(String, Option<String>, Option<Value>)>;
+
+    /// A sink whose completion dispatches report the event, the client they were delivered for and the viewer they ran as.
+    fn requester_sink() -> (Arc<KernelCompletionSink>, Arc<RuntimeKernel>, Asked) {
+        use crate::config::KernelConfig;
+        use orbital_core_base::effect_types::RuntimeEnvironment;
+        let kernel = Arc::new(RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(crate::entity_source::InMemoryEntityCache::new()),
+            KernelConfig::default(),
+        ));
+        let answer: Arc<CompletionAnswerer> = Arc::new(|_| IoAnswer::Service(Err("no host".to_string())));
+        let (told, asked) = std::sync::mpsc::channel();
+        let told = Mutex::new(told);
+        let seen = Arc::downgrade(&kernel);
+        let done: Arc<CompletionDone> = Arc::new(move |_, event, client_id, _| {
+            let viewer = seen.upgrade().and_then(|k| k.thread_viewer()).map(|v| (*v).clone());
+            let _ = told.lock().send((event.to_string(), client_id.map(str::to_string), viewer));
+        });
+        (Arc::new(KernelCompletionSink::new(kernel.clone(), answer, done)), kernel, asked)
+    }
+
+    fn viewer(id: &str) -> Value {
+        Value::Object(ValueMap::from_iter([("id".to_string(), Value::String(id.to_string()))]))
+    }
+
+    #[test]
+    fn a_completion_runs_as_the_viewer_and_for_the_client_whose_dispatch_deferred_its_key() {
+        let (sink, kernel, asked) = requester_sink();
+        let asking = {
+            let _viewer = kernel.enter_viewer(viewer("ada"));
+            let scope = sink.begin_dispatch_for(Some("tab-1"));
+            assert!(matches!(scope.answer(&deferred, &defers("k1")), IoAnswer::ServiceDeferred));
+            scope
+        };
+        drop(asking);
+        complete_on_a_thread(&sink, "k1", "DONE").join().expect("k1");
+        let (event, client, ran_as) = asked.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
+        assert_eq!(event, "DONE");
+        assert_eq!(client.as_deref(), Some("tab-1"));
+        assert_eq!(ran_as, Some(viewer("ada")));
+        complete_on_a_thread(&sink, "k1", "AGAIN").join().expect("k1 again");
+        let (_, client, ran_as) = asked.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
+        assert_eq!((client, ran_as), (None, None), "control: a finite key's requester is used once");
+    }
+
+    #[test]
+    fn control_a_completion_deferred_with_no_client_or_viewer_runs_with_neither() {
+        let (sink, _kernel, asked) = requester_sink();
+        let scope = sink.begin_dispatch();
+        assert!(matches!(scope.answer(&deferred, &defers("k2")), IoAnswer::ServiceDeferred));
+        drop(scope);
+        complete_on_a_thread(&sink, "k2", "DONE").join().expect("k2");
+        assert_eq!(asked.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched"), ("DONE".to_string(), None, None));
+    }
+
+    #[test]
+    fn a_stream_keeps_its_requester_for_every_item() {
+        let (sink, kernel, asked) = requester_sink();
+        {
+            let _viewer = kernel.enter_viewer(viewer("ada"));
+            let scope = sink.begin_dispatch_for(Some("tab-1"));
+            assert!(matches!(scope.answer(&|_| IoAnswer::Os(Ok(Value::Null)), &listens("s1")), IoAnswer::Os(Ok(_))));
+        }
+        for _ in 0..2 {
+            complete_on_a_thread(&sink, "s1", "MSG").join().expect("s1");
+            let (_, client, ran_as) = asked.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
+            assert_eq!((client.as_deref(), ran_as), (Some("tab-1"), Some(viewer("ada"))));
+        }
     }
 
     fn defers(key: &str) -> IoRequest {

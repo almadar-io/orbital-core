@@ -152,6 +152,24 @@ impl LiveBroadcastItem {
             .collect()
     }
 
+    /// A deferred completion's sourced emits (EXEC-QUEUE-10): each goes to the connection whose request deferred the key.
+    pub fn answered(response: &EventResponse, client_id: &str) -> Vec<Self> {
+        response
+            .emitted_events
+            .iter()
+            .filter_map(|emitted| {
+                let source = emitted.source.as_ref()?;
+                Some(Self {
+                    event: emitted.event.clone(),
+                    payload: emitted.payload.clone(),
+                    source: BusEventSource { persist_success: None, ..source.clone() },
+                    origin_client_id: Some(client_id.to_string()),
+                    target: LiveTarget::Origin,
+                })
+            })
+            .collect()
+    }
+
     /// A running call's live message (`emit.onMessage`): it goes to the connection of the request that made the call.
     pub fn call_message(event: String, payload: Value, trait_name: String, client_id: Option<String>) -> Self {
         Self {
@@ -208,6 +226,20 @@ mod tests {
         assert!(shared.delivered_to(Some("b"), |_| true));
         assert!(shared.delivered_to(None, |_| true));
         assert!(!shared.delivered_to(Some("b"), |_| false), "control: a viewer who may not read the row is skipped");
+    }
+
+    #[test]
+    fn a_deferred_completions_emits_reach_only_the_client_that_asked() {
+        let mut response = EventResponse::success("idle");
+        response.emitted_events = vec![
+            EmittedEvent { event: "FILE_READ".to_string(), payload: None, source: Some(BusEventSource::from_trait("Reader")) },
+            EmittedEvent { event: "SAVED".to_string(), payload: None, source: Some(BusEventSource { persist_success: Some(true), ..BusEventSource::from_trait("Reader") }) },
+        ];
+        let items = LiveBroadcastItem::answered(&response, "tab-1");
+        assert_eq!(items.iter().map(|i| i.event.as_str()).collect::<Vec<_>>(), ["FILE_READ", "SAVED"]);
+        assert!(items.iter().all(|i| i.delivered_to(Some("tab-1"), |_| false)));
+        assert!(items.iter().all(|i| !i.delivered_to(Some("tab-2"), |_| true)), "control: another tab gets none of them");
+        assert!(items.iter().all(|i| i.source.persist_success.is_none()));
     }
 
     #[test]

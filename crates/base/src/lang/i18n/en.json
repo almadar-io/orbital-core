@@ -206,6 +206,7 @@
     "timestamp": "timestamp",
     "date": "date",
     "datetime": "datetime",
+    "instant": "instant",
     "duration": "duration",
     "money": "money",
     "file": "file",

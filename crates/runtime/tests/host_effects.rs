@@ -1877,7 +1877,7 @@ mod os_completion {
         let (tx, done) = mpsc::channel();
         let tx = Mutex::new(tx);
         let on_done: Arc<CompletionDone> = Arc::new(
-            move |_site: &CallSite, event: &str, result: Result<DispatchOutcomes, DispatchError>| {
+            move |_site: &CallSite, event: &str, _: Option<&str>, result: Result<DispatchOutcomes, DispatchError>| {
                 let summary = result.map(|outcomes| outcomes.len()).map_err(|error| error.to_string());
                 let _ = tx.lock().unwrap().send((event.to_string(), summary));
             },
@@ -1920,7 +1920,7 @@ mod os_completion {
             }
             other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
         });
-        let on_done: Arc<CompletionDone> = Arc::new(|_: &CallSite, _: &str, _: Result<DispatchOutcomes, DispatchError>| {});
+        let on_done: Arc<CompletionDone> = Arc::new(|_: &CallSite, _: &str, _: Option<&str>, _: Result<DispatchOutcomes, DispatchError>| {});
         let sink = Arc::new(KernelCompletionSink::new(kernel.clone(), answer, on_done));
         let progress = kernel.start_dispatch("Sup", None, "GO", Value::Null, None, None).unwrap();
         sink.drive(progress).unwrap();
