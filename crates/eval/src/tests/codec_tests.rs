@@ -15,6 +15,8 @@ mod tests {
         expect: Option<serde_json::Value>,
         #[serde(default)]
         error: bool,
+        #[serde(default)]
+        null: bool,
         source: String,
     }
 
@@ -43,7 +45,7 @@ mod tests {
             "../../../../tests/fixtures/operators/uri-decode-vectors.json"
         ))
         .unwrap();
-        assert!(cases.iter().any(|c| c.error));
+        assert!(cases.iter().any(|c| c.error) && cases.iter().any(|c| c.null));
         assert!(cases.iter().any(|c| c.source.starts_with("round trip")));
         for case in cases.iter().filter(|c| c.op == "str/decode-uri-component") {
             let got = eval_decode(&case.args);
@@ -51,7 +53,7 @@ mod tests {
             if case.args[0].is_number() {
                 assert!(valid.is_err(), "{}", case.source);
             } else {
-                let expected = !case.error && !case.args[0].is_null();
+                let expected = !case.error && !case.null && !case.args[0].is_null();
                 assert_eq!(
                     valid,
                     Ok(serde_json::json!(expected)),
@@ -60,7 +62,9 @@ mod tests {
                     case.source
                 );
             }
-            if case.error {
+            if case.null {
+                assert_eq!(got, Ok(serde_json::Value::Null), "{:?} ({})", case.args, case.source);
+            } else if case.error {
                 let message =
                     got.expect_err(&format!("{:?} must error ({})", case.args, case.source));
                 assert!(
@@ -189,12 +193,16 @@ mod tests {
         ))
         .unwrap();
         assert!(
-            cases.iter().any(|c| c.error) && cases.iter().any(|c| c.source.starts_with("RFC 1321"))
+            cases.iter().any(|c| c.error)
+                && cases.iter().any(|c| c.null)
+                && cases.iter().any(|c| c.source.starts_with("RFC 1321"))
         );
         for case in &cases {
             assert_eq!(case.op, "hash/md5");
             let got = eval_op(&case.op, &case.args);
-            if case.error {
+            if case.null {
+                assert_eq!(got, Ok(serde_json::Value::Null), "{:?} ({})", case.args, case.source);
+            } else if case.error {
                 assert!(got.is_err(), "{:?} must error ({})", case.args, case.source);
             } else {
                 assert_eq!(

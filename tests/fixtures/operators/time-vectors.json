@@ -166,7 +166,7 @@
       "time/parse",
       ""
     ],
-    "error": true,
+    "null": true,
     "source": "invalid"
   },
   {
@@ -174,7 +174,7 @@
       "time/parse",
       "not a date"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid"
   },
   {
@@ -182,7 +182,7 @@
       "time/parse",
       "2028-02-30"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid"
   },
   {
@@ -190,7 +190,7 @@
       "time/parse",
       "2100-02-29"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid"
   },
   {
@@ -198,7 +198,7 @@
       "time/parse",
       "2028-13-01"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid"
   },
   {
@@ -206,7 +206,7 @@
       "time/parse",
       "2028-00-10"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid"
   },
   {
@@ -214,7 +214,7 @@
       "time/parse",
       "2028-03-01T25:00:00Z"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid"
   },
   {
@@ -222,7 +222,7 @@
       "time/parse",
       "2028-3-1"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid"
   },
   {
@@ -230,7 +230,7 @@
       "time/parse",
       "20280301"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid"
   },
   {
@@ -238,7 +238,7 @@
       "time/parse",
       "2028-03-01T13:45:10+2:00"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid"
   },
   {

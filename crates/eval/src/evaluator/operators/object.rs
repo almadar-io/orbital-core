@@ -62,8 +62,11 @@ impl Operator for ObjectSetOp {
         let path = eval_expr(&args[1], ctx)?.to_string_value();
         let value = eval_expr(&args[2], ctx)?;
 
-        for segment in orbital_core_base::value::split_path(&path) {
-            super::util::refuse_proto_key("object/set", &segment)?;
+        if orbital_core_base::value::split_path(&path)
+            .iter()
+            .any(|segment| super::util::is_refused_key(segment))
+        {
+            return Ok(Value::Null);
         }
 
         let mut result = match obj {
@@ -78,10 +81,7 @@ impl Operator for ObjectSetOp {
         };
 
         if !result.set_path(&path, value) {
-            return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "an object or list to set into".to_string(),
-                actual: format!("path `{path}`"),
-            }));
+            return Ok(Value::Null);
         }
 
         Ok(result)
@@ -113,13 +113,14 @@ pub struct ObjectMergeOp;
 impl Operator for ObjectMergeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         let mut result = ValueMap::new();
+        let mut refused = false;
 
         for arg in args {
             let val = eval_expr(arg, ctx)?;
             match val {
                 Value::Object(obj) => {
                     for (k, v) in obj {
-                        super::util::refuse_proto_key("object/merge", &k)?;
+                        refused |= super::util::is_refused_key(&k);
                         result.insert(k, v);
                     }
                 }
@@ -133,6 +134,9 @@ impl Operator for ObjectMergeOp {
             }
         }
 
+        if refused {
+            return Ok(Value::Null);
+        }
         Ok(Value::Object(result))
     }
 }
@@ -163,7 +167,9 @@ impl Operator for ObjectFromEntriesOp {
             if let Value::Array(pair) = entry {
                 if pair.len() >= 2 {
                     let key = pair[0].to_string_value();
-                    super::util::refuse_proto_key("object/fromEntries", &key)?;
+                    if super::util::is_refused_key(&key) {
+                        return Ok(Value::Null);
+                    }
                     let value = pair[1].clone();
                     result.insert(key, value);
                 }
@@ -178,10 +184,12 @@ impl Operator for ObjectFromEntriesOp {
 pub struct ObjectDeepMergeOp;
 impl Operator for ObjectDeepMergeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        fn deep_merge(base: ValueMap, overlay: ValueMap) -> Result<ValueMap, OrbitalError> {
+        fn deep_merge(base: ValueMap, overlay: ValueMap) -> Option<ValueMap> {
             let mut result = base;
             for (key, value) in overlay {
-                super::util::refuse_proto_key("object/deepMerge", &key)?;
+                if super::util::is_refused_key(&key) {
+                    return None;
+                }
                 match (result.get(&key), &value) {
                     (Some(Value::Object(base_obj)), Value::Object(overlay_obj)) => {
                         result.insert(
@@ -190,22 +198,26 @@ impl Operator for ObjectDeepMergeOp {
                         );
                     }
                     _ => {
-                        super::util::refuse_proto_keys_in("object/deepMerge", &value)?;
+                        if super::util::has_refused_key_in(&value) {
+                            return None;
+                        }
                         result.insert(key, value);
                     }
                 }
             }
-            Ok(result)
+            Some(result)
         }
 
         let mut result = ValueMap::new();
+        let mut refused = false;
 
         for arg in args {
             let val = eval_expr(arg, ctx)?;
             match val {
-                Value::Object(obj) => {
-                    result = deep_merge(result, obj)?;
-                }
+                Value::Object(obj) => match deep_merge(result.clone(), obj) {
+                    Some(merged) => result = merged,
+                    None => refused = true,
+                },
                 Value::Null => {} // Skip nulls
                 _ => {
                     return Err(OrbitalError::Eval(EvalError::TypeMismatch {
@@ -216,6 +228,9 @@ impl Operator for ObjectDeepMergeOp {
             }
         }
 
+        if refused {
+            return Ok(Value::Null);
+        }
         Ok(Value::Object(result))
     }
 }
@@ -397,6 +412,7 @@ impl Operator for ObjectMapKeysOp {
         let (params, body) = require_lambda!(mapper);
 
         let mut result = ValueMap::new();
+        let mut refused = false;
         for (key, value) in source {
             let mut child_ctx = ctx.child();
             if !params.is_empty() {
@@ -406,10 +422,13 @@ impl Operator for ObjectMapKeysOp {
                 child_ctx.set_local(&params[1], value.clone());
             }
             let new_key = eval_expr(&body, &child_ctx)?.to_string_value();
-            super::util::refuse_proto_key("object/mapKeys", &new_key)?;
+            refused |= super::util::is_refused_key(&new_key);
             result.insert(new_key, value);
         }
 
+        if refused {
+            return Ok(Value::Null);
+        }
         Ok(Value::Object(result))
     }
 }

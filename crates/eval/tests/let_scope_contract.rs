@@ -108,12 +108,12 @@ fn real_let_does_not_evaluate_malformed_entries_or_extra_slots() {
 fn real_let_does_evaluate_valid_initializer_and_body_slots() {
     let ctx = BindingContextBuilder::new().build();
     for arguments in [
-        args(json!([[["x", ["base64/decode", "!"]]], "@x"])),
-        args(json!([[], ["base64/decode", "!"]])),
+        args(json!([[["x", ["base64/decode"]]], "@x"])),
+        args(json!([[], ["base64/decode"]])),
     ] {
         match evaluate(arguments, &ctx) {
-            Err(OrbitalError::Eval(EvalError::InvalidArgument(message))) => {
-                assert!(message.starts_with("base64/decode:"), "{message}");
+            Err(OrbitalError::Eval(EvalError::ArityMismatch { operator, .. })) => {
+                assert_eq!(operator, "base64/decode");
             }
             other => panic!("expected the selected expression to fail, got {other:?}"),
         }

@@ -59,7 +59,7 @@ fn valid_calls() -> [(&'static str, Vec<Json>); 5] {
 }
 
 fn failing_operand() -> Json {
-    json!(["base64/decode", "@payload.invalidBase64"])
+    json!(["base64/decode", "@payload.invalidBase64", "extra"])
 }
 
 #[test]
@@ -140,10 +140,23 @@ fn valid_codec_arity_evaluates_failing_context_bound_operands() {
     for (op, mut args) in valid_calls() {
         args[0] = failing_operand();
         match evaluate(op, &args, &ctx) {
-            Err(OrbitalError::Eval(EvalError::InvalidArgument(message))) => {
-                assert!(message.starts_with("base64/decode:"), "{op}: {message}");
+            Err(OrbitalError::Eval(EvalError::ArityMismatch { operator, .. })) => {
+                assert_eq!(operator, "base64/decode", "{op}");
             }
             other => panic!("{op}: expected the context-bound nested decoder to fail, got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn an_invalid_base64_operand_answers_null_and_the_outer_codec_reads_it_as_a_missing_string() {
+    let ctx = context();
+    assert_eq!(evaluate("base64/decode", &[json!("@payload.invalidBase64")], &ctx).unwrap(), Value::Null);
+    assert_eq!(evaluate("base64/decode", &[json!("Zm9vYmFy")], &ctx).unwrap(), Value::String("foobar".into()));
+    match evaluate("base64/encode", &[json!(["base64/decode", "@payload.invalidBase64"])], &ctx) {
+        Err(OrbitalError::Eval(EvalError::InvalidArgument(message))) => {
+            assert!(message.starts_with("base64/encode:"), "{message}");
+        }
+        other => panic!("expected the null operand to be refused, got {other:?}"),
     }
 }

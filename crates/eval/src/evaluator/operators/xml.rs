@@ -20,8 +20,8 @@
 //!
 //! The five predefined entities, character references and CDATA read as text; the declaration, comments,
 //! processing instructions and a doctype are ignored. Malformed XML (no root, a second root, text outside the
-//! root, mismatched or unclosed tags, an unknown entity, a duplicate attribute, an invalid name) is an evaluation
-//! error. An absent (`null`) input is `null`.
+//! root, mismatched or unclosed tags, an unknown entity, a duplicate attribute, an invalid name) answers `null`
+//! from `xml/parse`. An absent (`null`) input is `null`.
 
 use super::macros::*;
 use super::*;
@@ -373,7 +373,9 @@ impl Operator for XmlParseOp {
         match eval_expr(&args[0], ctx)? {
             Value::Null => Ok(Value::Null),
             Value::String(text) => {
-                let mut value = parse_xml(&text)?;
+                let Ok(mut value) = parse_xml(&text) else {
+                    return Ok(Value::Null);
+                };
                 apply_list_paths(&mut value, &paths);
                 Ok(value)
             }

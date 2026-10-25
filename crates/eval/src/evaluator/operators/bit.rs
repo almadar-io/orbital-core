@@ -1,4 +1,4 @@
-//! `bit/*` operators over 32-bit unsigned words. Out-of-range operands and counts are refused, never wrapped.
+//! `bit/*` operators over 32-bit unsigned words. Out-of-range operands and counts answer null, never wrapped.
 
 use super::macros::*;
 use super::*;
@@ -15,11 +15,12 @@ fn bounded(
     op: &str,
     what: &str,
     max: f64,
-) -> Result<u32, OrbitalError> {
+) -> Result<Option<u32>, OrbitalError> {
     match eval_expr(arg, ctx)? {
         Value::Number(n) if n.is_finite() && n.fract() == 0.0 && (0.0..=max).contains(&n) => {
-            Ok(n as u32)
+            Ok(Some(n as u32))
         }
+        Value::Number(_) => Ok(None),
         other => Err(invalid(
             op,
             format!(
@@ -33,11 +34,11 @@ fn bounded(
     }
 }
 
-fn word(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<u32, OrbitalError> {
+fn word(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Option<u32>, OrbitalError> {
     bounded(arg, ctx, op, "operand", u32::MAX as f64)
 }
 
-fn count(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<u32, OrbitalError> {
+fn count(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Option<u32>, OrbitalError> {
     bounded(arg, ctx, op, "count", 31.0)
 }
 
@@ -48,9 +49,18 @@ fn fold(
     f: fn(u32, u32) -> u32,
 ) -> EvalResult {
     require_arity!(args, op, >= 2);
-    let mut acc = word(&args[0], ctx, op)?;
-    for arg in &args[1..] {
-        acc = f(acc, word(arg, ctx, op)?);
+    let mut words = Vec::with_capacity(args.len());
+    for arg in args {
+        words.push(word(arg, ctx, op)?);
+    }
+    let Some(mut acc) = words[0] else {
+        return Ok(Value::Null);
+    };
+    for next in &words[1..] {
+        let Some(next) = *next else {
+            return Ok(Value::Null);
+        };
+        acc = f(acc, next);
     }
     Ok(Value::Number(acc as f64))
 }
@@ -62,8 +72,9 @@ fn shift(
     f: fn(u32, u32) -> u32,
 ) -> EvalResult {
     require_arity!(args, op, == 2);
-    let a = word(&args[0], ctx, op)?;
-    let n = count(&args[1], ctx, op)?;
+    let (Some(a), Some(n)) = (word(&args[0], ctx, op)?, count(&args[1], ctx, op)?) else {
+        return Ok(Value::Null);
+    };
     Ok(Value::Number(f(a, n) as f64))
 }
 
@@ -96,7 +107,10 @@ pub struct BitNotOp;
 impl Operator for BitNotOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bit/not", == 1);
-        Ok(Value::Number(!word(&args[0], ctx, "bit/not")? as f64))
+        Ok(match word(&args[0], ctx, "bit/not")? {
+            Some(a) => Value::Number(!a as f64),
+            None => Value::Null,
+        })
     }
 }
 
@@ -209,49 +223,33 @@ mod tests {
     }
 
     #[test]
-    fn refusals() {
+    fn out_of_range_answers_null() {
+        for form in [
+            r#"["bit/xor", 4294967296, 0]"#,
+            r#"["bit/and", -1, 0]"#,
+            r#"["bit/or", 1.5, 0]"#,
+            r#"["bit/xor", 0, 1, 4294967296]"#,
+            r#"["bit/shl", 1, 32]"#,
+            r#"["bit/shr", 1, -1]"#,
+            r#"["bit/rotl", 1, 0.5]"#,
+            r#"["bit/rotl", 1, 32]"#,
+            r#"["bit/rotr", 1, 32]"#,
+            r#"["bit/rotr", 4294967296, 1]"#,
+            r#"["bit/shr", 4294967296, 0]"#,
+            r#"["bit/not", 4294967296]"#,
+        ] {
+            assert_eq!(eval(form).unwrap(), Value::Null, "{form}");
+        }
+    }
+
+    #[test]
+    fn non_numbers_stay_errors() {
         let cases: &[(&str, &str)] = &[
-            (
-                r#"["bit/xor", 4294967296, 0]"#,
-                "bit/xor: invalid operand 4294967296: expected a whole number 0..4294967295",
-            ),
-            (
-                r#"["bit/and", -1, 0]"#,
-                "bit/and: invalid operand -1: expected a whole number 0..4294967295",
-            ),
-            (
-                r#"["bit/or", 1.5, 0]"#,
-                "bit/or: invalid operand 1.5: expected a whole number 0..4294967295",
-            ),
             (
                 r#"["bit/not", null]"#,
                 "bit/not: invalid operand null: expected a whole number 0..4294967295",
             ),
             (r#"["bit/xor", "1", 0]"#, "Type mismatch: expected number, got string"),
-            (
-                r#"["bit/xor", 0, 1, 4294967296]"#,
-                "bit/xor: invalid operand 4294967296",
-            ),
-            (
-                r#"["bit/shl", 1, 32]"#,
-                "bit/shl: invalid count 32: expected a whole number 0..31",
-            ),
-            (
-                r#"["bit/shr", 1, -1]"#,
-                "bit/shr: invalid count -1: expected a whole number 0..31",
-            ),
-            (r#"["bit/rotl", 1, 0.5]"#, "bit/rotl: invalid count 0.5"),
-            (r#"["bit/rotl", 1, 32]"#, "bit/rotl: invalid count 32"),
-            (r#"["bit/rotr", 1, 32]"#, "bit/rotr: invalid count 32"),
-            (r#"["bit/rotr", 1, -1]"#, "bit/rotr: invalid count -1"),
-            (
-                r#"["bit/rotr", 4294967296, 1]"#,
-                "bit/rotr: invalid operand 4294967296",
-            ),
-            (
-                r#"["bit/shr", 4294967296, 0]"#,
-                "bit/shr: invalid operand 4294967296",
-            ),
         ];
         for (form, message) in cases {
             match eval(form) {

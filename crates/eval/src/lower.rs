@@ -273,6 +273,37 @@ impl NodeLowerer {
         }
     }
 
+    /// A substrate operator lowered as an `OirEffect::Custom`.
+    fn custom_effect_call(&self, op_name: &str, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+        // A trailing `{ emit: { success, failure } }` options object
+        // (mirroring fetch/persist) carries the completion events.
+        // The op fires `getSubstrateService().invoke(name, args)` and
+        // dispatches the success/failure event on completion — the
+        // `.lolo` async model. Without it the op is fire-and-forget.
+        // Only treated as options when the object has an `emit` key,
+        // so a plain object argument is still passed positionally
+        // (C-EMIT-SUBSTRATE-OPS-MARKER).
+        let (positional, emit_cfg) = match args.last() {
+            Some(SExpression::Object(obj)) if obj.contains_key("emit") => {
+                (&args[..args.len() - 1], self.extract_emit_config(obj)?)
+            }
+            _ => (args, None),
+        };
+        let resolved_args: Vec<OirExpr> = positional
+            .iter()
+            .map(|a| self.resolve_sexpr(a))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut args_map = orbital_core_base::ir::expr::OirFields::new();
+        for (i, arg) in resolved_args.into_iter().enumerate() {
+            args_map.insert(format!("arg{}", i), arg);
+        }
+        Ok(OirExpr::effect(OirEffect::Custom {
+            name: op_name.to_string(),
+            args: args_map,
+            emit: emit_cfg,
+        }))
+    }
+
     fn resolve_sexpr_call(&self, op: &str, args: &[SExpression]) -> Result<OirExpr, LowerError> {
         if op == "typed" && args.len() == 2 && !KEEP_TYPED.with(std::cell::Cell::get) {
             return self.resolve_sexpr(&args[0]);
@@ -654,33 +685,7 @@ impl NodeLowerer {
             // fall through to `OirExpr::Call` and produce invalid TS
             // (bare `llm/generate(...)` with a `/` in the function name).
             op_name if orbital_core_base::ir::effects::is_substrate_operator(op_name) => {
-                // A trailing `{ emit: { success, failure } }` options object
-                // (mirroring fetch/persist) carries the completion events.
-                // The op fires `getSubstrateService().invoke(name, args)` and
-                // dispatches the success/failure event on completion — the
-                // `.lolo` async model. Without it the op is fire-and-forget.
-                // Only treated as options when the object has an `emit` key,
-                // so a plain object argument is still passed positionally
-                // (C-EMIT-SUBSTRATE-OPS-MARKER).
-                let (positional, emit_cfg) = match args.last() {
-                    Some(SExpression::Object(obj)) if obj.contains_key("emit") => {
-                        (&args[..args.len() - 1], self.extract_emit_config(obj)?)
-                    }
-                    _ => (args, None),
-                };
-                let resolved_args: Vec<OirExpr> = positional
-                    .iter()
-                    .map(|a| self.resolve_sexpr(a))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let mut args_map = orbital_core_base::ir::expr::OirFields::new();
-                for (i, arg) in resolved_args.into_iter().enumerate() {
-                    args_map.insert(format!("arg{}", i), arg);
-                }
-                Ok(OirExpr::effect(OirEffect::Custom {
-                    name: op_name.to_string(),
-                    args: args_map,
-                    emit: emit_cfg,
-                }))
+                self.custom_effect_call(op_name, args)
             }
 
             // Function call (also covers namespaced operators like

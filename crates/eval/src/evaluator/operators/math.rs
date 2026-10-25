@@ -78,6 +78,14 @@ impl Operator for MulOp {
     }
 }
 
+fn nan_to_null(n: f64) -> Value {
+    if n.is_nan() {
+        Value::Null
+    } else {
+        Value::Number(n)
+    }
+}
+
 pub struct DivOp;
 impl Operator for DivOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -87,7 +95,7 @@ impl Operator for DivOp {
         let denominator = require_number!(eval_expr(&args[1], ctx)?);
 
         if denominator == 0.0 {
-            return Err(OrbitalError::Eval(EvalError::DivisionByZero));
+            return Ok(Value::Null);
         }
 
         Ok(Value::Number(numerator / denominator))
@@ -103,7 +111,7 @@ impl Operator for ModOp {
         let b = require_number!(eval_expr(&args[1], ctx)?);
 
         if b == 0.0 {
-            return Err(OrbitalError::Eval(EvalError::DivisionByZero));
+            return Ok(Value::Null);
         }
 
         Ok(Value::Number(a % b))
@@ -228,7 +236,7 @@ impl Operator for MathPowOp {
         let base = require_number!(eval_expr(&args[0], ctx)?);
         let exp = require_number!(eval_expr(&args[1], ctx)?);
 
-        Ok(Value::Number(base.powf(exp)))
+        Ok(nan_to_null(base.powf(exp)))
     }
 }
 
@@ -239,7 +247,7 @@ impl Operator for MathSqrtOp {
         require_arity!(args, "sqrt", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
 
-        Ok(Value::Number(n.sqrt()))
+        Ok(nan_to_null(n.sqrt()))
     }
 }
 
@@ -250,7 +258,7 @@ impl Operator for MathLog10Op {
         require_arity!(args, "log10", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
 
-        Ok(Value::Number(n.log10()))
+        Ok(nan_to_null(n.log10()))
     }
 }
 
@@ -261,7 +269,7 @@ impl Operator for MathLnOp {
         require_arity!(args, "ln", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
 
-        Ok(Value::Number(n.ln()))
+        Ok(nan_to_null(n.ln()))
     }
 }
 
@@ -348,9 +356,7 @@ impl Operator for MathRandomIntOp {
         let max = require_number!(eval_expr(&args[1], ctx)?) as i64;
 
         if max < min {
-            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "math/randomInt: max must not be below min, got min {min} and max {max}"
-            ))));
+            return Ok(Value::Null);
         }
 
         let seed = orbital_core_base::time_util::now_millis() as u64;
@@ -437,7 +443,7 @@ impl Operator for MathAsinOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/asin", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(Value::Number(n.asin()))
+        Ok(nan_to_null(n.asin()))
     }
 }
 
@@ -447,7 +453,7 @@ impl Operator for MathAcosOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/acos", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(Value::Number(n.acos()))
+        Ok(nan_to_null(n.acos()))
     }
 }
 

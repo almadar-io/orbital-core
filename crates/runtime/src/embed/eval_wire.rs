@@ -787,9 +787,9 @@ mod trace_effects_tests {
 
     #[test]
     fn a_failing_effect_is_failed_with_its_message_leaves_the_row_alone_and_does_not_stop_the_list() {
-        let out = trace(json!({ "x": 1 }), json!([["set", "@entity.y", ["/", 1, 0]], ["set", "@entity.x", 5]]));
+        let out = trace(json!({ "x": 1 }), json!([["set", "@entity.y", ["/", 1]], ["set", "@entity.x", 5]]));
         same!(out["effects"][0]["status"], json!("failed"));
-        assert!(out["effects"][0]["error"].as_str().unwrap().contains("Division by zero"));
+        assert!(out["effects"][0]["error"].as_str().unwrap().contains("Arity mismatch"));
         same!(out["effects"][1]["status"], json!("executed"));
         same!(out["entity"], json!({ "x": 5 }));
     }
@@ -866,7 +866,7 @@ mod resolve_values_tests {
 
     #[test]
     fn edge_a_failing_operator_call_is_that_values_error_and_never_fails_its_siblings() {
-        let out = resolve(json!({ "entity": {} }), json!([["i18n/t", "greet:hello"], "ok"]));
+        let out = resolve(json!({ "entity": {} }), json!([["i18n/t"], "ok"]));
         assert_eq!(out[0]["kind"], json!("error"));
         assert_eq!(out[1], json!({ "kind": "value", "value": "ok" }));
     }

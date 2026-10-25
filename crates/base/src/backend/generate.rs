@@ -12,7 +12,7 @@ use crate::ir::types::OirModule;
 pub const UNSUPPORTED_OPERATOR_MARKER: &str = "UNSUPPORTED operator:";
 
 /// The shared unsupported-operator marker text for a specific operator, e.g.
-/// `unsupported_operator_marker("tensor/foo") == "UNSUPPORTED operator: tensor/foo"`.
+/// `unsupported_operator_marker("example/unknown") == "UNSUPPORTED operator: example/unknown"`.
 /// Each shell wraps this in its own comment syntax; the substring stays greppable.
 pub fn unsupported_operator_marker(function: &str) -> String {
     format!("{UNSUPPORTED_OPERATOR_MARKER} {function}")

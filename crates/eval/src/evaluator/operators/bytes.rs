@@ -26,6 +26,17 @@ fn bytes_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Vec<u8
     decode_value(eval_expr(arg, ctx)?, op)
 }
 
+/// The bytes a base64 argument encodes, or `None` when the text is not standard base64; a non-text argument is an error.
+fn bytes_arg_or_none(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Option<Vec<u8>>, OrbitalError> {
+    match eval_expr(arg, ctx)? {
+        Value::String(s) => Ok(codec::base64_decode(&s).ok()),
+        other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+            "{op}: expected a bytes argument, got {}",
+            other.type_name()
+        )))),
+    }
+}
+
 fn index(len: usize, at: f64) -> usize {
     if at < 0.0 {
         (len as i64 + at as i64).max(0) as usize
@@ -49,25 +60,25 @@ impl Operator for BytesFromStringOp {
     }
 }
 
-/// bytes/to-string - decode as UTF-8; anything else is an `invalid` error
+/// bytes/to-string - decode as UTF-8; bytes that are not UTF-8 answer null
 pub struct BytesToStringOp;
 impl Operator for BytesToStringOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/to-string", == 1);
-        let data = bytes_arg(&args[0], ctx, "bytes/to-string")?;
-        String::from_utf8(data)
-            .map(Value::String)
-            .map_err(|e| invalid("bytes/to-string", format!("UTF-8 ({e})")))
+        let Some(data) = bytes_arg_or_none(&args[0], ctx, "bytes/to-string")? else {
+            return Ok(Value::Null);
+        };
+        Ok(String::from_utf8(data).map_or(Value::Null, Value::String))
     }
 }
 
-/// bytes/from-base64 - standard padded base64 text as the bytes it encodes; other text is an `invalid` error
+/// bytes/from-base64 - standard padded base64 text as the bytes it encodes; other text answers null
 pub struct BytesFromBase64Op;
 impl Operator for BytesFromBase64Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/from-base64", == 1);
-        let data = bytes_arg(&args[0], ctx, "bytes/from-base64")?;
-        Ok(Value::String(codec::base64_encode(&data)))
+        Ok(bytes_arg_or_none(&args[0], ctx, "bytes/from-base64")?
+            .map_or(Value::Null, |data| Value::String(codec::base64_encode(&data))))
     }
 }
 
@@ -146,10 +157,11 @@ impl Operator for BytesEqualsOp {
     }
 }
 
-/// A whole-number argument (a null is refused), or an `invalid` error naming what it is for.
-fn whole(arg: &SExpression, ctx: &BindingContext, op: &str, what: &str) -> Result<i64, OrbitalError> {
+/// A whole-number argument; a number that is not whole is `None`, a non-number is an `invalid` error naming what it is for.
+fn whole(arg: &SExpression, ctx: &BindingContext, op: &str, what: &str) -> Result<Option<i64>, OrbitalError> {
     match eval_expr(arg, ctx)? {
-        Value::Number(n) if n.is_finite() && n.fract() == 0.0 && n.abs() <= MAX_SAFE => Ok(n as i64),
+        Value::Number(n) if n.is_finite() && n.fract() == 0.0 && n.abs() <= MAX_SAFE => Ok(Some(n as i64)),
+        Value::Number(_) => Ok(None),
         other => Err(invalid(op, format!("{what} {}: expected a whole number", other.to_text()))),
     }
 }
@@ -157,17 +169,19 @@ fn whole(arg: &SExpression, ctx: &BindingContext, op: &str, what: &str) -> Resul
 /// The largest integer a number holds exactly, 2^53 - 1.
 const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
 
-fn width_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<usize, OrbitalError> {
+fn width_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Option<usize>, OrbitalError> {
     match eval_expr(arg, ctx)? {
-        Value::Number(n) if n == 1.0 || n == 2.0 || n == 4.0 || n == 8.0 => Ok(n as usize),
+        Value::Number(n) if n == 1.0 || n == 2.0 || n == 4.0 || n == 8.0 => Ok(Some(n as usize)),
+        Value::Number(_) => Ok(None),
         other => Err(invalid(op, format!("width {}: expected 1, 2, 4 or 8", other.to_text()))),
     }
 }
 
-fn big_endian_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<bool, OrbitalError> {
+fn big_endian_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Option<bool>, OrbitalError> {
     match eval_expr(arg, ctx)? {
-        Value::String(s) if s == "be" => Ok(true),
-        Value::String(s) if s == "le" => Ok(false),
+        Value::String(s) if s == "be" => Ok(Some(true)),
+        Value::String(s) if s == "le" => Ok(Some(false)),
+        Value::String(_) => Ok(None),
         other => Err(invalid(op, format!("endian {}: expected \"be\" or \"le\"", other.to_text()))),
     }
 }
@@ -210,7 +224,9 @@ impl Operator for BytesAtOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/at", == 2);
         let data = bytes_arg(&args[0], ctx, "bytes/at")?;
-        let at = whole(&args[1], ctx, "bytes/at", "index")?;
+        let Some(at) = whole(&args[1], ctx, "bytes/at", "index")? else {
+            return Ok(Value::Null);
+        };
         Ok(usize::try_from(at)
             .ok()
             .and_then(|i| data.get(i))
@@ -219,16 +235,20 @@ impl Operator for BytesAtOp {
 }
 
 /// bytes/read-uint (data, offset, width, endian) - the unsigned integer in width bytes at offset; null when they run
-/// past the data. A width-8 value above 2^53 - 1 is refused, never rounded.
+/// past the data. A width-8 value above 2^53 - 1 answers null, never rounded.
 pub struct BytesReadUintOp;
 impl Operator for BytesReadUintOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "bytes/read-uint";
         require_arity!(args, OP, == 4);
         let data = bytes_arg(&args[0], ctx, OP)?;
-        let offset = whole(&args[1], ctx, OP, "offset")?;
-        let width = width_arg(&args[2], ctx, OP)?;
-        let big = big_endian_arg(&args[3], ctx, OP)?;
+        let (Some(offset), Some(width), Some(big)) = (
+            whole(&args[1], ctx, OP, "offset")?,
+            width_arg(&args[2], ctx, OP)?,
+            big_endian_arg(&args[3], ctx, OP)?,
+        ) else {
+            return Ok(Value::Null);
+        };
         let Some(field) = usize::try_from(offset)
             .ok()
             .and_then(|start| data.get(start..start.checked_add(width)?))
@@ -242,24 +262,28 @@ impl Operator for BytesReadUintOp {
             field.iter().rev().fold(0, fold)
         };
         if value as f64 > MAX_SAFE {
-            return Err(invalid(OP, format!("value {value}: above 2^53 - 1, not exact as a number")));
+            return Ok(Value::Null);
         }
         Ok(Value::Number(value as f64))
     }
 }
 
-/// bytes/write-uint (value, width, endian) - value as width bytes; a value the width (or a number) cannot hold exactly is refused
+/// bytes/write-uint (value, width, endian) - value as width bytes; a value the width (or a number) cannot hold exactly answers null
 pub struct BytesWriteUintOp;
 impl Operator for BytesWriteUintOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "bytes/write-uint";
         require_arity!(args, OP, == 3);
-        let value = whole(&args[0], ctx, OP, "value")?;
-        let width = width_arg(&args[1], ctx, OP)?;
-        let big = big_endian_arg(&args[2], ctx, OP)?;
+        let (Some(value), Some(width), Some(big)) = (
+            whole(&args[0], ctx, OP, "value")?,
+            width_arg(&args[1], ctx, OP)?,
+            big_endian_arg(&args[2], ctx, OP)?,
+        ) else {
+            return Ok(Value::Null);
+        };
         let fits = value >= 0 && (width == 8 || value < 1i64 << (8 * width));
         if !fits {
-            return Err(invalid(OP, format!("value {value}: does not fit {width} unsigned bytes")));
+            return Ok(Value::Null);
         }
         let all = (value as u64).to_be_bytes();
         let mut field = all[8 - width..].to_vec();
@@ -320,9 +344,10 @@ mod tests {
     }
 
     #[test]
-    fn to_string_rejects_bad_base64_and_bad_utf8() {
-        fails_invalid(serde_json::json!(["bytes/to-string", "!!notbase64"]));
-        fails_invalid(serde_json::json!(["bytes/to-string", "/w=="]));
+    fn to_string_answers_null_for_bad_base64_and_bad_utf8() {
+        assert_eq!(eval(serde_json::json!(["bytes/to-string", "!!notbase64"])).unwrap(), Value::Null);
+        assert_eq!(eval(serde_json::json!(["bytes/to-string", "/w=="])).unwrap(), Value::Null);
+        assert!(eval(serde_json::json!(["bytes/to-string", 5])).is_err(), "control: a number is a type error, not a bad value");
     }
 
     #[test]
@@ -337,9 +362,10 @@ mod tests {
     }
 
     #[test]
-    fn from_base64_rejects_text_that_is_not_standard_base64() {
-        fails_invalid(serde_json::json!(["bytes/from-base64", "!!notbase64"]));
-        fails_invalid(serde_json::json!(["bytes/from-base64", "aGVsbG8"]));
+    fn from_base64_answers_null_for_text_that_is_not_standard_base64() {
+        assert_eq!(eval(serde_json::json!(["bytes/from-base64", "!!notbase64"])).unwrap(), Value::Null);
+        assert_eq!(eval(serde_json::json!(["bytes/from-base64", "aGVsbG8"])).unwrap(), Value::Null);
+        assert!(eval(serde_json::json!(["bytes/from-base64", 5])).is_err(), "control: a number is a type error, not a bad value");
     }
 
     #[test]
@@ -444,10 +470,6 @@ mod tests {
         fails_invalid(serde_json::json!(["bytes/equals", "aGk=", "%%"]));
     }
 
-    fn fails(form: serde_json::Value) {
-        assert!(eval(form).is_err());
-    }
-
     fn b64(bytes: &[u8]) -> String {
         codec::base64_encode(bytes)
     }
@@ -484,7 +506,7 @@ mod tests {
         assert_eq!(eval(serde_json::json!(["bytes/at", data, 4])).unwrap(), Value::Null);
         assert_eq!(eval(serde_json::json!(["bytes/at", data, -1])).unwrap(), Value::Null);
         assert_eq!(eval(serde_json::json!(["bytes/at", "", 0])).unwrap(), Value::Null);
-        fails_invalid(serde_json::json!(["bytes/at", data, 1.5]));
+        assert_eq!(eval(serde_json::json!(["bytes/at", data, 1.5])).unwrap(), Value::Null);
         fails_invalid(serde_json::json!(["bytes/at", data, null]));
         fails_invalid(serde_json::json!(["bytes/at", "%%", 0]));
     }
@@ -514,11 +536,12 @@ mod tests {
         assert_eq!(eval(serde_json::json!(["bytes/read-uint", data, 2, 2, "be"])).unwrap(), Value::Null);
         assert_eq!(eval(serde_json::json!(["bytes/read-uint", data, -1, 1, "be"])).unwrap(), Value::Null);
         assert_eq!(eval(serde_json::json!(["bytes/read-uint", data, 3, 1, "le"])).unwrap(), Value::Null);
-        fails(serde_json::json!(["bytes/read-uint", data, 0, 3, "be"]));
-        fails(serde_json::json!(["bytes/read-uint", data, 0, 1, "middle"]));
-        fails_invalid(serde_json::json!(["bytes/read-uint", data, 0.5, 1, "be"]));
+        assert_eq!(eval(serde_json::json!(["bytes/read-uint", data, 0, 3, "be"])).unwrap(), Value::Null);
+        assert_eq!(eval(serde_json::json!(["bytes/read-uint", data, 0, 1, "middle"])).unwrap(), Value::Null);
+        assert_eq!(eval(serde_json::json!(["bytes/read-uint", data, 0.5, 1, "be"])).unwrap(), Value::Null);
         let too_wide = b64(&[0, 0x20, 0, 0, 0, 0, 0, 0]);
-        fails_invalid(serde_json::json!(["bytes/read-uint", too_wide, 0, 8, "be"]));
+        assert_eq!(eval(serde_json::json!(["bytes/read-uint", too_wide, 0, 8, "be"])).unwrap(), Value::Null);
+        fails_invalid(serde_json::json!(["bytes/read-uint", data, null, 1, "be"]));
     }
 
     #[test]
@@ -538,14 +561,15 @@ mod tests {
     }
 
     #[test]
-    fn write_uint_refuses_values_the_width_cannot_hold() {
-        fails_invalid(serde_json::json!(["bytes/write-uint", 256, 1, "be"]));
-        fails_invalid(serde_json::json!(["bytes/write-uint", -1, 2, "be"]));
-        fails_invalid(serde_json::json!(["bytes/write-uint", 1.5, 2, "be"]));
+    fn write_uint_answers_null_for_values_the_width_cannot_hold() {
+        let null = |form: serde_json::Value| assert_eq!(eval(form).unwrap(), Value::Null);
+        null(serde_json::json!(["bytes/write-uint", 256, 1, "be"]));
+        null(serde_json::json!(["bytes/write-uint", -1, 2, "be"]));
+        null(serde_json::json!(["bytes/write-uint", 1.5, 2, "be"]));
+        null(serde_json::json!(["bytes/write-uint", 65_536, 2, "le"]));
+        null(serde_json::json!(["bytes/write-uint", 9_007_199_254_740_992_i64, 8, "be"]));
+        null(serde_json::json!(["bytes/write-uint", 1, 3, "be"]));
+        null(serde_json::json!(["bytes/write-uint", 1, 2, "big"]));
         fails_invalid(serde_json::json!(["bytes/write-uint", null, 2, "be"]));
-        fails_invalid(serde_json::json!(["bytes/write-uint", 65_536, 2, "le"]));
-        fails_invalid(serde_json::json!(["bytes/write-uint", 9_007_199_254_740_992_i64, 8, "be"]));
-        fails(serde_json::json!(["bytes/write-uint", 1, 3, "be"]));
-        fails(serde_json::json!(["bytes/write-uint", 1, 2, "big"]));
     }
 }

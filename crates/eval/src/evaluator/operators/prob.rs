@@ -9,10 +9,6 @@
 use super::macros::*;
 use super::*;
 
-fn invalid(message: impl Into<String>) -> OrbitalError {
-    OrbitalError::Eval(EvalError::InvalidArgument(message.into()))
-}
-
 fn number(expr: &SExpression, ctx: &BindingContext) -> Result<f64, OrbitalError> {
     Ok(require_number!(eval_expr(expr, ctx)?))
 }
@@ -283,7 +279,7 @@ prob_op!(ProbHistogramOp, "prob/histogram", 2, |args, ctx| {
     let samples = numbers(eval_expr(&args[0], ctx)?)?;
     let bins = number(&args[1], ctx)?;
     if bins < 1.0 || bins.fract() != 0.0 {
-        return Err(invalid(format!("prob/histogram bins must be a positive integer, got {bins}")));
+        return Ok(Value::Null);
     }
     let mut out = ValueMap::new();
     if samples.is_empty() {
@@ -323,7 +319,7 @@ prob_op!(ProbPercentileOp, "prob/percentile", 2, |args, ctx| {
     let samples = numbers(eval_expr(&args[0], ctx)?)?;
     let p = number(&args[1], ctx)?;
     if !(0.0..=100.0).contains(&p) {
-        return Err(invalid(format!("prob/percentile p must be within 0 to 100, got {p}")));
+        return Ok(Value::Null);
     }
     if samples.is_empty() {
         return Ok(Value::Number(0.0));
@@ -342,7 +338,7 @@ prob_op!(ProbCredibleIntervalOp, "prob/credible-interval", 2, |args, ctx| {
     let samples = numbers(eval_expr(&args[0], ctx)?)?;
     let alpha = number(&args[1], ctx)?;
     if !(0.0..=1.0).contains(&alpha) {
-        return Err(invalid(format!("prob/credible-interval alpha must be within 0 to 1, got {alpha}")));
+        return Ok(Value::Null);
     }
     if samples.is_empty() {
         return Ok(Value::Array(vec![Value::Number(0.0), Value::Number(0.0)]));

@@ -14,6 +14,8 @@ struct Case {
     expect: Json,
     #[serde(default)]
     error: bool,
+    #[serde(default)]
+    null: bool,
 }
 
 fn crate_path(rel: &str) -> PathBuf {
@@ -39,10 +41,12 @@ fn cases() -> Vec<Case> {
 #[test]
 fn every_shared_vector_matches() {
     let cases = cases();
-    assert!(cases.iter().any(|c| c.error) && cases.iter().any(|c| !c.error));
+    assert!(cases.iter().any(|c| c.null) && cases.iter().any(|c| !c.null && !c.error));
     for case in &cases {
         let got = eval(&case.op, &case.args);
-        if case.error {
+        if case.null {
+            assert_eq!(got, Ok(Json::Null), "{} {:?} must answer null", case.op, case.args);
+        } else if case.error {
             assert!(got.is_err(), "{} {:?} must error, got {got:?}", case.op, case.args);
         } else {
             assert_eq!(got.as_ref().ok(), Some(&case.expect), "{} {:?}", case.op, case.args);

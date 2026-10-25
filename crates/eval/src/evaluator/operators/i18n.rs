@@ -10,10 +10,7 @@ impl Operator for I18nTOp {
         require_arity!(args, "i18n/t", >= 1);
         let key = eval_expr(&args[0], ctx)?.to_string_value();
         let Some(message) = ctx.message(&key) else {
-            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "no `{}` message for `{key}` — `orb validate` checks every key against every declared locale",
-                ctx.locale.to_string_value()
-            ))));
+            return Ok(Value::Null);
         };
         let mut out = message.to_string();
         if let Some(params) = args.get(1) {
@@ -78,9 +75,10 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_key_is_an_error_not_a_fallback() {
+    fn a_missing_key_answers_null_not_a_fallback() {
         let c = ctx("sl", &[]);
-        assert!(eval_expr(&call(serde_json::json!(["i18n/t", "home:hero.title"])), &c).is_err());
+        let v = eval_expr(&call(serde_json::json!(["i18n/t", "home:hero.title"])), &c).unwrap();
+        assert_eq!(v, Value::Null);
     }
 
     #[test]

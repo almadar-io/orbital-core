@@ -2,17 +2,21 @@
 
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 
-fn eval(expr: serde_json::Value) -> f64 {
+fn eval_value(expr: serde_json::Value) -> Value {
     let ctx = BindingContextBuilder::new().build();
     let sexpr = serde_json::from_value(expr).unwrap();
-    match Evaluator::new().evaluate(&sexpr, &ctx).unwrap() {
+    Evaluator::new().evaluate(&sexpr, &ctx).unwrap()
+}
+
+fn eval(expr: serde_json::Value) -> f64 {
+    match eval_value(expr) {
         Value::Number(n) => n,
         other => panic!("expected a number, got {other:?}"),
     }
 }
 
 #[test]
-fn both_logs_agree_with_the_js_evaluator_at_one_zero_and_below_zero() {
+fn both_logs_agree_at_one_and_zero_and_answer_null_below_zero() {
     for op in ["math/log10", "math/ln"] {
         assert_eq!(eval(serde_json::json!([op, 1])), 0.0, "{op} 1");
         assert_eq!(
@@ -20,7 +24,7 @@ fn both_logs_agree_with_the_js_evaluator_at_one_zero_and_below_zero() {
             f64::NEG_INFINITY,
             "{op} 0"
         );
-        assert!(eval(serde_json::json!([op, -1])).is_nan(), "{op} -1");
+        assert_eq!(eval_value(serde_json::json!([op, -1])), Value::Null, "{op} -1");
     }
 }
 

@@ -10,7 +10,7 @@
 //! read through the one variant it belongs to: the variant whose single-valued tags it all carries, else the one
 //! untagged variant whose closed shape it fits (every key declared; on a tie, every required member present),
 //! else the one `Map K V` variant (`type IrExpr = … | Map string IrExpr`), whose values are the node's children
-//! when `V` is `Shape`; none or several is an error, never a guess.
+//! when `V` is `Shape`; none or several answers null for the whole fold, never a guess.
 //!
 //! A node that is not an object (a list, a string, a number, a boolean) is read through the one variant of a union
 //! declared with that kind (`type Expr = string | number | boolean | [Expr]`), or through the definition itself when
@@ -75,19 +75,16 @@ fn child_position(def: &FieldDefinition, shape: &str) -> Option<ChildPosition> {
 fn select_variant<'d>(
     def: &'d FieldDefinition,
     node: &ValueMap,
-) -> Result<&'d FieldDefinition, OrbitalError> {
+) -> Result<Option<&'d FieldDefinition>, OrbitalError> {
     let keys: Vec<&str> = node.keys().map(String::as_str).collect();
     let choice = def.select_union_variant(&keys, |field, tag| match node.get(field) {
         Some(Value::String(s)) if s == tag => TagReading::Equal,
         _ => TagReading::Differs,
     });
     match choice {
-        UnionVariantChoice::Matched(one) => Ok(one),
+        UnionVariantChoice::Matched(one) => Ok(Some(one)),
         UnionVariantChoice::NoMatch | UnionVariantChoice::Deferred => map_variant(def),
-        UnionVariantChoice::Ambiguous(names) => Err(bad(format!(
-            "the value fits several variants equally: {}",
-            names.join(", ")
-        ))),
+        UnionVariantChoice::Ambiguous(_) => Ok(None),
         UnionVariantChoice::Malformed(reason) => Err(bad(reason)),
     }
 }
@@ -97,7 +94,7 @@ fn is_map(def: &FieldDefinition) -> bool {
 }
 
 /// The one `Map K V` variant of the union `def`: an object no tag or closed shape claims belongs to it.
-fn map_variant(def: &FieldDefinition) -> Result<&FieldDefinition, OrbitalError> {
+fn map_variant(def: &FieldDefinition) -> Result<Option<&FieldDefinition>, OrbitalError> {
     let (Some(names), Some(variants)) = (&def.values, &def.properties) else {
         return Err(bad("a union definition declares its variants (values + properties)"));
     };
@@ -107,12 +104,8 @@ fn map_variant(def: &FieldDefinition) -> Result<&FieldDefinition, OrbitalError> 
         .filter(|(_, v)| is_map(v))
         .collect();
     match maps.as_slice() {
-        [(_, one)] => Ok(one),
-        [] => Err(bad("the value belongs to no variant of its union")),
-        several => Err(bad(format!(
-            "the value fits several variants equally: {}",
-            several.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
-        ))),
+        [(_, one)] => Ok(Some(*one)),
+        _ => Ok(None),
     }
 }
 
@@ -121,7 +114,7 @@ fn kind_variant<'d>(
     def: &'d FieldDefinition,
     shape: &str,
     value: &Value,
-) -> Result<&'d FieldDefinition, OrbitalError> {
+) -> Result<Option<&'d FieldDefinition>, OrbitalError> {
     let (Some(names), Some(variants)) = (&def.values, &def.properties) else {
         return Err(bad("a union definition declares its variants (values + properties)"));
     };
@@ -138,15 +131,12 @@ fn kind_variant<'d>(
         })
         .collect();
     match matching.as_slice() {
-        [(_, one)] => Ok(one),
+        [(_, one)] => Ok(Some(*one)),
         [] => Err(OrbitalError::Eval(EvalError::TypeMismatch {
             expected: shape.to_string(),
             actual: value.type_name().to_string(),
         })),
-        several => Err(bad(format!(
-            "the value fits several variants equally: {}",
-            several.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
-        ))),
+        _ => Ok(None),
     }
 }
 
@@ -193,14 +183,17 @@ impl Fold<'_> {
     }
 
     /// The node's plan and its children, read from its declaration, never from its shape or names.
-    fn expand<'v>(&self, value: &'v Value) -> Result<Frame<'v>, OrbitalError> {
-        let declared = match (value, &self.def.field_type) {
+    fn expand<'v>(&self, value: &'v Value) -> Result<Option<Frame<'v>>, OrbitalError> {
+        let chosen = match (value, &self.def.field_type) {
             (Value::Object(node), FieldType::Union) => select_variant(self.def, node)?,
-            (Value::Object(_), FieldType::Object) => self.def,
+            (Value::Object(_), FieldType::Object) => Some(self.def),
             (Value::Object(_), _) => return Err(bad("the definition is not a struct or a tagged union")),
             (_, FieldType::Union) => kind_variant(self.def, self.shape, value)?,
-            (Value::Array(_), FieldType::Array) => self.def,
+            (Value::Array(_), FieldType::Array) => Some(self.def),
             (other, _) => return Err(self.mismatch(self.shape.to_string(), other)),
+        };
+        let Some(declared) = chosen else {
+            return Ok(None);
         };
         let mut children = Vec::new();
         let plan = match value {
@@ -255,7 +248,7 @@ impl Fold<'_> {
             }
             _ => Plan::Leaf,
         };
-        Ok(Frame { value, plan, children, results: Vec::new() })
+        Ok(Some(Frame { value, plan, children, results: Vec::new() }))
     }
 
     fn step(&self, frame: Frame<'_>) -> EvalResult {
@@ -287,14 +280,19 @@ impl Fold<'_> {
         if root.is_null() {
             return Ok(Value::Null);
         }
-        let mut stack = vec![self.expand(root)?];
+        let Some(first) = self.expand(root)? else {
+            return Ok(Value::Null);
+        };
+        let mut stack = vec![first];
         loop {
             let top = stack.last_mut().expect("the walk holds the node in progress");
             if let Some(&child) = top.children.get(top.results.len()) {
                 if child.is_null() {
                     top.results.push(Value::Null);
                 } else {
-                    let frame = self.expand(child)?;
+                    let Some(frame) = self.expand(child)? else {
+                        return Ok(Value::Null);
+                    };
                     stack.push(frame);
                 }
                 continue;

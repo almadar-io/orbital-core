@@ -2,7 +2,7 @@
 //!
 //! Numbers format as `Intl.NumberFormat` does for the locales in [`locale_of`] and the currencies in [`CURRENCIES`]:
 //! the shortest decimal digits of the value, rounded half away from zero at the last fraction digit, grouped by the
-//! locale. A locale or currency outside those tables is an error naming the supported set, never a silent fallback.
+//! locale. A locale or currency outside those tables, and any option value outside its range, answers null, never a silent fallback.
 
 use super::macros::*;
 use super::*;
@@ -118,13 +118,8 @@ const LOCALES: &[(&str, &Locale)] = &[
     ("ru", &RU), ("ru-RU", &RU),
 ];
 
-pub fn locale_of(tag: &str) -> Result<&'static Locale, OrbitalError> {
-    LOCALES.iter().find(|(known, _)| *known == tag).map(|(_, locale)| *locale).ok_or_else(|| {
-        invalid(format!(
-            "format: locale `{tag}` is not supported; supported: {}",
-            LOCALES.iter().map(|(known, _)| *known).collect::<Vec<_>>().join(", ")
-        ))
-    })
+pub fn locale_of(tag: &str) -> Option<&'static Locale> {
+    LOCALES.iter().find(|(known, _)| *known == tag).map(|(_, locale)| *locale)
 }
 
 /// ISO code, the symbol written before the amount in English, and the minor units the currency has.
@@ -174,10 +169,17 @@ fn number_arg(expr: &SExpression, ctx: &BindingContext) -> Result<f64, OrbitalEr
     Ok(require_number!(eval_expr(expr, ctx)?))
 }
 
-fn fraction_digits(options: &ValueMap, key: &str) -> Result<Option<usize>, OrbitalError> {
+enum Digits {
+    Absent,
+    Set(usize),
+    OutOfRange,
+}
+
+fn fraction_digits(options: &ValueMap, key: &str) -> Result<Digits, OrbitalError> {
     match options.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) if n.fract() == 0.0 && (0.0..=100.0).contains(n) => Ok(Some(*n as usize)),
+        None | Some(Value::Null) => Ok(Digits::Absent),
+        Some(Value::Number(n)) if n.fract() == 0.0 && (0.0..=100.0).contains(n) => Ok(Digits::Set(*n as usize)),
+        Some(Value::Number(_)) => Ok(Digits::OutOfRange),
         Some(other) => Err(invalid(format!("format/number: `{key}` must be a whole number from 0 to 100, got {}", other.to_string_value()))),
     }
 }
@@ -203,20 +205,23 @@ impl Operator for FormatNumberOp {
         };
         let locale = match options.get("locale") {
             None | Some(Value::Null) => &EN,
-            Some(Value::String(tag)) => locale_of(tag)?,
+            Some(Value::String(tag)) => match locale_of(tag) {
+                Some(locale) => locale,
+                None => return Ok(Value::Null),
+            },
             Some(other) => return Err(invalid(format!("format/number: `locale` must be a string, got {}", other.to_string_value()))),
         };
-        let (min, max) = match fraction_digits(&options, "decimals")? {
-            Some(decimals) => (decimals, decimals),
-            None => match (fraction_digits(&options, "minimumFractionDigits")?, fraction_digits(&options, "maximumFractionDigits")?) {
-                (Some(min), Some(max)) if max < min => {
-                    return Err(invalid(format!("format/number: maximumFractionDigits {max} is below minimumFractionDigits {min}")))
-                }
-                (Some(min), Some(max)) => (min, max),
-                (Some(min), None) => (min, min.max(3)),
-                (None, Some(max)) => (0, max),
-                (None, None) => (0, 3),
-            },
+        let decimals = fraction_digits(&options, "decimals")?;
+        let minimum = fraction_digits(&options, "minimumFractionDigits")?;
+        let maximum = fraction_digits(&options, "maximumFractionDigits")?;
+        let (min, max) = match (decimals, minimum, maximum) {
+            (Digits::OutOfRange, _, _) | (_, Digits::OutOfRange, _) | (_, _, Digits::OutOfRange) => return Ok(Value::Null),
+            (Digits::Set(decimals), _, _) => (decimals, decimals),
+            (Digits::Absent, Digits::Set(min), Digits::Set(max)) if max < min => return Ok(Value::Null),
+            (Digits::Absent, Digits::Set(min), Digits::Set(max)) => (min, max),
+            (Digits::Absent, Digits::Set(min), Digits::Absent) => (min, min.max(3)),
+            (Digits::Absent, Digits::Absent, Digits::Set(max)) => (0, max),
+            (Digits::Absent, Digits::Absent, Digits::Absent) => (0, 3),
         };
         Ok(Value::String(render(n, locale, min, max, 0)))
     }
@@ -232,7 +237,7 @@ impl Operator for FormatPercentOp {
             Some(expr) => {
                 let d = number_arg(expr, ctx)?;
                 if d.fract() != 0.0 || !(0.0..=100.0).contains(&d) {
-                    return Err(invalid(format!("format/percent: decimals must be a whole number from 0 to 100, got {d}")));
+                    return Ok(Value::Null);
                 }
                 d as usize
             }
@@ -254,13 +259,10 @@ impl Operator for FormatCurrencyOp {
             None => "en-US".to_string(),
         };
         if !matches!(locale.as_str(), "en" | "en-US") {
-            return Err(invalid(format!("format/currency: locale `{locale}` is not supported; supported: en, en-US")));
+            return Ok(Value::Null);
         }
         let Some((_, symbol, digits)) = CURRENCIES.iter().find(|(known, _, _)| *known == code) else {
-            return Err(invalid(format!(
-                "format/currency: currency `{code}` is not supported; supported: {}",
-                CURRENCIES.iter().map(|(known, _, _)| *known).collect::<Vec<_>>().join(", ")
-            )));
+            return Ok(Value::Null);
         };
         let amount = render(n, &EN, *digits, *digits, 0);
         Ok(Value::String(match amount.strip_prefix('-') {
@@ -309,7 +311,7 @@ impl Operator for FormatBytesOp {
         require_arity!(args, "format/bytes", 1);
         let bytes = number_arg(&args[0], ctx)?;
         if !bytes.is_finite() || bytes < 0.0 {
-            return Err(invalid(format!("format/bytes: a size is a finite number from 0, got {bytes}")));
+            return Ok(Value::Null);
         }
         if bytes == 0.0 {
             return Ok(Value::String("0 B".to_string()));

@@ -1,30 +1,21 @@
 //! Shared operator helpers.
 
-use orbital_core_base::error::{EvalError, OrbitalError};
 use orbital_core_base::value::Value;
 
 /// The key no operator writes into an object it builds: a host that copies the result into a plain object would let
-/// it reach the prototype. Every key-writing object operator refuses it the same way.
+/// it reach the prototype. Every key-writing object operator answers null for it the same way.
 pub const REFUSED_KEY: &str = "__proto__";
 
-pub fn refuse_proto_key(operator: &str, key: &str) -> Result<(), OrbitalError> {
-    if key == REFUSED_KEY {
-        return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "{operator}: `{REFUSED_KEY}` is not a permitted object key"
-        ))));
-    }
-    Ok(())
+pub fn is_refused_key(key: &str) -> bool {
+    key == REFUSED_KEY
 }
 
-/// [`refuse_proto_key`] over every key of a value, at any depth.
-pub fn refuse_proto_keys_in(operator: &str, value: &Value) -> Result<(), OrbitalError> {
+/// [`is_refused_key`] over every key of a value, at any depth.
+pub fn has_refused_key_in(value: &Value) -> bool {
     match value {
-        Value::Object(map) => map.iter().try_for_each(|(key, inner)| {
-            refuse_proto_key(operator, key)?;
-            refuse_proto_keys_in(operator, inner)
-        }),
-        Value::Array(items) => items.iter().try_for_each(|item| refuse_proto_keys_in(operator, item)),
-        _ => Ok(()),
+        Value::Object(map) => map.iter().any(|(key, inner)| is_refused_key(key) || has_refused_key_in(inner)),
+        Value::Array(items) => items.iter().any(has_refused_key_in),
+        _ => false,
     }
 }
 

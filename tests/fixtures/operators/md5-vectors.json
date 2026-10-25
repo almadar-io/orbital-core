@@ -131,7 +131,7 @@
       "YWJj",
       "octal"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: digest encoding"
   },
   {
@@ -140,7 +140,7 @@
       "YWJj",
       "HEX"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: digest encoding is case-sensitive"
   },
   {
@@ -149,7 +149,7 @@
       "YWJ",
       "hex"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded base64"
   },
   {
@@ -158,7 +158,7 @@
       "YW Jj",
       "hex"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: whitespace in base64"
   },
   {
@@ -167,7 +167,7 @@
       "YWJj\n",
       "hex"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: trailing newline in base64"
   },
   {
@@ -176,7 +176,7 @@
       "_-8=",
       "hex"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: url-safe alphabet"
   },
   {
@@ -185,7 +185,7 @@
       "Zh==",
       "hex"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: non-canonical trailing bits"
   },
   {

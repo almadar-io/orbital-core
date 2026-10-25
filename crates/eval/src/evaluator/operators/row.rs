@@ -6,7 +6,7 @@ use super::*;
 use orbital_core_base::json_value::value_to_json;
 use orbital_core_base::row_set::RowPredicate;
 
-/// row/matches - `(row/matches pred row)`: `true` when `row` satisfies `pred`. An absent operand is an absent result.
+/// row/matches - `(row/matches pred row)`: `true` when `row` satisfies `pred`. An absent operand, or a value that is not a `RowPredicate`, is an absent result.
 pub struct RowMatchesOp;
 impl Operator for RowMatchesOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -22,11 +22,9 @@ impl Operator for RowMatchesOp {
                 actual: row.type_name().into(),
             }));
         }
-        let pred: RowPredicate = serde_json::from_value(value_to_json(&pred)).map_err(|e| {
-            OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "row/matches: not a RowPredicate: {e}"
-            )))
-        })?;
+        let Ok(pred) = serde_json::from_value::<RowPredicate>(value_to_json(&pred)) else {
+            return Ok(Value::Null);
+        };
         Ok(Value::Bool(pred.matches(&row)))
     }
 }

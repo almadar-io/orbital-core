@@ -4,14 +4,24 @@ use super::macros::*;
 use super::*;
 use orbital_core_base::codec;
 
-fn digest_text(bytes: &[u8], encoding: &str, op: &str) -> EvalResult {
+fn encode_digest(bytes: &[u8], encoding: &str) -> Option<String> {
     match encoding {
-        "hex" => Ok(Value::String(codec::hex(bytes))),
-        "base64" => Ok(Value::String(codec::base64_encode(bytes))),
-        other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "{op}: encoding must be \"hex\" or \"base64\", got \"{other}\""
-        )))),
+        "hex" => Some(codec::hex(bytes)),
+        "base64" => Some(codec::base64_encode(bytes)),
+        _ => None,
     }
+}
+
+fn digest_text(bytes: &[u8], encoding: &str, op: &str) -> EvalResult {
+    encode_digest(bytes, encoding).map(Value::String).ok_or_else(|| {
+        OrbitalError::Eval(EvalError::InvalidArgument(format!(
+            "{op}: encoding must be \"hex\" or \"base64\", got \"{encoding}\""
+        )))
+    })
+}
+
+fn digest_or_null(bytes: &[u8], encoding: &str) -> EvalResult {
+    Ok(encode_digest(bytes, encoding).map_or(Value::Null, Value::String))
 }
 
 fn string_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<String, OrbitalError> {
@@ -34,7 +44,7 @@ impl Operator for StrEncodeUriComponentOp {
     }
 }
 
-/// str/decode-uri-component - JS decodeURIComponent; null yields null, malformed input is an evaluation error
+/// str/decode-uri-component - JS decodeURIComponent; null yields null, malformed input answers null
 pub struct StrDecodeUriComponentOp;
 impl Operator for StrDecodeUriComponentOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -49,12 +59,7 @@ impl Operator for StrDecodeUriComponentOp {
                 ))))
             }
         };
-        let decoded = codec::decode_uri_component(&s).map_err(|e| {
-            OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "str/decode-uri-component: {e}"
-            )))
-        })?;
-        Ok(Value::String(decoded))
+        Ok(codec::decode_uri_component(&s).map_or(Value::Null, Value::String))
     }
 }
 
@@ -90,16 +95,13 @@ fn decode_base64_text(s: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| format!("not UTF-8: {e}"))
 }
 
-/// base64/decode - to UTF-8; invalid base64 or invalid UTF-8 is an evaluation error
+/// base64/decode - to UTF-8; invalid base64 or invalid UTF-8 answers null
 pub struct Base64DecodeOp;
 impl Operator for Base64DecodeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "base64/decode", == 1);
         let s = string_arg(&args[0], ctx, "base64/decode")?;
-        let text = decode_base64_text(&s).map_err(|e| {
-            OrbitalError::Eval(EvalError::InvalidArgument(format!("base64/decode: {e}")))
-        })?;
-        Ok(Value::String(text))
+        Ok(decode_base64_text(&s).map_or(Value::Null, Value::String))
     }
 }
 
@@ -141,18 +143,13 @@ impl Operator for HashSha256Op {
         };
         let data = match input.as_str() {
             "text" => s.into_bytes(),
-            "bytes" => codec::base64_decode(&s).map_err(|e| {
-                OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                    "{OP}: invalid bytes ({e})"
-                )))
-            })?,
-            other => {
-                return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                    "{OP}: input must be \"text\" or \"bytes\", got \"{other}\""
-                ))))
-            }
+            "bytes" => match codec::base64_decode(&s) {
+                Ok(data) => data,
+                Err(_) => return Ok(Value::Null),
+            },
+            _ => return Ok(Value::Null),
         };
-        digest_text(&codec::sha256(&data), &encoding, OP)
+        digest_or_null(&codec::sha256(&data), &encoding)
     }
 }
 
@@ -162,11 +159,12 @@ impl Operator for HashMd5Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "hash/md5", == 2);
         let s = string_arg(&args[0], ctx, "hash/md5")?;
-        let bytes = codec::base64_decode(&s).map_err(|e| {
-            OrbitalError::Eval(EvalError::InvalidArgument(format!("hash/md5: {e}")))
-        })?;
+        let bytes = codec::base64_decode(&s);
         let encoding = string_arg(&args[1], ctx, "hash/md5")?;
-        digest_text(&codec::md5(&bytes), &encoding, "hash/md5")
+        match bytes {
+            Ok(bytes) => digest_or_null(&codec::md5(&bytes), &encoding),
+            Err(_) => Ok(Value::Null),
+        }
     }
 }
 
@@ -196,23 +194,16 @@ impl Operator for HashPbkdf2Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "hash/pbkdf2";
         require_arity!(args, OP, == 4);
-        let bytes = |arg: &SExpression| -> Result<Vec<u8>, OrbitalError> {
-            let s = string_arg(arg, ctx, OP)?;
-            codec::base64_decode(&s).map_err(|e| {
-                OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                    "{OP}: invalid bytes ({e})"
-                )))
-            })
-        };
-        let password = bytes(&args[0])?;
-        let salt = bytes(&args[1])?;
-        let count = |arg: &SExpression, what: &str| -> Result<u32, OrbitalError> {
+        let password = bytes_in(&args[0], ctx, OP)?;
+        let salt = bytes_in(&args[1], ctx, OP)?;
+        let count = |arg: &SExpression, what: &str| -> Result<Option<u32>, OrbitalError> {
             match eval_expr(arg, ctx)? {
                 Value::Number(n)
                     if n.fract() == 0.0 && (1.0..=f64::from(u32::MAX)).contains(&n) =>
                 {
-                    Ok(n as u32)
+                    Ok(Some(n as u32))
                 }
+                Value::Number(_) => Ok(None),
                 other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
                     "{OP}: {what} {}: expected a whole number from 1",
                     other.to_text()
@@ -221,40 +212,43 @@ impl Operator for HashPbkdf2Op {
         };
         let iterations = count(&args[2], "iterations")?;
         let length = count(&args[3], "length")?;
+        let (Some(password), Some(salt), Some(iterations), Some(length)) = (password, salt, iterations, length) else {
+            return Ok(Value::Null);
+        };
         let key = codec::pbkdf2_hmac_sha256(&password, &salt, iterations, length as usize);
         Ok(Value::String(codec::base64_encode(&key)))
     }
 }
 
-fn bytes_in(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Vec<u8>, OrbitalError> {
+fn bytes_in(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Option<Vec<u8>>, OrbitalError> {
     let s = string_arg(arg, ctx, op)?;
-    codec::base64_decode(&s).map_err(|e| {
-        OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "{op}: invalid bytes ({e})"
-        )))
-    })
+    Ok(codec::base64_decode(&s).ok())
 }
 
-fn codec_options(args: &[SExpression], index: usize, ctx: &BindingContext, op: &str, keys: &[&str]) -> Result<Value, OrbitalError> {
+fn codec_options(args: &[SExpression], index: usize, ctx: &BindingContext, op: &str, keys: &[&str]) -> Result<Option<Value>, OrbitalError> {
     let value = match args.get(index) { Some(arg) => eval_expr(arg, ctx)?, None => Value::Object(Default::default()) };
     let Value::Object(fields) = &value else { return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: options must be an object")))); };
     for (key, value) in fields {
-        if !keys.contains(&key.as_str()) || (key == "result" && !matches!(value, Value::Bool(_))) {
+        if key == "result" && !matches!(value, Value::Bool(_)) {
             return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: invalid option {key}"))));
         }
+        if !keys.contains(&key.as_str()) {
+            return Ok(None);
+        }
     }
-    Ok(value)
+    Ok(Some(value))
 }
 
-fn codec_setting(options: &Value, key: &str, default: u32, max: u32, min: u32, op: &str) -> Result<u32, OrbitalError> {
-    let Some(value) = options.as_object().and_then(|fields| fields.get(key)) else { return Ok(default); };
-    if let Value::Number(n) = value {
-        if n.fract() == 0.0 && *n >= f64::from(min) && *n <= f64::from(max) { return Ok(*n as u32); }
+fn codec_setting(options: &Value, key: &str, default: u32, max: u32, min: u32, op: &str) -> Result<Option<u32>, OrbitalError> {
+    let Some(value) = options.as_object().and_then(|fields| fields.get(key)) else { return Ok(Some(default)); };
+    match value {
+        Value::Number(n) if n.fract() == 0.0 && *n >= f64::from(min) && *n <= f64::from(max) => Ok(Some(*n as u32)),
+        Value::Number(_) => Ok(None),
+        _ => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: {key} must be a whole number from {min} to {max}")))),
     }
-    Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: {key} must be a whole number from {min} to {max}"))))
 }
 
-fn codec_answer(answer: Result<codec::CodecDecoded, codec::CodecFailure>, options: &Value, op: &str, max: usize) -> EvalResult {
+fn codec_answer(answer: Result<codec::CodecDecoded, codec::CodecFailure>, options: &Value) -> EvalResult {
     if options.as_object().and_then(|fields| fields.get("result")) == Some(&Value::Bool(true)) {
         let (ok, data, crc, code) = match answer {
             Ok(decoded) => (true, Value::String(codec::base64_encode(&decoded.data)), decoded.crc.map(|crc| Value::Number(f64::from(crc))).unwrap_or(Value::Null), Value::Null),
@@ -262,10 +256,7 @@ fn codec_answer(answer: Result<codec::CodecDecoded, codec::CodecFailure>, option
         };
         return Ok(Value::Object([("ok", Value::Bool(ok)), ("data", data), ("crc", crc), ("code", code)].into_iter().map(|(key, value)| (key.to_string(), value)).collect()));
     }
-    answer.map(|decoded| Value::String(codec::base64_encode(&decoded.data))).map_err(|error| {
-        let detail = if error == codec::CodecFailure::OutputLimit { format!("the output is larger than {max} bytes") } else { error.code().to_string() };
-        OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: {detail}")))
-    })
+    Ok(answer.map_or(Value::Null, |decoded| Value::String(codec::base64_encode(&decoded.data))))
 }
 
 fn compress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult {
@@ -274,13 +265,16 @@ fn compress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult 
     let data = bytes_in(&args[0], ctx, op)?;
     let gzip = op == "gzip/compress";
     let options = codec_options(args, 1, ctx, op, if gzip { &["result", "level"] } else { &["result", "quality", "window"] })?;
+    let (Some(data), Some(options)) = (data, options) else { return Ok(Value::Null); };
     let packed = if gzip {
-        codec::gzip_compress_level(&data, codec_setting(&options, "level", 6, 9, 0, op)?)
+        let Some(level) = codec_setting(&options, "level", 6, 9, 0, op)? else { return Ok(Value::Null); };
+        codec::gzip_compress_level(&data, level)
     } else {
-        codec::brotli_compress_options(&data, codec_setting(&options, "quality", 11, 11, 0, op)? as i32, codec_setting(&options, "window", 22, 24, 10, op)? as i32)
+        let (Some(quality), Some(window)) = (codec_setting(&options, "quality", 11, 11, 0, op)?, codec_setting(&options, "window", 22, 24, 10, op)?) else { return Ok(Value::Null); };
+        codec::brotli_compress_options(&data, quality as i32, window as i32)
     };
     let crc = if gzip { Some(u32::from_le_bytes(packed[packed.len() - 8..packed.len() - 4].try_into().expect("gzip trailer"))) } else { None };
-    codec_answer(Ok(codec::CodecDecoded { data: packed, crc }), &options, op, 0)
+    codec_answer(Ok(codec::CodecDecoded { data: packed, crc }), &options)
 }
 
 fn decompress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult {
@@ -288,12 +282,14 @@ fn decompress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResul
     if args.len() > 3 { require_arity!(args, op, == 3); }
     let data = bytes_in(&args[0], ctx, op)?;
     let max = match eval_expr(&args[1], ctx)? {
-        Value::Number(n) if n.fract() == 0.0 && n >= 0.0 && n <= u32::MAX as f64 => n as usize,
+        Value::Number(n) if n.fract() == 0.0 && n >= 0.0 && n <= u32::MAX as f64 => Some(n as usize),
+        Value::Number(_) => None,
         other => return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: maxBytes {}: expected a whole number from 0", other.to_text())))),
     };
     let options = codec_options(args, 2, ctx, op, &["result"])?;
+    let (Some(data), Some(max), Some(options)) = (data, max, options) else { return Ok(Value::Null); };
     let answer = if op == "gzip/decompress" { codec::gzip_decode(&data, max) } else { codec::brotli_decode(&data, max) };
-    codec_answer(answer, &options, op, max)
+    codec_answer(answer, &options)
 }
 
 pub struct GzipCompressOp;
@@ -408,11 +404,16 @@ mod tests {
         for form in [
             serde_json::json!(["hash/sha256", 42, "hex"]),
             serde_json::json!(["hash/sha256", 42, "hex", "bytes"]),
-            serde_json::json!(["hash/sha256", "abc", "hex", "utf16"]),
-            serde_json::json!(["hash/sha256", "%%not base64", "hex", "bytes"]),
         ] {
             let err = eval(form).expect_err("refused");
             assert!(err.to_string().contains("hash/sha256"), "{err}");
+        }
+        for form in [
+            serde_json::json!(["hash/sha256", "abc", "hex", "utf16"]),
+            serde_json::json!(["hash/sha256", "%%not base64", "hex", "bytes"]),
+            serde_json::json!(["hash/sha256", "abc", "octal"]),
+        ] {
+            assert_eq!(eval(form).unwrap(), Value::Null);
         }
     }
 
@@ -425,11 +426,6 @@ mod tests {
             Ok(Value::String(b64)) => codec::base64_decode(&b64).expect("bytes"),
             other => panic!("expected bytes, got {other:?}"),
         }
-    }
-
-    fn refused(form: serde_json::Value, op: &str, says: &str) {
-        let err = eval(form).expect_err("refused").to_string();
-        assert!(err.contains(op) && err.contains(says), "{err}");
     }
 
     fn compression_cases(algo: &str, cli: &str) {
@@ -451,38 +447,20 @@ mod tests {
             bytes_of(serde_json::json!([decompress, empty, 0])).is_empty(),
             "edge: empty input"
         );
-        refused(
-            serde_json::json!([decompress, cli, 16]),
-            &decompress,
-            "larger than 16 bytes",
-        );
+        assert_eq!(eval(serde_json::json!([decompress, cli, 16])).unwrap(), Value::Null);
         let mut corrupt = codec::base64_decode(cli).unwrap();
         corrupt.truncate(corrupt.len() / 2);
-        refused(
-            serde_json::json!([decompress, codec::base64_encode(&corrupt), 1024]),
-            &decompress,
-            "",
+        assert_eq!(
+            eval(serde_json::json!([decompress, codec::base64_encode(&corrupt), 1024])).unwrap(),
+            Value::Null
         );
-        refused(
-            serde_json::json!([
-                decompress,
-                codec::base64_encode(b"not compressed at all"),
-                1024
-            ]),
-            &decompress,
-            "",
+        assert_eq!(
+            eval(serde_json::json!([decompress, codec::base64_encode(b"not compressed at all"), 1024])).unwrap(),
+            Value::Null
         );
-        refused(
-            serde_json::json!([decompress, "%%", 1024]),
-            &decompress,
-            "invalid bytes",
-        );
+        assert_eq!(eval(serde_json::json!([decompress, "%%", 1024])).unwrap(), Value::Null);
         for max in [serde_json::json!(-1), serde_json::json!(1.5)] {
-            refused(
-                serde_json::json!([decompress, cli, max]),
-                &decompress,
-                "maxBytes",
-            );
+            assert_eq!(eval(serde_json::json!([decompress, cli, max])).unwrap(), Value::Null);
         }
         assert!(
             eval(serde_json::json!([decompress, cli])).is_err(),
@@ -525,8 +503,8 @@ mod tests {
 
     #[test]
     fn control_the_two_formats_do_not_read_each_other() {
-        assert!(eval(serde_json::json!(["gzip/decompress", BROTLI_CLI, 1024])).is_err());
-        assert!(eval(serde_json::json!(["brotli/decompress", GZIP_CLI, 1024])).is_err());
+        assert_eq!(eval(serde_json::json!(["gzip/decompress", BROTLI_CLI, 1024])).unwrap(), Value::Null);
+        assert_eq!(eval(serde_json::json!(["brotli/decompress", GZIP_CLI, 1024])).unwrap(), Value::Null);
     }
 
     #[test]
@@ -544,8 +522,10 @@ mod tests {
             serde_json::json!(["gzip/compress", "", { "level": 10 }]),
             serde_json::json!(["brotli/compress", "", { "quality": 12 }]),
             serde_json::json!(["brotli/compress", "", { "window": 9 }]),
-            serde_json::json!(["gzip/decompress", GZIP_CLI, 100, { "result": "true" }]),
-        ] { assert!(eval(call).is_err()); }
+            serde_json::json!(["gzip/compress", "", { "unknown": 1 }]),
+            serde_json::json!(["gzip/compress", "%%"]),
+        ] { assert_eq!(eval(call).unwrap(), Value::Null); }
+        assert!(eval(serde_json::json!(["gzip/decompress", GZIP_CLI, 100, { "result": "true" }])).is_err());
     }
 
     #[test]
@@ -563,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn pbkdf2_control_differs_by_salt_and_refuses_bad_counts() {
+    fn pbkdf2_control_differs_by_salt_and_answers_null_for_bad_counts() {
         assert_ne!(
             pbkdf2_hex(b"password", b"pepper", 1, 32),
             pbkdf2_hex(b"password", b"salt", 1, 32)
@@ -577,16 +557,11 @@ mod tests {
             (1.0, 0.0),
             (1.0, 2.5),
         ] {
-            let err = eval(serde_json::json!([
-                "hash/pbkdf2",
-                pw,
-                salt,
-                iterations,
-                length
-            ]))
-            .expect_err("refused");
-            assert!(err.to_string().contains("hash/pbkdf2"), "{err}");
+            assert_eq!(
+                eval(serde_json::json!(["hash/pbkdf2", pw, salt, iterations, length])).unwrap(),
+                Value::Null
+            );
         }
-        assert!(eval(serde_json::json!(["hash/pbkdf2", "%%", salt, 1, 32])).is_err());
+        assert_eq!(eval(serde_json::json!(["hash/pbkdf2", "%%", salt, 1, 32])).unwrap(), Value::Null);
     }
 }

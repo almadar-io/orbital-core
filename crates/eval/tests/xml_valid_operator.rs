@@ -68,11 +68,11 @@ fn legacy_xml_parse_preserves_empty_text_namespace_and_null_values() {
 }
 
 #[test]
-fn legacy_xml_parse_still_throws_for_malformed_syntax() {
+fn xml_parse_answers_null_for_malformed_syntax() {
     let ctx = BindingContextBuilder::new().build();
     for input in ["", "plain text", "<a>", "<a></b>", "<a/><b/>"] {
         let parse: SExpression =
             serde_json::from_value(json!(["xml/parse", input, "Row"])).unwrap();
-        assert!(Evaluator::new().evaluate(&parse, &ctx).is_err(), "{input}");
+        assert_eq!(Evaluator::new().evaluate(&parse, &ctx).unwrap(), Value::Null, "{input}");
     }
 }

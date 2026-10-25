@@ -330,7 +330,7 @@ fn to_eval_error(mismatch: Mismatch) -> OrbitalError {
             expected: format!("a present operand for `{operator}`"),
             actual: operand,
         }),
-        Mismatch::MaybeAbsent { operator, operand } => {
+        Mismatch::MaybeAbsent { operator, operand } | Mismatch::MissingResult { operator, operand, .. } => {
             OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: format!("a present operand for `{operator}`"),
                 actual: operand,

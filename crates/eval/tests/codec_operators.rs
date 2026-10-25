@@ -14,6 +14,8 @@ struct Case {
     expect: Option<Json>,
     #[serde(default)]
     error: bool,
+    #[serde(default)]
+    null: bool,
 }
 
 fn crate_path(rel: &str) -> PathBuf {
@@ -39,7 +41,9 @@ fn every_shared_vector_matches() {
     assert!(!cases.is_empty());
     for case in &cases {
         let got = eval(&case.op, &case.args);
-        if case.error {
+        if case.null {
+            assert_eq!(got, Ok(Json::Null), "{} {:?} must answer null", case.op, case.args);
+        } else if case.error {
             assert!(got.is_err(), "{} {:?} must error, got {got:?}", case.op, case.args);
         } else {
             assert_eq!(
@@ -54,9 +58,9 @@ fn every_shared_vector_matches() {
 }
 
 #[test]
-fn an_unknown_digest_encoding_is_an_error_and_a_known_one_is_the_control() {
-    assert!(eval("hash/sha256", &[json!("abc"), json!("hex")]).is_ok());
-    assert!(eval("hash/sha256", &[json!("abc"), json!("octal")]).is_err());
+fn an_unknown_digest_encoding_answers_null_for_hash_and_errors_for_hmac() {
+    assert!(eval("hash/sha256", &[json!("abc"), json!("hex")]).is_ok_and(|v| v.is_string()));
+    assert_eq!(eval("hash/sha256", &[json!("abc"), json!("octal")]), Ok(Json::Null));
     assert!(eval("hmac/sha256", &[json!("k"), json!("m"), json!("octal")]).is_err());
 }
 
@@ -73,10 +77,12 @@ fn every_shared_regex_vector_matches() {
     let cases: Vec<Case> = serde_json::from_str(&raw).unwrap();
     assert!(cases.iter().any(|case| case.expect == Some(json!(true))));
     assert!(cases.iter().any(|case| case.expect == Some(json!(false))));
-    assert!(cases.iter().any(|case| case.error));
+    assert!(cases.iter().any(|case| case.null));
     for case in &cases {
         let got = eval(&case.op, &case.args);
-        if case.error {
+        if case.null {
+            assert_eq!(got, Ok(Json::Null), "{} {:?} must answer null", case.op, case.args);
+        } else if case.error {
             assert!(got.is_err(), "{} {:?} must error, got {got:?}", case.op, case.args);
         } else {
             assert_eq!(got.as_ref().ok(), case.expect.as_ref(), "{} {:?}", case.op, case.args);

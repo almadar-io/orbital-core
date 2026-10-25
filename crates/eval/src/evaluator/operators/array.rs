@@ -1142,19 +1142,10 @@ impl Operator for ArrayRemoveItemOp {
 
 /// Shared cosine core for array/cosine and array/nearest — the exact twin of
 /// `@almadar/evaluator`'s `cosineSimilarity` (std/array.ts), including its
-/// error conditions.
-fn cosine_similarity(a: &[Value], b: &[Value]) -> Result<f64, OrbitalError> {
-    if a.len() != b.len() {
-        return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "array/cosine: vector length mismatch ({} vs {})",
-            a.len(),
-            b.len()
-        ))));
-    }
-    if a.is_empty() {
-        return Err(OrbitalError::Eval(EvalError::InvalidArgument(
-            "array/cosine: empty vector has no defined similarity".to_string(),
-        )));
+/// error conditions; a length mismatch, an empty vector or a zero-magnitude vector has no similarity (`None`).
+fn cosine_similarity(a: &[Value], b: &[Value]) -> Result<Option<f64>, OrbitalError> {
+    if a.len() != b.len() || a.is_empty() {
+        return Ok(None);
     }
     let mut dot = 0.0;
     let mut norm_a = 0.0;
@@ -1174,11 +1165,9 @@ fn cosine_similarity(a: &[Value], b: &[Value]) -> Result<f64, OrbitalError> {
         norm_b += bv * bv;
     }
     if norm_a == 0.0 || norm_b == 0.0 {
-        return Err(OrbitalError::Eval(EvalError::InvalidArgument(
-            "array/cosine: zero-magnitude vector has no defined direction to compare".to_string(),
-        )));
+        return Ok(None);
     }
-    Ok(dot / (norm_a.sqrt() * norm_b.sqrt()))
+    Ok(Some(dot / (norm_a.sqrt() * norm_b.sqrt())))
 }
 
 /// array/cosine - Cosine similarity between two numeric arrays. Pure math,
@@ -1189,7 +1178,7 @@ impl Operator for ArrayCosineOp {
         require_arity!(args, "array/cosine", >= 2);
         let a = require_array!(eval_expr(&args[0], ctx)?);
         let b = require_array!(eval_expr(&args[1], ctx)?);
-        Ok(Value::Number(cosine_similarity(&a, &b)?))
+        Ok(cosine_similarity(&a, &b)?.map_or(Value::Null, Value::Number))
     }
 }
 
@@ -1204,9 +1193,7 @@ impl Operator for ArrayNearestOp {
         let query = require_array!(eval_expr(&args[0], ctx)?);
         let candidates = require_array!(eval_expr(&args[1], ctx)?);
         if candidates.is_empty() {
-            return Err(OrbitalError::Eval(EvalError::InvalidArgument(
-                "array/nearest: candidates array is empty, no nearest match exists".to_string(),
-            )));
+            return Ok(Value::Null);
         }
         let mut scores = Vec::with_capacity(candidates.len());
         for candidate in &candidates {
@@ -1219,7 +1206,10 @@ impl Operator for ArrayNearestOp {
                     }))
                 }
             };
-            scores.push(cosine_similarity(&query, c)?);
+            match cosine_similarity(&query, c)? {
+                Some(score) => scores.push(score),
+                None => return Ok(Value::Null),
+            }
         }
         let mut best_idx = 0usize;
         let mut best_score = scores[0];

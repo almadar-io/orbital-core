@@ -269,6 +269,10 @@ pub struct EmbeddedOperator {
     /// passes.
     #[serde(rename = "requiresEmitSuccess", default)]
     pub requires_emit_success: bool,
+    /// The operator can fail on a well-typed value; it answers null then, never raising, so its result is optional
+    /// (`T?`) and the program handles the missing value (owner ruling 2026-10-25).
+    #[serde(default)]
+    pub failable: Option<FailableOperator>,
     /// 0-indexed argument position of the operator's lambda/callback, when it
     /// takes one. The sexpr validator rejects a `(fn …)` form at any OTHER
     /// argument position — the decidable wrong-arg-order class
@@ -288,6 +292,15 @@ pub struct EmbeddedOperator {
     /// The host that executes the effect (`program`: the shared program host, `runProgramEffect`; `os`: the `os/` family under a declared grant); absent when the runtime executes it.
     #[serde(default)]
     pub host: Option<String>,
+}
+
+/// When a failable operator's result is not optional.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FailableOperator {
+    /// Argument positions whose bad value is the only way to fail: with a literal at every one of them the call is
+    /// checked when the program is validated, so its result is not optional.
+    #[serde(rename = "unlessLiteral", default)]
+    pub unless_literal: Vec<usize>,
 }
 
 /// Metadata for an operator category.

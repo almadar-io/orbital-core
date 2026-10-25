@@ -657,7 +657,15 @@ fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
                         .map(|signature| arg_types::CallFrame::enter(signature, &arr[1..]));
                     return operator.evaluate(&arr[1..], ctx);
                 }
-                // Unknown operator - treat as literal array
+                // A namespaced head is an operator by the language's naming rule: one the installed table does not
+                // know is refused, never read as data (owner ruling 2026-10-24; data lists like it are quoted).
+                if op.contains('/')
+                    && orbital_core_base::language_data::operator_data().is_ok()
+                    && orbital_core_base::language::registry::get_operator(op).is_none()
+                    && !orbital_core_base::effect_types::is_known_effect_name(op)
+                {
+                    return Err(EvalError::UnknownOperator(op.clone()).into());
+                }
             }
 
             // Literal array - evaluate all elements

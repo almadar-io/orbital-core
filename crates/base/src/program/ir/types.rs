@@ -973,7 +973,8 @@ pub fn payload_type_shape(field_type: &str) -> OirType {
             return OirType::map(payload_type_shape(&inner[..comma]), payload_type_shape(&inner[comma + 1..]));
         }
     }
-    match trimmed.to_lowercase().as_str() {
+    // Builtins are matched as the language spells them; another casing is a program's own type name.
+    match trimmed {
         "string" => return OirType::String,
         "number" | "float" | "double" => return OirType::Number,
         "integer" | "int" => return OirType::Integer,
@@ -988,13 +989,13 @@ pub fn payload_type_shape(field_type: &str) -> OirType {
         "money" => return OirType::Money,
         "file" => return OirType::File,
         "bytes" => return OirType::Bytes,
-        "callkey" => return OirType::CallKey,
+        "CallKey" => return OirType::CallKey,
         // In a payload position a relation travels as the related row's id and an enum as its literal value.
         "relation" | "enum" => return OirType::String,
         "array" | "list" => return OirType::array(OirType::Json),
         "object" => return OirType::Struct { fields: Vec::new(), additional: None },
         "json" | "tensor" => return OirType::Json,
-        "sexpr" => return OirType::SExpr,
+        "SExpr" => return OirType::SExpr,
         "node" => return OirType::Node,
         "orbital" => return OirType::Orbital,
         "behavior" => return OirType::Behavior,
@@ -2465,6 +2466,16 @@ mod tests {
             OirType::Reference { entity: "Order".to_string() },
             "control: a program name stays a reference"
         );
+    }
+
+    #[test]
+    fn a_program_type_spelled_like_a_builtin_in_another_case_stays_the_programs_type() {
+        for name in ["Orbital", "Trait", "Node", "File", "String", "Event"] {
+            assert_eq!(payload_type_shape(name), OirType::Reference { entity: name.to_string() }, "{name}");
+        }
+        assert_eq!(payload_type_shape("CallKey"), OirType::CallKey, "control: a mixed-case builtin is spelled as the language spells it");
+        assert_eq!(payload_type_shape("SExpr"), OirType::SExpr, "control");
+        assert_eq!(payload_type_shape("orbital"), OirType::Orbital, "control: the builtin itself");
     }
 
     #[test]

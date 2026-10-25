@@ -13,6 +13,8 @@ struct Case {
     expect: Option<Json>,
     #[serde(default)]
     error: bool,
+    #[serde(default)]
+    null: bool,
 }
 
 fn crate_path(rel: &str) -> PathBuf {
@@ -25,6 +27,7 @@ fn eval(expr: &Json) -> Result<Json, String> {
     match Evaluator::new().evaluate(&sexpr, &ctx).map_err(|e| e.to_string())? {
         Value::Number(n) => Ok(Json::from(n as i64)),
         Value::Bool(b) => Ok(Json::Bool(b)),
+        Value::Null => Ok(Json::Null),
         other => Err(format!("not a number or boolean: {other:?}")),
     }
 }
@@ -33,10 +36,12 @@ fn eval(expr: &Json) -> Result<Json, String> {
 fn every_shared_vector_matches() {
     let raw = std::fs::read_to_string(crate_path("tests/fixtures/operators/time-vectors.json")).unwrap();
     let cases: Vec<Case> = serde_json::from_str(&raw).unwrap();
-    assert!(cases.iter().any(|c| c.error) && cases.iter().any(|c| !c.error));
+    assert!(cases.iter().any(|c| c.null) && cases.iter().any(|c| !c.null && !c.error));
     for case in &cases {
         let got = eval(&case.expr);
-        if case.error {
+        if case.null {
+            assert_eq!(got, Ok(Json::Null), "{} must answer null", case.expr);
+        } else if case.error {
             assert!(got.is_err(), "{} must error, got {got:?}", case.expr);
         } else {
             assert_eq!(got.ok(), case.expect, "{}", case.expr);

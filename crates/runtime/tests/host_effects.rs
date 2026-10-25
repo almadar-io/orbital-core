@@ -2876,3 +2876,4 @@ mod access_check_effects {
         assert_eq!(payload_of(&response, "OK"), json!({ "allowed": true }));
     }
 }
+

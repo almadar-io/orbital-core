@@ -402,8 +402,13 @@ impl Relation<'_> {
                             if field.required && !found.required && found.default.is_none() {
                                 return None;
                             }
-                            if self.checked || !is_unknowable(&found.field_type) {
-                                explicit |= self.sub(&found.field_type, &field.field_type, progress + 1)?.requires_cast();
+                            // A member neither side requires may be missing either way, whether it reads as `T?` or `T`.
+                            let found_type = match (&found.field_type, field.required || found.required) {
+                                (OirType::Optional { inner }, false) => inner.as_ref(),
+                                (other, _) => other,
+                            };
+                            if self.checked || !is_unknowable(found_type) {
+                                explicit |= self.sub(found_type, &field.field_type, progress + 1)?.requires_cast();
                             }
                         }
                         None if field.required => return None,
@@ -1162,6 +1167,33 @@ pub fn compat_kind_oir(kind: &str) -> OirType {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_member_left_optional_either_way_is_the_same_member() {
+        use crate::ir::types::{OirField, OirType};
+        let record = |id: OirField| OirType::Struct {
+            additional: None,
+            fields: vec![id, {
+                let mut x = OirField::new("x", OirType::Number);
+                x.required = true;
+                x
+            }],
+        };
+        let plain = {
+            let mut id = OirField::new("id", OirType::String);
+            id.required = false;
+            id
+        };
+        let wrapped = OirField::optional("id", OirType::String);
+        assert!(super::assignable(&record(wrapped.clone()), &record(plain.clone())), "an optional member read as T? fits the same member read as T");
+        assert!(super::assignable(&record(plain), &record(wrapped)), "and the other way");
+        let mut required = OirField::new("id", OirType::String);
+        required.required = true;
+        assert!(
+            !super::assignable(&record(OirField::optional("id", OirType::String)), &record(required)),
+            "control: a required member does not take one that may be missing"
+        );
+    }
+
     #[test]
     fn a_field_ref_is_string_kind_at_run_time() {
         use crate::ir::types::OirType;

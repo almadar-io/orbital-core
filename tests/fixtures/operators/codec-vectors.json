@@ -132,7 +132,7 @@
     "args": [
       "Zg"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -140,7 +140,7 @@
     "args": [
       "Zm9"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -148,7 +148,7 @@
     "args": [
       "Zm9v!"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -156,7 +156,7 @@
     "args": [
       "Zg=a"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -164,7 +164,7 @@
     "args": [
       "=Zg="
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -172,7 +172,7 @@
     "args": [
       "Zm 9v"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -180,7 +180,7 @@
     "args": [
       "Zm9v\n"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -188,7 +188,7 @@
     "args": [
       "Z"
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -196,7 +196,7 @@
     "args": [
       "Zh=="
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -204,7 +204,7 @@
     "args": [
       "-_8="
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -212,7 +212,7 @@
     "args": [
       "/w=="
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -220,7 +220,7 @@
     "args": [
       "gA=="
     ],
-    "error": true,
+    "null": true,
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
@@ -328,7 +328,7 @@
       "abc",
       "base32"
     ],
-    "error": true,
+    "null": true,
     "source": "unknown encoding"
   },
   {
@@ -337,7 +337,7 @@
       "abc",
       "HEX"
     ],
-    "error": true,
+    "null": true,
     "source": "encoding is case-sensitive"
   },
   {

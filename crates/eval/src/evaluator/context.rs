@@ -974,7 +974,7 @@ mod tests {
 
     // G-ORBITAL-CORE-033 (ruled 2026-10-18): an operator call in an effect argument that fails is a failure, never data.
     fn untranslatable() -> Value {
-        Value::Array(vec![Value::String("i18n/t".to_string()), Value::String("greet:hello".to_string())])
+        Value::Array(vec![Value::String("math/abs".to_string())])
     }
 
     #[test]

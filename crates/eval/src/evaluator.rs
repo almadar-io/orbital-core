@@ -237,10 +237,9 @@ mod tests {
     }
 
     #[test]
-    fn random_int_with_max_below_min_is_an_invalid_argument_not_a_panic() {
+    fn random_int_with_max_below_min_answers_null_not_a_panic() {
         for call in [r#"["randomInt", 5, 1]"#, r#"["math/randomInt", 1, 0]"#, r#"["randomInt", 3, null]"#] {
-            let message = eval_err(call);
-            assert!(message.contains("math/randomInt: max must not be below min"), "{call}: {message}");
+            assert_eq!(eval(call), Value::Null, "{call}");
         }
     }
 
@@ -1463,16 +1462,16 @@ mod tests {
             eval(r#"["array/cosine", [1, 0], [-1, 0]]"#),
             Value::Number(-1.0)
         );
-        // Length mismatch, empty vector, and zero magnitude all error.
+        // Length mismatch, empty vector, and zero magnitude all answer null.
         for bad in [
             r#"["array/cosine", [1, 0], [1, 0, 0]]"#,
             r#"["array/cosine", [], []]"#,
             r#"["array/cosine", [0, 0], [1, 0]]"#,
         ] {
-            let expr: SExpression = serde_json::from_str(bad).unwrap();
-            let ctx = BindingContext::new();
-            assert!(eval_expr(&expr, &ctx).is_err(), "must error: {bad}");
+            assert_eq!(eval(bad), Value::Null, "must answer null: {bad}");
         }
+        let expr: SExpression = serde_json::from_str(r#"["array/cosine", [1, "a"], [1, 0]]"#).unwrap();
+        assert!(eval_expr(&expr, &BindingContext::new()).is_err());
     }
 
     #[test]
@@ -1499,10 +1498,9 @@ mod tests {
         };
         assert_eq!(obj.get("margin"), Some(&Value::Number(0.0)));
 
-        // Empty candidates errors.
-        let expr: SExpression = serde_json::from_str(r#"["array/nearest", [1, 0], []]"#).unwrap();
-        let ctx = BindingContext::new();
-        assert!(eval_expr(&expr, &ctx).is_err());
+        // Empty candidates, or a candidate with no similarity, answer null.
+        assert_eq!(eval(r#"["array/nearest", [1, 0], []]"#), Value::Null);
+        assert_eq!(eval(r#"["array/nearest", [1, 0], [[1, 0], [0, 0]]]"#), Value::Null);
     }
 
     // ========================================================================
@@ -3130,8 +3128,7 @@ mod tests {
         let err = fold_with(not_with_a_list, step.clone(), "RowPredicate", &predicate_definition()).unwrap_err();
         assert!(err.contains("RowPredicate") && err.contains("array"), "{err}");
         let untagged = serde_json::json!({ "kind": "xor", "of": [] });
-        let err = fold_with(untagged, step.clone(), "RowPredicate", &predicate_definition()).unwrap_err();
-        assert!(err.contains("no variant"), "{err}");
+        assert_eq!(fold_with(untagged, step.clone(), "RowPredicate", &predicate_definition()).unwrap(), Value::Null, "no variant claims it: a missing result");
         assert_eq!(
             fold_with(serde_json::Value::Null, step.clone(), "RowPredicate", &predicate_definition()).unwrap(),
             Value::Null,
@@ -3226,7 +3223,7 @@ mod tests {
     }
 
     #[test]
-    fn control_tree_fold_a_value_matching_no_variant_still_errors() {
+    fn control_tree_fold_a_kind_no_variant_declares_still_errors_and_an_unclaimed_shape_answers_null() {
         let no_boolean = serde_json::json!({
             "name": "E", "type": "union", "values": ["string", "map"],
             "properties": {
@@ -3246,10 +3243,8 @@ mod tests {
             }
         })
         .to_string();
-        let err = fold_with(serde_json::json!({ "a": "x" }), step.clone(), "E", &two_maps).unwrap_err();
-        assert!(err.contains("several variants") && err.contains("m1") && err.contains("m2"), "{err}");
-        let err = fold_with(serde_json::json!({ "kind": "xor", "of": [] }), step, "RowPredicate", &predicate_definition()).unwrap_err();
-        assert!(err.contains("no variant"), "a union with no Map variant still rejects an unclaimed object: {err}");
+        assert_eq!(fold_with(serde_json::json!({ "a": "x" }), step.clone(), "E", &two_maps).unwrap(), Value::Null, "several variants fit: a missing result");
+        assert_eq!(fold_with(serde_json::json!({ "kind": "xor", "of": [] }), step, "RowPredicate", &predicate_definition()).unwrap(), Value::Null, "no Map variant claims the object: a missing result");
     }
 
     fn row_matches(pred: &serde_json::Value, row: &serde_json::Value) -> Value {
@@ -3271,8 +3266,7 @@ mod tests {
             .payload(json_value(serde_json::json!({ "pred": { "kind": "nope" }, "row": { "id": "t1" } })))
             .build();
         let expr: SExpression = serde_json::from_str(r#"["row/matches", "@payload.pred", "@payload.row"]"#).unwrap();
-        let err = Evaluator::new().evaluate(&expr, &ctx).unwrap_err().to_string();
-        assert!(err.contains("not a RowPredicate"), "{err}");
+        assert_eq!(Evaluator::new().evaluate(&expr, &ctx).unwrap(), Value::Null, "not a RowPredicate: a missing result");
     }
 
     #[test]

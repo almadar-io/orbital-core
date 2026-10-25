@@ -619,7 +619,7 @@
       "(?=b)",
       "x"
     ],
-    "error": true,
+    "null": true,
     "source": "lookahead is an error"
   },
   {
@@ -629,7 +629,7 @@
       "(",
       "x"
     ],
-    "error": true,
+    "null": true,
     "source": "an invalid pattern is an error"
   },
   {
@@ -639,7 +639,7 @@
       "(a)\\1",
       "x"
     ],
-    "error": true,
+    "null": true,
     "source": "a backreference is an error"
   }
 ]

@@ -132,7 +132,7 @@
   "args": [
    "%"
   ],
-  "error": true,
+  "null": true,
   "source": "lone percent"
  },
  {
@@ -140,7 +140,7 @@
   "args": [
    "abc%"
   ],
-  "error": true,
+  "null": true,
   "source": "trailing percent"
  },
  {
@@ -148,7 +148,7 @@
   "args": [
    "%2"
   ],
-  "error": true,
+  "null": true,
   "source": "truncated escape"
  },
  {
@@ -156,7 +156,7 @@
   "args": [
    "%G0"
   ],
-  "error": true,
+  "null": true,
   "source": "bad first hex digit"
  },
  {
@@ -164,7 +164,7 @@
   "args": [
    "%0G"
   ],
-  "error": true,
+  "null": true,
   "source": "bad second hex digit"
  },
  {
@@ -172,7 +172,7 @@
   "args": [
    "%%20"
   ],
-  "error": true,
+  "null": true,
   "source": "percent followed by percent"
  },
  {
@@ -180,7 +180,7 @@
   "args": [
    "%é1"
   ],
-  "error": true,
+  "null": true,
   "source": "non-ASCII where hex is required"
  },
  {
@@ -188,7 +188,7 @@
   "args": [
    "%C3"
   ],
-  "error": true,
+  "null": true,
   "source": "truncated two-byte sequence"
  },
  {
@@ -196,7 +196,7 @@
   "args": [
    "%E2%9C"
   ],
-  "error": true,
+  "null": true,
   "source": "truncated three-byte sequence"
  },
  {
@@ -204,7 +204,7 @@
   "args": [
    "%F0%9F%98"
   ],
-  "error": true,
+  "null": true,
   "source": "truncated four-byte sequence"
  },
  {
@@ -212,7 +212,7 @@
   "args": [
    "%C3%28"
   ],
-  "error": true,
+  "null": true,
   "source": "invalid continuation byte"
  },
  {
@@ -220,7 +220,7 @@
   "args": [
    "%C3a"
   ],
-  "error": true,
+  "null": true,
   "source": "lead byte followed by a literal"
  },
  {
@@ -228,7 +228,7 @@
   "args": [
    "%80"
   ],
-  "error": true,
+  "null": true,
   "source": "lone continuation byte"
  },
  {
@@ -236,7 +236,7 @@
   "args": [
    "%FF"
   ],
-  "error": true,
+  "null": true,
   "source": "byte never valid in UTF-8"
  },
  {
@@ -244,7 +244,7 @@
   "args": [
    "%C0%80"
   ],
-  "error": true,
+  "null": true,
   "source": "overlong two-byte encoding"
  },
  {
@@ -252,7 +252,7 @@
   "args": [
    "%ED%A0%80"
   ],
-  "error": true,
+  "null": true,
   "source": "UTF-16 surrogate encoded in UTF-8"
  },
  {
@@ -260,7 +260,7 @@
   "args": [
    "%F4%90%80%80"
   ],
-  "error": true,
+  "null": true,
   "source": "code point above U+10FFFF"
  },
  {

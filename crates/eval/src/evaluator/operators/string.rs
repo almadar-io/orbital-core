@@ -29,9 +29,10 @@ impl Operator for StrToNumberOp {
             )));
         }
         match eval_expr(&args[0], ctx)? {
-            Value::String(text) => Ok(Value::Number(
-                orbital_core_base::str_utils::js_number_from_text(&text),
-            )),
+            Value::String(text) => {
+                let n = orbital_core_base::str_utils::js_number_from_text(&text);
+                Ok(if n.is_nan() { Value::Null } else { Value::Number(n) })
+            }
             other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "string".into(),
                 actual: other.type_name().into(),
@@ -101,7 +102,7 @@ impl Operator for SubstringOp {
 
         let chars: Vec<char> = s.chars().collect();
         let start = start.min(chars.len());
-        let end = end.min(chars.len());
+        let end = end.min(chars.len()).max(start);
 
         Ok(Value::String(chars[start..end].iter().collect()))
     }
@@ -200,7 +201,7 @@ impl Operator for StrReplaceOp {
 }
 
 /// str/replace-pattern - Replace every match of a shared-dialect regex (see `translate_shared_regex`).
-/// The replacement is literal (`$` has no meaning); an invalid or unsupported pattern is an error.
+/// The replacement is literal (`$` has no meaning); an invalid or unsupported pattern answers null.
 pub struct StrReplacePatternOp;
 impl Operator for StrReplacePatternOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -218,10 +219,7 @@ impl Operator for StrReplacePatternOp {
             }
         }
         let Some(regex) = compile_shared_regex(&texts[1]) else {
-            return Err(OrbitalError::Eval(EvalError::InvalidArgument(
-                "str/replace-pattern: pattern is invalid or outside the shared regex dialect"
-                    .into(),
-            )));
+            return Ok(Value::Null);
         };
         Ok(Value::String(replace_each_match(
             &regex, &texts[0], &texts[2],

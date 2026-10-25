@@ -113,6 +113,9 @@ pub enum Mismatch {
     /// An operand that can be missing or null handed to a position the kernel raises on when it is null (the
     /// parameter's `rejectsNull`), with no presence check or default in front of it.
     NullOperand { operator: String, operand: String },
+    /// An operand whose value an operator that can fail on a well-typed value produced (`source`, answering null
+    /// then), handed to an operator that needs a value, with no default or presence check in front of it.
+    MissingResult { operator: String, operand: String, source: String },
 }
 
 impl fmt::Display for Mismatch {
@@ -136,6 +139,9 @@ impl fmt::Display for Mismatch {
                     f,
                     "`{operand}` can be missing, so `{operator}` over it is undecided"
                 )
+            }
+            Mismatch::MissingResult { operator, operand, source } => {
+                write!(f, "`{operand}` is missing when `{source}` fails, and `{operator}` needs a value")
             }
         }
     }
@@ -3953,6 +3959,17 @@ mod tests {
             fields: vec![OirField::new("left", OirType::Number), OirField::new("right", OirType::String)],
             additional: Some(Box::new(OirType::Number)),
         })));
+    }
+
+    #[test]
+    fn a_nullable_merge_is_the_optional_of_the_merged_record() {
+        let objs = json!([p("...objs", json!({ "kind": "var", "name": "R", "bound": { "kind": "record" }, "each": true }))]);
+        let nullable = op(objs.clone(), json!({ "kind": "union", "of": [{ "kind": "mergeOf", "of": "R" }, { "kind": "literal", "value": null }] }), None);
+        let plain = op(objs, json!({ "kind": "mergeOf", "of": "R" }), None);
+        let operands = [ty(struct_of(&[("a", OirType::Number)])), ty(struct_of(&[("b", OirType::String)]))];
+        let merged = struct_of(&[("a", OirType::Number), ("b", OirType::String)]);
+        assert_eq!(call(&plain, &operands, Mode::Static), Ok(Some(merged.clone())), "control: the plain merge");
+        assert_eq!(call(&nullable, &operands, Mode::Static), Ok(Some(OirType::optional(merged))));
     }
 
     #[test]

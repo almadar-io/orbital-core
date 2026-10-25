@@ -304,7 +304,7 @@ fn parse_iso_instant(text: &str) -> Option<i64> {
     }
 }
 
-/// time/parse - RFC 3339 / ISO 8601 date or date-time to epoch ms; anything else is an error.
+/// time/parse - RFC 3339 / ISO 8601 date or date-time to epoch ms; anything else answers null.
 pub struct TimeParseOp;
 impl Operator for TimeParseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -321,9 +321,7 @@ impl Operator for TimeParseOp {
         };
         match parse_iso_instant(&date_str) {
             Some(ms) => Ok(Value::Number(ms as f64)),
-            None => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "time/parse: \"{date_str}\" is not an ISO 8601 date or date-time"
-            )))),
+            None => Ok(Value::Null),
         }
     }
 }
@@ -356,9 +354,11 @@ impl Operator for TimeValidOp {
 /// token-first substitution for the compiled path — same token
 /// vocabulary, kept in sync by hand since generated JS obviously can't call
 /// back into this Rust function.
-fn format_timestamp_tokens(ts_ms: f64, format: &str) -> String {
-    let dt = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts_ms as i64)
-        .unwrap_or_else(|| chrono::DateTime::<chrono::Utc>::from_timestamp_millis(0).unwrap());
+fn format_timestamp_tokens(ts_ms: f64, format: &str) -> Option<String> {
+    if !ts_ms.is_finite() {
+        return None;
+    }
+    let dt = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts_ms as i64)?;
     use chrono::{Datelike, Timelike};
 
     let weekday_short = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -431,7 +431,7 @@ fn format_timestamp_tokens(ts_ms: f64, format: &str) -> String {
         out.push(ch);
         i += ch.len_utf8();
     }
-    out
+    Some(out)
 }
 
 /// time/format - Format timestamp to string (basic support)
@@ -444,7 +444,7 @@ impl Operator for TimeFormatOp {
 
         if let Some(format_expr) = args.get(1) {
             let format = eval_expr(format_expr, ctx)?.to_string_value();
-            return Ok(Value::String(format_timestamp_tokens(ts, &format)));
+            return Ok(format_timestamp_tokens(ts, &format).map_or(Value::Null, Value::String));
         }
 
         // Basic formatting - convert to ISO date string

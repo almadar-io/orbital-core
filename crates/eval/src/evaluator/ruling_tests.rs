@@ -47,7 +47,7 @@ fn control_the_declared_arity_runs_and_a_variadic_operator_takes_any_count() {
 }
 
 #[test]
-fn every_key_writing_object_operator_refuses_proto() {
+fn every_key_writing_object_operator_answers_null_for_proto() {
     for call in [
         r#"["object/set", {"a": 1}, "__proto__.x", 1]"#,
         r#"["object/set", {"a": 1}, "a.__proto__", 1]"#,
@@ -57,8 +57,7 @@ fn every_key_writing_object_operator_refuses_proto() {
         r#"["object/fromEntries", [["__proto__", 1]]]"#,
         r#"["object/mapKeys", {"a": 1}, ["fn", "k", "__proto__"]]"#,
     ] {
-        let message = err(call);
-        assert!(message.contains("`__proto__` is not a permitted object key"), "{call}: {message}");
+        assert_eq!(ok(call), Value::Null, "{call}");
     }
 }
 
@@ -195,25 +194,25 @@ fn every_shared_format_vector_matches_the_js_evaluator() {
 }
 
 #[test]
-fn an_unsupported_locale_or_currency_is_named_not_ignored() {
-    let locale = err(r#"["format/number", 1, {"locale": "xx-YY"}]"#);
-    assert!(locale.contains("`xx-YY` is not supported") && locale.contains("supported:"), "{locale}");
-    let currency = err(r#"["format/currency", 1, "XYZ"]"#);
-    assert!(currency.contains("currency `XYZ` is not supported"), "{currency}");
-    let currency_locale = err(r#"["format/currency", 1, "USD", "de-DE"]"#);
-    assert!(currency_locale.contains("locale `de-DE` is not supported"), "{currency_locale}");
+fn an_unsupported_locale_or_currency_answers_null_not_a_fallback() {
+    assert_eq!(ok(r#"["format/number", 1, {"locale": "xx-YY"}]"#), Value::Null);
+    assert_eq!(ok(r#"["format/currency", 1, "XYZ"]"#), Value::Null);
+    assert_eq!(ok(r#"["format/currency", 1, "USD", "de-DE"]"#), Value::Null);
+    assert_eq!(ok(r#"["format/number", 1, {"locale": "de-DE"}]"#), Value::String("1".into()));
+    assert_eq!(ok(r#"["format/currency", 1, "USD"]"#), Value::String("$1.00".into()));
 }
 
 #[test]
-fn bad_fraction_digits_are_errors() {
+fn bad_fraction_digits_answer_null() {
     for call in [
         r#"["format/number", 1, {"decimals": -1}]"#,
         r#"["format/number", 1, {"decimals": 1.5}]"#,
         r#"["format/number", 1, {"minimumFractionDigits": 3, "maximumFractionDigits": 1}]"#,
         r#"["format/percent", 0.5, 2.5]"#,
     ] {
-        assert!(err(call).contains("format/"), "{call}");
+        assert_eq!(ok(call), Value::Null, "{call}");
     }
+    assert!(err(r#"["format/number", 1, {"decimals": "x"}]"#).contains("format/number"));
 }
 
 #[test]
