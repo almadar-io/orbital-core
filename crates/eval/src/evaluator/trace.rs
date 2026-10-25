@@ -1,5 +1,7 @@
 //! Evaluation trace: every node's entry, value and exit by structural path, lambda re-entries and the
 //! arguments an operator never ran. Off by default: `eval_expr` pays one relaxed atomic load.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::context::BindingContext;
 use super::operators::{get_operator, EvalResult};
@@ -43,7 +45,7 @@ struct Collector {
 
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
-thread_local! {
+orbital_core_base::kernel_local! {
     static COLLECTOR: RefCell<Option<Collector>> = const { RefCell::new(None) };
 }
 

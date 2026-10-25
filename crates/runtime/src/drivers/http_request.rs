@@ -1,6 +1,8 @@
 //! The `http` effect's request builder and its sans-I/O step machine (`docs/Almadar_Embedded_Kernel.md`,
 //! "The `http` effect", H.3, H.3b, H.3c). Pure: no clock, env, randomness or I/O. The kernel, the JS interpreter
 //! (through wasm) and the generated TS shell only answer the driver's asks.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 
 use std::time::Duration;
@@ -710,14 +712,14 @@ fn parse_jwt_bearer(map: &ValueMap) -> Result<TokenExchange, HttpRefusal> {
     let token_url = text_field(map, "tokenUrl", "auth")?;
     let grant = non_empty_text(map, "grant", "auth")?
         .unwrap_or_else(|| "urn:ietf:params:oauth:grant-type:jwt-bearer".to_string());
-    let mut form = ValueMap::new();
+    let mut form = ValueMap::default();
     form.insert("grant_type".to_string(), Value::String(grant));
     if let Some(scope) = non_empty_text(map, "scope", "auth")? {
         form.insert("scope".to_string(), Value::String(scope));
     }
-    let mut body = ValueMap::new();
+    let mut body = ValueMap::default();
     body.insert("form".to_string(), Value::Object(form));
-    let mut exchange = ValueMap::new();
+    let mut exchange = ValueMap::default();
     exchange.insert("scheme".to_string(), Value::String("token-exchange".to_string()));
     exchange.insert("tokenUrl".to_string(), Value::String(token_url.clone()));
     exchange.insert("body".to_string(), Value::Object(body));
@@ -1087,7 +1089,7 @@ pub fn parse_http_call(
         _ => return Err(HttpRefusal::OriginEscape(path.to_string())),
     }
 
-    let empty = ValueMap::new();
+    let empty = ValueMap::default();
     let map = match request {
         Value::Null => &empty,
         Value::Object(map) => map,
@@ -1252,11 +1254,11 @@ pub fn parse_beacon_call(url: &str, request: &Value) -> Result<HttpCallSpec, Htt
     let Some(Value::String(text)) = map.get("text") else {
         return invalid("a beacon request needs `text`, a string");
     };
-    let mut body = ValueMap::new();
+    let mut body = ValueMap::default();
     body.insert("text".to_string(), Value::String(text.clone()));
     body.insert(
         "headers".to_string(),
-        Value::Object(ValueMap::from([("Content-Type".to_string(), Value::String("text/plain".to_string()))])),
+        Value::Object(ValueMap::from_iter([("Content-Type".to_string(), Value::String("text/plain".to_string()))])),
     );
     let mut spec = parse_http_call(HttpMethod::Post, origin, &path, &Value::Object(body))?;
     spec.delivery = HttpDelivery::Beacon;
@@ -1715,7 +1717,7 @@ fn object(entries: Vec<(&str, Value)>) -> Value {
 }
 
 pub fn reply_payload(resp: &HttpResponse, as_: ResponseAs) -> Value {
-    let mut headers = ValueMap::new();
+    let mut headers = ValueMap::default();
     for (name, value) in &resp.headers {
         let name = name.to_ascii_lowercase();
         let joined = match headers.get(&name) {
@@ -2105,6 +2107,7 @@ impl crate::driver::Driver for HttpCallDriver {
 }
 
 impl HttpCallDriver {
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
     pub(crate) fn principal(&self) -> Option<&str> {
         self.principal.as_deref()
     }
@@ -2537,7 +2540,7 @@ impl HttpCallDriver {
         };
         self.secrets.resource_request = Some(request.clone());
         if self.spec.presign.is_some() {
-            let mut payload = ValueMap::new();
+            let mut payload = ValueMap::default();
             payload.insert("url".into(), Value::String(request.url));
             return self.done(Ok(Value::Object(payload)));
         }

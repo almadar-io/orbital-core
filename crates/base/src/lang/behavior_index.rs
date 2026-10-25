@@ -7,6 +7,8 @@
 //! There is no index file: the old `behaviors-registry.json` carried exactly
 //! these values, written by a TS extraction. The rules here are that
 //! extraction's, ported 1:1.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;

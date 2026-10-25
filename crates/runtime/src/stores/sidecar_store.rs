@@ -2,6 +2,8 @@
 //! sidecar cache. The network is injected (`SidecarFetcher`) so this crate stays
 //! network-free; the rule is the one in `docs/Almadar_Behavior_Packages.md` §13:
 //! a lock entry always resolves to `<cache>/<sha256>`, downloaded and verified on a miss.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::fs;
 use std::io::{self, Write};

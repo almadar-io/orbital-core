@@ -1,5 +1,7 @@
 //! The `.lolo` surface form of an S-expression: the twin of `@almadar/core`
 //! `formatSExpr` (parity fixture `tests/fixtures/format-sexpr`).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::quote::{decode_quote_body, quasiquote_of, quote_body_of, QUASIQUOTE_HEAD, QUOTE_HEAD};
 use crate::schema::sexpr::SExpression;

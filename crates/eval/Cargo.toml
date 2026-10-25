@@ -7,24 +7,44 @@ repository = "https://github.com/almadar-io/orbital-core"
 description = "orbital-core layer: eval"
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
-thiserror = "1.0"
-lru = "0.12"
-tracing = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
-parking_lot = "0.12"
-sha2 = "0.10"
-base64 = "0.22"
-regex = "1.10"
-quick-xml = "0.38"
-icu_collator = { version = "2.3", features = ["unstable"] }
+orbital-core-std = { path = "../std" }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc", "preserve_order"] }
+thiserror = { version = "2", default-features = false }
+lru = { version = "0.12", default-features = false, features = ["hashbrown"] }
+tracing = { version = "0.1", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["serde", "alloc"] }
+parking_lot = { version = "0.12", optional = true }
+sha2 = { version = "0.10", default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+regex = { version = "1.10", default-features = false, features = ["unicode"] }
+quick-xml = { version = "0.38", optional = true }
+icu_collator = { version = "2.3", default-features = false, features = ["unstable", "compiled_data"] }
 ts-rs = { version = "12.0.1", optional = true }
-orbital-core-base = { path = "../base" }
+orbital-core-base = { path = "../base", default-features = false }
 
 [features]
-ts-export = ["dep:ts-rs"]
-async = ["orbital-core-base/async"]
+default = ["std"]
+std = [
+    "orbital-core-base/std",
+    "serde/std",
+    "serde_json/std",
+    "thiserror/std",
+    "lru/default",
+    "tracing/std",
+    "chrono/std",
+    "chrono/clock",
+    "chrono/oldtime",
+    "chrono/wasmbind",
+    "dep:parking_lot",
+    "sha2/std",
+    "base64/std",
+    "regex/default",
+    "dep:quick-xml",
+    "icu_collator/default",
+]
+ts-export = ["std", "dep:ts-rs"]
+async = ["std", "orbital-core-base/async"]
 
 [dev-dependencies]
 orbital-core = { path = "../.." }

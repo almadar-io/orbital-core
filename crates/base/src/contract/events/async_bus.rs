@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 #[cfg(feature = "async")]
 use super::types::{Event, EventFilter, SubscriptionId};
 #[cfg(feature = "async")]
-use parking_lot::RwLock;
+use crate::sync::RwLock;
 #[cfg(feature = "async")]
 use std::collections::HashMap;
 #[cfg(feature = "async")]

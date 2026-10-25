@@ -1,0 +1,10 @@
+[package]
+name = "orbital-core-std"
+version = "18.0.0"
+edition = "2021"
+license = "BUSL-1.1"
+description = "The standard library's paths over core, alloc and hashbrown, for orbital-core's bare-metal build"
+
+[dependencies]
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
+num-traits = { version = "0.2", default-features = false, features = ["libm"] }

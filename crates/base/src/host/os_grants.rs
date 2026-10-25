@@ -1,11 +1,16 @@
 //! The program's `os/` grants (`docs/Almadar_OS_Operators.md` §4): closed by default, matched by pure
 //! total functions. The native answerer re-checks them after `realpath`; the validator reads the same data.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
-use crate::os::{OsError, OsErrorKind, OsOp};
+#[cfg(feature = "std")]
+use crate::os::{OsError, OsErrorKind};
+use crate::os::OsOp;
 use crate::schema::sexpr::SExpression;
 use crate::value::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+#[cfg(feature = "std")]
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -138,7 +143,9 @@ pub enum DevResource {
     Irq { line: u64 },
 }
 
-enum DevTarget {
+/// What a `dev` grant's target names: a register window or an interrupt line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevTarget {
     Mmio { base: u64, length: u64 },
     Irq { line: u64 },
 }
@@ -150,7 +157,8 @@ fn dev_number(text: &str) -> Option<u64> {
     }
 }
 
-fn dev_target(target: &str) -> Option<DevTarget> {
+/// The window or line a `dev` grant target names; `None` for a target that names neither.
+pub fn dev_target(target: &str) -> Option<DevTarget> {
     if let Some(window) = target.strip_prefix("mmio:") {
         let (base, length) = window.split_once('+')?;
         let (base, length) = (dev_number(base)?, dev_number(length)?);
@@ -269,6 +277,7 @@ pub struct OsGrants {
     pub anchored: AnchoredGrants,
 }
 
+#[cfg(feature = "std")]
 /// The absolute path as its `/`-separated segments with `.` dropped and `..` collapsed; `None` for a
 /// relative path, a non-UTF-8 segment, a platform prefix, or a `..` that climbs above the root.
 fn normalized_segments(path: &Path) -> Option<Vec<String>> {
@@ -340,6 +349,7 @@ fn anchor_of(text: &str) -> Option<(Anchor, &str)> {
     }
 }
 
+#[cfg(feature = "std")]
 /// [`normalized_segments`] for any anchored form: a home or start form is normalized under its anchor and refused
 /// when a `..` climbs above it.
 fn anchored_segments(path: &Path) -> Option<(Anchor, Vec<String>)> {
@@ -363,6 +373,7 @@ fn anchored_segments(path: &Path) -> Option<(Anchor, Vec<String>)> {
     }
 }
 
+#[cfg(feature = "std")]
 /// Whether `glob` (anchored, no `..`) matches the already-normalized `path` under `anchor`.
 fn glob_matches(glob: &str, anchor: Anchor, path: &[String]) -> bool {
     let Some((glob_anchor, rest)) = anchor_of(glob) else {
@@ -481,6 +492,7 @@ impl OsGrants {
         }
     }
 
+    #[cfg(feature = "std")]
     /// Whether `path` may be used in `mode`. The path is matched lexically (`.`/`..` collapsed, refused when
     /// it escapes the root); symlinks are resolved by the caller, which re-checks the real path.
     pub fn fs_allows(&self, path: &Path, mode: FsMode) -> bool {
@@ -492,17 +504,20 @@ impl OsGrants {
             .any(|g| g.modes.contains(&mode) && glob_matches(&g.glob, anchor, &segments))
     }
 
+    #[cfg(feature = "std")]
     /// [`Self::fs_allows`] for a host holding an absolute `path`: also matched in its `~/` and `./` forms when it lies
     /// under the home or start directory the host knows, so an anchored grant covers it.
     pub fn fs_allows_at(&self, path: &Path, mode: FsMode, anchors: &OsAnchors) -> bool {
         anchors.forms(path).iter().any(|form| self.fs_allows(form, mode))
     }
 
+    #[cfg(feature = "std")]
     /// [`Self::fs_tree_allows`] for a host holding an absolute `root`, as [`Self::fs_allows_at`].
     pub fn fs_tree_allows_at(&self, root: &Path, mode: FsMode, anchors: &OsAnchors) -> bool {
         anchors.forms(root).iter().any(|form| self.fs_tree_allows(form, mode))
     }
 
+    #[cfg(feature = "std")]
     /// Whether every path under the directory `root` may be used in `mode`: a grant that lists the mode, ends in
     /// `/**` and matches `root` itself covers `root` and all it contains. Matched lexically like [`fs_allows`].
     pub fn fs_tree_allows(&self, root: &Path, mode: FsMode) -> bool {
@@ -620,6 +635,7 @@ impl std::fmt::Debug for EnvSnapshot {
 }
 
 impl EnvSnapshot {
+    #[cfg(feature = "std")]
     /// Every variable of this process whose name and value are UTF-8.
     pub fn of_process() -> Self {
         Self::from_pairs(
@@ -636,6 +652,7 @@ impl EnvSnapshot {
     }
 }
 
+#[cfg(feature = "std")]
 /// The directories a host anchors `~/` and `./` to (the user's home and the directory it started the program in),
 /// and what a grant's declared anchors resolve to: the running executable's directory and the boot environment.
 /// A host without one of them grants nothing under that anchor.
@@ -647,6 +664,7 @@ pub struct OsAnchors {
     pub env: EnvSnapshot,
 }
 
+#[cfg(feature = "std")]
 impl OsAnchors {
     /// The process's own: `HOME` (`USERPROFILE` on Windows), its working directory, the directory of its executable
     /// and its environment, read once.
@@ -721,6 +739,7 @@ fn valid_name(name: &str) -> bool {
     !name.is_empty() && !name.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
+#[cfg(feature = "std")]
 fn rooted(segments: &[String], rest: Option<&str>) -> String {
     let mut out = format!("/{}", segments.join("/"));
     if let Some(rest) = rest {
@@ -733,6 +752,7 @@ fn rooted(segments: &[String], rest: Option<&str>) -> String {
 }
 
 impl OsGrants {
+    #[cfg(feature = "std")]
     /// The plain grant set a host checks against: every anchored entry resolved through `anchors` into an absolute
     /// `fs` glob or `exec` command, with the anchored part emptied. An entry whose anchor this host cannot place, or
     /// whose shape is invalid, grants nothing and is returned as a problem for the host to report.
@@ -871,6 +891,7 @@ fn anchored_sexpr(expr: &SExpression) -> Result<Option<(GrantAnchor, Option<&SEx
     Ok(Some((anchor, map.get("path").filter(|p| !matches!(p, SExpression::Null)))))
 }
 
+#[cfg(feature = "std")]
 impl OsAnchors {
     /// The absolute path an anchored path names on this host, or why it names none.
     pub fn resolve_path(&self, anchored: &AnchoredPath) -> Result<String, String> {
@@ -887,6 +908,7 @@ impl OsAnchors {
     }
 }
 
+#[cfg(feature = "std")]
 fn net_target(host: &str, port: u16) -> String {
     if host.contains(':') {
         format!("[{host}]:{port}")
@@ -913,6 +935,7 @@ fn anchored_net_problem(g: &AnchoredNetGrant) -> Option<String> {
     part(&g.host).or_else(|| part(&g.port)).or_else(|| g.kinds.is_empty().then(|| format!("net {} grants no kind", g.label())))
 }
 
+#[cfg(feature = "std")]
 impl OsAnchors {
     /// The text a net part names on this host: the literal, or the boot value of its `env` anchor.
     pub fn net_part(&self, part: &NetPart) -> Result<String, String> {
@@ -1205,8 +1228,12 @@ impl OsGrants {
     /// Whether the grants cover `need`.
     pub fn allows(&self, need: &OsRequirement) -> bool {
         match need {
+            #[cfg(feature = "std")]
             OsRequirement::Fs { path, mode } => self.fs_allows(Path::new(path), *mode),
+            #[cfg(feature = "std")]
             OsRequirement::FsTree { root, mode } => self.fs_tree_allows(Path::new(root), *mode),
+            #[cfg(not(feature = "std"))]
+            OsRequirement::Fs { .. } | OsRequirement::FsTree { .. } => false,
             OsRequirement::FsAnchored { anchor, path, mode } => relative_segments(path).is_some_and(|segments| {
                 self.anchored.fs.iter().any(|g| {
                     g.anchor == *anchor && g.modes.contains(mode) && relative_glob_matches(&g.glob, &segments)
@@ -1615,6 +1642,7 @@ pub fn anchored_net_args(op: OsOp) -> Option<(usize, usize)> {
     }
 }
 
+#[cfg(feature = "std")]
 /// The call's arguments with every anchored path (`{ anchor, path }`) at a path or command position, the anchored
 /// `cwd` of `os/spawn`, and every `env`-anchored host or port replaced by what it names on this host. The grant
 /// check then runs on the plain value against the boot-resolved grants.

@@ -2,15 +2,20 @@
 //! `/api/hooks/<name>`; the kernel owns what it means: whether the name is served, the payload the
 //! handler event is delivered with, the dispatch, and the HTTP answer read off the handler's own
 //! emit of its `answers` event.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::*;
 use crate::resumable::{DispatchError, DispatchOutcomes, Progress};
 use orbital_core_base::inbound::{
-    answer_of, cascade_capped, credential_unset, dispatch_failed, find_inbound, inbound_payload, inbound_unanswered,
+    answer_of, cascade_capped, credential_unset, dispatch_failed, find_inbound, inbound_payload,
     unknown_hook, InboundAnswer, InboundRoute,
 };
+#[cfg(feature = "std")]
+use orbital_core_base::inbound::inbound_unanswered;
 
 /// How long [`RuntimeKernel::await_inbound_answer`] waits for a late answer between checks that a call is still open.
+#[cfg(feature = "std")]
 const INBOUND_OPEN_CHECK: std::time::Duration = std::time::Duration::from_millis(50);
 
 impl RuntimeKernel {
@@ -136,6 +141,7 @@ impl RuntimeKernel {
         Self::inbound_cut(route, outcomes)
     }
 
+    #[cfg(feature = "std")]
     /// The answer of a delivery its delivering dispatch left unanswered ([`Self::inbound_answered`] false), on a host
     /// that waits: the first late answer `late` carries while `open_calls` reports a keyed call still open (a host
     /// counts a completion open until its dispatch has run, so a late answer is sent before its call closes). With no

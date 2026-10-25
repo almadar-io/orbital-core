@@ -1,5 +1,7 @@
 //! The declaration an `oauth-client` auth (and `oauth-authorize`) carries: which operation, which client, which
 //! inputs. Secret slots (`clientId`, `clientSecret`) are credential NAMES the host resolves, never values.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 

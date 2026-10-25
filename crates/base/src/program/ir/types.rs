@@ -1,10 +1,12 @@
 //! OIR Type Definitions
 //!
 //! Core types for the Orbital Intermediate Representation.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::schema::types::{FieldDefinition, FieldType, ServiceRef, ThemeDefinition};
 use crate::str_utils::to_snake_case;
-use indexmap::IndexMap;
+use crate::collections::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -2234,7 +2236,7 @@ impl OirPattern {
     pub fn new(pattern_type: impl Into<String>) -> Self {
         Self {
             pattern_type: pattern_type.into(),
-            config: OirObject::new(),
+            config: OirObject::default(),
         }
     }
 

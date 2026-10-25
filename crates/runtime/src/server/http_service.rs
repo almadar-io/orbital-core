@@ -1,6 +1,8 @@
 //! The HTTP seam, shared by every provider and by the kernel's sans-I/O `IoRequest::Http`: the `http` effect
 //! (`runtime::http_request`) builds a request and reads a response; the transport moves the bytes
 //! (`docs/Almadar_Embedded_Kernel.md`, "The `http` effect").
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::borrow::Cow;
 use std::time::Duration;

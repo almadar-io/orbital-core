@@ -7,6 +7,8 @@
 //! split itself: the unresolved source of each rendered slot, the bindings it was
 //! flushed with, and the `@entity` it was resolved against. [`RenderStore::stale`]
 //! re-resolves only the marker leaves against the entity as it is now.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::row_query::row_sets_in;
 use orbital_core_base::row_set::RowSetRef;

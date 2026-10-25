@@ -1,5 +1,7 @@
 //! `i18n/t`: the active locale's message for a catalog key (keys arrive
 //! qualified with their behavior's name — see `crate::messages`).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;

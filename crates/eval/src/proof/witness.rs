@@ -1,5 +1,7 @@
 //! Witness search: a payload that makes a guard come out as wanted, for the verify planner's steps. Moved from
 //! `orbital-core-runtime` `planner.rs` unchanged; the planner builds the [`Declared`] context it needs.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::schema::sexpr::SExpression;
 

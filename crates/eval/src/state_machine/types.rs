@@ -1,6 +1,8 @@
 //! State Machine Types
 //!
 //! Core types for state machine execution.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::schema::types::TraitDefinition;
@@ -39,7 +41,7 @@ impl TraitState {
             current_state: initial_state.to_string(),
             entity_id: None,
             entity_data: None,
-            data: ValueMap::new(),
+            data: ValueMap::default(),
             entered_at: orbital_core_base::time_util::now_millis(),
         }
     }
@@ -56,7 +58,7 @@ impl TraitState {
             current_state: initial_state.to_string(),
             entity_id: Some(entity_id.to_string()),
             entity_data: Some(entity_data),
-            data: ValueMap::new(),
+            data: ValueMap::default(),
             entered_at: orbital_core_base::time_util::now_millis(),
         }
     }

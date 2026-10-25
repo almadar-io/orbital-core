@@ -1,6 +1,8 @@
 //! Core schema types for Orbital
 //!
 //! These types match the TypeScript OrbitalSchema definitions and can parse `.orb` files.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -238,6 +240,15 @@ pub struct SchemaMetadata {
         skip_serializing_if = "Option::is_none"
     )]
     pub message_sources: Option<std::collections::BTreeMap<String, String>>,
+
+    /// Where each effect operator the client's traits run executes (`server`, `client`, `any`), written into a
+    /// compiled client program so a browser kernel with no installed operator table places every effect.
+    #[serde(rename = "operatorSites", default, skip_serializing_if = "Option::is_none")]
+    pub operator_sites: Option<std::collections::BTreeMap<String, String>>,
+
+    /// The operator table's dispatch facts, written into a compiled client program for a browser kernel with no table.
+    #[serde(rename = "dispatchFacts", default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_facts: Option<crate::language::registry::DispatchFacts>,
 }
 
 /// One `@config.<knob>` → render-ui prop substitution recorded at inline time.
@@ -958,7 +969,7 @@ pub struct IllustrationTokens {
 }
 
 /// Theme token entries in authored order, so the emitted CSS is deterministic.
-pub type ThemeMap = indexmap::IndexMap<String, String>;
+pub type ThemeMap = crate::collections::IndexMap<String, String>;
 
 /// Theme tokens - design system values
 ///
@@ -5745,7 +5756,7 @@ mod tests {
     fn theme_variant_color_and_illustration_are_optional_and_omitted_when_absent() {
         let variant = ThemeVariant {
             color: None,
-            colors: Some(ThemeMap::from([(
+            colors: Some(ThemeMap::from_iter([(
                 "background".to_string(),
                 "#111".to_string(),
             )])),

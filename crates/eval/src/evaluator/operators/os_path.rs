@@ -6,6 +6,8 @@
 //! of a relative one; the empty path is `.`. `base` and `dir` strip trailing separators first (Node's `posix`
 //! `basename`/`dirname`); `ext` is the last `.` of the base to its end, none for a base that starts with its
 //! only dot. `relative` needs both paths absolute or both relative to one shared base.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;

@@ -2,6 +2,8 @@
 //! reply union) over the shared sans-I/O driver loop. One call is one connection: connect (TLS for `rediss://`),
 //! `AUTH` and `SELECT` as one pipeline whose replies are all checked before the command is sent, the command, then
 //! close. Every ask is a journaled `os/*` ask of [`ByteStream`], so a replay of the journal is a replay of the call.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::emit_contract::REDIS_REPLY_DEPTH;
 use orbital_core_base::http_wire::{parse_slot_object, whole_number, CredentialSlot, HttpRefusal};
@@ -612,7 +614,7 @@ mod tests {
     }
 
     fn sock() -> DriverAnswer {
-        DriverAnswer::Os(Ok(Value::Object(ValueMap::from([("sock".to_string(), Value::Number(5.0))]))))
+        DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))]))))
     }
 
     fn ok() -> DriverAnswer {
@@ -620,14 +622,14 @@ mod tests {
     }
 
     fn data(bytes: &[u8]) -> DriverAnswer {
-        DriverAnswer::Os(Ok(Value::Object(ValueMap::from([
+        DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([
             ("data".to_string(), text(&codec::base64_encode(bytes))),
             ("eof".to_string(), Value::Bool(false)),
         ]))))
     }
 
     fn eof() -> DriverAnswer {
-        DriverAnswer::Os(Ok(Value::Object(ValueMap::from([
+        DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([
             ("data".to_string(), text("")),
             ("eof".to_string(), Value::Bool(true)),
         ]))))
@@ -785,7 +787,7 @@ mod tests {
 
     #[test]
     fn a_call_parses_its_command_and_connection_options() {
-        let options = Value::Object(ValueMap::from([
+        let options = Value::Object(ValueMap::from_iter([
             ("auth".to_string(), text("REDIS_PASSWORD")),
             ("user".to_string(), text("app")),
             ("db".to_string(), Value::Number(2.0)),
@@ -794,9 +796,9 @@ mod tests {
         assert_eq!(parsed.command, words(&["GET", "k"]));
         assert_eq!(parsed.auth, Some(CredentialSlot::from("REDIS_PASSWORD")));
         assert_eq!((parsed.user.as_deref(), parsed.db), (Some("app"), Some(2)));
-        let scoped = Value::Object(ValueMap::from([(
+        let scoped = Value::Object(ValueMap::from_iter([(
             "auth".to_string(),
-            Value::Object(ValueMap::from([("credential".to_string(), text("TOKEN")), ("scope".to_string(), text("user"))])),
+            Value::Object(ValueMap::from_iter([("credential".to_string(), text("TOKEN")), ("scope".to_string(), text("user"))])),
         )]));
         let parsed = parse_redis_call(&text("redis://h"), &list(&["PING"]), &scoped).expect("parses");
         assert_eq!(parsed.auth.map(|slot| slot.scope), Some(orbital_core_base::http_wire::SecretScope::User));
@@ -811,11 +813,11 @@ mod tests {
             assert!(parse_redis_call(&origin, &command, &nothing).is_err(), "{command:?}");
         }
         assert!(parse_redis_call(&Value::Number(1.0), &list(&["PING"]), &nothing).is_err());
-        let user_alone = Value::Object(ValueMap::from([("user".to_string(), text("app"))]));
+        let user_alone = Value::Object(ValueMap::from_iter([("user".to_string(), text("app"))]));
         assert!(parse_redis_call(&origin, &list(&["PING"]), &user_alone).is_err());
-        let unknown = Value::Object(ValueMap::from([("timeout".to_string(), Value::Number(1.0))]));
+        let unknown = Value::Object(ValueMap::from_iter([("timeout".to_string(), Value::Number(1.0))]));
         assert!(parse_redis_call(&origin, &list(&["PING"]), &unknown).is_err());
-        let fractional = Value::Object(ValueMap::from([("db".to_string(), Value::Number(1.5))]));
+        let fractional = Value::Object(ValueMap::from_iter([("db".to_string(), Value::Number(1.5))]));
         assert!(parse_redis_call(&origin, &list(&["PING"]), &fractional).is_err());
     }
 

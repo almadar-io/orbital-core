@@ -1,6 +1,8 @@
 //! The kernel half of credential administration (`orbital_core_base::credential_admin` owns the pure rules): it asks the
 //! host for the raw store and mode-flag facts, in a fixed order so a replay sees the same asks, and answers the
 //! program with the masked, gated, declared-name-checked result. The host decides nothing.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::HashMap;
 
@@ -171,7 +173,7 @@ fn test(asks: &dyn AdminAsks, catalog: &Catalog, service: &str) -> Result<Value,
 }
 
 fn counts(rotated: &RotateCounts) -> Value {
-    Value::Object(ValueMap::from([
+    Value::Object(ValueMap::from_iter([
         ("rotated".to_string(), Value::Number(rotated.rotated as f64)),
         ("alreadyCurrent".to_string(), Value::Number(rotated.already_current as f64)),
         ("unreadable".to_string(), Value::Number(rotated.unreadable as f64)),
@@ -208,14 +210,14 @@ pub fn run(
             require_store(asks, "")?;
             admin::settable(&catalog()?, service()?, env_var()?)?;
             let removed = asks.store_remove(env_var()?).map_err(host)?;
-            Ok(Value::Object(ValueMap::from([("removed".to_string(), Value::Bool(removed))])))
+            Ok(Value::Object(ValueMap::from_iter([("removed".to_string(), Value::Bool(removed))])))
         }
         CredentialAdminOp::Test => test(asks, &catalog()?, service()?),
         CredentialAdminOp::Mode => {
             let requested = parsed.mode.as_deref().ok_or_else(|| missing("mode"))?;
             admin::requested_mode(requested)?;
             let now = asks.mode_write(requested).map_err(host)?;
-            Ok(Value::Object(ValueMap::from([("mode".to_string(), Value::String(now))])))
+            Ok(Value::Object(ValueMap::from_iter([("mode".to_string(), Value::String(now))])))
         }
         CredentialAdminOp::Rotate => {
             require_store(asks, "")?;
@@ -400,13 +402,13 @@ mod tests {
     fn list_masks_stored_values_and_reads_the_environment_only_where_the_store_is_silent() {
         let host = Host::with_store(true).env("SALT", "env-salt-0042");
         host.seed("apikeys", "SALT", "stored-salt-9876");
-        let reply = run_with(&host, CredentialAdminOp::List, &Value::Object(ValueMap::new()), None).unwrap();
+        let reply = run_with(&host, CredentialAdminOp::List, &Value::Object(ValueMap::default()), None).unwrap();
         let entry = &get(&reply, "entries").as_array().unwrap()[0];
         assert_eq!(get(entry, "source"), &Value::String("store".into()));
         assert_eq!(get(entry, "last4"), &Value::String("9876".into()));
         assert!(!host.asked.borrow().iter().any(|ask| ask == "secret:SALT:-"), "a stored name is not read from the environment");
         let bare = Host::with_store(true).env("SALT", "env-salt-0042");
-        let reply = run_with(&bare, CredentialAdminOp::List, &Value::Object(ValueMap::new()), None).unwrap();
+        let reply = run_with(&bare, CredentialAdminOp::List, &Value::Object(ValueMap::default()), None).unwrap();
         assert_eq!(get(&get(&reply, "entries").as_array().unwrap()[0], "last4"), &Value::String("0042".into()));
     }
 

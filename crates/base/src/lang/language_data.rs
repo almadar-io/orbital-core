@@ -9,20 +9,48 @@
 //! top-level `orbLanguage` block names the data files, and `orbLanguage.compiler` is checked
 //! against this binary's version. There is no embedded fallback and no env
 //! override.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
+#[cfg(feature = "std")]
 use std::fs;
+#[cfg(feature = "std")]
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+/// A bare-metal host has no filesystem; an error's location is its text.
+#[cfg(not(feature = "std"))]
+type PathBuf = String;
+use crate::sync::OnceLock;
 
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::behavior_packages::{compiler_satisfies, find_npm_package, user_store_dir};
+#[cfg(feature = "std")]
+use crate::behavior_packages::{find_npm_package, user_store_dir};
 
 /// The package that ships the pattern vocabulary.
 pub const CORE_PACKAGE: &str = "@almadar/core";
-/// The package that ships the canonical operator table.
-pub use crate::behavior_packages::STD_PACKAGE;
+/// The canonical `@almadar/std` package name — the one behavior package every
+/// loader/lowerer/CLI path requires installed, with no embedded fallback
+/// (Phase 2). It ships the canonical operator table.
+pub const STD_PACKAGE: &str = "@almadar/std";
+
+pub fn compiler_satisfies(range: &str, running_version: &str) -> Result<bool, semver::Error> {
+    semver_satisfies(range, running_version)
+}
+
+pub fn std_peer_satisfies(range: &str, std_version: &str) -> Result<bool, semver::Error> {
+    semver_satisfies(range, std_version)
+}
+
+pub fn core_satisfies(range: &str, core_version: &str) -> Result<bool, semver::Error> {
+    semver_satisfies(range, core_version)
+}
+
+fn semver_satisfies(range: &str, version: &str) -> Result<bool, semver::Error> {
+    let req = semver::VersionReq::parse(range)?;
+    let ver = semver::Version::parse(version)?;
+    Ok(req.matches(&ver))
+}
 
 pub const CODE_NOT_INSTALLED: &str = "ORB_LANGUAGE_DATA_NOT_INSTALLED";
 pub const CODE_INCOMPATIBLE: &str = "ORB_LANGUAGE_DATA_INCOMPATIBLE";
@@ -49,6 +77,16 @@ pub struct LanguageData {
     /// The theme presets (`orbLanguage.themes`, a directory of one
     /// `ThemeDefinition` per `.json` file), sorted by file name.
     pub themes: Vec<String>,
+}
+
+impl LanguageData {
+    /// Where the data was read from, as text for a message.
+    pub fn root_text(&self) -> String {
+        #[cfg(feature = "std")]
+        return self.root.display().to_string();
+        #[cfg(not(feature = "std"))]
+        return self.root.clone();
+    }
 }
 
 /// The canonical operator table plus where it came from.
@@ -130,12 +168,32 @@ impl LanguageDataError {
     }
 }
 
-pub use crate::behavior_packages::{install_command, not_installed_message};
+/// The command that installs `package`: `orb update` for what every orb needs
+/// (`@almadar/core`, `@almadar/std`, which it installs itself), `orb add
+/// <package>` for anything else.
+pub fn install_command(package: &str) -> String {
+    if package == STD_PACKAGE || package == CORE_PACKAGE {
+        "orb update".to_string()
+    } else {
+        format!("orb add {package}")
+    }
+}
+
+/// The shared "not installed" message for a missing package — `orbital-compiler`'s
+/// loader, `orbital-lolo`'s contracts loader, the language-data loader and
+/// `orbital-cli` all report a missing package through this one function.
+pub fn not_installed_message(package: &str) -> String {
+    format!(
+        "{package} is not installed — run `{}` (or with `--global`)",
+        install_command(package)
+    )
+}
 
 pub fn running_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+#[cfg(feature = "std")]
 /// Resolves `@almadar/core` from `start_dir` / `user_store` and reads the
 /// language data it declares. Pure: touches no global state.
 pub fn load_language_data(
@@ -145,6 +203,7 @@ pub fn load_language_data(
     load_language_data_for(start_dir, user_store, running_version())
 }
 
+#[cfg(feature = "std")]
 pub fn load_language_data_for(
     start_dir: &Path,
     user_store: &Path,
@@ -169,6 +228,7 @@ pub fn load_language_data_for(
     })
 }
 
+#[cfg(feature = "std")]
 /// Resolves `@almadar/std` from `start_dir` / `user_store` and reads the
 /// operator table it declares; the evaluator crate certifies it
 /// ([`certify_operator_data`]). Pure: touches no global state.
@@ -179,6 +239,7 @@ pub fn load_operator_data(
     load_operator_data_for(start_dir, user_store, running_version())
 }
 
+#[cfg(feature = "std")]
 pub fn load_operator_data_for(
     start_dir: &Path,
     user_store: &Path,
@@ -218,8 +279,19 @@ pub fn check_operator_entries(data: &OperatorData) -> Result<(), LanguageDataErr
     for (name, meta) in section("categories")? {
         serde_json::from_value::<EmbeddedCategory>(meta.clone()).map_err(|e| unreadable(format!("category `{name}`"), e))?;
     }
-    for (name, meta) in section("operators")? {
+    let operators = section("operators")?;
+    for (name, meta) in operators {
         serde_json::from_value::<EmbeddedOperator>(meta.clone()).map_err(|e| unreadable(format!("operator `{name}`"), e))?;
+    }
+    for (name, field) in [("emit", "busExcluded"), ("program/dispatch", "targetOptions")] {
+        if operators.get(name).and_then(|meta| meta.get(field)).and_then(Value::as_array).is_none() {
+            return Err(LanguageDataError::Unreadable {
+                package: STD_PACKAGE,
+                version: data.std_version.clone(),
+                entry: format!("operator `{name}`"),
+                reason: format!("declares no `{field}` list"),
+            });
+        }
     }
     Ok(())
 }
@@ -255,12 +327,14 @@ pub fn unimplemented_rust_operators(table: &str, implemented: OperatorProbe) -> 
     Ok(missing)
 }
 
+#[cfg(feature = "std")]
 pub struct LanguageBlock {
     pkg: crate::behavior_packages::NpmPackage,
     block: serde_json::Map<String, Value>,
     package_json: PathBuf,
 }
 
+#[cfg(feature = "std")]
 impl LanguageBlock {
     pub fn declared_path(&self, field: &str) -> Option<PathBuf> {
         self.block
@@ -314,6 +388,7 @@ impl LanguageBlock {
     }
 }
 
+#[cfg(feature = "std")]
 /// Finds `package` and returns its range-checked top-level `orbLanguage` block.
 pub fn read_language_block(
     package: &'static str,
@@ -385,12 +460,19 @@ pub fn language_data() -> Result<&'static LanguageData, LanguageDataError> {
     if let Some(data) = LANGUAGE_DATA.get() {
         return Ok(data);
     }
-    let cwd = std::env::current_dir().map_err(|e| LanguageDataError::Invalid {
-        path: PathBuf::new(),
-        reason: format!("cannot read the working directory: {e}"),
-    })?;
-    let data = load_language_data(&cwd, &user_store_dir().unwrap_or_default())?;
-    Ok(LANGUAGE_DATA.get_or_init(|| data))
+    #[cfg(not(feature = "std"))]
+    {
+        Err(LanguageDataError::NotInstalled { package: CORE_PACKAGE })
+    }
+    #[cfg(feature = "std")]
+    {
+        let cwd = std::env::current_dir().map_err(|e| LanguageDataError::Invalid {
+            path: PathBuf::new(),
+            reason: format!("cannot read the working directory: {e}"),
+        })?;
+        let data = load_language_data(&cwd, &user_store_dir().unwrap_or_default())?;
+        Ok(LANGUAGE_DATA.get_or_init(|| data))
+    }
 }
 
 /// Accessors that cannot return a `Result` (`embedded::patterns()` and
@@ -645,12 +727,19 @@ pub fn operator_data() -> Result<&'static OperatorData, LanguageDataError> {
     if let Some(data) = OPERATOR_DATA.get() {
         return Ok(data);
     }
-    let cwd = std::env::current_dir().map_err(|e| LanguageDataError::Invalid {
-        path: PathBuf::new(),
-        reason: format!("cannot read the working directory: {e}"),
-    })?;
-    let data = load_operator_data(&cwd, &user_store_dir().unwrap_or_default())?;
-    Ok(OPERATOR_DATA.get_or_init(|| data))
+    #[cfg(not(feature = "std"))]
+    {
+        Err(LanguageDataError::NotInstalled { package: STD_PACKAGE })
+    }
+    #[cfg(feature = "std")]
+    {
+        let cwd = std::env::current_dir().map_err(|e| LanguageDataError::Invalid {
+            path: PathBuf::new(),
+            reason: format!("cannot read the working directory: {e}"),
+        })?;
+        let data = load_operator_data(&cwd, &user_store_dir().unwrap_or_default())?;
+        Ok(OPERATOR_DATA.get_or_init(|| data))
+    }
 }
 
 /// The operator table when something already installed or loaded it; never touches the filesystem.

@@ -49,7 +49,7 @@ pub use orbital_core_base::value::{Value, ValueMap};
 use lru::LruCache;
 use orbital_core_base::error::OrbitalError;
 use orbital_core_base::schema::sexpr::SExpression;
-use parking_lot::Mutex;
+use orbital_core_base::sync::Mutex;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn json_parse_object_array_scalar_nested() {
-        let mut obj = ValueMap::new();
+        let mut obj = ValueMap::default();
         obj.insert("a".to_string(), Value::Number(1.0));
         obj.insert("b".to_string(), Value::String("x".to_string()));
         assert_eq!(
@@ -637,10 +637,10 @@ mod tests {
             Value::String("a".to_string()),
             Value::String("b".to_string()),
         ]);
-        let mut row = ValueMap::new();
+        let mut row = ValueMap::default();
         row.insert("id".to_string(), Value::Number(1.0));
         row.insert("tags".to_string(), tags);
-        let mut rows = ValueMap::new();
+        let mut rows = ValueMap::default();
         rows.insert("rows".to_string(), Value::Array(vec![Value::Object(row)]));
         assert_eq!(
             eval(r#"["json/parse", "{\"rows\": [{\"id\": 1, \"tags\": [\"a\", \"b\"]}]}", "Row"]"#),
@@ -1012,8 +1012,8 @@ mod tests {
 
     #[test]
     fn test_binding_resolution() {
-        let mut payload = ValueMap::new();
-        let mut data = ValueMap::new();
+        let mut payload = ValueMap::default();
+        let mut data = ValueMap::default();
         data.insert(
             "email".to_string(),
             Value::String("test@example.com".to_string()),
@@ -1043,8 +1043,8 @@ mod tests {
     #[test]
     fn test_complex_guard_from_orbital_pattern() {
         // Guard: ["and", ["!=", "@payload.data.email", ""], ["!=", "@payload.data.name", ""]]
-        let mut payload = ValueMap::new();
-        let mut data = ValueMap::new();
+        let mut payload = ValueMap::default();
+        let mut data = ValueMap::default();
         data.insert(
             "email".to_string(),
             Value::String("test@example.com".to_string()),
@@ -1061,8 +1061,8 @@ mod tests {
         assert_eq!(eval_with_ctx(guard, &ctx), Value::Bool(true));
 
         // Test with empty email
-        let mut payload2 = ValueMap::new();
-        let mut data2 = ValueMap::new();
+        let mut payload2 = ValueMap::default();
+        let mut data2 = ValueMap::default();
         data2.insert("email".to_string(), Value::String("".to_string()));
         data2.insert("name".to_string(), Value::String("Test User".to_string()));
         payload2.insert("data".to_string(), Value::Object(data2));
@@ -1078,8 +1078,8 @@ mod tests {
     fn test_connection_slots_guard() {
         // Guard: [">=", "@payload.data.connectionSlots", 1]
         // Guard: ["<=", "@payload.data.connectionSlots", 100]
-        let mut payload = ValueMap::new();
-        let mut data = ValueMap::new();
+        let mut payload = ValueMap::default();
+        let mut data = ValueMap::default();
         data.insert("connectionSlots".to_string(), Value::Number(50.0));
         payload.insert("data".to_string(), Value::Object(data));
 
@@ -1104,7 +1104,7 @@ mod tests {
 
         let connections: Vec<Value> = (0..50)
             .map(|i| {
-                let mut c = ValueMap::new();
+                let mut c = ValueMap::default();
                 c.insert(
                     "requesterId".to_string(),
                     Value::String("user-1".to_string()),
@@ -1117,7 +1117,7 @@ mod tests {
             })
             .collect();
 
-        let mut user = ValueMap::new();
+        let mut user = ValueMap::default();
         user.insert("id".to_string(), Value::String("user-1".to_string()));
 
         let ctx = BindingContextBuilder::new()

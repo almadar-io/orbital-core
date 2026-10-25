@@ -2,6 +2,8 @@
 //! (`Value::is_truthy`), `=` as `loose_eq` (a null equals only null), ordering and arithmetic coercing null to 0
 //! (`Value::compare`, `to_number`). Anything outside that fragment becomes an opaque atom, named so an unproved
 //! obligation can say what it could not decide.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::rat::Rat;
 use orbital_core_base::schema::sexpr::{SExpression, SequentialBindings};

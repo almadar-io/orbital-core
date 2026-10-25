@@ -1,4 +1,6 @@
 //! Writing a generated project from a resolved program (the shell side of a compile).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::generate::{Backend, GeneratedOutput, ShellMode};
 use crate::ir::types::OirModule;
@@ -312,7 +314,8 @@ pub fn resolve_public_dir(source_path: &Path, public_dir: &str) -> Result<PathBu
 pub fn copy_locales(source_path: &Path, output: &Path) -> std::io::Result<()> {
     let destination = output.join("locales");
     std::fs::create_dir_all(&destination)?;
-    if let Some(source_locales) = source_path.parent().map(|d| d.join("locales")).filter(|d| d.is_dir()) {
+    let same_folder = |dir: &Path| matches!((dir.canonicalize(), destination.canonicalize()), (Ok(a), Ok(b)) if a == b);
+    if let Some(source_locales) = source_path.parent().map(|d| d.join("locales")).filter(|d| d.is_dir() && !same_folder(d)) {
         for entry in std::fs::read_dir(source_locales)?.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("json") {
@@ -347,6 +350,26 @@ pub fn copy_public(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locales_generated_beside_their_own_source_are_kept_not_truncated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("locales")).unwrap();
+        std::fs::write(dir.path().join("locales/en.json"), r#"{"hi":"Hi"}"#).unwrap();
+        copy_locales(&dir.path().join("program.orb"), dir.path()).expect("copies");
+        assert_eq!(std::fs::read_to_string(dir.path().join("locales/en.json")).unwrap(), r#"{"hi":"Hi"}"#);
+        assert_eq!(std::fs::read_to_string(dir.path().join("locales/ar.json")).unwrap(), "{}");
+    }
+
+    #[test]
+    fn control_locales_beside_another_source_are_copied_over() {
+        let src = tempfile::tempdir().expect("tempdir");
+        let out = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(src.path().join("locales")).unwrap();
+        std::fs::write(src.path().join("locales/sl.json"), r#"{"hi":"Zdravo"}"#).unwrap();
+        copy_locales(&src.path().join("app.lolo"), out.path()).expect("copies");
+        assert_eq!(std::fs::read_to_string(out.path().join("locales/sl.json")).unwrap(), r#"{"hi":"Zdravo"}"#);
+    }
 
     struct OneFile;
 

@@ -13,6 +13,8 @@
 //! trait (`crate::generate`) and [`type_compat`](crate::type_compat), this
 //! sits in `orbital-core` so shells implement it without depending on the
 //! compiler.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::ir::types::{OirField, OirType};
 

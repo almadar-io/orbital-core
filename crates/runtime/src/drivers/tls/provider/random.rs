@@ -1,5 +1,7 @@
 //! The one entropy source: a ChaCha20 DRBG seeded from the journaled `Random` ask. A session installs its DRBG
 //! for the span of each call into rustls; outside that span there is no randomness and every draw fails.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::cell::RefCell;
 
@@ -7,7 +9,7 @@ use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use rustls::crypto::{GetRandomFailed, SecureRandom};
 
-thread_local! {
+orbital_core_base::kernel_local! {
     static ACTIVE: RefCell<Option<ChaCha20Rng>> = const { RefCell::new(None) };
 }
 

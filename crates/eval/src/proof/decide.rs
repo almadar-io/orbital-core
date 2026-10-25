@@ -2,6 +2,8 @@
 //! linear real arithmetic (Fourier–Motzkin over exact rationals), string equality with closed domains
 //! (union-find), and booleans / nullness / opaque atoms (plain consistency). Complete for the fragment: `Unsat`
 //! is a proof, `Sat` carries a model, `Unknown` names the resource bound that stopped it.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::formula::{formula_vars, Atom, Formula, Lin, Rel, STerm, Sort, VarInfo, Vars};
 use super::rat::Rat;

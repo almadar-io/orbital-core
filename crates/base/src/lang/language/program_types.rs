@@ -3,9 +3,11 @@
 //!
 //! The data is `.orb` field definitions by type name, so the one `field_shape` that types a program's own struct
 //! aliases types these too.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use crate::sync::OnceLock;
 
 use crate::ir::types::{field_shape, OirType};
 use crate::schema::types::FieldDefinition;

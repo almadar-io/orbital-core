@@ -7,9 +7,11 @@
 //! render-ui validator (accept `children` on a draw-host; gate each child's
 //! drawable-ness) and the orbital-client render_probe (exempt a draw-host's painted
 //! children from renderer-coverage). Their only shared upstream is this crate.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::HashSet;
-use std::sync::LazyLock;
+use crate::sync::LazyLock;
 
 fn flagged(flag: &str) -> HashSet<String> {
     let registry: serde_json::Value =

@@ -22,6 +22,8 @@
 //! node's is the map of its values' results, and a node with no children gets `{}`. A null node folds to null without a step. Every call works on a strict subterm
 //! of a finite value, so it terminates, and the walk keeps its own stack so a deep value cannot overflow the
 //! thread's (G-ORB-433).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
@@ -30,7 +32,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-thread_local! {
+orbital_core_base::kernel_local! {
     static DEFINITIONS: RefCell<HashMap<String, Rc<FieldDefinition>>> = RefCell::new(HashMap::new());
 }
 
@@ -254,11 +256,11 @@ impl Fold<'_> {
     fn step(&self, frame: Frame<'_>) -> EvalResult {
         let mut results = frame.results.into_iter();
         let child_results = match frame.plan {
-            Plan::Leaf => Value::Object(ValueMap::new()),
+            Plan::Leaf => Value::Object(ValueMap::default()),
             Plan::List => Value::Array(results.collect()),
             Plan::Map(keys) => Value::Object(keys.into_iter().zip(results).collect()),
             Plan::Fields(slots) => {
-                let mut out = ValueMap::new();
+                let mut out = ValueMap::default();
                 for (key, slot) in slots {
                     let result = match slot {
                         Slot::Field => results.next().unwrap_or(Value::Null),

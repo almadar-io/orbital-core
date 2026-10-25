@@ -1,4 +1,6 @@
 //! Shared result and info types produced by the runtime kernel.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::dispatch_memory::DispatchView;
 use super::shared_entity::SharedEntity;
@@ -36,7 +38,8 @@ pub struct ProcessEventResult {
     pub event: Option<String>,
 
     /// The payload this event was delivered to the trait with, after any listen mapping; `Null` when none (a tick, an empty delivery).
-    pub payload: Value,
+    /// Shared with the delivery, so a long cascade keeps one payload, not a copy per step.
+    pub payload: std::sync::Arc<Value>,
 
     /// What the delivery looked like going in; `None` for a delivery that did not execute and for a tick.
     pub entry: Option<DeliveryEntry>,

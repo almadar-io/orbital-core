@@ -6,6 +6,8 @@
 //! emit up the embed scope chain the way `TraitScopeProvider`
 //! (R-EMBEDDED-EMIT-BUBBLE) does on the JS path. This module builds that
 //! inverse once per schema registration; nothing here mutates dispatch state.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::schema::types::TraitDefinition;
 use std::collections::{HashMap, HashSet};

@@ -2,6 +2,8 @@
 //! dispatches the declared input the kernel asked for, as the dispatch's viewer, through its ordinary input
 //! channel, turns that response into the answer with [`dispatch_outcome`]. Twin of `dispatchOutcomeOf`
 //! (`@almadar/core`); the shared corpus pins both.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::effects::response::EventResponse;
 use orbital_core_base::value::{Value, ValueMap};
@@ -57,7 +59,7 @@ pub fn dispatch_failure(response: &EventResponse) -> Option<String> {
 
 /// What a dispatch answers the model: `{ ok: true, emitted: [{ event, payload? }] }`, or `{ ok: false, error }`.
 pub fn dispatch_outcome(response: &EventResponse) -> Value {
-    let mut map = ValueMap::new();
+    let mut map = ValueMap::default();
     match dispatch_failure(response) {
         Some(error) => {
             map.insert("ok".to_string(), Value::Bool(false));
@@ -68,7 +70,7 @@ pub fn dispatch_outcome(response: &EventResponse) -> Value {
                 .emitted_events
                 .iter()
                 .map(|e| {
-                    let mut event = ValueMap::new();
+                    let mut event = ValueMap::default();
                     event.insert("event".to_string(), Value::String(e.event.clone()));
                     if let Some(payload) = &e.payload {
                         event.insert("payload".to_string(), payload.clone());
@@ -104,7 +106,7 @@ pub fn program_answer(op: &str, args: &[Value], answer: Value) -> Result<Value, 
 pub fn completion_result(op: &str, value: Value) -> Value {
     let text = orbital_core_base::agent_ports::is_agent_port_operator(op)
         .then(|| serde_json::to_string(&orbital_core_base::json_value::value_to_json(&value)).unwrap_or_default());
-    let mut payload = ValueMap::new();
+    let mut payload = ValueMap::default();
     payload.insert("result".to_string(), value);
     if let Some(text) = text {
         payload.insert("text".to_string(), Value::String(text));
@@ -114,7 +116,7 @@ pub fn completion_result(op: &str, value: Value) -> Value {
 
 /// The failure payload of a substrate or program op's completion: `{ error }`, plus `errors` when the op gave any.
 pub fn failure_payload(failure: &crate::effects::executor::SubstrateFailure) -> Value {
-    let mut payload = ValueMap::new();
+    let mut payload = ValueMap::default();
     payload.insert("error".to_string(), Value::String(failure.message.clone()));
     if !failure.errors.is_empty() {
         payload.insert("errors".to_string(), Value::Array(failure.errors.clone()));
@@ -178,7 +180,7 @@ mod tests {
         assert_eq!(inbound, hook, "control: an inbound delivery answers the handler's status and body");
         assert_eq!(program_answer("program/read", &[text("x")], text("y")).unwrap(), text("y"), "control: another op is not reshaped");
         assert!(program_answer("program/dispatch", &[text("O.T.GO"), object(serde_json::json!({}))], text("no response")).is_err(), "edge: a host that answers no event response fails");
-        let mut counted = ValueMap::new();
+        let mut counted = ValueMap::default();
         counted.insert("trait".to_string(), text("T"));
         counted.insert("from".to_string(), text("idle"));
         counted.insert("to".to_string(), text("idle"));

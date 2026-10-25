@@ -2,6 +2,8 @@
 //! (discovery, code exchange, refresh, revocation, userinfo) is a request this module builds and a response it checks;
 //! whoever owns the wire (a provider's `Transport`, the core `http` driver) sends it. Failures carry the coarse text
 //! `openid-client` raises (`unexpected HTTP response status code`, ...), never a token or a vendor body.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::fmt;
 
@@ -19,6 +21,7 @@ use std::time::Duration;
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const FORM_TYPE: &str = "application/x-www-form-urlencoded;charset=UTF-8";
 const CLOCK_TOLERANCE_S: f64 = 30.0;
+#[cfg(feature = "std")]
 pub mod store;
 
 /// A failed check: the fixed message `openid-client` raises, never a token or vendor body.

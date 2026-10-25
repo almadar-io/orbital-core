@@ -1,4 +1,6 @@
 //! Error types for Orbital core operations
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use thiserror::Error;
 
@@ -23,6 +25,7 @@ pub enum OrbitalError {
     #[error("Effect execution error: {0}")]
     EffectExecution(String),
 
+    #[cfg(feature = "std")]
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

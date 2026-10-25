@@ -6,6 +6,8 @@
 //! of that argument: which op tuples are written out literally, and so which
 //! entities the batch is known to touch. Placement, validation and codegen all
 //! ask here.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::runs_on::Residence;
 use crate::schema::sexpr::SExpression;

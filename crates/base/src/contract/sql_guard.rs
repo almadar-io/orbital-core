@@ -3,6 +3,8 @@
 //! accepts exactly one SELECT statement (optionally CTE-led). Comments are stripped and string and identifier
 //! contents blanked before the keyword check, so denied words inside literals never false-positive and comment
 //! or quote tricks cannot smuggle a second statement past it.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuardResult {

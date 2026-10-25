@@ -7,6 +7,8 @@
 //! wire form is identical to the TS side (camelCase keys, ids as plain
 //! strings). Minting lives in the L1 lowerer (Phase 2) — this module only
 //! classifies and round-trips ids; it never creates them.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -201,9 +203,10 @@ pub fn mint_id(kind: IdKind, entropy: &mut impl FnMut(usize) -> Vec<u8>) -> Stri
 
 /// This process's entropy seed. Every process gets its own, so two processes
 /// minting in the same millisecond never share an id sequence (G-ORB-006).
+#[cfg(feature = "std")]
 pub fn process_seed() -> u64 {
     use std::hash::{BuildHasher, Hasher};
-    static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    static SEED: crate::sync::OnceLock<u64> = crate::sync::OnceLock::new();
     *SEED.get_or_init(|| {
         // `RandomState`'s keys come from the OS's randomness, fresh per process.
         let mut h = std::collections::hash_map::RandomState::new().build_hasher();
@@ -212,6 +215,21 @@ pub fn process_seed() -> u64 {
         h.write_i64(crate::time_util::now_millis());
         h.finish()
     })
+}
+
+#[cfg(not(feature = "std"))]
+static HOST_SEED: crate::sync::OnceLock<u64> = crate::sync::OnceLock::new();
+
+/// A bare-metal host's entropy seed, drawn from its own randomness and installed once at boot.
+#[cfg(not(feature = "std"))]
+pub fn install_process_seed(seed: u64) {
+    assert!(HOST_SEED.set(seed).is_ok(), "the process seed is installed once");
+}
+
+/// This process's entropy seed, as the host installed it (G-ORB-006).
+#[cfg(not(feature = "std"))]
+pub fn process_seed() -> u64 {
+    *HOST_SEED.get().expect("the host installs its entropy seed (identity::install_process_seed) before ids are minted")
 }
 
 /// The default, NON-CRYPTOGRAPHIC entropy source: this process's seed, the clock

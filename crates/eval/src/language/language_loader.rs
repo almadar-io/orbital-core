@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 #[allow(unused_imports)]
 use orbital_core_base::language_data::*;
 
@@ -14,7 +16,7 @@ pub fn certify(data: &OperatorData) -> Result<(), LanguageDataError> {
 
 /// The installed table's certification, run once: the installed table never changes after it loads.
 fn certify_installed(data: &'static OperatorData) -> Result<(), LanguageDataError> {
-    static CERTIFIED: std::sync::OnceLock<Result<(), LanguageDataError>> = std::sync::OnceLock::new();
+    static CERTIFIED: orbital_core_base::sync::OnceLock<Result<(), LanguageDataError>> = orbital_core_base::sync::OnceLock::new();
     CERTIFIED.get_or_init(|| certify(data)).clone()
 }
 
@@ -39,6 +41,7 @@ pub fn operator_data_after_preflight() -> &'static OperatorData {
     }
 }
 
+#[cfg(feature = "std")]
 pub fn load_operator_data(
     start_dir: &std::path::Path,
     user_store: &std::path::Path,
@@ -48,6 +51,7 @@ pub fn load_operator_data(
     Ok(data)
 }
 
+#[cfg(feature = "std")]
 pub fn load_operator_data_for(
     start_dir: &std::path::Path,
     user_store: &std::path::Path,

@@ -2,6 +2,8 @@
 //!
 //! Cells are `{x,y}` integers. Cell arrays are returned in the exact
 //! deterministic order specified (parity depends on order). All ops pure.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::vector::{eval_obj, make_vec, vget};

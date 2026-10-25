@@ -1,4 +1,6 @@
 //! The `process` family: spawn, wait, kill, pids, signals, environment, stdio and tty.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::args::{arg_bytes, arg_i64, arg_opt, arg_str, bytes_value, denied};
 use super::fs::FdEntry;
@@ -7,7 +9,7 @@ use crate::resumable::CallSite;
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::os_grants::{FsMode, StdioKind};
 use orbital_core_base::value::{Value, ValueMap};
-use parking_lot::Mutex;
+use orbital_core_base::sync::Mutex;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -54,7 +56,7 @@ fn io_error(op: OsOp, e: &std::io::Error) -> OsError {
 }
 
 fn object(fields: Vec<(&str, Value)>) -> Value {
-    let mut map = ValueMap::new();
+    let mut map = ValueMap::default();
     for (k, v) in fields {
         map.insert(k.to_string(), v);
     }

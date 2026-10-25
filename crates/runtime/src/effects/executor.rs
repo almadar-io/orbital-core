@@ -1,6 +1,8 @@
 //! Effect Executor
 //!
 //! Environment-aware effect execution with routing logic.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::bus_event::ServerEffectCode;
 use orbital_core_base::runs_on::{runs_on, RunsOn};
@@ -15,7 +17,7 @@ use crate::entity_access::{check_mutation_access, missing_required_fields, scope
 use crate::row_query::{compare_rows, compile_predicate, default_row_order, PredicateRole, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome};
 use orbital_core_base::row_set::{nearest_rows, RowDirection, RowNearest, RowOrder, RowPredicate, RowSetRef, RowTotalMode};
 use orbital_core_base::schema::sexpr::SExpression;
-use parking_lot::RwLock;
+use orbital_core_base::sync::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -278,7 +280,7 @@ pub trait EffectDelegate: Send + Sync {
 #[derive(Debug, Default)]
 pub struct InMemoryPersistence {
     /// Rows per entity in insertion order, as the JS store's `Map`.
-    data: parking_lot::RwLock<HashMap<String, indexmap::IndexMap<String, Value>>>,
+    data: orbital_core_base::sync::RwLock<HashMap<String, orbital_core_base::collections::IndexMap<String, Value>>>,
     next_id: std::sync::atomic::AtomicU64,
     entity_policies: Option<Arc<RwLock<EntityAccessTable>>>,
 }
@@ -636,8 +638,22 @@ impl EffectExecutor {
     /// Execute an effect
     pub fn execute(&self, effect: &Effect, ctx: &BindingContext) -> EffectResult {
         let _span = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, "effect", op = effect.operator()).entered();
-        if self.environment.is_client() && runs_on(effect.operator()) == RunsOn::Server {
+        if self.environment.is_client() && !matches!(effect, Effect::Custom { .. }) && runs_on(effect.operator()) == RunsOn::Server {
             return self.delegate_to_server(effect.clone());
+        }
+        if self.environment.is_client() && matches!(effect, Effect::Custom { .. }) {
+            match orbital_core_base::runs_on::runs_on_known(effect.operator()) {
+                Some(RunsOn::Server) => return self.delegate_to_server(effect.clone()),
+                Some(_) => {}
+                None => {
+                    let reason = format!(
+                        "{} cannot be placed: no operator table is installed and the program carries no operatorSites entry for it; recompile the client program",
+                        effect.operator()
+                    );
+                    tracing::error!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, op = effect.operator(), "{reason}");
+                    return EffectResult::failed(effect.clone(), &reason);
+                }
+            }
         }
         match effect {
             Effect::Emit { event, payload } => self.do_emit(event, payload),
@@ -2489,7 +2505,7 @@ fn batch_entry(b: &BatchOp, result: &EffectResult) -> Value {
         (_, PersistOperation::Create | PersistOperation::Upsert | PersistOperation::Update) => {
             b.data.as_object().cloned().unwrap_or_default()
         }
-        _ => ValueMap::new(),
+        _ => ValueMap::default(),
     };
     entry.insert("action".to_string(), Value::String(b.action.clone()));
     entry.insert("entityType".to_string(), Value::String(b.entity.clone()));
@@ -2503,7 +2519,7 @@ fn batch_entry(b: &BatchOp, result: &EffectResult) -> Value {
 }
 
 fn batch_summary(effect: Effect, completed: Vec<Value>, total: usize) -> EffectResult {
-    let mut summary = ValueMap::new();
+    let mut summary = ValueMap::default();
     summary.insert(
         "completedCount".to_string(),
         Value::Number(completed.len() as f64),
@@ -2549,8 +2565,8 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingService {
-        calls: parking_lot::Mutex<Vec<(String, Option<String>)>>,
-        cancelled: parking_lot::Mutex<Vec<String>>,
+        calls: orbital_core_base::sync::Mutex<Vec<(String, Option<String>)>>,
+        cancelled: orbital_core_base::sync::Mutex<Vec<String>>,
     }
 
     impl ServiceHandler for RecordingService {
@@ -2678,7 +2694,7 @@ mod tests {
             operation: PersistOperation::Create,
             entity_type: "User".to_string(),
             data: Value::Object({
-                let mut m = ValueMap::new();
+                let mut m = ValueMap::default();
                 m.insert("name".to_string(), Value::String("John".to_string()));
                 m
             }),
@@ -2698,7 +2714,7 @@ mod tests {
 
     fn row_of(pairs: &[(&str, &str)]) -> Value {
         Value::Object({
-            let mut m = ValueMap::new();
+            let mut m = ValueMap::default();
             for (k, v) in pairs {
                 m.insert((*k).to_string(), Value::String((*v).to_string()));
             }
@@ -2785,7 +2801,7 @@ mod tests {
             .create(
                 "Ticket",
                 &Value::Object({
-                    let mut m = ValueMap::new();
+                    let mut m = ValueMap::default();
                     m.insert("subject".to_string(), Value::String("original".to_string()));
                     m
                 }),
@@ -2809,7 +2825,7 @@ mod tests {
             operation: PersistOperation::Update,
             entity_type: "Ticket".to_string(),
             data: Value::Object({
-                let mut m = ValueMap::new();
+                let mut m = ValueMap::default();
                 m.insert("id".to_string(), Value::String(ticket_id.clone()));
                 m.insert("subject".to_string(), Value::String("edited".to_string()));
                 m
@@ -2866,7 +2882,7 @@ mod tests {
                 SExpression::String("object/merge".to_string()),
                 SExpression::String("@payload.data".to_string()),
                 SExpression::Object({
-                    let mut m = orbital_core_base::schema::sexpr::SObject::new();
+                    let mut m = orbital_core_base::schema::sexpr::SObject::default();
                     m.insert(
                         "sender".to_string(),
                         SExpression::String("@user.id".to_string()),
@@ -2878,11 +2894,11 @@ mod tests {
         let effect =
             orbital_core_base::effect_types::parse_effect(&raw).expect("parse_persist must recognize this shape");
 
-        let mut payload_data = ValueMap::new();
+        let mut payload_data = ValueMap::default();
         payload_data.insert("content".to_string(), Value::String("hello".to_string()));
-        let mut payload = ValueMap::new();
+        let mut payload = ValueMap::default();
         payload.insert("data".to_string(), Value::Object(payload_data));
-        let mut user = ValueMap::new();
+        let mut user = ValueMap::default();
         user.insert("id".to_string(), Value::String("user-42".to_string()));
 
         let ctx = orbital_core_eval::evaluator::context::BindingContextBuilder::new()
@@ -2927,7 +2943,7 @@ mod tests {
             .create(
                 "Note",
                 &Value::Object({
-                    let mut m = ValueMap::new();
+                    let mut m = ValueMap::default();
                     m.insert("id".to_string(), Value::String("note-1".to_string()));
                     m.insert(
                         "authorId".to_string(),
@@ -2958,7 +2974,7 @@ mod tests {
         // The viewer is NOT the row's author — the declared `@delete`
         // policy must reject this row.
         let viewer = Value::Object({
-            let mut m = ValueMap::new();
+            let mut m = ValueMap::default();
             m.insert("id".to_string(), Value::String("someone-else".to_string()));
             m
         });
@@ -2994,7 +3010,7 @@ mod tests {
 
         let effect = Effect::RenderUi {
             slot: "main".to_string(),
-            content: Value::Object(ValueMap::new()),
+            content: Value::Object(ValueMap::default()),
         };
 
         // Server no-ops
@@ -3040,7 +3056,7 @@ mod tests {
 
         // Create
         let data = Value::Object({
-            let mut m = ValueMap::new();
+            let mut m = ValueMap::default();
             m.insert("name".to_string(), Value::String("John".to_string()));
             m
         });
@@ -3062,7 +3078,7 @@ mod tests {
 
         // Update
         let update_data = Value::Object({
-            let mut m = ValueMap::new();
+            let mut m = ValueMap::default();
             m.insert("name".to_string(), Value::String("Jane".to_string()));
             m
         });
@@ -3119,7 +3135,7 @@ mod tests {
             .create(
                 "User",
                 &Value::Object({
-                    let mut m = ValueMap::new();
+                    let mut m = ValueMap::default();
                     m.insert("id".to_string(), Value::String("user-1".to_string()));
                     m.insert("name".to_string(), Value::String("John".to_string()));
                     m
@@ -3130,7 +3146,7 @@ mod tests {
             .create(
                 "User",
                 &Value::Object({
-                    let mut m = ValueMap::new();
+                    let mut m = ValueMap::default();
                     m.insert("id".to_string(), Value::String("user-2".to_string()));
                     m.insert("name".to_string(), Value::String("Jane".to_string()));
                     m
@@ -3176,7 +3192,7 @@ mod tests {
             .create(
                 "User",
                 &Value::Object({
-                    let mut m = ValueMap::new();
+                    let mut m = ValueMap::default();
                     m.insert("id".to_string(), Value::String("user-123".to_string()));
                     m.insert("name".to_string(), Value::String("John".to_string()));
                     m
@@ -3252,13 +3268,13 @@ mod tests {
             ) -> Result<FetchPage, String> {
                 let mut rows = vec![
                     Value::Object({
-                        let mut m = ValueMap::new();
+                        let mut m = ValueMap::default();
                         m.insert("id".to_string(), Value::String("r1".to_string()));
                         m.insert("channel".to_string(), Value::String("general".to_string()));
                         m
                     }),
                     Value::Object({
-                        let mut m = ValueMap::new();
+                        let mut m = ValueMap::default();
                         m.insert("id".to_string(), Value::String("r2".to_string()));
                         m.insert("channel".to_string(), Value::String("random".to_string()));
                         m
@@ -3293,7 +3309,7 @@ mod tests {
         ]);
 
         let issuing_entity = Value::Object({
-            let mut m = ValueMap::new();
+            let mut m = ValueMap::default();
             m.insert(
                 "activeChannel".to_string(),
                 Value::String("general".to_string()),
@@ -3350,13 +3366,13 @@ mod tests {
             ) -> Result<FetchPage, String> {
                 let mut rows = vec![
                     Value::Object({
-                        let mut m = ValueMap::new();
+                        let mut m = ValueMap::default();
                         m.insert("id".to_string(), Value::String("r1".to_string()));
                         m.insert("ownerId".to_string(), Value::String("user-1".to_string()));
                         m
                     }),
                     Value::Object({
-                        let mut m = ValueMap::new();
+                        let mut m = ValueMap::default();
                         m.insert("id".to_string(), Value::String("r2".to_string()));
                         m.insert("ownerId".to_string(), Value::String("user-2".to_string()));
                         m
@@ -3382,7 +3398,7 @@ mod tests {
         }
 
         let viewer = Value::Object({
-            let mut m = ValueMap::new();
+            let mut m = ValueMap::default();
             m.insert("id".to_string(), Value::String("user-1".to_string()));
             m
         });

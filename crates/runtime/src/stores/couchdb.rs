@@ -8,6 +8,8 @@
 //!   kernel reads rows instead;
 //! - CouchDB has no multi-document transactions, so a write is conditioned on the `_rev` it read: a guard is tested in
 //!   process on the pre-image, a write that loses the race re-reads and re-tests, and a batch cannot be atomic.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -15,7 +17,7 @@ use std::sync::Arc;
 use orbital_core_base::codec::{base64_encode, encode_uri_component};
 use orbital_core_base::row_set::{RowCompareOp, RowPredicate, RowQuery, RowTotalMode};
 use orbital_core_base::value::Value;
-use parking_lot::{Mutex, RwLock};
+use orbital_core_base::sync::{Mutex, RwLock};
 use serde_json::{json, Map, Value as Json};
 
 use crate::entity_source::EntitySource;

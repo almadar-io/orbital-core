@@ -4,6 +4,8 @@
 //! lowered onto its `stateMachine.events[]` entry as `inbound`). The host only carries bytes:
 //! it hands the kernel `{name, headers, rawBody}` and writes back the answer the kernel returns.
 //! Mirrors `@almadar/core` `src/access/inbound.ts` (EXEC-INBOUND-1).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::schema::types::{InboundDeclaration, InboundVerification, OrbitalSchema, TraitReference};
 use crate::value::{Value, ValueMap};
@@ -179,7 +181,7 @@ pub fn inbound_payload<'a>(
     raw_body: &str,
     credential: Option<&str>,
 ) -> Value {
-    let mut lowered = ValueMap::new();
+    let mut lowered = ValueMap::default();
     for (name, value) in headers {
         let key = name.to_lowercase();
         let joined = match lowered.get(&key) {
@@ -193,7 +195,7 @@ pub fn inbound_payload<'a>(
         sender_verified(route, seen, credential)
     });
     let body = serde_json::from_str::<Value>(raw_body).unwrap_or(Value::Null);
-    let mut payload = ValueMap::new();
+    let mut payload = ValueMap::default();
     payload.insert("headers".to_string(), Value::Object(lowered));
     payload.insert("body".to_string(), body);
     payload.insert("rawBody".to_string(), Value::String(raw_body.to_string()));

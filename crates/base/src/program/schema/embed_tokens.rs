@@ -2,6 +2,8 @@
 //!
 //! One walker for the L1 button-reachability check (`orbital-lolo`) and the L2 `EmbedGraph`
 //! (`orbital-compiler`), so both read "A embeds B" from the same tokens.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::schema::sexpr::SExpression;
 use crate::schema::types::TraitDefinition;

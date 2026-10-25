@@ -1,5 +1,7 @@
 //! The one set of wire codecs: percent-encoders, base64, SHA-256, MD5, HMAC-SHA256, gzip and brotli. The `http` request builder
 //! and the std operators all read these.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use base64::Engine;
 use md5::Md5;
@@ -221,10 +223,14 @@ pub fn gzip_compress(data: &[u8]) -> Vec<u8> {
     gzip_compress_level(data, 6)
 }
 
+/// One gzip member: the fixed header (no name or time, OS unknown), the raw deflate stream, CRC-32 and size.
 pub fn gzip_compress_level(data: &[u8], level: u32) -> Vec<u8> {
-    use std::io::Write;
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level));
-    encoder.write_all(data).and_then(|()| encoder.finish()).expect("gzip into memory cannot fail")
+    let extra_flags = if level >= 9 { 2 } else if level <= 1 { 4 } else { 0 };
+    let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, extra_flags, 255];
+    out.extend_from_slice(&miniz_oxide::deflate::compress_to_vec(data, level.min(10) as u8));
+    out.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out
 }
 
 pub fn gzip_decompress(data: &[u8], max: usize) -> Result<Vec<u8>, String> {
@@ -259,42 +265,47 @@ pub fn gzip_decode(data: &[u8], max: usize) -> CodecResult {
             }
         }
         if flags & 2 != 0 {
-            let mut crc = flate2::Crc::new(); crc.update(&data[start..offset]);
+            let header_sum = crc32fast::hash(&data[start..offset]);
             let header_crc = data.get(offset..offset + 2).ok_or(CodecFailure::Truncated)?;
-            if u16::from_le_bytes([header_crc[0], header_crc[1]]) != crc.sum() as u16 { return Err(CodecFailure::HeaderCrc); }
+            if u16::from_le_bytes([header_crc[0], header_crc[1]]) != header_sum as u16 { return Err(CodecFailure::HeaderCrc); }
             offset += 2;
         }
-        let mut decoder = flate2::Decompress::new(false);
-        let mut crc = flate2::Crc::new();
+        let mut decoder = miniz_oxide::inflate::stream::InflateState::new_boxed(miniz_oxide::DataFormat::Raw);
+        let mut crc = crc32fast::Hasher::new();
         let member_start = out.len();
         loop {
             let mut buffer = [0; 8192];
-            let before_in = decoder.total_in();
-            let before_out = decoder.total_out();
-            let status = decoder.decompress(&data[offset..], &mut buffer, flate2::FlushDecompress::None).map_err(|_| CodecFailure::Block)?;
-            let consumed = (decoder.total_in() - before_in) as usize;
-            let produced = (decoder.total_out() - before_out) as usize;
+            let step = miniz_oxide::inflate::stream::inflate(&mut decoder, &data[offset..], &mut buffer, miniz_oxide::MZFlush::None);
+            let ended = match step.status {
+                Ok(status) => status == miniz_oxide::MZStatus::StreamEnd,
+                Err(miniz_oxide::MZError::Buf) => false,
+                Err(_) => return Err(CodecFailure::Block),
+            };
+            let (consumed, produced) = (step.bytes_consumed, step.bytes_written);
             offset += consumed;
             if produced > max - out.len() { return Err(CodecFailure::OutputLimit); }
             crc.update(&buffer[..produced]);
             out.extend_from_slice(&buffer[..produced]);
-            if status == flate2::Status::StreamEnd { break; }
+            if ended { break; }
             if consumed == 0 && produced == 0 { return Err(if offset == data.len() { CodecFailure::Truncated } else { CodecFailure::Block }); }
         }
+        let sum = crc.finalize();
         let trailer = data.get(offset..offset + 8).ok_or(CodecFailure::Truncated)?;
         let expected_crc = u32::from_le_bytes(trailer[..4].try_into().expect("four bytes"));
         let expected_size = u32::from_le_bytes(trailer[4..].try_into().expect("four bytes"));
-        if crc.sum() != expected_crc { return Err(CodecFailure::Crc); }
+        if sum != expected_crc { return Err(CodecFailure::Crc); }
         if (out.len() - member_start) as u32 != expected_size { return Err(CodecFailure::Size); }
         offset += 8;
-        if offset == data.len() { return Ok(CodecDecoded { data: out, crc: Some(crc.sum()) }); }
+        if offset == data.len() { return Ok(CodecDecoded { data: out, crc: Some(sum) }); }
     }
 }
 
+#[cfg(feature = "std")]
 pub fn brotli_compress(data: &[u8]) -> Vec<u8> {
     brotli_compress_options(data, 11, 22)
 }
 
+#[cfg(feature = "std")]
 pub fn brotli_compress_options(data: &[u8], quality: i32, window: i32) -> Vec<u8> {
     let params = brotli::enc::BrotliEncoderParams { quality, lgwin: window, ..Default::default() };
     let mut out = Vec::new();
@@ -302,10 +313,12 @@ pub fn brotli_compress_options(data: &[u8], quality: i32, window: i32) -> Vec<u8
     out
 }
 
+#[cfg(feature = "std")]
 pub fn brotli_decompress(data: &[u8], max: usize) -> Result<Vec<u8>, String> {
     brotli_decode(data, max).map(|out| out.data).map_err(|error| error.code().to_string())
 }
 
+#[cfg(feature = "std")]
 pub fn brotli_decode(data: &[u8], max: usize) -> CodecResult {
     use std::io::Read;
     let mut reader = brotli::Decompressor::new(data, 4096);
@@ -329,6 +342,20 @@ mod structured_codec_tests {
     use super::*;
 
     #[test]
+    fn gzip_compression_writes_the_bytes_flate2_wrote() {
+        use std::io::Write;
+        let inputs: [&[u8]; 4] = [b"", b"hello", &[7u8; 70_000], b"the quick brown fox jumps over the lazy dog, again and again and again"];
+        for data in inputs {
+            for level in [0, 1, 6, 9] {
+                let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level));
+                encoder.write_all(data).unwrap();
+                assert_eq!(gzip_compress_level(data, level), encoder.finish().unwrap(), "level {level}, {} bytes", data.len());
+                assert_eq!(gzip_decode(&gzip_compress_level(data, level), data.len()).unwrap().data, data, "round trip level {level}");
+            }
+        }
+    }
+
+    #[test]
     fn gzip_refusal_codes_are_structural_and_complete() {
         let valid = gzip_compress(b"hello");
         let code = |bytes: &[u8]| gzip_decode(bytes, 100).unwrap_err();
@@ -349,8 +376,8 @@ mod structured_codec_tests {
         assert_eq!(code(&bad), CodecFailure::Trailing);
         bad = valid.clone(); bad[3] = 2; bad.splice(10..10, [0, 0]);
         assert_eq!(code(&bad), CodecFailure::HeaderCrc);
-        let mut crc = flate2::Crc::new(); crc.update(&bad[..10]);
-        bad[10..12].copy_from_slice(&(crc.sum() as u16).to_le_bytes());
+        let header_sum = crc32fast::hash(&bad[..10]) as u16;
+        bad[10..12].copy_from_slice(&header_sum.to_le_bytes());
         assert_eq!(gzip_decode(&bad, 5).unwrap().data, b"hello");
         assert_eq!(gzip_decode(&valid, 4).unwrap_err(), CodecFailure::OutputLimit);
         assert_eq!(gzip_decode(&valid, 5).unwrap().data, b"hello");

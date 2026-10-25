@@ -1,5 +1,7 @@
 //! An append-only log whose clones are prefixes of one shared chain: `push` and `clone` are O(1), so a dispatch can
 //! keep every step's view of `@prevEvents` / `@prevStates` without each view owning a copy of the log (G-CROSS-288).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::sync::Arc;
 

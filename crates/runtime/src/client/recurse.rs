@@ -5,6 +5,8 @@
 //! desktop (egui) and tui (ratatui) renderers share one implementation. The
 //! "how to render a single pattern" step stays backend-specific (different `ui`
 //! types) and is supplied via `RenderContext::child_render`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::value::ValueMap;
 use orbital_core_base::ir::expr::{OirBinding, OirBindingRoot};
@@ -83,7 +85,7 @@ mod tests {
                 ]),
             ),
         ]);
-        let kids = child_patterns(&props, &ValueMap::new());
+        let kids = child_patterns(&props, &ValueMap::default());
         assert_eq!(kids.len(), 2);
         assert_eq!(
             kids[0].0.as_object().and_then(|o| o.get("type")),
@@ -94,7 +96,7 @@ mod tests {
 
     #[test]
     fn no_children_is_empty() {
-        let empty = ValueMap::new();
+        let empty = ValueMap::default();
         assert!(
             child_patterns(&obj(vec![("type", Value::String("button".into()))]), &empty).is_empty()
         );
@@ -105,7 +107,7 @@ mod tests {
     // current render content from the index; an unresolved one is dropped.
     #[test]
     fn resolves_trait_ref() {
-        let mut index = ValueMap::new();
+        let mut index = ValueMap::default();
         index.insert(
             "Search".to_string(),
             obj(vec![("type", Value::String("table-view".into()))]),
@@ -143,7 +145,7 @@ mod tests {
     // irrelevant here (the index is a flat trait→content map).
     #[test]
     fn resolves_overlay_sourced_peer() {
-        let mut index = ValueMap::new();
+        let mut index = ValueMap::default();
         index.insert(
             "Popover1".to_string(),
             obj(vec![("type", Value::String("popover".into()))]),
@@ -174,7 +176,7 @@ mod tests {
         };
 
         let entities = HashMap::new();
-        let tc = ValueMap::new();
+        let tc = ValueMap::default();
         let editing = None;
         let mut form = HashMap::new();
         let mut pending = Vec::new();
@@ -221,7 +223,7 @@ mod tests {
             seen.borrow_mut().push(ctx.source_trait.clone());
         };
 
-        let mut tc = ValueMap::new();
+        let mut tc = ValueMap::default();
         tc.insert("Catalog".to_string(), obj(vec![("type", Value::String("stack".into()))]));
 
         let entities = HashMap::new();

@@ -2,6 +2,8 @@
 //! (`orbital-ffi`), the WASM package and the Rust renderers. A host marshals arguments in and the
 //! [`wire`] types out; every decision (leg routing, merged responses, the tick clock's frame,
 //! repaints) is made here.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 pub mod eval_wire;
 pub mod memory;
@@ -9,9 +11,11 @@ pub mod server;
 pub mod wire;
 
 pub use server::{
-    substrate_completion_event_json, os_completion_event_json, os_deferring_ops_json, os_stream_ops_json, os_glob_matches, tab_url_matches,
+    substrate_completion_event_json, os_completion_event_json, os_deferring_ops_json, os_stream_ops_json, tab_url_matches,
     EmbeddedServer, ServerProgress, ServerResolve,
 };
+#[cfg(feature = "std")]
+pub use server::os_glob_matches;
 
 use crate::config::KernelConfig;
 use crate::effects::response::{EventRequest, EventResponse};
@@ -29,7 +33,7 @@ use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::theme::ThemeMode;
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
-use parking_lot::Mutex;
+use orbital_core_base::sync::Mutex;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use wire::{
@@ -71,7 +75,7 @@ fn with_awaiting_init(payload: Value, awaiting: Value) -> Value {
             map.insert("_awaitingInit".to_string(), awaiting);
             Value::Object(map)
         }
-        Value::Null => Value::Object(ValueMap::from([("_awaitingInit".to_string(), awaiting)])),
+        Value::Null => Value::Object(ValueMap::from_iter([("_awaitingInit".to_string(), awaiting)])),
         other => other,
     }
 }
@@ -90,7 +94,7 @@ pub fn mount_leg_request(
     client_id: &str,
 ) -> crate::effects::response::EventRequest {
     let mut traits: Vec<crate::effects::response::TraitFrom> = Vec::new();
-    let mut entity_by_trait: ValueMap = ValueMap::new();
+    let mut entity_by_trait: ValueMap = ValueMap::default();
     for leg in carried {
         for t in leg.traits.iter().flatten() {
             if !traits.iter().any(|seen| seen.r#trait == t.r#trait) {
@@ -422,7 +426,7 @@ impl EmbeddedKernel {
                                 .filter(|(name, _)| self.kernel.reads_shared_frame(name));
                             for (name, row) in shared {
                                 leg.entity_by_trait
-                                    .get_or_insert_with(ValueMap::new)
+                                    .get_or_insert_with(ValueMap::default)
                                     .entry(name.clone())
                                     .or_insert_with(|| row.clone());
                             }

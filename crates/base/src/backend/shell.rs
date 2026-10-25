@@ -4,6 +4,8 @@
 //! Kept in `orbital-core` so shell crates can implement it without depending on
 //! the compiler, breaking circular dependencies when the compiler registers those
 //! shells.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::path::{Path, PathBuf};
 use thiserror::Error;

@@ -3,6 +3,8 @@
 //! The blocking HTTP transport a client renderer posts events through
 //! (`SyncServerBridge`, feature `client-http`). All server-side effects (fetch,
 //! persist, call-service) are delegated through it.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 #[cfg(feature = "client-http")]
 use crate::effects::response::{EventRequest, EventResponse, TraitFrom};

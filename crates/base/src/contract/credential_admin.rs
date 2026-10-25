@@ -2,6 +2,8 @@
 //! catalog (the registry's remaining services plus the credentials the running program declares), last-4 masking, and
 //! the shapes `list`, `set`, `remove`, `test`, `mode` and `rotate` answer with. The host supplies only the raw store
 //! and mode-flag asks (`IoRequest::CredentialStore*` / `CredentialMode*`); everything decided here is pure.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::secrets::ProgramCredential;
 use crate::value::{Value, ValueMap};
@@ -137,7 +139,7 @@ fn js_type(value: &Value) -> &'static str {
 /// Check the request against the effect's closed string parameters: missing required ones, wrongly typed ones, then
 /// unknown ones, each with the contract's message.
 pub fn parse_request(op: CredentialAdminOp, request: &Value) -> Result<Request, Refusal> {
-    let empty = ValueMap::new();
+    let empty = ValueMap::default();
     let fields = match request {
         Value::Object(fields) => fields,
         Value::Null => &empty,
@@ -736,7 +738,7 @@ mod tests {
     fn a_request_is_checked_against_its_closed_string_contract() {
         let ok = parse_request(
             CredentialAdminOp::Set,
-            &Value::Object(ValueMap::from([
+            &Value::Object(ValueMap::from_iter([
                 ("service".into(), text("apikeys")),
                 ("envVar".into(), text("SALT")),
                 ("value".into(), text("v")),
@@ -744,18 +746,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ok.env_var.as_deref(), Some("SALT"));
-        let missing = parse_request(CredentialAdminOp::Set, &Value::Object(ValueMap::from([("service".into(), text("a"))]))).unwrap_err();
+        let missing = parse_request(CredentialAdminOp::Set, &Value::Object(ValueMap::from_iter([("service".into(), text("a"))]))).unwrap_err();
         assert_eq!(
             missing.message,
             "Validation failed for credential-set: envVar: Missing required parameter: envVar; value: Missing required parameter: value"
         );
         assert_eq!(missing.code, Some(VALIDATION_CODE));
-        let typed = parse_request(CredentialAdminOp::Test, &Value::Object(ValueMap::from([("service".into(), Value::Number(5.0))]))).unwrap_err();
+        let typed = parse_request(CredentialAdminOp::Test, &Value::Object(ValueMap::from_iter([("service".into(), Value::Number(5.0))]))).unwrap_err();
         assert_eq!(typed.message, "Validation failed for credential-test: service: Expected string, got number");
-        let extra = parse_request(CredentialAdminOp::List, &Value::Object(ValueMap::from([("extra".into(), Value::Bool(true))]))).unwrap_err();
+        let extra = parse_request(CredentialAdminOp::List, &Value::Object(ValueMap::from_iter([("extra".into(), Value::Bool(true))]))).unwrap_err();
         assert_eq!(extra.message, "Validation failed for credential-list: extra: Unknown parameter: extra (declared: service)");
         assert!(parse_request(CredentialAdminOp::Rotate, &Value::Null).is_ok());
-        assert!(parse_request(CredentialAdminOp::Rotate, &Value::Object(ValueMap::from([("force".into(), Value::Bool(true))]))).is_err());
+        assert!(parse_request(CredentialAdminOp::Rotate, &Value::Object(ValueMap::from_iter([("force".into(), Value::Bool(true))]))).is_err());
         assert!(parse_request(CredentialAdminOp::List, &Value::String("x".into())).is_err());
     }
 

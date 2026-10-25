@@ -1,6 +1,8 @@
 //! Effect Types
 //!
 //! Core types for effect execution.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::value::Value;
 use crate::value::ValueMap;
@@ -1209,7 +1211,7 @@ fn parse_http(args: &[SExpression]) -> Option<Effect> {
     let request = args
         .get(3)
         .map(|e| Value::from(e.clone()))
-        .unwrap_or_else(|| Value::Object(ValueMap::new()));
+        .unwrap_or_else(|| Value::Object(ValueMap::default()));
     let options = args.get(4).map(|e| Value::from(e.clone()));
     let key = options
         .as_ref()
@@ -1233,9 +1235,9 @@ fn parse_redis(args: &[SExpression]) -> Option<Effect> {
     if !(2..=4).contains(&args.len()) {
         return None;
     }
-    let mut options = ValueMap::new();
+    let mut options = ValueMap::default();
     let mut key = None;
-    let mut routes = ValueMap::new();
+    let mut routes = ValueMap::default();
     for trailing in &args[2..] {
         let SExpression::Object(fields) = trailing else {
             return None;
@@ -1269,9 +1271,9 @@ fn parse_postgres(args: &[SExpression]) -> Option<Effect> {
     if !(3..=5).contains(&args.len()) {
         return None;
     }
-    let mut options = ValueMap::new();
+    let mut options = ValueMap::default();
     let mut key = None;
-    let mut routes = ValueMap::new();
+    let mut routes = ValueMap::default();
     for trailing in &args[3..] {
         let SExpression::Object(fields) = trailing else {
             return None;

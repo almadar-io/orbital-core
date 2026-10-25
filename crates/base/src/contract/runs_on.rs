@@ -3,6 +3,8 @@
 //! the validator and the shells all need it and `orbital-core` is the crate they
 //! share; `orbital-compiler/tests/runs_on_drift.rs` fails the build when this
 //! table and `canonical-operators.json` disagree.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::ir::effects::OirEffect;
 use crate::ir::expr::OirExpr;
@@ -300,18 +302,75 @@ pub fn ir_effect_site(effect: &OirEffect, residence: &Residence) -> RunsOn {
 /// Site of an effect operator by registry name; `Any` for every effect not in
 /// [`EFFECT_SITES`] (and for a name that is not an effect at all).
 pub fn runs_on(operator: &str) -> RunsOn {
+    runs_on_known(operator).unwrap_or(RunsOn::Any)
+}
+
+/// The operator sites a compiled program carries (`_metadata.operatorSites`), for a kernel with no installed
+/// operator table (a browser).
+static PROGRAM_SITES: crate::sync::LazyLock<crate::sync::RwLock<std::collections::BTreeMap<String, RunsOn>>> =
+    crate::sync::LazyLock::new(|| crate::sync::RwLock::new(std::collections::BTreeMap::new()));
+
+impl RunsOn {
+    /// The site a registry or program table spells `text`.
+    pub fn parse(text: &str) -> Option<RunsOn> {
+        match text {
+            "client" => Some(RunsOn::Client),
+            "server" => Some(RunsOn::Server),
+            "any" => Some(RunsOn::Any),
+            _ => None,
+        }
+    }
+}
+
+/// Install the sites a compiled program carries; refuses a site that is not `client`, `server` or `any`.
+pub fn install_operator_sites(sites: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
+    let mut parsed = std::collections::BTreeMap::new();
+    for (operator, site) in sites {
+        let site = RunsOn::parse(site).ok_or_else(|| format!("operatorSites: {operator}: `{site}` is not client, server or any"))?;
+        parsed.insert(operator.clone(), site);
+    }
+    PROGRAM_SITES.write().extend(parsed);
+    Ok(())
+}
+
+/// The site of `operator`, or `None` when neither the kernel's own tables, the installed program sites nor an
+/// installed operator table can place it: a client kernel then refuses the effect instead of guessing `Any`.
+pub fn runs_on_known(operator: &str) -> Option<RunsOn> {
+    let registry = crate::language_data::operator_data()
+        .ok()
+        .map(|_| crate::language::registry::get_operator(operator).and_then(|op| op.runs_on.as_deref()));
+    known_site(operator, &PROGRAM_SITES.read(), registry)
+}
+
+/// `registry`: `None` when no operator table is installed, else the operator's declared site if it has one.
+fn known_site(
+    operator: &str,
+    installed: &std::collections::BTreeMap<String, RunsOn>,
+    registry: Option<Option<&str>>,
+) -> Option<RunsOn> {
     if let Some(op) = crate::os::OsOp::from_name(operator) {
-        return if op.is_kv() { RunsOn::Any } else { RunsOn::Server };
+        return Some(if op.is_kv() { RunsOn::Any } else { RunsOn::Server });
     }
     if let Some((_, site)) = EFFECT_SITES.iter().find(|(name, _)| *name == operator) {
-        return *site;
+        return Some(*site);
     }
-    match crate::language::registry::try_get_operator(operator).and_then(|op| op.runs_on.as_deref())
-    {
-        Some("server") => RunsOn::Server,
-        Some("client") => RunsOn::Client,
-        _ => RunsOn::Any,
+    if let Some(site) = installed.get(operator) {
+        return Some(*site);
     }
+    registry.map(|declared| declared.and_then(RunsOn::parse).unwrap_or(RunsOn::Any))
+}
+
+/// The sites, from the installed operator table, of each effect operator in `operators` that the kernel's own
+/// tables do not place: what a compiled client program carries so its kernel places every effect it runs.
+pub fn operator_sites<'a>(operators: impl IntoIterator<Item = &'a str>) -> std::collections::BTreeMap<String, String> {
+    operators
+        .into_iter()
+        .filter(|name| crate::os::OsOp::from_name(name).is_none() && !EFFECT_SITES.iter().any(|(site, _)| site == name))
+        .filter_map(|name| {
+            let op = crate::language::registry::try_get_operator(name)?;
+            op.has_side_effects.then(|| (name.to_string(), op.runs_on.clone().unwrap_or_else(|| "any".to_string())))
+        })
+        .collect()
 }
 
 /// Registry name of an IR effect (its `kind()` except where the IR spells it differently).
@@ -579,7 +638,7 @@ mod tests {
         );
         assert_eq!(ir_effect_site(&keyless, &r), RunsOn::Client);
         if let OirEffect::Http { request, .. } = &mut keyless {
-            *request = Some(OirExpr::object(OirFields::new()));
+            *request = Some(OirExpr::object(OirFields::default()));
         }
         assert_eq!(ir_effect_site(&keyless, &r), RunsOn::Client);
         assert!(
@@ -589,8 +648,8 @@ mod tests {
         assert!(!OirExpr::effect(keyless.clone()).runs_server_effect(&r));
         let mut keyed = keyless;
         if let OirEffect::Http { request, .. } = &mut keyed {
-            let mut fields = OirFields::new();
-            fields.insert("auth".to_string(), OirExpr::object(OirFields::new()));
+            let mut fields = OirFields::default();
+            fields.insert("auth".to_string(), OirExpr::object(OirFields::default()));
             *request = Some(OirExpr::object(fields));
         }
         assert_eq!(ir_effect_site(&keyed, &r), RunsOn::Server);
@@ -626,6 +685,23 @@ mod tests {
             http_auth(&http(serde_json::json!("@payload.r"))),
             HttpAuth::Opaque
         );
+    }
+
+    #[test]
+    fn a_program_site_places_an_operator_a_kernel_without_the_operator_table_cannot() {
+        let installed = std::collections::BTreeMap::from([("behavior/catalog".to_string(), RunsOn::Server)]);
+        assert_eq!(known_site("behavior/catalog", &installed, None), Some(RunsOn::Server));
+        assert_eq!(known_site("fetch", &installed, None), Some(RunsOn::Server));
+        assert_eq!(known_site("behavior/catalog", &std::collections::BTreeMap::new(), Some(Some("server"))), Some(RunsOn::Server));
+    }
+
+    #[test]
+    fn control_an_operator_no_table_places_is_unknown_and_an_installed_table_says_any() {
+        let none = std::collections::BTreeMap::new();
+        assert_eq!(known_site("behavior/catalog", &none, None), None);
+        assert_eq!(known_site("program/print", &none, Some(None)), Some(RunsOn::Any));
+        let bad = std::collections::BTreeMap::from([("x/y".to_string(), "sideways".to_string())]);
+        assert!(install_operator_sites(&bad).unwrap_err().contains("not client, server or any"));
     }
 
     #[test]

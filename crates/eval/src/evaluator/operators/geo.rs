@@ -3,6 +3,8 @@
 //! Rect = `{x,y,w,h}` (top-left origin), Circle = `{x,y,r}`, Point = `{x,y}`,
 //! Segment = `{x1,y1,x2,y2}`. Overlaps/containment return `Value::Bool`. All
 //! ops pure and total.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::vector::{eval_obj, has_z, make_vec, vget};

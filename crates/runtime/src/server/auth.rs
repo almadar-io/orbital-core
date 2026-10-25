@@ -3,6 +3,8 @@
 //! `sk_live_` API key against stored scrypt hashes), then becomes `@user` the way the program's `[identity]` entity says.
 //! The tokens are RS256/ES256 JWS checked by `jwt::verify_compact`; the keys are fetched through the host's `http` answer
 //! and kept in the credential source's TTL cache, so the kernel's egress and address rules apply to them like to any call.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::HashMap;
 use std::sync::Arc;

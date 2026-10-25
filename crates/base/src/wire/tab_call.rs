@@ -1,6 +1,8 @@
 //! A `browser/tab-*` request, accepted or refused: the one parser the kernel runs a call on and `orb validate` reads a
 //! literal call with. Every key a request may carry is closed, every value typed; the treatments (`hide`, `blur`, ...)
 //! become the inline styles the content script sets, so the page script holds no rule.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::agent_ports::find_input_by_address;
 use crate::external_inputs::ExternalInput;

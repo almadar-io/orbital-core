@@ -7,6 +7,8 @@
 //! interface version the sources were generated against, the pattern registry
 //! version, the coverage list, and the `sources` / `fixtures` directories. A
 //! shell refuses a pack whose interface differs from the one it emits against.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::HashMap;
 use std::fs;

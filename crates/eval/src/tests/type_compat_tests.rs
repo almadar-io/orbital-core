@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 #[test]
 fn literal_value_type_defers_operator_calls_but_types_literals() {

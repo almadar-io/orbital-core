@@ -1,5 +1,7 @@
 //! AWS Signature Version 4: header-signed requests and query-presigned URLs, the two ways the
 //! `@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner` calls are signed. Pure: the instant is a parameter.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::codec::{hex, hmac_sha256, sha256};
 

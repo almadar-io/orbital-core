@@ -1,5 +1,7 @@
 //! Time, validation, format, lambda, and composition operators (the
 //! system-facing remainder of the operator set).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::util::deep_equals;
@@ -576,11 +578,9 @@ impl Operator for ValidateObjectOp {
 /// (`validate/email`, `validate/url`, `validate/phone`, `validate/uuid`). The pattern is `@almadar/core`
 /// `SEMANTIC_STRING_PATTERNS`, carried by the table; a table that lacks it is an error, never a fallback.
 pub fn matches_semantic_pattern(operator: &str, value: &str) -> Result<bool, OrbitalError> {
-    static COMPILED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, regex::Regex>>> = std::sync::OnceLock::new();
+    static COMPILED: orbital_core_base::sync::OnceLock<orbital_core_base::sync::Mutex<std::collections::HashMap<String, regex::Regex>>> = orbital_core_base::sync::OnceLock::new();
     let cache = COMPILED.get_or_init(Default::default);
-    let mut cache = cache.lock().map_err(|_| {
-        OrbitalError::Eval(EvalError::InvalidArgument(format!("{operator}: pattern cache poisoned")))
-    })?;
+    let mut cache = cache.lock();
     if !cache.contains_key(operator) {
         let pattern = orbital_core_base::language::registry::operators()
             .get(operator)
@@ -1270,7 +1270,7 @@ impl Operator for ValidateCheckOp {
                 }
             }
         }
-        let mut out = ValueMap::new();
+        let mut out = ValueMap::default();
         out.insert("valid".to_string(), Value::Bool(errors.is_empty()));
         out.insert("errors".to_string(), Value::Array(errors));
         Ok(Value::Object(out))

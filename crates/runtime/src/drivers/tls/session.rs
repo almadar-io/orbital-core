@@ -2,6 +2,8 @@
 //! needs from outside is an argument: the 32-byte seed of the DRBG, the unix time, the server name and the
 //! trust roots. The output is a pure function of those and the inbound ciphertext; tickets and resumption
 //! are off, so no state outlives the session.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::VecDeque;
 use std::sync::Arc;

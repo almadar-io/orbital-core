@@ -6,6 +6,8 @@
 //! consumes. The roles match `@almadar/ui`'s `UISlotRenderer` treatments
 //! (sidebar/main inline; modal/drawer/overlay/center/toast as portals; hud/
 //! floating as fixed overlays; `system` invisible).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::schema::types::{OrbitalSchema, TraitReference};
 use serde::{Deserialize, Serialize};

@@ -2,6 +2,8 @@
 //! `deployment`, an `emit` whose declared listener is placed in another unit leaves the local worklist as an
 //! [`IoRequest::Deliver`] ask; a refusal comes back to the emitter as `DELIVERY_REJECTED`. The inbound side judges
 //! an [`Envelope`] and runs it as a fresh dispatch carrying its hop and causal id.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::*;
 use crate::listener::ListenerInfo;
@@ -58,7 +60,7 @@ pub(crate) fn mapped_listen_payload(
 ) -> Value {
     match mapping {
         Some(mapping) => {
-            let mut mapped = ValueMap::new();
+            let mut mapped = ValueMap::default();
             for (key, expr) in mapping {
                 if let Ok(value) = evaluator.evaluate(expr, ctx) {
                     mapped.insert(key.clone(), value);

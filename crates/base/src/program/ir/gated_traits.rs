@@ -2,6 +2,8 @@
 //! `access: authenticated` page's circuit only once its viewer is authenticated;
 //! a native host mirrors that by INITing these traits when that page first
 //! composes for an authenticated viewer, not at app start.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::ir::types::OirModule;
 use crate::schema::types::PageAccess;

@@ -20,6 +20,8 @@
 //! When the guard rejects a translation the English word is kept, which is
 //! always legal: every `canon_*` call site matches the English spelling
 //! before consulting the table, so English words parse in every language.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::lang::Lang;
 use serde_json::Value;

@@ -1,5 +1,7 @@
 //! A program's state machine as values (`MachineRow`, read by the `std-machine` atom) and the record `program/step`
 //! answers with (`PlayedStep`); `@almadar/core` names both as program types.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::embed::eval_wire::EvalStepWire;
 use crate::process_result::{EffectRun, EffectRunStatus, ProcessEventResult};

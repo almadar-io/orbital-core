@@ -1,5 +1,7 @@
 //! `row/matches`: whether a row satisfies a typed `RowPredicate`, decided by the kernel's one predicate evaluator
 //! (`RowPredicate::matches`, the evaluator every store and `compile_predicate`'s output run through).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;

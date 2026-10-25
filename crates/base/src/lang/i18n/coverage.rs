@@ -4,6 +4,8 @@
 //! equality (does `orbital-lolo`'s `Vocabulary` agree with `en`?) is a
 //! separate check owned by `orbital-lolo` — this module only checks the
 //! tables against each other.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::lang::LOLO_FIRST_TOKEN_KEYWORDS;
 use super::tables::I18nDefinition;

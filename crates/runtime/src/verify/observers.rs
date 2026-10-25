@@ -1,6 +1,8 @@
 //! Observers — pure verdicts over the captured frame stream (+ schema for structural
 //! invariants). Each is the Rust analogue of a `packages/almadar-verify/src/observer/*`
 //! assertion.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::verify::frame::{Frame, FrameStatus};
 use orbital_core_base::schema::types::TraitDefinition;

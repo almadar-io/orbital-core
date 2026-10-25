@@ -16,6 +16,8 @@
 //!   (the renderer's probe; skipped when it has none or no GPU).
 //! - **overlay_slots_render**: every modal/drawer open transition fills its slot
 //!   with real renderers.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::client::bridge::{KernelBridge, ServerBridge};
 use crate::client::client_core::ClientCore;
@@ -344,7 +346,7 @@ impl ProgramFacts {
         orbital_count: usize,
         build_app: &dyn Fn(usize) -> Result<ClientCore, String>,
     ) -> Result<ValueMap, String> {
-        let mut union = ValueMap::new();
+        let mut union = ValueMap::default();
         for idx in 0..orbital_count {
             let app = build_app(idx)?;
             for (name, content) in &app.trait_content {
@@ -849,7 +851,7 @@ mod tests {
         gated: &[&str],
     ) -> Vec<RenderedNode> {
         let content: Value = serde_json::from_value(content).unwrap();
-        let mut trait_content = ValueMap::new();
+        let mut trait_content = ValueMap::default();
         trait_content.insert(
             "Shown".to_string(),
             serde_json::from_value(serde_json::json!({ "type": "typography" })).unwrap(),

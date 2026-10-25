@@ -3,6 +3,8 @@
 //! one unit at a time (one delivery of the worklist, or one seed scope), and a unit commits to the run
 //! only once all its I/O is answered. A blocking host runs the units straight through; an async host
 //! runs each with the answers recorded so far and gets [`Progress::Await`] at the first one missing.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::envelope::Origin;
 use super::*;
@@ -79,7 +81,7 @@ struct SeedPlan {
 struct SeedRun {
     eid: String,
     event_name: String,
-    payload: Value,
+    payload: Arc<Value>,
     now: f64,
     seed_scopes: Vec<String>,
     seed_delivery: Arc<Value>,
@@ -1095,7 +1097,7 @@ impl RuntimeKernel {
         SeedRun {
             eid,
             event_name,
-            payload,
+            payload: Arc::new(payload),
             now,
             seed_scopes,
             seed_delivery,
@@ -1164,7 +1166,7 @@ impl RuntimeKernel {
                         scope,
                         Some(eid),
                         event_name,
-                        payload.clone(),
+                        Arc::clone(payload),
                         Some(&view),
                         false,
                     ),
@@ -1283,7 +1285,7 @@ impl RuntimeKernel {
                 &child,
                 Some(eid),
                 event,
-                Value::Object(ValueMap::new()),
+                Arc::new(Value::Object(ValueMap::default())),
                 None,
                 false,
                 Some(&composed_with),
@@ -1433,7 +1435,7 @@ impl RuntimeKernel {
             &item.trait_name,
             Some(eid),
             &item.event,
-            Value::clone(&item.payload),
+            Arc::clone(&item.payload),
             Some(&view),
             true,
         ) {

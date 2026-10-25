@@ -12,13 +12,15 @@
 //! shared two-valued semantics is declined (`query_page` answers `None`) and the kernel reads rows instead.
 //! Authentication is the emulator's owner token or a bearer minted from a service account
 //! ([`crate::jwt::service_account_assertion`]).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::{Arc, Mutex, RwLock};
 
-use indexmap::IndexMap;
+use orbital_core_base::collections::IndexMap;
 use orbital_core_base::codec::encode_uri_component;
 use orbital_core_base::row_set::{
     RowCompareOp, RowDirection, RowPredicate, RowQuery, RowTotalMode,
@@ -1230,7 +1232,7 @@ impl FirestoreRows {
             let got = self.client.batch_get(&refs, true)?;
             (got.docs, got.transaction)
         };
-        let mut tables: IndexMap<String, RowTable> = IndexMap::new();
+        let mut tables: IndexMap<String, RowTable> = IndexMap::default();
         for (entity, _) in &touched {
             tables.entry(entity.clone()).or_default();
         }

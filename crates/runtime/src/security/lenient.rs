@@ -1,4 +1,6 @@
 //! `Buffer.from(text, 'base64')`: the lenient base64 decoder the JS-twin providers share.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 /// Lenient about padding and whitespace; skips characters outside the standard alphabet.
 pub fn base64_decode_lenient(text: &str) -> Vec<u8> {

@@ -5,18 +5,32 @@
 //! ancestor `node_modules` nearest first, the `~/.orb` user store last;
 //! nearest wins per package name). Twin of `@almadar/core/language-data`
 //! `readVocabularyPacks` and `@almadar/core/i18n` `registerVocabulary`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+#[cfg(feature = "std")]
+use std::collections::HashSet;
+#[cfg(feature = "std")]
 use std::fs;
+#[cfg(feature = "std")]
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+#[cfg(not(feature = "std"))]
+type PathBuf = String;
+use crate::sync::OnceLock;
 
+#[cfg(feature = "std")]
 use serde_json::Value;
 
 use super::coverage::{check_translation_coverage, ProblemKind};
 use super::tables::{english, I18nDefinition};
-use crate::behavior_packages::{compiler_satisfies, node_modules_dirs, user_store_dir};
-use crate::language_data::{running_version, LanguageDataError};
+#[cfg(feature = "std")]
+use crate::behavior_packages::{node_modules_dirs, user_store_dir};
+#[cfg(feature = "std")]
+use crate::language_data::compiler_satisfies;
+#[cfg(feature = "std")]
+use crate::language_data::running_version;
+use crate::language_data::LanguageDataError;
 
 /// The top-level `package.json` key that makes a package a language pack.
 pub const VOCABULARY_BLOCK: &str = "orbVocabulary";
@@ -38,6 +52,7 @@ fn invalid(path: impl Into<PathBuf>, reason: String) -> LanguageDataError {
     }
 }
 
+#[cfg(feature = "std")]
 fn package_dirs(node_modules: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(node_modules) else {
         return Vec::new();
@@ -61,6 +76,7 @@ fn package_dirs(node_modules: &Path) -> Vec<PathBuf> {
     out.into_iter().map(|(_, p)| p).collect()
 }
 
+#[cfg(feature = "std")]
 /// Every installed language pack visible from `start_dir`, validated
 /// ([`validate_packs`]) and sorted by package name.
 pub fn discover_vocabulary_packs(
@@ -70,6 +86,7 @@ pub fn discover_vocabulary_packs(
     discover_for(start_dir, user_store, running_version())
 }
 
+#[cfg(feature = "std")]
 fn discover_for(
     start_dir: &Path,
     user_store: &Path,
@@ -113,6 +130,7 @@ fn discover_for(
     Ok(packs)
 }
 
+#[cfg(feature = "std")]
 fn read_pack(
     name: &str,
     manifest: &Value,
@@ -239,14 +257,21 @@ pub fn vocabulary_packs() -> Result<&'static [VocabularyPack], LanguageDataError
     if let Some(packs) = INSTALLED.get() {
         return Ok(packs);
     }
-    let cwd = std::env::current_dir().map_err(|e| {
-        invalid(
-            PathBuf::new(),
-            format!("cannot read the working directory: {e}"),
-        )
-    })?;
-    let packs = discover_vocabulary_packs(&cwd, &user_store_dir().unwrap_or_default())?;
-    Ok(INSTALLED.get_or_init(|| packs))
+    #[cfg(not(feature = "std"))]
+    {
+        Err(LanguageDataError::NotInstalled { package: crate::language_data::CORE_PACKAGE })
+    }
+    #[cfg(feature = "std")]
+    {
+        let cwd = std::env::current_dir().map_err(|e| {
+            invalid(
+                PathBuf::new(),
+                format!("cannot read the working directory: {e}"),
+            )
+        })?;
+        let packs = discover_vocabulary_packs(&cwd, &user_store_dir().unwrap_or_default())?;
+        Ok(INSTALLED.get_or_init(|| packs))
+    }
 }
 
 #[cfg(test)]

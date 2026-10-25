@@ -9,6 +9,8 @@
 //! Effects run in order and later effects read earlier `set`s (`exec_effect_expr`), so each effect list is executed
 //! symbolically, splitting on `if` / `when`. An obligation the model over-approximates is marked `inexact`: its
 //! counterexample may not be reachable, so it can never be reported as a violation.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::formula::{Sort, VarInfo, Vars};
 use orbital_core_base::effect_types::strip_trailing_emit_options;

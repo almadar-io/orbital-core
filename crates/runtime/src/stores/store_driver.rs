@@ -1,6 +1,8 @@
 //! EXEC-STORE-4 mapping: a row ask on a store-bound entity becomes one typed verb event for its driver
 //! orbital (`spec/store/row-store.lolo`), and the driver's keyed reply becomes the same [`IoAnswer`] a host
 //! would have given. Mapping only: parking and resuming the asking run is the kernel's.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::resumable::{IoAnswer, IoRequest};
 use crate::row_query::{RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteOutcome};

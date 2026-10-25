@@ -8,6 +8,8 @@
 //! - String: str/concat, upper, lower, trim, substring, split, join
 //! - Math: min, max, clamp, abs, floor, ceil, round
 //! - Control flow: do, when, let
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::context::BindingContext;
 use orbital_core_base::error::{EvalError, OrbitalError};
@@ -627,7 +629,7 @@ fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
 
         // Object - evaluate all values
         SExpression::Object(obj) => {
-            let mut result = ValueMap::new();
+            let mut result = ValueMap::default();
             for (k, v) in obj {
                 result.insert(k.clone(), eval_expr(v, ctx)?);
             }

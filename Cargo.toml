@@ -16,7 +16,7 @@ native-transport = ["orbital-core-runtime/native-transport"]
 [dependencies]
 orbital-core-base = { path = "crates/base" }
 orbital-core-eval = { path = "crates/eval" }
-orbital-core-runtime = { path = "crates/runtime", default-features = false }
+orbital-core-runtime = { path = "crates/runtime", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3.10"

@@ -8,12 +8,14 @@
 //! `RuntimeKernel::dispatch_with_server_leg` drains it right after one
 //! `dispatch` call to decide whether that dispatch produced a server leg —
 //! see `dispatch_mode.rs` for which [`super::DispatchMode`] gets one.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::effect_types::{Effect, RuntimeEnvironment};
 use crate::effects::executor::EffectDelegate;
-use parking_lot::Mutex;
+use orbital_core_base::sync::Mutex;
 use std::collections::{BTreeSet, HashMap};
-use std::thread::ThreadId;
+use orbital_core_base::sync::ThreadKey as ThreadId;
 
 /// Collects effects delegated to the server environment. `drain()` takes
 /// everything collected since the last drain, leaving the collector empty —
@@ -53,7 +55,7 @@ impl ServerLegCollector {
 
     /// Attribute every effect delegated while `run` executes to `trait_name`.
     pub fn attribute<R>(&self, trait_name: &str, run: impl FnOnce() -> R) -> R {
-        let thread = std::thread::current().id();
+        let thread = orbital_core_base::sync::current_thread();
         self.running
             .lock()
             .entry(thread)
@@ -88,7 +90,7 @@ impl EffectDelegate for ServerLegCollector {
             let source = self
                 .running
                 .lock()
-                .get(&std::thread::current().id())
+                .get(&orbital_core_base::sync::current_thread())
                 .and_then(|stack| stack.last().cloned());
             if let Some(source) = source {
                 self.sources.lock().insert(source);

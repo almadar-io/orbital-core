@@ -6,12 +6,14 @@
 //! JSON escaping the only escaping. Every write serializes the whole store to `<store>.json.tmp-<random>`, fsyncs it
 //! and renames it over `<store>.json`, so `kv/batch` is one atomic commit. Without a state directory the store is a
 //! memory map.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::os_host::{KvMode, OsHost, OsRequirement};
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::str_utils::js_number_string;
 use orbital_core_base::value::{Value, ValueMap};
-use parking_lot::Mutex;
+use orbital_core_base::sync::Mutex;
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};

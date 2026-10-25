@@ -1,5 +1,7 @@
 //! `as` - the explicit cast. `Explicit` conversions are validated against `type_compat::sub`
 //! at `orb validate`; at run time a cast is the identity on the value, guarded per target.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;

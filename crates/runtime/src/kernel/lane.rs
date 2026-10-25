@@ -4,10 +4,12 @@
 //! refused ([`KernelError::LaneHeldByParkedDispatch`]) while it is parked: it would otherwise wait on itself. A call
 //! carrying no turn waits its FIFO turn, whatever thread it runs on, except an in-place call made on the thread the
 //! running holder occupies (a blocking host answering an ask with a nested dispatch), which re-enters.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
-use parking_lot::{Condvar, Mutex};
+use orbital_core_base::sync::{Condvar, Mutex};
 use std::sync::Arc;
-use std::thread::ThreadId;
+use orbital_core_base::sync::ThreadKey as ThreadId;
 
 use super::KernelError;
 
@@ -42,7 +44,7 @@ impl DispatchLane {
         let mut s = self.state.lock();
         if s.held {
             let holder = LaneTurn(s.serving);
-            let in_place = turn.is_none() && s.running_on == Some(std::thread::current().id());
+            let in_place = turn.is_none() && s.running_on == Some(orbital_core_base::sync::current_thread());
             if turn == Some(holder) || in_place {
                 if let Some(event) = &s.parked {
                     return Err(KernelError::LaneHeldByParkedDispatch {
@@ -64,7 +66,7 @@ impl DispatchLane {
             self.turn.wait(&mut s);
         }
         s.held = true;
-        s.running_on = Some(std::thread::current().id());
+        s.running_on = Some(orbital_core_base::sync::current_thread());
         s.depth = 1;
         Ok(LaneGuard {
             lane: Some(self.clone()),
@@ -142,7 +144,7 @@ impl LaneHold {
     pub(crate) fn resume(mut self) -> LaneGuard {
         let lane = self.lane.take().expect("a parked lane hold");
         let mut s = lane.state.lock();
-        s.running_on = Some(std::thread::current().id());
+        s.running_on = Some(orbital_core_base::sync::current_thread());
         s.depth = 1;
         s.parked = None;
         drop(s);

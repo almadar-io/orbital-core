@@ -5,6 +5,8 @@
 //! are bounded ([`MAX_READ`]). `os/cpu-usage` is one reading of the cumulative counters, so `percent` is the
 //! average load since boot: the skeleton keeps no per-host state across asks to sample a delta from.
 //! Desktop actions run fixed tools with an argument array, never a shell; an absent tool is `unsupported`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::args::{arg_bool, arg_opt, arg_str, denied};
 use super::net::io_error;
@@ -15,7 +17,7 @@ use orbital_core_base::os_grants::{DesktopKind, SysKind};
 use orbital_core_base::value::{Value, ValueMap};
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use orbital_core_base::sync::OnceLock;
 use std::time::Instant;
 
 const MAX_READ: u64 = 1024 * 1024;
@@ -29,7 +31,7 @@ fn unsupported(op: OsOp, what: impl std::fmt::Display) -> OsError {
 }
 
 fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
-    let mut map = ValueMap::new();
+    let mut map = ValueMap::default();
     for (key, value) in pairs {
         map.insert(key.to_string(), value);
     }
@@ -234,7 +236,7 @@ mod procfs {
             if parts.len() < 4 || is_virtual(parts[2]) {
                 continue;
             }
-            let mut mount = ValueMap::new();
+            let mut mount = ValueMap::default();
             mount.insert("device".to_string(), text(unescape(parts[0])));
             mount.insert("mountPoint".to_string(), text(unescape(parts[1])));
             mount.insert("filesystem".to_string(), text(parts[2]));
@@ -280,7 +282,7 @@ mod procfs {
                 continue;
             }
             let at = |i: usize| f[i].parse::<f64>().unwrap_or(0.0);
-            let mut stat = ValueMap::new();
+            let mut stat = ValueMap::default();
             stat.insert("device".to_string(), text(f[2]));
             stat.insert("readsCompleted".to_string(), Value::Number(at(3)));
             stat.insert("writesCompleted".to_string(), Value::Number(at(7)));
@@ -292,7 +294,7 @@ mod procfs {
     }
 
     pub(super) fn net_dev(raw: &str) -> ValueMap {
-        let mut stats = ValueMap::new();
+        let mut stats = ValueMap::default();
         for line in raw.lines().skip(2) {
             let Some((name, rest)) = line.split_once(':') else {
                 continue;
@@ -303,7 +305,7 @@ mod procfs {
                 continue;
             }
             let at = |i: usize| f[i].parse::<f64>().unwrap_or(0.0);
-            let mut counters = ValueMap::new();
+            let mut counters = ValueMap::default();
             counters.insert("rxBytes".to_string(), Value::Number(at(0)));
             counters.insert("txBytes".to_string(), Value::Number(at(8)));
             counters.insert("rxPackets".to_string(), Value::Number(at(1)));

@@ -1,6 +1,8 @@
 //! What an OAuth flow asks its host to keep, and how a flow fails. The core `http` driver owns every request
 //! (`oauth-client` auth); the host only persists: pending grants, provider connections, the subject index,
 //! discovered metadata and the clock. Nothing here sends a byte (`docs/Almadar_Embedded_Kernel.md`, "OAuth").
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::fmt;
 

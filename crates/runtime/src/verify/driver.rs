@@ -2,6 +2,8 @@
 //! step (hermetic preamble → `process_event`), capturing a [`Frame`].
 //!
 //! The kernel is the executor under test; the planner's declared `to` is the oracle.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::config::KernelConfig;
 use crate::effects::response::EventResponse;
@@ -172,7 +174,7 @@ impl Harness {
         };
         if let Some(entity) = step.linked_entity.as_ref().filter(|e| !creates_own_row(e)) {
             let seed_id = self.effective_seed_id(entity);
-            let mut row = ValueMap::new();
+            let mut row = ValueMap::default();
             row.insert("id".to_string(), Value::String(seed_id));
             // Stamp the declared owner column(s) with the current viewer, exactly as
             // real seeding does (`stamp_owner`). Without this the row carries only

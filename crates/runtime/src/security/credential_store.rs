@@ -2,11 +2,13 @@
 //! (credential name, principal) kept through a row port, the master key held alone in `ALMADAR_CREDENTIAL_MASTER_KEY`. The rows
 //! are the same bytes the JS store writes (`service`, `envVar`, hex `ciphertext` / `iv` / `authTag`, `keyId`, `updatedAt`,
 //! `principal`), so one store file is read and written by both hosts. A stored value shadows its environment counterpart.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::credential_admin::{RotateCounts, StoreListing, StoredName};
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce, Tag};
-use parking_lot::Mutex;
+use orbital_core_base::sync::Mutex;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;

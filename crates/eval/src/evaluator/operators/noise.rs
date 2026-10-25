@@ -3,6 +3,8 @@
 //! Perlin-derived value-coherent noise. The permutation table is copied
 //! verbatim from the frozen spec so Rust and JS produce byte-identical output.
 //! All ops are pure and return a number in `[-1, 1]`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;

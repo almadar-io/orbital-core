@@ -1,6 +1,8 @@
 //! Single-use tickets for the live-event stream (`POST /api/events/ticket`, then `GET /api/events?ticket=`): an
 //! `EventSource` sends no `Authorization` header, so the viewer is bound to a ticket minted on an authenticated request.
 //! A ticket is 32 bytes from the host's CSPRNG, base64url, kept as a TTL secret holding the viewer's JSON.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::http_service::SecretSource;
 use orbital_core_base::value::Value;

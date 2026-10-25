@@ -3,6 +3,8 @@
 //! [`TlsStream::resume`]. Connecting asks `os/tcp-connect`, the journaled `Random` seed and the journaled clock;
 //! the handshake then moves ciphertext through `os/send` and `os/recv`. A wrapper forwards the answer to the
 //! stream while [`TlsStream::is_waiting`] and handles it itself otherwise.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use rustls::RootCertStore;
 
@@ -612,7 +614,7 @@ mod tests {
                 IoRequest::Os {
                     op: OsOp::TcpConnect,
                     ..
-                } => IoAnswer::Os(Ok(Value::Object(ValueMap::from([(
+                } => IoAnswer::Os(Ok(Value::Object(ValueMap::from_iter([(
                     "sock".to_string(),
                     Value::Number(1.0),
                 )])))),
@@ -627,7 +629,7 @@ mod tests {
                     let bytes = codec::base64_decode(text).expect("base64");
                     self.server.receive(&bytes);
                     self.sent.push(bytes);
-                    IoAnswer::Os(Ok(Value::Object(ValueMap::from([(
+                    IoAnswer::Os(Ok(Value::Object(ValueMap::from_iter([(
                         "bytes".to_string(),
                         Value::Number(0.0),
                     )]))))
@@ -642,7 +644,7 @@ mod tests {
                     };
                     let data = self.server.take(want as usize);
                     assert!(!data.is_empty(), "the client read with nothing to read");
-                    IoAnswer::Os(Ok(Value::Object(ValueMap::from([
+                    IoAnswer::Os(Ok(Value::Object(ValueMap::from_iter([
                         (
                             "data".to_string(),
                             Value::String(codec::base64_encode(&data)),

@@ -15,6 +15,8 @@
 //!
 //! Ordered writes. Every `send` on a socket takes a turn in call order and writes only after the turn before it has
 //! ended, so a keyed `send` (written on a thread of its own) and an unkeyed one never interleave their bytes.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::completion::{Completions, RunLaterError};
 use super::args::{arg_bytes, arg_i64, arg_opt, arg_str, bytes_value, denied};
@@ -26,7 +28,7 @@ use orbital_core_base::os_grants::NetKind;
 use orbital_core_base::value::{Value, ValueMap};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
-use parking_lot::{Condvar, Mutex};
+use orbital_core_base::sync::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -159,7 +161,7 @@ pub(super) fn io_error(op: OsOp, e: &io::Error) -> OsError {
 }
 
 pub(super) fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
-    let mut map = ValueMap::new();
+    let mut map = ValueMap::default();
     for (key, value) in pairs {
         map.insert(key.to_string(), value);
     }
@@ -1098,7 +1100,7 @@ mod tests {
             let closed = answer(OsOp::Close, std::slice::from_ref(&sock), None, None, host)
                 .expect("a socket")
                 .expect("closed");
-            assert_eq!(closed, Value::Object(ValueMap::new()));
+            assert_eq!(closed, Value::Object(ValueMap::default()));
             assert_eq!(
                 kind_of(ask(host, OsOp::Send, &[sock.clone(), s("aGk=")])),
                 OsErrorKind::Closed
@@ -1320,7 +1322,7 @@ mod tests {
             let sock = field(&opened, "sock");
             assert_eq!(
                 ask(host, OsOp::Shutdown, std::slice::from_ref(&sock)).expect("shutdown"),
-                Value::Object(ValueMap::new())
+                Value::Object(ValueMap::default())
             );
             let after = kind_of(ask(host, OsOp::Send, &[sock, s("aGk=")]));
             assert!(

@@ -1,6 +1,8 @@
 //! Expression lowering: an S-expression to an `OirExpr`. Stateless (it reads
 //! no schema, only the installed operator table), so it lives here and every
 //! consumer (the compiler's resolver, the shells) shares the one lowering.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::http_wire::HttpMethod;
 use orbital_core_base::ir::effects::{OirEffect, OirEmitConfig};
@@ -22,7 +24,7 @@ pub fn lower_sexpr(sexpr: &SExpression) -> Result<OirExpr, LowerError> {
     ExprLowerer.resolve_sexpr(sexpr)
 }
 
-thread_local! {
+orbital_core_base::kernel_local! {
     static KEEP_TYPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -264,7 +266,7 @@ impl NodeLowerer {
                 Ok(OirExpr::array(items))
             }
             SExpression::Object(obj) => {
-                let mut fields = orbital_core_base::ir::expr::OirFields::new();
+                let mut fields = orbital_core_base::ir::expr::OirFields::default();
                 for (key, value) in obj {
                     fields.insert(key.clone(), self.resolve_sexpr(value)?);
                 }
@@ -293,7 +295,7 @@ impl NodeLowerer {
             .iter()
             .map(|a| self.resolve_sexpr(a))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut args_map = orbital_core_base::ir::expr::OirFields::new();
+        let mut args_map = orbital_core_base::ir::expr::OirFields::default();
         for (i, arg) in resolved_args.into_iter().enumerate() {
             args_map.insert(format!("arg{}", i), arg);
         }
@@ -668,7 +670,7 @@ impl NodeLowerer {
                     .iter()
                     .map(|a| self.resolve_sexpr(a))
                     .collect::<Result<Vec<_>, _>>()?;
-                let mut args_map = orbital_core_base::ir::expr::OirFields::new();
+                let mut args_map = orbital_core_base::ir::expr::OirFields::default();
                 for (i, arg) in resolved_args.into_iter().enumerate() {
                     args_map.insert(format!("arg{}", i), arg);
                 }
@@ -948,7 +950,7 @@ impl NodeLowerer {
         let data = if data_end > 2 {
             self.resolve_sexpr(&args[data_end - 1])?
         } else {
-            OirExpr::object(orbital_core_base::ir::expr::OirFields::new())
+            OirExpr::object(orbital_core_base::ir::expr::OirFields::default())
         };
 
         let mut effect = match operation.as_str() {
@@ -1434,7 +1436,7 @@ impl NodeLowerer {
         let call_args = if args_end > 2 {
             self.resolve_sexpr(&args[args_end - 1])?
         } else {
-            OirExpr::object(orbital_core_base::ir::expr::OirFields::new())
+            OirExpr::object(orbital_core_base::ir::expr::OirFields::default())
         };
 
         let mut effect = OirEffect::call_service(service, method, call_args);
@@ -1508,8 +1510,8 @@ impl NodeLowerer {
                 "postgres takes an origin, a statement, its params, then optional options".to_string(),
             ));
         }
-        let mut options = orbital_core_base::schema::sexpr::SObject::new();
-        let mut routes = orbital_core_base::schema::sexpr::SObject::new();
+        let mut options = orbital_core_base::schema::sexpr::SObject::default();
+        let mut routes = orbital_core_base::schema::sexpr::SObject::default();
         let mut key = None;
         for trailing in &args[3..] {
             match trailing {
@@ -1557,8 +1559,8 @@ impl NodeLowerer {
                 "redis takes an origin, a command, then optional options".to_string(),
             ));
         }
-        let mut options = orbital_core_base::schema::sexpr::SObject::new();
-        let mut routes = orbital_core_base::schema::sexpr::SObject::new();
+        let mut options = orbital_core_base::schema::sexpr::SObject::default();
+        let mut routes = orbital_core_base::schema::sexpr::SObject::default();
         let mut key = None;
         for trailing in &args[2..] {
             match trailing {
@@ -2224,7 +2226,7 @@ mod tests {
         let OirEffect::BrowserBeacon { request, key, emit, .. } = *effect else {
             panic!("beacon effect");
         };
-        let mut fields = orbital_core_base::ir::expr::OirFields::new();
+        let mut fields = orbital_core_base::ir::expr::OirFields::default();
         fields.insert("text".into(), OirExpr::binding(OirBinding::parse("@entity.text").unwrap()));
         assert_eq!(request, OirExpr::object(fields));
         assert_eq!(key, Some(OirExpr::binding(OirBinding::parse("@payload.key").unwrap())));
@@ -2240,7 +2242,7 @@ mod tests {
             panic!("batch effect");
         };
         assert_eq!(entities, vec!["Task"]);
-        let mut row = orbital_core_base::ir::expr::OirFields::new();
+        let mut row = orbital_core_base::ir::expr::OirFields::default();
         row.insert("id".into(), OirExpr::binding(OirBinding::parse("@entity.id").unwrap()));
         assert_eq!(ops, OirExpr::array(vec![OirExpr::call("list", vec![
             OirExpr::string("create"), OirExpr::string("Task"), OirExpr::object(row),

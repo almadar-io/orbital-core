@@ -11,6 +11,8 @@
 //!   VIEWER through its ordinary input channel (guards, grants and entity policies apply, never a bypass). The
 //!   kernel sends the qualified address and the checked payload only, never a principal: the host runs the
 //!   dispatch as the viewer it started this dispatch for, and answers the outcome the model is told.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::RuntimeKernel;
 use crate::effects::executor::SubstrateHandler;
@@ -184,7 +186,7 @@ impl RuntimeKernel {
                     .collect();
                 for (entity_id, state) in instances {
                     let snapshot = self.snapshot_trait(trait_name, entity_id.as_deref());
-                    let mut row = ValueMap::new();
+                    let mut row = ValueMap::default();
                     row.insert("trait".to_string(), Value::String(trait_name.clone()));
                     row.insert(
                         "entityId".to_string(),
@@ -195,14 +197,14 @@ impl RuntimeKernel {
                     traits.push(Value::Object(row));
                 }
             }
-            let mut state = ValueMap::new();
+            let mut state = ValueMap::default();
             state.insert("orbital".to_string(), Value::String(detail.name));
             state.insert("traits".to_string(), Value::Array(traits));
             answer.insert("state".to_string(), Value::Object(state));
         }
         if reads.stats {
             let stats = self.stats();
-            let mut counters = ValueMap::new();
+            let mut counters = ValueMap::default();
             for (name, count) in [
                 ("registeredSchemas", stats.registered_schemas),
                 ("registeredTraits", stats.registered_traits),
@@ -214,7 +216,7 @@ impl RuntimeKernel {
             answer.insert("stats".to_string(), Value::Object(counters));
         }
         if let Some(steps) = reads.trace {
-            let mut ask = ValueMap::new();
+            let mut ask = ValueMap::default();
             ask.insert("trace".to_string(), Value::Number(steps as f64));
             let trace = self
                 .io
@@ -310,7 +312,7 @@ impl RuntimeKernel {
                 vec![args.first().cloned().unwrap_or(Value::Null), payload, Value::Object(options)]
             }
             DispatchPlan::Inbound { name, body, headers } => {
-                let mut ask = ValueMap::new();
+                let mut ask = ValueMap::default();
                 ask.insert("inbound".to_string(), Value::String(name));
                 ask.insert("body".to_string(), Value::String(body));
                 ask.insert("headers".to_string(), Value::Object(headers));

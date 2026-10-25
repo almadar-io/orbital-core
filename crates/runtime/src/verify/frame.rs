@@ -2,6 +2,8 @@
 //!
 //! Mirrors the TS verifier's `Frame` (`packages/almadar-verify/src/observer/types.ts`),
 //! trimmed to what the headless kernel circuit can witness.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

@@ -1,6 +1,8 @@
 //! The step machine of an `oauth-client` auth: one operation (discovery, code, connect, refresh, revoke,
 //! userinfo) as a sequence of host asks (what to persist) and HTTP exchanges (what to send). The pure response
 //! checks are `crate::oauth`; this module only orders them. Sans-I/O: the driver feeds it each answer.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};

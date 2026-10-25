@@ -15,6 +15,8 @@
 //! `resolvePersonaSpec` / `findPersonaInRoster` in
 //! `packages/almadar-core/src/types/user.ts`; the roster derivation is pinned to
 //! the interpreter path by the shared fixtures in `orbital-core fixtures`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::mock_random::iso_from_ms;
 use orbital_core_base::policy::identity_entity_def;
@@ -40,8 +42,15 @@ pub enum EnvPersona {
     Bare(String),
 }
 
+/// A bare-metal host has no process environment, so no persona is asked for.
+#[cfg(not(feature = "std"))]
+pub fn persona_from_env_spec() -> Result<EnvPersona, String> {
+    Ok(EnvPersona::None)
+}
+
 /// Read and classify `ALMADAR_PERSONA`. `Err` only for a malformed JSON form —
 /// a developer who asked to be somebody must never be shown the app as nobody.
+#[cfg(feature = "std")]
 pub fn persona_from_env_spec() -> Result<EnvPersona, String> {
     let raw = match std::env::var(PERSONA_ENV) {
         Ok(raw) if !raw.trim().is_empty() => raw,
@@ -187,7 +196,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, role)| {
-                let mut m = ValueMap::new();
+                let mut m = ValueMap::default();
                 m.insert("id".to_string(), Value::String(format!("Person-{}", i + 1)));
                 m.insert("role".to_string(), Value::String((*role).to_string()));
                 Value::Object(m)

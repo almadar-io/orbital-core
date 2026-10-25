@@ -1,5 +1,7 @@
 //! Trait name -> owning orbital, the one routing index every host that addresses a server leg
 //! per orbital shares (`orbital-ffi`'s wire, `orbital-client`'s `ClientKernel`).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::kernel::RuntimeKernel;
 use std::collections::{BTreeMap, BTreeSet};

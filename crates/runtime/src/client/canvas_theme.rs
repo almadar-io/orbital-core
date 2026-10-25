@@ -4,6 +4,8 @@
 //! runs on the web), limited to the fields the native renderer reads. Parity is
 //! pinned by `tests/fixtures/canvas-theme/*.json`, generated in Chromium by
 //! `tools/almadar-pattern-sync/scripts/canvas-theme-fixture.mjs`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::schema::types::ThemeTokens;
 use serde::{Deserialize, Serialize};

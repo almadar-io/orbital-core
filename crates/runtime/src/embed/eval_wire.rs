@@ -2,6 +2,8 @@
 //! row-access owner (`entity_access`) behind JSON strings, so a host renders with the kernel's semantics
 //! and never carries a second evaluator. A render hands its binding context once and every expression it
 //! binds in one `evaluate_many` crossing.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::entity_access::{apply_read_access, check_mutation_access};
 use crate::kernel::envelope::mapped_listen_payload;
@@ -680,7 +682,7 @@ pub fn trace_effects_json(context_json: &str, effects_json: &str) -> Result<Stri
     let effects: Vec<SExpression> = parse(effects_json, "effects")?;
     let entity = match ctx.entity.as_value() {
         Value::Object(map) => map.clone(),
-        _ => ValueMap::new(),
+        _ => ValueMap::default(),
     };
     let mut run = EffectRun { ctx, entity, emitted: Vec::new(), writes: Vec::new() };
     run.mirror();

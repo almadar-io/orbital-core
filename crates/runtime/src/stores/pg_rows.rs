@@ -11,6 +11,8 @@
 //! a session pool that runs many statements, with transactions and writes. The `postgres` effect's read-only guard
 //! (`sql_guard`) stays that effect's one guard; this store is a kernel-internal use and never takes statements from a
 //! program. Every bind value travels as text and the server infers its type, exactly as `postgres.rs` does.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,7 +23,7 @@ use orbital_core_base::row_set::{
 };
 use orbital_core_base::str_utils::js_number_string;
 use orbital_core_base::value::{Value, ValueMap};
-use parking_lot::{Mutex, RwLock};
+use orbital_core_base::sync::{Mutex, RwLock};
 
 use crate::entity_source::EntitySource;
 use crate::postgres::{
@@ -677,7 +679,7 @@ fn cell(oid: u32, bytes: Option<&[u8]>) -> Result<Value, String> {
 
 /// A result row as the row object `deserializeRow` returns: the stamp columns under the stamp names, as ISO text.
 fn row_of(columns: &[Column], cells: &[Option<Vec<u8>>]) -> Result<ValueMap, String> {
-    let mut row = ValueMap::new();
+    let mut row = ValueMap::default();
     for (column, bytes) in columns.iter().zip(cells) {
         row.insert(
             column.name.clone(),

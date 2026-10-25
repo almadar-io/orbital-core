@@ -22,12 +22,17 @@
 //! processing instructions and a doctype are ignored. Malformed XML (no root, a second root, text outside the
 //! root, mismatched or unclosed tags, an unknown entity, a duplicate attribute, an invalid name) answers `null`
 //! from `xml/parse`. An absent (`null`) input is `null`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
 use orbital_core_base::schema::types::{Orbital, OrbitalSchema, PayloadField};
+#[cfg(feature = "std")]
 use quick_xml::escape::resolve_xml_entity;
+#[cfg(feature = "std")]
 use quick_xml::events::{BytesStart, Event};
+#[cfg(feature = "std")]
 use quick_xml::Reader;
 
 #[derive(Default)]
@@ -49,6 +54,7 @@ fn collapse(text: &str) -> String {
         .join(" ")
 }
 
+#[cfg(feature = "std")]
 fn is_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
@@ -59,6 +65,7 @@ fn bad(message: impl std::fmt::Display) -> OrbitalError {
     OrbitalError::Eval(EvalError::InvalidArgument(format!("xml/parse: {message}")))
 }
 
+#[cfg(feature = "std")]
 fn local_name(raw: &[u8]) -> Result<String, OrbitalError> {
     let name = std::str::from_utf8(raw).map_err(bad)?;
     let local = name.rsplit(':').next().unwrap_or(name);
@@ -69,6 +76,7 @@ fn local_name(raw: &[u8]) -> Result<String, OrbitalError> {
     }
 }
 
+#[cfg(feature = "std")]
 fn open(start: &BytesStart) -> Result<(String, Node), OrbitalError> {
     let name = local_name(start.local_name().as_ref())?;
     let mut node = Node::default();
@@ -87,6 +95,7 @@ fn open(start: &BytesStart) -> Result<(String, Node), OrbitalError> {
     Ok((name, node))
 }
 
+#[cfg(feature = "std")]
 fn parse_tree(text: &str) -> Result<Node, OrbitalError> {
     let mut reader = Reader::from_str(text);
     let mut stack: Vec<(String, Node)> = Vec::new();
@@ -170,13 +179,19 @@ fn parse_tree(text: &str) -> Result<Node, OrbitalError> {
     root.ok_or_else(|| bad("no root element"))
 }
 
+/// XML parsing runs on `quick-xml`, whose byte search needs the standard library; a bare-metal host has no parser.
+#[cfg(not(feature = "std"))]
+fn parse_tree(_text: &str) -> Result<Node, OrbitalError> {
+    Err(bad("xml is not available on a bare-metal host"))
+}
+
 fn to_value(node: Node) -> Value {
     let text = collapse(&node.full);
     let own_has_text = node.own.chars().any(|c| !is_xml_space(c));
     if node.attrs.is_empty() && (node.children.is_empty() || own_has_text) {
         return Value::String(text);
     }
-    let mut object = ValueMap::new();
+    let mut object = ValueMap::default();
     for (key, value) in node.attrs {
         object.insert(format!("@{key}"), Value::String(value));
     }

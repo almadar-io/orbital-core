@@ -2,6 +2,8 @@
 //! sigils -> canonical English. Never touches any other string value (a
 //! user's entity name, a label, free text, …) — only the four positions the
 //! `.orb` schema itself gives grammatical meaning to.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::lang::{self, Lang};
 use serde_json::Value;

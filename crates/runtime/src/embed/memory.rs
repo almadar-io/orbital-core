@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 use crate::entity_source::{EntitySource, InMemoryEntityCache};
 use crate::row_query::{QueryCapabilities, RowWriteOp, WriteCapabilities};
 use orbital_core_base::value::Value;

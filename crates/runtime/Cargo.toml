@@ -7,40 +7,60 @@ repository = "https://github.com/almadar-io/orbital-core"
 description = "orbital-core layer: runtime"
 
 [dependencies]
-indexmap = { version = "2", features = ["serde"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
-thiserror = "1.0"
-tracing = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
-parking_lot = "0.12"
-smallvec = "1"
-sha2 = "0.10"
-base64 = "0.22"
-web-time = "1.1"
+orbital-core-std = { path = "../std" }
+indexmap = { version = "2", default-features = false, features = ["serde"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc", "preserve_order"] }
+thiserror = { version = "2", default-features = false }
+tracing = { version = "0.1", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["serde", "alloc"] }
+parking_lot = { version = "0.12", optional = true }
+smallvec = { version = "1", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+web-time = { version = "1.1", optional = true }
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 p256 = { version = "0.13", default-features = false, features = ["alloc", "ecdh", "ecdsa", "pem"] }
 rsa = { version = "0.9", default-features = false, features = ["pem", "sha2"] }
-url = "2"
+url = { version = "2", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["tls12"] }
-webpki-roots = "1"
+webpki-roots = { version = "1", default-features = false }
 x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
 p384 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
-hmac = "0.12"
+hmac = { version = "0.12", default-features = false }
 rand_chacha = { version = "0.3", default-features = false }
 ureq = { version = "2.9", default-features = false, features = ["json"], optional = true }
-orbital-core-base = { path = "../base" }
-orbital-core-eval = { path = "../eval" }
+orbital-core-base = { path = "../base", default-features = false }
+orbital-core-eval = { path = "../eval", default-features = false }
 
 [features]
-default = ["wire-drivers"]
+default = ["std", "wire-drivers"]
+std = [
+    "orbital-core-base/std",
+    "orbital-core-eval/std",
+    "indexmap/std",
+    "serde/std",
+    "serde_json/std",
+    "thiserror/std",
+    "tracing/std",
+    "chrono/std",
+    "chrono/clock",
+    "chrono/oldtime",
+    "chrono/wasmbind",
+    "dep:parking_lot",
+    "sha2/std",
+    "base64/std",
+    "dep:web-time",
+    "url/std",
+    "dep:getrandom",
+]
 # The raw-socket store drivers (Postgres, Redis, their TLS stream): a server-role capability the browser kernel build leaves out.
-wire-drivers = []
-async = ["orbital-core-eval/async"]
-client-http = ["dep:ureq"]
+wire-drivers = ["std"]
+async = ["std", "orbital-core-eval/async"]
+client-http = ["std", "dep:ureq"]
 # The native HTTP(S) transport of a server-role host (ureq + rustls); off for wasm32 and for hosts that bring their own `Transport`.
-native-transport = ["dep:ureq", "ureq/tls"]
+native-transport = ["std", "dep:ureq", "ureq/tls"]
 
 [dev-dependencies]
 tempfile = "3.10"
@@ -52,7 +72,7 @@ orbital-core-eval = { path = "../eval", features = ["ts-export"] }
 js-sys = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-getrandom = "0.2"
+getrandom = { version = "0.2", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

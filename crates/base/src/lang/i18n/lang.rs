@@ -4,10 +4,12 @@
 //! Canonicalization is always native -> English: the parser reads whatever
 //! script the author wrote and stores the canonical English word, so every
 //! downstream phase (lower, codegen, `.orb` JSON) only ever sees English.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::tables::{self, I18nDefinition};
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use crate::sync::OnceLock;
 
 /// One vocabulary section's inverted (native -> English) map.
 type SectionMap = HashMap<&'static str, &'static str>;

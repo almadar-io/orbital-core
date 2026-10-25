@@ -1,6 +1,8 @@
 //! The guard precondition of a planned step: a guard that reads an `@entity.<field>` the guarded trait never
 //! sets on its own is satisfied by a sibling trait on the same entity (or a setter the trait's own walk reaches).
 //! The hermetic reset strands such a field at its default, so the step needs the setter dispatched first.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::planner::{
     collect_binding_texts, collect_emitted, effective_seed_id, entity_def, initial_state,

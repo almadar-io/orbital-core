@@ -2,6 +2,10 @@
 //!
 //! Directories under `src/` are organizational only — every module stays at the crate root
 //! (flat public paths) via its `#[path]`. See `README.md`.
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate orbital_core_std as std;
 
 // program — what a program IS: value model + IR + structure
 #[path = "program/value.rs"]
@@ -55,12 +59,15 @@ pub mod language;
 pub mod i18n;
 #[path = "lang/language_data.rs"]
 pub mod language_data;
+#[cfg(feature = "std")]
 #[path = "lang/behavior_index.rs"]
 pub mod behavior_index;
 #[path = "lang/protocols.rs"]
 pub mod protocols;
+#[cfg(feature = "std")]
 #[path = "lang/behavior_packages.rs"]
 pub mod behavior_packages;
+#[cfg(feature = "std")]
 #[path = "lang/renderer_packs.rs"]
 pub mod renderer_packs;
 #[path = "lang/theme.rs"]
@@ -115,12 +122,16 @@ pub mod agent_ports;
 pub mod drawable;
 
 // backend — the shell/backend contract shells implement
+#[cfg(feature = "std")]
 #[path = "backend/shell.rs"]
 pub mod shell;
+#[cfg(feature = "std")]
 #[path = "backend/shell_protocol.rs"]
 pub mod shell_protocol;
+#[cfg(feature = "std")]
 #[path = "backend/generate.rs"]
 pub mod generate;
+#[cfg(feature = "std")]
 #[path = "backend/project.rs"]
 pub mod project;
 
@@ -137,6 +148,10 @@ pub mod secrets;
 // util — shared plumbing, no domain vocabulary
 #[path = "util/error.rs"]
 pub mod error;
+#[path = "util/sync.rs"]
+pub mod sync;
+#[path = "util/collections.rs"]
+pub mod collections;
 #[path = "util/logging.rs"]
 pub mod logging;
 #[path = "util/messages.rs"]
@@ -147,5 +162,6 @@ pub mod str_utils;
 pub mod time_util;
 #[path = "util/cron.rs"]
 pub mod cron;
+#[cfg(feature = "std")]
 #[path = "util/fixtures.rs"]
 pub mod fixtures;

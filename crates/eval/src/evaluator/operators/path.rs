@@ -3,6 +3,8 @@
 //! Grid cells are `{x,y}` integer objects. The open-set is a linear-scanned
 //! array (NOT a heap) with a deterministic tie-break (lower f, lower h, earliest
 //! insertion) so Rust and JS produce identical paths.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
@@ -16,7 +18,7 @@ struct Cell {
 }
 
 fn cell_value(c: Cell) -> Value {
-    let mut m = ValueMap::new();
+    let mut m = ValueMap::default();
     m.insert("x".to_string(), Value::Number(c.x as f64));
     m.insert("y".to_string(), Value::Number(c.y as f64));
     Value::Object(m)

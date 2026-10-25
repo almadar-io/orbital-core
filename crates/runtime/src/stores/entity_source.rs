@@ -3,6 +3,8 @@
 //! An `EntitySource` hides the difference between a client-side in-memory cache
 //! and a server-side persistence adapter so the kernel can read and write entity
 //! data without knowing which environment it is running in.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::row_query::{
     apply_write, CreateIds, QueryRun, RowIdPage, RowPage, RowTable, RowWriteBatch,
@@ -10,7 +12,7 @@ use super::row_query::{
 };
 use orbital_core_base::row_set::RowQuery;
 use orbital_core_base::value::Value;
-use parking_lot::RwLock;
+use orbital_core_base::sync::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -359,7 +361,7 @@ mod tests {
     use orbital_core_base::value::ValueMap;
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
-        let mut m = ValueMap::new();
+        let mut m = ValueMap::default();
         for (k, v) in pairs {
             m.insert((*k).to_string(), v.clone());
         }
@@ -497,7 +499,7 @@ mod tests {
         let cache = InMemoryEntityCache::new();
         let ids = ["e", "a", "d", "b", "c", "f", "h", "g"];
         for id in ids {
-            let mut row = ValueMap::new();
+            let mut row = ValueMap::default();
             row.insert("id".to_string(), Value::String(id.to_string()));
             cache.create("Item", &Value::Object(row)).unwrap();
         }
@@ -511,7 +513,7 @@ mod tests {
         };
         assert_eq!(listed(&cache), ids);
 
-        let mut patch = ValueMap::new();
+        let mut patch = ValueMap::default();
         patch.insert("n".to_string(), Value::Number(1.0));
         cache.write("Item", "d", &Value::Object(patch)).unwrap();
         cache.delete("Item", "b").unwrap();

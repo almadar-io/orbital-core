@@ -4,6 +4,8 @@
 //! `dayWindow` + `timeSlots` + `events`; the `.orb` never supplies a precomputed
 //! `days` array. Native backends must compute the same derivation here instead of
 //! rendering empty — one owner so egui / dioxus / terminal never drift.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::value::ValueMap;
 use super::helpers::{get_array, get_number, get_string, get_string_array};
@@ -101,7 +103,7 @@ pub fn event_slot_index(event: &Value, slots: &[String]) -> Option<usize> {
 /// Build a click payload `{date, time?}` mirroring the React callbacks
 /// `onSlotClick(day, time)` / `onDayClick(day)`.
 pub fn calendar_click_payload(date: &str, time: Option<&str>) -> Value {
-    let mut o = ValueMap::new();
+    let mut o = ValueMap::default();
     o.insert("date".to_string(), Value::String(date.to_string()));
     if let Some(t) = time {
         o.insert("time".to_string(), Value::String(t.to_string()));

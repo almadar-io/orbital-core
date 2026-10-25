@@ -2,6 +2,10 @@
 //!
 //! Directories under `src/` are organizational only — every module stays at the crate root
 //! (flat public paths) via its `#[path]`. See `README.md`.
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate orbital_core_std as std;
 
 #[cfg(test)]
 #[path = "tests/codec_tests.rs"]

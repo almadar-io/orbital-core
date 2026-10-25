@@ -1,6 +1,8 @@
 //! OIR Validation
 //!
 //! Validates OIR modules for correctness before code generation.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::HashSet;
 
@@ -249,10 +251,8 @@ impl<'a> OirValidator<'a> {
                 ));
             }
         }
-        // Duplicate page PATH is the compiler phase's job now
-        // (`validation::page::validate_page_path_uniqueness`, param-shape
-        // normalized) — this OIR layer only caught the exact-string case,
-        // which is a strict subset.
+        // Duplicate page PATH is the std lint `std-orb-lint-page-path-uniqueness`
+        // (param-shape normalized), not this OIR layer.
     }
 
     fn validate_entity(&self, entity: &OirEntity, result: &mut ValidationResult) {

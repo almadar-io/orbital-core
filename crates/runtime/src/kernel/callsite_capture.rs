@@ -6,6 +6,8 @@
 //! lifecycle arm under the composing payload. This module is the static half: the adjacency, the
 //! children a set of fired effects compose, and the lifecycle event a repaint may use. JS twin:
 //! `@almadar/core` `embedded-trait-config.ts` + `StateMachineCore.repaintLifecycleEvent`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::schema::types::TraitDefinition;

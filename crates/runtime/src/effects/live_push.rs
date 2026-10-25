@@ -6,6 +6,8 @@
 //!   (`{type:'event'|'effect'|'complete'|'error', data, timestamp}`).
 //! - [`LiveBroadcastItem`]: the persistent `GET /api/events` channel's payload
 //!   (`OrbitalServerRuntime.ts:344-356`), fanned out to every OTHER connected client.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 

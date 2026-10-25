@@ -10,10 +10,12 @@
 //! component names from the installed mapping). `registry.json` is the same data
 //! as the patterns registry — reused, not re-read. All of it comes from the
 //! installed `@almadar/core` (`crate::language_data`), not the binary.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use crate::sync::OnceLock;
 
 fn language() -> &'static crate::language_data::LanguageData {
     crate::language_data::language_data_after_preflight()

@@ -7,6 +7,8 @@
 //! reads before inline substitutes them with the knob's value, so a caller
 //! runs it on the parsed program and on every behavior file `uses` loads
 //! (an atom's knobs are typed in the atom).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde_json::{Map, Value};
 

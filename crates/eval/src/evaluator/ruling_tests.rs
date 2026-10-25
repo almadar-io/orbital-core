@@ -1,5 +1,7 @@
 //! Kernel rulings of 2026-10-18: declared arity is a bound, `__proto__` is refused as a key, `validate/check` takes rules
 //! by field, `str/template` and `str/truncate` follow the kernel.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::evaluator::context::BindingContext;
 use crate::evaluator::Evaluator;

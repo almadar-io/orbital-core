@@ -1,5 +1,7 @@
 //! Credential resolution: the tenant credential store first, then the host env, as `configureFromStore`
 //! layers `{ ...env, ...store.snapshotEnv() }` in `@almadar/runtime`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};

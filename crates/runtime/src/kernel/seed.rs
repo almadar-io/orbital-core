@@ -8,6 +8,8 @@
 //!
 //! This is the single owner of field→row synthesis; consumers (the Layer-2 render
 //! probe, the screenshot probe) call [`seed_sample_data`] rather than rolling their own.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::value::ValueMap;
 use orbital_core_base::schema::types::{Cardinality, EntityDefinition, EntityRef, FieldDefinition, FieldType, Persistence};
@@ -91,7 +93,7 @@ pub fn sample_row(
     identity: bool,
     entropy: &mut Entropy,
 ) -> ValueMap {
-    let mut row: ValueMap = ValueMap::new();
+    let mut row: ValueMap = ValueMap::default();
     for f in fields {
         let Some(name) = f.name.as_ref() else {
             continue;
@@ -370,7 +372,7 @@ fn sample_value(
             let candidates = mock_candidates(declared);
             return Some(
                 match candidates.get((ordinal - 1) % candidates.len().max(1)) {
-                    Some(spec) => Value::Object(ValueMap::from([(
+                    Some(spec) => Value::Object(ValueMap::from_iter([(
                         "behavior".to_string(),
                         Value::String(spec.to_string()),
                     )])),
@@ -454,7 +456,7 @@ fn sample_value(
         })),
         // File seeds the canonical struct value (satisfies its own
         // type-compat validity rule, like the semantic domains above).
-        FieldType::File => Some(Value::Object(ValueMap::from([
+        FieldType::File => Some(Value::Object(ValueMap::from_iter([
             (
                 "name".to_string(),
                 Value::String(format!("{}-{}.pdf", slug(name), index)),
@@ -601,7 +603,7 @@ fn sample_object(
     // Sorted, so seeded draws do not depend on the map's order (the JS owner sorts too).
     let mut names: Vec<&String> = properties.keys().collect();
     names.sort();
-    let mut out: ValueMap = ValueMap::new();
+    let mut out: ValueMap = ValueMap::default();
     for prop_name in names {
         let mut child = properties[prop_name].clone();
         child.name = Some(prop_name.clone());
@@ -678,6 +680,12 @@ fn typed_mock_value(field: &FieldDefinition, literal: String) -> Value {
 /// name-matching guess would silently scope the wrong column.
 pub const OWNER_FIELDS_ENV: &str = "ALMADAR_PERSONA_OWNS";
 
+#[cfg(not(feature = "std"))]
+fn owner_fields_from_env() -> Vec<(String, String)> {
+    Vec::new()
+}
+
+#[cfg(feature = "std")]
 fn owner_fields_from_env() -> Vec<(String, String)> {
     std::env::var(OWNER_FIELDS_ENV)
         .unwrap_or_default()
@@ -724,7 +732,7 @@ pub fn seed_sample_data_as(
             .into_iter()
             .find(|row| row.get_path("id").and_then(|v| v.as_str()) == Some(id.as_str()))
             .unwrap_or_else(|| {
-                Value::Object(ValueMap::from([("id".to_string(), Value::String(id))]))
+                Value::Object(ValueMap::from_iter([("id".to_string(), Value::String(id))]))
             })
     });
     seed_mock_dataset(
@@ -954,8 +962,8 @@ impl<'a> MockSeeder<'a> {
         owner_fields.extend(owner_fields_from_env());
         // First entity on a collection that declares any directive owns its policies
         // (`entityAccessPoliciesByStoreKey`).
-        let mut create_policies: ValueMap = ValueMap::new();
-        let mut read_policies: ValueMap = ValueMap::new();
+        let mut create_policies: ValueMap = ValueMap::default();
+        let mut read_policies: ValueMap = ValueMap::default();
         let mut decided: std::collections::HashSet<String> = std::collections::HashSet::new();
         for def in inline_entity_defs(schema) {
             let declared = def.read_policy.is_some()
@@ -1404,7 +1412,7 @@ impl<'a> MockSeeder<'a> {
                     let _ = self.source.write(
                         &entity,
                         &id,
-                        &Value::Object(ValueMap::from([(name.to_string(), value)])),
+                        &Value::Object(ValueMap::from_iter([(name.to_string(), value)])),
                     );
                 }
             }
@@ -1458,7 +1466,7 @@ impl<'a> MockSeeder<'a> {
                     let _ = self.source.write(
                         &entity,
                         &id,
-                        &Value::Object(ValueMap::from([(name.to_string(), value)])),
+                        &Value::Object(ValueMap::from_iter([(name.to_string(), value)])),
                     );
                 }
             }
@@ -1683,7 +1691,7 @@ mod policy_tests {
     }
 
     fn behavior_value(spec: &str) -> Value {
-        Value::Object(ValueMap::from([(
+        Value::Object(ValueMap::from_iter([(
             "behavior".to_string(),
             Value::String(spec.to_string()),
         )]))
@@ -1816,7 +1824,7 @@ mod tests {
     fn rows(n: usize) -> Vec<Value> {
         (0..n)
             .map(|i| {
-                let mut m = ValueMap::new();
+                let mut m = ValueMap::default();
                 m.insert("id".to_string(), Value::String(format!("r{}", i)));
                 m.insert(
                     "memberId".to_string(),
@@ -2707,7 +2715,7 @@ mod read_owner_tests {
             ("s3", "hr"),
             ("s4", "employee"),
         ] {
-            let row = Value::Object(ValueMap::from([
+            let row = Value::Object(ValueMap::from_iter([
                 ("id".to_string(), Value::String(id.to_string())),
                 ("role".to_string(), Value::String(role.to_string())),
             ]));

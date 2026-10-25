@@ -4,6 +4,8 @@
 //! follows the FIRST vector arg: include `z` only if that arg had a `z` key.
 //! Missing `z` reads as 0. All ops are pure and total (degenerate input never
 //! errors — e.g. normalize of a zero-length vector returns the zero vector).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
@@ -21,7 +23,7 @@ pub fn has_z(obj: &ValueMap) -> bool {
 
 /// Build a vector object; includes `z` only when `with_z` is true.
 pub fn make_vec(x: f64, y: f64, z: f64, with_z: bool) -> Value {
-    let mut m = ValueMap::new();
+    let mut m = ValueMap::default();
     m.insert("x".to_string(), Value::Number(x));
     m.insert("y".to_string(), Value::Number(y));
     if with_z {
@@ -35,7 +37,7 @@ pub fn eval_obj(arg: &SExpression, ctx: &BindingContext) -> Result<ValueMap, Orb
     let v = eval_expr(arg, ctx)?;
     match v {
         Value::Object(o) => Ok(o),
-        _ => Ok(ValueMap::new()),
+        _ => Ok(ValueMap::default()),
     }
 }
 

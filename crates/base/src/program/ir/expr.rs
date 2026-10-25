@@ -1,11 +1,13 @@
 //! OIR Expression Types
 //!
 //! Universal expression type for guards and effects (parsed S-expressions).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 
 /// Expression-object fields in authored order (deterministic codegen and IR wire).
-pub type OirFields = indexmap::IndexMap<String, OirExpr>;
+pub type OirFields = crate::collections::IndexMap<String, OirExpr>;
 
 /// Universal expression type (parsed S-expression)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -154,7 +156,7 @@ impl OirExpr {
                 S::Array(v)
             }
             OirExpr::Object { fields } => {
-                let mut m = crate::schema::sexpr::SObject::with_capacity(fields.len());
+                let mut m = crate::schema::sexpr::SObject::with_capacity_and_hasher(fields.len(), Default::default());
                 for (k, val) in fields {
                     m.insert(k.clone(), val.to_sexpression()?);
                 }

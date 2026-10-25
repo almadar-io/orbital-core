@@ -1,4 +1,6 @@
 //! Encoding and digest operators. Every byte-level step is `crate::codec`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
@@ -271,7 +273,7 @@ fn compress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult 
         codec::gzip_compress_level(&data, level)
     } else {
         let (Some(quality), Some(window)) = (codec_setting(&options, "quality", 11, 11, 0, op)?, codec_setting(&options, "window", 22, 24, 10, op)?) else { return Ok(Value::Null); };
-        codec::brotli_compress_options(&data, quality as i32, window as i32)
+        brotli_compress(&data, quality as i32, window as i32, op)?
     };
     let crc = if gzip { Some(u32::from_le_bytes(packed[packed.len() - 8..packed.len() - 4].try_into().expect("gzip trailer"))) } else { None };
     codec_answer(Ok(codec::CodecDecoded { data: packed, crc }), &options)
@@ -288,8 +290,29 @@ fn decompress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResul
     };
     let options = codec_options(args, 2, ctx, op, &["result"])?;
     let (Some(data), Some(max), Some(options)) = (data, max, options) else { return Ok(Value::Null); };
-    let answer = if op == "gzip/decompress" { codec::gzip_decode(&data, max) } else { codec::brotli_decode(&data, max) };
+    let answer = if op == "gzip/decompress" { codec::gzip_decode(&data, max) } else { brotli_decode(&data, max, op)? };
     codec_answer(answer, &options)
+}
+
+#[cfg(feature = "std")]
+fn brotli_compress(data: &[u8], quality: i32, window: i32, _op: &str) -> Result<Vec<u8>, OrbitalError> {
+    Ok(codec::brotli_compress_options(data, quality, window))
+}
+
+#[cfg(feature = "std")]
+fn brotli_decode(data: &[u8], max: usize, _op: &str) -> Result<codec::CodecResult, OrbitalError> {
+    Ok(codec::brotli_decode(data, max))
+}
+
+/// Brotli runs through the codec's `std::io` streams, which a bare-metal host does not have.
+#[cfg(not(feature = "std"))]
+fn brotli_compress(_data: &[u8], _quality: i32, _window: i32, op: &str) -> Result<Vec<u8>, OrbitalError> {
+    Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: brotli is not available on a bare-metal host"))))
+}
+
+#[cfg(not(feature = "std"))]
+fn brotli_decode(_data: &[u8], _max: usize, op: &str) -> Result<codec::CodecResult, OrbitalError> {
+    Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: brotli is not available on a bare-metal host"))))
 }
 
 pub struct GzipCompressOp;

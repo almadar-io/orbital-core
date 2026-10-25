@@ -4,10 +4,12 @@
 //! gates, downstream crates' wire tests and `orb verify --server`'s fixture pass
 //! all read through here, never a path of their own. Loaded once; a missing or
 //! malformed set panics naming the file (callers run where core is installed).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use crate::sync::OnceLock;
 
 /// One `fixtures/events-wire/<name>/` case: every `*.json` it carries, by file name.
 #[derive(Debug, Clone)]

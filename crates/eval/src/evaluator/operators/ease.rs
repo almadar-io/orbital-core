@@ -1,5 +1,7 @@
 //! G6 Game: easing operators (`ease/*`). Pure, total. Penner formulas pinned
 //! so JS and Rust paths match byte-for-byte.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;

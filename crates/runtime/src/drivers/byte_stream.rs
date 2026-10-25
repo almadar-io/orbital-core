@@ -1,6 +1,8 @@
 //! The byte stream a TCP protocol driver (redis, postgres) speaks over: a sans-I/O step machine whose every call
 //! returns a [`StreamEvent`], an `Ask` being answered through [`ByteStream::resume`]. [`PlainTcp`] drives the host's
 //! raw `os/tcp-connect`, `os/send`, `os/recv` and `os/close`; the TLS stream wraps the same asks (`tls::TlsStream`).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::codec;
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
@@ -256,7 +258,7 @@ mod tests {
     }
 
     fn sock_reply() -> DriverAnswer {
-        DriverAnswer::Os(Ok(Value::Object(ValueMap::from([("sock".to_string(), Value::Number(7.0))]))))
+        DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([("sock".to_string(), Value::Number(7.0))]))))
     }
 
     #[test]
@@ -273,7 +275,7 @@ mod tests {
         );
         assert_eq!(stream.resume(DriverAnswer::Os(Ok(Value::Null))), StreamEvent::Sent);
         assert_eq!(stream.recv(), os(OsOp::Recv, vec![Value::Number(7.0), Value::Number(16384.0)]));
-        let reply = Value::Object(ValueMap::from([
+        let reply = Value::Object(ValueMap::from_iter([
             ("data".to_string(), Value::String("K1BPTkcNCg==".to_string())),
             ("eof".to_string(), Value::Bool(false)),
         ]));
@@ -287,7 +289,7 @@ mod tests {
         let (mut stream, _) = PlainTcp::connect("redis://cache.internal", &egress());
         stream.resume(sock_reply());
         stream.recv();
-        let reply = Value::Object(ValueMap::from([
+        let reply = Value::Object(ValueMap::from_iter([
             ("data".to_string(), Value::String(String::new())),
             ("eof".to_string(), Value::Bool(true)),
         ]));

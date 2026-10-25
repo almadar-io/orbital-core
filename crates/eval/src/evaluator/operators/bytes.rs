@@ -1,4 +1,6 @@
 //! `bytes/*` operators. A bytes value is a standard padded base64 string at run time.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;

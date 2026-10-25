@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 use crate::ProcessEventResult;
 
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -146,7 +148,7 @@ pub struct DispatchObserver {
     pub completed: Box<dyn Fn(DispatchTraceRecord) + Send + Sync>,
 }
 
-thread_local! {
+orbital_core_base::kernel_local! {
     static ANSWER_DISPATCH: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 

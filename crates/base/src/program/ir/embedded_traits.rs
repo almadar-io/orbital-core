@@ -3,6 +3,8 @@
 //! A trait referenced via `@trait.X` by a sibling's `render-ui` only paints
 //! inside the sibling's frame, so it never owns a page slot on its own.
 //! Mirrors `collectEmbeddedTraits` in `@almadar/runtime/ui`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::ir::effects::OirEffect;
 use crate::ir::expr::OirExpr;

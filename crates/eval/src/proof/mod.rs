@@ -1,5 +1,7 @@
 //! The one symbolic reasoner over guard expressions: witness search for the verify planner, and the decision
 //! procedure that proves spec invariants (`@invariant`, `@holds`) for `orb validate`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 pub mod confirm;
 pub mod decide;

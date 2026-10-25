@@ -10,6 +10,8 @@
 //! matter which trait issues it — the un-bypassable twin of a call-site
 //! `filter:`, which sibling traits can skip simply by not declaring one
 //! (R-FETCH-SCOPE-SIBLING-BYPASS).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::effect_types::PersistOperation;
 use orbital_core_eval::evaluator::context::BindingContext;
@@ -468,14 +470,14 @@ mod tests {
     use orbital_core_base::value::ValueMap;
 
     fn row(id: &str, owner: &str) -> Value {
-        let mut m = ValueMap::new();
+        let mut m = ValueMap::default();
         m.insert("id".to_string(), Value::String(id.to_string()));
         m.insert("memberId".to_string(), Value::String(owner.to_string()));
         Value::Object(m)
     }
 
     fn viewer(id: &str) -> Value {
-        let mut m = ValueMap::new();
+        let mut m = ValueMap::default();
         m.insert("id".to_string(), Value::String(id.to_string()));
         Value::Object(m)
     }
@@ -498,7 +500,7 @@ mod tests {
     }
 
     fn row_with_status(id: &str, owner: &str, status: &str) -> Value {
-        let mut m = ValueMap::new();
+        let mut m = ValueMap::default();
         m.insert("id".to_string(), Value::String(id.to_string()));
         m.insert("memberId".to_string(), Value::String(owner.to_string()));
         m.insert("status".to_string(), Value::String(status.to_string()));

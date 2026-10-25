@@ -11,12 +11,14 @@
 //! The check rides the one evaluation entry: [`super::eval_expr`] records the argument slice of the operator
 //! call it dispatches, and the evaluation of an element of that slice is bound at its position. No operator
 //! implementation carries a check of its own.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::mem::{discriminant, Discriminant};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use orbital_core_base::sync::OnceLock;
 
 use super::get_operator;
 use crate::evaluator::operators::kind::OperatorKind;
@@ -364,7 +366,7 @@ struct Frame {
     bindings: CallBindings,
 }
 
-thread_local! {
+orbital_core_base::kernel_local! {
     static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -418,7 +420,7 @@ fn is_bare_variable(formal: Option<&OperatorTypeRef>) -> bool {
     }
 }
 
-thread_local! {
+orbital_core_base::kernel_local! {
     static DECLARED: RefCell<HashMap<String, std::rc::Rc<DeclaredShape>>> = RefCell::new(HashMap::new());
 }
 
@@ -969,8 +971,8 @@ mod tests {
         let same_shape = Value::Array(vec![pair(s("a"), num(1.0)), pair(s("b"), num(2.0))]);
         assert!(check_rt(op(), &[same_shape]).is_ok());
         let records = Value::Array(vec![
-            Value::Object(ValueMap::new()),
-            Value::Object(ValueMap::new()),
+            Value::Object(ValueMap::default()),
+            Value::Object(ValueMap::default()),
         ]);
         assert!(check_rt(op(), &[records]).is_ok());
     }
@@ -1006,7 +1008,7 @@ mod tests {
     fn op_tuple(action: &str, widths: usize) -> Value {
         let mut items = vec![s(action), s("Row"), s("id")];
         if widths > 3 {
-            items.push(Value::Object(ValueMap::new()));
+            items.push(Value::Object(ValueMap::default()));
         }
         Value::Array(items)
     }
@@ -1042,7 +1044,7 @@ mod tests {
                 Some(1),
             )
         };
-        let create = Value::Array(vec![s("create"), s("Row"), Value::Object(ValueMap::new())]);
+        let create = Value::Array(vec![s("create"), s("Row"), Value::Object(ValueMap::default())]);
         let rekey = Value::Array(vec![op_tuple("delete", 3), create]);
         let set = Value::Array(vec![op_tuple("update", 4)]);
         let groups = Value::Array(vec![Value::Array(vec![rekey]), Value::Array(vec![set])]);
@@ -1077,7 +1079,7 @@ mod tests {
 
     #[test]
     fn a_pair_of_unlike_types_is_indexed_by_array_nth() {
-        let entry = Value::Array(vec![s("a"), Value::Object(ValueMap::new())]);
+        let entry = Value::Array(vec![s("a"), Value::Object(ValueMap::default())]);
         assert_eq!(check_rt(nth(), &[entry, num(1.0)]).map_err(|e| e.to_string()), Ok(()));
         let entry = Value::Array(vec![s("a"), num(1.0)]);
         assert_eq!(check_rt(nth(), &[entry, num(1.0)]).map_err(|e| e.to_string()), Ok(()));
@@ -1192,7 +1194,7 @@ mod tests {
             json!([{ "name": "obj", "type": { "kind": "var", "name": "R", "bound": { "kind": "record" } } }]),
             Some(1),
         );
-        assert!(check(&op, &[Value::Object(ValueMap::new())]).is_ok());
+        assert!(check(&op, &[Value::Object(ValueMap::default())]).is_ok());
         assert_eq!(
             check(&op, &[Value::Array(vec![])]).unwrap_err().to_string(),
             "Evaluation error: Type mismatch: expected object, got array"

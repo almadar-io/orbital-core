@@ -6,6 +6,8 @@
 //! binding interpolation, scan or rewrite can reach inside it, and any JSON
 //! parser restores `x`. `@almadar/core`'s `encodeQuoteBody` produces the same
 //! bytes (shared fixture `fixtures/quote/cases.json`).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::schema::sexpr::SExpression;
 
@@ -166,7 +168,7 @@ fn extract_holes(
             // Canonical key order, so hole numbering matches the body bytes on every path.
             let mut keys: Vec<&String> = map.keys().collect();
             keys.sort();
-            let mut out = crate::schema::sexpr::SObject::new();
+            let mut out = crate::schema::sexpr::SObject::default();
             for key in keys {
                 out.insert(key.clone(), extract_holes(&map[key], holes)?);
             }

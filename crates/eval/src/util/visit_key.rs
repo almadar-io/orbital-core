@@ -1,5 +1,7 @@
 //! The one identity of a cascade delivery (Runtime Spec Clause 5.3): `(trait, event, from, payload, frame)`.
 //! Twin of `@almadar/core` `dispatchVisitKey`; both runtimes must agree on which deliveries are repeats.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::Serialize;
 use serde_json::{Map, Number, Value};

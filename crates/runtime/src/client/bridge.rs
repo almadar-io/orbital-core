@@ -5,6 +5,8 @@
 //! verification + embedded runs). Both produce the same `crate::EventResponse`
 //! built by the **canonical** `EventResponse::from_process_result` — no per-transport
 //! conversion logic.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::client::http::BridgeError;
 use crate::row_query::RowPage;
@@ -126,7 +128,7 @@ pub struct KernelBridge {
     entities: std::sync::Arc<crate::entity_source::InMemoryEntityCache>,
     /// Answers every ask a dispatch makes (`os/*`, `http`, credentials, rows) under the program's grants and
     /// egress, as `orbital-server` does; without one an ask fails as having no host.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
     host: Option<std::sync::Arc<crate::native_host::NativeHost>>,
 }
 
@@ -151,7 +153,7 @@ impl KernelBridge {
             kernel,
             schema,
             entities,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
             host: None,
         })
     }
@@ -159,7 +161,7 @@ impl KernelBridge {
     /// Answer this bridge's asks in process through a [`NativeHost`](crate::native_host::NativeHost) built over the
     /// bridge's own rows, with the registered program's egress and `os/` grants, so a standalone binary runs a
     /// program that touches the operating system without a server.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
     pub fn host_natively(
         mut self,
         transport: std::sync::Arc<dyn crate::http_service::Transport>,
@@ -186,7 +188,7 @@ impl KernelBridge {
         hosted: impl FnOnce() -> Result<crate::resumable::Progress<crate::resumable::DispatchOutcomes>, crate::resumable::DispatchError>,
         bare: impl FnOnce() -> Result<crate::resumable::DispatchOutcomes, crate::kernel::KernelError>,
     ) -> Result<crate::resumable::DispatchOutcomes, BridgeError> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
         if let Some(host) = &self.host {
             return hosted()
                 .and_then(|progress| crate::resumable::drive_concurrent(&self.kernel, progress, &|request| host.answer(request)))

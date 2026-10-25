@@ -1,6 +1,8 @@
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
+use core::net::IpAddr;
+use core::net::Ipv4Addr;
+use core::net::Ipv6Addr;
 use serde::Deserialize;
 use serde::Serialize;
 use crate::value::Value;

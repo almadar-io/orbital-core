@@ -1,6 +1,8 @@
 //! The cross-instance envelope: what a cross-unit `emit` becomes when its declared `listens` target runs in
 //! another deployment unit (`docs/Almadar_Sandbox.md` Contracts 1, EXEC-QUEUE-9). The kernel only builds
 //! envelopes and judges inbound ones; transport, routing and mailboxes belong to the host.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::codec::{hex, sha256};
 use crate::value::{Value, ValueMap};
@@ -99,7 +101,7 @@ pub struct DeliveryRefused {
 impl DeliveryRefused {
     /// `{ id, to: { instance, orbital, trait? }, event, reason, causalId }`.
     pub fn payload(&self) -> Value {
-        let mut to = ValueMap::new();
+        let mut to = ValueMap::default();
         to.insert(
             "instance".to_string(),
             Value::String(self.to.instance.clone()),
@@ -111,7 +113,7 @@ impl DeliveryRefused {
         if let Some(trait_name) = &self.to.trait_name {
             to.insert("trait".to_string(), Value::String(trait_name.clone()));
         }
-        let mut payload = ValueMap::new();
+        let mut payload = ValueMap::default();
         payload.insert("id".to_string(), Value::String(self.id.clone()));
         payload.insert("to".to_string(), Value::Object(to));
         payload.insert("event".to_string(), Value::String(self.event.clone()));

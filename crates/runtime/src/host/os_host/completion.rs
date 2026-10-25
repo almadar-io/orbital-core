@@ -1,6 +1,8 @@
 //! The completion of a keyed `os/` call that outlives its dispatch (EXEC-QUEUE-10). The host answers the ask
 //! `ServiceDeferred` at once and, when the operation ends, hands its outcome to an [`OsCompletionSink`].
 //! [`KernelCompletionSink`] turns that outcome into the event of the call's declared route and dispatches it.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::kernel::RuntimeKernel;
 pub use crate::resumable::completion_event;
@@ -10,7 +12,7 @@ use crate::resumable::{
 };
 use orbital_core_base::os::OsError;
 use orbital_core_base::value::Value;
-use parking_lot::{Condvar, Mutex};
+use orbital_core_base::sync::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -509,7 +511,7 @@ mod tests {
     }
 
     fn exited(code: f64) -> Value {
-        Value::Object(ValueMap::from([("code".to_string(), Value::Number(code))]))
+        Value::Object(ValueMap::from_iter([("code".to_string(), Value::Number(code))]))
     }
 
     #[test]

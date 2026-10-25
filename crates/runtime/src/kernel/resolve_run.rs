@@ -1,6 +1,8 @@
 //! A row-set reference resolved through a host-answered store (EXEC-RENDER-3): the same `@read`-checked
 //! resolve as [`RuntimeKernel::resolve_rows`], run as a resumable step so each read it makes is a request the
 //! host answers. The step replays with the recorded answers, as a dispatch does.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::*;
 use crate::resumable::{

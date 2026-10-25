@@ -2,6 +2,8 @@
 //! verdict on what was observed. A host that drives the program itself (the browser driver, a shell)
 //! asks the kernel for the plan and judges each observed step here, so the planner and the verdict
 //! exist once. The native walk (`verify::driver`) judges through the same [`judge`].
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::planner::{
     self, ArmConflict, GuardCase, PayloadCase, Precondition, ReplyRoute, Step, Variant,
@@ -423,7 +425,7 @@ impl PropositionObservation {
             entity_after: entry
                 .and_then(|e| e.entity_after.as_ref().map(|after| after.to_value()))
                 .unwrap_or(orbital_core_base::value::Value::Null),
-            payload: hop.payload.clone(),
+            payload: orbital_core_base::value::Value::clone(&hop.payload),
             unobserved: None,
         }
     }

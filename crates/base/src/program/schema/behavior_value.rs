@@ -6,6 +6,8 @@
 //! `{"behavior": "<spec>", "orbital": "<Pascal>", ...§8b import body}`, spelled
 //! `<spec>.orbitals.<Pascal>`. A local embed (`@trait.X`) is a different, string
 //! form and never a behavior value.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::value::Value;
 use crate::value::ValueMap;
@@ -119,7 +121,7 @@ impl TraitValueRef {
 
     /// The wire object `{"behavior", "trait"}`.
     pub fn to_value(&self) -> Value {
-        Value::Object(ValueMap::from([
+        Value::Object(ValueMap::from_iter([
             ("behavior".to_string(), Value::String(self.behavior.clone())),
             ("trait".to_string(), Value::String(self.trait_name.clone())),
         ]))
@@ -280,7 +282,7 @@ pub fn apply_orbital_overrides(value: &Value, overrides: &Value) -> Option<Value
         };
         let mut traits = match base.get("traits") {
             Some(Value::Object(old)) => old.clone(),
-            _ => ValueMap::new(),
+            _ => ValueMap::default(),
         };
         for (name, entry) in new_traits {
             let Value::Object(entry) = entry else {
@@ -288,7 +290,7 @@ pub fn apply_orbital_overrides(value: &Value, overrides: &Value) -> Option<Value
             };
             let prior = match traits.get(name) {
                 Some(Value::Object(old)) => old.clone(),
-                _ => ValueMap::new(),
+                _ => ValueMap::default(),
             };
             traits.insert(
                 name.clone(),
@@ -340,7 +342,7 @@ impl OrbitalValueRef {
 
     /// The wire object `{"behavior", "orbital"}`.
     pub fn to_value(&self) -> Value {
-        Value::Object(ValueMap::from([
+        Value::Object(ValueMap::from_iter([
             ("behavior".to_string(), Value::String(self.behavior.clone())),
             ("orbital".to_string(), Value::String(self.orbital.clone())),
         ]))
@@ -535,7 +537,7 @@ pub fn is_orbital_value(value: &Value) -> bool {
 /// valid specifier, `None` otherwise. Twin of `@almadar/core` `behaviorRef`.
 pub fn behavior_ref(specifier: &str) -> Option<Value> {
     is_behavior_specifier(specifier).then(|| {
-        Value::Object(ValueMap::from([(
+        Value::Object(ValueMap::from_iter([(
             "behavior".to_string(),
             Value::String(specifier.to_string()),
         )]))
@@ -579,7 +581,7 @@ pub fn apply_behavior_ref_overrides(value: &Value, overrides: &Value) -> Option<
     if over.len() != 1 || !is_bridge(bridge) {
         return None;
     }
-    Some(Value::Object(ValueMap::from([
+    Some(Value::Object(ValueMap::from_iter([
         ("behavior".to_string(), value_map.get("behavior")?.clone()),
         ("bridge".to_string(), bridge.clone()),
     ])))

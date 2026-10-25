@@ -1,6 +1,8 @@
 //! The native answerer of [`IoRequest::Os`]: one place every native host reaches through `answer_http`.
 //! Wasm hosts answer `Os` themselves, as they do `Random`. The grant check and handle ownership live in the
 //! family modules; this file routes an op to its family and owns the handle tables.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 pub mod args;
 pub mod completion;
@@ -14,7 +16,7 @@ pub use orbital_core_base::os_grants::*;
 use orbital_core_base::value::Value;
 use orbital_core_base::os::{family_of, OsError, OsErrorKind, OsFamily, OsOp};
 use crate::resumable::{CallSite, IoAnswer, IoRequest};
-use parking_lot::Mutex;
+use orbital_core_base::sync::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;

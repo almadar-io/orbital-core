@@ -1,4 +1,6 @@
 //! API-boundary event payload validation through the kernel's declared-shape checker.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::ir::types::{payload_field_shape, DeclaredShape, OirType};
 use orbital_core_base::schema::types::PayloadField;

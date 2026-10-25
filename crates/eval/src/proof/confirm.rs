@@ -1,6 +1,8 @@
 //! Replay a solver model through the real evaluator: a counterexample is reported only when every assumption
 //! evaluates truthy and the goal falsy on it, so a disagreement between the decision procedure and the evaluator can
 //! never surface as a violation.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::decide::{Model, ModelValue};
 use crate::evaluator::context::BindingContextBuilder;
@@ -28,9 +30,9 @@ fn insert_path(target: &mut ValueMap, path: &[&str], value: Value) {
     }
     let child = target
         .entry(head.to_string())
-        .or_insert_with(|| Value::Object(ValueMap::new()));
+        .or_insert_with(|| Value::Object(ValueMap::default()));
     if !matches!(child, Value::Object(_)) {
-        *child = Value::Object(ValueMap::new());
+        *child = Value::Object(ValueMap::default());
     }
     if let Value::Object(map) = child {
         insert_path(map, tail, value);

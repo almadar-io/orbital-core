@@ -6,6 +6,8 @@
 //! contracts are the [`ServiceRegistryData`] the language reader already loads.
 //!
 //! The compiler's static twin is `check_params` (I-13).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::language::registry::{EmbeddedServiceParam, ServiceRegistryData};
 use serde_json::Value;

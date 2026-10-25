@@ -1,5 +1,7 @@
 //! The cryptography of web push: RFC 8291 `aes128gcm` content encryption and the VAPID ES256 JWT (RFC 8292).
 //! Pure: the ephemeral key, the salt and the expiry are parameters.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use aes_gcm::aead::generic_array::GenericArray;
 use aes_gcm::aead::Aead;

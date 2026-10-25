@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 use crate::client_effect::ClientEffect;
 use crate::client_effect::NavigateOptions;
 use crate::oauth_ask::OAuthAsk;

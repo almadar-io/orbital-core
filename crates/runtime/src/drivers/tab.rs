@@ -1,6 +1,8 @@
 //! The `browser/tab-*` effects at the kernel: a [`TabDriver`] is a sans-I/O step machine on the shared driver
 //! loop. The request it runs was accepted by `orbital_core_base::tab_call::parse_tab_call`; every result is shaped
 //! here, and the host is asked only for raw tab and page operations ([`TabAsk`]).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::driver::{Driver, DriverAnswer, DriverAsk, DriverStep};
 use orbital_core_base::tab::{TabApply, TabAsk, TabCommand, TabFailure, TabFailureKind, TabField, TabImageFormat, TabOp};
@@ -17,7 +19,7 @@ fn key_value(key: Option<&str>) -> Value {
 }
 
 fn failure_payload(kind: TabFailureKind, message: &str, key: Option<&str>) -> Value {
-    Value::Object(ValueMap::from([
+    Value::Object(ValueMap::from_iter([
         ("error".to_string(), Value::String(message.to_string())),
         ("kind".to_string(), Value::String(kind.as_str().to_string())),
         ("key".to_string(), key_value(key)),
@@ -68,7 +70,7 @@ fn command(tab: i64, command: TabCommand) -> DriverStep {
 }
 
 fn element_ref(tab: i64, element_id: &str) -> Value {
-    Value::Object(ValueMap::from([
+    Value::Object(ValueMap::from_iter([
         ("tab".to_string(), Value::Number(tab as f64)),
         ("elementId".to_string(), Value::String(element_id.to_string())),
     ]))
@@ -152,7 +154,7 @@ fn tab_infos(reply: &Value, pattern: Option<&str>) -> Option<Vec<Value>> {
         if pattern.is_some_and(|p| !matches_pattern(p, &url)) {
             continue;
         }
-        tabs.push(Value::Object(ValueMap::from([
+        tabs.push(Value::Object(ValueMap::from_iter([
             ("tab".to_string(), Value::Number(tab as f64)),
             ("url".to_string(), Value::String(url)),
             ("title".to_string(), Value::String(title)),

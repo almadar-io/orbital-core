@@ -28,6 +28,8 @@
 //! drifting, `orbital-compiler` carries a test that asserts this table agrees
 //! with the baked registry — drift fails a build rather than waiting to be
 //! noticed in a corpus sweep.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::os::OsOp;
 

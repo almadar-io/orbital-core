@@ -9,6 +9,8 @@
 //! whenever the scheduler is non-empty — the client is otherwise
 //! event-reactive, so without this the `set`-effect loops
 //! (`gameflowTick every 33ms`) never advance.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::time::Duration;
 use web_time::Instant;

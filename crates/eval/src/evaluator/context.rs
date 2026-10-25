@@ -12,6 +12,8 @@
 //! - `@pages` - render-resolved app nav entries (kernel-populated)
 //!
 //! Nested paths are supported: `@entity.address.city`
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::error::{EvalError, OrbitalError};
 use orbital_core_base::shared_entity::SharedEntity;
@@ -467,6 +469,13 @@ impl BindingContext {
         }
     }
 
+    /// Whether the root of the binding `token` (`@user` of `@user.name`) holds a non-null value.
+    fn root_is_held(&self, token: &str) -> bool {
+        let path = token.strip_prefix('@').unwrap_or(token);
+        let root = path.split(['.', '[']).next().unwrap_or(path);
+        self.resolve(root).is_some_and(|v| !v.is_null())
+    }
+
     /// Resolve a binding reference string (starting with @)
     ///
     /// E.g., "@payload.data.email" -> resolve("payload.data.email")
@@ -652,6 +661,9 @@ impl BindingContext {
                     if !(s.starts_with("@config.") || s.starts_with("@trait.")) {
                         return match self.resolve_binding(s) {
                             Some(resolved) => Cow::Owned(resolved),
+                            // A held root missing only the path reads null, as an expression does; a root the kernel
+                            // has not populated keeps its token.
+                            None if self.root_is_held(s) => Cow::Owned(Value::Null),
                             None => Cow::Borrowed(value),
                         };
                     }
@@ -968,7 +980,7 @@ mod tests {
     use super::*;
 
     fn sample_payload() -> Value {
-        let mut data = ValueMap::new();
+        let mut data = ValueMap::default();
         data.insert(
             "email".to_string(),
             Value::String("test@example.com".to_string()),
@@ -976,15 +988,39 @@ mod tests {
         data.insert("name".to_string(), Value::String("Test User".to_string()));
         data.insert("connectionSlots".to_string(), Value::Number(10.0));
 
-        let mut payload = ValueMap::new();
+        let mut payload = ValueMap::default();
         payload.insert("data".to_string(), Value::Object(data));
         payload.insert("id".to_string(), Value::String("user-123".to_string()));
 
         Value::Object(payload)
     }
 
+    #[test]
+    fn a_render_binding_to_a_missing_field_of_a_held_root_resolves_to_null() {
+        let mut ctx = BindingContext::new();
+        let mut user = ValueMap::default();
+        user.insert("email".to_string(), Value::String("learner@kflow.test".to_string()));
+        ctx.set_user(Value::Object(user));
+        let mut card = ValueMap::default();
+        card.insert("name".to_string(), Value::String("@user.name".to_string()));
+        card.insert("email".to_string(), Value::String("@user.email".to_string()));
+        let resolved = ctx.resolve_value(&Value::Object(card)).into_owned();
+        let Value::Object(out) = resolved else { panic!("an object resolves to an object") };
+        assert_eq!(out.get("name"), Some(&Value::Null));
+        assert_eq!(out.get("email"), Some(&Value::String("learner@kflow.test".to_string())));
+    }
+
+    #[test]
+    fn control_a_binding_to_a_root_the_kernel_has_not_populated_stays_its_token() {
+        let ctx = BindingContext::new();
+        let token = Value::String("@pages".to_string());
+        assert_eq!(ctx.resolve_value(&token).into_owned(), token);
+        let theme = Value::String("@currentTheme.name".to_string());
+        assert_eq!(ctx.resolve_value(&theme).into_owned(), theme);
+    }
+
     fn sample_user() -> Value {
-        let mut user = ValueMap::new();
+        let mut user = ValueMap::default();
         user.insert(
             "id".to_string(),
             Value::String("current-user-id".to_string()),
@@ -1044,9 +1080,9 @@ mod tests {
     fn test_resolve_value_every_root() {
         // THE canonical value-walker resolves any `@payload.X` / `@entity.X` / `@config.X`
         // inside a tree — no per-binding special-casing. (Effects run through this.)
-        let mut entity = ValueMap::new();
+        let mut entity = ValueMap::default();
         entity.insert("title".to_string(), Value::String("Ticket #1".to_string()));
-        let mut config = ValueMap::new();
+        let mut config = ValueMap::default();
         config.insert("look".to_string(), Value::String("striped".to_string()));
         let ctx = BindingContextBuilder::new()
             .payload(sample_payload())
@@ -1054,7 +1090,7 @@ mod tests {
             .config(Value::Object(config))
             .build();
 
-        let content = Value::Object(ValueMap::from([
+        let content = Value::Object(ValueMap::from_iter([
             // a data table bound to the loaded collection — resolves to the payload value
             (
                 "rows".to_string(),
@@ -1082,8 +1118,8 @@ mod tests {
         );
         assert_eq!(obj["heading"], Value::String("Ticket #1".to_string()));
         assert_eq!(obj["look"], Value::String("striped".to_string()));
-        // Unresolvable binding is left literal (not crashed, not blanked).
-        assert_eq!(obj["missing"], Value::String("@payload.nope".to_string()));
+        // A missing field of a held root reads null, never its own source text.
+        assert_eq!(obj["missing"], Value::Null);
         assert_eq!(obj["literal"], Value::String("plain".to_string()));
     }
 
@@ -1091,7 +1127,7 @@ mod tests {
     /// (the dispatch viewer's), params included.
     #[test]
     fn resolve_value_evaluates_a_translate_call_with_the_contexts_catalog() {
-        let mut entity = ValueMap::new();
+        let mut entity = ValueMap::default();
         entity.insert("count".to_string(), Value::Number(3.0));
         let ctx = BindingContextBuilder::new()
             .entity(Value::Object(entity))
@@ -1104,13 +1140,13 @@ mod tests {
         let call = Value::Array(vec![
             Value::String("i18n/t".to_string()),
             Value::String("home:posts.count".to_string()),
-            Value::Object(ValueMap::from([(
+            Value::Object(ValueMap::from_iter([(
                 "n".to_string(),
                 Value::String("@entity.count".to_string()),
             )])),
         ]);
         let resolved = ctx
-            .resolve_value(&Value::Object(ValueMap::from([(
+            .resolve_value(&Value::Object(ValueMap::from_iter([(
                 "label".to_string(),
                 call,
             )])))
@@ -1143,12 +1179,12 @@ mod tests {
         // hop resolves `@config.theme` to the STRING `"@currentTheme"`; without a
         // second hop that scalar round-trips literal on the wire (the exact §155.1
         // gap: `box.data-theme` arriving as `"@currentTheme"`).
-        let mut config = ValueMap::new();
+        let mut config = ValueMap::default();
         config.insert(
             "theme".to_string(),
             Value::String("@currentTheme".to_string()),
         );
-        let mut user = ValueMap::new();
+        let mut user = ValueMap::default();
         user.insert("name".to_string(), Value::String("Ada".to_string()));
         let ctx = BindingContextBuilder::new()
             .config(Value::Object(config))
@@ -1167,18 +1203,18 @@ mod tests {
 
     #[test]
     fn test_resolve_value_runtime_data_is_never_evaluated_as_code() {
-        let mut payload = ValueMap::new();
+        let mut payload = ValueMap::default();
         payload.insert(
             "argv".to_string(),
             Value::Array(vec![Value::String("list".into()), Value::String("-c".into()), Value::String("x".into())]),
         );
         payload.insert("note".to_string(), Value::String("@user.email".into()));
-        let mut entity = ValueMap::new();
+        let mut entity = ValueMap::default();
         entity.insert(
             "form".to_string(),
             Value::Array(vec![Value::String("if".into()), Value::Bool(true), Value::String("a".into()), Value::String("b".into())]),
         );
-        let mut user = ValueMap::new();
+        let mut user = ValueMap::default();
         user.insert("email".to_string(), Value::String("ada@example.com".into()));
         let ctx = BindingContextBuilder::new()
             .payload(Value::Object(payload))
@@ -1204,7 +1240,7 @@ mod tests {
 
     #[test]
     fn test_resolve_value_config_trees_and_authored_forms_still_evaluate() {
-        let mut config = ValueMap::new();
+        let mut config = ValueMap::default();
         config.insert(
             "label".to_string(),
             Value::Array(vec![Value::String("if".into()), Value::Bool(true), Value::String("A".into()), Value::String("B".into())]),
@@ -1228,7 +1264,7 @@ mod tests {
         // A config default that forwards to itself (`x = @config.x`, an authoring
         // bug) must not recurse forever — the same occurs-check that already
         // guards structural (Object/Array) re-expansion covers the scalar hop.
-        let mut config = ValueMap::new();
+        let mut config = ValueMap::default();
         config.insert("x".to_string(), Value::String("@config.x".to_string()));
         let ctx = BindingContextBuilder::new()
             .config(Value::Object(config))
@@ -1247,7 +1283,7 @@ mod tests {
         // longer string ("Count: @entity.count") interpolates, while a pure-binding
         // string ("@entity.count") resolves to its typed value. Locks the runtime/
         // codegen parity for prefixed bindings (the "Count: @entity.count" bug).
-        let mut entity = ValueMap::new();
+        let mut entity = ValueMap::default();
         entity.insert("count".to_string(), Value::Number(0.0));
         entity.insert("name".to_string(), Value::String("Counter".to_string()));
         let ctx = BindingContextBuilder::new()
@@ -1368,7 +1404,7 @@ mod tests {
     fn test_entity_stores() {
         let connections = vec![
             {
-                let mut c = ValueMap::new();
+                let mut c = ValueMap::default();
                 c.insert(
                     "requesterId".to_string(),
                     Value::String("user-1".to_string()),
@@ -1377,7 +1413,7 @@ mod tests {
                 Value::Object(c)
             },
             {
-                let mut c = ValueMap::new();
+                let mut c = ValueMap::default();
                 c.insert(
                     "requesterId".to_string(),
                     Value::String("user-1".to_string()),
@@ -1404,9 +1440,9 @@ mod tests {
     /// leave the self-token literal instead of recursing forever.
     #[test]
     fn resolve_value_self_referential_structure_terminates() {
-        let mut entry = ValueMap::new();
+        let mut entry = ValueMap::default();
         entry.insert("action".to_string(), Value::String("restarted".to_string()));
-        let mut entity = ValueMap::new();
+        let mut entity = ValueMap::default();
         entity.insert(
             "audit".to_string(),
             Value::Array(vec![
@@ -1437,7 +1473,7 @@ mod tests {
     /// resolve normally.
     #[test]
     fn resolve_value_mutual_cycle_terminates_and_siblings_still_resolve() {
-        let mut entity = ValueMap::new();
+        let mut entity = ValueMap::default();
         entity.insert(
             "a".to_string(),
             Value::Array(vec![Value::String("@entity.b".to_string())]),
@@ -1479,7 +1515,7 @@ mod tests {
     /// (`isSExpression` ~533-543) does on the JS side.
     #[test]
     fn render_ui_operator_forms_are_evaluated() {
-        let mut entity = ValueMap::new();
+        let mut entity = ValueMap::default();
         entity.insert("status".to_string(), Value::String("draft".to_string()));
         let ctx = BindingContextBuilder::new()
             .entity(Value::Object(entity))
@@ -1535,7 +1571,7 @@ mod tests {
         Value::Array(
             (0..n)
                 .map(|i| {
-                    let mut row = ValueMap::new();
+                    let mut row = ValueMap::default();
                     row.insert("n".to_string(), Value::Number(i as f64));
                     row.insert("label".to_string(), Value::String(format!("row-{i}")));
                     Value::Object(row)

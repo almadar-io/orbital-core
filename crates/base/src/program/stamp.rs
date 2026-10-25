@@ -17,6 +17,8 @@
 //! DERIVED id rooted in the embedding parent (`derive_id`) instead of an
 //! entropy mint, so the embed edge is recoverable from the id and re-derivation
 //! never churns.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::identity::{
     derive_id, derive_node_id, IdKind, IdentityLedger, LedgerEntry, LedgerOwner,

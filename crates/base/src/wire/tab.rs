@@ -2,6 +2,8 @@
 //! ([`TabOp`]), the raw asks the kernel makes of a browser host to perform them ([`TabAsk`], [`TabCommand`])
 //! and how a host fails one ([`TabFailure`]). The kernel validates every request and shapes every result; a host
 //! only opens, closes and lists tabs and runs the raw commands in a page, and holds no decision.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 

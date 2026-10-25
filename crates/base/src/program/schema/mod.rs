@@ -36,6 +36,7 @@ pub fn parse_schema(json: &str) -> Result<OrbitalSchema> {
 }
 
 /// Parse an OrbitalSchema from a file path
+#[cfg(feature = "std")]
 pub fn parse_schema_file(path: &std::path::Path) -> Result<OrbitalSchema> {
     let content = std::fs::read_to_string(path)?;
     parse_schema(&content)

@@ -10,6 +10,8 @@
 //! The async (threaded) send path stays in `DesktopApp` (it drives the egui frame
 //! loop); the synchronous [`ClientCore::drive_blocking`] path serves `GameApp` and
 //! the Layer-2 verifier.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::value::ValueMap;
 use crate::client::client_kernel::ClientKernel;
@@ -130,7 +132,7 @@ impl ClientCore {
             current_trait_name,
             current_state: "browsing".to_string(),
             ui_slots: HashMap::new(),
-            trait_content: ValueMap::new(),
+            trait_content: ValueMap::default(),
             form_data: HashMap::new(),
             entities: HashMap::new(),
             status_message: None,
@@ -138,7 +140,7 @@ impl ClientCore {
             editing_entity: None,
             embedded,
             current_page,
-            route_params: ValueMap::new(),
+            route_params: ValueMap::default(),
             page_entered: false,
             page_history: Vec::new(),
             await_rows: Vec::new(),
@@ -1001,7 +1003,7 @@ fn route_params(pattern: &str, path: &str) -> Option<ValueMap> {
     if route.len() != actual.len() {
         return None;
     }
-    let mut params = ValueMap::new();
+    let mut params = ValueMap::default();
     for (r, a) in route.iter().zip(&actual) {
         match r.strip_prefix(':') {
             Some(name) => {
@@ -1081,7 +1083,7 @@ mod tests {
             "the client-kernel path never populates server_bridge"
         );
 
-        let mut payload = ValueMap::new();
+        let mut payload = ValueMap::default();
         payload.insert("title".to_string(), Value::String("Hello".to_string()));
         core.drive_blocking("SHOW", Some("RenderTrait"), Value::Object(payload));
 
@@ -1619,7 +1621,7 @@ mod tests {
         core.mount_page_blocking();
         assert_eq!(main_prop(&core, "title"), ["42"]);
 
-        let mut params = ValueMap::new();
+        let mut params = ValueMap::default();
         params.insert("id".to_string(), Value::String("7".into()));
         params.insert("tab".to_string(), Value::String("history".into()));
         core.navigate_to("/notes/42", Some(&Value::Object(params)));

@@ -3,6 +3,8 @@
 //! must be a key of `en.orb`. Uses `syn` (dev-only) to parse the schema
 //! source directly rather than duplicating field lists by hand — the schema
 //! stays the single owner of the `.orb` shape.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::tables;
 use std::collections::BTreeSet;
@@ -169,8 +171,8 @@ fn is_notation(key: &str) -> bool {
 }
 
 fn notation_keys() -> &'static std::collections::BTreeSet<String> {
-    static KEYS: std::sync::OnceLock<std::collections::BTreeSet<String>> =
-        std::sync::OnceLock::new();
+    static KEYS: crate::sync::OnceLock<std::collections::BTreeSet<String>> =
+        crate::sync::OnceLock::new();
     KEYS.get_or_init(|| {
         #[derive(serde::Deserialize)]
         struct Notation {

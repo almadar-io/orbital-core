@@ -5,6 +5,8 @@
 //! child context, so a `prob/sample` loop and a lambda body advance one stream. Without `prob/seed` the stream
 //! starts from the dispatch's one `now` stamp (`BindingContext::now_millis`): a dispatch replays identically, and
 //! the pure evaluator takes no ask to the host.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
@@ -169,7 +171,7 @@ fn run_model(expr: &SExpression, ctx: &mut BindingContext) -> EvalResult {
                 if let Some(field) = target.strip_prefix("@entity.") {
                     let mut entity = match ctx.entity.as_value() {
                         Value::Object(map) => map.clone(),
-                        _ => ValueMap::new(),
+                        _ => ValueMap::default(),
                     };
                     entity.insert(field.to_string(), value);
                     ctx.set_entity(Value::Object(entity));
@@ -213,7 +215,7 @@ fn rejection_samples(args: &[SExpression], ctx: &BindingContext) -> Result<(Vec<
         let mut sample = ctx.child();
         sample.set_entity(match ctx.entity.as_value() {
             Value::Object(map) => Value::Object(map.clone()),
-            _ => Value::Object(ValueMap::new()),
+            _ => Value::Object(ValueMap::default()),
         });
         ctx.prob().take_rejected();
         run_model(&args[0], &mut sample)?;
@@ -244,7 +246,7 @@ prob_op!(ProbInferOp, "prob/infer", 4, |args, ctx| {
         let variance = samples.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count;
         (mean, variance, count / n)
     };
-    let mut out = ValueMap::new();
+    let mut out = ValueMap::default();
     out.insert("mean".to_string(), Value::Number(mean));
     out.insert("variance".to_string(), Value::Number(variance));
     out.insert(
@@ -281,7 +283,7 @@ prob_op!(ProbHistogramOp, "prob/histogram", 2, |args, ctx| {
     if bins < 1.0 || bins.fract() != 0.0 {
         return Ok(Value::Null);
     }
-    let mut out = ValueMap::new();
+    let mut out = ValueMap::default();
     if samples.is_empty() {
         out.insert("binEdges".to_string(), Value::Array(vec![]));
         out.insert("counts".to_string(), Value::Array(vec![]));

@@ -31,6 +31,8 @@
 //! still owns the backgrounding — it now calls `dispatch` from its worker thread
 //! instead of `ServerBridge::send_event_with_options`, so posting still never
 //! blocks the egui frame loop.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::client::bridge::{seed_into, ServerBridge};
 use crate::client::http::BridgeError;
@@ -542,7 +544,7 @@ mod tests {
     use super::*;
     use crate::entity_source::EntitySource;
     use {orbital_core_base::bus_event::{BusEventSource, EmittedEvent}, crate::effects::response::EventResponse};
-    use parking_lot::Mutex;
+    use orbital_core_base::sync::Mutex;
     use std::collections::HashMap;
 
     /// Riya (2026-09-24): a mount's seeder INIT must not reach a sibling before
@@ -822,7 +824,7 @@ mod tests {
 
     #[test]
     fn client_kernel_persisted_awaited_posts_leg_and_folds() {
-        let mut row = ValueMap::new();
+        let mut row = ValueMap::default();
         row.insert("id".to_string(), Value::String("n-1".to_string()));
         row.insert(
             "title".to_string(),

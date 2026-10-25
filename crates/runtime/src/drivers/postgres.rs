@@ -4,6 +4,8 @@
 //! protocol (Parse, Bind, Describe, Execute, Sync) with every parameter and result in text format, then Terminate and
 //! close. Every ask is a journaled `os/*`, `Secret`, `Random` or clock ask, so a replay of the journal is a replay of
 //! the call. The statement passes `sql_guard` (the one read-only guard) before anything connects.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::codec;
 use orbital_core_base::emit_contract::POSTGRES_ARRAY_DEPTH;
@@ -516,7 +518,7 @@ pub fn cell_value(oid: u32, cell: Option<&[u8]>) -> Result<Value, ValueProblem> 
 pub fn result_value(columns: &[Column], rows: &[Vec<Option<Vec<u8>>>], tag: Option<&str>) -> Result<Value, ValueProblem> {
     let mut out_rows = Vec::with_capacity(rows.len());
     for row in rows {
-        let mut object = ValueMap::new();
+        let mut object = ValueMap::default();
         for (column, cell) in columns.iter().zip(row) {
             object.insert(column.name.clone(), cell_value(column.type_oid, cell.as_deref())?);
         }
@@ -525,9 +527,9 @@ pub fn result_value(columns: &[Column], rows: &[Vec<Option<Vec<u8>>>], tag: Opti
     let counted = tag.and_then(|t| t.rsplit(' ').next()).and_then(|n| n.parse::<f64>().ok()).unwrap_or(rows.len() as f64);
     let columns_value = columns
         .iter()
-        .map(|c| Value::Object(ValueMap::from([("name".to_string(), Value::String(c.name.clone())), ("typeOid".to_string(), Value::Number(f64::from(c.type_oid)))])))
+        .map(|c| Value::Object(ValueMap::from_iter([("name".to_string(), Value::String(c.name.clone())), ("typeOid".to_string(), Value::Number(f64::from(c.type_oid)))])))
         .collect();
-    Ok(Value::Object(ValueMap::from([
+    Ok(Value::Object(ValueMap::from_iter([
         ("rows".to_string(), Value::Array(out_rows)),
         ("rowCount".to_string(), Value::Number(counted)),
         ("columns".to_string(), Value::Array(columns_value)),
@@ -1198,7 +1200,7 @@ mod tests {
             let answer = match &ask {
                 DriverAsk::Secret { .. } => DriverAnswer::Secret(Ok(password.map(str::to_string))),
                 DriverAsk::Random { bytes } => DriverAnswer::Random(Ok(vec![7u8; *bytes as usize])),
-                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::Object(ValueMap::from([("sock".to_string(), Value::Number(5.0))])))),
+                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))])))),
                 DriverAsk::Os { op: OsOp::Send, args, .. } => {
                     let Value::String(b64) = &args[1] else { panic!("send data") };
                     sent.push(base64_decode(b64).expect("base64"));
@@ -1206,12 +1208,12 @@ mod tests {
                 }
                 DriverAsk::Os { op: OsOp::Recv, .. } => {
                     let Some(reply) = replies.next() else { return (asks, step, sent) };
-                    DriverAnswer::Os(Ok(Value::Object(ValueMap::from([
+                    DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([
                         ("data".to_string(), text(&base64_encode(&reply(&sent)))),
                         ("eof".to_string(), Value::Bool(false)),
                     ]))))
                 }
-                DriverAsk::Os { op: OsOp::Close, .. } => DriverAnswer::Os(Ok(Value::Object(ValueMap::new()))),
+                DriverAsk::Os { op: OsOp::Close, .. } => DriverAnswer::Os(Ok(Value::Object(ValueMap::default()))),
                 DriverAsk::Clock => DriverAnswer::Clock(Ok(1_760_000_000_000)),
                 other => panic!("unexpected ask {other:?}"),
             };
@@ -1280,14 +1282,14 @@ mod tests {
         let result = done_ok(&step);
         assert_eq!(field(result, "rowCount"), &Value::Number(1.0));
         let row = field(result, "rows");
-        assert_eq!(row, &Value::Array(vec![Value::Object(ValueMap::from([
+        assert_eq!(row, &Value::Array(vec![Value::Object(ValueMap::from_iter([
             ("n".to_string(), Value::Number(42.0)),
             ("t".to_string(), Value::Null),
             ("z".to_string(), Value::Null),
         ]))]));
         assert_eq!(
             field(result, "columns"),
-            &Value::Array(vec!["n", "t", "z"].into_iter().zip([23.0, 25.0, 23.0]).map(|(n, o)| Value::Object(ValueMap::from([
+            &Value::Array(vec!["n", "t", "z"].into_iter().zip([23.0, 25.0, 23.0]).map(|(n, o)| Value::Object(ValueMap::from_iter([
                 ("name".to_string(), text(n)),
                 ("typeOid".to_string(), Value::Number(o)),
             ]))).collect())
@@ -1507,7 +1509,7 @@ mod tests {
         for _ in 0..8 {
             let DriverStep::Ask(ask) = step.clone() else { break };
             let answer = match ask {
-                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::Object(ValueMap::from([("sock".to_string(), Value::Number(5.0))])))),
+                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))])))),
                 DriverAsk::Os { op: OsOp::Recv, .. } => DriverAnswer::Os(Err(OsError::new(OsErrorKind::Timeout, "os/recv: timed out"))),
                 DriverAsk::Os { op: OsOp::Close, .. } => {
                     closed = true;

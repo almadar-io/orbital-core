@@ -14,6 +14,8 @@
 //! checks known structural members recursively. Schemaless records and opaque
 //! recursive references remain undecidable; remaining leniency is enumerated
 //! in `mod compat_tests`, not implicit.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::ir::types::OirType;
 

@@ -4,6 +4,8 @@
 //! own `stateMachine.events[]` entry as `input: true`. Hosts gate their input
 //! channel with this list and clients build tool lists from it. Mirrors
 //! `@almadar/core` `src/access/externalInputs.ts`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::schema::types::{EventDefinition, PayloadField, TraitReference};
 use crate::schema::types::OrbitalSchema;

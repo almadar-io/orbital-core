@@ -7,33 +7,59 @@ repository = "https://github.com/almadar-io/orbital-core"
 description = "orbital-core layer: base"
 
 [dependencies]
-indexmap = { version = "2", features = ["serde"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
+orbital-core-std = { path = "../std" }
+indexmap = { version = "2", default-features = false, features = ["serde"] }
+foldhash = { version = "0.2", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc", "preserve_order"] }
 serde_path_to_error = "0.1"
-thiserror = "1.0"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-chrono = { version = "0.4", features = ["serde"] }
-parking_lot = "0.12"
-semver = "1"
-sha2 = "0.10"
-md-5 = "0.10"
-flate2 = "1.1"
-brotli = "9"
+thiserror = { version = "2", default-features = false }
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+chrono = { version = "0.4", default-features = false, features = ["serde", "alloc"] }
+parking_lot = { version = "0.12", optional = true }
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "once", "lazy"] }
+semver = { version = "1", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+md-5 = { version = "0.10", default-features = false }
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+crc32fast = { version = "1.5", default-features = false }
+brotli = { version = "9", default-features = false }
 scrypt = { version = "0.11", default-features = false }
-base64 = "0.22"
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 tokio = { version = "1.0", features = ["full"], optional = true }
 p256 = { version = "0.13", default-features = false, features = ["alloc", "ecdh", "ecdsa", "pem"] }
 rsa = { version = "0.9", default-features = false, features = ["pem", "sha2"] }
 ts-rs = { version = "12.0.1", optional = true }
-url = "2"
+url = { version = "2", default-features = false }
 
 [features]
-ts-export = ["dep:ts-rs"]
-async = ["dep:tokio"]
+default = ["std"]
+std = [
+    "indexmap/std",
+    "serde/std",
+    "serde_json/std",
+    "thiserror/std",
+    "tracing/std",
+    "dep:tracing-subscriber",
+    "chrono/std",
+    "chrono/clock",
+    "chrono/oldtime",
+    "chrono/wasmbind",
+    "dep:parking_lot",
+    "semver/std",
+    "sha2/std",
+    "md-5/std",
+    "crc32fast/std",
+    "brotli/std",
+    "base64/std",
+    "url/std",
+]
+ts-export = ["std", "dep:ts-rs"]
+async = ["std", "dep:tokio"]
 
 [dev-dependencies]
+flate2 = "1.1"
 tempfile = "3.10"
 tokio = { version = "1.0", features = ["full", "rt", "macros"] }
 syn = { version = "2", features = ["full"] }

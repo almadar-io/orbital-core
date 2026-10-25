@@ -1,4 +1,6 @@
 //! The path memory of one dispatch (Runtime Spec Clause 5.5); twin of `almadar-runtime` `DispatchMemory`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::effects::response::DispatchLog;
 use orbital_core_base::value::Value;

@@ -1,4 +1,6 @@
 //! Runtime kernel — canonical runtime lifecycle for Orbital applications.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::dispatch_memory::{DispatchMemory, DispatchView};
 use super::embed_index::EmbedIndex;
@@ -60,7 +62,7 @@ use orbital_core_eval::evaluator::Evaluator;
 use orbital_core_eval::state_machine::manager::StateMachineManager;
 use orbital_core_eval::state_machine::types::{EventPayload, TraitState};
 use orbital_core_eval::util::visit_key::DispatchVisits;
-use parking_lot::RwLock;
+use orbital_core_base::sync::RwLock;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -128,7 +130,7 @@ struct RepaintJob {
     /// Walking through a child that was not repainted: its children keep the payload they were last composed with.
     keep_composed: bool,
     /// The children this walk has repainted, shared by every job of one walk.
-    visited: Arc<parking_lot::Mutex<HashSet<String>>>,
+    visited: Arc<orbital_core_base::sync::Mutex<HashSet<String>>>,
 }
 
 /// A trait never receives a routed event before its own lifecycle event
@@ -210,7 +212,7 @@ fn take_awaiting_sidecar(payload: Value) -> (Value, Option<HashSet<String>>) {
 fn with_awaiting_sidecar(payload: Value, awaiting: &HashSet<String>) -> Value {
     let mut map = match payload {
         Value::Object(map) => map,
-        _ => ValueMap::new(),
+        _ => ValueMap::default(),
     };
     let mut list: Vec<&String> = awaiting.iter().collect();
     list.sort();
@@ -261,7 +263,7 @@ pub struct RuntimeKernel {
     current_user: Arc<RwLock<Value>>,
     /// The viewer a request's thread dispatches as (set by [`ViewerGuard`]); a dispatch captures it when it starts, so
     /// requests served at the same time keep their own `@user`.
-    viewer_by_thread: Arc<RwLock<HashMap<std::thread::ThreadId, Arc<Value>>>>,
+    viewer_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<Value>>>>,
     /// The host runs an emit's listeners whenever it marks the emit `dispatched`, so a fold runs only the client-only ones.
     host_fans_out: std::sync::atomic::AtomicBool,
     /// Record each step's `@entity` after its effects ([`DeliveryEntry::entity_after`]); off unless a verifier asks.
@@ -318,7 +320,7 @@ pub struct RuntimeKernel {
     /// A store-bound entity's declared `instances`, written through its driver by the next resumable dispatch
     /// before its first step (EXEC-STORE-4): one create batch per entity.
     pub(crate) store_seeds:
-        Arc<parking_lot::Mutex<std::collections::VecDeque<crate::resumable::StoreAsk>>>,
+        Arc<orbital_core_base::sync::Mutex<std::collections::VecDeque<crate::resumable::StoreAsk>>>,
     /// Frame slot -> the id of the row a carried row named: that trait reads that row under its frame,
     /// not the dispatch's address (G-CROSS-256).
     carried_rows: Arc<RwLock<HashMap<(String, String), String>>>,
@@ -501,7 +503,7 @@ struct EntitySourceHandler {
     entity_policies: Arc<RwLock<EntityAccessTable>>,
     entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
     /// Entity types the kernel has written since the render store last heard (EXEC-RENDER-3).
-    written: Arc<parking_lot::Mutex<BTreeSet<String>>>,
+    written: Arc<orbital_core_base::sync::Mutex<BTreeSet<String>>>,
 }
 
 impl EntitySourceHandler {
@@ -1007,8 +1009,8 @@ fn entropy_from(io: Arc<IoPort>) -> EntropySource {
 
 /// Holds a request thread's viewer; dropping it forgets the viewer.
 pub struct ViewerGuard {
-    slot: Arc<RwLock<HashMap<std::thread::ThreadId, Arc<Value>>>>,
-    thread: std::thread::ThreadId,
+    slot: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<Value>>>>,
+    thread: orbital_core_base::sync::ThreadKey,
     outer: Option<Arc<Value>>,
 }
 
@@ -1155,11 +1157,11 @@ impl RuntimeKernel {
             step_site: Arc::new(RwLock::new(None)),
             step_frame: Arc::new(RwLock::new(None)),
             capture_children: Arc::new(RwLock::new(HashMap::new())),
-            composed_callsite: Arc::new(RwLock::new(ValueMap::new())),
+            composed_callsite: Arc::new(RwLock::new(ValueMap::default())),
             frames: Arc::new(RwLock::new(HashMap::new())),
             carried_rows: Arc::new(RwLock::new(HashMap::new())),
             suspended_commit: Arc::new(RwLock::new(None)),
-            store_seeds: Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new())),
+            store_seeds: Arc::new(orbital_core_base::sync::Mutex::new(std::collections::VecDeque::new())),
             theme_presets: Arc::new(RwLock::new(ThemePresets::new())),
             theme_mode: Arc::new(RwLock::new(None)),
             nav_pages: Arc::new(RwLock::new(Value::Array(Vec::new()))),
@@ -1297,6 +1299,18 @@ impl RuntimeKernel {
             .merge(ThemePresets::from_definitions(
                 schema.theme_definitions.iter().flatten(),
             ));
+        if let Some(sites) = schema.metadata.as_ref().and_then(|m| m.operator_sites.as_ref()) {
+            orbital_core_base::runs_on::install_operator_sites(sites).map_err(KernelError::Internal)?;
+        }
+        match schema.metadata.as_ref().and_then(|m| m.dispatch_facts.clone()) {
+            Some(facts) => orbital_core_base::language::registry::install_dispatch_facts(facts).map_err(KernelError::Internal)?,
+            None if orbital_core_base::language::registry::dispatch_facts().is_none() => {
+                return Err(KernelError::Internal(format!(
+                    "schema '{schema_name}': no operator table is installed and the program carries no `_metadata.dispatchFacts`; compile it as a client program"
+                )));
+            }
+            None => {}
+        }
 
         // A bare `ALMADAR_PERSONA` (id/role) resolves against this app's declared
         // roster — its [identity] entity's seeded rows — which construction could
@@ -1724,7 +1738,7 @@ impl RuntimeKernel {
         payload: Value,
     ) -> Result<ProcessEventResult, KernelError> {
         let _lane = self.lane.enter(None)?;
-        self.process_event_in_dispatch(trait_name, entity_id, event_name, payload, None, false)
+        self.process_event_in_dispatch(trait_name, entity_id, event_name, Arc::new(payload), None, false)
             .map_err(Fault::into_kernel)
     }
 
@@ -1735,7 +1749,7 @@ impl RuntimeKernel {
         trait_name: &str,
         entity_id: Option<&str>,
         event_name: &str,
-        payload: Value,
+        payload: Arc<Value>,
         view: Option<&DispatchView>,
         follow_on: bool,
     ) -> Result<ProcessEventResult, Fault> {
@@ -1752,7 +1766,7 @@ impl RuntimeKernel {
         trait_name: &str,
         entity_id: Option<&str>,
         event_name: &str,
-        payload: Value,
+        payload: Arc<Value>,
         view: Option<&DispatchView>,
         follow_on: bool,
         callsite: Option<&Value>,
@@ -1791,9 +1805,9 @@ impl RuntimeKernel {
 
         // `@payload` is this event's own payload; an absent one reads `{}` (drift D-2).
         let effective_payload = if payload.is_null() {
-            Value::Object(ValueMap::new())
+            Value::Object(ValueMap::default())
         } else {
-            payload.clone()
+            Value::clone(&payload)
         };
 
         let ctx = BindingContextBuilder::new()
@@ -1840,7 +1854,7 @@ impl RuntimeKernel {
 
         let event_payload = EventPayload {
             event: event_name.to_string(),
-            data: payload.clone(),
+            data: Value::clone(&payload),
             source: Some(entity_id.to_string()),
             timestamp: orbital_core_base::time_util::now_millis(),
         };
@@ -2273,7 +2287,7 @@ impl RuntimeKernel {
                     .linked_entity
                     .clone()
                     .unwrap_or_else(|| trait_name.to_string()),
-                payload: Value::Null,
+                payload: Arc::new(Value::Null),
                 entry: None,
                 fired_arm: None,
                 transition_index: None,
@@ -2290,7 +2304,7 @@ impl RuntimeKernel {
         }
 
         // A tick has no payload (drift D-2).
-        let tick_payload = Value::Object(ValueMap::new());
+        let tick_payload = Value::Object(ValueMap::default());
 
         let ctx = BindingContextBuilder::new()
             .payload(tick_payload)
@@ -2331,7 +2345,7 @@ impl RuntimeKernel {
                     effect_results: Vec::new(),
                     entity_data,
                     linked_entity: entity_type.to_string(),
-                    payload: Value::Null,
+                    payload: Arc::new(Value::Null),
                     entry: None,
                     fired_arm: None,
                     transition_index: None,
@@ -2387,7 +2401,7 @@ impl RuntimeKernel {
             effect_results,
             entity_data: effective_entity,
             linked_entity: entity_type.to_string(),
-            payload: Value::Null,
+            payload: Arc::new(Value::Null),
             entry: None,
             fired_arm: None,
             transition_index: None,
@@ -2521,7 +2535,7 @@ impl RuntimeKernel {
                 map.insert("_awaitingInit".to_string(), awaiting.clone());
                 Some(Value::Object(map))
             }
-            Value::Null => Some(Value::Object(ValueMap::from([(
+            Value::Null => Some(Value::Object(ValueMap::from_iter([(
                 "_awaitingInit".to_string(),
                 awaiting.clone(),
             )]))),
@@ -2569,7 +2583,7 @@ impl RuntimeKernel {
                         seed_row.clone()
                     };
                     let entity_by_trait = (!replayed_from.is_null())
-                        .then(|| ValueMap::from([(trait_name.to_string(), replayed_from)]));
+                        .then(|| ValueMap::from_iter([(trait_name.to_string(), replayed_from)]));
                     vec![EventRequest {
                         event: event.to_string(),
                         tick: tick.map(str::to_string),
@@ -2609,7 +2623,7 @@ impl RuntimeKernel {
                         legs.push(EventRequest {
                             event: delivered,
                             tick: tick.map(str::to_string),
-                            payload: with_awaiting(r.payload.clone()),
+                            payload: with_awaiting(Value::clone(&r.payload)),
                             entity_id: raw_entity_id.map(str::to_string),
                             target_trait: Some(t.clone()),
                             client_id: client_id.map(|s| s.to_string()),
@@ -2631,7 +2645,7 @@ impl RuntimeKernel {
                                     .collect()
                             }),
                             entity_by_trait: (!entry.entity_before.is_null()).then(|| {
-                                ValueMap::from([(t.clone(), entry.entity_before.to_value())])
+                                ValueMap::from_iter([(t.clone(), entry.entity_before.to_value())])
                             }),
                             delivery,
                             dispatch_log,
@@ -2672,7 +2686,7 @@ impl RuntimeKernel {
                         client_id: client_id.map(str::to_string),
                         source_trait: Some(trait_name.to_string()),
                         entity_by_trait: shared_frame
-                            .map(|row| ValueMap::from([(trait_name.to_string(), row)])),
+                            .map(|row| ValueMap::from_iter([(trait_name.to_string(), row)])),
                         ..Default::default()
                     },
                     awaiting: if tick.is_some() {
@@ -2755,7 +2769,7 @@ impl RuntimeKernel {
                 let event = result.event.clone()?;
                 Some(EventRequest {
                     event: event.clone(),
-                    payload: (!result.payload.is_null()).then(|| result.payload.clone()),
+                    payload: (!result.payload.is_null()).then(|| Value::clone(&result.payload)),
                     target_trait: Some(trait_name.clone()),
                     source_trait: Some(emitter.unwrap_or(trait_name).to_string()),
                     client_id: client_id.map(str::to_string),
@@ -2765,7 +2779,7 @@ impl RuntimeKernel {
                         event: Some(event),
                     }]),
                     entity_by_trait: (!entry.entity_before.is_null()).then(|| {
-                        ValueMap::from([(trait_name.clone(), entry.entity_before.to_value())])
+                        ValueMap::from_iter([(trait_name.clone(), entry.entity_before.to_value())])
                     }),
                     delivery,
                     dispatch_log: dispatch_log_of(entry),
@@ -2913,7 +2927,7 @@ impl RuntimeKernel {
                 event: None,
             }]),
             entity_by_trait: (!pre_tick_row.is_null())
-                .then(|| ValueMap::from([(trait_name.to_string(), pre_tick_row.clone())])),
+                .then(|| ValueMap::from_iter([(trait_name.to_string(), pre_tick_row.clone())])),
             ..Default::default()
         });
         if !outcome.executed {
@@ -3496,11 +3510,11 @@ impl RuntimeKernel {
         let authored: Vec<&SExpression> =
             result.effect_runs.iter().map(|run| &run.effect).collect();
         let composed = super::callsite_capture::embedded_by_effects(&def, &authored);
-        let payload = match &result.payload {
-            Value::Null => Value::Object(ValueMap::new()),
+        let payload = match result.payload.as_ref() {
+            Value::Null => Value::Object(ValueMap::default()),
             other => other.clone(),
         };
-        let visited = Arc::new(parking_lot::Mutex::new(HashSet::new()));
+        let visited = Arc::new(orbital_core_base::sync::Mutex::new(HashSet::new()));
         children
             .into_iter()
             .filter(|child| composed.contains(child))
@@ -3675,7 +3689,7 @@ impl RuntimeKernel {
             for trait_name in bound {
                 let row = rows
                     .entry(trait_name.to_string())
-                    .or_insert_with(|| Value::Object(ValueMap::new()));
+                    .or_insert_with(|| Value::Object(ValueMap::default()));
                 if let Value::Object(fields) = row {
                     fields.extend(frame_fields.iter().map(|(k, v)| (k.clone(), (**v).clone())));
                 }
@@ -4583,7 +4597,7 @@ impl RuntimeKernel {
         };
         EffectResult::executed_with_value(
             effect.clone(),
-            Value::Object(ValueMap::from([(
+            Value::Object(ValueMap::from_iter([(
                 "allowed".to_string(),
                 Value::Bool(allowed),
             )])),
@@ -4607,7 +4621,7 @@ impl RuntimeKernel {
         match self.io.random(count) {
             Ok(raw) => EffectResult::executed_with_value(
                 effect.clone(),
-                Value::Object(ValueMap::from([(
+                Value::Object(ValueMap::from_iter([(
                     "value".to_string(),
                     Value::String(codec::base64url_encode(&raw)),
                 )])),
@@ -4628,7 +4642,7 @@ impl RuntimeKernel {
                             fields.insert("key".to_string(), key.clone());
                             Value::Object(fields)
                         }
-                        _ => Value::Object(ValueMap::from([
+                        _ => Value::Object(ValueMap::from_iter([
                             (
                                 "error".to_string(),
                                 Value::String(result.error.clone().unwrap_or_default()),
@@ -4691,7 +4705,7 @@ impl RuntimeKernel {
                 match answer {
                     Ok(standing) => EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::Object(ValueMap::from([
+                        Value::Object(ValueMap::from_iter([
                             ("connected".to_string(), Value::Bool(standing.connected)),
                             (
                                 "label".to_string(),
@@ -4720,7 +4734,7 @@ impl RuntimeKernel {
                     Ok(reply) => EffectResult::executed_with_value(effect.clone(), reply),
                     Err(refusal) => http_failure(
                         effect,
-                        Value::Object(ValueMap::from([
+                        Value::Object(ValueMap::from_iter([
                             ("error".to_string(), Value::String(refusal.message)),
                             (
                                 "code".to_string(),
@@ -4744,7 +4758,7 @@ impl RuntimeKernel {
     }
 
     fn oauth_failed(effect: &Effect, reason: OAuthFailureReason) -> EffectResult {
-        let payload = Value::Object(ValueMap::from([
+        let payload = Value::Object(ValueMap::from_iter([
             (
                 "error".to_string(),
                 Value::String(reason.message().to_string()),
@@ -4782,7 +4796,7 @@ impl RuntimeKernel {
                 fields.insert("key".to_string(), key);
                 Value::Object(fields)
             }
-            _ => Value::Object(ValueMap::from([
+            _ => Value::Object(ValueMap::from_iter([
                 (
                     "error".to_string(),
                     Value::String(result.error.clone().unwrap_or_default()),
@@ -4946,7 +4960,7 @@ impl RuntimeKernel {
         };
         EffectResult::executed_with_value(
             effect.clone(),
-            Value::Object(ValueMap::from([
+            Value::Object(ValueMap::from_iter([
                 ("authUrl".to_string(), Value::String(auth_url)),
                 ("state".to_string(), Value::String(state)),
                 ("code".to_string(), Value::String(code)),
@@ -5225,7 +5239,7 @@ impl RuntimeKernel {
                 fields.insert("key".to_string(), Value::String(key.to_string()));
                 Value::Object(fields)
             }
-            (Some(key), other) => Value::Object(ValueMap::from([
+            (Some(key), other) => Value::Object(ValueMap::from_iter([
                 ("value".to_string(), other),
                 ("key".to_string(), Value::String(key.to_string())),
             ])),
@@ -5317,7 +5331,7 @@ impl RuntimeKernel {
         let key_value = key.map_or(Value::Null, |k| Value::String(k.to_string()));
         let failed = |failure: ModelFailure| {
             let mut result = EffectResult::failed(effect.clone(), &failure.message);
-            result.return_value = Some(Value::Object(ValueMap::from([
+            result.return_value = Some(Value::Object(ValueMap::from_iter([
                 ("error".to_string(), Value::String(failure.message)),
                 (
                     "kind".to_string(),
@@ -5338,7 +5352,7 @@ impl RuntimeKernel {
                 match self.io.prompt(text, schema, key) {
                     Ok(reply) => EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::Object(ValueMap::from([
+                        Value::Object(ValueMap::from_iter([
                             ("reply".to_string(), Value::String(reply)),
                             ("key".to_string(), key_value),
                         ])),
@@ -5360,7 +5374,7 @@ impl RuntimeKernel {
                 if texts.is_empty() {
                     return EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::Object(ValueMap::from([
+                        Value::Object(ValueMap::from_iter([
                             ("embeddings".to_string(), Value::Array(Vec::new())),
                             ("key".to_string(), key_value),
                         ])),
@@ -5369,7 +5383,7 @@ impl RuntimeKernel {
                 match self.io.embed(&texts, key) {
                     Ok(vectors) => EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::Object(ValueMap::from([
+                        Value::Object(ValueMap::from_iter([
                             (
                                 "embeddings".to_string(),
                                 Value::Array(
@@ -5463,7 +5477,7 @@ impl RuntimeKernel {
         let failed = |message: &str| {
             let mut result = EffectResult::failed(effect.clone(), message);
             if let Some(key) = &key {
-                result.return_value = Some(Value::Object(ValueMap::from([
+                result.return_value = Some(Value::Object(ValueMap::from_iter([
                     ("error".to_string(), Value::String(message.to_string())),
                     ("key".to_string(), Value::String(key.clone())),
                 ])));
@@ -5479,7 +5493,7 @@ impl RuntimeKernel {
                 use orbital_core_base::ir::effects::PageFactField;
                 let live = facts.available;
                 let pick = |field: PageFactField| live && fields.contains(&field);
-                let mut payload = ValueMap::from([
+                let mut payload = ValueMap::from_iter([
                     ("available".to_string(), Value::Bool(live)),
                     (
                         "hostname".to_string(),
@@ -5819,7 +5833,7 @@ impl RuntimeKernel {
     /// Dispatch as `user` from this thread until the guard drops: the dispatches this thread starts keep this `@user`
     /// however other requests set theirs meanwhile.
     pub fn enter_viewer(&self, user: Value) -> ViewerGuard {
-        let thread = std::thread::current().id();
+        let thread = orbital_core_base::sync::current_thread();
         let outer = self.viewer_by_thread.write().insert(thread, Arc::new(user));
         ViewerGuard {
             slot: Arc::clone(&self.viewer_by_thread),
@@ -5833,7 +5847,7 @@ impl RuntimeKernel {
     pub fn thread_viewer(&self) -> Option<Arc<Value>> {
         self.viewer_by_thread
             .read()
-            .get(&std::thread::current().id())
+            .get(&orbital_core_base::sync::current_thread())
             .cloned()
     }
 
@@ -6018,7 +6032,7 @@ impl RuntimeKernel {
         };
         let row = match &item.payload {
             Some(Value::Object(fields)) => Value::Object(fields.clone()),
-            _ => Value::Object(ValueMap::new()),
+            _ => Value::Object(ValueMap::default()),
         };
         let mut rows = vec![row];
         self.retain_readable_by(&entity, &mut rows, viewer);
@@ -6349,7 +6363,7 @@ fn config_defaults_value<T: std::borrow::Borrow<TraitDefinition>>(
     trait_def: &TraitDefinition,
     all_traits: &HashMap<String, T>,
 ) -> Value {
-    let mut map: ValueMap = ValueMap::new();
+    let mut map: ValueMap = ValueMap::default();
     if let Some(cfg) = &trait_def.config {
         for (k, field) in cfg {
             if let Some(default) = field.default.as_ref() {
@@ -6558,7 +6572,7 @@ struct PendingSets {
 impl PendingSets {
     fn new(ctx: &BindingContext) -> Self {
         Self {
-            sets: ValueMap::new(),
+            sets: ValueMap::default(),
             view: ctx.entity.clone(),
         }
     }
@@ -6913,7 +6927,7 @@ fn resolved_when_run(effect: &Effect) -> bool {
 fn os_failure(effect: &Effect, error: &OsError) -> EffectResult {
     http_failure(
         effect,
-        Value::Object(ValueMap::from([
+        Value::Object(ValueMap::from_iter([
             ("error".to_string(), Value::String(error.message.clone())),
             (
                 "kind".to_string(),
@@ -7030,7 +7044,7 @@ mod navigate_options_tests {
     /// unresolved `@payload.title` literal.
     #[test]
     fn navigate_carries_crumb_options() {
-        let mut payload = ValueMap::new();
+        let mut payload = ValueMap::default();
         payload.insert("title".to_string(), Value::String("My Note".to_string()));
         let ctx = BindingContextBuilder::new()
             .payload(Value::Object(payload))
@@ -7061,7 +7075,7 @@ mod call_key_tests {
     use super::*;
 
     fn ctx_with_batch() -> BindingContext {
-        let mut entity = ValueMap::new();
+        let mut entity = ValueMap::default();
         entity.insert("batchId".to_string(), Value::String("b-7".to_string()));
         BindingContextBuilder::new()
             .entity(Value::Object(entity))
@@ -7099,7 +7113,7 @@ mod call_key_tests {
 
     #[test]
     fn a_cancel_call_on_a_bound_list_resolves_to_the_list_and_a_list_literal_evaluates() {
-        let mut entity = ValueMap::new();
+        let mut entity = ValueMap::default();
         entity.insert("batchId".to_string(), Value::String("b-7".to_string()));
         entity.insert(
             "keys".to_string(),
@@ -7155,7 +7169,7 @@ fn app_nav_items(schema: &OrbitalSchema) -> Vec<Value> {
             if page.path.contains(':') || !seen.insert(page.path.clone()) {
                 continue;
             }
-            let mut item = ValueMap::from([
+            let mut item = ValueMap::from_iter([
                 ("href".to_string(), Value::String(page.path.clone())),
                 ("label".to_string(), Value::String(label.clone())),
             ]);
@@ -7258,7 +7272,7 @@ fn keyed_call_completion_emit(
             let key = key?;
             (
                 emit.cancelled.clone()?,
-                Value::Object(ValueMap::from([(
+                Value::Object(ValueMap::from_iter([(
                     "key".to_string(),
                     Value::String(key.to_string()),
                 )])),
@@ -7346,7 +7360,7 @@ fn substrate_completion_emit(
 }
 
 fn error_payload(result: &EffectResult, errors: Option<Value>) -> Value {
-    let mut payload = ValueMap::new();
+    let mut payload = ValueMap::default();
     payload.insert(
         "error".to_string(),
         Value::String(result.error.clone().unwrap_or_default()),
@@ -7371,7 +7385,7 @@ fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<Effe
                 Value::Array(mut r) if by_id && r.len() == 1 => r.remove(0),
                 other => other,
             };
-            let mut payload = ValueMap::new();
+            let mut payload = ValueMap::default();
             payload.insert("data".to_string(), data);
             if let Some(total) = result.total_count {
                 payload.insert("totalCount".to_string(), Value::Number(total as f64));
@@ -7409,7 +7423,7 @@ fn persist_completion_emit(
 ) -> Option<EffectResult> {
     let (event, payload) = match result.outcome {
         EffectOutcome::Failed => {
-            let mut payload = ValueMap::new();
+            let mut payload = ValueMap::default();
             if let Some(err) = &result.error {
                 payload.insert("error".to_string(), Value::String(err.clone()));
             }
@@ -7440,7 +7454,7 @@ fn persist_completion_emit(
                     id,
                     ..
                 } => {
-                    let mut payload = ValueMap::new();
+                    let mut payload = ValueMap::default();
                     // The declared id is a binding (`@payload.id`): the payload carries the id it named.
                     payload.insert(
                         "id".to_string(),
@@ -7469,7 +7483,7 @@ mod merge_entity_tests {
     use super::*;
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
-        let mut m = ValueMap::new();
+        let mut m = ValueMap::default();
         for (k, v) in pairs {
             m.insert((*k).to_string(), v.clone());
         }
@@ -7510,7 +7524,7 @@ mod merge_entity_tests {
     #[test]
     fn merge_entity_empty_set_returns_base() {
         let base = obj(&[("a", Value::Number(1.0))]);
-        assert_eq!(merge_entity(&base, &Value::Object(ValueMap::new())), base);
+        assert_eq!(merge_entity(&base, &Value::Object(ValueMap::default())), base);
         assert_eq!(merge_entity(&base, &Value::Null), base);
     }
 
@@ -8505,7 +8519,7 @@ mod client_dispatch_tests {
     #[test]
     fn render_ui_runs_locally_in_client_env() {
         let (kernel, _collector) = client_kernel_with(render_ui_schema());
-        let mut payload = ValueMap::new();
+        let mut payload = ValueMap::default();
         payload.insert("title".to_string(), Value::String("Hello".to_string()));
         let outcomes = kernel
             .dispatch("RenderTrait", None, "SHOW", Value::Object(payload))
@@ -8867,7 +8881,7 @@ mod client_dispatch_tests {
     #[test]
     fn apply_server_response_merges_data_and_states() {
         let kernel = server_kernel_with(server_response_schema());
-        let mut row = ValueMap::new();
+        let mut row = ValueMap::default();
         row.insert("id".to_string(), Value::String("n-1".to_string()));
         row.insert(
             "title".to_string(),
@@ -8876,8 +8890,8 @@ mod client_dispatch_tests {
         let mut data = HashMap::new();
         data.insert("Note".to_string(), vec![Value::Object(row)]);
 
-        let mut entity_by_trait = ValueMap::new();
-        let mut listener_entity = ValueMap::new();
+        let mut entity_by_trait = ValueMap::default();
+        let mut listener_entity = ValueMap::default();
         listener_entity.insert("id".to_string(), Value::String("singleton".to_string()));
         listener_entity.insert("note".to_string(), Value::String("n-1".to_string()));
         entity_by_trait.insert("Listener".to_string(), Value::Object(listener_entity));
@@ -9003,7 +9017,7 @@ mod client_dispatch_tests {
             })],
             entity_data: SharedEntity::null(),
             linked_entity: "Note".to_string(),
-            payload: Value::Null,
+            payload: std::sync::Arc::new(Value::Null),
             entry: None,
             fired_arm: None,
             transition_index: None,
@@ -9136,7 +9150,7 @@ mod client_dispatch_tests {
                 "Composer",
                 None,
                 "DRAFT",
-                Value::Object(ValueMap::from([("value".to_string(), Value::from("hi"))])),
+                Value::Object(ValueMap::from_iter([("value".to_string(), Value::from("hi"))])),
                 None,
             )
             .unwrap();
@@ -9453,7 +9467,7 @@ mod client_dispatch_tests {
                 "Composer",
                 None,
                 "DRAFT",
-                Value::Object(ValueMap::from([("value".to_string(), Value::from("hi"))])),
+                Value::Object(ValueMap::from_iter([("value".to_string(), Value::from("hi"))])),
                 None,
             )
             .unwrap();
@@ -9675,7 +9689,7 @@ mod mount_lifecycle_tests {
     /// A server host follows the client's mount from each leg's
     /// `_awaitingInit` (JS twin: `riya-level-seed-reaches-the-body.test.ts`).
     fn leg(awaiting: &[&str]) -> Value {
-        Value::Object(ValueMap::from([(
+        Value::Object(ValueMap::from_iter([(
             "_awaitingInit".to_string(),
             Value::Array(
                 awaiting
@@ -10285,7 +10299,7 @@ mod circuit_step_tests {
     }
 
     fn key(k: &str) -> Value {
-        let mut data = ValueMap::new();
+        let mut data = ValueMap::default();
         data.insert("key".to_string(), Value::String(k.to_string()));
         Value::Object(data)
     }

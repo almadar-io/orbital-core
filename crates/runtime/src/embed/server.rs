@@ -2,6 +2,8 @@
 //! service call and substrate operator is an `Await` the host answers. A JavaScript host cannot block
 //! on a promise, so it starts a dispatch, answers the requests it is handed (in any order, all at
 //! once) and resumes. The continuation never leaves this module; only requests and answers cross.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::wire::{CallSiteWire, Settled, IoReplyWire, PendingRequestWire, ResolveProgressWire, ServerProgressWire};
 use crate::effects::response::{RunTick, TraitFrom, TransitionHop};
@@ -16,9 +18,11 @@ use crate::effects::response::{EventRequest, EventResponse};
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::os::{OsError, OsOp};
-use orbital_core_base::os_grants::{resolve_anchored_args, EnvSnapshot, FsMode, OsAnchors, OsGrants, OsRequirement};
+#[cfg(feature = "std")]
+use orbital_core_base::os_grants::{resolve_anchored_args, EnvSnapshot, FsMode, OsAnchors};
+use orbital_core_base::os_grants::{OsGrants, OsRequirement};
 use orbital_core_base::value::Value;
-use parking_lot::Mutex;
+use orbital_core_base::sync::Mutex;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -105,9 +109,11 @@ pub struct EmbeddedServer {
     next_flight: Mutex<u64>,
     dispatch_stream: Mutex<Vec<crate::effects::live_push::StreamItem>>,
     /// Where the host places the program's anchored grants and arguments; none until it says.
+    #[cfg(feature = "std")]
     os_anchors: Mutex<OsAnchors>,
 }
 
+#[cfg(feature = "std")]
 /// A host's anchors as it sends them: its home and start directories, its executable's directory and its boot
 /// environment.
 #[derive(serde::Deserialize)]
@@ -169,6 +175,7 @@ impl EmbeddedServer {
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
+            #[cfg(feature = "std")]
             os_anchors: Mutex::new(OsAnchors::default()),
         })
     }
@@ -187,6 +194,7 @@ impl EmbeddedServer {
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
+            #[cfg(feature = "std")]
             os_anchors: Mutex::new(OsAnchors::default()),
         })
     }
@@ -224,6 +232,7 @@ impl EmbeddedServer {
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
+            #[cfg(feature = "std")]
             os_anchors: Mutex::new(OsAnchors::default()),
         })
     }
@@ -670,10 +679,18 @@ impl EmbeddedServer {
 
     /// The program's `os/` grants the kernel holds.
     /// The program's grants with every anchored entry resolved under the host's anchors.
+    #[cfg(feature = "std")]
     pub fn os_grants(&self) -> OsGrants {
         self.kernel.os_grants().resolve_anchors(&self.os_anchors.lock()).0
     }
 
+    /// The program's grants as declared: a bare-metal host has no filesystem anchors to place.
+    #[cfg(not(feature = "std"))]
+    pub fn os_grants(&self) -> OsGrants {
+        self.kernel.os_grants()
+    }
+
+    #[cfg(feature = "std")]
     /// Place the program's anchored grants and arguments under the host's anchors (`OsAnchorsWire` JSON); answers the
     /// entries that grant nothing under them, as `[{ path, message }]`.
     pub fn set_os_anchors_json(&self, anchors_json: &str) -> Result<String, String> {
@@ -686,6 +703,7 @@ impl EmbeddedServer {
         serde_json::to_string(&problems).map_err(|e| format!("serialize: {e}"))
     }
 
+    #[cfg(feature = "std")]
     /// The `op` call's arguments with every anchored path, `cwd` and `env` host or port replaced by what it names under
     /// the host's anchors, as `Settled<args, OsError>` JSON.
     pub fn os_resolve_args_json(&self, op: &str, args_json: &str) -> Result<String, String> {
@@ -866,6 +884,7 @@ struct EventFired {
     payload: Value,
 }
 
+#[cfg(feature = "std")]
 /// Whether the one glob `glob` matches `path` lexically, as `os/glob` filters its results.
 pub fn os_glob_matches(glob: &str, path: &str) -> bool {
     OsGrants::read_matcher(glob).fs_allows(std::path::Path::new(path), FsMode::Read)

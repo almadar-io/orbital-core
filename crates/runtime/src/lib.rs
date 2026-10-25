@@ -7,6 +7,10 @@
 //!
 //! Directories under `src/` are organizational only — every module stays at the crate root
 //! (flat public paths) via its `#[path]`. See `README.md`.
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate orbital_core_std as std;
 
 // kernel — the one dispatch loop, worklist and step machinery
 #[path = "kernel/config.rs"]
@@ -51,6 +55,7 @@ pub mod kernel;
 // client — the client-role embedding of the same kernel
 #[path = "client/canvas_theme.rs"]
 pub mod canvas_theme;
+#[cfg(feature = "std")]
 #[path = "client/desktop_protocol.rs"]
 pub mod desktop_protocol;
 #[path = "client/embed_index.rs"]
@@ -59,6 +64,7 @@ pub mod embed_index;
 pub mod motion;
 #[path = "client/render_store.rs"]
 pub(crate) mod render_store;
+#[cfg(feature = "std")]
 pub mod client;
 
 // server — the server-role embedding and its HTTP seam
@@ -70,13 +76,14 @@ pub mod http_service;
 pub mod stream_ticket;
 
 // stores — row stores: kernel drivers over raw ports (EXEC-STORE)
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "stores/couchdb.rs"]
 pub mod couchdb;
 #[path = "stores/entity_access.rs"]
 pub mod entity_access;
 #[path = "stores/entity_source.rs"]
 pub mod entity_source;
+#[cfg(feature = "std")]
 #[path = "stores/firestore.rs"]
 pub mod firestore;
 #[cfg(all(feature = "wire-drivers", not(target_arch = "wasm32")))]
@@ -84,13 +91,15 @@ pub mod firestore;
 pub mod pg_rows;
 #[path = "stores/row_query.rs"]
 pub mod row_query;
+#[cfg(feature = "std")]
 #[path = "stores/sidecar_store.rs"]
 pub mod sidecar_store;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "stores/store_config.rs"]
 pub mod store_config;
 #[path = "stores/store_driver.rs"]
 pub mod store_driver;
+#[cfg(feature = "std")]
 #[path = "stores/vector_store.rs"]
 pub mod vector_store;
 
@@ -117,10 +126,10 @@ pub mod tls;
 // security — auth, tokens and secrets (the kernel signs; hosts verify)
 #[path = "security/credential_admin.rs"]
 pub mod credential_admin;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "security/credential_store.rs"]
 pub mod credential_store;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "security/credentials.rs"]
 pub mod credentials;
 #[path = "security/jwt.rs"]
@@ -139,16 +148,16 @@ pub mod webpush;
 // host — the native OS hosts and their transports (EXEC-HOST)
 #[path = "host/agent_ports.rs"]
 pub mod agent_ports;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "host/kv_host.rs"]
 pub mod kv_host;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "host/native_host.rs"]
 pub mod native_host;
 #[cfg(feature = "native-transport")]
 #[path = "host/native_transport.rs"]
 pub mod native_transport;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "host/os_host/mod.rs"]
 pub mod os_host;
 

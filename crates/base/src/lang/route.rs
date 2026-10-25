@@ -1,4 +1,6 @@
 //! Route matching shared by the compiler's navigate checks and `expects` derivation.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::schema::sexpr::SExpression;
 

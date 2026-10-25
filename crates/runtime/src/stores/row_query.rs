@@ -9,10 +9,12 @@
 //! Two-valued null logic: a missing or null field satisfies only `!=` against a non-null value and
 //! `isNull: true`. Strings compare by code point (UTF-8 byte order). A comparison relates only two
 //! values of one kind. An array or object is never equal to anything.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_eval::evaluator::context::BindingContext;
 use orbital_core_base::value::Value;
-use indexmap::IndexMap;
+use orbital_core_base::collections::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -833,7 +835,7 @@ pub fn apply_write(
             };
             let mut fields = match data {
                 Value::Object(o) => o.clone(),
-                _ => orbital_core_base::value::ValueMap::new(),
+                _ => orbital_core_base::value::ValueMap::default(),
             };
             fields.insert("id".to_string(), Value::String(id.clone()));
             let row = Value::Object(fields);
@@ -854,7 +856,7 @@ pub fn apply_write(
             };
             let mut fields = match data {
                 Value::Object(o) => o.clone(),
-                _ => orbital_core_base::value::ValueMap::new(),
+                _ => orbital_core_base::value::ValueMap::default(),
             };
             fields.insert("id".to_string(), Value::String(id.clone()));
             let kept = table.get(&id).map(|existing| {
@@ -887,7 +889,7 @@ pub fn apply_write(
             }
             let mut fields = match &*before {
                 Value::Object(o) => o.clone(),
-                _ => orbital_core_base::value::ValueMap::new(),
+                _ => orbital_core_base::value::ValueMap::default(),
             };
             if let Value::Object(incoming) = data {
                 for (k, v) in incoming {

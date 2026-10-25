@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 use super::TraitDefinition;
 
 pub fn trait_execution_fingerprint(

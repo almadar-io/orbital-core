@@ -1,6 +1,8 @@
 //! The renderer-neutral client: event transport (in-process kernel or HTTP),
 //! the client-role kernel and the client circuit (slots, entities, trait
 //! content) every renderer draws from.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 pub mod bridge;
 pub mod calendar;

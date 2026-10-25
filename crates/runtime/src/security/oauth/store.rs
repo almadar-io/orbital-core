@@ -4,6 +4,8 @@
 //! durable credential of its signed-in owner (`oauth:connection:<provider>`, tokens included, never read back
 //! whole). Only the subject index, discovered metadata and the mock token table stay process-local.
 //! [`MemoryOAuthStore`] is the same answerer over an in-memory credential set, for a native or test host.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

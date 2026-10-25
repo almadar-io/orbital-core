@@ -1,4 +1,6 @@
 //! String operators.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;

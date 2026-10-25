@@ -1,5 +1,7 @@
 //! The Layer 2 client render report (`orb verify`): produced by the desktop
 //! program's render probe, read by `orb`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 

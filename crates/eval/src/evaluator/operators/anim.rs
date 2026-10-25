@@ -1,4 +1,6 @@
 //! G6 Game: animation operators (`anim/*`). Pure, total.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
@@ -51,7 +53,7 @@ impl Operator for AnimSheetRectOp {
                 (frame_index / cols).floor() * frame_h,
             )
         };
-        let mut m = ValueMap::new();
+        let mut m = ValueMap::default();
         m.insert("sx".to_string(), Value::Number(sx));
         m.insert("sy".to_string(), Value::Number(sy));
         m.insert("sw".to_string(), Value::Number(frame_w));

@@ -2,6 +2,8 @@
 //!
 //! Shared types used by compiler backends. Kept in `orbital-core` so shell crates
 //! can implement `Backend` without depending on the compiler.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::ir::types::OirModule;
 

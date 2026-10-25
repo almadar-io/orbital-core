@@ -7,6 +7,8 @@
 //! ARRAY whose arity carries which trailing fields are present, so this is the one
 //! type in the crate with a hand-written `Serialize`/`Deserialize` instead of a
 //! derive — no other shape in the wire needs positional (rather than keyed) framing.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::value::Value;
 use serde::de::{Error as DeError, SeqAccess, Visitor};
@@ -250,7 +252,7 @@ mod tests {
     fn render_ui_arity_3() {
         let effect = ClientEffect::RenderUi {
             slot: "main".to_string(),
-            config: Some(Value::Object(ValueMap::from([(
+            config: Some(Value::Object(ValueMap::from_iter([(
                 "type".to_string(),
                 Value::String("card".to_string()),
             )]))),
@@ -281,7 +283,7 @@ mod tests {
     fn navigate_arity_3() {
         let effect = ClientEffect::Navigate {
             path: "/notes/:id".to_string(),
-            params: Some(Value::Object(ValueMap::from([(
+            params: Some(Value::Object(ValueMap::from_iter([(
                 "id".to_string(),
                 Value::String("42".to_string()),
             )]))),
@@ -308,7 +310,7 @@ mod tests {
     fn navigate_arity_4() {
         let effect = ClientEffect::Navigate {
             path: "/notes/:id".to_string(),
-            params: Some(Value::Object(ValueMap::from([(
+            params: Some(Value::Object(ValueMap::from_iter([(
                 "id".to_string(),
                 Value::String("42".to_string()),
             )]))),
@@ -341,7 +343,7 @@ mod tests {
     fn from_effect_render_ui() {
         let effect = Effect::RenderUi {
             slot: "main".to_string(),
-            content: Value::Object(ValueMap::from([(
+            content: Value::Object(ValueMap::from_iter([(
                 "type".to_string(),
                 Value::String("card".to_string()),
             )])),
@@ -351,7 +353,7 @@ mod tests {
             client,
             ClientEffect::RenderUi {
                 slot: "main".to_string(),
-                config: Some(Value::Object(ValueMap::from([(
+                config: Some(Value::Object(ValueMap::from_iter([(
                     "type".to_string(),
                     Value::String("card".to_string())
                 )]))),
@@ -424,7 +426,7 @@ mod tests {
     fn render_ui_value_is_the_pattern_and_an_empty_object_for_none() {
         let effect = ClientEffect::RenderUi {
             slot: "modal".to_string(),
-            config: Some(Value::Object(ValueMap::from([(
+            config: Some(Value::Object(ValueMap::from_iter([(
                 "type".to_string(),
                 Value::String("form".to_string()),
             )]))),

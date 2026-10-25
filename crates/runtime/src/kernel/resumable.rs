@@ -7,6 +7,8 @@
 //! answer for, and calls [`RuntimeKernel::resume`] with the answers, in any order and as late as it likes.
 //! The step that asked is run again from the state the dispatch had before it, now with the answers in
 //! hand, so a request is asked for once however often the step is replayed.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::effects::executor::{ServiceCaller, ServiceHandler, SubstrateFailure, SubstrateHandler};
 use orbital_core_base::value::{Value, ValueMap};
@@ -25,10 +27,10 @@ use orbital_core_base::tab::{TabAsk, TabFailure, TabFailureKind};
 use crate::process_result::ProcessEventResult;
 use crate::row_query::{apply_write_batch_across, guard_unsupported_reason, query_unsupported_reason, touched_ids, CreateIds, QueryCapabilities, RowCommit, RowCommitWrite, RowTable, QueryRun, RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome, ScanControl, WriteCapabilities};
 use orbital_core_base::row_set::{RowQuery, RowSetRef};
-use parking_lot::{Mutex, MutexGuard, RwLock};
+use orbital_core_base::sync::{Mutex, MutexGuard, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::thread::ThreadId;
+use orbital_core_base::sync::ThreadKey as ThreadId;
 
 /// What a dispatch produced: one outcome per delivery, in dispatch order.
 pub type DispatchOutcomes = Vec<(String, ProcessEventResult)>;
@@ -287,14 +289,14 @@ pub fn completion_event(
         Ok(result) => {
             let mut fields = match result {
                 Value::Object(fields) => fields,
-                other => ValueMap::from([("value".to_string(), other)]),
+                other => ValueMap::from_iter([("value".to_string(), other)]),
             };
             fields.insert("key".to_string(), key);
             Some((site.emit.success.clone()?, Value::Object(fields)))
         }
         Err(error) => Some((
             site.emit.failure.clone()?,
-            Value::Object(ValueMap::from([
+            Value::Object(ValueMap::from_iter([
                 ("error".to_string(), Value::String(error.message)),
                 (
                     "kind".to_string(),
@@ -1258,7 +1260,7 @@ impl IoPort {
     fn direct(&self) -> bool {
         match self.ledger.lock().as_ref() {
             None => true,
-            Some(ledger) => ledger.thread != std::thread::current().id(),
+            Some(ledger) => ledger.thread != orbital_core_base::sync::current_thread(),
         }
     }
 
@@ -1305,7 +1307,7 @@ impl IoPort {
     /// diverged from its record: the step's result is garbage and must be rolled back.
     pub(crate) fn suspended(&self) -> bool {
         self.ledger.lock().as_ref().is_some_and(|l| {
-            l.thread == std::thread::current().id()
+            l.thread == orbital_core_base::sync::current_thread()
                 && (!l.pending.is_empty() || !l.store_asks.is_empty() || l.diverged.is_some())
         })
     }
@@ -1329,7 +1331,7 @@ impl IoPort {
     ) -> (R, StepEnd) {
         let gate = self.gate.lock();
         *self.ledger.lock() = Some(StepLedger {
-            thread: std::thread::current().id(),
+            thread: orbital_core_base::sync::current_thread(),
             claimed: Claimed::default(),
             reads_at_start: reads.clone(),
             reads,
@@ -1374,7 +1376,7 @@ impl IoPort {
     fn read_before(&self, entity_type: &str, id: &str) -> Option<Option<Arc<Value>>> {
         let slot = self.ledger.lock();
         let ledger = slot.as_ref()?;
-        if ledger.thread != std::thread::current().id() || ledger.blocked || ledger.diverged.is_some() {
+        if ledger.thread != orbital_core_base::sync::current_thread() || ledger.blocked || ledger.diverged.is_some() {
             return None;
         }
         ledger.reads.get(&(entity_type.to_string(), id.to_string())).cloned()
@@ -1385,7 +1387,7 @@ impl IoPort {
             return;
         }
         if let Some(ledger) = self.ledger.lock().as_mut() {
-            if ledger.thread == std::thread::current().id() {
+            if ledger.thread == orbital_core_base::sync::current_thread() {
                 Arc::make_mut(&mut ledger.reads).insert((entity_type.to_string(), id.to_string()), row);
             }
         }
@@ -1394,7 +1396,7 @@ impl IoPort {
     /// The kernel wrote `entity_type`: what the dispatch read of it is no longer what the host holds.
     fn forget_reads(&self, entity_type: &str) {
         if let Some(ledger) = self.ledger.lock().as_mut() {
-            if ledger.thread == std::thread::current().id() && ledger.reads.keys().any(|(t, _)| t == entity_type) {
+            if ledger.thread == orbital_core_base::sync::current_thread() && ledger.reads.keys().any(|(t, _)| t == entity_type) {
                 Arc::make_mut(&mut ledger.reads).retain(|(t, _), _| t != entity_type);
             }
         }
@@ -1409,7 +1411,7 @@ impl IoPort {
         let mut slot = self.ledger.lock();
         let direct = match slot.as_ref() {
             None => true,
-            Some(ledger) => ledger.thread != std::thread::current().id(),
+            Some(ledger) => ledger.thread != orbital_core_base::sync::current_thread(),
         };
         if direct {
             drop(slot);
@@ -1513,7 +1515,7 @@ impl IoPort {
         let Some(ledger) = slot.as_mut() else {
             return false;
         };
-        if ledger.thread != std::thread::current().id()
+        if ledger.thread != orbital_core_base::sync::current_thread()
             || ledger.blocked
             || ledger.diverged.is_some()
         {
@@ -2598,7 +2600,7 @@ pub struct HttpHost<'a> {
     /// Receives each event of a stream, with the call site whose `onMessage` route it belongs to.
     pub on_event: &'a dyn Fn(Option<&CallSite>, Value),
     /// The native `os/` answerer's grants and handles; `None` denies every `os/` ask.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
     pub os: Option<&'a crate::os_host::OsHost<'a>>,
 }
 
@@ -2619,12 +2621,20 @@ fn address_refusal(url: &str, egress: &[String]) -> Option<String> {
         return (!listed && !orbital_core_base::http_wire::is_public_address(ip))
             .then(|| format!("refused: {ip} is not a public address"));
     }
-    use std::net::ToSocketAddrs;
-    match (host, port).to_socket_addrs() {
-        Ok(mut addrs) => addrs
-            .find(|a| !orbital_core_base::http_wire::is_public_address(a.ip()))
-            .map(|a| format!("refused: {host} resolves to {}, not a public address", a.ip())),
-        Err(e) => Some(format!("{host} did not resolve: {e}")),
+    #[cfg(feature = "std")]
+    {
+        use std::net::ToSocketAddrs;
+        match (host, port).to_socket_addrs() {
+            Ok(mut addrs) => addrs
+                .find(|a| !orbital_core_base::http_wire::is_public_address(a.ip()))
+                .map(|a| format!("refused: {host} resolves to {}, not a public address", a.ip())),
+            Err(e) => Some(format!("{host} did not resolve: {e}")),
+        }
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = port;
+        Some(format!("refused: {host} cannot be resolved on a bare-metal host"))
     }
 }
 
@@ -2639,36 +2649,36 @@ fn blocking_send(
 }
 
 /// `bytes` of operating-system CSPRNG output; wasm hosts answer `Random` themselves.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 fn os_random(bytes: u32) -> Result<Vec<u8>, String> {
     let mut buf = vec![0u8; bytes as usize];
     getrandom::getrandom(&mut buf).map_err(|e| format!("random: {e}"))?;
     Ok(buf)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", not(feature = "std")))]
 fn os_random(_bytes: u32) -> Result<Vec<u8>, String> {
     Err("random: the host must answer Random".to_string())
 }
 
 /// `cancel-call` of a deferred keyed `os/` call: its pending completion is dropped, so its outcome never fires a route.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub(crate) fn os_completion_cancelled(host: &HttpHost<'_>, key: &str) -> bool {
     host.os.is_some_and(|os| os.handles.cancel_completion(key))
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", not(feature = "std")))]
 pub(crate) fn os_completion_cancelled(_host: &HttpHost<'_>, _key: &str) -> bool {
     false
 }
 
 /// An [`IoRequest::Os`] answered by the native answerer; wasm hosts answer `Os` themselves.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 fn answer_os_host(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer {
     crate::os_host::answer_os(host.and_then(|h| h.os), request)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", not(feature = "std")))]
 fn answer_os_host(_host: Option<&HttpHost<'_>>, _request: &IoRequest) -> IoAnswer {
     IoAnswer::Os(Err(OsError::new(OsErrorKind::Unsupported, "os: the host must answer Os")))
 }
@@ -2678,11 +2688,11 @@ fn answer_os_host(_host: Option<&HttpHost<'_>>, _request: &IoRequest) -> IoAnswe
 pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer {
     match (request, host) {
         (IoRequest::Http { request, delay_ms, .. }, Some(host)) => {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
             if let Some(ms) = delay_ms {
                 std::thread::sleep(std::time::Duration::from_millis(*ms));
             }
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(any(target_arch = "wasm32", not(feature = "std")))]
             let _ = delay_ms;
             IoAnswer::Http(blocking_send(host, request))
         }
@@ -2814,6 +2824,7 @@ pub fn drive_blocking(
     })
 }
 
+#[cfg(feature = "std")]
 /// [`drive_blocking`] for a host whose answerer is `Sync`: the keyed `call-service` requests of one step run on
 /// scoped threads at the same time (EXEC-QUEUE-8) and every other request is answered in order on this thread.
 pub fn drive_concurrent(
@@ -2824,6 +2835,7 @@ pub fn drive_concurrent(
     drive_with(kernel, progress, |requests| answer_batch(requests, answer))
 }
 
+#[cfg(feature = "std")]
 /// Answer one step's pending requests: each keyed `call-service` on its own scoped thread, the rest in
 /// order on the calling thread. The replies keep the order of `requests`; the kernel matches them by id.
 pub fn answer_batch(
@@ -3249,7 +3261,7 @@ mod http_replay_tests {
     }
 
     fn os_ok() -> IoAnswer {
-        IoAnswer::Os(Ok(Value::Object(orbital_core_base::value::ValueMap::from([(
+        IoAnswer::Os(Ok(Value::Object(orbital_core_base::value::ValueMap::from_iter([(
             "data".to_string(),
             Value::String("hi".to_string()),
         )]))))

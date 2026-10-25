@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 use crate::str_utils::js_number_string;
 use crate::value::Value;
 
@@ -31,83 +33,71 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
 /// JSON text as JavaScript's `JSON.stringify` writes it: every number through [`js_number_string`], a non-finite
 /// number as `null`.
 pub fn js_json_string<T: serde::Serialize + ?Sized>(value: &T) -> String {
-    let mut out = Vec::new();
-    value
-        .serialize(&mut serde_json::Serializer::with_formatter(
-            &mut out,
-            JsNumberFormatter,
-        ))
-        .expect("JSON text of an in-memory value always writes");
-    String::from_utf8(out).expect("serde_json writes UTF-8")
+    let mut out = String::new();
+    write_js_json(&to_json_tree(value), None, 0, &mut out);
+    out
 }
 
 /// [`js_json_string`] with two-space indentation, as `JSON.stringify(v, null, 2)` writes it.
 pub fn js_json_string_pretty<T: serde::Serialize + ?Sized>(value: &T) -> String {
-    let mut out = Vec::new();
-    value
-        .serialize(&mut serde_json::Serializer::with_formatter(
-            &mut out,
-            JsPrettyFormatter(serde_json::ser::PrettyFormatter::new()),
-        ))
-        .expect("JSON text of an in-memory value always writes");
-    String::from_utf8(out).expect("serde_json writes UTF-8")
+    let mut out = String::new();
+    write_js_json(&to_json_tree(value), Some("  "), 0, &mut out);
+    out
 }
 
-struct JsPrettyFormatter(serde_json::ser::PrettyFormatter<'static>);
-
-impl serde_json::ser::Formatter for JsPrettyFormatter {
-    fn write_f64<W: ?Sized + std::io::Write>(&mut self, writer: &mut W, value: f64) -> std::io::Result<()> {
-        writer.write_all(js_number_string(value).as_bytes())
-    }
-    fn write_f32<W: ?Sized + std::io::Write>(&mut self, writer: &mut W, value: f32) -> std::io::Result<()> {
-        self.write_f64(writer, f64::from(value))
-    }
-    fn begin_array<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
-        self.0.begin_array(writer)
-    }
-    fn end_array<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
-        self.0.end_array(writer)
-    }
-    fn begin_array_value<W: ?Sized + std::io::Write>(&mut self, writer: &mut W, first: bool) -> std::io::Result<()> {
-        self.0.begin_array_value(writer, first)
-    }
-    fn end_array_value<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
-        self.0.end_array_value(writer)
-    }
-    fn begin_object<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
-        self.0.begin_object(writer)
-    }
-    fn end_object<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
-        self.0.end_object(writer)
-    }
-    fn begin_object_key<W: ?Sized + std::io::Write>(&mut self, writer: &mut W, first: bool) -> std::io::Result<()> {
-        self.0.begin_object_key(writer, first)
-    }
-    fn begin_object_value<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
-        self.0.begin_object_value(writer)
-    }
-    fn end_object_value<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
-        self.0.end_object_value(writer)
-    }
+fn to_json_tree<T: serde::Serialize + ?Sized>(value: &T) -> serde_json::Value {
+    serde_json::to_value(value).expect("JSON text of an in-memory value always writes")
 }
 
-struct JsNumberFormatter;
-
-impl serde_json::ser::Formatter for JsNumberFormatter {
-    fn write_f64<W: ?Sized + std::io::Write>(
-        &mut self,
-        writer: &mut W,
-        value: f64,
-    ) -> std::io::Result<()> {
-        writer.write_all(js_number_string(value).as_bytes())
-    }
-
-    fn write_f32<W: ?Sized + std::io::Write>(
-        &mut self,
-        writer: &mut W,
-        value: f32,
-    ) -> std::io::Result<()> {
-        self.write_f64(writer, f64::from(value))
+fn write_js_json(value: &serde_json::Value, indent: Option<&str>, depth: usize, out: &mut String) {
+    let newline = |out: &mut String, depth: usize| {
+        if let Some(unit) = indent {
+            out.push('\n');
+            for _ in 0..depth {
+                out.push_str(unit);
+            }
+        }
+    };
+    match value {
+        serde_json::Value::Null => out.push_str("null"),
+        serde_json::Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        serde_json::Value::Number(n) => match (n.is_f64(), n.as_f64()) {
+            (true, Some(f)) => out.push_str(&js_number_string(f)),
+            _ => out.push_str(&n.to_string()),
+        },
+        serde_json::Value::String(text) => {
+            out.push_str(&serde_json::to_string(text).expect("a string always writes"))
+        }
+        serde_json::Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                newline(out, depth + 1);
+                write_js_json(item, indent, depth + 1, out);
+            }
+            if !items.is_empty() {
+                newline(out, depth);
+            }
+            out.push(']');
+        }
+        serde_json::Value::Object(map) => {
+            out.push('{');
+            for (i, (key, item)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                newline(out, depth + 1);
+                out.push_str(&serde_json::to_string(key).expect("a string always writes"));
+                out.push_str(if indent.is_some() { ": " } else { ":" });
+                write_js_json(item, indent, depth + 1, out);
+            }
+            if !map.is_empty() {
+                newline(out, depth);
+            }
+            out.push('}');
+        }
     }
 }
 
@@ -133,6 +123,28 @@ mod tests {
             js_json_string(&value_to_json(&value)),
             "[10000000000000000000,0.000001,1,0,1e+21,null]"
         );
+    }
+
+    #[test]
+    fn js_json_text_matches_serde_json_text_when_no_float_is_involved() {
+        let cases = [
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!({"a": [], "b": {}, "c": [1, -2, true, null]}),
+            serde_json::json!({"q\"uote": "back\\slash \u{1} \n\t\r é 💡 /", "nested": [[{"k": [0]}]]}),
+            serde_json::json!([u64::MAX, i64::MIN, "", " "]),
+        ];
+        for case in &cases {
+            assert_eq!(js_json_string(case), serde_json::to_string(case).unwrap(), "compact {case}");
+            assert_eq!(js_json_string_pretty(case), serde_json::to_string_pretty(case).unwrap(), "pretty {case}");
+        }
+    }
+
+    #[test]
+    fn js_json_pretty_writes_floats_as_ecmascript_inside_indented_containers() {
+        let value = Value::Object([("n".to_string(), Value::Number(1e21)), ("f".to_string(), Value::Number(0.5))].into_iter().collect());
+        assert_eq!(js_json_string_pretty(&value), "{\n  \"n\": 1e+21,\n  \"f\": 0.5\n}");
     }
 
     #[test]

@@ -6,9 +6,11 @@
 //! The table names and accessor signatures are unchanged from the generated file
 //! they replace; the derivation rules are the ones `tools/almadar-pattern-sync/
 //! rust-codegen.ts` applied at generation time.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
+use crate::sync::LazyLock;
 
 use serde_json::{Map, Value};
 
@@ -31,7 +33,7 @@ static REGISTRY: LazyLock<Value> = LazyLock::new(|| {
     serde_json::from_str(&data.patterns).unwrap_or_else(|e| {
         panic!(
             "ORB_LANGUAGE_DATA_INVALID: {}: patterns registry is not valid JSON: {e}",
-            data.root.display()
+            data.root_text()
         )
     })
 });

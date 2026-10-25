@@ -2,6 +2,8 @@
 //! `firebase`), the `USE_MOCK_DATA` flag, `DATABASE_URL`, `PGPOOL_MAX`, `COUCHDB_URL` and the Firebase variables,
 //! the contract `@almadar/db`'s `persistenceSpecFromEnv` reads. A native host asks it for the store its kernel answers
 //! row requests from, so the server, the Node add-on and the Python extension select a store one way.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::couchdb::CouchRows;
 use crate::entity_source::{EntitySource, InMemoryEntityCache};

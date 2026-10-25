@@ -5,6 +5,8 @@
 //! cross-orbital `linkedEntity` and import remap targets (→ `expects entity`), `navigate`
 //! targets a sibling serves (→ `expects page`), and `listens` on a sibling orbital's trait
 //! (→ `expects trait`). Shapes copy the provider's declared fields verbatim.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 

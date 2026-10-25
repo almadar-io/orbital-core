@@ -1,6 +1,8 @@
 //! Orbital Client Runtime
 //!
 //! Thin client-side wrapper around `crate::RuntimeKernel`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::entity_source::InMemoryEntityCache;
 use crate::config::KernelConfig;
@@ -286,7 +288,7 @@ mod tests {
     fn test_entity_cache() {
         let runtime = OrbitalClientRuntime::new();
 
-        let mut data = ValueMap::new();
+        let mut data = ValueMap::default();
         data.insert("id".to_string(), Value::String("test-1".to_string()));
         data.insert("value".to_string(), Value::Number(42.0));
 
@@ -304,7 +306,7 @@ mod tests {
     fn test_current_user() {
         let runtime = OrbitalClientRuntime::new();
 
-        let mut user = ValueMap::new();
+        let mut user = ValueMap::default();
         user.insert("id".to_string(), Value::String("user-1".to_string()));
         user.insert("name".to_string(), Value::String("Test User".to_string()));
 

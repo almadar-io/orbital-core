@@ -1,6 +1,8 @@
 //! JWS compact tokens signed with a PEM private key: RS256 (RSASSA-PKCS1-v1_5 over SHA-256, RFC 7518 3.3) and
 //! ES256 (ECDSA P-256, RFC 7518 3.4), plus the Google service-account assertion. Pure and wasm-compatible
 //! (RustCrypto `rsa`/`p256`); RS256 is deterministic, ES256 is RFC 6979 deterministic.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::fmt;
 

@@ -1,6 +1,8 @@
 //! The viewer: who `@user` is, as one typed record. `@almadar/core`'s `Viewer` is generated from this type, and a
 //! provider's claims are a typed list rather than open keys. The `@user` binding holds the same viewer flat (claims as
 //! keys); [`Viewer::from_user`] and [`Viewer::to_user`] convert between the two.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 
@@ -116,7 +118,7 @@ impl Viewer {
 
     /// The flat `@user` value of this viewer. `Err` when a claim repeats a named field or another claim.
     pub fn to_user(&self) -> Result<Value, String> {
-        let mut map = ValueMap::new();
+        let mut map = ValueMap::default();
         map.insert("id".to_string(), Value::String(self.id.clone()));
         for (key, field) in [
             ("email", &self.email),

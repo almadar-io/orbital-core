@@ -7,6 +7,8 @@
 //! long row's extra cells are dropped, a leading BOM is ignored. Empty text,
 //! header-only text and non-string input → `[]`, never an error. The
 //! `@almadar/evaluator` twin is `std/csv.ts`; both read `operator-types.json`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
@@ -66,7 +68,7 @@ pub fn parse_csv(text: &str) -> Vec<Value> {
         return Vec::new();
     };
     rows.map(|cells| {
-        let mut row = ValueMap::new();
+        let mut row = ValueMap::default();
         for (index, name) in header.iter().enumerate() {
             row.insert(
                 name.clone(),

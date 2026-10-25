@@ -24,21 +24,6 @@
 //!
 //! Example: `ALMADAR_DEBUG='almadar:runtime:*,almadar:bridge' orb verify <app> --screenshot …`
 
-use parking_lot::Mutex;
-use serde::Serialize;
-use std::fmt::Write as _;
-use std::io::{IsTerminal, Write};
-use std::sync::{Arc, Once};
-use std::time::{Duration, Instant};
-use tracing::field::{Field, Visit};
-use tracing::span::{Attributes, Id, Record};
-use tracing::{Event, Level, Metadata, Subscriber};
-use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::layer::{Context, Filter, SubscriberExt};
-use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::Layer;
-
 /// Canonical namespace constants (mirror the TS `createLogger('…')` namespaces).
 pub mod ns {
     pub const RUNTIME_KERNEL: &str = "almadar:runtime:kernel";
@@ -66,6 +51,28 @@ pub const OUTCOME: &str = "outcome";
 pub fn record_outcome<T, E>(span: &tracing::Span, result: &Result<T, E>) {
     span.record(OUTCOME, if result.is_ok() { "ok" } else { "failed" });
 }
+
+#[cfg(feature = "std")]
+pub use hosted::*;
+
+/// The subscriber, its configuration and the timing tree: a hosted process's logging, absent on bare metal.
+#[cfg(feature = "std")]
+mod hosted {
+use crate::sync::Mutex;
+use serde::Serialize;
+use std::fmt::Write as _;
+use std::io::{IsTerminal, Write};
+use std::sync::{Arc, Once};
+use std::time::{Duration, Instant};
+use tracing::field::{Field, Visit};
+use tracing::span::{Attributes, Id, Record};
+use tracing::{Event, Level, Metadata, Subscriber};
+use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::layer::{Context, Filter, SubscriberExt};
+use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::Layer;
+
 
 /// One parsed namespace pattern: exact, `prefix*`, or `*`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -835,6 +842,7 @@ impl std::fmt::Display for TimingTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logging::{record_outcome, OUTCOME};
 
     #[test]
     fn default_config_fires_warn_and_error_only() {
@@ -1045,4 +1053,5 @@ mod tests {
         assert_eq!(lines[1]["data"]["file"], "app.lolo");
         assert!(lines[1]["data"]["elapsedMs"].is_number());
     }
+}
 }

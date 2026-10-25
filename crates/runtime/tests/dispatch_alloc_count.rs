@@ -203,8 +203,8 @@ fn fetch_dispatch_allocation_count_is_pinned() {
 }
 
 // 746 (was 1258): a dispatch clones the kernel's one `prob/*` seed source instead of building one (G-ORBITAL-CORE-029, 2026-10-18).
-// 737: G-ORBITAL-CORE-049, 2026-10-25.
-const PINNED_FETCH: usize = 737;
+// 738: G-ORBITAL-CORE-049, 2026-10-25; +1 the seed's shared payload `Arc`, which spares every step a deep copy.
+const PINNED_FETCH: usize = 738;
 
 #[test]
 fn read_access_allocation_count_is_pinned() {
@@ -330,8 +330,8 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
 
 // 174201 (was 331144): each suspension records the transition its step committed (two names and a box, G-CROSS-259), and a dispatch
 // clones the kernel's one `prob/*` seed source (G-ORBITAL-CORE-029), 2026-10-18.
-// 174040: G-ORBITAL-CORE-049, 2026-10-25.
-const PINNED_REPLAY: usize = 174040;
+// 174041: G-ORBITAL-CORE-049, 2026-10-25; +1 the seed's shared payload `Arc`, which spares every step a deep copy.
+const PINNED_REPLAY: usize = 174041;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)

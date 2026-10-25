@@ -3,6 +3,8 @@
 //! Both read the related entity's rows through the kernel's entity source, so on the server role they are
 //! host-answered like any other read. JS twins: `OrbitalServerRuntime.populateRelations` and
 //! `effect-stage.ts` `injectRelationOptions`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::entity_source::EntitySource;
 use orbital_core_base::value::ValueMap;
@@ -253,7 +255,7 @@ fn visit(source: &dyn EntitySource, targets: &HashMap<String, String>, node: &mu
                     Some(Value::Array(entries)) => entries.clone(),
                     _ => Vec::new(),
                 };
-                let mut data: ValueMap = ValueMap::new();
+                let mut data: ValueMap = ValueMap::default();
                 for entry in &entries {
                     let Some(name) = field_name(entry) else {
                         continue;
@@ -276,7 +278,7 @@ fn visit(source: &dyn EntitySource, targets: &HashMap<String, String>, node: &mu
                             let label = text("name")
                                 .or_else(|| text("title"))
                                 .unwrap_or_else(|| id.clone());
-                            Value::Object(ValueMap::from([
+                            Value::Object(ValueMap::from_iter([
                                 ("value".to_string(), Value::String(id)),
                                 ("label".to_string(), Value::String(label)),
                             ]))

@@ -1,4 +1,6 @@
 //! Object operators (and the `path` builder).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::util::deep_equals;
@@ -71,7 +73,7 @@ impl Operator for ObjectSetOp {
 
         let mut result = match obj {
             Value::Object(o) => Value::Object(o),
-            Value::Null => Value::Object(ValueMap::new()),
+            Value::Null => Value::Object(ValueMap::default()),
             _ => {
                 return Err(OrbitalError::Eval(EvalError::TypeMismatch {
                     expected: "object".to_string(),
@@ -112,7 +114,7 @@ impl Operator for ObjectHasOp {
 pub struct ObjectMergeOp;
 impl Operator for ObjectMergeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        let mut result = ValueMap::new();
+        let mut result = ValueMap::default();
         let mut refused = false;
 
         for arg in args {
@@ -162,7 +164,7 @@ impl Operator for ObjectFromEntriesOp {
             }
         };
 
-        let mut result = ValueMap::new();
+        let mut result = ValueMap::default();
         for entry in array {
             if let Value::Array(pair) = entry {
                 if pair.len() >= 2 {
@@ -208,7 +210,7 @@ impl Operator for ObjectDeepMergeOp {
             Some(result)
         }
 
-        let mut result = ValueMap::new();
+        let mut result = ValueMap::default();
         let mut refused = false;
 
         for arg in args {
@@ -264,7 +266,7 @@ impl Operator for ObjectPickOp {
             }
         };
 
-        let mut result = ValueMap::new();
+        let mut result = ValueMap::default();
         for key in keys {
             if let Some(value) = source.get(&key) {
                 result.insert(key, value.clone());
@@ -335,7 +337,7 @@ impl Operator for ObjectMapValuesOp {
         // Handle lambda mapper
         let (params, body) = require_lambda!(mapper);
 
-        let mut result = ValueMap::new();
+        let mut result = ValueMap::default();
         for (key, value) in source {
             let mut child_ctx = ctx.child();
             if !params.is_empty() {
@@ -370,7 +372,7 @@ impl Operator for ObjectFilterOp {
             }
         };
 
-        let mut result = ValueMap::new();
+        let mut result = ValueMap::default();
         for (key, value) in source {
             let should_include = super::array::apply_callback(
                 &args[1],
@@ -411,7 +413,7 @@ impl Operator for ObjectMapKeysOp {
 
         let (params, body) = require_lambda!(mapper);
 
-        let mut result = ValueMap::new();
+        let mut result = ValueMap::default();
         let mut refused = false;
         for (key, value) in source {
             let mut child_ctx = ctx.child();

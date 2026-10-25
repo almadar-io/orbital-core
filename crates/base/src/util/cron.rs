@@ -12,6 +12,8 @@
 //! - `orbital-shell-typescript::codegen::effect::tick` — emit real
 //!   cron-matching code for a `ticks { ... every "<cron>" }` block.
 //! - `orbital-server::tick::scheduler` — the native Rust tick scheduler.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::HashSet;
 

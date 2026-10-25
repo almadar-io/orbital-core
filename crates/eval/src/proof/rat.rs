@@ -1,5 +1,7 @@
 //! Exact rationals for the linear theory. Every operation is checked: an overflow returns `None`, and the caller
 //! reports the obligation unproved rather than guessing.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::cmp::Ordering;
 

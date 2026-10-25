@@ -1,6 +1,8 @@
 //! The ordering and expectations of the verifier's flow planners: the emit sweep, the pattern event contracts,
 //! affordance clicks, forced-failure probes and the CRUD chains. A host finds what it can only see (the
 //! rendered buttons, forms and portals) and asks the kernel what to fire and what to expect.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::planner::{self, Precondition};
 use crate::verify::plan_wire::{self, PlanOptions, PreambleEvent, RoleWire};

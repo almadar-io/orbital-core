@@ -42,20 +42,21 @@ pub mod async_bus;
 pub mod bus;
 pub mod types;
 
-/// Event names the bus deliberately never delivers.
+/// Event names the bus deliberately never delivers: the operator table's `emit` `busExcluded` list, or the copy a
+/// registered client program carries (`registry::dispatch_facts`).
 ///
-/// The runtime excludes these from bus routing (both the qualified
-/// self-subscription and the bare cascade) because a bare `UI:INIT` would
-/// broadcast a re-INIT into every trait on the page. The consequence for
-/// static analysis: **a control targeting one of these can never fire**, so no
-/// affordance bound to a lifecycle name may count as an emitter. Shared here in
-/// `orbital-core` because L1 and L2 both need the same answer.
-pub const BUS_EXCLUDED_EVENTS: &[&str] = &["INIT", "LOAD", "$MOUNT"];
+/// A bare `UI:INIT` on the bus would broadcast a re-INIT into every trait on the page, so a control targeting one of
+/// these can never fire and no affordance bound to a lifecycle name counts as an emitter.
+pub fn bus_excluded_events() -> &'static [String] {
+    crate::language::registry::dispatch_facts()
+        .map(|facts| facts.bus_excluded.as_slice())
+        .expect("a kernel dispatches only after its operator table or a registered program supplied the dispatch facts")
+}
 
 /// True when the bus will never deliver `event`, so a control wired to it is
 /// dead on both execution paths.
 pub fn is_bus_excluded_event(event: &str) -> bool {
-    BUS_EXCLUDED_EVENTS.contains(&event)
+    bus_excluded_events().iter().any(|excluded| excluded == event)
 }
 
 pub use bus::{shared_bus, EventBus, EventCallback, SharedEventBus};

@@ -9,6 +9,8 @@
 //!
 //! [`IR_VERSION`] is the one contract between `orb` and its shells: a shell
 //! accepts a range of IR versions and refuses a request outside it.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::ir::types::OirModule;
 use crate::project::WriteOptions;

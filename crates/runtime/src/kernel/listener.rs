@@ -1,4 +1,6 @@
 //! Cross-orbital event listener wiring for the runtime kernel.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::bus_event::BusEventSource;
 use orbital_core_base::value::ValueMap;
@@ -10,7 +12,7 @@ use orbital_core_base::schema::types::ListenDefinition;
 use orbital_core_base::events::bus::SharedEventBus;
 use orbital_core_base::events::types::SubscriptionId;
 use orbital_core_base::value::Value;
-use parking_lot::RwLock;
+use orbital_core_base::sync::RwLock;
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -139,7 +141,7 @@ impl ListenerManager {
             }
 
             let mapped_payload = if let Some(ref mapping) = payload_mapping {
-                let mut mapped = ValueMap::new();
+                let mut mapped = ValueMap::default();
                 for (key, expr) in mapping {
                     if let Ok(value) = evaluator.evaluate(expr, &ctx) {
                         mapped.insert(key.clone(), value);
@@ -392,13 +394,13 @@ mod tests {
             .register("ProfileManagement", "Orb", &listen)
             .unwrap();
 
-        let mut payload1 = ValueMap::new();
+        let mut payload1 = ValueMap::default();
         payload1.insert("status".to_string(), Value::String("pending".to_string()));
         bus.emit(Event::new("USER_UPDATED", Value::Object(payload1)));
 
         assert_eq!(triggered.load(Ordering::SeqCst), 0);
 
-        let mut payload2 = ValueMap::new();
+        let mut payload2 = ValueMap::default();
         payload2.insert("status".to_string(), Value::String("active".to_string()));
         bus.emit(Event::new("USER_UPDATED", Value::Object(payload2)));
 
@@ -417,7 +419,7 @@ mod tests {
             },
         ));
 
-        let mut mapping = orbital_core_base::schema::sexpr::SObject::new();
+        let mut mapping = orbital_core_base::schema::sexpr::SObject::default();
         mapping.insert(
             "userId".to_string(),
             serde_json::from_str::<SExpression>(r#""@payload.id""#).unwrap(),
@@ -441,7 +443,7 @@ mod tests {
             .register("ProfileManagement", "Orb", &listen)
             .unwrap();
 
-        let mut payload = ValueMap::new();
+        let mut payload = ValueMap::default();
         payload.insert("id".to_string(), Value::String("user-123".to_string()));
         payload.insert("name".to_string(), Value::String("John".to_string()));
         bus.emit(Event::new("USER_CREATED", Value::Object(payload)));

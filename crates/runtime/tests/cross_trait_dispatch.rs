@@ -852,7 +852,7 @@ fn live_kernel() -> Live {
         kernel.clone(),
         Arc::new(move |request: &orbital_core_runtime::resumable::IoRequest| native.answer(request)),
         Arc::new(move |_: &orbital_core_runtime::resumable::CallSite, event: &str, result: Result<orbital_core_runtime::resumable::DispatchOutcomes, orbital_core_runtime::resumable::DispatchError>| {
-            let payload = result.unwrap().first().map(|(_, r)| serde_json::to_value(&r.payload).unwrap()).unwrap_or_default();
+            let payload = result.unwrap().first().map(|(_, r)| serde_json::to_value(&*r.payload).unwrap()).unwrap_or_default();
             done.lock().unwrap().send((event.to_string(), payload)).unwrap();
         }),
     ));
@@ -899,4 +899,43 @@ fn control_an_unkeyed_subscribe_is_answered_in_place_and_refused() {
     let entity = watch(&live.kernel);
     assert!(entity["error"].as_str().unwrap_or_default().contains("give it a key"), "{entity}");
     assert_eq!(entity["count"].as_f64().unwrap_or(0.0), 0.0, "no item arrived");
+}
+
+fn two_listener_schema() -> OrbitalSchema {
+    let target = |name: &str, mapping: serde_json::Value| {
+        serde_json::json!({
+            "name": name,
+            "linkedEntity": "Item",
+            "listens": [{ "event": "SAVE", "triggers": "DO_SAVE", "source": { "kind": "trait", "trait": "Source" }, "payloadMapping": mapping }],
+            "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "DO_SAVE", "effects": [["set", "@entity.id", "@payload.id"]] }]
+            }
+        })
+    };
+    serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Source", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [{ "from": "idle", "to": "idle", "event": "SAVE" }] } },
+                target("TargetA", serde_json::Value::Null),
+                target("TargetB", serde_json::Value::Null),
+                target("Mapped", serde_json::json!({ "id": "@payload.id" }))
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn listeners_of_one_delivery_keep_one_shared_payload_in_their_outcomes() {
+    let kernel = kernel_with(two_listener_schema());
+    let payload: Value = serde_json::from_value(serde_json::json!({ "id": "abc123", "rows": [1, 2, 3] })).unwrap();
+    let outcomes = kernel.dispatch("Source", Some("row-1"), "SAVE", payload).unwrap();
+    let of = |name: &str| &outcomes.iter().find(|(t, _)| t == name).unwrap_or_else(|| panic!("{name} should fire")).1;
+    assert!(Arc::ptr_eq(&of("TargetA").payload, &of("TargetB").payload), "bare listeners share the delivered payload, never a copy each");
+    assert!(!Arc::ptr_eq(&of("TargetA").payload, &of("Mapped").payload), "control: a mapped listener holds its own payload");
+    assert_eq!(serde_json::to_value(&*of("Mapped").payload).unwrap()["id"], "abc123");
 }

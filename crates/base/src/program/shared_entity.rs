@@ -1,14 +1,17 @@
 //! A trait's `@entity` as the kernel keeps it: each field behind its own `Arc`, so binding it to a step, a snapshot
 //! and a merge copy no field. The whole value is built once, only when something reads `@entity` whole. Serializes
 //! exactly like the `Value` it stands for.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::value::{path_segments, Value, ValueMap};
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 use std::borrow::Cow;
-use std::sync::{Arc, OnceLock};
+use crate::sync::OnceLock;
+use std::sync::Arc;
 
-pub type SharedFields = indexmap::IndexMap<String, Arc<Value>>;
+pub type SharedFields = crate::collections::IndexMap<String, Arc<Value>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct SharedEntity(Repr);
@@ -54,7 +57,7 @@ impl SharedEntity {
     }
 
     pub fn empty_object() -> Self {
-        Self::object(SharedFields::new())
+        Self::object(SharedFields::default())
     }
 
     fn object(fields: SharedFields) -> Self {
@@ -253,7 +256,7 @@ impl SharedEntity {
         };
         match self.object_fields() {
             Some(base) => {
-                let mut merged = SharedFields::with_capacity(base.len() + set_fields.len());
+                let mut merged = SharedFields::with_capacity_and_hasher(base.len() + set_fields.len(), Default::default());
                 merged.extend(base.iter().map(|(k, v)| (k.clone(), Arc::clone(v))));
                 for (k, v) in set_fields.iter() {
                     merged.insert(k.clone(), Arc::clone(v));

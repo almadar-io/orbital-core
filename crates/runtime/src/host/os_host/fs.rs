@@ -1,10 +1,12 @@
 //! The `fs` family: files, descriptors, directories, stat, path effects and file watching.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::{HandleSlab, IdCounter, OsHost};
 use crate::resumable::CallSite;
 use orbital_core_base::os::{OsError, OsOp};
 use orbital_core_base::value::Value;
-use parking_lot::Mutex;
+use orbital_core_base::sync::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -2338,7 +2340,7 @@ mod tests {
         let e = fx
             .call(
                 OsOp::WatchFiles,
-                vec![st("/x/**"), Value::Object(ValueMap::new())],
+                vec![st("/x/**"), Value::Object(ValueMap::default())],
             )
             .expect_err("unsupported");
         assert_eq!(e.kind, OsErrorKind::Unsupported);
@@ -2371,7 +2373,7 @@ mod tests {
             let (entered_tx, entered) = mpsc::channel();
             let (release, release_rx) = mpsc::channel();
             let (terminal_tx, terminal) = mpsc::channel();
-            let release_rx = parking_lot::Mutex::new(release_rx);
+            let release_rx = orbital_core_base::sync::Mutex::new(release_rx);
             let first = AtomicBool::new(true);
             handles.completions.set_test_observer(Arc::new(move |key, lease, observed| {
                 assert_eq!(key, "open");
@@ -2464,7 +2466,7 @@ mod tests {
                     if kind == "unknown" {
                         assert_eq!(result, Err(OsError::new(OsErrorKind::Closed, "os/close: not an open handle")));
                     } else {
-                        assert_eq!(result, Ok(Value::Object(ValueMap::new())));
+                        assert_eq!(result, Ok(Value::Object(ValueMap::default())));
                     }
                     assert!(!handles.fs.fds.contains(fd));
                     assert!(!handles.net.socks.contains(fd));

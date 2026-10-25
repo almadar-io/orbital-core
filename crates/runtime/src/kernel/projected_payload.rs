@@ -1,6 +1,8 @@
 //! `T.f` payload fields at dispatch: each takes `f` of a row of `T` the caller has (wrapped in
 //! an array for an array field), so a filter or lookup keyed by it matches real data. JS twin:
 //! `@almadar-io/verify` `applyProjectedPayload`.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::value::ValueMap;
 use orbital_core_base::schema::types::PayloadField;
@@ -13,7 +15,7 @@ pub fn projected_payload<'a>(
     fields: &[PayloadField],
     rows_for: impl Fn(&str) -> Option<&'a [Value]>,
 ) -> ValueMap {
-    let mut out = ValueMap::new();
+    let mut out = ValueMap::default();
     for field in fields {
         let Some(projection) = &field.projected_from else {
             continue;
@@ -47,7 +49,7 @@ pub fn projected_through_mapping<'a>(
     rows_for: impl Fn(&str) -> Option<&'a [Value]>,
 ) -> ValueMap {
     let projected = projected_payload(target_fields, rows_for);
-    let mut out = ValueMap::new();
+    let mut out = ValueMap::default();
     for (target_field, expr) in mapping {
         let SExpression::String(binding) = expr else {
             continue;

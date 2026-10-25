@@ -7,12 +7,15 @@
 //! plus running `cargo build` is enough to update the validator.
 //!
 //! See `docs/Lolo_Language_Spec_v3_PLAN.md` Section 8 for context.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::schema::types::PayloadTypeWhen;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "std")]
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use crate::sync::OnceLock;
 
 // ============================================================================
 // 3.1 — canonical-operators.json (installed @almadar/std operator table)
@@ -277,6 +280,12 @@ pub struct EmbeddedOperator {
     /// from the arguments' signs (`sum`, `product`, `max`, `min`). The checker proves divisors and roots with it.
     #[serde(default)]
     pub sign: Option<ResultSign>,
+    /// The event names the bus never delivers (`busExcluded`, on `emit`): a control or emit naming one fires nothing.
+    #[serde(rename = "busExcluded", default)]
+    pub bus_excluded: Vec<String>,
+    /// The options that name a dispatch's target (`targetOptions`, on `program/dispatch`).
+    #[serde(rename = "targetOptions", default)]
+    pub target_options: Vec<String>,
     /// 0-indexed argument position of the operator's lambda/callback, when it
     /// takes one. The sexpr validator rejects a `(fn …)` form at any OTHER
     /// argument position — the decidable wrong-arg-order class
@@ -361,6 +370,71 @@ pub fn parsed_operators() -> &'static OperatorsSchema {
 /// All operators keyed by name (e.g. `"+"`, `"render-ui"`, `"behavior/compose"`).
 pub fn operators() -> &'static HashMap<String, EmbeddedOperator> {
     &parsed_operators().operators
+}
+
+/// Every slot an effect's `emit` options map declares in the operator table: the names an emit map may route a
+/// result to.
+pub fn emit_slots() -> &'static HashSet<String> {
+    static SLOTS: OnceLock<HashSet<String>> = OnceLock::new();
+    SLOTS.get_or_init(|| {
+        let mut slots = HashSet::new();
+        for op in operators().values() {
+            for param in &op.params {
+                if let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) = &param.ty {
+                    if let Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields: emit, .. })) = fields.get("emit") {
+                        slots.extend(emit.keys().cloned());
+                    }
+                }
+            }
+        }
+        slots
+    })
+}
+
+/// What a kernel reads at dispatch from the operator table: the events the bus never delivers (`emit` `busExcluded`)
+/// and the options that name a dispatch's target (`program/dispatch` `targetOptions`). A browser kernel has no table, so
+/// a compiled client program carries them (`_metadata.dispatchFacts`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatchFacts {
+    pub bus_excluded: Vec<String>,
+    pub target_options: Vec<String>,
+}
+
+static PROGRAM_DISPATCH_FACTS: OnceLock<DispatchFacts> = OnceLock::new();
+
+/// The dispatch facts of the installed operator table; `None` when no table is installed.
+pub fn table_dispatch_facts() -> Option<&'static DispatchFacts> {
+    static TABLE: OnceLock<DispatchFacts> = OnceLock::new();
+    crate::language_data::operator_data().ok()?;
+    Some(TABLE.get_or_init(|| {
+        let list = |op: &str, read: fn(&EmbeddedOperator) -> &Vec<String>| {
+            get_operator(op).map(read).cloned().expect("the operator table declares its dispatch facts (checked at load)")
+        };
+        DispatchFacts {
+            bus_excluded: list("emit", |op| &op.bus_excluded),
+            target_options: list("program/dispatch", |op| &op.target_options),
+        }
+    }))
+}
+
+/// Install the dispatch facts a compiled program carries; refuses facts that differ from ones already installed.
+pub fn install_dispatch_facts(facts: DispatchFacts) -> Result<(), String> {
+    match PROGRAM_DISPATCH_FACTS.get() {
+        Some(installed) if *installed != facts => Err(format!(
+            "dispatchFacts: the program carries {facts:?}, but this kernel already runs a program with {installed:?}"
+        )),
+        Some(_) => Ok(()),
+        None => {
+            let _ = PROGRAM_DISPATCH_FACTS.set(facts);
+            Ok(())
+        }
+    }
+}
+
+/// The installed operator table's dispatch facts, else those a registered program carried.
+pub fn dispatch_facts() -> Option<&'static DispatchFacts> {
+    table_dispatch_facts().or_else(|| PROGRAM_DISPATCH_FACTS.get())
 }
 
 /// All operator categories.
@@ -947,6 +1021,7 @@ pub fn get_pattern(pattern_type: &str) -> Option<&'static EmbeddedPattern> {
 // are installed, not baked: a name is known when an installed package ships a
 // behavior file of that name (`behavior_index::indexed_names`).
 
+#[cfg(feature = "std")]
 /// Returns true if `name` is a behavior an installed behavior package ships. This
 /// call site has no `LoaderConfig`/`packages` to reuse, so it re-discovers from
 /// `current_dir()` / the user store, same as `CompilerOptions::from_env`.
@@ -954,6 +1029,7 @@ pub fn is_known_behavior(name: &str) -> bool {
     installed_behavior_index_contains(name)
 }
 
+#[cfg(feature = "std")]
 /// True when `name` is shipped by any installed behavior package. Package discovery +
 /// each package's names are memoized per registry root.
 pub fn installed_behavior_index_contains(name: &str) -> bool {
@@ -969,6 +1045,7 @@ pub fn installed_behavior_index_contains(name: &str) -> bool {
         .any(|pkg| package_behavior_names(pkg).contains(name))
 }
 
+#[cfg(feature = "std")]
 pub fn package_behavior_names(pkg: &crate::behavior_packages::BehaviorPackage) -> HashSet<String> {
     use std::sync::Mutex;
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, HashSet<String>>>> = OnceLock::new();

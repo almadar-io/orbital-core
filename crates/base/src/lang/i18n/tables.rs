@@ -1,10 +1,12 @@
 //! The vocabulary tables: English, built in (the grammar this binary
 //! implements; `en.json` is synced from `@almadar/core` by pattern-sync's
 //! `i18n` step), plus every installed language pack ([`super::packs`]).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use crate::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct I18nMeta {

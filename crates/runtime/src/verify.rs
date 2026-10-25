@@ -1,6 +1,8 @@
 //! Layer 1 — the kernel circuit walk: plan every trait's transitions, drive the
 //! kernel headlessly, observe. Pure over a resolved program, so the compiled
 //! `orb verify` and an in-browser client run the same walk.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 pub mod driver;
 pub mod flows;
@@ -168,7 +170,7 @@ fn verify_with_harness(
 fn persona_with_field(base: &Value, field: &str, value: &str) -> Value {
     let mut obj = match base {
         Value::Object(m) => m.clone(),
-        _ => ValueMap::new(),
+        _ => ValueMap::default(),
     };
     obj.insert(field.to_string(), Value::String(value.to_string()));
     Value::Object(obj)

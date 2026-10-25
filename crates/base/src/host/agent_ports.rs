@@ -7,6 +7,8 @@
 //! plan is before the host is asked. The kernel (`orbital-core-runtime` `kernel/agent_ports`) runs the plan;
 //! the host runs the dispatch. Twin of `@almadar/core` `src/access/agentPorts.ts`; one corpus
 //! (`crates/runtime/tests/fixtures/agent-ports/vectors.json`) pins both.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::external_inputs::ExternalInput;
 use crate::schema::types::{
@@ -49,7 +51,7 @@ fn text(s: &str) -> Value {
 }
 
 fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
-    let mut map = ValueMap::new();
+    let mut map = ValueMap::default();
     for (key, value) in pairs {
         map.insert(key.to_string(), value);
     }
@@ -65,7 +67,7 @@ fn through_json<T: serde::Serialize>(value: &T) -> Value {
 
 /// A refusal the model is answered with: `{ ok: false, error }`.
 fn refusal(error: &str, issues: Option<Vec<Value>>) -> Value {
-    let mut map = ValueMap::new();
+    let mut map = ValueMap::default();
     map.insert("ok".to_string(), Value::Bool(false));
     map.insert("error".to_string(), text(error));
     if let Some(issues) = issues {
@@ -78,7 +80,7 @@ fn refusal(error: &str, issues: Option<Vec<Value>>) -> Value {
 /// payload the model is shown in place of the input's own.
 pub fn reflect_input(input: &ExternalInput, payload: Option<&[PayloadField]>) -> Value {
     let payload = payload.unwrap_or(&input.payload_schema);
-    let mut map = ValueMap::new();
+    let mut map = ValueMap::default();
     map.insert("orbital".to_string(), text(&input.orbital));
     map.insert("trait".to_string(), text(&input.trait_name));
     map.insert("event".to_string(), text(&input.event));
@@ -260,7 +262,7 @@ fn element_of(field_type: &str) -> (bool, &str) {
 
 /// A declared payload as the JSON Schema of one object: what a tool-calling model fills.
 pub fn payload_schema_to_json_schema(fields: &[PayloadField]) -> Value {
-    let mut properties = ValueMap::new();
+    let mut properties = ValueMap::default();
     let mut required: Vec<Value> = Vec::new();
     for field in fields {
         if field.properties.as_ref().is_some_and(Vec::is_empty) && field.field_type != "union" {
@@ -271,7 +273,7 @@ pub fn payload_schema_to_json_schema(fields: &[PayloadField]) -> Value {
             required.push(text(&field.name));
         }
     }
-    let mut out = ValueMap::new();
+    let mut out = ValueMap::default();
     out.insert("type".to_string(), text("object"));
     if !fields.is_empty() {
         out.insert("additionalProperties".to_string(), Value::Bool(false));
@@ -288,7 +290,7 @@ fn payload_field_to_json_schema(field: &PayloadField) -> Value {
     let mut shape = match &field.properties {
         Some(properties) => payload_schema_to_json_schema(properties),
         None => {
-            let mut base = ValueMap::new();
+            let mut base = ValueMap::default();
             if let Some(json) = json_type_of(element) {
                 base.insert("type".to_string(), text(json));
             }
@@ -511,7 +513,7 @@ pub fn issues_value(issues: &[PayloadIssue], root: &Value) -> Vec<Value> {
     issues
         .iter()
         .map(|found| {
-            let mut map = ValueMap::new();
+            let mut map = ValueMap::default();
             map.insert("path".to_string(), text(&found.path));
             map.insert("reason".to_string(), text(found.reason));
             if let Some(expected) = &found.expected {
@@ -619,7 +621,7 @@ fn inbound_plan(options: &ValueMap) -> Result<DispatchPlan, String> {
         Some(_) => return Err(INBOUND_SHAPE.to_string()),
     };
     let headers = match options.get("headers") {
-        None | Some(Value::Null) => ValueMap::new(),
+        None | Some(Value::Null) => ValueMap::default(),
         Some(Value::Object(headers)) if headers.values().all(|v| v.as_str().is_some()) => headers.clone(),
         Some(_) => return Err(INBOUND_SHAPE.to_string()),
     };
@@ -633,7 +635,7 @@ enum Arguments {
 
 fn arguments_of(raw: Option<&Value>) -> Result<Arguments, String> {
     match raw {
-        None | Some(Value::Null) => Ok(Arguments::Payload(Value::Object(ValueMap::new()))),
+        None | Some(Value::Null) => Ok(Arguments::Payload(Value::Object(ValueMap::default()))),
         Some(Value::String(source)) => {
             let source = if source.is_empty() {
                 "{}"
@@ -658,8 +660,13 @@ pub const DISPATCH_REQUEST_OPTIONS: [&str; 14] = [
     "delivery", "dispatchLog", "viewer",
 ];
 
-/// The request options that name a dispatch's target; a request naming none of them is addressed at the calling trait.
-pub const REQUEST_TARGET_OPTIONS: [&str; 3] = ["orbital", "targetTrait", "event"];
+/// The request options that name a dispatch's target (the operator table's `program/dispatch` `targetOptions`); a
+/// request naming none of them is addressed at the calling trait.
+pub fn request_target_options() -> &'static [String] {
+    crate::language::registry::dispatch_facts()
+        .map(|facts| facts.target_options.as_slice())
+        .expect("a kernel dispatches only after its operator table or a registered program supplied the dispatch facts")
+}
 
 /// The event a `program/dispatch` fires on its own calling trait: a bare event address whose options carry a request
 /// option and name no target. The kernel plans it so and the validator counts it as fired.
@@ -667,7 +674,7 @@ pub fn calling_trait_event<'a, 'k>(address: &'a str, mut option_keys: impl Itera
     let bare = !address.is_empty() && !address.contains('.') && !address.starts_with('@');
     let mut requested = false;
     for key in option_keys.by_ref() {
-        if REQUEST_TARGET_OPTIONS.contains(&key) {
+        if request_target_options().iter().any(|target| target == key) {
             return None;
         }
         requested |= key != "schema";
@@ -702,15 +709,15 @@ fn request_option_error(key: &str, value: &Value) -> Option<String> {
 type DispatchOptions = (Option<Vec<PayloadField>>, ValueMap);
 
 fn schema_option(raw: Option<&Value>) -> Result<DispatchOptions, String> {
-    let Some(raw) = raw else { return Ok((None, ValueMap::new())) };
+    let Some(raw) = raw else { return Ok((None, ValueMap::default())) };
     let Value::Object(options) = raw else {
         return if raw.is_null() {
-            Ok((None, ValueMap::new()))
+            Ok((None, ValueMap::default()))
         } else {
             Err("program/dispatch: the options must be an object".to_string())
         };
     };
-    let mut request = ValueMap::new();
+    let mut request = ValueMap::default();
     for (key, value) in options.iter().filter(|(key, _)| key.as_str() != "schema") {
         if let Some(error) = request_option_error(key, value) {
             return Err(error);
@@ -763,7 +770,7 @@ pub fn plan_dispatch(
     if !request.is_empty() {
         let mut request = request;
         let mut address = address.clone();
-        if REQUEST_TARGET_OPTIONS.iter().all(|key| !request.contains_key(*key)) {
+        if request_target_options().iter().all(|key| !request.contains_key(key)) {
             if address.contains('.') {
                 return failed("program/dispatch: a request addressed at the calling trait names a bare event".to_string());
             }
@@ -1018,7 +1025,7 @@ mod tests {
             as_json(&Value::Array(issues)),
             serde_json::json!([{ "path": "n", "reason": "wrong-type", "expected": "number", "received": "string" }])
         );
-        let empty = Value::Object(ValueMap::new());
+        let empty = Value::Object(ValueMap::default());
         let issues = issues_value(&payload_issues(&fields, &empty), &empty);
         assert_eq!(
             as_json(&Value::Array(issues)),
@@ -1153,6 +1160,41 @@ mod tests {
             assert!(matches!(&plan, DispatchPlan::Failed(f) if f.error.contains(why)), "{bad}: {plan:?}");
         }
         assert!(matches!(plan_request(request(serde_json::json!({ "traits": null }))), DispatchPlan::Request { .. }), "control: null traits is discovery");
+    }
+
+    #[test]
+    fn the_dispatch_target_options_and_the_bus_excluded_events_are_the_operator_table_s() {
+        let data = crate::language_data::operator_data().expect("the installed operator table");
+        let table: Json = serde_json::from_str(&data.operators).unwrap();
+        let listed = |op: &str, field: &str| -> Vec<String> {
+            table["operators"][op][field].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect()
+        };
+        assert_eq!(request_target_options(), listed("program/dispatch", "targetOptions").as_slice());
+        assert_eq!(crate::events::bus_excluded_events(), listed("emit", "busExcluded").as_slice());
+        assert!(crate::events::is_bus_excluded_event("$MOUNT"));
+        assert!(!crate::events::is_bus_excluded_event("SAVE"), "control: an ordinary event is delivered");
+    }
+
+    #[test]
+    fn a_program_s_dispatch_facts_install_once_and_conflicting_ones_are_refused() {
+        use crate::language::registry::{install_dispatch_facts, DispatchFacts};
+        let facts = |excluded: &[&str]| DispatchFacts {
+            bus_excluded: excluded.iter().map(|e| e.to_string()).collect(),
+            target_options: vec!["orbital".into(), "targetTrait".into(), "event".into()],
+        };
+        assert_eq!(install_dispatch_facts(facts(&["INIT", "LOAD", "$MOUNT"])), Ok(()));
+        assert_eq!(install_dispatch_facts(facts(&["INIT", "LOAD", "$MOUNT"])), Ok(()), "a second program with the same facts");
+        let conflict = install_dispatch_facts(facts(&["INIT"]));
+        assert!(conflict.is_err_and(|e| e.contains("already runs a program")), "control: different facts are refused");
+    }
+
+    #[test]
+    fn the_emit_slots_are_every_emit_option_field_the_operator_table_declares() {
+        let slots = crate::language::registry::emit_slots();
+        for slot in ["success", "failure", "cancelled", "onMessage", "onChange"] {
+            assert!(slots.contains(slot), "{slot}: {slots:?}");
+        }
+        assert!(!slots.contains("onSave"), "control: a name no emit options declare is no slot: {slots:?}");
     }
 
     #[test]

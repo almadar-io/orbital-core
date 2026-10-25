@@ -7,6 +7,8 @@
 //!
 //! `KERNEL_WIRE_TS_WRITE=1 cargo test -p orbital-core-runtime --lib kernel_wire_ts` rewrites the file; without it
 //! the test fails when the committed file is stale.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::{
     AppliedWire, DispatchWire, FrameWire, IoReplyWire, MountWire, ResolveProgressWire, ServerProgressWire,

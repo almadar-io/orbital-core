@@ -2,6 +2,8 @@
 //! it starts with a [`DriverStep`], and each [`DriverAnswer`] resumed into it yields the next. [`drive`] answers
 //! every ask through the kernel's journaled [`IoPort`] wrappers, one send or read per ask, so a replay of the
 //! journal is a replay of the driver.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 
@@ -711,7 +713,7 @@ mod tests {
     }
 
     fn beacon_driver() -> (crate::http_request::HttpCallDriver, DriverStep) {
-        let request = Value::Object(orbital_core_base::value::ValueMap::from([(
+        let request = Value::Object(orbital_core_base::value::ValueMap::from_iter([(
             "text".to_string(),
             Value::String("hello".to_string()),
         )]));

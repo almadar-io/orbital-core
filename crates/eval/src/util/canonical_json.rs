@@ -14,6 +14,8 @@
 //! `orbital-lolo`'s `lower.rs` / `formatter.rs` golden-comparison
 //! `canonicalize` helpers) — `orbital-core` is the most-upstream crate all
 //! four already depend on, so this is the one production owner.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde_json::Value;
 

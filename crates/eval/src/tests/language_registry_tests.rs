@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 #[allow(unused_imports)]
 use orbital_core_base::language::registry::*;
 

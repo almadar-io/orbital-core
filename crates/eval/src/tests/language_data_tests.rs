@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 #[allow(unused_imports)]
 use crate::language_loader::install_language_bundle;
 #[allow(unused_imports)]
@@ -270,8 +272,10 @@ mod tests {
 
     fn table(op: &str, category_targets: &str) -> String {
         format!(
-            r#"{{"categories":{{"arithmetic":{{"description":"","target":["rust","ts"]}},"other":{{"description":"","target":{category_targets}}}}},
-                "operators":{{"+":{{"category":"arithmetic","minArity":2,"returnType":"number"}},"{op}":{{"category":"other","minArity":0,"returnType":"number"}}}}}}"#
+            r#"{{"categories":{{"arithmetic":{{"description":"","target":["rust","ts"]}},"other":{{"description":"","target":{category_targets}}},"effect":{{"description":"","target":[]}}}},
+                "operators":{{"+":{{"category":"arithmetic","minArity":2,"returnType":"number"}},"{op}":{{"category":"other","minArity":0,"returnType":"number"}},
+                "emit":{{"category":"effect","minArity":1,"returnType":"void","busExcluded":["INIT","LOAD","$MOUNT"]}},
+                "program/dispatch":{{"category":"effect","minArity":1,"returnType":"void","targetOptions":["orbital","targetTrait","event"]}}}}}}"#
         )
     }
 
@@ -295,6 +299,26 @@ mod tests {
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
         assert!(err.to_string().contains("category `other`"), "{err}");
+    }
+
+    #[test]
+    fn a_table_without_the_bus_excluded_events_or_the_dispatch_target_options_is_refused() {
+        for (op, field) in [("emit", "busExcluded"), ("program/dispatch", "targetOptions")] {
+            let tmp = Tmp::new(&format!("ops-no-{field}"));
+            let mut v: Value = serde_json::from_str(&table("-", r#"["rust"]"#)).unwrap();
+            v["operators"][op].as_object_mut().unwrap().remove(field);
+            install_std(&tmp.0, ">=17.0.0", &v.to_string());
+            let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+            assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE", "{op}");
+            let msg = err.to_string();
+            assert!(msg.contains(&format!("operator `{op}`")) && msg.contains(field), "{msg}");
+
+            let tmp = Tmp::new(&format!("ops-no-{field}-entry"));
+            v["operators"].as_object_mut().unwrap().remove(op);
+            install_std(&tmp.0, ">=17.0.0", &v.to_string());
+            let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+            assert!(err.to_string().contains(&format!("operator `{op}`")), "a table without `{op}` is refused: {err}");
+        }
     }
 
     #[test]

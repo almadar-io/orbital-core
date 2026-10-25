@@ -1,4 +1,6 @@
 //! Array operators.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
@@ -1232,7 +1234,7 @@ impl Operator for ArrayNearestOp {
         } else {
             best_score - second_best
         };
-        let mut result = ValueMap::new();
+        let mut result = ValueMap::default();
         result.insert("index".to_string(), Value::Number(best_idx as f64));
         result.insert("score".to_string(), Value::Number(best_score));
         result.insert("margin".to_string(), Value::Number(margin));

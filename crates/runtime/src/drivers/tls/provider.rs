@@ -4,6 +4,8 @@
 
 //! A rustls `CryptoProvider` built over the RustCrypto crates. Randomness is the session's seeded DRBG
 //! (`random`); there is no ambient entropy and no signing key (the kernel is only ever a TLS client).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 mod aead;
 mod hash;

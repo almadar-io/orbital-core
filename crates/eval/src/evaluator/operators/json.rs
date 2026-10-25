@@ -5,6 +5,8 @@
 //! non-string input → `Value::Null` (JS `null`), never throws —
 //! guards can branch on null. No reviver, no prototype access, no side
 //! effects. `(json/stringify v)` is the inverse: any `Value` → JSON string.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;

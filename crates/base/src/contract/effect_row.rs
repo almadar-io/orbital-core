@@ -28,6 +28,8 @@
 //! - **L2** knows the whole program post-inline. After `rewrite_config_bindings`
 //!   substitutes call-site config, it re-resolves those entries and only then are
 //!   resource comparisons meaningful.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 

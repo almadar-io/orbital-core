@@ -1,6 +1,8 @@
 //! Event Types
 //!
 //! Core types for the event bus system.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::value::ValueMap;
 use crate::value::Value;
@@ -54,7 +56,7 @@ impl Event {
             source: None,
             target: None,
             timestamp: crate::time_util::now_millis(),
-            metadata: ValueMap::new(),
+            metadata: ValueMap::default(),
         }
     }
 
@@ -66,7 +68,7 @@ impl Event {
             source: Some(source.to_string()),
             target: None,
             timestamp: crate::time_util::now_millis(),
-            metadata: ValueMap::new(),
+            metadata: ValueMap::default(),
         }
     }
 
@@ -78,7 +80,7 @@ impl Event {
             source: Some(trait_name.to_string()),
             target: None,
             timestamp: crate::time_util::now_millis(),
-            metadata: ValueMap::new(),
+            metadata: ValueMap::default(),
         }
     }
 

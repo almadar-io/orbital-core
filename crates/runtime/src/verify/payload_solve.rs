@@ -2,6 +2,8 @@
 //! `(json/parse @payload.f Type)`. Each is planned as the JSON text of a minimal instance of the program's
 //! declared `Type`, then steered by trying member changes until the arm's guard, run by the real evaluator,
 //! answers as wanted.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::planner::{guard_passes, synth_field, EntityCtx};
 use orbital_core_base::schema::sexpr::SExpression;

@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 use base64::Engine;
 #[allow(unused_imports)]
 use orbital_core_base::codec::*;

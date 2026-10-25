@@ -7,6 +7,8 @@
 //! missing a key still deserializes.
 //!
 //! Reference: builder/docs/Orbital_Pattern.orb
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
@@ -19,7 +21,7 @@ use orbital_core_base::effect_types::{Effect, EffectOutcome, EffectResult};
 /// The evaluator value of a delivery record `{ event, payload, source }` (`@event`); twin of
 /// `@almadar/core` `deliveryRecordValue`. `source` carries only the fields that are set.
 pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSource) -> Value {
-    let mut src: ValueMap = ValueMap::new();
+    let mut src: ValueMap = ValueMap::default();
     let mut put_str = |key: &str, v: &Option<String>| {
         if let Some(v) = v {
             src.insert(key.to_string(), Value::String(v.clone()));
@@ -39,7 +41,7 @@ pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSour
     if let Some(v) = source.dispatched {
         src.insert("dispatched".to_string(), Value::Bool(v));
     }
-    let mut record = ValueMap::new();
+    let mut record = ValueMap::default();
     record.insert("event".to_string(), Value::String(event.to_string()));
     record.insert("payload".to_string(), payload.clone());
     record.insert("source".to_string(), Value::Object(src));
@@ -514,7 +516,7 @@ impl TransitionHop {
                     effects: result.effect_runs.iter().map(HopEffect::of_run).collect(),
                     observed: result.entry.as_ref().and_then(|entry| {
                         Some(HopObservation {
-                            payload: result.payload.clone(),
+                            payload: Value::clone(&result.payload),
                             entity_before: entry.entity_before.to_value(),
                             entity_after: entry.entity_after.as_ref()?.to_value(),
                         })
@@ -738,7 +740,7 @@ impl EventResponse {
         };
         let mut data: HashMap<String, Vec<Value>> = HashMap::new();
         let mut data_refs: HashMap<String, orbital_core_base::row_set::RowSetRef> = HashMap::new();
-        let mut entity_by_trait: indexmap::IndexMap<String, &crate::shared_entity::SharedEntity> = indexmap::IndexMap::new();
+        let mut entity_by_trait: orbital_core_base::collections::IndexMap<String, &crate::shared_entity::SharedEntity> = indexmap::IndexMap::default();
         let mut client_effects: Vec<ClientEffect> = Vec::new();
         let mut client_effects_by_trait: Vec<ClientEffectByTrait> = Vec::new();
         let mut effect_results: Vec<ServerEffectResult> = Vec::new();
@@ -1215,7 +1217,7 @@ mod tests {
             effect_results: Vec::new(),
             entity_data: crate::shared_entity::SharedEntity::null(),
             linked_entity: "Note".to_string(),
-            payload: Value::Null,
+            payload: std::sync::Arc::new(Value::Null),
             entry: None,
             fired_arm: None,
             transition_index: None,
@@ -1350,7 +1352,7 @@ mod tests {
         result.effect_results = vec![
             EffectResult::executed(Effect::RenderUi {
                 slot: "modal".to_string(),
-                content: Value::Object(ValueMap::from([(
+                content: Value::Object(ValueMap::from_iter([(
                     "type".to_string(),
                     Value::String("form".to_string()),
                 )])),

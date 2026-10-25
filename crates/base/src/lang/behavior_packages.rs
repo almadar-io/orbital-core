@@ -3,6 +3,8 @@
 //! package wins per name; the user store (`~/.orb/node_modules`) is always
 //! consulted as the lowest-precedence final rung, so a project's own copy of a
 //! package always shadows the user-store install of the same name.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -481,49 +483,11 @@ pub fn user_store_dir() -> Option<PathBuf> {
     home.map(|h| PathBuf::from(h).join(".orb"))
 }
 
-/// The canonical `@almadar/std` package name — the one behavior package every
-/// loader/lowerer/CLI path requires installed, with no embedded fallback
-/// (Phase 2).
-pub const STD_PACKAGE: &str = "@almadar/std";
+pub use crate::language_data::STD_PACKAGE;
 
-/// The command that installs `package`: `orb update` for what every orb needs
-/// (`@almadar/core`, `@almadar/std`, which it installs itself), `orb add
-/// <package>` for anything else.
-pub fn install_command(package: &str) -> String {
-    if package == STD_PACKAGE || package == crate::language_data::CORE_PACKAGE {
-        "orb update".to_string()
-    } else {
-        format!("orb add {package}")
-    }
-}
+pub use crate::language_data::{install_command, not_installed_message};
 
-/// The shared "not installed" message for a missing package — `orbital-compiler`'s
-/// loader, `orbital-lolo`'s contracts loader, the language-data loader and
-/// `orbital-cli` all report a missing package through this one function.
-pub fn not_installed_message(package: &str) -> String {
-    format!(
-        "{package} is not installed — run `{}` (or with `--global`)",
-        install_command(package)
-    )
-}
-
-pub fn compiler_satisfies(range: &str, running_version: &str) -> Result<bool, semver::Error> {
-    semver_satisfies(range, running_version)
-}
-
-pub fn std_peer_satisfies(range: &str, std_version: &str) -> Result<bool, semver::Error> {
-    semver_satisfies(range, std_version)
-}
-
-pub fn core_satisfies(range: &str, core_version: &str) -> Result<bool, semver::Error> {
-    semver_satisfies(range, core_version)
-}
-
-fn semver_satisfies(range: &str, version: &str) -> Result<bool, semver::Error> {
-    let req = semver::VersionReq::parse(range)?;
-    let ver = semver::Version::parse(version)?;
-    Ok(req.matches(&ver))
-}
+pub use crate::language_data::{compiler_satisfies, core_satisfies, std_peer_satisfies};
 
 fn scan_node_modules(
     node_modules: &Path,

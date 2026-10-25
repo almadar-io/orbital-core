@@ -3,6 +3,8 @@
 //! Same LCG, same draw per helper, same word corpus, so a seeded mock store is the
 //! same bytes on the Rust path as on the runtime and compiled paths
 //! (orbital-core `tests/baked/mock-seed/dataset.seeded.json` pins it).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 /// Seed every mock store starts from (`DEFAULT_MOCK_SEED` in `@almadar/runtime`).
 pub const DEFAULT_MOCK_SEED: u32 = 42;

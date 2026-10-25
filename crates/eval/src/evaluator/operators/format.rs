@@ -3,6 +3,8 @@
 //! Numbers format as `Intl.NumberFormat` does for the locales in [`locale_of`] and the currencies in [`CURRENCIES`]:
 //! the shortest decimal digits of the value, rounded half away from zero at the last fraction digit, grouped by the
 //! locale. A locale or currency outside those tables, and any option value outside its range, answers null, never a silent fallback.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
@@ -193,7 +195,7 @@ impl Operator for FormatNumberOp {
         let options = match args.get(1) {
             Some(expr) => match eval_expr(expr, ctx)? {
                 Value::Object(map) => map,
-                Value::Null => ValueMap::new(),
+                Value::Null => ValueMap::default(),
                 other => {
                     return Err(OrbitalError::Eval(EvalError::TypeMismatch {
                         expected: "object".to_string(),
@@ -201,7 +203,7 @@ impl Operator for FormatNumberOp {
                     }))
                 }
             },
-            None => ValueMap::new(),
+            None => ValueMap::default(),
         };
         let locale = match options.get("locale") {
             None | Some(Value::Null) => &EN,

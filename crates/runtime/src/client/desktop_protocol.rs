@@ -4,6 +4,8 @@
 //! - `orb-desktop request` reads a [`DesktopEnvelope`] as JSON on stdin and
 //!   prints a [`DesktopReply`] as JSON.
 //! - `orb-desktop window <resolved.orb> [--server <url>]` opens the app window.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::shell_protocol::{exchange, read_request, reply_exit, Program, ShellFailure, CODE_NOT_RUNNABLE};

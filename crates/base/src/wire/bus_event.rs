@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 use crate::value::Value;
 use serde::Deserialize;
 use serde::Serialize;

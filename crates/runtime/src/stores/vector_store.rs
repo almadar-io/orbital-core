@@ -16,6 +16,8 @@
 //! on the same dead lock can briefly both proceed, in which case the re-read still keeps everything
 //! already on disk and only a record landed inside that one window can be dropped. `write` alone (no
 //! lock) is last-rename-wins.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::fs;
 use std::io;

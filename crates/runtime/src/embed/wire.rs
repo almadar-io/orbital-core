@@ -1,5 +1,7 @@
 //! The embedded kernel's wire: what every host (C ABI, JNI, WASM) hands across its boundary as
 //! JSON. Field names are the hosts' contract; `tests/fixtures/embed/golden` pins them.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::credential_admin::{CredentialStanding, RotateCounts, StoreListing};
 use crate::effects::executor::{ServiceCaller, SubstrateFailure};

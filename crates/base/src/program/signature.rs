@@ -13,6 +13,8 @@
 //! field of the record `R` is bound to. An argument handed to a type variable whose type is not known — an unresolved expression, an expression value, json — is
 //! an error ([`Mismatch::Undetermined`]): a variable never stands for an unknown. A static argument at a concrete
 //! position binds nothing and is not checked.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -741,7 +743,6 @@ fn walk_path_in(ty: &OirType, path: &str, resolve: &dyn Fn(&str) -> Option<OirTy
             }
             may_be_absent |= next.is_optional();
             here = language_value(unwrap_optional(&next)).clone();
-            current = next;
         }
         match &here {
             OirType::Struct { fields, additional } => match fields.iter().find(|f| f.name == segment) {

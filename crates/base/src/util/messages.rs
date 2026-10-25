@@ -4,6 +4,8 @@
 //! so one merged catalog per locale serves a whole program without two
 //! behaviors' keys colliding, and nothing at runtime has to know which
 //! behavior an expression came from.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde_json::Value;
 

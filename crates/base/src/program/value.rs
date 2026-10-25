@@ -2,6 +2,8 @@
 //!
 //! The Value type represents the result of evaluating an S-expression.
 //! It supports all JSON-compatible types plus additional runtime types.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::schema::sexpr::SExpression;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -10,7 +12,7 @@ use std::sync::Arc;
 
 /// The fields of an object value, in insertion order: `object/keys`, `object/values` and `object/entries` list
 /// them in the order the fields were written, as the JS evaluator does.
-pub type ValueMap = indexmap::IndexMap<String, Value>;
+pub type ValueMap = crate::collections::IndexMap<String, Value>;
 
 /// Runtime value resulting from S-expression evaluation
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -123,7 +125,7 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor {
     }
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
-        let mut object = ValueMap::with_capacity(map.size_hint().unwrap_or(0).min(4096));
+        let mut object = ValueMap::with_capacity_and_hasher(map.size_hint().unwrap_or(0).min(4096), Default::default());
         while let Some((key, value)) = map.next_entry::<String, Value>()? {
             object.insert(key, value);
         }
@@ -382,7 +384,7 @@ impl Value {
                 match current {
                     Value::Object(obj) => {
                         if !obj.contains_key(part.as_ref()) {
-                            obj.insert(part.to_string(), Value::Object(ValueMap::new()));
+                            obj.insert(part.to_string(), Value::Object(ValueMap::default()));
                         }
                         match obj.get_mut(part.as_ref()) {
                             Some(v) => current = v,
@@ -634,7 +636,7 @@ mod tests {
 
     #[test]
     fn get_and_set_path_agree_on_an_escaped_dot() {
-        let mut v = Value::Object(ValueMap::new());
+        let mut v = Value::Object(ValueMap::default());
         assert!(v.set_path(r"a.b\.c", Value::Number(1.0)));
         assert_eq!(v.get_path(r"a.b\.c"), Some(&Value::Number(1.0)));
         assert_eq!(v.get_path_owned(r"a.b\.c"), Some(Value::Number(1.0)));
@@ -675,8 +677,8 @@ mod tests {
 
     #[test]
     fn test_get_path() {
-        let mut obj = ValueMap::new();
-        let mut address = ValueMap::new();
+        let mut obj = ValueMap::default();
+        let mut address = ValueMap::default();
         address.insert("city".to_string(), Value::String("NYC".to_string()));
         address.insert("zip".to_string(), Value::String("10001".to_string()));
         obj.insert("name".to_string(), Value::String("John".to_string()));
@@ -707,7 +709,7 @@ mod tests {
             Value::String("b".to_string()),
             Value::String("c".to_string()),
         ]);
-        let mut root = ValueMap::new();
+        let mut root = ValueMap::default();
         root.insert("data".to_string(), data);
         let value = Value::Object(root);
 
@@ -730,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_get_path_owned_empty_array_length_is_zero() {
-        let mut root = ValueMap::new();
+        let mut root = ValueMap::default();
         root.insert("data".to_string(), Value::Array(vec![]));
         let value = Value::Object(root);
         assert_eq!(
@@ -741,7 +743,7 @@ mod tests {
 
     #[test]
     fn test_set_path() {
-        let mut value = Value::Object(ValueMap::new());
+        let mut value = Value::Object(ValueMap::default());
 
         assert!(value.set_path("name", Value::String("John".to_string())));
         assert_eq!(

@@ -1,5 +1,7 @@
 //! The native HTTP(S) transport of a server-role host: `ureq` + rustls, redirects never followed, and a connection only to an
 //! address that was checked as public (or an IP literal the program lists in `egress`).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 use crate::http_service::{HttpRequest, HttpResponse, Transport, TransportError};
 use crate::http_request::is_public_address;
 use std::collections::HashMap;

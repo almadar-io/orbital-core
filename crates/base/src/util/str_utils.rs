@@ -3,6 +3,8 @@
 //! Each function here is the single source of truth for a string-shape
 //! transformation that was previously duplicated byte-for-byte across
 //! orbital-cli, orbital-compiler, and orbital-shell-typescript.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 /// PascalCase / camelCase → snake_case. Lowercases each uppercase char and
 /// inserts `_` before it (except at the start). Separators in the input are

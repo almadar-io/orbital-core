@@ -1,6 +1,8 @@
 //! OIR Pretty Printer
 //!
 //! Human-readable formatting for OIR structures.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use std::fmt::Write;
 

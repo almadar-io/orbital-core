@@ -1,5 +1,7 @@
 //! Report — fold frames + verdicts into a `verify-report.json` (mirrors the TS
 //! `ReportShape`) and decide overall pass/fail (fail-closed on any failed verdict).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::verify::frame::{Frame, FrameStatus};
 use crate::verify::observers::Verdict;

@@ -2,6 +2,8 @@
 //! entity source, `http` and `os/` under the program's declared egress and grants, credentials, OAuth, random and clock
 //! from the secret source and the operating system. Each piece is the existing answerer (`BlockingHost`, `HttpHost`,
 //! `answer_os`); this owns them so a host can share one answerer across threads and rebuild it when a program registers.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::effects::executor::{ServiceCaller, ServiceHandler, SubstrateFailure, SubstrateHandler};
 use crate::entity_source::EntitySource;
@@ -342,7 +344,7 @@ pub(crate) mod tests {
         }
     }
 
-    struct Settled(parking_lot::Mutex<std::sync::mpsc::Sender<(String, Result<Value, Value>)>>);
+    struct Settled(orbital_core_base::sync::Mutex<std::sync::mpsc::Sender<(String, Result<Value, Value>)>>);
 
     impl crate::os_host::completion::OsCompletionSink for Settled {
         fn complete(&self, _: &CallSite, _: &str, _: Result<Value, orbital_core_base::os::OsError>) {}
@@ -356,7 +358,7 @@ pub(crate) mod tests {
         let handles = Arc::new(OsHandles::default());
         let (tx, rx) = std::sync::mpsc::channel();
         if sink {
-            handles.completions.set_sink(Arc::new(Settled(parking_lot::Mutex::new(tx))));
+            handles.completions.set_sink(Arc::new(Settled(orbital_core_base::sync::Mutex::new(tx))));
         }
         let host = NativeHost::new(
             Arc::new(InMemoryEntityCache::new()),

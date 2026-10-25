@@ -1,4 +1,6 @@
 //! Argument readers and the bytes encoding shared by every family of the native `os/` answerer.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;

@@ -2,6 +2,8 @@
 //!
 //! Common utilities for extracting and processing pattern properties
 //! from orbital schema definitions.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::value::ValueMap;
 use orbital_core_base::value::Value;
@@ -212,9 +214,9 @@ pub struct SlotContent {
 
 /// A shared empty per-trait content map for contexts without `@trait` support.
 pub fn empty_trait_content() -> &'static ValueMap {
-    use std::sync::OnceLock;
+    use orbital_core_base::sync::OnceLock;
     static EMPTY: OnceLock<ValueMap> = OnceLock::new();
-    EMPTY.get_or_init(ValueMap::new)
+    EMPTY.get_or_init(ValueMap::default)
 }
 
 /// Map an `@almadar/ui` spacing token (`none`..`2xl`) to egui pixels.
@@ -450,7 +452,7 @@ pub fn substitute_row_bindings(spec: &Value, param: &str, row: &Value) -> Value 
             Value::Array(arr.iter().map(|v| substitute_row_bindings(v, param, row)).collect())
         }
         Value::Object(obj) => {
-            let mut out = ValueMap::with_capacity(obj.len());
+            let mut out = ValueMap::with_capacity_and_hasher(obj.len(), Default::default());
             for (k, v) in obj {
                 out.insert(k.clone(), substitute_row_bindings(v, param, row));
             }
@@ -507,7 +509,7 @@ pub fn render_item_children(
 /// the returned objects expose `key`/`label` so existing render loops work unchanged.
 pub fn get_columns(props: &Value, rows: &[Value]) -> Vec<Value> {
     let spec = |key: &str, label: &str| -> Value {
-        let mut o = ValueMap::new();
+        let mut o = ValueMap::default();
         o.insert("key".to_string(), Value::String(key.to_string()));
         o.insert("label".to_string(), Value::String(label.to_string()));
         Value::Object(o)
@@ -810,7 +812,7 @@ pub fn inject_entity_data(pattern: &mut Value, entity_type: &str, data: &[Value]
 
 /// Build a payload object from form data
 pub fn build_form_payload(form_data: &HashMap<String, String>) -> Value {
-    let mut payload = ValueMap::new();
+    let mut payload = ValueMap::default();
 
     for (key, value) in form_data {
         // Try to parse as number or boolean

@@ -1,3 +1,5 @@
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 use crate::value::Value;
 use serde::Deserialize;
 use serde::Serialize;
@@ -158,7 +160,7 @@ pub const ROW_SET_MARKER: &str = "$rowSet";
 
 /// The render-prop leaf that carries `reference` (core's `RowSetMarker`): `{ "$rowSet": true, "ref": … }`.
 pub fn row_set_marker(reference: &RowSetRef) -> Value {
-    let mut leaf = crate::value::ValueMap::new();
+    let mut leaf = crate::value::ValueMap::default();
     leaf.insert(ROW_SET_MARKER.to_string(), Value::Bool(true));
     leaf.insert(
         "ref".to_string(),
@@ -347,7 +349,7 @@ mod nearest_tests {
     use super::*;
 
     fn row(id: &str, embedding: Option<Value>) -> Arc<Value> {
-        let mut map = crate::value::ValueMap::new();
+        let mut map = crate::value::ValueMap::default();
         map.insert("id".to_string(), Value::String(id.to_string()));
         if let Some(v) = embedding {
             map.insert("embedding".to_string(), v);

@@ -1,4 +1,6 @@
 //! Runtime kernel configuration.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::effects::executor::{EffectDelegate, ServiceHandler, SubstrateHandler};
 use orbital_core_base::effect_types::RuntimeEnvironment;

@@ -1,6 +1,8 @@
 //! OIR Effect Definitions
 //!
 //! Effects are actions that modify state or interact with the outside world.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 
@@ -1932,7 +1934,7 @@ mod tests {
         let eff = OirEffect::CallService {
             service: "llm".into(),
             method: "classifyMany".into(),
-            args: OirExpr::object(crate::ir::expr::OirFields::new()),
+            args: OirExpr::object(crate::ir::expr::OirFields::default()),
             key: Some(OirExpr::string("batch-1")),
             emit: Some(OirEmitConfig {
                 cancelled: Some("CANCELLED".into()),
@@ -1952,7 +1954,7 @@ mod tests {
         let eff = OirEffect::call_service(
             "llm",
             "generate",
-            OirExpr::object(crate::ir::expr::OirFields::new()),
+            OirExpr::object(crate::ir::expr::OirFields::default()),
         );
         let json = serde_json::to_value(&eff).unwrap();
         assert!(json.get("key").is_none(), "{json}");

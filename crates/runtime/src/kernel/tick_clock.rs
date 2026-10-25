@@ -10,6 +10,8 @@
 //! Pure: time comes in as `now_ms`, calendar time as a closure. Every host loop (CADisplayLink /
 //! `withFrameNanos` / the egui and dioxus frame hooks) differences its own monotonic clock into
 //! `now_ms`; this module never touches the kernel.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::cron::{cron_matches, parse_cron, CronFields};
 use orbital_core_base::schema::types::{Orbital, OrbitalSchema, StringOrNumber, TraitReference};
@@ -32,7 +34,27 @@ pub struct Calendar {
 }
 
 impl Calendar {
-    #[cfg(not(target_arch = "wasm32"))]
+    /// A bare-metal host carries no time-zone database: its calendar is UTC, read from the host clock.
+    #[cfg(all(not(feature = "std"), not(target_arch = "wasm32")))]
+    pub fn local_now() -> Self {
+        use chrono::{Datelike, Timelike};
+        let now = chrono::DateTime::from_timestamp_millis(orbital_core_base::time_util::now_millis())
+            .expect("the host clock answers a representable instant");
+        Self {
+            minute: now.minute(),
+            hour: now.hour(),
+            day: now.day(),
+            month: now.month(),
+            weekday: now.weekday().num_days_from_sunday(),
+            minute_key: i64::from(now.year()) * 100_000_000
+                + i64::from(now.month0()) * 1_000_000
+                + i64::from(now.day()) * 10_000
+                + i64::from(now.hour()) * 100
+                + i64::from(now.minute()),
+        }
+    }
+
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
     pub fn local_now() -> Self {
         use chrono::{Datelike, Local, Timelike};
         let now = Local::now();

@@ -3,6 +3,8 @@
 //! from CSS, while iOS/Android animate the numbers this resolves into, so no shell parses a CSS
 //! transform itself. A token outside the declared transform vocabulary keeps the base shape and
 //! is logged, never guessed.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use orbital_core_base::schema::types::{css_time_ms, EnterAnimation, MotionShapeTokens, ThemeTokens};
 use serde::Serialize;

@@ -1,4 +1,6 @@
 //! `bit/*` operators over 32-bit unsigned words. Out-of-range operands and counts answer null, never wrapped.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;

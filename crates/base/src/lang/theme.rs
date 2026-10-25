@@ -12,6 +12,8 @@
 //! presets it references (`themeDefinitions`, written by `orb` from the
 //! installed `@almadar/core` — [`carry_theme_definitions`]); the compiler reads
 //! the installed set ([`ThemePresets::installed`]).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::schema::types::{OrbitalSchema, ThemeDefinition, ThemeRef, ThemeTokens, ThemeVariant};
 use serde::{Deserialize, Serialize};
@@ -127,7 +129,7 @@ impl ThemePresets {
     /// parsed once. Hosts that compile programs read these; a kernel reads the
     /// definitions each program carries ([`carry_theme_definitions`]).
     pub fn installed() -> &'static Self {
-        static PRESETS: std::sync::OnceLock<ThemePresets> = std::sync::OnceLock::new();
+        static PRESETS: crate::sync::OnceLock<ThemePresets> = crate::sync::OnceLock::new();
         PRESETS.get_or_init(|| {
             let mut presets = Self::new();
             for json in &crate::language_data::language_data_after_preflight().themes {
@@ -375,9 +377,11 @@ fn empty_tokens() -> ThemeTokens {
 // ---------------------------------------------------------------------------
 
 /// CSS custom properties keyed by variable name, in emission order.
-pub type CssVars = indexmap::IndexMap<String, String>;
+pub type CssVars = crate::collections::IndexMap<String, String>;
 
 mod css_axes {
+    #[cfg(not(feature = "std"))]
+    use std::prelude::v1::*;
     use super::CssVars;
     use crate::schema::types::{DensityTokens, DiagramTokens, ElevationTokens, EnterAnimation, GeometryTokens, IconFamily, IconographyTokens, IllustrationTokens, MotionDurationKey, MotionEasingKey, MotionIntent, MotionTokens, SceneTokens, SurfaceTokens, TypeIntent, TypeScaleTokens, TypeSizeKey, TypeWeight};
 
@@ -788,7 +792,7 @@ pub fn css_vars(
     mode: ThemeMode,
     dark_variant: Option<&ThemeVariant>,
 ) -> CssVars {
-    let mut vars = CssVars::new();
+    let mut vars = CssVars::default();
     let dark = if mode == ThemeMode::Dark {
         dark_variant
     } else {

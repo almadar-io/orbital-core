@@ -2,8 +2,10 @@
 //! (`crate::language_data`), in the shape the validator and the TS
 //! shell's type inference read. Derived once per process; a new operator or a
 //! metadata change needs no compiler rebuild.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
-use std::sync::LazyLock;
+use crate::sync::LazyLock;
 
 use super::registry::{categories, operators, OperatorTypeRef};
 

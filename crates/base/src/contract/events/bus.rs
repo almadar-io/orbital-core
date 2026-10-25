@@ -5,9 +5,11 @@
 //! - Async receivers via Tokio broadcast channels
 //! - Event namespacing and wildcard patterns
 //! - Subscription management
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use super::types::{Event, EventFilter, SubscriptionId};
-use parking_lot::RwLock;
+use crate::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 

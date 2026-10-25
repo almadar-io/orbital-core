@@ -6,6 +6,8 @@
 //! of effect-emitted auto-advance is a *client* concern (the kernel fires one event and
 //! returns the declared target; the client re-fires emitted follow-ups), so Layer 1 does
 //! not need it.
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 #[cfg(test)]
 mod source_provenance_tests {

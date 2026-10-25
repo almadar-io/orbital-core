@@ -2,6 +2,8 @@
 //! ([`OsOp`]), the error a host answers with ([`OsError`]) and how an `os/<op>` call site is read.
 //! The contract is `docs/Almadar_OS_Operators.md`; the pure `os/path-*` operators are not here (they are
 //! evaluator operators, `evaluator/operators/os_path.rs`).
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use crate::schema::sexpr::{SExpression, SObject};
 use serde::{Deserialize, Serialize};

@@ -9,13 +9,15 @@
 //! - `["and", ["!=", "@payload.email", ""], [">=", "@payload.age", 18]]`
 //! - `["persist", "create", "User", "@payload.data"]`
 //! - `["render-ui", "main", { "type": "page-header", "title": "Hello" }]`
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// An S-expression object: keys in authored order, so lowering and codegen are deterministic.
-pub type SObject = indexmap::IndexMap<String, SExpression>;
+pub type SObject = crate::collections::IndexMap<String, SExpression>;
 
 /// S-Expression - the fundamental unit of Orbital logic
 ///
@@ -104,7 +106,7 @@ impl<'de> serde::de::Visitor<'de> for SExpressionVisitor {
     }
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<SExpression, A::Error> {
-        let mut object = SObject::with_capacity(map.size_hint().unwrap_or(0).min(4096));
+        let mut object = SObject::with_capacity_and_hasher(map.size_hint().unwrap_or(0).min(4096), Default::default());
         while let Some((key, value)) = map.next_entry::<String, SExpression>()? {
             object.insert(key, value);
         }
@@ -1294,7 +1296,7 @@ mod tests {
         // Build the SAME logical object many times. HashMap iteration order is
         // randomly seeded, so a non-canonical serializer disagrees with itself.
         let render = || {
-            let mut map = SObject::new();
+            let mut map = SObject::default();
             map.insert("zebra".to_string(), SExpression::Number(1.0));
             map.insert("alpha".to_string(), SExpression::Bool(true));
             map.insert("middle".to_string(), SExpression::String("x".to_string()));
@@ -1656,7 +1658,7 @@ mod tests {
 
     #[test]
     fn is_statically_false_true_for_empty_object() {
-        assert!(SExpression::Object(SObject::new()).is_statically_false());
+        assert!(SExpression::Object(SObject::default()).is_statically_false());
     }
 
     #[test]
