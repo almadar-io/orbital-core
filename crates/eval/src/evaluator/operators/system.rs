@@ -304,7 +304,8 @@ fn parse_iso_instant(text: &str) -> Option<i64> {
     }
 }
 
-/// time/parse - RFC 3339 / ISO 8601 date or date-time to epoch ms; anything else answers null.
+/// time/parse - RFC 3339 / ISO 8601 date or date-time to epoch ms; a date/datetime value already held as epoch ms is
+/// that number; anything else answers null.
 pub struct TimeParseOp;
 impl Operator for TimeParseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -312,6 +313,7 @@ impl Operator for TimeParseOp {
 
         let date_str = match eval_expr(&args[0], ctx)? {
             Value::String(s) => s,
+            Value::Number(ms) => return Ok(if ms.is_finite() { Value::Number(ms) } else { Value::Null }),
             other => {
                 return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
                     "time/parse: expected a string argument, got {}",

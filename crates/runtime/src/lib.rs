@@ -41,8 +41,7 @@ pub mod resumable;
 pub mod seed;
 #[path = "kernel/server_leg.rs"]
 pub mod server_leg;
-#[path = "kernel/shared_entity.rs"]
-pub mod shared_entity;
+pub use orbital_core_base::shared_entity;
 #[path = "kernel/tick_clock.rs"]
 pub mod tick_clock;
 #[path = "kernel/trait_owners.rs"]

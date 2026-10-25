@@ -2740,6 +2740,8 @@ pub enum FieldType {
     Date,
     Datetime,
     Timestamp,
+    /// Epoch milliseconds the clock produced; a number at rest.
+    Instant,
     /// Semantic string domains. `.lolo` already types `date`/`datetime` rather
     /// than annotating them, so a field's domain belongs in the type system for
     /// the same reason. These replaced the TS-only `format` property, which had
@@ -2905,6 +2907,7 @@ impl FieldType {
             "date" => FieldType::Date,
             "datetime" => FieldType::Datetime,
             "timestamp" => FieldType::Timestamp,
+            "instant" => FieldType::Instant,
             "object" => FieldType::Object,
             _ => return None,
         })

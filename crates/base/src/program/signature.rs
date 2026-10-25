@@ -157,6 +157,9 @@ pub struct CallBindings {
     absent: BTreeMap<String, (usize, String)>,
     /// The type of the default supplied for a `field-of` parameter whose field the record does not declare.
     defaults: BTreeMap<String, OirType>,
+    /// The `field-of` variables the call supplies a never-null default for: a read through a record that may be
+    /// missing is answered by it.
+    defaulted: BTreeSet<String>,
     /// The variables the null value was passed to: they may hold null.
     nullable: BTreeSet<String>,
     /// The variables whose latest binding is an effect (it produces no value).
@@ -599,6 +602,11 @@ fn checks(ty: &OperatorTypeRef) -> bool {
     }
 }
 
+/// The concrete type a declared primitive name stands for (`"instant"`), or `None` for `void`.
+pub fn concrete_type(name: &str) -> Option<OirType> {
+    concrete(name)
+}
+
 fn concrete(name: &str) -> Option<OirType> {
     Some(match name {
         "number" => OirType::Number,
@@ -606,6 +614,7 @@ fn concrete(name: &str) -> Option<OirType> {
         "boolean" => OirType::Boolean,
         "date" => OirType::Date,
         "datetime" => OirType::DateTime,
+        "instant" => OirType::Instant,
         "bytes" => OirType::Bytes,
         "callkey" => OirType::CallKey,
         "sexpr" => OirType::SExpr,
@@ -628,6 +637,7 @@ fn checkable(name: &str) -> Option<OirType> {
         "boolean" => Some(OirType::Boolean),
         "date" => Some(OirType::Date),
         "datetime" => Some(OirType::DateTime),
+        "instant" => Some(OirType::Instant),
         _ => None,
     }
 }
@@ -1019,6 +1029,11 @@ fn merge_list_shapes(a: &OirType, b: &OirType) -> Option<OirType> {
     if let (Some(x), Some(y)) = (element_of(a), element_of(b)) {
         if agrees(&x, &y) {
             return Some(OirType::array(x));
+        }
+    }
+    if let (OirType::Array { inner: x }, OirType::Array { inner: y }) = (a, b) {
+        if let Some(element) = merge_list_shapes(x, y) {
+            return Some(OirType::array(element));
         }
     }
     joined_tuples(&[a.clone(), b.clone()]).map(|items| OirType::Tuple { items })
@@ -1475,6 +1490,9 @@ fn bind_type(
             },
             K::KeyOf { of } => bind_key(of, actual, formal, b, mode),
             K::FieldOf { of } => {
+                if matches!(known, Known::Type(ty) if !ty.is_optional()) || matches!(known, Known::EmptyList) {
+                    b.defaulted.insert(of.clone());
+                }
                 if b.absent.contains_key(of) {
                     match known {
                         Known::Type(ty) => {
@@ -2122,9 +2140,18 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
             K::FieldOf { of } => {
                 let record = b.bound(of)?;
                 let Some(key) = b.keys.get(of).and_then(|keys| keys.first()) else {
-                    // The key is a computed value: only a record whose every field has one type answers it.
+                    // The key is a computed value: only a record whose every field has one type answers it. A key the
+                    // map does not hold answers null, unless a default answers it (a list index reads like `array/nth`,
+                    // which the owner ruled is not optional).
+                    let missing = |found: &OirType| {
+                        if b.defaulted.contains(of) || found.is_optional() {
+                            found.clone()
+                        } else {
+                            OirType::optional(found.clone())
+                        }
+                    };
                     return match unwrap_optional(record) {
-                        OirType::Map { value, .. } => Some((**value).clone()),
+                        OirType::Map { value, .. } => Some(missing(value)),
                         OirType::Array { inner } => Some((**inner).clone()),
                         // A record whose members are alike: whichever one the key names has their join.
                         OirType::Struct { fields, .. } => {
@@ -2144,6 +2171,14 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                     };
                 };
                 match walk_path_in(record, key, &|name| b.named_types.get(name).cloned()) {
+                    // A read through a record that may be missing may be missing too, unless a default answers it.
+                    Path::Found(found)
+                        if matches!(record, OirType::Optional { .. })
+                            && !found.is_optional()
+                            && !b.defaulted.contains(of) =>
+                    {
+                        Some(OirType::optional(found))
+                    }
                     Path::Found(found) => Some(found),
                     Path::Missing => b.defaults.get(of).cloned(),
                     Path::Opaque => None,
@@ -2764,6 +2799,49 @@ mod tests {
         assert!(
             call(&count, &[ty(scalars)], Mode::Static).is_err(),
             "control: unlike scalars"
+        );
+    }
+
+    #[test]
+    fn lists_of_unlike_width_tuples_bound_in_turn_are_one_list_type() {
+        let flatten = op(json!([p("arr", list(list(var("T"))))]), list(var("T")), Some(1));
+        let update = OirType::Tuple {
+            items: vec![OirType::String, OirType::String, OirType::String, OirType::Struct { fields: Vec::new(), additional: None }],
+        };
+        let delete = OirType::Tuple {
+            items: vec![OirType::String, OirType::String, OirType::String],
+        };
+        let sig = Signature::of(&flatten);
+        let mut b = CallBindings::new();
+        sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(update)))), Mode::Runtime).unwrap();
+        assert_eq!(
+            sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(delete)))), Mode::Runtime),
+            Ok(())
+        );
+        assert_eq!(
+            sig.result(&b),
+            Some(s_arr(s_arr(OirType::Tuple {
+                items: vec![OirType::String, OirType::String, OirType::String, absent_slot()],
+            })))
+        );
+        let rekey = OirType::Tuple {
+            items: vec![OirType::String, OirType::String, absent_slot()],
+        };
+        let update = OirType::Tuple {
+            items: vec![OirType::String, OirType::String, OirType::String, OirType::Struct { fields: Vec::new(), additional: None }],
+        };
+        let mut b = CallBindings::new();
+        sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(rekey)))), Mode::Runtime).unwrap();
+        assert_eq!(
+            sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(update)))), Mode::Runtime),
+            Ok(()),
+            "a joined delete/create group beside an update group"
+        );
+        let mut b = CallBindings::new();
+        sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(OirType::Number)))), Mode::Runtime).unwrap();
+        assert!(
+            sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(OirType::String)))), Mode::Runtime).is_err(),
+            "control: lists of unlike scalars stay two types"
         );
     }
 
@@ -3436,6 +3514,21 @@ mod tests {
     }
 
     #[test]
+    fn a_key_read_through_a_maybe_missing_record_is_that_fields_type_maybe_missing() {
+        let row = struct_of(&[("name", OirType::String), ("count", OirType::Number)]);
+        assert_eq!(
+            call(&get(), &[ty(OirType::optional(row.clone())), text("count")], Mode::Static),
+            Ok(Some(OirType::optional(OirType::Number)))
+        );
+        assert_eq!(
+            call(&get(), &[ty(OirType::optional(row.clone())), text("count"), ty(OirType::Number)], Mode::Static),
+            Ok(Some(OirType::Number)),
+            "control: a present default answers the missing record"
+        );
+        assert_eq!(call(&get(), &[ty(row), text("count")], Mode::Static), Ok(Some(OirType::Number)), "control: a present record");
+    }
+
+    #[test]
     fn a_key_names_a_field_and_the_result_is_that_fields_type() {
         let row = struct_of(&[("name", OirType::String), ("count", OirType::Number)]);
         assert_eq!(
@@ -3852,9 +3945,14 @@ mod tests {
         let dynamic = Actual::of_type(OirType::String);
         let map = OirType::map(OirType::String, OirType::Number);
         assert_eq!(
-            call(&get(), &[ty(map), dynamic], Mode::Static),
+            call(&get(), &[ty(map.clone()), Actual::of_type(OirType::String)], Mode::Static),
+            Ok(Some(OirType::optional(OirType::Number))),
+            "a map holds one value type under every key, and a key it lacks answers null"
+        );
+        assert_eq!(
+            call(&get(), &[ty(map), dynamic, ty(OirType::Number)], Mode::Static),
             Ok(Some(OirType::Number)),
-            "a map holds one value type under every key"
+            "control: a default answers the missing key"
         );
         let row = struct_of(&[("name", OirType::String), ("count", OirType::Number)]);
         assert_eq!(
@@ -5063,8 +5161,8 @@ mod tests {
         );
         assert_eq!(
             read(OirType::optional(OirType::Orbital), "orbital"),
-            Ok(Some(OirType::String)),
-            "an unbound value reads like a bound one"
+            Ok(Some(OirType::optional(OirType::String))),
+            "a value that may be unbound reads a member that may be missing (G-ORBITAL-CORE-060)"
         );
         assert!(
             read(OirType::Orbital, "nonsense").is_err(),

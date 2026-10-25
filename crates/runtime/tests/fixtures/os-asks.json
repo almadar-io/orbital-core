@@ -65,6 +65,7 @@
     { "name": "rmdir recursive", "op": "os/rmdir", "args": ["${tmp}/d", true], "expect": { "ok": {} } },
     { "name": "gone", "op": "os/exists", "args": ["${tmp}/d"], "expect": { "ok": { "ok": false } } },
     { "name": "watch-files is unsupported", "op": "os/watch-files", "args": ["${tmp}"], "expect": { "error": { "kind": "unsupported", "message": "os/watch-files: streaming host not implemented" } } },
+    { "name": "a device call is unsupported on a hosted process", "op": "os/irq-ack", "args": [33], "expect": { "error": { "kind": "unsupported", "message": "os/irq-ack: this host has no devices" } } },
 
     { "name": "spawn echo", "op": "os/spawn", "args": ["echo", ["hi"], { "stdout": "pipe" }], "bind": { "pid": "pid", "outFd": "stdout" }, "expect": { "ok": { "pid": { "$number": true }, "stdout": { "$number": true } } } },
     { "name": "wait", "op": "os/wait", "args": [{ "$var": "pid" }], "expect": { "ok": { "code": 0 } } },

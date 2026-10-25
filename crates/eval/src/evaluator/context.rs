@@ -14,6 +14,7 @@
 //! Nested paths are supported: `@entity.address.city`
 
 use orbital_core_base::error::{EvalError, OrbitalError};
+use orbital_core_base::shared_entity::SharedEntity;
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
 use std::collections::HashMap;
@@ -110,8 +111,8 @@ impl ProbState {
 /// Provides access to runtime values during expression evaluation.
 #[derive(Debug, Clone, Default)]
 pub struct BindingContext {
-    /// Entity data (`@entity`)
-    pub entity: Arc<Value>,
+    /// Entity data (`@entity`), held field by field as the kernel keeps it
+    pub entity: SharedEntity,
     /// Event payload (`@payload`)
     pub payload: Arc<Value>,
     /// Current state (`@state`)
@@ -168,7 +169,7 @@ pub struct BindingContext {
 /// One scope's local bindings over its parent's. `None` marks a binding removed in this scope.
 #[derive(Debug, Clone, Default)]
 struct LocalFrame {
-    vars: Vec<(String, Option<Value>)>,
+    vars: Vec<(String, Option<Arc<Value>>)>,
     parent: Option<Arc<LocalFrame>>,
 }
 
@@ -177,13 +178,13 @@ impl LocalFrame {
         let mut frame = self;
         loop {
             if let Some((_, value)) = frame.vars.iter().find(|(key, _)| key == name) {
-                return value.as_ref();
+                return value.as_deref();
             }
             frame = frame.parent.as_deref()?;
         }
     }
 
-    fn put(&mut self, name: &str, value: Option<Value>) {
+    fn put(&mut self, name: &str, value: Option<Arc<Value>>) {
         match self.vars.iter_mut().find(|(key, _)| key == name) {
             Some(slot) => slot.1 = value,
             None => self.vars.push((name.to_string(), value)),
@@ -257,14 +258,20 @@ impl BindingContext {
     /// Create a context with entity data
     pub fn with_entity(entity: Value) -> Self {
         Self {
-            entity: Arc::new(entity),
+            entity: SharedEntity::whole(entity),
             ..Default::default()
         }
     }
 
     /// Set the entity value
     pub fn set_entity(&mut self, entity: Value) -> &mut Self {
-        self.entity = Arc::new(entity);
+        self.entity = SharedEntity::whole(entity);
+        self
+    }
+
+    /// Bind the entity as the kernel holds it: no field is copied.
+    pub fn set_entity_shared(&mut self, entity: SharedEntity) -> &mut Self {
+        self.entity = entity;
         self
     }
 
@@ -312,6 +319,12 @@ impl BindingContext {
 
     /// Set a local binding
     pub fn set_local(&mut self, name: &str, value: Value) -> &mut Self {
+        self.own_frame().put(name, Some(Arc::new(value)));
+        self
+    }
+
+    /// Bind a local to a value another binding already holds, without copying it.
+    pub fn set_local_shared(&mut self, name: &str, value: Arc<Value>) -> &mut Self {
         self.own_frame().put(name, Some(value));
         self
     }
@@ -372,9 +385,15 @@ impl BindingContext {
             (path, None)
         };
 
+        if root == "entity" {
+            return match rest {
+                Some(rest_path) => self.entity.get_path_owned(rest_path),
+                None => Some(self.entity.to_value()),
+            };
+        }
+
         // Get the root value
         let root_value = match root {
-            "entity" => &self.entity,
             "payload" => &self.payload,
             "state" => &self.state,
             "config" => &self.config,
@@ -424,7 +443,12 @@ impl BindingContext {
         };
         let root_value: &Value = match root {
             "now" | "prevEvents" | "prevStates" | "fromState" | "toState" => return None,
-            "entity" => &self.entity,
+            "entity" => {
+                return match rest {
+                    Some(rest_path) => self.entity.get_path(rest_path),
+                    None => Some(self.entity.as_value()),
+                }
+            }
             "payload" => &self.payload,
             "state" => &self.state,
             "config" => &self.config,
@@ -880,7 +904,7 @@ impl BindingContextBuilder {
     }
 
     pub fn entity(mut self, entity: Value) -> Self {
-        self.context.entity = Arc::new(entity);
+        self.context.entity = SharedEntity::whole(entity);
         self
     }
 

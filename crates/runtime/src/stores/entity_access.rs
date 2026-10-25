@@ -17,6 +17,7 @@ use orbital_core_eval::evaluator::Evaluator;
 use orbital_core_base::schema::types::EntityDefinition;
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::schema::types::OrbitalSchema;
+use orbital_core_base::shared_entity::SharedEntity;
 use orbital_core_base::value::Value;
 use std::collections::HashMap;
 
@@ -281,8 +282,7 @@ pub fn apply_read_access(
     let mut row_ctx = ctx.clone();
     let candidates = std::mem::take(rows);
     for row in candidates {
-        let shared = std::sync::Arc::new(row);
-        row_ctx.entity = std::sync::Arc::clone(&shared);
+        row_ctx.entity = SharedEntity::whole(row);
         let mut keep = true;
         for predicate in &predicates {
             match evaluator.evaluate(predicate, &row_ctx) {
@@ -299,9 +299,9 @@ pub fn apply_read_access(
             }
             break;
         }
-        row_ctx.entity = std::sync::Arc::clone(&ctx.entity);
+        let held = std::mem::replace(&mut row_ctx.entity, ctx.entity.clone());
         if keep {
-            rows.push(std::sync::Arc::try_unwrap(shared).unwrap_or_else(|held| (*held).clone()));
+            rows.push(held.into_value());
         }
     }
     tracing::debug!(

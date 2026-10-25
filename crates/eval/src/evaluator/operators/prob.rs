@@ -167,7 +167,7 @@ fn run_model(expr: &SExpression, ctx: &mut BindingContext) -> EvalResult {
             let value = eval_expr(&rest[1], ctx)?;
             if let SExpression::String(target) = &rest[0] {
                 if let Some(field) = target.strip_prefix("@entity.") {
-                    let mut entity = match &*ctx.entity {
+                    let mut entity = match ctx.entity.as_value() {
                         Value::Object(map) => map.clone(),
                         _ => ValueMap::new(),
                     };
@@ -211,7 +211,7 @@ fn rejection_samples(args: &[SExpression], ctx: &BindingContext) -> Result<(Vec<
     while i < n {
         i += 1.0;
         let mut sample = ctx.child();
-        sample.set_entity(match &*ctx.entity {
+        sample.set_entity(match ctx.entity.as_value() {
             Value::Object(map) => Value::Object(map.clone()),
             _ => Value::Object(ValueMap::new()),
         });

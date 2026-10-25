@@ -67,6 +67,18 @@ pub enum VisitFrame<'a> {
     Value(&'a EvalValue),
 }
 
+impl<'a> VisitFrame<'a> {
+    /// The frame of an entity as held, never copied.
+    pub fn of(entity: &'a orbital_core_base::shared_entity::SharedEntity) -> Self {
+        use orbital_core_base::shared_entity::EntityParts;
+        match entity.parts() {
+            EntityParts::Null => VisitFrame::Null,
+            EntityParts::Fields(fields) => VisitFrame::Fields(fields.iter().map(|(k, v)| (k.as_str(), v)).collect()),
+            EntityParts::Value(v) => VisitFrame::Value(v),
+        }
+    }
+}
+
 /// A set of deliveries under the `dispatch_visit_key` identity. Steps are filed by
 /// `(trait, event, from)` and each visit keeps only the SHA-256 of its canonical payload and
 /// frame, so a long loop over a large entity does not retain a copy of every frame it passed.

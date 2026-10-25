@@ -3,6 +3,7 @@
 use super::macros::*;
 use super::*;
 use orbital_core_base::value::ValueMap;
+use std::sync::Arc;
 
 /// The numbers `array/max` / `array/min` fold: each element (or its `args[1]` field)
 /// read through `Value::to_number`; an element or field that yields none is skipped.
@@ -45,19 +46,20 @@ fn numbers_of(
 /// almadar-evaluator's `evalWithItem`/`evalLambda`).
 pub fn apply_callback(
     callable: &SExpression,
-    values: &[Value],
+    values: Vec<Value>,
     ctx: &BindingContext,
 ) -> EvalResult {
+    let values: Vec<Arc<Value>> = values.into_iter().map(Arc::new).collect();
     let mut child = ctx.child();
     if let Some(item) = values.first() {
-        child.set_local("item", item.clone());
+        child.set_local_shared("item", Arc::clone(item));
     }
     if let Some(index) = values.get(1) {
-        child.set_local("index", index.clone());
+        child.set_local_shared("index", Arc::clone(index));
     }
     if let Ok(Value::Lambda { params, body }) = eval_expr(callable, ctx) {
-        for (param, value) in params.iter().zip(values) {
-            child.set_local(param, value.clone());
+        for (param, value) in params.iter().zip(&values) {
+            child.set_local_shared(param, Arc::clone(value));
         }
         return eval_expr(&body, &child);
     }
@@ -110,7 +112,7 @@ impl Operator for CountOp {
             if let (Value::Array(arr), Some(predicate)) = (val, args.get(1)) {
                 let mut count = 0usize;
                 for (i, item) in arr.iter().enumerate() {
-                    if apply_callback(predicate, &[item.clone(), Value::Number(i as f64)], ctx)?
+                    if apply_callback(predicate, vec![item.clone(), Value::Number(i as f64)], ctx)?
                         .is_truthy()
                     {
                         count += 1;
@@ -224,7 +226,7 @@ impl Operator for MapOp {
             let results: Result<Vec<Value>, _> = array
                 .into_iter()
                 .enumerate()
-                .map(|(i, item)| apply_callback(&args[1], &[item, Value::Number(i as f64)], ctx))
+                .map(|(i, item)| apply_callback(&args[1], vec![item, Value::Number(i as f64)], ctx))
                 .collect();
             return Ok(Value::Array(results?));
         }
@@ -308,7 +310,7 @@ impl Operator for FindOp {
         let array = require_array!(arr);
 
         for (i, item) in array.into_iter().enumerate() {
-            if apply_callback(predicate, &[item.clone(), Value::Number(i as f64)], ctx)?.is_truthy()
+            if apply_callback(predicate, vec![item.clone(), Value::Number(i as f64)], ctx)?.is_truthy()
             {
                 return Ok(item);
             }
@@ -530,7 +532,7 @@ impl Operator for ArrayEveryOp {
         let array = require_array!(arr);
 
         for (i, item) in array.into_iter().enumerate() {
-            if !apply_callback(predicate, &[item, Value::Number(i as f64)], ctx)?.is_truthy() {
+            if !apply_callback(predicate, vec![item, Value::Number(i as f64)], ctx)?.is_truthy() {
                 return Ok(Value::Bool(false));
             }
         }
@@ -550,7 +552,7 @@ impl Operator for ArraySomeOp {
         let array = require_array!(arr);
 
         for (i, item) in array.into_iter().enumerate() {
-            if apply_callback(predicate, &[item, Value::Number(i as f64)], ctx)?.is_truthy() {
+            if apply_callback(predicate, vec![item, Value::Number(i as f64)], ctx)?.is_truthy() {
                 return Ok(Value::Bool(true));
             }
         }

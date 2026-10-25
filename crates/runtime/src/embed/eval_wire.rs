@@ -678,7 +678,7 @@ impl EffectRun {
 pub fn trace_effects_json(context_json: &str, effects_json: &str) -> Result<String, String> {
     let ctx = context_of(context_json)?;
     let effects: Vec<SExpression> = parse(effects_json, "effects")?;
-    let entity = match &*ctx.entity {
+    let entity = match ctx.entity.as_value() {
         Value::Object(map) => map.clone(),
         _ => ValueMap::new(),
     };

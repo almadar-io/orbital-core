@@ -47,6 +47,8 @@ pub enum WidenKind {
     NumericToDate,
     /// Numeric value read as a DateTime.
     NumericToDateTime,
+    /// An instant is a number of epoch milliseconds.
+    InstantNumber,
     /// Any scalar renders as a node ("any rendered value is a ReactNode").
     ScalarToNode,
     /// A semantic string domain (email, url, phone, uuid, image) is a string.
@@ -161,7 +163,7 @@ pub fn is_string_kind(t: &OirType) -> bool {
 
 /// Kinds erased to `"number"`: Number, Integer, and Money (numeric at rest).
 pub fn is_number_kind(t: &OirType) -> bool {
-    matches!(t, OirType::Number | OirType::Integer | OirType::Money)
+    matches!(t, OirType::Number | OirType::Integer | OirType::Money | OirType::Instant)
 }
 
 pub fn semantic_kind(t: &OirType) -> Option<SemanticStringKind> {
@@ -291,6 +293,10 @@ impl Relation<'_> {
                 ))
         {
             return Some(Coercion::Identity);
+        }
+        // A relation read is the related row's id at rest (owner ruling 2026-10-25), so it fits a string.
+        if matches!((src, dst), (OirType::Reference { .. }, OirType::String)) {
+            return Some(Coercion::Erase { from: src.clone() });
         }
         let expanded_src = match (self.resolve, src) {
             (Some(resolve), OirType::TypeRef { name } | OirType::Reference { entity: name }) => {
@@ -534,12 +540,15 @@ impl Relation<'_> {
             },
             OirType::Number => match src {
                 OirType::Integer => Some(Coercion::Widen(WidenKind::IntegerNumber)),
+                OirType::Instant => Some(Coercion::Widen(WidenKind::InstantNumber)),
                 OirType::Money => Some(Coercion::Widen(WidenKind::MoneyNumber)),
                 _ => None,
             },
             // Integer is the narrower numeric kind: Number/Money do not narrow
             // back down to Integer (4.4); only Integer == Integer, caught above.
             OirType::Integer => None,
+            // Only the clock makes an instant (identity, caught above).
+            OirType::Instant => None,
             OirType::Boolean => None,
             OirType::Date => match src {
                 _ if is_string_kind(src) => Some(Coercion::Widen(WidenKind::StringToDate)),
@@ -806,6 +815,7 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         "boolean" => CompatType::Ty(OirType::Boolean),
         "date" => CompatType::Ty(OirType::Date),
         "datetime" => CompatType::Ty(OirType::DateTime),
+        "instant" => CompatType::Ty(OirType::Instant),
         "email" => CompatType::Ty(OirType::Email),
         "url" => CompatType::Ty(OirType::Url),
         "phone" => CompatType::Ty(OirType::Phone),
@@ -1053,6 +1063,7 @@ pub fn oir_type_kind(t: &crate::ir::types::OirType) -> String {
         OirType::Boolean => "boolean".to_string(),
         OirType::Date => "date".to_string(),
         OirType::DateTime => "datetime".to_string(),
+        OirType::Instant => "instant".to_string(),
         OirType::Json | OirType::SExpr => "json".to_string(),
         OirType::Array { .. } | OirType::Tuple { .. } => "array".to_string(),
         OirType::Map { .. } | OirType::Struct { .. } | OirType::Row { .. } => "object".to_string(),
@@ -2539,7 +2550,8 @@ mod compat_tests {
             ),
             None
         );
-        assert_eq!(sub(&article, &String), None);
+        // Owner ruling 2026-10-25: a relation read is the related row's id, so it fits a string, and is not a row.
+        assert_eq!(sub(&article, &String), Some(C::Erase { from: article.clone() }));
         assert_eq!(sub(&article, &row), None);
         assert_eq!(sub(&Json, &article), None);
     }

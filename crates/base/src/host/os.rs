@@ -20,6 +20,7 @@ pub enum OsFamily {
     Net,
     Sys,
     Kv,
+    Dev,
 }
 
 /// The one family that answers `op`.
@@ -41,6 +42,7 @@ pub fn family_of(op: OsOp) -> OsFamily {
         | ThermalZones | Notify | Speak | BrightnessGet | BrightnessSet | VolumeGet | VolumeSet
         | VolumeMute | Suspend | Hibernate => OsFamily::Sys,
         KvGet | KvPut | KvDelete | KvScan | KvBatch => OsFamily::Kv,
+        MmioRead | MmioWrite | IrqWait | IrqAck => OsFamily::Dev,
     }
 }
 
@@ -178,6 +180,10 @@ os_ops! {
     VolumeMute => ("os/volume-mute", 0, 1, Single),
     Suspend => ("os/suspend", 0, 0, Single),
     Hibernate => ("os/hibernate", 0, 0, Single),
+    MmioRead => ("os/mmio-read", 3, 3, Single),
+    MmioWrite => ("os/mmio-write", 4, 4, Single),
+    IrqWait => ("os/irq-wait", 1, 1, Single),
+    IrqAck => ("os/irq-ack", 1, 1, Single),
     KvGet => ("kv/get", 2, 2, Single),
     KvPut => ("kv/put", 3, 3, Single),
     KvDelete => ("kv/delete", 2, 2, Single),
@@ -200,7 +206,7 @@ impl OsOp {
     /// asked it, its outcome arriving later as an event of the route (EXEC-QUEUE-10).
     pub fn defers_completion(self) -> bool {
         (family_of(self) == OsFamily::Fs && self.shape() == OsShape::Single && self != OsOp::Cwd)
-            || matches!(self, OsOp::Wait | OsOp::Send | OsOp::Recv | OsOp::Recvfrom | OsOp::StdinRead)
+            || matches!(self, OsOp::Wait | OsOp::Send | OsOp::Recv | OsOp::Recvfrom | OsOp::StdinRead | OsOp::IrqWait)
     }
 }
 
@@ -306,7 +312,7 @@ mod tests {
             assert!(op.name().starts_with("os/") || op.is_kv());
             assert!(op.min_args() <= op.max_args());
         }
-        assert_eq!(OsOp::ALL.len(), 96);
+        assert_eq!(OsOp::ALL.len(), 100);
         assert_eq!(OsOp::from_name("http"), None);
     }
 
@@ -330,9 +336,22 @@ mod tests {
         }
         let other: Vec<_> = OsOp::ALL.iter().copied()
             .filter(|op| family_of(*op) != OsFamily::Fs && op.defers_completion()).collect();
-        assert_eq!(other, vec![OsOp::Wait, OsOp::StdinRead, OsOp::Send, OsOp::Recv, OsOp::Recvfrom]);
+        assert_eq!(other, vec![OsOp::Wait, OsOp::StdinRead, OsOp::Send, OsOp::Recv, OsOp::Recvfrom, OsOp::IrqWait]);
         assert!(!OsOp::Wait.is_stream() && !OsOp::Recv.is_stream());
         assert!(!OsOp::Spawn.defers_completion() && !OsOp::Sendto.defers_completion());
+    }
+
+    #[test]
+    fn the_device_family_is_exactly_the_four_device_ops() {
+        let dev: Vec<&str> = OsOp::ALL.iter().filter(|op| family_of(**op) == OsFamily::Dev).map(|op| op.name()).collect();
+        assert_eq!(dev, vec!["os/mmio-read", "os/mmio-write", "os/irq-wait", "os/irq-ack"]);
+        assert_eq!((OsOp::MmioRead.min_args(), OsOp::MmioRead.max_args()), (3, 3));
+        assert_eq!((OsOp::MmioWrite.min_args(), OsOp::MmioWrite.max_args()), (4, 4));
+        assert_eq!((OsOp::IrqWait.min_args(), OsOp::IrqAck.max_args()), (1, 1));
+        assert!(dev.iter().all(|name| !OsOp::from_name(name).is_some_and(OsOp::is_stream)));
+        assert!(OsOp::IrqWait.defers_completion());
+        assert!(!OsOp::MmioRead.defers_completion() && !OsOp::IrqAck.defers_completion(), "control: register access answers at once");
+        assert_eq!(family_of(OsOp::StdoutWrite), OsFamily::Process, "control: stdio stays in process");
     }
 
     #[test]

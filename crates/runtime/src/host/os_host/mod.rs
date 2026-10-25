@@ -125,6 +125,7 @@ fn dispatch(
         OsFamily::Net => net::answer(op, args, key, site, host),
         OsFamily::Sys => sys::answer(op, args, key, site, host),
         OsFamily::Kv => Some(crate::kv_host::answer(op, args, host)),
+        OsFamily::Dev => Some(Err(OsError::new(OsErrorKind::Unsupported, format!("{}: this host has no devices", op.name())))),
     };
     // `os/close` takes an fd or a socket: the fs table is asked first, and a handle it does not own
     // (`None`) is offered to the net table.
@@ -405,7 +406,7 @@ mod tests {
 
     #[test]
     fn every_op_belongs_to_exactly_one_family_in_contract_order() {
-        let mut counts = [0usize; 5];
+        let mut counts = [0usize; 6];
         for op in OsOp::ALL {
             let slot = match family_of(*op) {
                 OsFamily::Fs => 0,
@@ -413,11 +414,12 @@ mod tests {
                 OsFamily::Net => 2,
                 OsFamily::Sys => 3,
                 OsFamily::Kv => 4,
+                OsFamily::Dev => 5,
             };
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 18, 10, 31, 5]);
+        assert_eq!(counts, [32, 18, 10, 31, 5, 4]);
     }
 
     #[test]
@@ -458,6 +460,26 @@ mod tests {
         ] {
             assert_eq!(family_of(op), OsFamily::Sys, "{}", op.name());
         }
+    }
+
+    #[test]
+    fn a_hosted_process_answers_every_device_call_unsupported() {
+        with_host(|host| {
+            for (op, args) in [
+                (OsOp::MmioRead, vec![Value::Number(150994944.0), Value::Number(24.0), Value::Number(4.0)]),
+                (OsOp::MmioWrite, vec![Value::Number(150994944.0), Value::Number(0.0), Value::Number(1.0), Value::Number(65.0)]),
+                (OsOp::IrqWait, vec![Value::Number(33.0)]),
+                (OsOp::IrqAck, vec![Value::Number(33.0)]),
+            ] {
+                let request = IoRequest::Os { op, args, key: Some("k".into()), site: None };
+                let IoAnswer::Os(Err(error)) = answer_os(Some(host), &request) else { panic!("{} must fail", op.name()) };
+                assert_eq!(error.kind, OsErrorKind::Unsupported, "{}", op.name());
+                assert!(error.message.contains("no devices"), "{}", error.message);
+            }
+        });
+        let request = IoRequest::Os { op: OsOp::IrqWait, args: vec![Value::Number(33.0)], key: None, site: None };
+        let IoAnswer::Os(Err(error)) = answer_os(None, &request) else { panic!("no host must deny") };
+        assert_eq!(error.kind, OsErrorKind::Denied, "control: no host denies before any device question");
     }
 
     #[test]

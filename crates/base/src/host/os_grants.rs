@@ -77,9 +77,20 @@ macro_rules! named_kinds {
     };
 }
 
+/// What a device call does: read or write a register in an `mmio` window, wait for or acknowledge an `irq` line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DevKind {
+    Read,
+    Write,
+    Wait,
+    Ack,
+}
+
 named_kinds!(FsMode { Read => "read", Write => "write", Create => "create", Remove => "remove", Meta => "meta" });
 named_kinds!(KvMode { Read => "read", Write => "write" });
 named_kinds!(NetKind { Tcp => "tcp", Udp => "udp", Listen => "listen" });
+named_kinds!(DevKind { Read => "read", Write => "write", Wait => "wait", Ack => "ack" });
 named_kinds!(StdioKind { In => "in", Out => "out", Err => "err" });
 named_kinds!(SysKind {
     Cpu => "cpu",
@@ -109,6 +120,44 @@ pub struct FsGrant {
 pub struct NetGrant {
     pub target: String,
     pub kinds: Vec<NetKind>,
+}
+
+/// A device resource and the kinds of access it grants: `mmio:<base>+<length>` (a register window) or
+/// `irq:<line>`, numbers decimal or `0x` hex.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevGrant {
+    pub target: String,
+    pub kinds: Vec<DevKind>,
+}
+
+/// The device resource a call touches: `width` bytes at `offset` into the window based at `base`, or an irq line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "resource", rename_all = "kebab-case")]
+pub enum DevResource {
+    Mmio { base: u64, offset: u64, width: u64 },
+    Irq { line: u64 },
+}
+
+enum DevTarget {
+    Mmio { base: u64, length: u64 },
+    Irq { line: u64 },
+}
+
+fn dev_number(text: &str) -> Option<u64> {
+    match text.strip_prefix("0x") {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => text.parse().ok(),
+    }
+}
+
+fn dev_target(target: &str) -> Option<DevTarget> {
+    if let Some(window) = target.strip_prefix("mmio:") {
+        let (base, length) = window.split_once('+')?;
+        let (base, length) = (dev_number(base)?, dev_number(length)?);
+        (length > 0 && base.checked_add(length).is_some()).then_some(DevTarget::Mmio { base, length })
+    } else {
+        target.strip_prefix("irq:").and_then(dev_number).map(|line| DevTarget::Irq { line })
+    }
 }
 
 /// Where an anchored grant or path is rooted, resolved once when the host boots: the directory of the running
@@ -211,6 +260,8 @@ pub struct OsGrants {
     pub stdio: Vec<StdioKind>,
     pub sys: Vec<SysKind>,
     pub desktop: Vec<DesktopKind>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dev: Vec<DevGrant>,
     /// `kv: { <store>: [read, write] }`: a store name, or a `*`/`?` glob over one, and the modes it grants.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub kv: BTreeMap<String, Vec<KvMode>>,
@@ -391,6 +442,12 @@ impl OsGrants {
                 None => self.net.push(grant.clone()),
             }
         }
+        for grant in &other.dev {
+            match self.dev.iter_mut().find(|g| g.target == grant.target) {
+                Some(held) => extend_missing(&mut held.kinds, &grant.kinds),
+                None => self.dev.push(grant.clone()),
+            }
+        }
         for grant in &other.anchored.fs {
             match self
                 .anchored
@@ -492,6 +549,26 @@ impl OsGrants {
 
     pub fn desktop_allows(&self, kind: DesktopKind) -> bool {
         self.desktop.contains(&kind)
+    }
+
+    /// Whether `resource` may be used for `kind`: a register access lies wholly inside a granted window, an irq line
+    /// is granted exactly.
+    pub fn dev_allows(&self, resource: &DevResource, kind: DevKind) -> bool {
+        self.dev.iter().any(|g| {
+            g.kinds.contains(&kind)
+                && match (dev_target(&g.target), resource) {
+                    (Some(DevTarget::Mmio { base, length }), DevResource::Mmio { base: at, offset, width }) => {
+                        matches!(kind, DevKind::Read | DevKind::Write)
+                            && at.checked_add(*offset).and_then(|start| start.checked_add(*width)).is_some_and(|end| {
+                                *at + *offset >= base && end <= base + length
+                            })
+                    }
+                    (Some(DevTarget::Irq { line }), DevResource::Irq { line: asked }) => {
+                        matches!(kind, DevKind::Wait | DevKind::Ack) && line == *asked
+                    }
+                    _ => false,
+                }
+        })
     }
 
     /// Whether the kv `store` may be used in `mode`: an entry naming it exactly or by a one-segment glob.
@@ -930,6 +1007,18 @@ impl OsGrants {
                 grants: OsGrants { desktop: vec![*kind], ..OsGrants::default() },
             });
         }
+        for (i, g) in self.dev.iter().enumerate() {
+            for kind in &g.kinds {
+                out.push(GrantAtom {
+                    path: format!("dev[{i}]"),
+                    label: format!("dev {:?} {}", g.target, kind.name()),
+                    grants: OsGrants {
+                        dev: vec![DevGrant { target: g.target.clone(), kinds: vec![*kind] }],
+                        ..OsGrants::default()
+                    },
+                });
+            }
+        }
         for (store, modes) in &self.kv {
             for mode in modes {
                 out.push(GrantAtom {
@@ -1017,6 +1106,14 @@ impl OsGrants {
                 problem(format!("net[{i}]"), format!("{:?} grants no kind", g.target));
             }
         }
+        for (i, g) in self.dev.iter().enumerate() {
+            if dev_target(&g.target).is_none() {
+                problem(format!("dev[{i}]"), format!("{:?} is not `mmio:<base>+<length>` or `irq:<line>`", g.target));
+            }
+            if g.kinds.is_empty() {
+                problem(format!("dev[{i}]"), format!("{:?} grants no kind", g.target));
+            }
+        }
         for (i, name) in self.env.iter().enumerate() {
             if !valid_name(name) || name.contains('=') {
                 problem(format!("env[{i}]"), format!("{name:?} is not a variable name"));
@@ -1093,6 +1190,7 @@ pub enum OsRequirement {
     Sys { kind: SysKind },
     Desktop { kind: DesktopKind },
     Kv { store: String, mode: KvMode },
+    Dev { resource: DevResource, kind: DevKind },
 }
 
 impl OsRequirement {
@@ -1136,6 +1234,7 @@ impl OsGrants {
             OsRequirement::Sys { kind } => self.sys_allows(*kind),
             OsRequirement::Desktop { kind } => self.desktop_allows(*kind),
             OsRequirement::Kv { store, mode } => self.kv_allows(store, *mode),
+            OsRequirement::Dev { resource, kind } => self.dev_allows(resource, *kind),
         }
     }
 }
@@ -1161,6 +1260,32 @@ fn literal_port(args: &[SExpression], index: usize, deferred: Deferred) -> Resul
         }
         Some(_) => Err(index),
     }
+}
+
+fn literal_int(args: &[SExpression], index: usize, deferred: Deferred) -> Result<Option<u64>, usize> {
+    match args.get(index) {
+        None => Ok(None),
+        Some(arg) if deferred(arg) => Ok(None),
+        Some(SExpression::Number(n)) if n.fract() == 0.0 && *n >= 0.0 && *n <= u64::MAX as f64 => Ok(Some(*n as u64)),
+        Some(_) => Err(index),
+    }
+}
+
+fn mmio_need(args: &[SExpression], kind: DevKind, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
+    let (base, offset, width) = (literal_int(args, 0, deferred)?, literal_int(args, 1, deferred)?, literal_int(args, 2, deferred)?);
+    Ok(match (base, offset, width) {
+        (Some(base), Some(offset), Some(width)) => {
+            vec![OsRequirement::Dev { resource: DevResource::Mmio { base, offset, width }, kind }]
+        }
+        _ => Vec::new(),
+    })
+}
+
+fn irq_need(args: &[SExpression], kind: DevKind, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
+    Ok(literal_int(args, 0, deferred)?
+        .map(|line| OsRequirement::Dev { resource: DevResource::Irq { line }, kind })
+        .into_iter()
+        .collect())
 }
 
 /// The leading pieces of a `str/concat` target that are known before the call runs, cut after the last
@@ -1631,6 +1756,10 @@ fn requirements_of(
         Suspend | Hibernate => desktop(DesktopKind::Power),
         KvGet | KvScan => kv_need(args, KvMode::Read, deferred),
         KvPut | KvDelete | KvBatch => kv_need(args, KvMode::Write, deferred),
+        MmioRead => mmio_need(args, DevKind::Read, deferred),
+        MmioWrite => mmio_need(args, DevKind::Write, deferred),
+        IrqWait => irq_need(args, DevKind::Wait, deferred),
+        IrqAck => irq_need(args, DevKind::Ack, deferred),
         Close | Read | Write | Seek | Fsync | Cwd | Wait | Kill | Pid | Ppid | CurrentExe | WatchProcess
         | WatchSignal | Environ | Isatty | TtySize | Send | Recv | Recvfrom | Shutdown | WatchPort
         | ClockMonotonic | WatchCron => Ok(Vec::new()),
@@ -1912,6 +2041,56 @@ mod tests {
         assert!(g.desktop_allows(DesktopKind::Notify));
         assert!(!g.desktop_allows(DesktopKind::Power));
         assert!(!g.desktop_allows(DesktopKind::Speak));
+    }
+
+    #[test]
+    fn dev_grants_cover_a_register_window_and_an_irq_line_only() {
+        let g: OsGrants = serde_json::from_value(json!({
+            "dev": [
+                {"target": "mmio:0x09000000+0x1000", "kinds": ["read", "write"]},
+                {"target": "irq:33", "kinds": ["wait", "ack"]}
+            ]
+        }))
+        .expect("dev grants");
+        let mmio = |offset, width| DevResource::Mmio { base: 0x0900_0000, offset, width };
+        assert!(g.dev_allows(&mmio(0x18, 4), DevKind::Read));
+        assert!(g.dev_allows(&mmio(0xffc, 4), DevKind::Write), "the last word of the window");
+        assert!(!g.dev_allows(&mmio(0xffd, 4), DevKind::Read), "control: one byte past the window");
+        assert!(!g.dev_allows(&DevResource::Mmio { base: 0x0900_1000, offset: 0, width: 4 }, DevKind::Read), "control: another device");
+        assert!(g.dev_allows(&DevResource::Irq { line: 33 }, DevKind::Ack));
+        assert!(!g.dev_allows(&DevResource::Irq { line: 34 }, DevKind::Wait), "control: another line");
+        assert!(!g.dev_allows(&DevResource::Irq { line: 33 }, DevKind::Read), "control: a register kind on an irq");
+        assert!(!OsGrants::default().dev_allows(&mmio(0, 1), DevKind::Read), "control: closed by default");
+        assert!(g.entry_problems().is_empty());
+    }
+
+    #[test]
+    fn a_dev_target_that_names_no_window_or_line_is_an_entry_problem() {
+        let g = OsGrants {
+            dev: vec![
+                DevGrant { target: "mmio:0x10".into(), kinds: vec![DevKind::Read] },
+                DevGrant { target: "irq:x".into(), kinds: vec![DevKind::Wait] },
+                DevGrant { target: "irq:5".into(), kinds: vec![] },
+                DevGrant { target: "mmio:0x10+0".into(), kinds: vec![DevKind::Read] },
+            ],
+            ..OsGrants::default()
+        };
+        let paths: Vec<String> = g.entry_problems().into_iter().map(|p| p.path).collect();
+        assert_eq!(paths, vec!["dev[0]", "dev[1]", "dev[2]", "dev[3]"]);
+    }
+
+    #[test]
+    fn device_calls_need_their_window_or_line() {
+        let call = |op, args: serde_json::Value| os_requirements(op, &serde_json::from_value::<Vec<SExpression>>(args).expect("args"));
+        let mmio = |offset, width, kind| OsRequirement::Dev { resource: DevResource::Mmio { base: 0x0900_0000, offset, width }, kind };
+        assert_eq!(call(OsOp::MmioRead, json!([150994944, 24, 4])), Ok(vec![mmio(24, 4, DevKind::Read)]));
+        assert_eq!(call(OsOp::MmioWrite, json!([150994944, 0, 1, 65])), Ok(vec![mmio(0, 1, DevKind::Write)]));
+        assert_eq!(call(OsOp::IrqWait, json!([33])), Ok(vec![OsRequirement::Dev { resource: DevResource::Irq { line: 33 }, kind: DevKind::Wait }]));
+        assert_eq!(call(OsOp::IrqAck, json!([33])), Ok(vec![OsRequirement::Dev { resource: DevResource::Irq { line: 33 }, kind: DevKind::Ack }]));
+        assert_eq!(call(OsOp::MmioRead, json!([150994944, "@entity.offset", 4])), Err(1), "control: a computed offset is not literal");
+        let deferred = |arg: &SExpression| matches!(arg, SExpression::String(s) if s.starts_with("@config."));
+        let args: Vec<SExpression> = serde_json::from_value(json!(["@config.base", 24, 4])).expect("args");
+        assert_eq!(os_requirements_deferring(OsOp::MmioRead, &args, &deferred), Ok(vec![]), "a config base is checked by the host");
     }
 
     #[test]

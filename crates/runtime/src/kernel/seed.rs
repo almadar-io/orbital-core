@@ -313,6 +313,16 @@ fn sample_date(index: usize, date_only: bool, entropy: &mut Entropy) -> Value {
     }
 }
 
+/// 2026-01-15T00:00:00Z in epoch milliseconds, the first indexed instant sample.
+const INDEXED_INSTANT_BASE_MS: f64 = 1_768_435_200_000.0;
+
+fn sample_instant(index: usize, entropy: &mut Entropy) -> Value {
+    match entropy {
+        Entropy::Seeded(rng) => Value::Number(rng.straddling_date(SEEDED_DATE_WINDOW_DAYS)),
+        Entropy::Index => Value::Number(INDEXED_INSTANT_BASE_MS + ((index % 12) as f64) * 30.0 * 86_400_000.0),
+    }
+}
+
 /// One sample value for a field. `None` means OMIT the key. Twin of `sampleFieldValue`.
 fn sample_value(
     field: &FieldDefinition,
@@ -472,6 +482,7 @@ fn sample_value(
         })),
         FieldType::Date => Some(sample_date(index, true, entropy)),
         FieldType::Datetime | FieldType::Timestamp => Some(sample_date(index, false, entropy)),
+        FieldType::Instant => Some(sample_instant(index, entropy)),
         FieldType::Enum => Some(Value::Null),
         // Placeholder only; the caller's post-pass links real sibling ids.
         // Matches `sampleRelation` in `@almadar/core/mock` exactly.
@@ -645,7 +656,7 @@ fn mock_field_value(declared: &str, index: usize) -> String {
 /// `@almadar/core/mock`'s `typedMockValue`.
 fn typed_mock_value(field: &FieldDefinition, literal: String) -> Value {
     match field.field_type {
-        FieldType::Number | FieldType::Money => match literal.trim().parse::<f64>() {
+        FieldType::Number | FieldType::Money | FieldType::Instant => match literal.trim().parse::<f64>() {
             Ok(n) if n.is_finite() => Value::Number(n),
             _ => Value::String(literal),
         },

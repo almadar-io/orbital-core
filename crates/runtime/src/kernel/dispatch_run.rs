@@ -14,6 +14,7 @@ use crate::resumable::{
 use crate::row_query::RowWriteOutcome;
 use orbital_core_base::envelope::{DeliverRefusal, DeliverRefusalKind, Envelope, EnvelopeVerdict};
 use orbital_core_base::value::ValueMap;
+use orbital_core_eval::util::visit_key::VisitFrame;
 
 /// Why a unit stopped short: a kernel error, or an I/O answer the unit does not have yet (the unit
 /// has put the run and the kernel back as they were before it).
@@ -1149,7 +1150,7 @@ impl RuntimeKernel {
                 if self.io.suspended() {
                     return Err(Fault::Suspended);
                 }
-                let visit = visited.visit(scope, event_name, &from, payload, &frame.visit_frame());
+                let visit = visited.visit(scope, event_name, &from, payload, &VisitFrame::of(&frame));
                 if visited.seen(&visit) {
                     *idx += 1;
                     return Ok(Flow::More);
@@ -1376,7 +1377,7 @@ impl RuntimeKernel {
             return Err(Fault::Suspended);
         }
         let visit = (!item.completion)
-            .then(|| visited.visit(&item.trait_name, &item.event, &from, &item.payload, &frame.visit_frame()));
+            .then(|| visited.visit(&item.trait_name, &item.event, &from, &item.payload, &VisitFrame::of(&frame)));
         if visit.as_ref().is_some_and(|v| visited.seen(v)) {
             return Ok(true);
         }
@@ -1396,7 +1397,7 @@ impl RuntimeKernel {
         if cascade.steps >= CROSS_TRAIT_CASCADE_CAP {
             let at_cap = match visit {
                 Some(v) => v,
-                None => visited.visit(&item.trait_name, &item.event, &from, &item.payload, &frame.visit_frame()),
+                None => visited.visit(&item.trait_name, &item.event, &from, &item.payload, &VisitFrame::of(&frame)),
             };
             visited.record(at_cap);
             let cut = crate::process_result::CascadeCut {

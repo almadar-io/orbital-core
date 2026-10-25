@@ -273,6 +273,10 @@ pub struct EmbeddedOperator {
     /// (`T?`) and the program handles the missing value (owner ruling 2026-10-25).
     #[serde(default)]
     pub failable: Option<FailableOperator>,
+    /// The sign of a numeric result (`sign` in the operator table): always at least zero (`nonNegative`), or derived
+    /// from the arguments' signs (`sum`, `product`, `max`, `min`). The checker proves divisors and roots with it.
+    #[serde(default)]
+    pub sign: Option<ResultSign>,
     /// 0-indexed argument position of the operator's lambda/callback, when it
     /// takes one. The sexpr validator rejects a `(fn …)` form at any OTHER
     /// argument position — the decidable wrong-arg-order class
@@ -301,6 +305,35 @@ pub struct FailableOperator {
     /// checked when the program is validated, so its result is not optional.
     #[serde(rename = "unlessLiteral", default)]
     pub unless_literal: Vec<usize>,
+    /// Argument positions whose value of the named type cannot make the call fail (an `instant` timestamp).
+    #[serde(rename = "unlessTyped", default)]
+    pub unless_typed: Vec<UnlessTyped>,
+    /// Argument positions where a value proved nonzero (a divisor), at least zero (a square root's argument) or above
+    /// zero (a logarithm's) cannot make the call fail.
+    #[serde(rename = "unlessNonZero", default)]
+    pub unless_non_zero: Vec<usize>,
+    #[serde(rename = "unlessNonNegative", default)]
+    pub unless_non_negative: Vec<usize>,
+    #[serde(rename = "unlessPositive", default)]
+    pub unless_positive: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResultSign {
+    NonNegative,
+    Sum,
+    Product,
+    Max,
+    Min,
+}
+
+/// One argument position and the type that proves it cannot fail there.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnlessTyped {
+    pub arg: usize,
+    #[serde(rename = "type")]
+    pub ty: String,
 }
 
 /// Metadata for an operator category.

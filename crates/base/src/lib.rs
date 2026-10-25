@@ -6,6 +6,8 @@
 // program — what a program IS: value model + IR + structure
 #[path = "program/value.rs"]
 pub mod value;
+#[path = "program/shared_entity.rs"]
+pub mod shared_entity;
 #[path = "program/json_value.rs"]
 pub mod json_value;
 #[path = "program/type_compat.rs"]

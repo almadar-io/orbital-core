@@ -145,7 +145,8 @@ fn search_dispatch_allocation_count_is_pinned() {
     );
 }
 
-const PINNED_SEARCH: usize = 1510;
+// 1405 (was 1510): a step binds `@entity` as the kernel holds it and a `set` writes one field (G-ORBITAL-CORE-049, 2026-10-25).
+const PINNED_SEARCH: usize = 1405;
 
 fn fetch_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
@@ -202,7 +203,8 @@ fn fetch_dispatch_allocation_count_is_pinned() {
 }
 
 // 746 (was 1258): a dispatch clones the kernel's one `prob/*` seed source instead of building one (G-ORBITAL-CORE-029, 2026-10-18).
-const PINNED_FETCH: usize = 746;
+// 737: G-ORBITAL-CORE-049, 2026-10-25.
+const PINNED_FETCH: usize = 737;
 
 #[test]
 fn read_access_allocation_count_is_pinned() {
@@ -248,7 +250,7 @@ fn read_access_allocation_count_is_pinned() {
     );
 }
 
-const PINNED_READ_ACCESS: usize = 2069;
+const PINNED_READ_ACCESS: usize = 969;
 
 const REPLAY_ROWS: usize = 1000;
 const REPLAY_WRITES: usize = 6;
@@ -328,7 +330,8 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
 
 // 174201 (was 331144): each suspension records the transition its step committed (two names and a box, G-CROSS-259), and a dispatch
 // clones the kernel's one `prob/*` seed source (G-ORBITAL-CORE-029), 2026-10-18.
-const PINNED_REPLAY: usize = 174201;
+// 174040: G-ORBITAL-CORE-049, 2026-10-25.
+const PINNED_REPLAY: usize = 174040;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)
@@ -479,10 +482,9 @@ fn allocated_by_loop(blob: &str, steps: usize) -> usize {
     spent
 }
 
-/// The bytes a 30-step loop over a 64 KiB unchanged field allocates beyond the same loop over a small one. The cycle check
-/// reads the frame as the kernel holds it (no copy, an unchanged field's digest reused): 7995270 before. What remains is
-/// the step's binding context and its pending-set view, each a whole-entity copy per step (G-ORBITAL-CORE-049).
-const PINNED_LARGE_FIELD_BYTES: usize = 5_963_685;
+/// The bytes a 30-step loop over a 64 KiB unchanged field allocates beyond the same loop over a small one: 7995270, then
+/// 5963685 while the binding context and pending-set view each copied the entity per step (G-ORBITAL-CORE-049), now none.
+const PINNED_LARGE_FIELD_BYTES: usize = 0;
 
 #[test]
 fn an_unchanged_large_field_allocation_per_step_is_pinned() {
@@ -494,10 +496,44 @@ fn an_unchanged_large_field_allocation_per_step_is_pinned() {
     let small = allocated_by_loop("x", STEPS);
     let extra = large.saturating_sub(small);
     println!("ALLOCATED_LARGE_FIELD {extra} over {STEPS} steps");
-    assert!(
-        extra <= PINNED_LARGE_FIELD_BYTES,
+    assert_eq!(
+        extra, PINNED_LARGE_FIELD_BYTES,
         "allocations over an unchanged {BLOB}-byte field rose: {extra} > {PINNED_LARGE_FIELD_BYTES}"
     );
+}
+
+/// G-ORBITAL-CORE-049: a step binds `@entity` as the kernel holds it, so an unread field costs nothing per step.
+#[test]
+fn a_step_does_not_copy_an_unread_large_field() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    const BLOB: usize = 64 * 1024;
+    allocated_by_loop("x", 1);
+    for steps in [10, 30] {
+        let extra = allocated_by_loop(&"x".repeat(BLOB), steps).saturating_sub(allocated_by_loop("x", steps));
+        println!("UNREAD_LARGE_FIELD {extra} over {steps} steps");
+        assert!(
+            extra < 4 * BLOB,
+            "a {BLOB}-byte field no step reads costs {extra} bytes over {steps} steps"
+        );
+    }
+}
+
+#[test]
+fn control_a_large_field_read_each_step_is_still_paid_for() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    const BLOB: usize = 64 * 1024;
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(rewriter_schema(&"x".repeat(BLOB))).unwrap();
+    let payload = serde_json::from_value::<Value>(json!({ "left": 10 })).unwrap();
+    let before = BYTES.load(Ordering::SeqCst);
+    let out = k.dispatch("Rewriter", None, "REWRITE", payload).unwrap();
+    let spent = BYTES.load(Ordering::SeqCst) - before;
+    assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 10);
+    assert!(spent > 10 * BLOB, "a field each step rewrites is built each step: {spent} bytes");
 }
 
 #[test]
@@ -762,6 +798,97 @@ fn a_reduce_binds_its_accumulator_without_copying_it() {
     let extra = spent(&large).saturating_sub(spent(&map_of(2, 4)));
     println!("ALLOCATED_BY_50_STEP_REDUCE {extra} (one copy: {one_copy})");
     assert!(extra < 70 * one_copy, "a 50-step reduce copies its accumulator twice a step: {extra} extra bytes, one copy is {one_copy}");
+}
+
+fn mapper_schema(list: &serde_json::Value, read: serde_json::Value) -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "alloc-map",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Mapped", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "list", "type": "array", "default": list },
+                { "name": "out", "type": "array", "default": [] }
+            ] },
+            "traits": [{
+                "name": "Map", "linkedEntity": "Mapped",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "MAP",
+                        "effects": [["set", "@entity.out", read]] }]
+                }
+            }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn allocated_by_map(list: &serde_json::Value, read: &serde_json::Value) -> usize {
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(mapper_schema(list, read.clone())).unwrap();
+    let before = BYTES.load(Ordering::SeqCst);
+    let out = k.dispatch("Map", None, "MAP", Value::Null).unwrap();
+    let spent = BYTES.load(Ordering::SeqCst) - before;
+    assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 1);
+    spent
+}
+
+/// A callback binds each element once: the `(fn (x) …)` parameter and `@item` share the element the operator handed
+/// over. Two lists of the same length whose elements differ only in size isolate what a map copies per element byte
+/// (the per-call frame costs the same for both): one copy, the one reading the list makes.
+#[test]
+fn a_callback_binds_each_element_once() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let list = |width: usize| serde_json::Value::Array((0..256).map(|i| json!(format!("{i}{}", "v".repeat(width)))).collect());
+    let one_copy = |value: &serde_json::Value| {
+        let as_value = serde_json::from_value::<Value>(value.clone()).unwrap();
+        let before = BYTES.load(Ordering::SeqCst);
+        let copy = as_value.clone();
+        let spent = BYTES.load(Ordering::SeqCst) - before;
+        drop(copy);
+        spent
+    };
+    let (wide, narrow) = (list(4096), list(8));
+    let element_bytes = one_copy(&wide) - one_copy(&narrow);
+    let still = json!(["array/slice", "@entity.list", 0, 0]);
+    let mapping = |list: &serde_json::Value, body: &serde_json::Value| {
+        allocated_by_map(list, &json!(["array/map", "@entity.list", body])).saturating_sub(allocated_by_map(list, &still))
+    };
+    // (body, copies allowed): the list read, plus the body's own owned read of the element where it makes one.
+    for (body, copies) in [
+        (json!(["fn", ["x"], 1]), 1),
+        (json!(["fn", ["x"], ["str/len", "@x"]]), 2),
+        (json!(["fn", ["x"], ["str/len", "@item"]]), 2),
+    ] {
+        mapping(&narrow, &body);
+        let per_size = mapping(&wide, &body).saturating_sub(mapping(&narrow, &body));
+        println!("MAP_ELEMENT_BYTES {body}: {per_size} (one copy of the elements: {element_bytes})");
+        assert!(
+            per_size < (copies + 1) * element_bytes,
+            "{body}: binding copies each element: {per_size} bytes for {element_bytes} bytes of elements, {copies} copies allowed"
+        );
+    }
+}
+
+#[test]
+fn control_a_callback_still_sees_both_the_parameter_and_item() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mapped = |body: serde_json::Value| {
+        let k = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            Default::default(),
+        );
+        k.register_schema(mapper_schema(&json!(["a", "b"]), json!(["array/map", "@entity.list", body]))).unwrap();
+        let out = k.dispatch("Map", None, "MAP", Value::Null).unwrap();
+        serde_json::to_value(&out.last().unwrap().1.entity_data).unwrap()["out"].clone()
+    };
+    assert_eq!(mapped(json!(["fn", ["x", "i"], ["str/concat", "@x", "@item"]])), json!(["aa", "bb"]));
+    assert_eq!(mapped(json!(["fn", ["x", "i"], ["+", "@i", "@index"]])), json!([0.0, 2.0]));
 }
 
 fn fanout_schema(listeners: usize) -> OrbitalSchema {

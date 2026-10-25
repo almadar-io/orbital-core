@@ -69,6 +69,7 @@ fn type_tag(ty: &OirType) -> String {
         OirType::Boolean => "boolean".to_string(),
         OirType::Date => "date".to_string(),
         OirType::DateTime => "datetime".to_string(),
+        OirType::Instant => "instant".to_string(),
         OirType::Email => "email".to_string(),
         OirType::Url => "url".to_string(),
         OirType::Phone => "phone".to_string(),
@@ -138,7 +139,9 @@ pub fn render_default<R: TargetLiteralRenderer>(
         | (OirType::FieldRef { .. }, OirValue::String(s))
         | (OirType::File, OirValue::String(s)) => Ok(Some(r.string(s))),
 
-        (OirType::Number, OirValue::Number(n)) | (OirType::Money, OirValue::Number(n)) => {
+        (OirType::Number, OirValue::Number(n))
+        | (OirType::Instant, OirValue::Number(n))
+        | (OirType::Money, OirValue::Number(n)) => {
             Ok(Some(r.number(*n)))
         }
         (OirType::Integer, OirValue::Number(n)) if n.fract() == 0.0 => {

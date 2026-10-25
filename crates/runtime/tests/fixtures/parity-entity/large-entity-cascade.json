@@ -1,0 +1,653 @@
+{
+  "name": "large-entity-cascade",
+  "description": "Per-step cost against entity size: a 400-step self-cascade that reads and writes one small field over an empty entity (control), over a 50 000-number field, and appending to an accumulator over the same field. Source: large-entity-cascade.lolo (orb lower).",
+  "schema": {
+    "typeContractVersion": 1,
+    "name": "large-entity-cascade",
+    "version": "1.0.0",
+    "description": "Bench fixture: a self-cascade over an entity whose size is set by BUILD; each step reads and writes one small field, or appends to an accumulator.",
+    "orbitals": [
+      {
+        "name": "BenchOrbital",
+        "id": "orb_G4Q8JFFAKHN9RJRJC8Z4JPEECH",
+        "entity": {
+          "name": "BenchRecord",
+          "id": "ent_1RR81HYV58DJM7GWTE7S2RAMC3",
+          "persistence": "runtime",
+          "fields": [
+            {
+              "nullable": false,
+              "name": "id",
+              "type": "string",
+              "required": true
+            },
+            {
+              "nullable": false,
+              "name": "big",
+              "type": "array",
+              "default": [],
+              "items": {
+                "nullable": false,
+                "type": "number"
+              }
+            },
+            {
+              "nullable": false,
+              "name": "acc",
+              "type": "array",
+              "default": [],
+              "items": {
+                "nullable": false,
+                "type": "number"
+              }
+            },
+            {
+              "nullable": false,
+              "name": "counter",
+              "type": "number",
+              "default": 0
+            },
+            {
+              "nullable": false,
+              "name": "n",
+              "type": "number",
+              "default": 0
+            }
+          ]
+        },
+        "traits": [
+          {
+            "name": "Bench",
+            "id": "trt_NS7H0TDZQRZVWAAHPK368921KR",
+            "effectRow": [
+              {
+                "kind": "emit",
+                "resource": "STEP"
+              },
+              {
+                "kind": "emit",
+                "resource": "STEP_ACC"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.acc"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.big"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.counter"
+              },
+              {
+                "kind": "set",
+                "resource": "@entity.n"
+              }
+            ],
+            "linkedEntity": "BenchRecord",
+            "linkedEntityId": "ent_1RR81HYV58DJM7GWTE7S2RAMC3",
+            "entityRefIds": {
+              "BenchRecord": "ent_1RR81HYV58DJM7GWTE7S2RAMC3"
+            },
+            "emits": [
+              {
+                "event": "STEP",
+                "eventId": "evt_FXTH787MWCTE64G43RFCJ4DXHK",
+                "description": "One iteration of the read-one-field cascade.",
+                "tier": "internal",
+                "scope": "internal",
+                "payloadSchema": [
+                  {
+                    "nullable": false,
+                    "name": "i",
+                    "type": "number",
+                    "required": true
+                  }
+                ]
+              },
+              {
+                "event": "STEP_ACC",
+                "eventId": "evt_EDYZXBQEW9QE4MX9W3V0A0GX5M",
+                "description": "One iteration of the accumulating cascade.",
+                "tier": "internal",
+                "scope": "internal",
+                "payloadSchema": [
+                  {
+                    "nullable": false,
+                    "name": "i",
+                    "type": "number",
+                    "required": true
+                  }
+                ]
+              }
+            ],
+            "stateMachine": {
+              "states": [
+                {
+                  "name": "ready",
+                  "isInitial": true
+                }
+              ],
+              "events": [
+                {
+                  "key": "INIT",
+                  "id": "evt_QFY1TGQZS4ZWJ4X217027WGABG",
+                  "name": "Initialize"
+                },
+                {
+                  "key": "BUILD",
+                  "id": "evt_BD2Q0TQG6AR357F2HK4KV3B94E",
+                  "name": "Build",
+                  "description": "Fill the large field with size numbers.",
+                  "payloadSchema": [
+                    {
+                      "nullable": false,
+                      "name": "size",
+                      "type": "number",
+                      "required": true
+                    }
+                  ],
+                  "listened": true
+                },
+                {
+                  "key": "RUN",
+                  "id": "evt_27CMZNJKAK9N9ZSHV18TMBCWYF",
+                  "name": "Run",
+                  "description": "Run n cascade steps that touch only the counter.",
+                  "payloadSchema": [
+                    {
+                      "nullable": false,
+                      "name": "n",
+                      "type": "number",
+                      "required": true
+                    }
+                  ],
+                  "listened": true
+                },
+                {
+                  "key": "RUN_ACC",
+                  "id": "evt_TH3HWSZ71JKGS6X6SE28QY1P5J",
+                  "name": "Run Acc",
+                  "description": "Run n cascade steps that each append to the accumulator.",
+                  "payloadSchema": [
+                    {
+                      "nullable": false,
+                      "name": "n",
+                      "type": "number",
+                      "required": true
+                    }
+                  ],
+                  "listened": true
+                },
+                {
+                  "key": "STEP",
+                  "id": "evt_FXTH787MWCTE64G43RFCJ4DXHK",
+                  "name": "Step",
+                  "description": "One iteration of the read-one-field cascade.",
+                  "tier": "internal",
+                  "payloadSchema": [
+                    {
+                      "nullable": false,
+                      "name": "i",
+                      "type": "number",
+                      "required": true
+                    }
+                  ],
+                  "listened": true
+                },
+                {
+                  "key": "STEP_ACC",
+                  "id": "evt_EDYZXBQEW9QE4MX9W3V0A0GX5M",
+                  "name": "Step Acc",
+                  "description": "One iteration of the accumulating cascade.",
+                  "tier": "internal",
+                  "payloadSchema": [
+                    {
+                      "nullable": false,
+                      "name": "i",
+                      "type": "number",
+                      "required": true
+                    }
+                  ],
+                  "listened": true
+                }
+              ],
+              "transitions": [
+                {
+                  "from": "ready",
+                  "to": "ready",
+                  "event": "INIT",
+                  "eventId": "evt_QFY1TGQZS4ZWJ4X217027WGABG"
+                },
+                {
+                  "from": "ready",
+                  "to": "ready",
+                  "event": "BUILD",
+                  "eventId": "evt_BD2Q0TQG6AR357F2HK4KV3B94E",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.big",
+                      [
+                        "array/range",
+                        0,
+                        "@payload.size"
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.acc",
+                      []
+                    ]
+                  ]
+                },
+                {
+                  "from": "ready",
+                  "to": "ready",
+                  "event": "RUN",
+                  "eventId": "evt_27CMZNJKAK9N9ZSHV18TMBCWYF",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.counter",
+                      0
+                    ],
+                    [
+                      "set",
+                      "@entity.n",
+                      "@payload.n"
+                    ],
+                    [
+                      "emit",
+                      "STEP",
+                      {
+                        "i": "@entity.counter"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "ready",
+                  "to": "ready",
+                  "event": "RUN_ACC",
+                  "eventId": "evt_TH3HWSZ71JKGS6X6SE28QY1P5J",
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.counter",
+                      0
+                    ],
+                    [
+                      "set",
+                      "@entity.n",
+                      "@payload.n"
+                    ],
+                    [
+                      "set",
+                      "@entity.acc",
+                      []
+                    ],
+                    [
+                      "emit",
+                      "STEP_ACC",
+                      {
+                        "i": "@entity.counter"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "ready",
+                  "to": "ready",
+                  "event": "STEP",
+                  "eventId": "evt_FXTH787MWCTE64G43RFCJ4DXHK",
+                  "guard": [
+                    "<",
+                    "@entity.counter",
+                    "@entity.n"
+                  ],
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.counter",
+                      [
+                        "+",
+                        "@entity.counter",
+                        1
+                      ]
+                    ],
+                    [
+                      "emit",
+                      "STEP",
+                      {
+                        "i": "@entity.counter"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "ready",
+                  "to": "ready",
+                  "event": "STEP",
+                  "eventId": "evt_FXTH787MWCTE64G43RFCJ4DXHK",
+                  "guard": [
+                    ">=",
+                    "@entity.counter",
+                    "@entity.n"
+                  ]
+                },
+                {
+                  "from": "ready",
+                  "to": "ready",
+                  "event": "STEP_ACC",
+                  "eventId": "evt_EDYZXBQEW9QE4MX9W3V0A0GX5M",
+                  "guard": [
+                    "<",
+                    "@entity.counter",
+                    "@entity.n"
+                  ],
+                  "effects": [
+                    [
+                      "set",
+                      "@entity.counter",
+                      [
+                        "+",
+                        "@entity.counter",
+                        1
+                      ]
+                    ],
+                    [
+                      "set",
+                      "@entity.acc",
+                      [
+                        "array/append",
+                        "@entity.acc",
+                        "@entity.counter"
+                      ]
+                    ],
+                    [
+                      "emit",
+                      "STEP_ACC",
+                      {
+                        "i": "@entity.counter"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "from": "ready",
+                  "to": "ready",
+                  "event": "STEP_ACC",
+                  "eventId": "evt_EDYZXBQEW9QE4MX9W3V0A0GX5M",
+                  "guard": [
+                    ">=",
+                    "@entity.counter",
+                    "@entity.n"
+                  ]
+                }
+              ]
+            },
+            "dispatch": "client",
+            "sourceDeclaration": {
+              "traitId": "trt_NS7H0TDZQRZVWAAHPK368921KR",
+              "fingerprint": "a00a15a81817eb257be2e805dcadeece5691b99c8df47561ec27fe5eb3daccd4"
+            }
+          }
+        ],
+        "pages": [
+          {
+            "name": "BenchStart",
+            "id": "pag_5HZPGKVZK3ZSHJ8EZD2VJW581N",
+            "path": "",
+            "protocol": "boot",
+            "traits": [
+              {
+                "ref": "Bench",
+                "refId": "trt_NS7H0TDZQRZVWAAHPK368921KR"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "schemaVersion": 1,
+    "ledger": {
+      "schemaVersion": 1,
+      "entries": {
+        "ent_1RR81HYV58DJM7GWTE7S2RAMC3": {
+          "id": "ent_1RR81HYV58DJM7GWTE7S2RAMC3",
+          "kind": "entity",
+          "bakedName": "BenchRecord",
+          "curName": "BenchRecord",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "evt_27CMZNJKAK9N9ZSHV18TMBCWYF": {
+          "id": "evt_27CMZNJKAK9N9ZSHV18TMBCWYF",
+          "kind": "event",
+          "bakedName": "RUN",
+          "curName": "RUN",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_NS7H0TDZQRZVWAAHPK368921KR"
+        },
+        "evt_BD2Q0TQG6AR357F2HK4KV3B94E": {
+          "id": "evt_BD2Q0TQG6AR357F2HK4KV3B94E",
+          "kind": "event",
+          "bakedName": "BUILD",
+          "curName": "BUILD",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_NS7H0TDZQRZVWAAHPK368921KR"
+        },
+        "evt_EDYZXBQEW9QE4MX9W3V0A0GX5M": {
+          "id": "evt_EDYZXBQEW9QE4MX9W3V0A0GX5M",
+          "kind": "event",
+          "bakedName": "STEP_ACC",
+          "curName": "STEP_ACC",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_NS7H0TDZQRZVWAAHPK368921KR"
+        },
+        "evt_FXTH787MWCTE64G43RFCJ4DXHK": {
+          "id": "evt_FXTH787MWCTE64G43RFCJ4DXHK",
+          "kind": "event",
+          "bakedName": "STEP",
+          "curName": "STEP",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_NS7H0TDZQRZVWAAHPK368921KR"
+        },
+        "evt_QFY1TGQZS4ZWJ4X217027WGABG": {
+          "id": "evt_QFY1TGQZS4ZWJ4X217027WGABG",
+          "kind": "event",
+          "bakedName": "INIT",
+          "curName": "INIT",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_NS7H0TDZQRZVWAAHPK368921KR"
+        },
+        "evt_TH3HWSZ71JKGS6X6SE28QY1P5J": {
+          "id": "evt_TH3HWSZ71JKGS6X6SE28QY1P5J",
+          "kind": "event",
+          "bakedName": "RUN_ACC",
+          "curName": "RUN_ACC",
+          "renames": [],
+          "owner": "workspace",
+          "parent": "trt_NS7H0TDZQRZVWAAHPK368921KR"
+        },
+        "orb_G4Q8JFFAKHN9RJRJC8Z4JPEECH": {
+          "id": "orb_G4Q8JFFAKHN9RJRJC8Z4JPEECH",
+          "kind": "orbital",
+          "bakedName": "BenchOrbital",
+          "curName": "BenchOrbital",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "pag_5HZPGKVZK3ZSHJ8EZD2VJW581N": {
+          "id": "pag_5HZPGKVZK3ZSHJ8EZD2VJW581N",
+          "kind": "page",
+          "bakedName": "BenchStart",
+          "curName": "BenchStart",
+          "renames": [],
+          "owner": "workspace"
+        },
+        "trt_NS7H0TDZQRZVWAAHPK368921KR": {
+          "id": "trt_NS7H0TDZQRZVWAAHPK368921KR",
+          "kind": "trait",
+          "bakedName": "Bench",
+          "curName": "Bench",
+          "renames": [],
+          "owner": "workspace"
+        }
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "name": "small-entity-read",
+      "orbital": "BenchOrbital",
+      "steps": [
+        {
+          "trait": "Bench",
+          "event": "BUILD",
+          "payload": {
+            "size": 0
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN",
+          "payload": {
+            "n": 400
+          }
+        }
+      ]
+    },
+    {
+      "name": "large-entity-read",
+      "orbital": "BenchOrbital",
+      "steps": [
+        {
+          "trait": "Bench",
+          "event": "BUILD",
+          "payload": {
+            "size": 50000
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN",
+          "payload": {
+            "n": 400
+          }
+        }
+      ]
+    },
+    {
+      "name": "large-entity-append",
+      "orbital": "BenchOrbital",
+      "steps": [
+        {
+          "trait": "Bench",
+          "event": "BUILD",
+          "payload": {
+            "size": 50000
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN_ACC",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN_ACC",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN_ACC",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN_ACC",
+          "payload": {
+            "n": 400
+          }
+        },
+        {
+          "trait": "Bench",
+          "event": "RUN_ACC",
+          "payload": {
+            "n": 400
+          }
+        }
+      ]
+    }
+  ]
+}

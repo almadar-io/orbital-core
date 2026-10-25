@@ -10,6 +10,7 @@
 
 use super::row_query::row_sets_in;
 use orbital_core_base::row_set::RowSetRef;
+use orbital_core_base::shared_entity::SharedEntity;
 use orbital_core_base::value::Value;
 use orbital_core_eval::evaluator::context::BindingContext;
 use orbital_core_eval::evaluator::operators::get_operator;
@@ -25,7 +26,7 @@ struct RenderedSlot {
     slot: String,
     source: Value,
     flushed: Arc<BindingContext>,
-    entity: Arc<Value>,
+    entity: SharedEntity,
     resolved: Value,
     /// The row-set references the resolved content carries (EXEC-RENDER-3).
     row_sets: Vec<RowSetRef>,
@@ -79,7 +80,7 @@ impl RenderStore {
                 slot,
                 source,
                 flushed: flushed.clone(),
-                entity: Arc::clone(&flushed.entity),
+                entity: flushed.entity.clone(),
                 row_sets: row_sets_in(&resolved),
                 resolved,
                 rows_dirty: false,
@@ -155,17 +156,17 @@ impl RenderStore {
             let mut repaints = Vec::new();
             for slot in slots
                 .iter_mut()
-                .filter(|s| s.rows_dirty || *s.entity != *now)
+                .filter(|s| s.rows_dirty || s.entity.as_value() != &*now)
             {
                 let rows_changed = std::mem::take(&mut slot.rows_dirty);
-                let resolved = if *slot.entity != *now {
+                let resolved = if slot.entity.as_value() != &*now {
                     let mut live = (*slot.flushed).clone();
-                    live.entity = Arc::clone(&now);
+                    live.entity = SharedEntity::from_arc(Arc::clone(&now));
                     resolve_deferred(&slot.source, &slot.flushed, &live, 0)
                 } else {
                     slot.resolved.clone()
                 };
-                slot.entity = Arc::clone(&now);
+                slot.entity = SharedEntity::from_arc(Arc::clone(&now));
                 if rows_changed || resolved != slot.resolved {
                     slot.resolved = resolved.clone();
                     slot.row_sets = row_sets_in(&resolved);

@@ -232,6 +232,24 @@ fn inner_list_positions(item: &Value) -> Option<Vec<OirType>> {
     let Value::Array(entries) = item else {
         return None;
     };
+    // A list of lists settles its entries together, as a list of lists does at the top: unlike op tuples are one element type.
+    if !entries.is_empty() && entries.iter().all(|entry| matches!(entry, Value::Array(_) | Value::Null)) {
+        let nested: Vec<Option<Vec<OirType>>> = entries.iter().map(inner_list_positions).collect();
+        let typed: Vec<Vec<OirType>> = nested.iter().flatten().cloned().collect();
+        if !typed.is_empty() {
+            if let [element] = settle_inner_lists(typed, Vec::new()).as_slice() {
+                return Some(
+                    nested
+                        .iter()
+                        .map(|positions| match positions {
+                            Some(_) => element.clone(),
+                            None => absent_slot(),
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
     let positions: Vec<OirType> = entries
         .iter()
         .map(|entry| match entry {
@@ -456,7 +474,7 @@ pub fn declared_text(ty: &OirType) -> String {
         OirType::Struct { .. } | OirType::File => "object".to_string(),
         OirType::Row { entity } | OirType::Reference { entity } => entity.clone(),
         OirType::TypeRef { name } | OirType::Enum { name } | OirType::Var { name } => name.clone(),
-        OirType::Integer | OirType::Money => "number".to_string(),
+        OirType::Integer | OirType::Money | OirType::Instant => "number".to_string(),
         other => serde_json::to_value(other)
             .ok()
             .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string))
@@ -550,7 +568,7 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>, 
         OirType::Reference { .. } => {
             (!matches!(value, Value::Object(_) | Value::String(_))).then(|| (String::new(), value.type_name()))
         }
-        OirType::Number | OirType::Integer | OirType::Money => {
+        OirType::Number | OirType::Integer | OirType::Money | OirType::Instant => {
             (!matches!(value, Value::Number(_))).then(|| (String::new(), value.type_name()))
         }
         OirType::Boolean => (!matches!(value, Value::Bool(_))).then(|| (String::new(), value.type_name())),
@@ -1014,6 +1032,26 @@ mod tests {
             check_rt(append(), &[deletes, op_tuple("update", 4)]).map_err(|e| e.to_string()),
             Ok(())
         );
+    }
+
+    #[test]
+    fn groups_of_op_tuples_of_unlike_widths_flatten_to_one_list() {
+        let flatten = || {
+            operator(
+                json!([{ "name": "arr", "type": { "kind": "array", "of": { "kind": "array", "of": { "kind": "var", "name": "T" } } } }]),
+                Some(1),
+            )
+        };
+        let create = Value::Array(vec![s("create"), s("Row"), Value::Object(ValueMap::new())]);
+        let rekey = Value::Array(vec![op_tuple("delete", 3), create]);
+        let set = Value::Array(vec![op_tuple("update", 4)]);
+        let groups = Value::Array(vec![Value::Array(vec![rekey]), Value::Array(vec![set])]);
+        assert_eq!(check_rt(flatten(), &[groups]).map_err(|e| e.to_string()), Ok(()));
+        let unlike = Value::Array(vec![
+            Value::Array(vec![Value::Array(vec![num(1.0)])]),
+            Value::Array(vec![Value::Array(vec![s("x")])]),
+        ]);
+        assert!(check_rt(flatten(), &[unlike]).is_err(), "control: lists of unlike scalars stay two types");
     }
 
     #[test]

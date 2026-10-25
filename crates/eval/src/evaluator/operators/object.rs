@@ -374,7 +374,7 @@ impl Operator for ObjectFilterOp {
         for (key, value) in source {
             let should_include = super::array::apply_callback(
                 &args[1],
-                &[Value::String(key.clone()), value.clone()],
+                vec![Value::String(key.clone()), value.clone()],
                 ctx,
             )?;
             if should_include.is_truthy() {

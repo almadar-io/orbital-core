@@ -1827,7 +1827,7 @@ impl RuntimeKernel {
             return Err(Fault::Suspended);
         }
         if !entity_data.is_null() {
-            ctx.set_entity(entity_data.to_value());
+            ctx.set_entity_shared(entity_data.clone());
         }
         debug!(
             target: "almadar::kernel",
@@ -1892,7 +1892,7 @@ impl RuntimeKernel {
             // in the client-facing effects against the full context, through the ONE
             // canonical resolver — `@payload` is a typed payload so `X` is arbitrary; no
             // per-field special-cases. The entity is the post-Set effective entity.
-            ctx.set_entity(effective_entity.to_value());
+            ctx.set_entity_shared(effective_entity.clone());
             let sources = render_sources(&effect_results);
             let mut effect_results = effect_results
                 .into_iter()
@@ -2314,7 +2314,7 @@ impl RuntimeKernel {
             return Err(Fault::Suspended);
         }
         if !entity_data.is_null() {
-            ctx.set_entity(entity_data.to_value());
+            ctx.set_entity_shared(entity_data.clone());
         }
 
         // Guard gates the tick exactly like the JS runtime — evaluated through the one
@@ -2360,7 +2360,7 @@ impl RuntimeKernel {
         let captured_entity_data = SharedEntity::from_value(captured_entity_data);
         let effective_entity = entity_data.merged(&captured_entity_data);
 
-        ctx.set_entity(effective_entity.to_value());
+        ctx.set_entity_shared(effective_entity.clone());
         let sources = render_sources(&effect_results);
         let mut effect_results = effect_results
             .into_iter()
@@ -6552,14 +6552,14 @@ fn browser_data_effect(effect: &Effect, residence: &orbital_core_base::runs_on::
 /// (JS twin: `EffectExecutor`'s bindings mirror).
 struct PendingSets {
     sets: ValueMap,
-    view: Arc<Value>,
+    view: SharedEntity,
 }
 
 impl PendingSets {
     fn new(ctx: &BindingContext) -> Self {
         Self {
             sets: ValueMap::new(),
-            view: Arc::clone(&ctx.entity),
+            view: ctx.entity.clone(),
         }
     }
 
@@ -6569,17 +6569,14 @@ impl PendingSets {
             return std::borrow::Cow::Borrowed(ctx);
         }
         let mut c = ctx.clone();
-        c.entity = Arc::clone(&self.view);
+        c.entity = self.view.clone();
         std::borrow::Cow::Owned(c)
     }
 
     fn insert(&mut self, field: String, value: Value) {
         self.sets.insert(field.clone(), value.clone());
-        match Arc::make_mut(&mut self.view) {
-            Value::Object(entity) => {
-                entity.insert(field, value);
-            }
-            other => *other = Value::Object(self.sets.clone()),
+        if !self.view.set_field(field, value) {
+            self.view = SharedEntity::from_value(Value::Object(self.sets.clone()));
         }
     }
 }

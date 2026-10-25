@@ -199,6 +199,7 @@ impl PrettyPrinter {
             OirType::Boolean => "Boolean".to_string(),
             OirType::Date => "Date".to_string(),
             OirType::DateTime => "DateTime".to_string(),
+            OirType::Instant => "Instant".to_string(),
             OirType::Email => "Email".to_string(),
             OirType::Url => "Url".to_string(),
             OirType::Phone => "Phone".to_string(),

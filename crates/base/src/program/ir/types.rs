@@ -576,6 +576,9 @@ pub enum OirType {
     Boolean,
     Date,
     DateTime,
+    /// Epoch milliseconds the clock produced (`time/now`, `time/today`, and time arithmetic over an instant): always a
+    /// valid moment, so formatting it cannot fail. Nothing widens into it; it fits wherever a number does.
+    Instant,
     /// Semantic string domains. Every target renders these as its string type;
     /// they exist in the IR so `oir_type_to_mock_type` / `oir_type_to_form_type`
     /// can dispatch on the declared domain instead of guessing from a name.
@@ -847,6 +850,7 @@ fn field_shape_inner(field: &FieldDefinition) -> OirType {
         FieldType::Boolean => OirType::Boolean,
         FieldType::Date => OirType::Date,
         FieldType::Datetime | FieldType::Timestamp => OirType::DateTime,
+        FieldType::Instant => OirType::Instant,
         FieldType::Email => OirType::Email,
         FieldType::Url => OirType::Url,
         FieldType::Phone => OirType::Phone,
@@ -981,6 +985,7 @@ pub fn payload_type_shape(field_type: &str) -> OirType {
         "boolean" | "bool" => return OirType::Boolean,
         "date" => return OirType::Date,
         "datetime" | "timestamp" => return OirType::DateTime,
+        "instant" => return OirType::Instant,
         "email" => return OirType::Email,
         "url" => return OirType::Url,
         "phone" => return OirType::Phone,
@@ -1054,12 +1059,13 @@ fn payload_field_shape_inner(
     is_entity: &impl Fn(&str) -> bool,
 ) -> OirType {
     if field.field_type != "union" {
+        // A payload field typed by an entity carries that entity's row; a relation field of a row carries its id.
         if let Some(entity) = field.entity.as_deref().filter(|entity| is_entity(entity)) {
-            let reference = OirType::Reference { entity: entity.to_string() };
+            let row = OirType::row(entity);
             return if field.field_type.trim_start().starts_with('[') {
-                OirType::array(reference)
+                OirType::array(row)
             } else {
-                reference
+                row
             };
         }
     }

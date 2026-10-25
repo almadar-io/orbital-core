@@ -1,0 +1,66 @@
+app large-entity-cascade [
+  version: "1.0.0",
+  description: "Bench fixture: a self-cascade over an entity whose size is set by BUILD; each step reads and writes one small field, or appends to an accumulator."
+]
+orbital BenchOrbital {
+  entity BenchRecord [runtime] {
+    id : string!
+    big : [number] = []
+    acc : [number] = []
+    counter : number = 0
+    n : number = 0
+  }
+
+  trait Bench -> BenchRecord [client] {
+    initial: ready
+
+    state ready {
+      INIT -> ready
+      BUILD -> ready
+        (set @entity.big (array/range 0 ?size))
+        (set @entity.acc [])
+      RUN -> ready
+        (set @entity.counter 0)
+        (set @entity.n ?n)
+        (emit STEP { i: @entity.counter })
+      RUN_ACC -> ready
+        (set @entity.counter 0)
+        (set @entity.n ?n)
+        (set @entity.acc [])
+        (emit STEP_ACC { i: @entity.counter })
+      STEP -> ready when (< @entity.counter @entity.n)
+        (set @entity.counter (+ @entity.counter 1))
+        (emit STEP { i: @entity.counter })
+      STEP -> ready when (>= @entity.counter @entity.n)
+      STEP_ACC -> ready when (< @entity.counter @entity.n)
+        (set @entity.counter (+ @entity.counter 1))
+        (set @entity.acc (array/append @entity.acc @entity.counter))
+        (emit STEP_ACC { i: @entity.counter })
+      STEP_ACC -> ready when (>= @entity.counter @entity.n)
+    }
+
+    emits {
+      STEP -> internal { i : number! }
+        @description "One iteration of the read-one-field cascade."
+        @tier "internal"
+      STEP_ACC -> internal { i : number! }
+        @description "One iteration of the accumulating cascade."
+        @tier "internal"
+    }
+
+    listens {
+      BUILD { size : number! }
+        @description "Fill the large field with size numbers."
+      RUN { n : number! }
+        @description "Run n cascade steps that touch only the counter."
+      RUN_ACC { n : number! }
+        @description "Run n cascade steps that each append to the accumulator."
+      STEP { i : number! }
+        @description "Next read-one-field iteration."
+      STEP_ACC { i : number! }
+        @description "Next accumulating iteration."
+    }
+  }
+
+  page boot as BenchStart -> Bench
+}

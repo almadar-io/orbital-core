@@ -500,6 +500,8 @@ const OS_ACCEPTED: &[ShapeField] = &[field("sock", "number"), field("peer", "str
 const OS_RECVFROM: &[ShapeField] = &[field("data", "bytes"), field("peer", "string")];
 const OS_ADDRESSES: &[ShapeField] = &[field("addresses", "array")];
 const OS_NANOS: &[ShapeField] = &[field("nanos", "number")];
+const OS_REGISTER: &[ShapeField] = &[field("value", "int")];
+const OS_IRQ: &[ShapeField] = &[field("irq", "int")];
 const OS_UID: &[ShapeField] = &[field("uid", "number")];
 const OS_GID: &[ShapeField] = &[field("gid", "number")];
 const OS_USERNAME: &[ShapeField] = &[field("username", "string")];
@@ -594,6 +596,9 @@ fn os_contract(op: OsOp) -> OsContract {
         OsOp::KvDelete => single(KV_EXISTED),
         OsOp::KvScan => single(OS_ENTRIES),
         OsOp::KvBatch => single(KV_APPLIED),
+        OsOp::MmioRead => single(OS_REGISTER),
+        OsOp::IrqWait => single(OS_IRQ),
+        OsOp::MmioWrite | OsOp::IrqAck => single(OS_NONE),
     }
 }
 
@@ -778,6 +783,18 @@ mod tests {
         assert_eq!(shape, &[field("data", "bytes")]);
         assert_eq!(success_payload("os/getenv", CallVariant::Plain), ProducedPayload::Shape(OS_VALUE));
         assert_eq!(OS_VALUE, &[field("value", "string")]);
+    }
+
+    #[test]
+    fn device_calls_declare_an_int_register_value_and_an_irq_line() {
+        assert_eq!(success_payload("os/mmio-read", CallVariant::Plain), ProducedPayload::Shape(OS_REGISTER));
+        assert_eq!(OS_REGISTER, &[field("value", "int")]);
+        assert_eq!(success_payload("os/irq-wait", CallVariant::Plain), ProducedPayload::Shape(OS_IRQ));
+        assert_eq!(OS_IRQ, &[field("irq", "int")]);
+        for operator in ["os/mmio-write", "os/irq-ack"] {
+            assert_eq!(success_payload(operator, CallVariant::Plain), ProducedPayload::Shape(OS_NONE), "{operator}");
+        }
+        assert_eq!(message_payload("os/irq-wait"), ProducedPayload::Opaque, "control: a single answer has no stream event");
     }
 
     #[test]
