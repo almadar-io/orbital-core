@@ -36,7 +36,7 @@ pub mod envelope;
 pub mod bus_event;
 #[path = "wire/client_effect.rs"]
 pub mod client_effect;
-#[path = "wire/effect_types.rs"]
+#[path = "wire/effect_types/mod.rs"]
 pub mod effect_types;
 #[path = "wire/http_wire.rs"]
 pub mod http_wire;
