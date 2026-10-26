@@ -1,0 +1,349 @@
+//! Answering asks and driving a dispatch on blocking and concurrent hosts.
+
+use super::*;
+
+/// A request whose resolved address is not public is refused unless its origin is an IP literal listed in egress.
+pub(super) fn address_refusal(url: &str, egress: &[String]) -> Option<String> {
+    let rest = url.split_once("://").map(|(_, rest)| rest)?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let default_port = if url.starts_with("https://") { 443 } else { 80 };
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if !p.contains(']') => (h, p.parse::<u16>().unwrap_or(default_port)),
+        _ => (authority, default_port),
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let listed = egress
+            .iter()
+            .any(|e| http_request::origin_allowed(url, std::slice::from_ref(e)));
+        return (!listed && !orbital_core_base::http_wire::is_public_address(ip))
+            .then(|| format!("refused: {ip} is not a public address"));
+    }
+    #[cfg(feature = "std")]
+    {
+        use std::net::ToSocketAddrs;
+        match (host, port).to_socket_addrs() {
+            Ok(mut addrs) => addrs
+                .find(|a| !orbital_core_base::http_wire::is_public_address(a.ip()))
+                .map(|a| format!("refused: {host} resolves to {}, not a public address", a.ip())),
+            Err(e) => Some(format!("{host} did not resolve: {e}")),
+        }
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = port;
+        Some(format!("refused: {host} cannot be resolved on a bare-metal host"))
+    }
+}
+
+pub(super) fn blocking_send(
+    host: &HttpHost<'_>,
+    request: &HttpRequest,
+) -> Result<HttpResponse, TransportError> {
+    if let Some(refusal) = address_refusal(&request.url, host.egress) {
+        return Err(TransportError::Refused(refusal));
+    }
+    host.transport.send(request)
+}
+
+/// `bytes` of operating-system CSPRNG output; wasm hosts answer `Random` themselves.
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+pub(super) fn os_random(bytes: u32) -> Result<Vec<u8>, String> {
+    let mut buf = vec![0u8; bytes as usize];
+    getrandom::getrandom(&mut buf).map_err(|e| format!("random: {e}"))?;
+    Ok(buf)
+}
+
+#[cfg(any(target_arch = "wasm32", not(feature = "std")))]
+pub(super) fn os_random(_bytes: u32) -> Result<Vec<u8>, String> {
+    Err("random: the host must answer Random".to_string())
+}
+
+/// `cancel-call` of a deferred keyed `os/` call: its pending completion is dropped, so its outcome never fires a route.
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+pub(crate) fn os_completion_cancelled(host: &HttpHost<'_>, key: &str) -> bool {
+    host.os.is_some_and(|os| os.handles.cancel_completion(key))
+}
+
+#[cfg(any(target_arch = "wasm32", not(feature = "std")))]
+pub(crate) fn os_completion_cancelled(_host: &HttpHost<'_>, _key: &str) -> bool {
+    false
+}
+
+/// An [`IoRequest::Os`] answered by the native answerer; wasm hosts answer `Os` themselves.
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+pub(super) fn answer_os_host(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer {
+    crate::os_host::answer_os(host.and_then(|h| h.os), request)
+}
+
+#[cfg(any(target_arch = "wasm32", not(feature = "std")))]
+pub(super) fn answer_os_host(_host: Option<&HttpHost<'_>>, _request: &IoRequest) -> IoAnswer {
+    IoAnswer::Os(Err(OsError::new(OsErrorKind::Unsupported, "os: the host must answer Os")))
+}
+
+/// Answer an [`IoRequest::Http`] / `HttpStream` / `Secret` / `SecretSet` / `Random` / `Os` / `CredentialStatus` /
+/// `CredentialForget` with `host`; with no host an `http` request fails.
+pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer {
+    match (request, host) {
+        (IoRequest::Http { request, delay_ms, .. }, Some(host)) => {
+            #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+            if let Some(ms) = delay_ms {
+                std::thread::sleep(std::time::Duration::from_millis(*ms));
+            }
+            #[cfg(any(target_arch = "wasm32", not(feature = "std")))]
+            let _ = delay_ms;
+            IoAnswer::Http(blocking_send(host, request))
+        }
+        (
+            IoRequest::HttpStream {
+                request,
+                key,
+                framing,
+                site,
+                ..
+            },
+            Some(host),
+        ) => IoAnswer::Http((|| {
+            if let Some(refusal) = address_refusal(&request.url, host.egress) {
+                return Err(TransportError::Refused(refusal));
+            }
+            let mut decoder = http_request::StreamDecoder::new(*framing, key.as_deref());
+            let reply = host.transport.stream(request, &mut |bytes| {
+                for event in decoder.push(bytes) {
+                    (host.on_event)(site.as_ref(), event);
+                }
+                Ok(())
+            })?;
+            for event in decoder.finish() {
+                (host.on_event)(site.as_ref(), event);
+            }
+            Ok(reply)
+        })()),
+        (IoRequest::HttpBeacon { request, .. }, Some(host)) => IoAnswer::HttpBeacon(
+            blocking_send(host, request).map(|reply| BeaconOutcome::Fetched { status: reply.status }),
+        ),
+        (IoRequest::HttpBeacon { .. }, None) => {
+            IoAnswer::HttpBeacon(Err(TransportError::Failed(NO_HTTP_HOST.to_string())))
+        }
+        (IoRequest::PageFacts { .. }, _) => IoAnswer::PageFacts(Ok(PageFacts {
+            available: false,
+            hostname: String::new(),
+            referrer: String::new(),
+            screen_width: None,
+        })),
+        (IoRequest::Prompt { .. }, _) => IoAnswer::Prompt(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_PROMPT_HOST))),
+        (IoRequest::Embed { .. }, _) => IoAnswer::Embed(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_EMBED_HOST))),
+        (IoRequest::Tab { .. }, _) => IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::Unavailable, NO_TAB_HOST))),
+        (IoRequest::Http { .. } | IoRequest::HttpStream { .. }, None) => {
+            IoAnswer::Http(Err(TransportError::Failed(NO_HTTP_HOST.to_string())))
+        }
+        (IoRequest::Secret { name, principal }, Some(host)) => {
+            IoAnswer::Secret(host.secrets.secret_of(name, principal.as_deref()))
+        }
+        (IoRequest::Secret { .. }, None) => IoAnswer::Secret(Err(NO_HTTP_HOST.to_string())),
+        (
+            IoRequest::SecretSet {
+                name,
+                value,
+                ttl_ms,
+                principal,
+            },
+            Some(host),
+        ) => IoAnswer::SecretSet(host.secrets.store_secret_of(name, value, *ttl_ms, principal.as_deref())),
+        (IoRequest::SecretSet { .. }, None) => IoAnswer::SecretSet(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::SecretRotate { name, value, principal }, Some(host)) => {
+            IoAnswer::SecretRotate(host.secrets.rotate_secret_of(name, value, principal.as_deref()))
+        }
+        (IoRequest::SecretRotate { .. }, None) => IoAnswer::SecretRotate(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::Random { bytes }, _) => IoAnswer::Random(os_random(*bytes)),
+        (IoRequest::Clock, _) => IoAnswer::Clock(Ok(orbital_core_base::time_util::now_millis())),
+        (IoRequest::Os { .. }, _) => answer_os_host(host, request),
+        (IoRequest::CredentialStatus { name, principal }, Some(host)) => {
+            IoAnswer::CredentialStatus(host.secrets.secret_of(name, principal.as_deref()).and_then(|value| {
+                let connected = crate::http_service::credential_status_connected(
+                    value.as_deref(),
+                    principal.as_deref(),
+                );
+                let label = if connected { host.secrets.label_of(name, principal.as_deref())? } else { None };
+                Ok(crate::credential_admin::CredentialStanding { connected, label })
+            }))
+        }
+        (IoRequest::CredentialForget { name, principal }, Some(host)) => {
+            IoAnswer::CredentialForget(host.secrets.forget_of(name, principal.as_deref()))
+        }
+        (IoRequest::OAuth { ask, principal }, Some(host)) => {
+            IoAnswer::OAuth(host.secrets.oauth_of(ask, principal.as_deref()))
+        }
+        (IoRequest::OAuth { .. }, None) => IoAnswer::OAuth(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::Deliver { envelope, .. }, _) => IoAnswer::Deliver(Err(DeliverRefusal {
+            kind: DeliverRefusalKind::Down,
+            id: envelope.id.clone(),
+        })),
+        (IoRequest::CredentialStatus { .. }, None) => IoAnswer::CredentialStatus(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialForget { .. }, None) => IoAnswer::CredentialForget(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStoreList, Some(host)) => IoAnswer::CredentialStoreList(host.secrets.credential_store_list()),
+        (IoRequest::CredentialStoreRead { name }, Some(host)) => {
+            IoAnswer::CredentialStoreRead(host.secrets.credential_store_read(name))
+        }
+        (IoRequest::CredentialStoreWrite { service, name, value }, Some(host)) => {
+            IoAnswer::CredentialStoreWrite(host.secrets.credential_store_write(service, name, value))
+        }
+        (IoRequest::CredentialStoreRemove { name }, Some(host)) => {
+            IoAnswer::CredentialStoreRemove(host.secrets.credential_store_remove(name))
+        }
+        (IoRequest::CredentialStoreRotate, Some(host)) => IoAnswer::CredentialStoreRotate(host.secrets.credential_store_rotate()),
+        (IoRequest::CredentialModeRead, Some(host)) => IoAnswer::CredentialModeRead(host.secrets.credential_mode()),
+        (IoRequest::CredentialModeWrite { mode }, Some(host)) => {
+            IoAnswer::CredentialModeWrite(host.secrets.set_credential_mode(mode))
+        }
+        (IoRequest::CredentialStoreList, None) => IoAnswer::CredentialStoreList(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStoreRead { .. }, None) => IoAnswer::CredentialStoreRead(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStoreWrite { .. }, None) => IoAnswer::CredentialStoreWrite(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStoreRemove { .. }, None) => IoAnswer::CredentialStoreRemove(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStoreRotate, None) => IoAnswer::CredentialStoreRotate(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialModeRead, None) => IoAnswer::CredentialModeRead(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialModeWrite { .. }, None) => IoAnswer::CredentialModeWrite(Err(NO_HTTP_HOST.to_string())),
+        _ => IoAnswer::Service(Err("not an HTTP request".to_string())),
+    }
+}
+
+/// Answer each [`Progress::Await`] on the spot with `answer` until the dispatch is done: the adapter
+/// that lets a blocking host run the resumable code path.
+pub fn drive_blocking(
+    kernel: &crate::kernel::RuntimeKernel,
+    progress: Progress<DispatchOutcomes>,
+    answer: &dyn Fn(&IoRequest) -> IoAnswer,
+) -> Result<DispatchOutcomes, DispatchError> {
+    drive_with(kernel, progress, |requests| {
+        requests
+            .iter()
+            .map(|p| IoReply { id: p.id, answer: answer(&p.request) })
+            .collect()
+    })
+}
+
+#[cfg(feature = "std")]
+/// [`drive_blocking`] for a host whose answerer is `Sync`: the keyed `call-service` requests of one step run on
+/// scoped threads at the same time (EXEC-QUEUE-8) and every other request is answered in order on this thread.
+pub fn drive_concurrent(
+    kernel: &crate::kernel::RuntimeKernel,
+    progress: Progress<DispatchOutcomes>,
+    answer: &(dyn Fn(&IoRequest) -> IoAnswer + Sync),
+) -> Result<DispatchOutcomes, DispatchError> {
+    drive_with(kernel, progress, |requests| answer_batch(requests, answer))
+}
+
+#[cfg(feature = "std")]
+/// Answer one step's pending requests: each keyed `call-service` on its own scoped thread, the rest in
+/// order on the calling thread. The replies keep the order of `requests`; the kernel matches them by id.
+pub fn answer_batch(
+    requests: &[PendingRequest],
+    answer: &(dyn Fn(&IoRequest) -> IoAnswer + Sync),
+) -> Vec<IoReply> {
+    let dispatch_id = crate::dispatch_trace::answer_dispatch_id();
+    std::thread::scope(|scope| {
+        let overlapped: Vec<_> = requests
+            .iter()
+            .map(|p| {
+                matches!(p.request, IoRequest::CallService { key: Some(_), .. })
+                    .then(|| scope.spawn(move || {
+                        let _context = crate::dispatch_trace::AnswerContext::enter(dispatch_id);
+                        answer(&p.request)
+                    }))
+            })
+            .collect();
+        requests
+            .iter()
+            .zip(overlapped)
+            .map(|(p, handle)| IoReply {
+                id: p.id,
+                answer: match handle {
+                    Some(handle) => handle
+                        .join()
+                        .unwrap_or_else(|_| IoAnswer::Service(Err("the call-service answerer panicked".to_string()))),
+                    None => {
+                        let started = std::time::Instant::now();
+                        let answered = answer(&p.request);
+                        tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, request = ?std::mem::discriminant(&p.request), ms = started.elapsed().as_millis() as u64, deferred = matches!(answered, IoAnswer::ServiceDeferred), "host ask answered");
+                        answered
+                    }
+                },
+            })
+            .collect()
+    })
+}
+
+pub(super) fn drive_with(
+    kernel: &crate::kernel::RuntimeKernel,
+    mut progress: Progress<DispatchOutcomes>,
+    mut serve: impl FnMut(&[PendingRequest]) -> Vec<IoReply>,
+) -> Result<DispatchOutcomes, DispatchError> {
+    loop {
+        match progress {
+            Progress::Done(outcomes) => return Ok(outcomes),
+            Progress::Await { continuation, requests } => {
+                let context = crate::dispatch_trace::AnswerContext::enter(Some(continuation.dispatch_id()));
+                let replies = serve(&requests);
+                drop(context);
+                progress = kernel.resume(continuation, replies)?;
+            }
+        }
+    }
+}
+
+/// Check `replies` against `pending` and turn them into the exchanges the replayed step is served from.
+pub(crate) fn accept_replies(
+    pending: &[PendingRequest],
+    replies: Vec<IoReply>,
+) -> Result<Vec<Exchange>, ResumeError> {
+    let mut answers: Vec<Option<IoAnswer>> = vec![None; pending.len()];
+    for reply in replies {
+        let Some(at) = pending.iter().position(|p| p.id == reply.id) else {
+            return Err(ResumeError::Unknown(reply.id));
+        };
+        if answers[at].is_some() {
+            return Err(ResumeError::Duplicate(reply.id));
+        }
+        if !reply.answer.answers(&pending[at].request) {
+            return Err(ResumeError::WrongKind(reply.id));
+        }
+        answers[at] = Some(reply.answer);
+    }
+    pending
+        .iter()
+        .zip(answers)
+        .map(|(p, answer)| match answer {
+            Some(answer) => Ok(Exchange::new(p.request.clone(), answer)),
+            None => Err(ResumeError::Unanswered(p.id)),
+        })
+        .collect()
+}
+
+
+/// A compare-and-commit over `source` (EXEC-STORE-5): every row must still equal the version the kernel read, then the
+/// puts and deletes apply as one atomic batch.
+pub(super) fn commit_on(source: &dyn EntitySource, rows: &[RowCommit]) -> Result<bool, String> {
+    for row in rows {
+        let current = source.find(&row.entity_type, &row.id)?.map(|r| (*r).clone());
+        if current != row.expected {
+            return Ok(false);
+        }
+    }
+    let ops: Vec<RowWriteOp> = rows
+        .iter()
+        .filter_map(|row| match &row.write {
+            RowCommitWrite::Keep => None,
+            RowCommitWrite::Put { row: data } => Some(RowWriteOp::Upsert { entity_type: row.entity_type.clone(), data: data.clone() }),
+            RowCommitWrite::Delete => Some(RowWriteOp::Delete { entity_type: row.entity_type.clone(), id: row.id.clone(), guard: None }),
+        })
+        .collect();
+    if ops.is_empty() {
+        return Ok(true);
+    }
+    match source.write_batch(&RowWriteBatch { ops, on_failure: RowWriteFailureMode::Atomic }) {
+        Some(Ok(outcomes)) if outcomes.iter().all(RowWriteOutcome::applied) => Ok(true),
+        Some(Ok(outcomes)) => Err(format!("the commit did not apply: {outcomes:?}")),
+        Some(Err(error)) => Err(error),
+        None => Err("this source cannot commit rows atomically".to_string()),
+    }
+}

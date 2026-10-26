@@ -39,7 +39,7 @@ pub mod program_machine;
 pub mod projected_payload;
 #[path = "kernel/relations.rs"]
 pub mod relations;
-#[path = "kernel/resumable.rs"]
+#[path = "kernel/resumable/mod.rs"]
 pub mod resumable;
 #[path = "kernel/instances.rs"]
 pub mod instances;
@@ -78,9 +78,9 @@ pub mod stream_ticket;
 // stores — row stores: kernel drivers over raw ports (EXEC-STORE)
 #[path = "stores/entity_access.rs"]
 pub mod entity_access;
-#[path = "stores/entity_source.rs"]
+#[path = "stores/entity_source/mod.rs"]
 pub mod entity_source;
-#[path = "stores/row_query.rs"]
+#[path = "stores/row_query/mod.rs"]
 pub mod row_query;
 #[cfg(feature = "std")]
 #[path = "stores/sidecar_store.rs"]

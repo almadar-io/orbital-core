@@ -84,7 +84,7 @@ pub mod emit_contract;
 pub mod persist_batch;
 #[path = "contract/runs_on.rs"]
 pub mod runs_on;
-#[path = "contract/expects.rs"]
+#[path = "contract/expects/mod.rs"]
 pub mod expects;
 #[path = "contract/external_inputs.rs"]
 pub mod external_inputs;

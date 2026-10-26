@@ -484,6 +484,8 @@ mod tests {
     fn test_to_snake_case() {
         assert_eq!(to_snake_case("Task"), "task");
         assert_eq!(to_snake_case("TaskItem"), "task_item");
+        assert_eq!(to_snake_case("TaskList"), "task_list");
+        assert_eq!(to_snake_case("HTTPServer"), "h_t_t_p_server");
     }
 
     #[test]

@@ -54,8 +54,12 @@ impl TestKernel {
     }
 
     pub fn build(self, schema_json: Json) -> RuntimeKernel {
+        self.register(schema(schema_json))
+    }
+
+    pub fn register(self, schema: OrbitalSchema) -> RuntimeKernel {
         let kernel = RuntimeKernel::new(self.environment, self.source, self.config);
-        kernel.register_schema(schema(schema_json)).expect("test schema registers");
+        kernel.register_schema(schema).expect("test schema registers");
         kernel
     }
 }

@@ -295,13 +295,6 @@ fn await_render_rows_key_each_prediction_by_the_dispatch_that_leads_to_it() {
 }
 
 #[test]
-fn test_to_snake_case() {
-    assert_eq!(to_snake_case("Task"), "task");
-    assert_eq!(to_snake_case("TaskList"), "task_list");
-    assert_eq!(to_snake_case("HTTPServer"), "h_t_t_p_server");
-}
-
-#[test]
 fn test_oir_module_new() {
     let module = OirModule::new("TestApp", "1.0.0");
     assert_eq!(module.name, "TestApp");
