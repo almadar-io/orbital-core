@@ -583,7 +583,7 @@ use describe::*;
 use shapes::*;
 use bind::*;
 pub use records::concrete_type;
-pub use paths::{type_at_path, project_children_type};
+pub use paths::{project_children_type, type_at_path};
 pub use describe::describe_type;
 pub use bind::nominal_type;
 pub use resolve::resolve;

@@ -14,7 +14,7 @@ pub mod value;
 pub mod shared_entity;
 #[path = "program/json_value.rs"]
 pub mod json_value;
-#[path = "program/type_compat.rs"]
+#[path = "program/type_compat/mod.rs"]
 pub mod type_compat;
 #[path = "program/ir/mod.rs"]
 pub mod ir;
