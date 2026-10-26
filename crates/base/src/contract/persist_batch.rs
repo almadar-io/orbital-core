@@ -167,6 +167,7 @@ pub fn batch_written_entities(ops: &SExpression) -> Option<std::collections::BTr
                     list(&items[2], out)?;
                     list(&items[3], out)
                 }
+                "let" if items.len() == 3 => list(&items[2], out),
                 _ => None,
             },
             Some(_) => items.iter().try_for_each(|x| element(x, out)),
@@ -303,6 +304,20 @@ mod tests {
         assert!(batch_written_entities(&deletes_only).unwrap().is_empty(), "a delete writes no row");
         let branch = ops(json!(["array/map", "@entity.items", ["fn", "i", ["if", "@i.new", ["create", "A", {}], ["update", "B", "@i.id", {}]]]]));
         assert_eq!(batch_written_entities(&branch).unwrap().into_iter().collect::<Vec<_>>(), vec!["A", "B"]);
+    }
+
+    #[test]
+    fn a_let_bound_batch_names_what_its_body_writes() {
+        let trim = ops(json!(["let", [["rows", ["array/sort", "@payload.data", "at", "asc"]]],
+            ["array/map", ["array/take", "@rows", 2.0], ["fn", "r", ["delete", "Snapshot", "@r.id"]]]]));
+        assert!(batch_written_entities(&trim).unwrap().is_empty(), "a let around deletes writes no row");
+        let create = ops(json!(["let", [["n", 1.0]], ["array/map", "@payload.items", ["fn", "x", ["create", "A", {}]]]]));
+        assert_eq!(batch_written_entities(&create).unwrap().into_iter().collect::<Vec<_>>(), vec!["A"]);
+    }
+
+    #[test]
+    fn control_a_let_whose_body_is_a_binding_may_write_anything() {
+        assert!(batch_written_entities(&ops(json!(["let", [["ops", "@payload.ops"]], "@ops"]))).is_none());
     }
 
     #[test]

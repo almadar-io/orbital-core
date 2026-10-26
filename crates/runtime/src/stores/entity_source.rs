@@ -372,13 +372,17 @@ impl InMemoryEntityCache {
         query: &RowQuery,
         visit: &mut dyn FnMut(&Arc<Value>) -> ScanControl,
     ) -> Result<(), String> {
-        let key = self.store_key(entity_type);
+        if self.indexes.read().is_empty() {
+            return self.scan(entity_type, visit);
+        }
         let narrowed: Option<Vec<Arc<Value>>> = {
+            let collections = self.collections.read();
+            let key: &str = collections.get(entity_type).map_or(entity_type, String::as_str);
             let data = self.data.read();
             let indexes = self.indexes.read();
-            indexes.get(&key).and_then(|store| store.candidates(query)).map(|ids| {
+            indexes.get(key).and_then(|store| store.candidates(query)).map(|ids| {
                 ids.iter()
-                    .filter_map(|id| data.get(&key).and_then(|table| table.get(id)).cloned())
+                    .filter_map(|id| data.get(key).and_then(|table| table.get(id)).cloned())
                     .collect()
             })
         };
@@ -409,6 +413,9 @@ impl InMemoryEntityCache {
     /// row the batch touched are brought to the rows' final state.
     fn apply_batch(&self, batch: &RowWriteBatch) -> Vec<RowWriteOutcome> {
         let mut cache = self.data.write();
+        if self.indexes.read().is_empty() {
+            return self.apply_batch_on(&mut cache, batch);
+        }
         let mut before: Vec<(String, String, Option<Arc<Value>>)> = Vec::new();
         for op in &batch.ops {
             let key = self.store_key(op.entity_type());
@@ -500,8 +507,9 @@ impl EntitySource for InMemoryEntityCache {
 
     fn write(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String> {
         let key = self.store_key(entity_type);
+        let index_key = (!self.indexes.read().is_empty()).then(|| key.clone());
         let mut cache = self.data.write();
-        let type_cache = cache.entry(key.clone()).or_default();
+        let type_cache = cache.entry(key).or_default();
 
         // Read-modify-write: merge `data` into the EXISTING record so a partial write
         // (a `set` of one field, a `persist` of a slice, a re-fetch of a projection)
@@ -526,7 +534,9 @@ impl EntitySource for InMemoryEntityCache {
         }
         let row = Arc::new(record.clone());
         let was = type_cache.insert(id.to_string(), row.clone());
-        self.reindex(&key, id, was.as_ref(), Some(&row));
+        if let Some(key) = index_key {
+            self.reindex(&key, id, was.as_ref(), Some(&row));
+        }
         Ok(record)
     }
 
@@ -553,8 +563,9 @@ impl EntitySource for InMemoryEntityCache {
             return self.write(entity_type, &id, data);
         }
         let key = self.store_key(entity_type);
+        let index_key = (!self.indexes.read().is_empty()).then(|| key.clone());
         let mut cache = self.data.write();
-        let table = cache.entry(key.clone()).or_default();
+        let table = cache.entry(key).or_default();
         if table.contains_key(&id) {
             return Err(format!("Entity {entity_type} with id {id} already exists"));
         }
@@ -563,8 +574,15 @@ impl EntitySource for InMemoryEntityCache {
             obj.insert("id".to_string(), Value::String(id.clone()));
         }
         let row = Arc::new(record.clone());
-        table.insert(id.clone(), row.clone());
-        self.reindex(&key, &id, None, Some(&row));
+        match index_key {
+            Some(key) => {
+                table.insert(id.clone(), row.clone());
+                self.reindex(&key, &id, None, Some(&row));
+            }
+            None => {
+                table.insert(id, row);
+            }
+        }
         Ok(record)
     }
 

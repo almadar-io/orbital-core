@@ -477,12 +477,12 @@
     "expr": [
       "time/parse",
       [
-        "/",
-        1,
-        0
+        "*",
+        1e308,
+        10
       ]
     ],
     "null": true,
-    "source": "edge: a number that is not a moment answers null"
+    "source": "edge: a number that is not a moment (infinite) answers null; division by zero is null since the failable flip and null operand is refused (null-operands.json)"
   }
 ]

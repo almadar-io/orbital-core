@@ -682,6 +682,95 @@ pub fn check_declared_argument(index: usize, declared: &OirType) -> Result<(), O
     })
 }
 
+/// Whether `ty` names the type variable `name` anywhere, other than as the `key-of` / `field-of` reference that reads a
+/// record's declared fields and so never binds the variable.
+fn names_variable(ty: &OperatorTypeRef, name: &str) -> bool {
+    let OperatorTypeRef::Tagged(kind) = ty else {
+        return false;
+    };
+    match kind {
+        OperatorTypeRefKind::Var { name: own, bound, .. } => {
+            own == name || bound.as_deref().is_some_and(|bound| names_variable(bound, name))
+        }
+        OperatorTypeRefKind::Union { of } => of.iter().any(|member| names_variable(member, name)),
+        OperatorTypeRefKind::Array { of } => names_variable(of, name),
+        OperatorTypeRefKind::Tuple { items } => items.iter().any(|item| names_variable(item, name)),
+        OperatorTypeRefKind::Map { key, value } => names_variable(key, name) || names_variable(value, name),
+        OperatorTypeRefKind::Object { fields, .. } => fields.values().any(|field| names_variable(field, name)),
+        OperatorTypeRefKind::Binding { shape } => shape.as_deref().is_some_and(|shape| names_variable(shape, name)),
+        OperatorTypeRefKind::Sexpr { of } => of.as_deref().is_some_and(|of| names_variable(of, name)),
+        OperatorTypeRefKind::Fn { params, returns } => {
+            params.iter().any(|param| names_variable(param, name)) || names_variable(returns, name)
+        }
+        OperatorTypeRefKind::PickOf { of }
+        | OperatorTypeRefKind::OmitOf { of }
+        | OperatorTypeRefKind::MergeOf { of }
+        | OperatorTypeRefKind::ChildrenOf { of, .. } => of == name,
+        OperatorTypeRefKind::KeyOf { .. }
+        | OperatorTypeRefKind::FieldOf { .. }
+        | OperatorTypeRefKind::Literal { .. }
+        | OperatorTypeRefKind::Entity { .. }
+        | OperatorTypeRefKind::EntityRef
+        | OperatorTypeRefKind::EventKey { .. }
+        | OperatorTypeRefKind::UiSlot
+        | OperatorTypeRefKind::PatternType
+        | OperatorTypeRefKind::Record
+        | OperatorTypeRefKind::Shape => false,
+    }
+}
+
+/// Whether an object value at `index` can neither fail nor leave a trace in the call's bindings, so the binder is not run.
+///
+/// A plain `record` formal admits every object. A variable whose bound admits a record (`record`, or a union with
+/// one) and that is not an `each` variable admits it too; the binding it would make, `{}` (an untyped object carries no
+/// fields), is read only by another position that names the same variable, so it is skipped exactly when no other
+/// position does. A `key-of` position reads nothing at run time (its argument has no text here) and a `field-of`
+/// position resolves against `{}` to nothing, the same as against an unbound variable. A signature with return
+/// semantics unifies bindings across positions and is left to the binder, as is a rest position, which binds the one
+/// variable once per argument.
+fn object_binds_nothing(signature: &Signature<'static>, index: usize) -> bool {
+    let Some(formal) = signature.formal(index) else {
+        return false;
+    };
+    let OperatorTypeRef::Tagged(kind) = formal else {
+        return false;
+    };
+    let (name, bound) = match kind {
+        OperatorTypeRefKind::Record => return true,
+        OperatorTypeRefKind::Var { name, bound, each: false } => (name, bound.as_deref()),
+        _ => return false,
+    };
+    if signature.semantics().is_some() {
+        return false;
+    }
+    let admits_record = |ty: &OperatorTypeRef| matches!(ty, OperatorTypeRef::Tagged(OperatorTypeRefKind::Record));
+    let admits = match bound {
+        None => true,
+        Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Union { of })) => of.iter().any(admits_record),
+        Some(bound) => admits_record(bound),
+    };
+    if !admits {
+        return false;
+    }
+    let same_as = |at: usize| signature.formal(at).is_some_and(|other| std::ptr::eq(other, formal));
+    if same_as(index + 1) || (index > 0 && same_as(index - 1)) {
+        return false;
+    }
+    let mut previous: Option<&OperatorTypeRef> = None;
+    let mut position = 0;
+    while let Some(other) = signature.formal(position) {
+        if previous.is_some_and(|prior| std::ptr::eq(prior, other)) {
+            break;
+        }
+        if position != index && names_variable(other, name) {
+            return false;
+        }
+        previous = Some(other);
+        position += 1;
+    }
+    true
+}
+
 /// Binds the evaluated argument at `index` of the call being evaluated against its declared type.
 pub fn check_argument(index: usize, value: &Value) -> Result<(), OrbitalError> {
     if value.is_null() {
@@ -699,6 +788,9 @@ pub fn check_argument(index: usize, value: &Value) -> Result<(), OrbitalError> {
                 ("number", Value::Number(_)) | ("string", Value::String(_)) | ("boolean", Value::Bool(_)) => return Ok(()),
                 _ => {}
             }
+        }
+        if matches!(value, Value::Object(_)) && object_binds_nothing(&signature, index) {
+            return Ok(());
         }
         if !matches!(value, Value::Array(_)) {
             return signature
@@ -1321,5 +1413,116 @@ mod tests {
         assert!(check_rt(op(), &[Value::Array(rows.clone())]).is_ok());
         rows.push(pair(s("b"), s("x")));
         assert!(check_rt(op(), &[Value::Array(rows)]).is_err());
+    }
+
+    fn record_or_list_bound() -> serde_json::Value {
+        json!({ "kind": "union", "of": [
+            { "kind": "record" },
+            { "kind": "array", "of": { "kind": "var", "name": "E", "each": true } }
+        ] })
+    }
+
+    fn object_get() -> EmbeddedOperator {
+        operator(
+            json!([
+                { "name": "obj", "type": { "kind": "var", "name": "R", "bound": record_or_list_bound() } },
+                { "name": "path", "type": { "kind": "keyOf", "of": "R" } },
+                { "name": "default", "optional": true, "type": { "kind": "fieldOf", "of": "R" } }
+            ]),
+            Some(3),
+        )
+    }
+
+    fn object() -> Value {
+        Value::Object(ValueMap::default())
+    }
+
+    fn same_verdict(op: &EmbeddedOperator, args: &[Value]) {
+        let bound = check(op, args).map_err(|e| e.to_string());
+        let leaked: &'static EmbeddedOperator = Box::leak(Box::new(op.clone()));
+        let exprs: Vec<SExpression> = args.iter().map(|_| SExpression::Null).collect();
+        let _frame = CallFrame::enter(Signature::of(leaked), &exprs);
+        let fast = args
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, v)| check_argument(i, v))
+            .map_err(|e| e.to_string());
+        assert_eq!(fast, bound, "{args:?}");
+    }
+
+    #[test]
+    fn an_object_passes_the_record_or_list_position_of_object_get_with_its_key_and_default() {
+        let op = object_get();
+        assert!(check_rt(op.clone(), &[object(), s("a"), num(1.0)]).is_ok());
+        assert!(check_rt(op.clone(), &[object(), s("a")]).is_ok());
+        assert!(check_rt(op.clone(), &[Value::Array(vec![num(1.0)]), s("0")]).is_ok());
+        same_verdict(&op, &[object(), s("a"), s("fallback")]);
+        same_verdict(&op, &[object(), num(3.0)]);
+    }
+
+    #[test]
+    fn a_scalar_at_the_record_or_list_position_still_raises_the_binder_message() {
+        let op = object_get();
+        for value in [num(1.0), s("x"), Value::Bool(true)] {
+            let err = check_rt(op.clone(), &[value.clone(), s("a")]).unwrap_err().to_string();
+            assert!(err.contains("Type mismatch"), "{err}");
+            same_verdict(&op, &[value, s("a")]);
+        }
+    }
+
+    #[test]
+    fn control_array_len_still_refuses_a_list_of_unlike_items() {
+        let op = list_of_var();
+        assert!(check_rt(op.clone(), &[Value::Array(vec![num(1.0), s("b")])]).is_err());
+        assert!(check_rt(op, &[Value::Array(vec![num(1.0), num(2.0)])]).is_ok());
+    }
+
+    #[test]
+    fn a_variable_named_by_another_position_still_binds_and_conflicts() {
+        let op = operator(
+            json!([
+                { "name": "a", "type": { "kind": "var", "name": "R", "bound": { "kind": "record" } } },
+                { "name": "b", "type": { "kind": "var", "name": "R" } }
+            ]),
+            Some(2),
+        );
+        assert!(check_rt(op.clone(), &[object(), object()]).is_ok());
+        assert!(check_rt(op.clone(), &[object(), num(1.0)]).is_err());
+        same_verdict(&op, &[object(), num(1.0)]);
+        same_verdict(&op, &[object(), s("x")]);
+        same_verdict(&op, &[object(), Value::Array(vec![num(1.0)])]);
+    }
+
+    #[test]
+    fn a_rest_position_of_a_record_variable_binds_each_argument_to_the_one_variable() {
+        let op = operator(
+            json!([{ "name": "...xs", "type": { "kind": "var", "name": "R", "bound": { "kind": "record" } } }]),
+            None,
+        );
+        assert!(check_rt(op.clone(), &[object(), object(), object()]).is_ok());
+        same_verdict(&op, &[object(), Value::Array(vec![num(1.0)])]);
+        same_verdict(&op, &[object(), num(1.0)]);
+    }
+
+    #[test]
+    fn a_plain_record_position_takes_an_object_and_refuses_the_rest() {
+        let op = operator(json!([{ "name": "r", "type": { "kind": "record" } }]), Some(1));
+        assert!(check_rt(op.clone(), &[object()]).is_ok());
+        same_verdict(&op, &[num(1.0)]);
+        same_verdict(&op, &[Value::Array(vec![])]);
+    }
+
+    #[test]
+    fn an_object_variable_unbounded_by_a_record_binds_as_before() {
+        let op = operator(
+            json!([
+                { "name": "a", "type": { "kind": "var", "name": "T" } },
+                { "name": "b", "type": { "kind": "var", "name": "T" } }
+            ]),
+            Some(2),
+        );
+        same_verdict(&op, &[object(), object()]);
+        same_verdict(&op, &[object(), num(1.0)]);
+        same_verdict(&op, &[num(1.0), object()]);
     }
 }

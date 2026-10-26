@@ -867,7 +867,7 @@ mod tests {
         let watcher_state = kernel
             .embedded
             .kernel()
-            .get_state("Watcher", Some("singleton"))
+            .get_state("Watcher", None)
             .unwrap();
         assert_eq!(
             watcher_state.current_state, "watched",
@@ -978,7 +978,7 @@ mod tests {
             kernel
                 .embedded
                 .kernel()
-                .get_state("Move", Some("singleton"))
+                .get_state("Move", None)
                 .unwrap()
                 .current_state,
             "idle",
@@ -1222,7 +1222,7 @@ mod tests {
             kernel
                 .embedded
                 .kernel()
-                .get_state("Listener", Some("singleton"))
+                .get_state("Listener", None)
                 .unwrap()
                 .current_state,
             "heard"
@@ -1242,7 +1242,7 @@ mod tests {
         assert!(kernel
             .embedded
             .kernel()
-            .get_state("Listener", Some("singleton"))
+            .get_state("Listener", None)
             .is_none_or(|s| s.current_state == "idle"));
     }
 

@@ -45,15 +45,17 @@ fn assert_extra_rejected(op: &str, args: Vec<Json>, expected: &str) {
     assert_arity(op, &extra, arity, &ctx);
 }
 
-fn valid_calls() -> [(&'static str, Vec<Json>); 5] {
+/// Each codec's full call and its minimum arity (`hash/sha256` takes an optional third `input`).
+fn valid_calls() -> [(&'static str, Vec<Json>, usize); 5] {
     [
-        ("str/encode-uri-component", vec![json!("a b&c")]),
-        ("base64/encode", vec![json!("foobar")]),
-        ("base64/decode", vec![json!("Zm9vYmFy")]),
-        ("hash/sha256", vec![json!("abc"), json!("hex")]),
+        ("str/encode-uri-component", vec![json!("a b&c")], 1),
+        ("base64/encode", vec![json!("foobar")], 1),
+        ("base64/decode", vec![json!("Zm9vYmFy")], 1),
+        ("hash/sha256", vec![json!("abc"), json!("hex"), json!("text")], 2),
         (
             "hmac/sha256",
             vec![json!("Jefe"), json!("what do ya want for nothing?"), json!("hex")],
+            3,
         ),
     ]
 }
@@ -85,7 +87,7 @@ fn base64_decode_rejects_extra_arguments() {
 fn hash_sha256_rejects_extra_arguments() {
     assert_extra_rejected(
         "hash/sha256",
-        vec![json!("abc"), json!("hex")],
+        vec![json!("abc"), json!("hex"), json!("text")],
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
 }
@@ -102,9 +104,9 @@ fn hmac_sha256_rejects_extra_arguments() {
 #[test]
 fn missing_codec_arguments_are_typed_arity_errors() {
     let ctx = context();
-    for (op, args) in valid_calls() {
-        for count in 0..args.len() {
-            assert_arity(op, &args[..count], args.len(), &ctx);
+    for (op, args, min) in valid_calls() {
+        for count in 0..min {
+            assert_arity(op, &args[..count], min, &ctx);
         }
     }
 }
@@ -112,7 +114,7 @@ fn missing_codec_arguments_are_typed_arity_errors() {
 #[test]
 fn extra_codec_arity_is_rejected_before_evaluating_failing_operands() {
     let ctx = context();
-    for (op, mut args) in valid_calls() {
+    for (op, mut args, _) in valid_calls() {
         let arity = args.len();
         args[0] = failing_operand();
         args.push(json!("extra"));
@@ -123,21 +125,20 @@ fn extra_codec_arity_is_rejected_before_evaluating_failing_operands() {
 #[test]
 fn missing_codec_arity_is_rejected_before_evaluating_failing_operands() {
     let ctx = context();
-    for (op, mut args) in valid_calls() {
-        if args.len() == 1 {
+    for (op, mut args, min) in valid_calls() {
+        if min == 1 {
             continue;
         }
-        let arity = args.len();
         args[0] = failing_operand();
-        args.pop();
-        assert_arity(op, &args, arity, &ctx);
+        args.truncate(min - 1);
+        assert_arity(op, &args, min, &ctx);
     }
 }
 
 #[test]
 fn valid_codec_arity_evaluates_failing_context_bound_operands() {
     let ctx = context();
-    for (op, mut args) in valid_calls() {
+    for (op, mut args, _) in valid_calls() {
         args[0] = failing_operand();
         match evaluate(op, &args, &ctx) {
             Err(OrbitalError::Eval(EvalError::ArityMismatch { operator, .. })) => {

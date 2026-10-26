@@ -1532,12 +1532,13 @@ pub fn compile_predicate(
 
 /// A fetch `filter` in the object form `{ field: value, ... }` as the equality conjunction it means,
 /// `(and (= row.field value) ...)`; `{}` is the empty conjunction, `true`. Any other form is returned as is.
-pub fn lower_object_filter(filter: &Value) -> Value {
+pub fn lower_object_filter(filter: &Value) -> std::borrow::Cow<'_, Value> {
+    use std::borrow::Cow;
     let Value::Object(map) = filter else {
-        return filter.clone();
+        return Cow::Borrowed(filter);
     };
     if map.is_empty() {
-        return Value::Bool(true);
+        return Cow::Owned(Value::Bool(true));
     }
     let mut conjunction = vec![Value::String("and".to_string())];
     for (field, value) in map {
@@ -1551,7 +1552,7 @@ pub fn lower_object_filter(filter: &Value) -> Value {
             value.clone(),
         ]));
     }
-    Value::Array(conjunction)
+    Cow::Owned(Value::Array(conjunction))
 }
 
 /// The `RowOrder` of a fetch's `(field, descending)` spec.

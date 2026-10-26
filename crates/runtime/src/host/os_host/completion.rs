@@ -559,7 +559,7 @@ mod tests {
             orbital: None,
             trait_name: "Sup".to_string(),
             follow_on: false,
-            entity_id: "singleton".to_string(),
+            entity_id: crate::process_result::RUNTIME_SINGLETON.to_string(),
             emit: CallRoutes {
                 success: success.map(str::to_string),
                 failure: failure.map(str::to_string),

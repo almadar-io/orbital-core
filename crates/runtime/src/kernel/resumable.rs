@@ -257,8 +257,8 @@ pub struct CallSite {
     pub orbital: Option<String>,
     pub trait_name: String,
     pub follow_on: bool,
-    /// The frame the call was made on (`singleton` for an id-less dispatch): a deferred outcome is dispatched to it.
-    /// Not carried by [`crate::embed::wire::CallSiteWire`]: a site rebuilt from the wire addresses `singleton`.
+    /// The frame key the call was made on ([`crate::process_result::RUNTIME_SINGLETON`] for an id-less dispatch): a
+    /// deferred outcome is dispatched to it. A host names it to a viewer through [`crate::process_result::public_entity_id`].
     pub entity_id: String,
     pub emit: CallRoutes,
 }
@@ -815,7 +815,7 @@ pub struct DispatchContinuation {
     /// The kernel's dispatch lane, held while this dispatch is parked (EXEC-CONC-1).
     pub(crate) lane: Option<crate::kernel::lane::LaneHold>,
     /// The keyed calls this dispatch is parked on without the lane: their completions wait for it to end.
-    pub(crate) keyed: Option<crate::kernel::lane::KeyedHold>,
+    pub(crate) keyed: Option<Box<crate::kernel::lane::KeyedHold>>,
 }
 
 impl DispatchContinuation {
@@ -1817,11 +1817,13 @@ impl EntitySource for IoPort {
     }
 
     fn write_where(&self, op: &RowWriteOp) -> Option<Result<RowWriteOutcome, String>> {
-        let one = RowWriteBatch { ops: vec![op.clone()], on_failure: RowWriteFailureMode::Stop };
-        if let Some(written) = self.local_writes(&one) {
-            return Some(written.and_then(|mut outcomes| {
-                outcomes.pop().ok_or_else(|| "the kernel answered a write with no outcome".to_string())
-            }));
+        if self.local(op.entity_type()) {
+            let one = RowWriteBatch { ops: vec![op.clone()], on_failure: RowWriteFailureMode::Stop };
+            if let Some(written) = self.local_writes(&one) {
+                return Some(written.and_then(|mut outcomes| {
+                    outcomes.pop().ok_or_else(|| "the kernel answered a write with no outcome".to_string())
+                }));
+            }
         }
         if !matches!(op, RowWriteOp::Rekey { .. }) {
             if let Some(outcome) = self.bound_single_write(op.entity_type(), || op.clone()) {

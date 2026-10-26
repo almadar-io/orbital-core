@@ -2857,9 +2857,10 @@ impl RuntimeKernel {
     }
 
     /// The legs a fold's own arms owe the host, one per trait whose arm delegated an effect: a trait
-    /// continuing its own unconsumed emit, or one whose delegated data lives in the browser store. A
-    /// listener's server work is the host's own cascade, so it is dropped, as the JS fold drops it
-    /// (`applyOrbitalEventResponse`). Drains the collector, so the fold's effects never ride a later dispatch.
+    /// continuing its own unconsumed emit, one whose delegated data lives in the browser store, or a
+    /// listener whose emitter ran in this fold and posts no leg (EXEC-DIST-10). Any other listener's server
+    /// work is the host's own cascade (it ran the emitter, or the emitter's own leg fans out there), so it is
+    /// dropped. Drains the collector, so the fold's effects never ride a later dispatch.
     pub fn fold_follow_on_legs(
         &self,
         outcomes: &[(String, ProcessEventResult)],
@@ -2870,6 +2871,18 @@ impl RuntimeKernel {
         let residence = orbital_core_base::runs_on::Residence::of_entities(
             self.entity_definitions.read().values(),
         );
+        let delegates = |result: &ProcessEventResult| {
+            result.executed
+                && result
+                    .effect_results
+                    .iter()
+                    .any(|r| matches!(r.outcome, EffectOutcome::Delegated(_)))
+        };
+        let ran_client_side: HashSet<&str> = outcomes
+            .iter()
+            .filter(|(_, result)| result.executed && !delegates(result))
+            .map(|(trait_name, _)| trait_name.as_str())
+            .collect();
         Ok(outcomes
             .iter()
             .filter_map(|(trait_name, result)| {
@@ -2886,7 +2899,8 @@ impl RuntimeKernel {
                 let delivery = DeliveryRecord::from_value(&entry.view.event);
                 let emitter = delivery.as_ref().and_then(|d| d.source.r#trait.as_deref());
                 let own = emitter == Some(trait_name.as_str());
-                if !own && !delegated.iter().all(|e| browser_data_effect(e, &residence)) {
+                let unposted_emitter = emitter.is_some_and(|e| ran_client_side.contains(e));
+                if !own && !unposted_emitter && !delegated.iter().all(|e| browser_data_effect(e, &residence)) {
                     return None;
                 }
                 let event = result.event.clone()?;
@@ -3109,7 +3123,6 @@ impl RuntimeKernel {
                 &eid,
                 queue,
                 &mut DispatchVisits::default(),
-                &HashSet::new(),
                 &mut DispatchMemory::default(),
                 &mut outcomes,
             )?;
@@ -3386,9 +3399,8 @@ impl RuntimeKernel {
     /// that the host did not already run (`source.dispatched`) is delivered to that
     /// trait first; its listeners fan out from that delivery.
     ///
-    /// `already_delivered` also seeds the cascade's own visited-set, so a
-    /// listener loop that cycles back onto an already-delivered pair is
-    /// skipped too, not just the top-level entries.
+    /// `already_delivered` filters only those reported emits (EXEC-DIST-10): a step the fold runs is a new
+    /// delivery even when its pair matches one the dispatch delivered, and the visit key bounds its cycles.
     pub fn apply_server_response(
         &self,
         response: &EventResponse,
@@ -3571,7 +3583,6 @@ impl RuntimeKernel {
             RUNTIME_SINGLETON,
             fanned.into(),
             &mut visited,
-            already_delivered,
             &mut DispatchMemory::default(),
             &mut outcomes,
         )?;

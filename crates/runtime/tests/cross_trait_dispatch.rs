@@ -425,7 +425,7 @@ fn counter_site() -> orbital_core_runtime::resumable::CallSite {
         orbital: None,
         trait_name: "Counter".to_string(),
         follow_on: false,
-        entity_id: "singleton".to_string(),
+        entity_id: orbital_core_runtime::process_result::RUNTIME_SINGLETON.to_string(),
         emit: orbital_core_runtime::resumable::CallRoutes { success: Some("DONE".to_string()), ..Default::default() },
     }
 }

@@ -597,6 +597,9 @@ pub(crate) fn with_operand<R>(
 ) -> Result<R, OrbitalError> {
     if let SExpression::String(s) = expr {
         if let Some(value) = s.strip_prefix('@').and_then(|path| ctx.resolve_borrowed(path)) {
+            if let Some(index) = arg_types::argument_slot(expr) {
+                arg_types::check_argument(index, value)?;
+            }
             return f(value);
         }
     }

@@ -2575,7 +2575,7 @@
         "4111111111111234"
       ],
       "expect": {
-        "value": "\u2022\u2022\u2022\u2022 \u2022\u2022\u2022\u2022 \u2022\u2022\u2022\u2022 1234"
+        "value": "•••• •••• •••• 1234"
       }
     },
     {
@@ -6024,7 +6024,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "string",
+          "expected": "literal",
           "actual": "number"
         }
       }
@@ -6093,7 +6093,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "string",
+          "expected": "literal",
           "actual": "number"
         }
       }
@@ -6346,7 +6346,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "string",
+          "expected": "literal",
           "actual": "number"
         }
       }
@@ -6410,17 +6410,13 @@
       }
     },
     {
-      "name": "time/parse: argument 0 is number",
+      "name": "time/parse: a number is a date value held as epoch ms",
       "expr": [
         "time/parse",
         5
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "string",
-          "actual": "number"
-        }
+        "value": 5
       }
     },
     {
@@ -6487,7 +6483,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "string",
+          "expected": "literal",
           "actual": "number"
         }
       }

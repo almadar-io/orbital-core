@@ -126,3 +126,73 @@ fn the_delegated_effects_of_a_fold_do_not_ride_the_next_dispatch() {
         "a state-only arm owes the host no delegated work"
     );
 }
+
+/// A client-run `Pager` hears the host's `ANSWERED` and asks again; `Fetcher` (server data) hears the ask in the fold.
+fn pager() -> EmbeddedKernel {
+    EmbeddedKernel::new(pager_schema(), "c1").unwrap()
+}
+
+fn pager_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "paging",
+        "orbitals": [{
+            "name": "Board",
+            "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Pager", "linkedEntity": "Invoice", "dispatch": "client",
+                  "emits": [{ "event": "ASK", "scope": "external" }],
+                  "listens": [{ "event": "ANSWERED", "source": { "kind": "trait", "trait": "Fetcher" }, "triggers": "NEXT" }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "NEXT", "effects": [["emit", "ASK", { "page": 2 }]] }] } },
+                { "name": "Fetcher", "linkedEntity": "Invoice",
+                  "emits": [{ "event": "ANSWERED", "scope": "external" }],
+                  "listens": [{ "event": "ASK", "source": { "kind": "trait", "trait": "Pager" }, "triggers": "LOAD" }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "LOAD", "effects": [["fetch", "Invoice", {}]] }] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn answered(dispatched: bool) -> EventResponse {
+    EventResponse {
+        success: true,
+        transitioned: true,
+        emitted_events: vec![EmittedEvent {
+            event: "ANSWERED".to_string(),
+            payload: None,
+            source: Some(BusEventSource {
+                orbital: Some("Board".to_string()),
+                r#trait: Some("Fetcher".to_string()),
+                dispatched: dispatched.then_some(true),
+                ..Default::default()
+            }),
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_server_listener_a_client_step_reaches_in_the_fold_is_posted() {
+    let applied = pager().apply_server_response(&answered(true), &HashSet::new()).unwrap();
+    let legs: Vec<_> = applied
+        .server_legs
+        .iter()
+        .filter(|r| r.leg.target_trait.as_deref() == Some("Fetcher"))
+        .collect();
+    assert_eq!(legs.len(), 1, "the ask a client step made in the fold reaches the host");
+    assert_eq!(legs[0].leg.event, "LOAD");
+    assert_eq!(serde_json::to_value(&legs[0].leg.payload).unwrap(), json!({ "page": 2.0 }));
+}
+
+#[test]
+fn edge_the_second_ask_is_posted_though_the_dispatch_already_delivered_the_pair() {
+    let already: HashSet<(String, String)> = std::iter::once(("Fetcher".to_string(), "LOAD".to_string())).collect();
+    let applied = pager().apply_server_response(&answered(true), &already).unwrap();
+    assert!(applied.server_legs.iter().any(|r| r.leg.target_trait.as_deref() == Some("Fetcher")));
+}
+

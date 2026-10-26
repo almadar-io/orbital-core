@@ -373,6 +373,39 @@ pub fn operator_sites<'a>(operators: impl IntoIterator<Item = &'a str>) -> std::
         .collect()
 }
 
+/// The `_metadata` a compiled client program carries for a browser kernel, which has no installed core: the sites of
+/// the effects its `orbitals` call, the dispatch facts and the endpoint protocol table.
+pub fn client_program_metadata(orbitals: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    let mut heads = std::collections::BTreeSet::new();
+    collect_call_heads(orbitals, &mut heads);
+    let sites = operator_sites(heads.iter().map(String::as_str));
+    let mut metadata = serde_json::Map::new();
+    if !sites.is_empty() {
+        metadata.insert("operatorSites".to_string(), serde_json::json!(sites));
+    }
+    if let Some(facts) = crate::language::registry::table_dispatch_facts() {
+        metadata.insert("dispatchFacts".to_string(), serde_json::json!(facts));
+    }
+    if let Ok(rows) = crate::protocols::table() {
+        metadata.insert("protocols".to_string(), serde_json::json!(rows));
+    }
+    metadata
+}
+
+/// Every string at the head of a JSON array under `value`: the operator of each call the program spells.
+fn collect_call_heads(value: &serde_json::Value, heads: &mut std::collections::BTreeSet<String>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            if let Some(serde_json::Value::String(head)) = items.first() {
+                heads.insert(head.clone());
+            }
+            items.iter().for_each(|item| collect_call_heads(item, heads));
+        }
+        serde_json::Value::Object(map) => map.values().for_each(|item| collect_call_heads(item, heads)),
+        _ => {}
+    }
+}
+
 /// Registry name of an IR effect (its `kind()` except where the IR spells it differently).
 pub fn effect_operator(effect: &OirEffect) -> &'static str {
     match effect.kind() {
@@ -435,6 +468,24 @@ pub fn sexpr_runs_server_effect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_client_program_carries_the_sites_of_its_effects_and_the_language_tables_a_browser_kernel_lacks() {
+        let program = serde_json::json!([{ "traits": [{ "stateMachine": { "transitions": [
+            { "effects": [["behavior/resolve", "@payload.value", {}], ["math/abs", 1]] }
+        ] } }] }]);
+        let metadata = client_program_metadata(&program);
+        assert_eq!(metadata["operatorSites"], serde_json::json!({ "behavior/resolve": "server" }));
+        assert!(metadata.contains_key("dispatchFacts"));
+        assert!(metadata["protocols"].as_array().is_some_and(|rows| !rows.is_empty()));
+    }
+
+    #[test]
+    fn control_a_program_calling_no_effect_carries_no_sites_but_still_the_tables() {
+        let metadata = client_program_metadata(&serde_json::json!([]));
+        assert!(!metadata.contains_key("operatorSites"));
+        assert!(metadata.contains_key("dispatchFacts") && metadata.contains_key("protocols"));
+    }
 
     #[test]
     fn the_table_is_sorted_and_names_each_operator_once() {

@@ -221,7 +221,7 @@ fn an_identical_payload_with_an_unchanged_row_is_still_a_cycle() {
     assert_eq!(executed_steps(&kernel, json!({ "k": 1 })), 1);
 }
 
-/// Twin of `almadar-runtime/test/client-role-already-delivered-cascade.test.ts`.
+/// Server reports `X` from `Source`; the client fans it through `Relay` to `Chime` (EXEC-DIST-10).
 fn relay_chain() -> RuntimeKernel {
     let idle = json!([{ "name": "idle", "isInitial": true }]);
     let schema: OrbitalSchema = serde_json::from_value(json!({
@@ -275,8 +275,14 @@ fn with_nothing_delivered_the_fold_reaches_chime() {
 }
 
 #[test]
-fn a_pair_the_client_already_delivered_is_skipped_two_hops_down() {
+fn a_pair_the_fold_reaches_through_a_fresh_step_is_delivered_though_the_dispatch_delivered_it() {
     let already = std::iter::once(("Chime".to_string(), "PING".to_string())).collect();
+    assert!(chime_pinged(&already));
+}
+
+#[test]
+fn control_an_echo_of_an_emit_the_client_already_ran_is_not_folded_again() {
+    let already = std::iter::once(("Source".to_string(), "X".to_string())).collect();
     assert!(!chime_pinged(&already));
 }
 

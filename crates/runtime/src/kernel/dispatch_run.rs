@@ -350,7 +350,7 @@ impl RuntimeKernel {
                             _ => None,
                         })
                         .collect();
-                    continuation.keyed = Some(self.keyed_parks.hold(keys));
+                    continuation.keyed = Some(Box::new(self.keyed_parks.hold(keys)));
                     drop(lane);
                 } else {
                     continuation.keyed = None;
@@ -1212,10 +1212,9 @@ impl RuntimeKernel {
             tick,
             ..
         } = seed;
-        let none = HashSet::new();
         match stage {
             Stage::Released(cascade) => {
-                if !self.cascade_unit(eid, cascade, visited, &none, memory, outcomes)? {
+                if !self.cascade_unit(eid, cascade, visited, memory, outcomes)? {
                     *stage = Stage::Scopes {
                         idx: 0,
                         own: Vec::new(),
@@ -1294,7 +1293,7 @@ impl RuntimeKernel {
                 Ok(Flow::More)
             }
             Stage::Main(cascade) => {
-                if self.cascade_unit(eid, cascade, visited, &none, memory, outcomes)? {
+                if self.cascade_unit(eid, cascade, visited, memory, outcomes)? {
                     Ok(Flow::More)
                 } else {
                     Ok(Flow::Done)
@@ -1314,7 +1313,6 @@ impl RuntimeKernel {
         eid: &str,
         queue: VecDeque<CascadeItem>,
         visited: &mut DispatchVisits,
-        already_delivered: &HashSet<(String, String)>,
         memory: &mut DispatchMemory,
         outcomes: &mut Vec<(String, ProcessEventResult)>,
     ) -> Result<(), KernelError> {
@@ -1324,7 +1322,6 @@ impl RuntimeKernel {
                 eid,
                 &mut cascade,
                 visited,
-                already_delivered,
                 memory,
                 outcomes,
             ) {
@@ -1437,7 +1434,6 @@ impl RuntimeKernel {
         eid: &str,
         cascade: &mut Cascade,
         visited: &mut DispatchVisits,
-        already_delivered: &HashSet<(String, String)>,
         memory: &mut DispatchMemory,
         outcomes: &mut Vec<(String, ProcessEventResult)>,
     ) -> Result<bool, Fault> {
@@ -1446,9 +1442,6 @@ impl RuntimeKernel {
         };
         if let Some(job) = item.repaint.clone() {
             self.repaint_unit(eid, cascade, item, job, outcomes)?;
-            return Ok(true);
-        }
-        if already_delivered.contains(&(item.trait_name.clone(), item.event.clone())) {
             return Ok(true);
         }
         {

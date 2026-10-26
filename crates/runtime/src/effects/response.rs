@@ -1428,7 +1428,7 @@ mod tests {
 
     #[test]
     fn a_server_effect_result_code_round_trips_every_core_value() {
-        for code in ["not-found", "no-row-key", "duplicate-id", "denied"] {
+        for code in ["not-found", "no-row-key", "duplicate-id", "denied", "derived-failed"] {
             let wire = serde_json::json!({ "effect": "persist", "success": false, "code": code });
             let parsed: ServerEffectResult = serde_json::from_value(wire.clone()).expect("parses");
             assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);

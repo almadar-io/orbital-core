@@ -2243,7 +2243,7 @@ impl EffectExecutor {
                     return Self::fetch_failed(effect, &e);
                 }
             };
-            let interpolated_filter = filter.map(|f| interpolate_filter_trait_refs(&lower_object_filter(f), ctx));
+            let interpolated_filter = filter.map(|f| interpolate_filter_trait_refs(lower_object_filter(f).as_ref(), ctx));
             if deliver == FetchDeliver::Ids {
                 if resolved_id.is_some() || include.is_some_and(|i| !i.is_empty()) {
                     let e = format!(
