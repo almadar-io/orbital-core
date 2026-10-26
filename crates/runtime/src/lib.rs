@@ -97,7 +97,7 @@ pub mod vector_store;
 pub mod byte_stream;
 #[path = "drivers/driver.rs"]
 pub mod driver;
-#[path = "drivers/http_request.rs"]
+#[path = "drivers/http_request/mod.rs"]
 pub mod http_request;
 #[cfg(feature = "wire-drivers")]
 #[path = "drivers/postgres.rs"]
@@ -115,7 +115,7 @@ pub mod tls;
 #[path = "security/credential_admin.rs"]
 pub mod credential_admin;
 #[cfg(feature = "std")]
-#[path = "security/credential_store.rs"]
+#[path = "security/credential_store/mod.rs"]
 pub mod credential_store;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "security/credentials.rs"]

@@ -65,12 +65,12 @@ pub mod behavior_index;
 #[path = "lang/protocols.rs"]
 pub mod protocols;
 #[cfg(feature = "std")]
-#[path = "lang/behavior_packages.rs"]
+#[path = "lang/behavior_packages/mod.rs"]
 pub mod behavior_packages;
 #[cfg(feature = "std")]
 #[path = "lang/renderer_packs.rs"]
 pub mod renderer_packs;
-#[path = "lang/theme.rs"]
+#[path = "lang/theme/mod.rs"]
 pub mod theme;
 #[path = "lang/route.rs"]
 pub mod route;
