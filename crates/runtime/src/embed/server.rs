@@ -84,6 +84,8 @@ struct Seed {
     tick: bool,
     /// The row the request addressed; its frames are the ones the response echoes.
     entity_id: Option<String>,
+    /// A `request.mount` dispatch: its rows are whole and seed the viewer's frames (EXEC-DIST-7).
+    mount: bool,
 }
 
 struct Flight {
@@ -475,6 +477,7 @@ impl EmbeddedServer {
                 event: seed_event,
                 tick: false,
                 entity_id: entity_id.map(str::to_string),
+                mount: true,
             };
             return self.settle(progress, seed, user, None);
         }
@@ -518,6 +521,7 @@ impl EmbeddedServer {
                 event: request.event,
                 tick: false,
                 entity_id: entity_id.map(str::to_string),
+                mount: false,
             };
             return self.settle(progress, seed, user, Some((handlers, held)));
         }
@@ -545,6 +549,7 @@ impl EmbeddedServer {
             event: request.event,
             tick: false,
             entity_id: entity_id.map(str::to_string),
+            mount: false,
         };
         self.settle(progress, seed, user, None)
     }
@@ -603,6 +608,7 @@ impl EmbeddedServer {
             event: request.event.clone(),
             tick: false,
             entity_id: entity_id.map(str::to_string),
+            mount: false,
         };
         self.settle(progress, seed, user, None)
     }
@@ -637,6 +643,7 @@ impl EmbeddedServer {
             event: event.to_string(),
             tick: true,
             entity_id: entity_id.map(str::to_string),
+            mount: false,
         };
         self.settle(progress, seed, user, None)
     }
@@ -783,6 +790,11 @@ impl EmbeddedServer {
                     None if seed.tick => {
                         EventResponse::from_process_results(&outcomes, "", &seed.event)
                     }
+                    None if seed.mount => EventResponse::from_process_results_mount(
+                        &outcomes,
+                        &seed.trait_name,
+                        &seed.event,
+                    ),
                     None => EventResponse::from_process_results(
                         &outcomes,
                         &seed.trait_name,
@@ -793,7 +805,7 @@ impl EmbeddedServer {
                 response.transitions = (!hops.is_empty()).then_some(hops);
                 self.kernel.stamp_emitted_sources(&mut response);
                 self.kernel
-                    .echo_frames(&mut response, seed.entity_id.as_deref());
+                    .echo_frames(&mut response, &outcomes, seed.entity_id.as_deref(), seed.mount);
                 self.echo_held_states(&mut response, &seed.trait_name, seed.entity_id.as_deref());
                 *self.dispatch_stream.lock() = crate::effects::live_push::StreamItem::of_outcomes(&outcomes, &response);
                 Ok(ServerProgress::Done(response))

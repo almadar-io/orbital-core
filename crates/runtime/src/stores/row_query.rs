@@ -188,6 +188,28 @@ pub struct QueryCapabilities {
     /// `nearest` is pushed down: the store ranks by cosine similarity itself (EXEC-FETCH-2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nearest: Option<bool>,
+    /// How the driver realizes the entity's declared `@index` paths; absent is `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexes: Option<IndexRealization>,
+}
+
+/// When a store driver creates the access paths an entity declares (EXEC-STORE-6).
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IndexRealization {
+    /// The kernel sends `ROWS_ENSURE_INDEXES` and the driver creates the paths while the app runs.
+    Runtime,
+    /// The kernel sends `ROWS_ENSURE_INDEXES`; the driver records the paths for a deploy step.
+    Deploy,
+    None,
+}
+
+impl IndexRealization {
+    /// The driver wants the declared paths sent.
+    pub fn wants_paths(self) -> bool {
+        matches!(self, Self::Runtime | Self::Deploy)
+    }
 }
 
 impl QueryCapabilities {
@@ -216,6 +238,7 @@ impl QueryCapabilities {
             exact_total: true,
             ids_only: Some(true),
             nearest: Some(true),
+            indexes: None,
         }
     }
 }
@@ -1505,6 +1528,30 @@ pub fn compile_predicate(
             PredicateRole::Filter => Err(NotExpressible::Binding(binding)),
         },
     }
+}
+
+/// A fetch `filter` in the object form `{ field: value, ... }` as the equality conjunction it means,
+/// `(and (= row.field value) ...)`; `{}` is the empty conjunction, `true`. Any other form is returned as is.
+pub fn lower_object_filter(filter: &Value) -> Value {
+    let Value::Object(map) = filter else {
+        return filter.clone();
+    };
+    if map.is_empty() {
+        return Value::Bool(true);
+    }
+    let mut conjunction = vec![Value::String("and".to_string())];
+    for (field, value) in map {
+        conjunction.push(Value::Array(vec![
+            Value::String("=".to_string()),
+            Value::Array(vec![
+                Value::String("object/get".to_string()),
+                Value::String("@entity".to_string()),
+                Value::String(field.clone()),
+            ]),
+            value.clone(),
+        ]));
+    }
+    Value::Array(conjunction)
 }
 
 /// The `RowOrder` of a fetch's `(field, descending)` spec.

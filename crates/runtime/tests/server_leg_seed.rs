@@ -200,10 +200,10 @@ fn carried_rows_schema() -> OrbitalSchema {
         "name": "App",
         "orbitals": [{
             "name": "CardOrbital",
-            "entity": { "name": "Card", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "label", "type": "string" }] },
+            "entity": { "name": "Card", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "label", "type": "string" }, { "name": "seen", "type": "object" }] },
             "traits": [{ "name": "Viewer", "linkedEntity": "Card",
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
-                    "transitions": [{ "from": "idle", "to": "idle", "event": "PING", "effects": [] }] } }]
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "PING", "effects": [["set", "@entity.seen", { "label": "@entity.label", "createdAt": ["object/get", "@entity", "createdAt"] }]] }] } }]
         }, {
             "name": "ChatOrbital",
             "entity": { "name": "Draft", "persistence": "persistent", "collection": "drafts", "shared": true, "fields": [{ "name": "id", "type": "string" }, { "name": "channel", "type": "string" }] },
@@ -216,11 +216,11 @@ fn carried_rows_schema() -> OrbitalSchema {
             ]
         }, {
             "name": "ScratchOrbital",
-            "entity": { "name": "Scratch", "persistence": "runtime", "shared": true, "fields": [{ "name": "id", "type": "string" }, { "name": "channel", "type": "string" }] },
+            "entity": { "name": "Scratch", "persistence": "runtime", "shared": true, "fields": [{ "name": "id", "type": "string" }, { "name": "channel", "type": "string" }, { "name": "seenChannel", "type": "string" }] },
             "traits": [
                 { "name": "ScratchWriter", "linkedEntity": "Scratch",
                   "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
-                      "transitions": [{ "from": "idle", "to": "idle", "event": "SELECT", "effects": [] }] } },
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "SELECT", "effects": [["set", "@entity.seenChannel", "@entity.channel"]] }] } },
                 { "name": "ScratchReader", "linkedEntity": "Scratch",
                   "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] } }
             ]
@@ -292,9 +292,9 @@ fn a_runtime_row_carried_with_its_own_id_is_that_row_not_the_seeded_singleton() 
     );
     let viewer = entity_of(&response, "Viewer");
     assert_eq!(viewer["id"], json!("row-1"));
-    assert_eq!(viewer["label"], json!("hello"));
+    assert_eq!(viewer["seen"]["label"], json!("hello"));
     assert!(
-        viewer.get("createdAt").is_none(),
+        viewer["seen"]["createdAt"].is_null(),
         "the seeded singleton leaked into row-1: {viewer}"
     );
 }
@@ -303,8 +303,8 @@ fn a_runtime_row_carried_with_its_own_id_is_that_row_not_the_seeded_singleton() 
 fn control_a_runtime_row_carried_without_an_id_folds_over_the_singleton() {
     let response = carried_rows_run("CardOrbital", ping(json!({ "label": "hello" })));
     let viewer = entity_of(&response, "Viewer");
-    assert_eq!(viewer["label"], json!("hello"));
-    assert_eq!(viewer["createdAt"], json!("2026-01-01T00:00:00.000Z"));
+    assert_eq!(viewer["seen"]["label"], json!("hello"));
+    assert_eq!(viewer["seen"]["createdAt"], json!("2026-01-01T00:00:00.000Z"));
 }
 
 #[test]
@@ -351,7 +351,7 @@ fn control_a_runtime_shared_row_carried_with_an_id_folds_into_the_shared_frame()
         },
     );
     assert_eq!(
-        entity_of(&response, "ScratchReader")["channel"],
+        entity_of(&response, "ScratchReader")["seenChannel"],
         json!("c1")
     );
 }
@@ -401,8 +401,8 @@ fn edge_two_forks_of_one_template_hold_separate_sessions() {
 fn a_fork_holds_none_of_its_templates_runtime_rows() {
     let fork = seeded_rows_server().fork_session().unwrap();
     let viewer = entity_of(&drive_rows(&fork, "CardOrbital", ping(json!({ "label": "hello" }))), "Viewer");
-    assert_eq!(viewer["label"], json!("hello"));
-    assert!(viewer.get("createdAt").is_none(), "the template's seeded row reached the fork: {viewer}");
+    assert_eq!(viewer["seen"]["label"], json!("hello"));
+    assert!(viewer["seen"]["createdAt"].is_null(), "the template's seeded row reached the fork: {viewer}");
 }
 
 #[test]
@@ -462,4 +462,65 @@ fn control_a_dispatch_after_the_mount_returns_only_what_it_wrote() {
     let holder = entity_of(&drive_rows(&server, "HolderOrbital", bump), "Holder");
     assert!(holder.get("count").is_some(), "{holder}");
     assert!(holder.get("items").is_none(), "the unchanged list rode the dispatch: {holder}");
+}
+
+fn topic_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "TopicOrbital",
+            "entity": { "name": "Topic", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "topic", "type": "string" },
+                { "name": "seen", "type": "string" }
+            ] },
+            "traits": [{ "name": "Viewer", "linkedEntity": "Topic",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "SET_TOPIC", "effects": [["set", "@entity.topic", "@payload.topic"]] },
+                        { "from": "idle", "to": "idle", "event": "READ_BACK", "effects": [["set", "@entity.seen", "@entity.topic"]] }
+                    ] } }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn topic_request(event: &str, topic: Option<&str>, carried: Option<&str>) -> EventRequest {
+    EventRequest {
+        event: event.to_string(),
+        target_trait: Some("Viewer".to_string()),
+        payload: topic.map(|t| row(json!({ "topic": t }))),
+        entity_by_trait: carried.map(|t| ValueMap::from([("Viewer".to_string(), row(json!({ "topic": t })))])),
+        ..Default::default()
+    }
+}
+
+fn seen_after(server: &EmbeddedServer, request: EventRequest) -> Json {
+    entity_of(&drive_rows(server, "TopicOrbital", request), "Viewer")["seen"].clone()
+}
+
+#[test]
+fn a_viewers_server_frame_is_not_overwritten_by_another_viewers_session() {
+    let template = EmbeddedServer::new(topic_schema()).unwrap();
+    let (a, b) = (template.fork_session().unwrap(), template.fork_session().unwrap());
+    drive_rows(&a, "TopicOrbital", topic_request("SET_TOPIC", Some("app"), None));
+    drive_rows(&b, "TopicOrbital", topic_request("SET_TOPIC", Some("cli"), None));
+    assert_eq!(seen_after(&a, topic_request("READ_BACK", None, None)), json!("app"));
+    assert_eq!(seen_after(&b, topic_request("READ_BACK", None, None)), json!("cli"));
+}
+
+#[test]
+fn control_one_viewer_reads_back_its_own_last_write() {
+    let server = EmbeddedServer::new(topic_schema()).unwrap().fork_session().unwrap();
+    drive_rows(&server, "TopicOrbital", topic_request("SET_TOPIC", Some("app"), None));
+    drive_rows(&server, "TopicOrbital", topic_request("SET_TOPIC", Some("cli"), None));
+    assert_eq!(seen_after(&server, topic_request("READ_BACK", None, None)), json!("cli"));
+}
+
+#[test]
+fn a_stateless_request_reads_back_the_frame_its_client_carries_not_another_viewers() {
+    let template = EmbeddedServer::new(topic_schema()).unwrap();
+    drive_rows(&template.fork_session().unwrap(), "TopicOrbital", topic_request("SET_TOPIC", Some("cli"), None));
+    let fresh = template.fork_session().unwrap();
+    assert_eq!(seen_after(&fresh, topic_request("READ_BACK", None, Some("app"))), json!("app"));
 }

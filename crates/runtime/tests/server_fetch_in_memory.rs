@@ -105,3 +105,138 @@ fn control_a_missed_fetch_with_no_failure_route_reports_none() {
     assert!(result.is_failed(), "{result:?}");
     assert_eq!(result.routed_failure(), None);
 }
+
+/// The ids a `fetch` with `filter` returns over `rows`, in the fetch's order, for a LIST dispatched with `payload`.
+fn fetched_ids(rows: serde_json::Value, filter: serde_json::Value, payload: serde_json::Value) -> Vec<String> {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "sf", "orbitals": [{ "name": "Main",
+            "entity": { "name": "Ticket", "persistence": "persistent", "fields": [
+                { "name": "id", "type": "string" }, { "name": "projectId", "type": "string" },
+                { "name": "status", "type": "string" }, { "name": "score", "type": "number", "required": true }] },
+            "traits": [{ "name": "T", "linkedEntity": "Ticket", "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "LIST",
+                    "effects": [["fetch", "Ticket", { "filter": filter, "emit": { "success": "L" } }]] }] } }] }]
+    }))
+    .unwrap();
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        cache.clone() as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(schema).unwrap();
+    for row in rows.as_array().unwrap() {
+        let id = row["id"].as_str().unwrap().to_string();
+        let row: Value = serde_json::from_value(row.clone()).unwrap();
+        cache.write("Ticket", &id, &row).unwrap();
+    }
+    let payload: Value = serde_json::from_value(payload).unwrap();
+    let out = k.dispatch("T", None, "LIST", payload).unwrap();
+    out.iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .filter_map(|er| er.return_value.as_ref()?.as_array().cloned())
+        .flatten()
+        .map(|row| row.get_path("id").and_then(|v| v.as_str().map(str::to_string)).unwrap())
+        .collect()
+}
+
+fn tickets() -> serde_json::Value {
+    json!([
+        { "id": "t1", "projectId": "p1", "status": "open", "score": 1 },
+        { "id": "t2", "projectId": "p1", "status": "done", "score": 2 },
+        { "id": "t3", "projectId": "p2", "status": "open", "score": 3 },
+        { "id": "t4", "projectId": "p2", "status": "done", "score": 4 }
+    ])
+}
+
+fn sorted(mut ids: Vec<String>) -> Vec<String> {
+    ids.sort();
+    ids
+}
+
+#[test]
+fn control_an_s_expression_filter_returns_only_the_matching_rows() {
+    let filter = json!(["=", ["object/get", "@entity", "projectId"], "p1"]);
+    assert_eq!(sorted(fetched_ids(tickets(), filter, json!({}))), ["t1", "t2"]);
+}
+
+#[test]
+fn an_object_filter_returns_the_rows_the_s_expression_form_returns() {
+    let object = fetched_ids(tickets(), json!({ "projectId": "p1" }), json!({}));
+    let sexpr = fetched_ids(tickets(), json!(["=", ["object/get", "@entity", "projectId"], "p1"]), json!({}));
+    assert_eq!(sorted(object.clone()), ["t1", "t2"]);
+    assert_eq!(object, sexpr);
+}
+
+#[test]
+fn an_object_filter_value_that_is_a_payload_binding_resolves_before_comparing() {
+    let ids = fetched_ids(tickets(), json!({ "projectId": "@payload.id" }), json!({ "id": "p2" }));
+    assert_eq!(sorted(ids), ["t3", "t4"]);
+}
+
+#[test]
+fn an_object_filter_value_that_is_an_expression_is_evaluated_before_comparing() {
+    let ids = fetched_ids(tickets(), json!({ "score": ["+", "@payload.n", 1] }), json!({ "n": 2 }));
+    assert_eq!(ids, ["t3"]);
+}
+
+#[test]
+fn an_object_filters_keys_and_together() {
+    let ids = fetched_ids(tickets(), json!({ "projectId": "p2", "status": "open" }), json!({}));
+    assert_eq!(ids, ["t3"]);
+}
+
+#[test]
+fn an_object_filter_that_matches_nothing_returns_no_rows() {
+    assert!(fetched_ids(tickets(), json!({ "projectId": "nope" }), json!({})).is_empty());
+}
+
+#[test]
+fn an_object_filter_with_no_keys_is_the_empty_conjunction_and_admits_every_row() {
+    assert_eq!(sorted(fetched_ids(tickets(), json!({}), json!({}))), ["t1", "t2", "t3", "t4"]);
+}
+
+/// The ids a `fetch` lists after a `persist create` of `row`, on a Server kernel that keeps `[runtime]` rows in the kernel.
+fn persisted_then_fetched(persistence: &str, row: serde_json::Value) -> Vec<String> {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "rt", "orbitals": [{ "name": "Main",
+            "entity": { "name": "Card", "persistence": persistence, "fields": [
+                { "name": "id", "type": "string" }, { "name": "label", "type": "string" }] },
+            "traits": [{ "name": "T", "linkedEntity": "Card", "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [
+                    { "from": "idle", "to": "idle", "event": "SAVE", "effects": [["persist", "create", "Card", row]] },
+                    { "from": "idle", "to": "idle", "event": "LIST", "effects": [["fetch", "Card", { "emit": { "success": "L" } }]] }] } }] }]
+    }))
+    .unwrap();
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        orbital_core_runtime::config::KernelConfig { runtime_rows_in_kernel: true, ..Default::default() },
+    );
+    k.register_schema(schema).unwrap();
+    k.dispatch("T", None, "SAVE", Value::Null).unwrap();
+    let out = k.dispatch("T", None, "LIST", Value::Null).unwrap();
+    out.iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .filter_map(|er| er.return_value.as_ref()?.as_array().cloned())
+        .flatten()
+        .map(|row| row.get_path("id").and_then(|v| v.as_str().map(str::to_string)).unwrap())
+        .collect()
+}
+
+#[test]
+fn a_runtime_row_persisted_with_an_id_is_fetched() {
+    assert_eq!(persisted_then_fetched("runtime", json!({ "id": "c1", "label": "x" })), ["c1"]);
+}
+
+#[test]
+fn control_a_persistent_row_persisted_with_an_id_is_fetched() {
+    assert_eq!(persisted_then_fetched("persistent", json!({ "id": "c1", "label": "x" })), ["c1"]);
+}
+
+#[test]
+fn control_a_runtime_row_persisted_without_an_id_is_fetched() {
+    assert_eq!(persisted_then_fetched("runtime", json!({ "label": "x" })).len(), 1);
+}

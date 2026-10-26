@@ -380,6 +380,11 @@ impl StateMachineManager {
         self.states.remove(&instance_id);
     }
 
+    /// Keep only the instances `keep` accepts.
+    pub fn retain_instances(&mut self, mut keep: impl FnMut(&TraitState) -> bool) {
+        self.states.retain(|_, state| keep(state));
+    }
+
     /// Get all trait instances for a trait name
     pub fn get_instances_for_trait(&self, trait_name: &str) -> Vec<&TraitState> {
         self.states

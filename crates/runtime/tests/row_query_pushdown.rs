@@ -1549,3 +1549,191 @@ fn a_batch_op_that_cannot_apply_fails_the_batch_with_its_code_index_and_count() 
         assert!(!results.iter().any(|er| er.is_failed()), "pushed={pushed}: {results:?}");
     }
 }
+
+fn index(fields: &[&str], order_by: Option<&str>) -> orbital_core_base::schema::types::EntityIndex {
+    orbital_core_base::schema::types::EntityIndex {
+        fields: fields.iter().map(|f| f.to_string()).collect(),
+        order_by: order_by.map(str::to_string),
+    }
+}
+
+fn indexes() -> Vec<orbital_core_base::schema::types::EntityIndex> {
+    vec![
+        index(&["status"], None),
+        index(&["owner"], None),
+        index(&["priority"], Some("score:desc")),
+        index(&["score"], None),
+        index(&["status", "priority"], Some("id")),
+    ]
+}
+
+fn ticket_cache(declared: bool) -> InMemoryEntityCache {
+    let f = fixture("query-cases.json");
+    let cache = InMemoryEntityCache::new();
+    if declared {
+        cache.declare_indexes("Ticket", &indexes());
+    }
+    for r in arcs(&f["rows"]) {
+        cache.write("Ticket", r.as_object().unwrap()["id"].as_str().unwrap(), &r).unwrap();
+    }
+    cache
+}
+
+fn mutate(cache: &InMemoryEntityCache) {
+    cache.write("Ticket", "t01", &v(&json!({ "status": "closed" }))).unwrap();
+    cache.write("Ticket", "t02", &v(&json!({ "owner": null }))).unwrap();
+    cache.write("Ticket", "t09", &v(&json!({ "score": 12, "priority": 7 }))).unwrap();
+    cache.delete("Ticket", "t03").unwrap();
+    cache.create("Ticket", &v(&json!({ "id": "t13", "status": "open", "owner": "u1", "priority": 9, "score": 10 }))).unwrap();
+    cache.create("Ticket", &v(&json!({ "status": "open", "owner": "u2", "priority": 1 }))).unwrap();
+    let batch = RowWriteBatch {
+        ops: vec![
+            RowWriteOp::Update { entity_type: "Ticket".into(), id: "t04".into(), data: v(&json!({ "status": "closed", "priority": 5 })), guard: None },
+            RowWriteOp::Upsert { entity_type: "Ticket".into(), data: v(&json!({ "id": "t05", "status": "open", "owner": "u9" })) },
+            RowWriteOp::Delete { entity_type: "Ticket".into(), id: "t06".into(), guard: None },
+        ],
+        on_failure: RowWriteFailureMode::Stop,
+    };
+    cache.write_batch(&batch).unwrap().unwrap();
+}
+
+fn every_case_agrees(plain: &InMemoryEntityCache, indexed: &InMemoryEntityCache, when: &str) {
+    let f = fixture("query-cases.json");
+    for case in f["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let query: RowQuery = serde_json::from_value(case["query"].clone()).expect(name);
+        assert_eq!(
+            indexed.query_page("Ticket", &query).unwrap_rows(),
+            plain.query_page("Ticket", &query).unwrap_rows(),
+            "{when}: {name}: page"
+        );
+        assert_eq!(
+            indexed.query_ids("Ticket", &query).unwrap_rows(),
+            plain.query_ids("Ticket", &query).unwrap_rows(),
+            "{when}: {name}: ids"
+        );
+    }
+}
+
+#[test]
+fn control_an_undeclared_cache_answers_every_query_case_as_the_recorded_page() {
+    let f = fixture("query-cases.json");
+    let cache = ticket_cache(false);
+    for case in f["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let query: RowQuery = serde_json::from_value(case["query"].clone()).expect(name);
+        let page = cache.query_page("Ticket", &query).unwrap_rows();
+        assert_eq!(ids_of(&page.rows), expected_ids(&case["expect"]), "{name}");
+    }
+}
+
+#[test]
+fn an_index_never_changes_a_query_cases_page() {
+    every_case_agrees(&ticket_cache(false), &ticket_cache(true), "seeded");
+}
+
+#[test]
+fn an_index_never_changes_a_query_cases_page_after_writes() {
+    let (plain, indexed) = (ticket_cache(false), ticket_cache(true));
+    mutate(&plain);
+    mutate(&indexed);
+    every_case_agrees(&plain, &indexed, "after writes");
+}
+
+#[test]
+fn an_index_declared_after_the_rows_were_written_agrees_with_one_declared_before() {
+    let (plain, late) = (ticket_cache(false), ticket_cache(false));
+    mutate(&plain);
+    mutate(&late);
+    late.declare_indexes("Ticket", &indexes());
+    every_case_agrees(&plain, &late, "declared late");
+    mutate_again(&plain);
+    mutate_again(&late);
+    every_case_agrees(&plain, &late, "written after the late declaration");
+}
+
+fn mutate_again(cache: &InMemoryEntityCache) {
+    cache.write("Ticket", "t10", &v(&json!({ "status": "archived", "owner": "u3" }))).unwrap();
+    cache.delete("Ticket", "t13").unwrap();
+}
+
+fn status_is(value: &str) -> RowQuery {
+    serde_json::from_value(json!({ "filter": { "kind": "compare", "field": "status", "op": "==", "value": value } })).unwrap()
+}
+
+#[test]
+fn a_covered_equality_query_visits_only_the_candidates_its_index_names() {
+    let (plain, indexed) = (ticket_cache(false), ticket_cache(true));
+    let query = status_is("closed");
+    let want = plain.query_page("Ticket", &query).unwrap_rows();
+    assert_eq!(plain.rows_visited(), 12, "an undeclared cache scans every row");
+    let got = indexed.query_page("Ticket", &query).unwrap_rows();
+    assert_eq!(got, want);
+    assert_eq!(want.rows.len(), 3);
+    assert_eq!(indexed.rows_visited(), 3, "the index named the three closed rows");
+}
+
+#[test]
+fn a_covered_query_still_visits_only_candidates_after_a_write_moves_a_row_between_buckets() {
+    let indexed = ticket_cache(true);
+    indexed.write("Ticket", "t01", &v(&json!({ "status": "closed" }))).unwrap();
+    let before = indexed.rows_visited();
+    let page = indexed.query_page("Ticket", &status_is("closed")).unwrap_rows();
+    let mut closed = ids_of(&page.rows);
+    closed.sort();
+    assert_eq!(closed, ["t01", "t03", "t07", "t11"].map(String::from));
+    assert_eq!(indexed.rows_visited() - before, 4);
+    let open = indexed.query_page("Ticket", &status_is("open")).unwrap_rows();
+    assert!(!ids_of(&open.rows).contains(&"t01".to_string()));
+}
+
+#[test]
+fn control_a_query_on_an_unindexed_field_scans_every_row() {
+    let indexed = ticket_cache(true);
+    let query: RowQuery = serde_json::from_value(json!({ "filter": { "kind": "compare", "field": "title", "op": "==", "value": "Alpha" } })).unwrap();
+    let page = indexed.query_page("Ticket", &query).unwrap_rows();
+    assert_eq!(ids_of(&page.rows), ["t01"]);
+    assert_eq!(indexed.rows_visited(), 12);
+}
+
+#[test]
+fn an_equality_on_an_indexed_field_still_applies_the_rest_of_the_filter_and_the_policy() {
+    let (plain, indexed) = (ticket_cache(false), ticket_cache(true));
+    let query: RowQuery = serde_json::from_value(json!({
+        "policy": { "kind": "compare", "field": "owner", "op": "==", "value": "u1" },
+        "filter": { "kind": "all", "of": [
+            { "kind": "compare", "field": "status", "op": "==", "value": "open" },
+            { "kind": "compare", "field": "priority", "op": ">", "value": 3 }] },
+        "order": { "field": "id", "direction": "desc" }
+    })).unwrap();
+    let got = indexed.query_page("Ticket", &query).unwrap_rows();
+    assert_eq!(got, plain.query_page("Ticket", &query).unwrap_rows());
+    assert_eq!(ids_of(&got.rows), ["t06"]);
+    assert!(indexed.rows_visited() < 12);
+}
+
+#[test]
+fn an_equality_on_null_or_a_missing_field_is_answered_as_the_scan_answers_it() {
+    let (plain, indexed) = (ticket_cache(false), ticket_cache(true));
+    for value in [json!(null), json!("nope")] {
+        let query: RowQuery = serde_json::from_value(json!({ "filter": { "kind": "compare", "field": "owner", "op": "==", "value": value } })).unwrap();
+        assert_eq!(indexed.query_page("Ticket", &query).unwrap_rows(), plain.query_page("Ticket", &query).unwrap_rows());
+    }
+}
+
+#[test]
+fn a_drivers_declared_index_realization_parses_and_an_absent_one_is_none() {
+    use orbital_core_runtime::row_query::IndexRealization;
+    let full = serde_json::to_value(QueryCapabilities::full()).unwrap();
+    assert_eq!(serde_json::from_value::<QueryCapabilities>(full.clone()).unwrap().indexes, None);
+    for (word, want) in [("runtime", IndexRealization::Runtime), ("deploy", IndexRealization::Deploy), ("none", IndexRealization::None)] {
+        let mut declared = full.clone();
+        declared["indexes"] = json!(word);
+        let parsed: QueryCapabilities = serde_json::from_value(declared.clone()).unwrap();
+        assert_eq!(parsed.indexes, Some(want), "{word}");
+        assert_eq!(serde_json::to_value(&parsed).unwrap()["indexes"], json!(word));
+    }
+    let mut unknown = full;
+    unknown["indexes"] = json!("sometimes");
+    assert!(serde_json::from_value::<QueryCapabilities>(unknown).is_err());
+}

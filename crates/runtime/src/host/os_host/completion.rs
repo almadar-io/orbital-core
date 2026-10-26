@@ -359,6 +359,8 @@ pub struct KernelCompletionSink {
 pub struct Requester {
     pub viewer: Option<Arc<Value>>,
     pub client_id: Option<String>,
+    /// The frame session of the dispatch that deferred it (EXEC-DIST-9); `None` is the program session.
+    pub session: Option<Arc<str>>,
 }
 
 /// Each deferred key's requester, and whether the key is a stream (kept until a new ask reuses the key).
@@ -452,6 +454,7 @@ impl KernelCompletionSink {
         self.scope(Arc::new(Requester {
             viewer: self.kernel.thread_viewer(),
             client_id: client_id.map(str::to_string),
+            session: self.kernel.thread_session(),
         }))
     }
 
@@ -516,6 +519,7 @@ impl KernelCompletionSink {
         self.wait_for_owner(key);
         let requester = self.requester_of(key);
         let _viewer = requester.viewer.as_ref().map(|viewer| self.kernel.enter_viewer((**viewer).clone()));
+        let _session = requester.session.as_ref().map(|session| self.kernel.enter_session(session));
         let scope = self.scope(requester.clone());
         let answer = |request: &IoRequest| scope.answer(&*self.answer, request);
         let result = self

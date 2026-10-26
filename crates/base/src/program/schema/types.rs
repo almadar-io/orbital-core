@@ -2352,6 +2352,10 @@ pub struct EntityDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invariants: Option<Vec<SExpression>>,
 
+    /// `@index { fields, orderBy? }`: declared access paths. A path changes a query's cost, never its result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexes: Option<Vec<EntityIndex>>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamps: Option<bool>,
     #[serde(default, rename = "softDelete", skip_serializing_if = "Option::is_none")]
@@ -2362,6 +2366,16 @@ pub struct EntityDefinition {
     pub visual_prompt: Option<String>,
     #[serde(default, rename = "assetRef", skip_serializing_if = "Option::is_none")]
     pub asset_ref: Option<SemanticAssetRef>,
+}
+
+/// One declared access path: the equality `fields` in order, and the `orderBy` string a `fetch` takes
+/// (`"field"` / `"field:desc"`); absent means EXEC-FETCH-1's default order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EntityIndex {
+    pub fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_by: Option<String>,
 }
 
 /// Twin of `@almadar/core`'s entity asset metadata.
@@ -4994,6 +5008,27 @@ mod tests {
     }
 
     #[test]
+    fn entity_indexes_round_trip_camel_case_and_skip_when_absent() {
+        use serde_json::json;
+        let entity = json!({
+            "name": "Edge",
+            "fields": [{ "name": "graphId", "type": "string" }],
+            "indexes": [{ "fields": ["graphId"] }, { "fields": ["graphId", "relation"], "orderBy": "weight:desc" }]
+        });
+        let e: super::EntityDefinition = serde_json::from_value(entity.clone()).unwrap();
+        let indexes = e.indexes.as_ref().expect("indexes parsed");
+        assert_eq!(indexes.len(), 2);
+        assert_eq!(indexes[1].fields, vec!["graphId".to_string(), "relation".to_string()]);
+        assert_eq!(indexes[1].order_by.as_deref(), Some("weight:desc"));
+        assert_eq!(indexes[0].order_by, None);
+        assert_eq!(serde_json::to_value(&e).unwrap()["indexes"], entity["indexes"]);
+        let bare: super::EntityDefinition = serde_json::from_value(json!({ "name": "A", "fields": [] })).unwrap();
+        assert!(serde_json::to_value(&bare).unwrap().get("indexes").is_none());
+        let unknown = json!({ "name": "A", "fields": [], "indexes": [{ "fields": ["x"], "unique": true }] });
+        assert!(serde_json::from_value::<super::EntityDefinition>(unknown).is_err(), "control: an unknown index key is refused");
+    }
+
+    #[test]
     fn propositions_on_real_declarations_and_on_the_transition_expectation_round_trip() {
         use serde_json::json;
         let ensures = json!([["=", "@entity.balance", ["-", "@fromEntity.balance", "@payload.amount"]]]);
@@ -5544,6 +5579,7 @@ mod tests {
             delete_policy: None,
             access_waivers: None,
             invariants: None,
+            indexes: None,
         };
         let serialized = serde_json::to_string(&entity).unwrap();
         assert!(!serialized.contains("shared"));

@@ -14,7 +14,7 @@ use orbital_core_base::value::Value;
 use orbital_core_base::events::types::Event;
 use orbital_core_base::events::bus::SharedEventBus;
 use crate::entity_access::{check_mutation_access, missing_required_fields, scope_fetched_rows, EntityAccessTable};
-use crate::row_query::{compare_rows, compile_predicate, default_row_order, PredicateRole, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome};
+use crate::row_query::{compare_rows, compile_predicate, default_row_order, lower_object_filter, PredicateRole, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome};
 use orbital_core_base::row_set::{nearest_rows, RowDirection, RowNearest, RowOrder, RowPredicate, RowSetRef, RowTotalMode};
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::sync::RwLock;
@@ -2138,7 +2138,7 @@ impl EffectExecutor {
                     return Self::fetch_failed(effect, &e);
                 }
             };
-            let interpolated_filter = filter.map(|f| interpolate_filter_trait_refs(f, ctx));
+            let interpolated_filter = filter.map(|f| interpolate_filter_trait_refs(&lower_object_filter(f), ctx));
             if deliver == FetchDeliver::Ids {
                 if resolved_id.is_some() || include.is_some_and(|i| !i.is_empty()) {
                     let e = format!(

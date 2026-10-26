@@ -68,15 +68,6 @@ fn a_shared_frame_is_echoed_to_every_trait_bound_to_it() {
 }
 
 #[test]
-fn a_frame_written_by_an_earlier_request_reaches_a_request_that_changes_nothing() {
-    let server = EmbeddedServer::new(schema()).unwrap();
-    run(&server, "WRITE", "Writer");
-    let later = run(&server, "NOTHING_HANDLES_THIS", "Sibling");
-    assert_eq!(rows(&later)["Sibling"]["v"], json!("written"));
-    assert_eq!(rows(&later)["Writer"]["v"], json!("written"));
-}
-
-#[test]
 fn a_private_frame_stays_with_its_trait_and_its_entitys_other_traits_do_not_see_it() {
     let server = EmbeddedServer::new(schema()).unwrap();
     let rows = rows(&run(&server, "COUNT", "Private"));
@@ -326,7 +317,6 @@ fn control_a_trait_that_did_not_step_and_whose_frame_was_not_written_has_no_row(
     assert!(rows.get("Idle").is_none(), "{rows}");
 }
 
-// Replaces `a_frame_written_by_an_earlier_request_reaches_a_request_that_changes_nothing` in K2.
 #[test]
 fn a_request_that_changes_nothing_carries_no_earlier_fields() {
     let server = EmbeddedServer::new(schema()).unwrap();
@@ -335,4 +325,151 @@ fn a_request_that_changes_nothing_carries_no_earlier_fields() {
     for trait_name in ["Sibling", "Writer"] {
         assert!(later[trait_name].get("v").is_none(), "{later}");
     }
+}
+
+fn failing_schema(with_failure: bool) -> OrbitalSchema {
+    let mut effects = vec![json!(["set", "@entity.v", "applied"])];
+    if with_failure {
+        effects.push(json!(["set", "@entity.w", ["behavior/ref", "Indigo Pioneer"]]));
+    } else {
+        effects.push(json!(["set", "@entity.w", "also"]));
+    }
+    effects.push(json!(["set", "@entity.x", "after"]));
+    serde_json::from_value(json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Doc4", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "v", "type": "string", "default": "v0" },
+                { "name": "w", "type": "string", "default": "w0" },
+                { "name": "x", "type": "string", "default": "x0" }
+            ] },
+            "traits": [{ "name": "Fails", "linkedEntity": "Doc4",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": effects }] } }]
+        }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_step_that_fails_reports_the_sets_it_applied_and_not_the_one_that_failed_or_the_ones_it_skipped() {
+    let server = EmbeddedServer::new(failing_schema(true)).unwrap();
+    let rows = rows(&run(&server, "GO", "Fails"));
+    assert_eq!(rows["Fails"]["v"], json!("applied"), "{rows}");
+    assert!(rows["Fails"].get("w").is_none() && rows["Fails"].get("x").is_none(), "{rows}");
+}
+
+#[test]
+fn control_the_same_step_without_the_failure_reports_all_three_sets() {
+    let server = EmbeddedServer::new(failing_schema(false)).unwrap();
+    let rows = rows(&run(&server, "GO", "Fails"));
+    assert_eq!(rows["Fails"]["w"], json!("also"), "{rows}");
+    assert_eq!(rows["Fails"]["x"], json!("after"), "{rows}");
+}
+
+// The client view (EXEC-DIST-8): the one projection a response takes on its way to a browser keeps an emit only when a
+// client-run trait hears it, its emitter is client-run, it is `external`, or it carries a persist success.
+
+fn handoff_schema() -> OrbitalSchema {
+    let machine = |arms: Json| json!({ "states": [{ "name": "idle", "isInitial": true }], "transitions": arms });
+    serde_json::from_value(json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },
+            "traits": [
+                { "name": "Source", "linkedEntity": "Job",
+                  "emits": [{ "event": "OUTSIDE", "scope": "external" }],
+                  "stateMachine": machine(json!([{ "from": "idle", "to": "idle", "event": "GO", "effects": [
+                      ["emit", "HANDOFF", { "blob": "server-only-payload" }],
+                      ["emit", "PAINT", { "label": "for-the-client" }],
+                      ["emit", "OUTSIDE", { "label": "for-hosts" }],
+                      ["emit", "ASKED", { "q": "named-by-a-prop" }],
+                      ["emit", "QUIET", { "q": "named-by-nothing" }],
+                      ["render-ui", "main", { "type": "chat-bar", "sendEvent": "ASKED" }]] }])) },
+                { "name": "Sink", "linkedEntity": "Job",
+                  "listens": [{ "event": "HANDOFF", "triggers": "TAKE", "source": { "kind": "trait", "trait": "Source" } }],
+                  "stateMachine": machine(json!([{ "from": "idle", "to": "idle", "event": "TAKE", "effects": [] }])) },
+                { "name": "Painter", "linkedEntity": "Job", "dispatch": "client",
+                  "listens": [{ "event": "PAINT", "triggers": "SHOW", "source": { "kind": "trait", "trait": "Source" } }],
+                  "stateMachine": machine(json!([{ "from": "idle", "to": "idle", "event": "SHOW", "effects": [] }])) },
+                { "name": "ClientSource", "linkedEntity": "Job", "dispatch": "client",
+                  "stateMachine": machine(json!([{ "from": "idle", "to": "idle", "event": "CLIENT_GO", "effects": [["emit", "FROM_CLIENT", { "n": 1 }]] }])) }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn emitted_names(response: &EventResponse) -> Vec<String> {
+    response.emitted_events.iter().map(|e| e.event.clone()).collect()
+}
+
+fn viewed(server: &EmbeddedServer, event: &str, target: &str) -> (EventResponse, EventResponse) {
+    let full = run(server, event, target);
+    let view = server.kernel().client_view(full.clone());
+    (full, view)
+}
+
+#[test]
+fn the_client_view_drops_an_emit_only_server_traits_listen_to() {
+    let server = EmbeddedServer::new(handoff_schema()).unwrap();
+    let (full, view) = viewed(&server, "GO", "Source");
+    assert!(emitted_names(&full).contains(&"HANDOFF".to_string()), "in-process consumers keep the full response");
+    assert!(!emitted_names(&view).contains(&"HANDOFF".to_string()), "{:?}", emitted_names(&view));
+}
+
+#[test]
+fn control_the_client_view_keeps_an_emit_a_client_run_trait_listens_to() {
+    let server = EmbeddedServer::new(handoff_schema()).unwrap();
+    let (_, view) = viewed(&server, "GO", "Source");
+    let paint = view.emitted_events.iter().find(|e| e.event == "PAINT").expect("PAINT kept");
+    assert_eq!(serde_json::to_value(&paint.payload).unwrap(), json!({ "label": "for-the-client" }));
+}
+
+#[test]
+fn control_the_client_view_keeps_an_external_emit() {
+    let server = EmbeddedServer::new(handoff_schema()).unwrap();
+    let (_, view) = viewed(&server, "GO", "Source");
+    assert!(emitted_names(&view).contains(&"OUTSIDE".to_string()), "{:?}", emitted_names(&view));
+}
+
+#[test]
+fn control_the_client_view_keeps_an_emit_whose_emitter_is_client_run() {
+    let server = EmbeddedServer::new(handoff_schema()).unwrap();
+    let (_, view) = viewed(&server, "CLIENT_GO", "ClientSource");
+    assert!(emitted_names(&view).contains(&"FROM_CLIENT".to_string()), "{:?}", emitted_names(&view));
+}
+
+// A deferred completion pushed to the tab carries its payload only when the completing trait runs on the client.
+#[test]
+fn a_server_trait_completion_carries_no_payload_to_the_browser() {
+    let server = EmbeddedServer::new(handoff_schema()).unwrap();
+    let payload = serde_json::from_value(json!({ "text": "big" })).unwrap();
+    assert_eq!(server.kernel().browser_completion_payload("Source", &payload), orbital_core_base::value::Value::Null);
+}
+
+#[test]
+fn control_a_client_trait_completion_keeps_its_payload() {
+    let server = EmbeddedServer::new(handoff_schema()).unwrap();
+    let payload: orbital_core_base::value::Value = serde_json::from_value(json!({ "text": "big" })).unwrap();
+    assert_eq!(server.kernel().browser_completion_payload("ClientSource", &payload), payload);
+}
+
+#[test]
+fn the_client_view_keeps_an_emit_only_a_pattern_prop_names() {
+    let server = EmbeddedServer::new(handoff_schema()).unwrap();
+    let (full, view) = viewed(&server, "GO", "Source");
+    assert!(emitted_names(&full).contains(&"ASKED".to_string()));
+    assert!(emitted_names(&view).contains(&"ASKED".to_string()), "a chat-bar sendEvent names it: {:?}", emitted_names(&view));
+}
+
+#[test]
+fn control_the_client_view_drops_a_server_only_emit_no_pattern_prop_names() {
+    let server = EmbeddedServer::new(handoff_schema()).unwrap();
+    let (full, view) = viewed(&server, "GO", "Source");
+    assert!(emitted_names(&full).contains(&"QUIET".to_string()));
+    assert!(!emitted_names(&view).contains(&"QUIET".to_string()), "{:?}", emitted_names(&view));
 }

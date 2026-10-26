@@ -225,7 +225,7 @@ fn a_relayed_outcome_carries_the_mapped_payload() {
         .map(|(_, o)| o)
         .expect("Relay ran");
     let expected: Value = serde_json::from_value(json!({ "rows": [{ "id": "i-1" }] })).unwrap();
-    assert_eq!(relay.payload, expected);
+    assert_eq!(*relay.payload, expected);
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn control_a_payloadless_seed_outcome_carries_null() {
         .find(|(t, o)| t == "Browse" && o.event.as_deref() == Some("INIT"))
         .map(|(_, o)| o)
         .expect("INIT ran");
-    assert_eq!(seed.payload, Value::Null);
+    assert_eq!(*seed.payload, Value::Null);
 }
 
 fn guarded_seed_schema(with_listener: bool) -> OrbitalSchema {

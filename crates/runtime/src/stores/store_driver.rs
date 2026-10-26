@@ -8,6 +8,7 @@ use crate::resumable::{IoAnswer, IoRequest};
 use crate::row_query::{RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteOutcome};
 use orbital_core_base::json_value::value_to_json;
 use orbital_core_base::row_set::RowQuery;
+use orbital_core_base::schema::types::EntityIndex;
 use orbital_core_base::value::Value;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -16,12 +17,14 @@ pub const ROW_READ: &str = "ROW_READ";
 pub const ROW_LIST: &str = "ROW_LIST";
 pub const ROWS_QUERY: &str = "ROWS_QUERY";
 pub const ROWS_WRITE: &str = "ROWS_WRITE";
+pub const ROWS_ENSURE_INDEXES: &str = "ROWS_ENSURE_INDEXES";
 
 pub const ROW_FOUND: &str = "ROW_FOUND";
 pub const ROWS_LISTED: &str = "ROWS_LISTED";
 pub const ROWS_PAGE: &str = "ROWS_PAGE";
 pub const ROWS_IDS: &str = "ROWS_IDS";
 pub const ROWS_WRITTEN: &str = "ROWS_WRITTEN";
+pub const ROWS_INDEXES_ENSURED: &str = "ROWS_INDEXES_ENSURED";
 pub const STORE_UNSUPPORTED: &str = "STORE_UNSUPPORTED";
 pub const STORE_FAILED: &str = "STORE_FAILED";
 
@@ -70,6 +73,14 @@ struct QueryVerb<'a> {
 struct WriteVerb<'a> {
     key: &'a str,
     batch: &'a RowWriteBatch,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnsureVerb<'a> {
+    key: &'a str,
+    entity_type: &'a str,
+    indexes: &'a [EntityIndex],
 }
 
 #[derive(Deserialize)]
@@ -133,6 +144,14 @@ pub fn verb_for(request: &IoRequest, key: &str) -> Option<DriverVerb> {
         _ => return None,
     };
     Some(DriverVerb { event, payload })
+}
+
+/// The verb that sends a driver the access paths an entity declares (EXEC-STORE-6).
+pub fn ensure_verb(entity_type: &str, indexes: &[EntityIndex], key: &str) -> DriverVerb {
+    DriverVerb {
+        event: ROWS_ENSURE_INDEXES,
+        payload: to_value(&EnsureVerb { key, entity_type, indexes }),
+    }
 }
 
 /// The `key` a driver reply carries.

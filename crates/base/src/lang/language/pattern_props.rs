@@ -192,6 +192,30 @@ pub static PATTERN_EVENT_PROPS: LazyLock<HashMap<&'static str, HashSet<&'static 
             .collect()
     });
 
+/// Every prop that names a bus event, per pattern (pattern_type -> prop_name -> (registry kind, eventField)): the
+/// kinds `event`, `event-ref`, `event-listen`, `event-list` (its `eventField`, default `event`) and `event-map` (its
+/// values). Type-derived by pattern-sync, no name heuristics.
+pub static PATTERN_EVENT_NAME_PROPS: LazyLock<
+    HashMap<&'static str, HashMap<&'static str, (&'static str, &'static str)>>,
+> = LazyLock::new(|| {
+    const KINDS: [&str; 5] = ["event", "event-ref", "event-listen", "event-list", "event-map"];
+    patterns_map()
+        .iter()
+        .filter_map(|(name, def)| {
+            let props: HashMap<&'static str, (&'static str, &'static str)> = props_schema(def)?
+                .iter()
+                .filter_map(|(prop, prop_def)| {
+                    let kind = prop_def.get("kind").and_then(Value::as_str)?;
+                    let kind = KINDS.iter().copied().find(|k| *k == kind)?;
+                    let field = prop_def.get("eventField").and_then(Value::as_str).unwrap_or("event");
+                    Some((prop.as_str(), (kind, field)))
+                })
+                .collect();
+            (!props.is_empty()).then_some((name.as_str(), props))
+        })
+        .collect()
+});
+
 /// Event-list props per pattern (pattern_type -> prop_name -> eventField). The
 /// inline phase walks the array and rewrites each item's eventField-named value.
 /// The default eventField is "event".

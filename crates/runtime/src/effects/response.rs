@@ -717,6 +717,8 @@ impl EventResponse {
     /// and address a `guardFailed` on that one outcome (§156: cascaded guard failures
     /// downstream of the seed are tolerated no-ops, exactly like the JS runtime's embed
     /// bubble; only the seed's own rejection is reported to the caller).
+    ///
+    /// Each trait's row is its `id` plus only the fields its steps wrote in this dispatch (EXEC-DIST-7).
     pub fn from_process_results(
         outcomes: &[(String, crate::process_result::ProcessEventResult)],
         seed_trait: &str,
@@ -726,6 +728,22 @@ impl EventResponse {
             outcomes.iter().map(|(t, r)| (t.as_str(), r)),
             seed_trait,
             event_name,
+            false,
+        )
+    }
+
+    /// [`from_process_results`](Self::from_process_results) for a `request.mount` dispatch: each row is the trait's whole
+    /// effective entity, which seeds the viewer's frame.
+    pub fn from_process_results_mount(
+        outcomes: &[(String, crate::process_result::ProcessEventResult)],
+        seed_trait: &str,
+        event_name: &str,
+    ) -> Self {
+        Self::fold_outcomes(
+            outcomes.iter().map(|(t, r)| (t.as_str(), r)),
+            seed_trait,
+            event_name,
+            true,
         )
     }
 
@@ -733,6 +751,7 @@ impl EventResponse {
         outcomes: impl Iterator<Item = (&'a str, &'a crate::process_result::ProcessEventResult)>,
         seed_trait: &str,
         event_name: &str,
+        whole_rows: bool,
     ) -> Self {
         let mut merged = EventResponse {
             success: true,
@@ -740,7 +759,7 @@ impl EventResponse {
         };
         let mut data: HashMap<String, Vec<Value>> = HashMap::new();
         let mut data_refs: HashMap<String, orbital_core_base::row_set::RowSetRef> = HashMap::new();
-        let mut entity_by_trait: orbital_core_base::collections::IndexMap<String, &crate::shared_entity::SharedEntity> = indexmap::IndexMap::default();
+        let mut entity_by_trait: orbital_core_base::collections::IndexMap<String, Value> = indexmap::IndexMap::default();
         let mut client_effects: Vec<ClientEffect> = Vec::new();
         let mut client_effects_by_trait: Vec<ClientEffectByTrait> = Vec::new();
         let mut effect_results: Vec<ServerEffectResult> = Vec::new();
@@ -779,9 +798,21 @@ impl EventResponse {
                     .get_or_insert_with(|| format!("{seed_trait}.{event_name}"));
             }
 
-            let is_empty_obj = result.entity_data.fields().is_some_and(|o| o.is_empty());
-            if !result.entity_data.is_null() && !is_empty_obj {
-                entity_by_trait.insert(trait_name.to_string(), &result.entity_data);
+            if whole_rows {
+                let is_empty_obj = result.entity_data.fields().is_some_and(|o| o.is_empty());
+                if !result.entity_data.is_null() && !is_empty_obj {
+                    entity_by_trait.insert(trait_name.to_string(), result.entity_data.to_value());
+                }
+            } else if result.executed {
+                let row = entity_by_trait
+                    .entry(trait_name.to_string())
+                    .or_insert_with(|| Value::Object(ValueMap::default()));
+                if let Value::Object(fields) = row {
+                    fields.extend(result.written.iter().map(|(k, v)| (k.clone(), v.clone())));
+                    if let Some(id) = result.entity_data.get("id").filter(|id| !id.is_null()) {
+                        fields.insert("id".to_string(), id.clone());
+                    }
+                }
             }
 
             for (index, er) in result.effect_results.iter().enumerate() {
@@ -861,7 +892,7 @@ impl EventResponse {
         } else {
             Some(data_refs)
         };
-        let entity_by_trait: ValueMap = entity_by_trait.into_iter().map(|(name, entity)| (name, entity.to_value())).collect();
+        let entity_by_trait: ValueMap = entity_by_trait.into_iter().collect();
         merged.entity_by_trait = if entity_by_trait.is_empty() {
             None
         } else {
@@ -911,7 +942,7 @@ impl EventResponse {
     ) -> Self {
         // No seed/event context on the single-result path — pass a seed that can never
         // match so `guard_failed` stays unset (ticks don't dispatch a named event).
-        Self::fold_outcomes(std::iter::once((trait_name, result)), "", "")
+        Self::fold_outcomes(std::iter::once((trait_name, result)), "", "", false)
     }
 }
 
@@ -1230,6 +1261,7 @@ mod tests {
             consumed_emits: Vec::new(),
             failure: None,
             callsite_payload: None,
+            written: ValueMap::default(),
         }
     }
 

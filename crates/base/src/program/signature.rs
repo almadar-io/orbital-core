@@ -32,7 +32,7 @@ pub fn absent_slot() -> OirType {
     }
 }
 
-fn is_absent_slot(ty: &OirType) -> bool {
+pub fn is_absent_slot(ty: &OirType) -> bool {
     matches!(ty, OirType::Optional { inner } if matches!(**inner, OirType::Json))
 }
 

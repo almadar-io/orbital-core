@@ -182,7 +182,7 @@ impl RuntimeKernel {
                     .read()
                     .get_instances_for_trait(trait_name)
                     .into_iter()
-                    .map(|s| (s.entity_id.clone(), s.current_state.clone()))
+                    .filter_map(|s| Some((self.session_instance_id(s.entity_id.as_deref())?, s.current_state.clone())))
                     .collect();
                 for (entity_id, state) in instances {
                     let snapshot = self.snapshot_trait(trait_name, entity_id.as_deref());

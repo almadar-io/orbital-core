@@ -95,6 +95,10 @@ fn store_program_seeded(bound: bool, seeded: bool) -> OrbitalSchema {
 
 /// `query`: the driver's declared `queryCapabilities` and whether it answers ROWS_QUERY (`true`) or declines it.
 fn store_program_querying(bound: bool, seeded: bool, query: Option<bool>) -> OrbitalSchema {
+    serde_json::from_value(store_program_json(bound, seeded, query)).unwrap()
+}
+
+fn store_program_json(bound: bool, seeded: bool, query: Option<bool>) -> serde_json::Value {
     let mut ticket = serde_json::json!({ "name": "Ticket", "persistence": "persistent",
         "fields": [{ "name": "id", "type": "string" }, { "name": "used", "type": "boolean" }] });
     if bound {
@@ -145,7 +149,7 @@ fn store_program_querying(bound: bool, seeded: bool, query: Option<bool>) -> Orb
         let full = serde_json::to_value(orbital_core_runtime::row_query::QueryCapabilities::full()).unwrap();
         program["orbitals"][1]["config"] = serde_json::json!({ "queryCapabilities": { "type": "QueryCapabilities", "default": full } });
     }
-    serde_json::from_value(program).unwrap()
+    program
 }
 
 fn store_run(bound: bool, event: &str, id: &str) -> Vec<serde_json::Value> {
@@ -388,4 +392,137 @@ fn a_bound_entitys_guarded_take_sends_the_compiled_guard_to_its_driver() {
     let (_, unguarded) = store_run_program(store_program(true), true, "TAKE", "t1");
     let plain: Vec<serde_json::Value> = mirrored_batches(&unguarded);
     assert!(plain.iter().flat_map(|b| b["ops"].as_array().unwrap().clone()).all(|op| op.get("guard").is_none()), "{plain:?}");
+}
+
+// EXEC-STORE-6: an entity that declares `@index` paths bound to a driver whose `queryCapabilities.indexes` is
+// `runtime` or `deploy` has them sent to the driver once, as one ROWS_ENSURE_INDEXES, before its first row ask.
+fn indexed_store_program(realization: Option<&str>, ensure_fails: bool) -> OrbitalSchema {
+    let mut program = store_program_json(true, false, Some(true));
+    program["orbitals"][0]["entity"]["fields"]
+        .as_array_mut()
+        .unwrap()
+        .extend([serde_json::json!({ "name": "status", "type": "string" }), serde_json::json!({ "name": "owner", "type": "string" })]);
+    program["orbitals"][0]["entity"]["indexes"] =
+        serde_json::json!([{ "fields": ["status"] }, { "fields": ["owner", "status"], "orderBy": "id:desc" }]);
+    let mut capabilities = serde_json::to_value(orbital_core_runtime::row_query::QueryCapabilities::full()).unwrap();
+    if let Some(realization) = realization {
+        capabilities["indexes"] = serde_json::json!(realization);
+    }
+    program["orbitals"][1]["config"] = serde_json::json!({ "queryCapabilities": { "type": "QueryCapabilities", "default": capabilities } });
+    let driver = &mut program["orbitals"][1]["traits"][0]["stateMachine"];
+    driver["events"].as_array_mut().unwrap().push(serde_json::json!({ "key": "ROWS_ENSURE_INDEXES", "name": "ROWS_ENSURE_INDEXES" }));
+    let effects = if ensure_fails {
+        serde_json::json!([["emit", "STORE_FAILED", { "key": "@payload.key", "message": "cannot create index" }]])
+    } else {
+        serde_json::json!([
+            ["persist", "create", "Mirror", { "id": "@payload.key", "batch": { "entityType": "@payload.entityType", "indexes": "@payload.indexes" } }],
+            ["emit", "ROWS_INDEXES_ENSURED", { "key": "@payload.key" }]
+        ])
+    };
+    driver["transitions"].as_array_mut().unwrap().push(
+        serde_json::json!({ "from": "ready", "to": "ready", "event": "ROWS_ENSURE_INDEXES", "effects": effects }),
+    );
+    serde_json::from_value(program).unwrap()
+}
+
+/// The effect results of each event, in order, and every request the host was asked, over one kernel.
+fn run_events(program: OrbitalSchema, events: &[&str]) -> (Vec<Vec<serde_json::Value>>, Vec<IoRequest>) {
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    kernel.register_schema(program).unwrap();
+    let host_rows = InMemoryEntityCache::new();
+    let asked = std::sync::Mutex::new(Vec::new());
+    let mut results = Vec::new();
+    for event in events {
+        let payload: Value = serde_json::from_value(serde_json::json!({ "id": "t1" })).unwrap();
+        let progress = kernel.start_dispatch("Desk", None, event, payload, None, None).unwrap();
+        let outcomes = orbital_core_runtime::resumable::drive_blocking(&kernel, progress, &|request| {
+            asked.lock().unwrap().push(request.clone());
+            BlockingHost { source: &host_rows, service: None, substrate: None }.answer(request)
+        })
+        .unwrap_or_else(|e| panic!("{event}: {e:?}"));
+        results.push(
+            EventResponse::from_process_results(&outcomes, "Desk", event)
+                .effect_results
+                .iter()
+                .flatten()
+                .map(|r| serde_json::to_value(r).unwrap())
+                .collect(),
+        );
+    }
+    (results, asked.into_inner().unwrap())
+}
+
+fn ensured(asked: &[IoRequest]) -> Vec<serde_json::Value> {
+    mirrored_batches(asked).into_iter().filter(|b| b.get("indexes").is_some()).collect()
+}
+
+fn declared_paths() -> serde_json::Value {
+    serde_json::json!([{ "fields": ["status"] }, { "fields": ["owner", "status"], "orderBy": "id:desc" }])
+}
+
+fn saw(results: &[serde_json::Value], target: &str) -> bool {
+    results.iter().any(|r| r["target"] == target)
+}
+
+#[test]
+fn a_runtime_driver_is_sent_the_declared_paths_once_before_the_first_row_ask() {
+    let (results, asked) = run_events(indexed_store_program(Some("runtime"), false), &["LOOK"]);
+    let sent = ensured(&asked);
+    assert_eq!(sent.len(), 1, "{asked:?}");
+    assert_eq!((sent[0]["entityType"].as_str(), &sent[0]["indexes"]), (Some("Ticket"), &declared_paths()));
+    assert!(saw(&results[0], "SEEN"), "{results:?}");
+}
+
+#[test]
+fn a_deploy_driver_is_sent_the_declared_paths_too() {
+    let (_, asked) = run_events(indexed_store_program(Some("deploy"), false), &["LOOK"]);
+    assert_eq!(ensured(&asked).len(), 1, "{asked:?}");
+}
+
+#[test]
+fn a_replayed_step_and_later_dispatches_do_not_resend_the_ensure() {
+    let (results, asked) = run_events(indexed_store_program(Some("runtime"), false), &["LOOK", "LOOK", "TAKE"]);
+    assert_eq!(ensured(&asked).len(), 1, "{asked:?}");
+    assert!(results.iter().all(|r| !r.is_empty()), "{results:?}");
+}
+
+#[test]
+fn control_a_driver_declaring_none_is_sent_no_ensure() {
+    let (results, asked) = run_events(indexed_store_program(Some("none"), false), &["LOOK"]);
+    assert!(ensured(&asked).is_empty(), "{asked:?}");
+    assert!(saw(&results[0], "SEEN"), "{results:?}");
+}
+
+#[test]
+fn control_a_driver_declaring_nothing_is_sent_no_ensure() {
+    let (_, asked) = run_events(indexed_store_program(None, false), &["LOOK"]);
+    assert!(ensured(&asked).is_empty(), "{asked:?}");
+}
+
+#[test]
+fn control_an_entity_declaring_no_paths_is_sent_no_ensure() {
+    let (_, asked) = run_events(
+        serde_json::from_value({
+            let mut p = store_program_json(true, false, Some(true));
+            let mut c = serde_json::to_value(orbital_core_runtime::row_query::QueryCapabilities::full()).unwrap();
+            c["indexes"] = serde_json::json!("runtime");
+            p["orbitals"][1]["config"] = serde_json::json!({ "queryCapabilities": { "type": "QueryCapabilities", "default": c } });
+            p
+        })
+        .unwrap(),
+        &["LOOK"],
+    );
+    assert!(ensured(&asked).is_empty(), "{asked:?}");
+}
+
+#[test]
+fn a_failed_ensure_fails_the_first_row_ask_with_the_named_error_and_scans_nothing() {
+    let (results, _) = run_events(indexed_store_program(Some("runtime"), true), &["LOOK"]);
+    assert!(saw(&results[0], "UNSEEN") && !saw(&results[0], "SEEN"), "{results:?}");
+    let text = serde_json::to_string(&results[0]).unwrap();
+    assert!(text.contains("could not ensure the indexes of Ticket: cannot create index"), "{text}");
 }

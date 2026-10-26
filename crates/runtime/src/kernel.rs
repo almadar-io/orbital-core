@@ -12,7 +12,7 @@ use super::http_request;
 use super::listener::{ListenerManager, TriggerCallback};
 use super::process_result::{
     DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo,
-    ProcessEventResult, RuntimeStats,
+    written_fields, ProcessEventResult, RuntimeStats,
 };
 use super::render_store::RenderStore;
 use super::resumable::{CallRoutes, CallSite, CallVerdict, IoPort, AWAITING_HOST};
@@ -264,6 +264,10 @@ pub struct RuntimeKernel {
     /// The viewer a request's thread dispatches as (set by [`ViewerGuard`]); a dispatch captures it when it starts, so
     /// requests served at the same time keep their own `@user`.
     viewer_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<Value>>>>,
+    /// The session a request's thread dispatches in (set by [`SessionGuard`]): a frame belongs to the session whose
+    /// dispatch made it (EXEC-DIST-9). A thread with none is in the program session.
+    session_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
+    scratch_sessions: std::sync::atomic::AtomicU64,
     /// The host runs an emit's listeners whenever it marks the emit `dispatched`, so a fold runs only the client-only ones.
     host_fans_out: std::sync::atomic::AtomicBool,
     /// Record each step's `@entity` after its effects ([`DeliveryEntry::entity_after`]); off unless a verifier asks.
@@ -1052,6 +1056,45 @@ impl Drop for ViewerGuard {
     }
 }
 
+/// Holds a request thread's session; dropping it restores the outer one, and a scratch session's frames go with it.
+pub struct SessionGuard {
+    slot: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
+    thread: orbital_core_base::sync::ThreadKey,
+    outer: Option<Arc<str>>,
+    scratch: Option<(
+        Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
+        Arc<RwLock<HashMap<(String, String), String>>>,
+        Arc<RwLock<StateMachineManager>>,
+        String,
+    )>,
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        {
+            let mut slot = self.slot.write();
+            match self.outer.take() {
+                Some(outer) => slot.insert(self.thread, outer),
+                None => slot.remove(&self.thread),
+            };
+        }
+        if let Some((frames, carried, states, session)) = self.scratch.take() {
+            let suffix = session_suffix(&session);
+            frames.write().retain(|(_, eid), _| !eid.ends_with(&suffix));
+            carried.write().retain(|(_, eid), _| !eid.ends_with(&suffix));
+            states
+                .write()
+                .retain_instances(|state| !state.entity_id.as_deref().is_some_and(|eid| eid.ends_with(&suffix)));
+        }
+    }
+}
+
+const SESSION_SEPARATOR: char = '\u{1f}';
+
+fn session_suffix(session: &str) -> String {
+    format!("{SESSION_SEPARATOR}{session}")
+}
+
 /// Puts a run's viewer in the kernel's `@user` slot for one unit and restores the previous one.
 struct UserHold {
     slot: Arc<RwLock<Value>>,
@@ -1168,6 +1211,8 @@ impl RuntimeKernel {
             prob_entropy,
             current_user: Arc::new(RwLock::new(current_user)),
             viewer_by_thread: Arc::default(),
+            session_by_thread: Arc::default(),
+            scratch_sessions: std::sync::atomic::AtomicU64::new(0),
             lane: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
             record_entity_after: std::sync::atomic::AtomicBool::new(false),
@@ -1573,6 +1618,9 @@ impl RuntimeKernel {
                     if let Some(collection) = &def.collection {
                         self.entity_source.bind_collection(&def.name, collection);
                     }
+                    if let Some(indexes) = def.indexes.as_deref().filter(|i| !i.is_empty()) {
+                        self.entity_source.declare_indexes(&def.name, indexes);
+                    }
                     if def.persistence == Some(Persistence::Runtime) {
                         self.io.claim_runtime(&def.name);
                     }
@@ -1580,6 +1628,16 @@ impl RuntimeKernel {
                         if let Some(driver) = def.store.as_ref().or(schema.store.as_ref()) {
                             self.io.bind_store(&def.name, driver);
                             self.declare_store_capabilities(schema, &def.name, driver);
+                            let wants = self
+                                .io
+                                .query_capabilities_of(&def.name)
+                                .and_then(|c| c.indexes)
+                                .is_some_and(|realization| realization.wants_paths());
+                            if let Some(indexes) = def.indexes.as_deref().filter(|i| wants && !i.is_empty()) {
+                                if let Some(ensure) = self.io.store_ensure(&def.name, indexes.to_vec()) {
+                                    self.store_seeds.lock().push_back(ensure);
+                                }
+                            }
                         }
                     }
                 }
@@ -1836,8 +1894,9 @@ impl RuntimeKernel {
 
         let mut state_manager = self.state_manager.write();
 
+        let state_key = self.state_key(Some(entity_id));
         let current_state = state_manager
-            .get_or_create_state(trait_name, Some(entity_id))
+            .get_or_create_state(trait_name, state_key.as_deref())
             .map_err(|e| KernelError::Internal(e.to_string()))?
             .clone();
 
@@ -1904,7 +1963,7 @@ impl RuntimeKernel {
         // `(when ["=", "@user.role", ...])` / `@config.*` guards see real values
         // on the Rust path).
         let result = state_manager
-            .process_event_with_ctx(trait_name, Some(entity_id), &event_payload, &ctx)
+            .process_event_with_ctx(trait_name, state_key.as_deref(), &event_payload, &ctx)
             .map_err(|e| KernelError::Internal(e.to_string()))?;
         // The transition is committed; its effects run without the state lock, so one that reads states (or
         // dispatches in place) does not wait on its own dispatch (EXEC-QUEUE-11). The lane keeps other dispatches out.
@@ -1937,6 +1996,7 @@ impl RuntimeKernel {
             // `@entity.<untouched-field>` (tabs `activeTab: @entity.filterKind`, board
             // `current*` card fields, …) reverts to a literal token. The merged value is
             // also what render-ui resolves against below and what the client receives.
+            let written = written_fields(&captured_entity_data);
             let captured_entity_data = SharedEntity::from_value(captured_entity_data);
             let effective_entity = entity_data.merged(&captured_entity_data);
 
@@ -2029,6 +2089,7 @@ impl RuntimeKernel {
                 cascade_cut: None,
                 consumed_emits: Vec::new(),
                 failure,
+                written,
                 callsite_payload: capture,
             })
         } else {
@@ -2106,6 +2167,7 @@ impl RuntimeKernel {
                 cascade_cut: None,
                 consumed_emits: Vec::new(),
                 failure: None,
+                written: ValueMap::default(),
                 callsite_payload: None,
             })
         }
@@ -2300,8 +2362,9 @@ impl RuntimeKernel {
 
         let current_state = {
             let mut state_manager = self.state_manager.write();
+            let state_key = self.state_key(Some(state_entity));
             state_manager
-                .get_or_create_state(trait_name, Some(state_entity))
+                .get_or_create_state(trait_name, state_key.as_deref())
                 .map_err(|e| KernelError::Internal(e.to_string()))?
                 .current_state
                 .clone()
@@ -2337,6 +2400,7 @@ impl RuntimeKernel {
                 cascade_cut: None,
                 consumed_emits: Vec::new(),
                 failure: None,
+                written: ValueMap::default(),
                 callsite_payload: None,
             });
         }
@@ -2395,6 +2459,7 @@ impl RuntimeKernel {
                     cascade_cut: None,
                     consumed_emits: Vec::new(),
                     failure: None,
+                    written: ValueMap::default(),
                     callsite_payload: None,
                 });
             }
@@ -2409,6 +2474,7 @@ impl RuntimeKernel {
         // Persist the MERGED entity (read-modify-write), not the partial — same
         // reasoning as process_event: a replace-write of only the tick's Set fields
         // would drop every untouched field on the next render.
+        let written = written_fields(&captured_entity_data);
         let captured_entity_data = SharedEntity::from_value(captured_entity_data);
         let effective_entity = entity_data.merged(&captured_entity_data);
 
@@ -2451,6 +2517,7 @@ impl RuntimeKernel {
             cascade_cut: None,
             consumed_emits: Vec::new(),
             failure,
+            written,
             callsite_payload: None,
         })
     }
@@ -3112,7 +3179,35 @@ impl RuntimeKernel {
         } else {
             trait_name.to_string()
         };
-        (key, entity_id.to_string())
+        (key, self.session_eid(entity_id))
+    }
+
+    /// The key a trait instance's state is held under: its frame's session-folded entity id (the one fold, so state and
+    /// frames cannot drift apart). `None` stays `None` in the program session.
+    fn state_key(&self, entity_id: Option<&str>) -> Option<String> {
+        match self.thread_session() {
+            None => entity_id.map(str::to_string),
+            Some(_) => Some(self.session_eid(entity_id.unwrap_or("singleton"))),
+        }
+    }
+
+    /// The instance's own entity id when it belongs to the current session, else `None`.
+    pub(crate) fn session_instance_id(&self, held_key: Option<&str>) -> Option<Option<String>> {
+        let suffix = self.thread_session().map(|s| session_suffix(&s));
+        match (held_key, suffix) {
+            (Some(key), Some(suffix)) => key.strip_suffix(suffix.as_str()).map(|id| Some(id.to_string())),
+            (Some(key), None) if key.contains(SESSION_SEPARATOR) => None,
+            (key, None) => Some(key.map(str::to_string)),
+            (None, Some(_)) => None,
+        }
+    }
+
+    /// `entity_id` as the current session's frames key it: unchanged in the program session.
+    fn session_eid(&self, entity_id: &str) -> String {
+        match self.thread_session() {
+            Some(session) => format!("{entity_id}{}", session_suffix(&session)),
+            None => entity_id.to_string(),
+        }
     }
 
     /// A trait's `@entity`: declared field defaults, then its row, then its frame.
@@ -3190,10 +3285,11 @@ impl RuntimeKernel {
     /// and can never deadlock against a concurrent `dispatch`/`process_event`.
     pub fn snapshot_trait(&self, trait_name: &str, entity_id: Option<&str>) -> TraitSnapshot {
         let eid = entity_id.unwrap_or("singleton");
+        let state_key = self.state_key(Some(eid));
         let state = self
             .state_manager
             .read()
-            .get_state(trait_name, Some(eid))
+            .get_state(trait_name, state_key.as_deref())
             .map(|s| s.current_state.clone())
             .unwrap_or_default();
         let entity_type = self
@@ -3232,11 +3328,12 @@ impl RuntimeKernel {
         let eid = entity_id.unwrap_or("singleton");
         if !snapshot.state.is_empty() {
             let mut state_manager = self.state_manager.write();
+            let state_key = self.state_key(Some(eid));
             if state_manager
-                .get_or_create_state(trait_name, Some(eid))
+                .get_or_create_state(trait_name, state_key.as_deref())
                 .is_ok()
             {
-                if let Some(state) = state_manager.get_state_mut(trait_name, Some(eid)) {
+                if let Some(state) = state_manager.get_state_mut(trait_name, state_key.as_deref()) {
                     state.transition_to(&snapshot.state);
                 }
             }
@@ -3379,16 +3476,16 @@ impl RuntimeKernel {
                 if client_only.contains(trait_name) && !host_ran.contains(trait_name.as_str()) {
                     continue;
                 }
-                let entity_id = Some(
+                let entity_id = self.state_key(Some(
                     trait_entity_ids
                         .get(trait_name)
                         .map_or("singleton", String::as_str),
-                );
+                ));
                 if state_manager
-                    .get_or_create_state(trait_name, entity_id)
+                    .get_or_create_state(trait_name, entity_id.as_deref())
                     .is_ok()
                 {
-                    if let Some(state) = state_manager.get_state_mut(trait_name, entity_id) {
+                    if let Some(state) = state_manager.get_state_mut(trait_name, entity_id.as_deref()) {
                         state.transition_to(state_name);
                     }
                 }
@@ -3697,44 +3794,200 @@ impl RuntimeKernel {
         }
     }
 
-    /// Bring the response's rows to the frames as they stand when the dispatch ends: a trait's row is its
-    /// FINAL row (a sibling sharing its frame may have written after it stepped), and every non-empty frame
-    /// is echoed to every trait bound to it, so a bound trait that never ran still converges its row.
-    /// JS twin: the final-row and frame-echo passes at the end of `evaluateOrbitalEvent`.
-    pub fn echo_frames(&self, response: &mut EventResponse, entity_id: Option<&str>) {
-        let eid = entity_id.unwrap_or("singleton");
+    /// Bring the response's rows to the frames the dispatch wrote: every field a step's `set`s wrote lands in
+    /// every trait bound to that frame, so a sibling sharing it (stepped or not) converges on the same values
+    /// (EXEC-DIST-7). With `whole_frames` (a `request.mount`) every non-empty frame is echoed whole instead,
+    /// seeding the viewer. JS twin: the final-row and frame-echo passes at the end of `evaluateOrbitalEvent`.
+    pub fn echo_frames(
+        &self,
+        response: &mut EventResponse,
+        outcomes: &[(String, ProcessEventResult)],
+        entity_id: Option<&str>,
+        whole_frames: bool,
+    ) {
         let defs = self.trait_definitions.read();
-        let frames = self.frames.read();
         let mut rows = response.entity_by_trait.take().unwrap_or_default();
-        for ((key, frame_eid), frame) in frames.iter() {
-            let Some(frame_fields) = frame.fields().filter(|f| !f.is_empty()) else {
-                continue;
-            };
-            if frame_eid != eid {
-                continue;
-            }
-            let bound: Vec<&str> = match key.strip_prefix("$shared::") {
+        let bound_to = |key: &str| -> Vec<String> {
+            match key.strip_prefix("$shared::") {
                 Some(entity) => defs
                     .values()
                     .filter(|def| def.linked_entity.as_deref() == Some(entity))
-                    .map(|def| def.name.as_str())
+                    .map(|def| def.name.clone())
                     .collect(),
-                None => defs
-                    .get(key)
-                    .map(|def| def.name.as_str())
-                    .into_iter()
-                    .collect(),
-            };
-            for trait_name in bound {
-                let row = rows
-                    .entry(trait_name.to_string())
-                    .or_insert_with(|| Value::Object(ValueMap::default()));
-                if let Value::Object(fields) = row {
-                    fields.extend(frame_fields.iter().map(|(k, v)| (k.clone(), (**v).clone())));
+                None => defs.get(key).map(|def| def.name.clone()).into_iter().collect(),
+            }
+        };
+        if whole_frames {
+            let eid = self.session_eid(entity_id.unwrap_or("singleton"));
+            let frames = self.frames.read();
+            for ((key, frame_eid), frame) in frames.iter() {
+                let Some(frame_fields) = frame.fields().filter(|f| !f.is_empty()) else {
+                    continue;
+                };
+                if *frame_eid != eid {
+                    continue;
+                }
+                for trait_name in bound_to(key) {
+                    let row = rows
+                        .entry(trait_name)
+                        .or_insert_with(|| Value::Object(ValueMap::default()));
+                    if let Value::Object(fields) = row {
+                        fields.extend(frame_fields.iter().map(|(k, v)| (k.clone(), (**v).clone())));
+                    }
+                }
+            }
+        } else {
+            let mut written: orbital_core_base::collections::IndexMap<String, (ValueMap, Option<Value>)> =
+                Default::default();
+            for (trait_name, outcome) in outcomes {
+                if !outcome.executed || outcome.written.is_empty() {
+                    continue;
+                }
+                let (fields, id) = written
+                    .entry(self.trait_frame_key(trait_name))
+                    .or_default();
+                fields.extend(outcome.written.iter().map(|(k, v)| (k.clone(), v.clone())));
+                if id.is_none() {
+                    *id = outcome.entity_data.get("id").filter(|id| !id.is_null()).cloned();
+                }
+            }
+            for (key, (fields, id)) in written {
+                for trait_name in bound_to(&key) {
+                    let row = rows
+                        .entry(trait_name)
+                        .or_insert_with(|| Value::Object(ValueMap::default()));
+                    if let Value::Object(row_fields) = row {
+                        row_fields.extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+                        if let Some(id) = &id {
+                            row_fields.entry("id".to_string()).or_insert_with(|| id.clone());
+                        }
+                    }
                 }
             }
         }
         response.entity_by_trait = (!rows.is_empty()).then_some(rows);
+    }
+
+    /// The browser's view of `response` (EXEC-DIST-8): the one projection a response takes on its way to a browser. An
+    /// emit stays when the browser can use it: a client-run trait (client or optimistic) listens to it, its emitter is
+    /// client-run, its contract is `external`, it carries a persist success, or a pattern prop of some `render-ui`
+    /// names it. An emit only server traits hear is dropped. In-process consumers keep the full response; call this after
+    /// [`stamp_emitted_sources`](Self::stamp_emitted_sources).
+    pub fn client_view(&self, mut response: EventResponse) -> EventResponse {
+        if response.emitted_events.is_empty() {
+            return response;
+        }
+        let mut named: Option<HashSet<String>> = None;
+        let emitted = std::mem::take(&mut response.emitted_events);
+        response.emitted_events = emitted
+            .into_iter()
+            .filter(|e| match self.browser_hears(e) {
+                Some(heard) => heard,
+                None => named
+                    .get_or_insert_with(|| self.pattern_event_names())
+                    .contains(&e.event),
+            })
+            .collect();
+        response
+    }
+
+    /// `Some(true)` when the browser hears `emitted` by a rule that needs no program scan, `None` when only a pattern
+    /// prop could name it.
+    fn browser_hears(&self, emitted: &orbital_core_base::bus_event::EmittedEvent) -> Option<bool> {
+        let Some(source) = emitted.source.as_ref() else {
+            return Some(true);
+        };
+        if source.persist_success == Some(true) {
+            return Some(true);
+        }
+        let Some(emitter) = source.r#trait.as_deref() else {
+            return Some(true);
+        };
+        let defs = self.trait_definitions.read();
+        let client_run = |name: &str| {
+            defs.get(name)
+                .is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited)
+        };
+        let external = defs
+            .get(emitter)
+            .and_then(|d| d.emits.as_ref())
+            .is_some_and(|contracts| {
+                contracts.iter().any(|c| {
+                    c.event == emitted.event
+                        && matches!(c.scope, Some(orbital_core_base::schema::types::EventScope::External))
+                })
+            });
+        let heard = client_run(emitter)
+            || external
+            || self
+                .listener_manager
+                .matching(&emitted.event, source)
+                .iter()
+                .any(|l| client_run(&l.trait_name));
+        heard.then_some(true)
+    }
+
+    /// Every event name a pattern prop of the program's effects names: the props whose registry kind is an event
+    /// (`event`, `event-ref`, `event-listen`, `event-list`, `event-map`).
+    fn pattern_event_names(&self) -> HashSet<String> {
+        use orbital_core_base::language::pattern_props::PATTERN_EVENT_NAME_PROPS;
+        fn walk(value: &serde_json::Value, out: &mut HashSet<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    let props = map
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|pattern| PATTERN_EVENT_NAME_PROPS.get(pattern));
+                    for (prop, (kind, field)) in props.into_iter().flatten() {
+                        let Some(named) = map.get(*prop) else { continue };
+                        match (*kind, named) {
+                            ("event" | "event-ref" | "event-listen", serde_json::Value::String(name)) => {
+                                out.insert(name.clone());
+                            }
+                            ("event-list", serde_json::Value::Array(items)) => out.extend(
+                                items
+                                    .iter()
+                                    .filter_map(|item| item.get(*field).and_then(serde_json::Value::as_str))
+                                    .map(str::to_string),
+                            ),
+                            ("event-map", serde_json::Value::Object(entries)) => out.extend(
+                                entries.values().filter_map(serde_json::Value::as_str).map(str::to_string),
+                            ),
+                            _ => {}
+                        }
+                    }
+                    map.values().for_each(|v| walk(v, out));
+                }
+                serde_json::Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
+                _ => {}
+            }
+        }
+        let mut out = HashSet::new();
+        for def in self.trait_definitions.read().values() {
+            let transitions = def.state_machine.transitions.iter().flat_map(|t| t.effects.iter().flatten());
+            let ticks = def.ticks.iter().flatten().flat_map(|t| t.effects.iter());
+            for effect in transitions.chain(ticks) {
+                if let Ok(json) = serde_json::to_value(effect) {
+                    walk(&json, &mut out);
+                }
+            }
+        }
+        out
+    }
+
+    /// The payload a deferred completion's push carries to the browser (EXEC-QUEUE-10): the payload when the completing
+    /// trait runs on the client, `Null` (no payload) when it runs on the server.
+    pub fn browser_completion_payload(&self, trait_name: &str, payload: &Value) -> Value {
+        let server_run = self
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .is_some_and(|d| self.dispatch_mode_of(d) == DispatchMode::PersistedAwaited);
+        if server_run {
+            Value::Null
+        } else {
+            payload.clone()
+        }
     }
 
     /// The orbital that declares `trait_name`.
@@ -5689,7 +5942,8 @@ impl RuntimeKernel {
 
     /// The state a trait instance is in now, or the one it will be created in; empty for an unknown trait.
     fn current_state_name(&self, trait_name: &str, entity_id: Option<&str>) -> String {
-        if let Some(state) = self.state_manager.read().get_state(trait_name, entity_id) {
+        let state_key = self.state_key(entity_id);
+        if let Some(state) = self.state_manager.read().get_state(trait_name, state_key.as_deref()) {
             return state.current_state.clone();
         }
         self.trait_definitions
@@ -5744,7 +5998,8 @@ impl RuntimeKernel {
     /// meanwhile (`None` when it still holds the state the step entered).
     pub(crate) fn rewind_provisional(&self, commit: &ProvisionalCommit) -> Option<TraitState> {
         let mut state_manager = self.state_manager.write();
-        let held = state_manager.get_state_mut(&commit.trait_name, Some(&commit.entity_id))?;
+        let state_key = self.state_key(Some(&commit.entity_id));
+        let held = state_manager.get_state_mut(&commit.trait_name, state_key.as_deref())?;
         let moved = (held.current_state != commit.to).then(|| held.clone());
         *held = commit.from.clone();
         moved
@@ -5753,20 +6008,22 @@ impl RuntimeKernel {
     /// Hold `state` as `trait_name`'s state under `entity_id`.
     pub(crate) fn set_held_state(&self, trait_name: &str, entity_id: &str, state: TraitState) {
         let mut state_manager = self.state_manager.write();
+        let state_key = self.state_key(Some(entity_id));
         if state_manager
-            .get_or_create_state(trait_name, Some(entity_id))
+            .get_or_create_state(trait_name, state_key.as_deref())
             .is_ok()
         {
-            if let Some(held) = state_manager.get_state_mut(trait_name, Some(entity_id)) {
+            if let Some(held) = state_manager.get_state_mut(trait_name, state_key.as_deref()) {
                 *held = state;
             }
         }
     }
 
     pub fn get_state(&self, trait_name: &str, entity_id: Option<&str>) -> Option<TraitState> {
+        let state_key = self.state_key(Some(entity_id.unwrap_or("singleton")));
         self.state_manager
             .read()
-            .get_state(trait_name, Some(entity_id.unwrap_or("singleton")))
+            .get_state(trait_name, state_key.as_deref())
             .cloned()
     }
 
@@ -5785,11 +6042,12 @@ impl RuntimeKernel {
                 continue;
             }
             let mut state_manager = self.state_manager.write();
+            let state_key = self.state_key(Some(eid));
             if state_manager
-                .get_or_create_state(&carried.r#trait, Some(eid))
+                .get_or_create_state(&carried.r#trait, state_key.as_deref())
                 .is_ok()
             {
-                if let Some(state) = state_manager.get_state_mut(&carried.r#trait, Some(eid)) {
+                if let Some(state) = state_manager.get_state_mut(&carried.r#trait, state_key.as_deref()) {
                     state.transition_to(&carried.from);
                 }
             }
@@ -5836,10 +6094,11 @@ impl RuntimeKernel {
 
     /// Reset a trait instance to its initial state.
     pub fn reset_state(&self, trait_name: &str, entity_id: Option<&str>) {
+        let state_key = self.state_key(Some(entity_id.unwrap_or("singleton")));
         let _ = self
             .state_manager
             .write()
-            .reset_trait(trait_name, entity_id);
+            .reset_trait(trait_name, state_key.as_deref());
     }
 
     /// Set the current user.
@@ -5879,6 +6138,46 @@ impl RuntimeKernel {
             thread,
             outer,
         }
+    }
+
+    /// Dispatch in `session` from this thread until the guard drops (EXEC-DIST-9): the frames this thread's dispatches
+    /// read and write are that session's.
+    pub fn enter_session(&self, session: &str) -> SessionGuard {
+        let thread = orbital_core_base::sync::current_thread();
+        let outer = self.session_by_thread.write().insert(thread, Arc::from(session));
+        SessionGuard { slot: Arc::clone(&self.session_by_thread), thread, outer, scratch: None }
+    }
+
+    /// A session of its own for one request that names no client: its frames are dropped when the guard drops.
+    pub fn enter_scratch_session(&self) -> SessionGuard {
+        let id = format!(
+            "scratch-{}",
+            self.scratch_sessions.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let mut guard = self.enter_session(&id);
+        guard.scratch = Some((Arc::clone(&self.frames), Arc::clone(&self.carried_rows), Arc::clone(&self.state_manager), id));
+        guard
+    }
+
+    /// The session this thread entered; `None` is the program session (ticks, boot, hooks, in-program asks).
+    pub fn thread_session(&self) -> Option<Arc<str>> {
+        self.session_by_thread
+            .read()
+            .get(&orbital_core_base::sync::current_thread())
+            .cloned()
+    }
+
+    /// The sessions that hold a frame now, the program session excluded.
+    pub fn frame_sessions(&self) -> Vec<String> {
+        let mut sessions: Vec<String> = self
+            .frames
+            .read()
+            .keys()
+            .filter_map(|(_, eid)| eid.split_once(SESSION_SEPARATOR).map(|(_, s)| s.to_string()))
+            .collect();
+        sessions.sort();
+        sessions.dedup();
+        sessions
     }
 
     /// The viewer this thread entered, for a dispatch that starts now; a host that answers a call later, on another
@@ -9056,6 +9355,7 @@ mod client_dispatch_tests {
             cascade_cut: None,
             consumed_emits: Vec::new(),
             failure: None,
+            written: ValueMap::default(),
             callsite_payload: None,
         };
         result.previous_state = "idle".to_string();

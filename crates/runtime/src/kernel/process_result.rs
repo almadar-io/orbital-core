@@ -5,7 +5,7 @@ use std::prelude::v1::*;
 use super::dispatch_memory::DispatchView;
 use super::shared_entity::SharedEntity;
 use orbital_core_base::effect_types::{Effect, EffectResult};
-use orbital_core_base::value::Value;
+use orbital_core_base::value::{Value, ValueMap};
 use orbital_core_base::schema::types::{FieldDefinition, PageRef};
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_eval::state_machine::types::ArmGuard;
@@ -75,6 +75,18 @@ pub struct ProcessEventResult {
 
     /// The payload this trait's `@callsitePayload` read during the step (its composer's), when it has one.
     pub callsite_payload: Option<Value>,
+
+    /// The fields this step's `set` effects wrote, in write order, last write wins; empty for a step that did not run
+    /// or wrote nothing. A dispatch response row is these plus the `id` (EXEC-DIST-7).
+    pub written: ValueMap,
+}
+
+/// The fields a step's captured `set`s name; empty for anything that is not an object.
+pub fn written_fields(captured: &Value) -> ValueMap {
+    match captured {
+        Value::Object(fields) => fields.clone(),
+        _ => ValueMap::default(),
+    }
 }
 
 impl ProcessEventResult {

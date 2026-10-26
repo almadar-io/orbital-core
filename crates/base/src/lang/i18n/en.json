@@ -138,7 +138,8 @@
     "roles": "roles",
     "invariant": "invariant",
     "holds": "holds",
-    "ensures": "ensures"
+    "ensures": "ensures",
+    "index": "index"
   },
   "sigils": {
     "entity": "entity",
@@ -264,6 +265,8 @@
     "ensures": "ensures",
     "holds": "holds",
     "invariants": "invariants",
+    "indexes": "indexes",
+    "orderBy": "orderBy",
     "alias": "alias",
     "animations": "animations",
     "appliesTo": "appliesTo",

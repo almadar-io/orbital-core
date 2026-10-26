@@ -27,7 +27,7 @@ use orbital_core_base::ir::types::{DeclaredShape, OirType};
 use orbital_core_base::language::registry::{OperatorTypeRef, OperatorTypeRefKind};
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::signature::{
-    absent_slot, Actual, CallBindings, Known, Mismatch, Mode, Signature,
+    absent_slot, is_absent_slot, Actual, CallBindings, Known, Mismatch, Mode, Signature,
 };
 use orbital_core_base::value::Value;
 use std::collections::BTreeMap;
@@ -118,6 +118,38 @@ fn scalar_known(value: &Value) -> Option<Known> {
     }
 }
 
+/// The scalar kind of an evaluated value, as an index into the distinct kinds a list can hold; `None` for a value that has no scalar type.
+fn scalar_kind(value: &Value) -> Option<usize> {
+    match value {
+        Value::Number(_) => Some(0),
+        Value::String(_) => Some(1),
+        Value::Bool(_) => Some(2),
+        Value::Object(_) => Some(3),
+        Value::Null | Value::Lambda { .. } | Value::Array(_) => None,
+    }
+}
+
+/// Whether `entry` is the entry whose position type is `ty` in [`inner_list_positions`], answered without building the type.
+fn entry_has_position(entry: &Value, ty: &OirType) -> bool {
+    match entry {
+        Value::Number(_) => matches!(ty, OirType::Number),
+        Value::String(_) => matches!(ty, OirType::String),
+        Value::Bool(_) => matches!(ty, OirType::Boolean),
+        Value::Object(_) => matches!(ty, OirType::Struct { fields, additional: None } if fields.is_empty()),
+        Value::Null | Value::Lambda { .. } => is_absent_slot(ty),
+        Value::Array(_) => false,
+    }
+}
+
+/// Whether a list with no list among its entries already has the positions `known`: the repeat of a shape seen, which adds nothing.
+fn flat_list_repeats(entries: &[Value], known: &[OirType]) -> bool {
+    entries.len() == known.len()
+        && entries
+            .iter()
+            .zip(known)
+            .all(|(entry, ty)| entry_has_position(entry, ty))
+}
+
 fn push_unique(into: &mut Vec<Known>, known: Known) {
     if !into.contains(&known) {
         into.push(known);
@@ -187,6 +219,7 @@ fn list_views<E>(
         Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Array { .. }))
     );
     let mut inner: Vec<Vec<OirType>> = Vec::new();
+    let mut seen_kinds = [false; 4];
     for item in items {
         match item {
             Value::Array(_) if tuple_formal || nested_formal => {
@@ -196,7 +229,12 @@ fn list_views<E>(
                     }
                 }
             }
-            Value::Array(_) => {
+            Value::Array(entries) => {
+                if !entries.iter().any(|entry| matches!(entry, Value::Array(_)))
+                    && inner.iter().any(|known| flat_list_repeats(entries, known))
+                {
+                    continue;
+                }
                 if let Some(positions) = inner_list_positions(item) {
                     if !inner.contains(&positions) {
                         inner.push(positions);
@@ -204,8 +242,13 @@ fn list_views<E>(
                 }
             }
             _ => {
-                if let Some(Known::Type(element)) = scalar_known(item) {
-                    note(element);
+                if let Some(kind) = scalar_kind(item) {
+                    if !seen_kinds[kind] {
+                        seen_kinds[kind] = true;
+                        if let Some(Known::Type(element)) = scalar_known(item) {
+                            note(element);
+                        }
+                    }
                 }
             }
         }
@@ -265,13 +308,13 @@ fn inner_list_positions(item: &Value) -> Option<Vec<OirType>> {
         .collect();
     positions
         .iter()
-        .any(|ty| *ty != absent_slot())
+        .any(|ty| !is_absent_slot(ty))
         .then_some(positions)
 }
 
 /// Whether the entries of a list differ in type: such a list is a tuple.
 fn is_tuple(positions: &[OirType]) -> bool {
-    let mut present = positions.iter().filter(|ty| **ty != absent_slot());
+    let mut present = positions.iter().filter(|ty| !is_absent_slot(ty));
     present
         .next()
         .is_some_and(|first| present.any(|ty| ty != first))
@@ -282,7 +325,7 @@ fn settle_positions(positions: Vec<OirType>) -> OirType {
     if is_tuple(&positions) {
         return OirType::Tuple { items: positions };
     }
-    match positions.into_iter().find(|ty| *ty != absent_slot()) {
+    match positions.into_iter().find(|ty| !is_absent_slot(ty)) {
         Some(element) => OirType::array(element),
         None => OirType::Tuple { items: Vec::new() },
     }
@@ -1199,5 +1242,84 @@ mod tests {
             check(&op, &[Value::Array(vec![])]).unwrap_err().to_string(),
             "Evaluation error: Type mismatch: expected object, got array"
         );
+    }
+
+    #[test]
+    fn a_long_homogeneous_list_of_each_scalar_kind_passes() {
+        let strings = Value::Array((0..500).map(|i| s(&i.to_string())).collect());
+        let numbers = Value::Array((0..500).map(|i| num(i as f64)).collect());
+        let bools = Value::Array((0..500).map(|i| Value::Bool(i % 2 == 0)).collect());
+        let records = Value::Array((0..500).map(|_| Value::Object(ValueMap::default())).collect());
+        for list in [strings, numbers, bools, records] {
+            assert!(check_rt(list_of_var(), &[list]).is_ok());
+        }
+    }
+
+    #[test]
+    fn one_unlike_element_after_a_long_run_raises_the_same_error_as_in_a_short_list() {
+        let short = Value::Array(vec![s("a"), num(1.0)]);
+        let mut long: Vec<Value> = (0..500).map(|i| s(&i.to_string())).collect();
+        long.push(num(1.0));
+        long.push(s("tail"));
+        let expected = check_rt(list_of_var(), &[short]).unwrap_err().to_string();
+        let got = check_rt(list_of_var(), &[Value::Array(long)]).unwrap_err().to_string();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn nulls_among_a_homogeneous_list_do_not_change_its_type() {
+        let list = Value::Array(vec![s("a"), Value::Null, s("b"), Value::Null]);
+        assert!(check_rt(list_of_var(), &[list]).is_ok());
+    }
+
+    #[test]
+    fn an_empty_list_and_a_list_of_nulls_are_empty_lists_that_agree_with_any_list() {
+        let op = || {
+            operator(
+                json!([
+                    { "name": "a", "type": { "kind": "array", "of": { "kind": "var", "name": "T" } } },
+                    { "name": "b", "type": { "kind": "array", "of": { "kind": "var", "name": "T" } } }
+                ]),
+                Some(2),
+            )
+        };
+        let strings = Value::Array(vec![s("a"), s("b")]);
+        let empty = Value::Array(vec![]);
+        let nulls = Value::Array(vec![Value::Null, Value::Null]);
+        assert!(check_rt(op(), &[strings.clone(), empty]).is_ok());
+        assert!(check_rt(op(), &[nulls, strings]).is_ok());
+    }
+
+    #[test]
+    fn repeated_rows_of_one_shape_settle_as_one_and_an_unlike_row_still_raises() {
+        let row = || pair(s("a"), num(1.0));
+        let rows = Value::Array((0..200).map(|_| row()).collect());
+        assert!(check_rt(list_of_var(), &[rows]).is_ok());
+        let with_null = Value::Array(vec![pair(s("a"), Value::Null), pair(s("b"), Value::Null), pair(s("c"), Value::Null)]);
+        assert!(check_rt(list_of_var(), &[with_null]).is_ok());
+        let mut unlike: Vec<Value> = (0..200).map(|_| Value::Array(vec![s("a")])).collect();
+        unlike.push(Value::Array(vec![num(1.0)]));
+        assert!(check_rt(list_of_var(), &[Value::Array(unlike)]).is_err());
+    }
+
+    #[test]
+    fn rows_that_differ_only_after_many_repeats_are_still_tuples_of_one_list() {
+        let mut rows: Vec<Value> = (0..200).map(|_| pair(s("a"), num(1.0))).collect();
+        rows.push(pair(s("b"), s("x")));
+        assert!(check_rt(list_of_var(), &[Value::Array(rows)]).is_ok());
+    }
+
+    #[test]
+    fn a_tuple_formal_still_checks_every_row_after_the_fast_path() {
+        let op = || {
+            operator(
+                json!([{ "name": "entries", "type": { "kind": "array", "of": { "kind": "tuple", "items": ["string", "number"] } } }]),
+                Some(1),
+            )
+        };
+        let mut rows: Vec<Value> = (0..200).map(|_| pair(s("a"), num(1.0))).collect();
+        assert!(check_rt(op(), &[Value::Array(rows.clone())]).is_ok());
+        rows.push(pair(s("b"), s("x")));
+        assert!(check_rt(op(), &[Value::Array(rows)]).is_err());
     }
 }

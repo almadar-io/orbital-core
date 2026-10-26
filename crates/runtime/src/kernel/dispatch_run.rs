@@ -547,10 +547,11 @@ impl RuntimeKernel {
             .outcomes
             .iter()
             .map(|(name, result)| {
+                let state_key = self.state_key(Some(&result.state_entity_id));
                 let observed_state = self
                     .state_manager
                     .read()
-                    .get_state(name, Some(&result.state_entity_id))
+                    .get_state(name, state_key.as_deref())
                     .map(|state| state.current_state.clone());
                 let mut trace = crate::dispatch_trace::transition_of(name, result, observed_state);
                 let source = self.emit_source(name);
@@ -760,13 +761,36 @@ impl RuntimeKernel {
             })),
             Err(message) => {
                 tracing::warn!(driver = %ask.driver, %message, "kernel: store seed not sent");
+                if let Some(ensure) = &ask.ensure {
+                    self.io.set_index_failure(
+                        &ensure.entity_type,
+                        Some(format!("store driver {} could not ensure the indexes of {}: {message}", ask.driver, ensure.entity_type)),
+                    );
+                }
                 None
             }
         }
     }
 
     pub(crate) fn seed_landed(&self, ask: &StoreAsk, answer: &IoAnswer, origin: &str) {
-        Self::report_seed(ask, answer);
+        if let Some(ensure) = &ask.ensure {
+            match answer {
+                IoAnswer::Wrote(Err(message)) => {
+                    tracing::warn!(driver = %ask.driver, entity = %ensure.entity_type, %message, "kernel: store indexes not ensured");
+                    self.io.set_index_failure(
+                        &ensure.entity_type,
+                        Some(format!(
+                            "store driver {} could not ensure the indexes of {}: {message}",
+                            ask.driver, ensure.entity_type
+                        )),
+                    );
+                    return;
+                }
+                _ => self.io.set_index_failure(&ensure.entity_type, None),
+            }
+        } else {
+            Self::report_seed(ask, answer);
+        }
         self.store_seeds
             .lock()
             .retain(|registered| registered.key != origin);
@@ -774,12 +798,15 @@ impl RuntimeKernel {
 
     /// The driver orbital's dispatch of the verb `ask` maps to, in a frame of its own keyed by the ask.
     pub(crate) fn store_driver_run(&self, ask: &StoreAsk) -> Result<DispatchContinuation, String> {
-        let verb = crate::store_driver::verb_for(&ask.request, &ask.key).ok_or_else(|| {
-            format!(
-                "store driver {}: {:?} is not a row ask a driver answers",
-                ask.driver, ask.request
-            )
-        })?;
+        let verb = match &ask.ensure {
+            Some(ensure) => crate::store_driver::ensure_verb(&ensure.entity_type, &ensure.indexes, &ask.key),
+            None => crate::store_driver::verb_for(&ask.request, &ask.key).ok_or_else(|| {
+                format!(
+                    "store driver {}: {:?} is not a row ask a driver answers",
+                    ask.driver, ask.request
+                )
+            })?,
+        };
         let candidates: Vec<String> = {
             let schemas = self.schemas.read();
             self.trait_homes
@@ -841,6 +868,9 @@ impl RuntimeKernel {
     /// The answer the driver's keyed reply gives `ask`: a driver that sent none, or a malformed one, failed it.
     pub(crate) fn store_reply(&self, ask: &StoreAsk, outcomes: &DispatchOutcomes) -> IoAnswer {
         use crate::store_driver::*;
+        if ask.ensure.is_some() {
+            return Self::ensure_reply(ask, outcomes);
+        }
         const REPLIES: [&str; 7] = [
             ROW_FOUND,
             ROWS_LISTED,
@@ -870,6 +900,33 @@ impl RuntimeKernel {
                 "store driver {} sent no reply for ask {}",
                 ask.driver, ask.key
             )),
+        }
+    }
+
+    /// `Wrote(Ok)` when the driver confirmed the ensure, else `Wrote(Err)` with its message.
+    fn ensure_reply(ask: &StoreAsk, outcomes: &DispatchOutcomes) -> IoAnswer {
+        use crate::store_driver::*;
+        let reply = outcomes
+            .iter()
+            .flat_map(|(_, r)| r.effect_results.iter())
+            .find_map(|er| match &er.effect {
+                Effect::Emit { event, payload }
+                    if [ROWS_INDEXES_ENSURED, STORE_FAILED].contains(&event.as_str())
+                        && reply_key(payload) == Some(ask.key.as_str()) =>
+                {
+                    Some((event.as_str(), payload))
+                }
+                _ => None,
+            });
+        match reply {
+            Some((ROWS_INDEXES_ENSURED, _)) => IoAnswer::Wrote(Ok(Vec::new())),
+            Some((_, payload)) => IoAnswer::Wrote(Err(payload
+                .as_object()
+                .and_then(|o| o.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("the driver failed without a message")
+                .to_string())),
+            None => IoAnswer::Wrote(Err(format!("the driver sent no reply for ask {}", ask.key))),
         }
     }
 

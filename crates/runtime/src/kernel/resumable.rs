@@ -927,7 +927,17 @@ pub(crate) struct StepEnd {
 pub(crate) struct StoreAsk {
     pub(crate) driver: String,
     pub(crate) key: String,
+    /// For an ensure ask (`ensure` set) this is an unused placeholder: the verb is built from `ensure`.
     pub(crate) request: IoRequest,
+    /// The access paths this ask sends its driver (EXEC-STORE-6), in place of a row ask.
+    pub(crate) ensure: Option<EnsureIndexes>,
+}
+
+/// An entity's declared `@index` paths, sent once to the driver it is bound to.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct EnsureIndexes {
+    pub(crate) entity_type: String,
+    pub(crate) indexes: Vec<orbital_core_base::schema::types::EntityIndex>,
 }
 
 /// Which journal entries a step has claimed: a prefix counter while answers are claimed in order (no
@@ -1045,6 +1055,8 @@ pub(crate) struct IoPort {
     clock: Option<crate::config::DispatchClock>,
     /// `[runtime]` entities live in `memory` and are never a host ask, when the kernel is configured to own them.
     runtime_in_kernel: bool,
+    /// Entity -> why its driver could not ensure its declared indexes (EXEC-STORE-6).
+    index_failures: RwLock<HashMap<String, String>>,
     runtime_types: RwLock<HashSet<String>>,
     memory: crate::entity_source::InMemoryEntityCache,
     /// `[store: Driver]` bindings: entity type -> the driver orbital that answers its row asks.
@@ -1083,6 +1095,7 @@ impl IoPort {
             noticed: Mutex::new(HashSet::new()),
             clock: None,
             runtime_in_kernel: false,
+            index_failures: RwLock::new(HashMap::new()),
             runtime_types: RwLock::new(HashSet::new()),
             memory: crate::entity_source::InMemoryEntityCache::new(),
             store_drivers: RwLock::new(HashMap::new()),
@@ -1101,7 +1114,32 @@ impl IoPort {
             driver,
             key: self.next_store_key(),
             request: IoRequest::WriteRows { batch: RowWriteBatch { ops, on_failure: RowWriteFailureMode::Stop } },
+            ensure: None,
         })
+    }
+
+    /// The ask that sends the driver of `entity_type` its declared `indexes`; `None` when unbound.
+    pub(crate) fn store_ensure(
+        &self,
+        entity_type: &str,
+        indexes: Vec<orbital_core_base::schema::types::EntityIndex>,
+    ) -> Option<StoreAsk> {
+        let driver = self.store_drivers.read().get(entity_type).cloned()?;
+        Some(StoreAsk {
+            driver,
+            key: self.next_store_key(),
+            request: IoRequest::ListRows { entity_type: entity_type.to_string() },
+            ensure: Some(EnsureIndexes { entity_type: entity_type.to_string(), indexes }),
+        })
+    }
+
+    /// Record (or clear) why the indexes of `entity_type` could not be ensured: its row asks fail with it.
+    pub(crate) fn set_index_failure(&self, entity_type: &str, failure: Option<String>) {
+        let mut failures = self.index_failures.write();
+        match failure {
+            Some(message) => failures.insert(entity_type.to_string(), message),
+            None => failures.remove(entity_type),
+        };
     }
 
     pub(crate) fn next_store_key(&self) -> String {
@@ -1190,6 +1228,10 @@ impl IoPort {
 
     /// The entity a row request addresses, when it is one a kernel-owned `[runtime]` entity answers itself.
     fn local_entity<'r>(&self, request: &'r IoRequest) -> Option<&'r str> {
+        if let IoRequest::WriteRows { batch } = request {
+            let first = batch.ops.first()?.entity_type();
+            return batch.ops.iter().all(|op| self.local(op.entity_type())).then_some(first);
+        }
         let entity = match request {
             IoRequest::ReadRow { entity_type, .. }
             | IoRequest::ListRows { entity_type }
@@ -1419,6 +1461,9 @@ impl IoPort {
             return Asked::Withheld;
         }
         let request = request();
+        if let Some(answer) = self.index_failure_answer(&request) {
+            return Asked::Answer(answer);
+        }
         let keyed = match &request {
             IoRequest::CallService { key: Some(key), .. } => Some(key.clone()),
             _ => None,
@@ -1443,7 +1488,7 @@ impl IoPort {
                 }
         });
         if let Some(driver) = store_driver.filter(|_| at.is_none() && !ledger.blocked) {
-            ledger.store_asks.push(StoreAsk { driver, key: self.next_store_key(), request });
+            ledger.store_asks.push(StoreAsk { driver, key: self.next_store_key(), request, ensure: None });
             ledger.blocked = true;
             return Asked::Withheld;
         }
@@ -1481,6 +1526,16 @@ impl IoPort {
                 Asked::Withheld
             }
         }
+    }
+
+    /// The failed answer of a row ask on an entity whose declared indexes the driver could not ensure.
+    fn index_failure_answer(&self, request: &IoRequest) -> Option<IoAnswer> {
+        let failures = self.index_failures.read();
+        if failures.is_empty() {
+            return None;
+        }
+        let message = failures.get(request_entity(request)?)?;
+        crate::store_driver::failed_answer(request, message.clone())
     }
 
     /// An ask with no step in flight runs in place, except a row ask on a store-bound entity, which fails.
@@ -1760,6 +1815,12 @@ impl EntitySource for IoPort {
     }
 
     fn write_where(&self, op: &RowWriteOp) -> Option<Result<RowWriteOutcome, String>> {
+        let one = RowWriteBatch { ops: vec![op.clone()], on_failure: RowWriteFailureMode::Stop };
+        if let Some(written) = self.local_writes(&one) {
+            return Some(written.and_then(|mut outcomes| {
+                outcomes.pop().ok_or_else(|| "the kernel answered a write with no outcome".to_string())
+            }));
+        }
         if !matches!(op, RowWriteOp::Rekey { .. }) {
             if let Some(outcome) = self.bound_single_write(op.entity_type(), || op.clone()) {
                 return Some(outcome);
@@ -1788,6 +1849,9 @@ impl EntitySource for IoPort {
     }
 
     fn write_batch(&self, batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
+        if let Some(written) = self.local_writes(batch) {
+            return Some(written);
+        }
         if self.direct() {
             if let Some(op) = batch
                 .ops
@@ -1810,9 +1874,40 @@ impl EntitySource for IoPort {
     fn bind_collection(&self, entity_type: &str, collection: &str) {
         self.source.bind_collection(entity_type, collection)
     }
+
+    fn declare_indexes(&self, entity_type: &str, indexes: &[orbital_core_base::schema::types::EntityIndex]) {
+        self.source.declare_indexes(entity_type, indexes);
+        self.memory.declare_indexes(entity_type, indexes);
+    }
 }
 
 impl IoPort {
+    /// `batch` when it touches kernel-owned `[runtime]` rows: all of them are written in the kernel's memory
+    /// (journaled inside a step); a batch that also touches a host-store entity is refused and writes nothing.
+    /// `None` when no op is a `[runtime]` row.
+    fn local_writes(&self, batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
+        let local = batch.ops.iter().filter(|op| self.local(op.entity_type())).count();
+        if local == 0 {
+            return None;
+        }
+        if local != batch.ops.len() {
+            return Some(Err(
+                "a write batch cannot mix [runtime] rows, which live in the kernel, with rows of a host store".to_string(),
+            ));
+        }
+        if self.direct() {
+            return Some(
+                self.memory
+                    .write_batch(batch)
+                    .unwrap_or_else(|| Err("the kernel's row memory has no conditional writes".to_string())),
+            );
+        }
+        Some(match self.ask(|| IoRequest::WriteRows { batch: batch.clone() }) {
+            Asked::Answer(IoAnswer::Wrote(outcomes)) => outcomes,
+            Asked::Direct | Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        })
+    }
+
     /// Run `batch` here and send its rows as one compare-and-commit (EXEC-STORE-5); a conflict re-reads and
     /// re-runs, at most three times.
     fn commit_writes(&self, batch: &RowWriteBatch) -> Result<Vec<RowWriteOutcome>, String> {
@@ -3918,5 +4013,90 @@ mod store_ask_tests {
         let gone = Exchange::new(update, IoAnswer::Wrote(Ok(vec![RowWriteOutcome::NotFound])));
         let (done, _) = port.run_step(vec![gone], || port.write("Ticket", "t1", &data));
         assert_eq!(done, Err("Entity not found: Ticket:t1".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod runtime_row_tests {
+    use super::*;
+    use crate::entity_source::InMemoryEntityCache;
+
+    fn row(id: &str) -> Value {
+        serde_json::from_value(serde_json::json!({ "id": id })).unwrap()
+    }
+
+    fn create(entity: &str, id: &str) -> RowWriteOp {
+        RowWriteOp::Create { entity_type: entity.to_string(), data: row(id) }
+    }
+
+    fn batch(ops: Vec<RowWriteOp>) -> RowWriteBatch {
+        RowWriteBatch { ops, on_failure: RowWriteFailureMode::Stop }
+    }
+
+    fn ids(port: &IoPort, entity: &str) -> Vec<String> {
+        let mut ids: Vec<String> = port
+            .list(entity)
+            .unwrap()
+            .iter()
+            .map(|r| r.get_path("id").and_then(|v| v.as_str().map(str::to_string)).unwrap())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn ports() -> (IoPort, Arc<InMemoryEntityCache>) {
+        let host = Arc::new(InMemoryEntityCache::new());
+        let port = IoPort::new(host.clone() as Arc<dyn EntitySource>, None, None).with_runtime_rows(true);
+        port.claim_runtime("Card");
+        (port, host)
+    }
+
+    #[test]
+    fn a_runtime_row_written_with_write_where_is_listed_and_never_reaches_the_host_source() {
+        let (port, host) = ports();
+        assert!(matches!(port.write_where(&create("Card", "c1")), Some(Ok(_))));
+        assert_eq!(ids(&port, "Card"), ["c1"]);
+        assert_eq!(host.count(), 0);
+    }
+
+    #[test]
+    fn control_a_persistent_row_written_with_write_where_is_listed() {
+        let (port, host) = ports();
+        assert!(matches!(port.write_where(&create("Note", "n1")), Some(Ok(_))));
+        assert_eq!(ids(&port, "Note"), ["n1"]);
+        assert_eq!(host.count(), 1);
+    }
+
+    #[test]
+    fn a_runtime_batch_is_listed_and_never_reaches_the_host_source() {
+        let (port, host) = ports();
+        let written = port.write_batch(&batch(vec![create("Card", "c1"), create("Card", "c2")]));
+        assert!(matches!(written, Some(Ok(ref outcomes)) if outcomes.len() == 2), "{written:?}");
+        assert_eq!(ids(&port, "Card"), ["c1", "c2"]);
+        assert_eq!(host.count(), 0);
+    }
+
+    #[test]
+    fn a_runtime_row_written_in_a_step_is_listed_in_the_same_step_and_in_a_replay() {
+        let (port, host) = ports();
+        let step = |port: &IoPort| (port.write_where(&create("Card", "c1")), ids(port, "Card"));
+        let (first, end) = port.run_step(Vec::new(), || step(&port));
+        assert!(matches!(first.0, Some(Ok(_))), "{:?}", first.0);
+        assert_eq!(first.1, ["c1"]);
+        assert!(end.pending.is_empty() && end.diverged.is_none());
+        assert_eq!(host.count(), 0);
+        let (replayed, end) = port.run_step(end.journal.clone(), || step(&port));
+        assert!(matches!(replayed.0, Some(Ok(_))), "{:?}", replayed.0);
+        assert_eq!(replayed.1, ["c1"]);
+        assert!(end.pending.is_empty() && end.diverged.is_none());
+    }
+
+    #[test]
+    fn a_batch_mixing_runtime_and_host_rows_is_refused_and_writes_nothing() {
+        let (port, host) = ports();
+        let written = port.write_batch(&batch(vec![create("Card", "c1"), create("Note", "n1")]));
+        assert!(matches!(written, Some(Err(_))), "{written:?}");
+        assert!(ids(&port, "Card").is_empty());
+        assert_eq!(host.count(), 0);
     }
 }
