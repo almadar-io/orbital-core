@@ -114,7 +114,7 @@ pub mod events;
 // host — the ask surface a host must be able to answer
 #[path = "host/os.rs"]
 pub mod os;
-#[path = "host/os_grants.rs"]
+#[path = "host/os_grants/mod.rs"]
 pub mod os_grants;
 #[path = "host/agent_ports.rs"]
 pub mod agent_ports;
