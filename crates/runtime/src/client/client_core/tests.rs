@@ -46,8 +46,8 @@ fn client_core_drives_render_through_client_kernel() {
     );
 
     let mut payload = ValueMap::default();
-    payload.insert("title".to_string(), Value::String("Hello".to_string()));
-    core.drive_blocking("SHOW", Some("RenderTrait"), Value::Object(payload));
+    payload.insert("title".to_string(), Value::string("Hello"));
+    core.drive_blocking("SHOW", Some("RenderTrait"), Value::object(payload));
 
     assert_eq!(core.current_state, "shown");
     let main_slot = core.ui_slots.get("main").expect("main slot rendered");
@@ -57,7 +57,7 @@ fn client_core_drives_render_through_client_kernel() {
         .as_object()
         .and_then(|o| o.get("title"))
         .cloned();
-    assert_eq!(title, Some(Value::String("Hello".to_string())));
+    assert_eq!(title, Some(Value::string("Hello")));
 }
 
 /// Two peer traits that both own `main`, and a third embedded by the first (`@trait.Child`).
@@ -98,7 +98,7 @@ fn main_titles(core: &ClientCore) -> Vec<String> {
             contents
                 .iter()
                 .map(|c| match c.props.as_object().and_then(|o| o.get("title")) {
-                    Some(Value::String(title)) => title.clone(),
+                    Some(Value::String(title)) => title.to_string(),
                     _ => String::new(),
                 })
                 .collect()
@@ -289,7 +289,7 @@ fn main_shows_the_current_pages_writers_and_navigate_switches_page() {
         core.page_main_contents()
             .iter()
             .map(|c| match c.props.as_object().and_then(|o| o.get("title")) {
-                Some(Value::String(t)) => t.clone(),
+                Some(Value::String(t)) => t.to_string(),
                 _ => String::new(),
             })
             .collect()
@@ -558,7 +558,7 @@ fn main_prop(core: &ClientCore, key: &str) -> Vec<String> {
     core.page_main_contents()
         .iter()
         .map(|c| match c.props.as_object().and_then(|o| o.get(key)) {
-            Some(Value::String(t)) => t.clone(),
+            Some(Value::String(t)) => t.to_string(),
             _ => String::new(),
         })
         .collect()
@@ -584,9 +584,9 @@ fn a_page_mount_inits_only_its_traits_with_the_route_params() {
     assert_eq!(main_prop(&core, "title"), ["42"]);
 
     let mut params = ValueMap::default();
-    params.insert("id".to_string(), Value::String("7".into()));
-    params.insert("tab".to_string(), Value::String("history".into()));
-    core.navigate_to("/notes/42", Some(&Value::Object(params)));
+    params.insert("id".to_string(), Value::string("7"));
+    params.insert("tab".to_string(), Value::string("history"));
+    core.navigate_to("/notes/42", Some(&Value::object(params)));
     core.mount_page_blocking();
     assert_eq!(
         main_prop(&core, "title"),
@@ -609,7 +609,7 @@ fn navigate_back_returns_to_the_previous_page() {
     assert_eq!(core.current_page.as_deref(), Some("DetailPage"));
     assert_eq!(
         core.route_params.get("id"),
-        Some(&Value::String("1".into()))
+        Some(&Value::string("1"))
     );
     core.navigate_back();
     assert_eq!(core.current_page.as_deref(), Some("ListPage"));

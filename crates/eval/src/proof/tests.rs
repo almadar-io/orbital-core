@@ -1171,3 +1171,53 @@ fn a_transition_that_does_not_carry_the_ensures_owes_nothing() {
     assert_eq!(v.len(), 1, "{v:#?}");
     assert!(v[0].0.contains("PAY"), "{v:#?}");
 }
+
+// G-ORB-535: std-lifecycle's two `ScanRecordsLoaded` arms share from/event/to; under `action: delete` the status arm's
+// `@ensures` was checked against the live delete arm.
+#[test]
+fn an_arms_ensures_binds_that_arm_not_a_sibling_sharing_its_event() {
+    let action = json!({ "action": { "type": "string", "default": "delete" } });
+    let status_arm = pay(
+        json!([["set", "@entity.paid", 3]]),
+        json!([["=", "@entity.paid", 3]]),
+        Some(json!(["=", "@config.action", "status"])),
+    );
+    let mut delete_arm = pay(json!([["set", "@entity.paid", 0]]), json!(null), Some(json!(["=", "@config.action", "delete"])));
+    delete_arm.as_object_mut().unwrap().remove("ensures");
+    assert_eq!(only(&configured(json!([status_arm, delete_arm]), action)), Verdict::Proved);
+}
+
+#[test]
+fn control_an_expected_transition_still_binds_every_arm_with_its_event() {
+    let ensures = json!([["=", "@entity.paid", 3]]);
+    let arms = json!([
+        { "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.paid", 3]] },
+        { "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.paid", 0]] }
+    ]);
+    let spec = json!([{ "kind": "transition", "traitName": "Checkout", "from": "open", "event": "PAY", "to": "paid", "ensures": ensures, "strict": true }]);
+    let v = verdicts(&program(arms, J::Null, spec));
+    assert!(v.iter().any(|(_, x)| matches!(x, Verdict::Violated { .. })), "{v:#?}");
+}
+
+// G-ORB-535: a call site's `enabled: (> @config.keepDays 0)` reaches the trait folded to `(> 30 0)`.
+#[test]
+fn a_closed_call_site_default_is_folded_not_unresolved() {
+    let enabled = json!({ "enabled": { "type": "boolean", "default": [">", 30, 0] } });
+    let t = json!([pay(
+        json!([["set", "@entity.paid", 3]]),
+        json!([["and", "@config.enabled", ["=", "@entity.paid", 3]]]),
+        None
+    )]);
+    assert_eq!(only(&configured(t, enabled)), Verdict::Proved);
+}
+
+#[test]
+fn control_a_default_bound_at_run_time_stays_unresolved() {
+    let enabled = json!({ "enabled": { "type": "boolean", "default": [">", "@user.level", 0] } });
+    let t = json!([pay(
+        json!([["set", "@entity.paid", 3]]),
+        json!([["and", "@config.enabled", ["=", "@entity.paid", 3]]]),
+        None
+    )]);
+    assert!(matches!(only(&configured(t, enabled)), Verdict::Unproved { .. }));
+}

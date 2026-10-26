@@ -628,7 +628,7 @@ fn reply_payload_text_bytes_and_lowercased_headers() {
         val(json!({"status": 201, "headers": {"content-type": "text/plain", "x-a": "1, 2"}, "body": "héllo"}))
     );
     let b = HttpResponse { status: 200, headers: vec![], body: vec![0, 1, 255] };
-    assert_eq!(get(&reply_payload(&b, ResponseAs::Bytes), "body"), Value::String("AAH/".into()));
+    assert_eq!(get(&reply_payload(&b, ResponseAs::Bytes), "body"), Value::string("AAH/"));
 }
 
 #[test]
@@ -645,7 +645,7 @@ fn failure_and_refusal_payload_shapes() {
         refusal_payload(&HttpRefusal::CredentialMissing("K".into())),
         with_rest(json!({"error": "credential missing: K", "kind": "unconfigured", "credential": "K"}))
     );
-    assert_eq!(get(&refusal_payload(&HttpRefusal::EgressDenied("o".into())), "kind"), Value::String("refused".into()));
+    assert_eq!(get(&refusal_payload(&HttpRefusal::EgressDenied("o".into())), "kind"), Value::string("refused"));
 }
 
 fn http_ask(step: HttpStep) -> HttpRequest {
@@ -668,13 +668,13 @@ fn driver_plain_call_echoes_the_key() {
     let req = http_ask(step);
     assert_eq!(req.url, "https://api.example.com/v1/x");
     let ok = done(d.resume(HttpAnswer::Http(Ok(response(200, &[], "hi"))))).unwrap();
-    assert_eq!(get(&ok, "key"), Value::String("k1".into()));
-    assert_eq!(get(&ok, "body"), Value::String("hi".into()));
+    assert_eq!(get(&ok, "key"), Value::string("k1"));
+    assert_eq!(get(&ok, "body"), Value::string("hi"));
 
     let (mut d, step) = HttpCallDriver::start(spec(json!({})), egress(), None);
     http_ask(step);
     let err = done(d.resume(HttpAnswer::Http(Err(TransportError::TimedOut)))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("timeout".into()));
+    assert_eq!(get(&err, "kind"), Value::string("timeout"));
     assert_eq!(get(&err, "key"), Value::Null);
 }
 
@@ -682,14 +682,14 @@ fn driver_plain_call_echoes_the_key() {
 fn driver_refuses_before_any_http_ask() {
     let (_, step) = HttpCallDriver::start(spec(json!({})), vec![], Some("k".into()));
     let err = done(step).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("refused".into()));
-    assert_eq!(get(&err, "key"), Value::String("k".into()));
+    assert_eq!(get(&err, "kind"), Value::string("refused"));
+    assert_eq!(get(&err, "key"), Value::string("k"));
 
     let s = spec(json!({"auth": {"scheme": "bearer", "credential": "TOKEN"}}));
     let (mut d, step) = HttpCallDriver::start(s, egress(), None);
     assert_eq!(step, HttpStep::Ask(HttpAsk::Secret { name: "TOKEN".into(), scope: SecretScope::App }));
     let err = done(d.resume(HttpAnswer::Secret(Ok(None)))).unwrap_err();
-    assert_eq!(get(&err, "error"), Value::String("credential missing: TOKEN".into()));
+    assert_eq!(get(&err, "error"), Value::string("credential missing: TOKEN"));
 }
 
 #[test]
@@ -743,7 +743,7 @@ fn driver_oauth_token_url_must_be_in_egress() {
     d.resume(HttpAnswer::Secret(Ok(None)));
     d.resume(HttpAnswer::Secret(Ok(Some("client-1".into()))));
     let err = done(d.resume(HttpAnswer::Secret(Ok(Some("shh".into()))))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("refused".into()));
+    assert_eq!(get(&err, "kind"), Value::string("refused"));
 }
 
 #[test]
@@ -771,7 +771,7 @@ fn driver_paginates_by_cursor_and_stops_on_null() {
     let paged = done(d.resume(HttpAnswer::Http(Ok(response(200, &[], r#"{"items":[3],"next":null}"#))))).unwrap();
     assert_eq!(get(&paged, "pages"), Value::Number(2.0));
     assert_eq!(get(&paged, "items"), val(json!([1, 2, 3])));
-    assert_eq!(get(&paged, "key"), Value::String("p".into()));
+    assert_eq!(get(&paged, "key"), Value::string("p"));
     assert_eq!(get(&paged, "last.status"), Value::Number(200.0));
 }
 
@@ -818,7 +818,7 @@ fn driver_link_header_follows_next_on_the_same_origin_only() {
     http_ask(step);
     let evil = r#"<https://evil.com/x>; rel="next""#;
     let err = done(d.resume(HttpAnswer::Http(Ok(response(200, &[("Link", evil)], "[1]"))))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("refused".into()));
+    assert_eq!(get(&err, "kind"), Value::string("refused"));
 }
 
 #[test]
@@ -860,7 +860,7 @@ fn a_driver_serialized_mid_flight_resumes_with_the_same_steps() {
 fn control_an_unexpected_answer_fails_instead_of_panicking() {
     let (mut d, _) = HttpCallDriver::start(spec(json!({})), egress(), None);
     let err = done(d.resume(HttpAnswer::SecretSet(Ok(())))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("failed".into()));
+    assert_eq!(get(&err, "kind"), Value::string("failed"));
 }
 
 #[test]
@@ -889,8 +889,8 @@ fn frame_stream_is_the_one_place_the_key_is_added() {
 fn a_refused_call_carries_its_key_from_core() {
     let r = HttpRefusal::Invalid("bad".into());
     let err = done(HttpCallDriver::refused(&r, Some("k"))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("refused".into()));
-    assert_eq!(get(&err, "key"), Value::String("k".into()));
+    assert_eq!(get(&err, "kind"), Value::string("refused"));
+    assert_eq!(get(&err, "key"), Value::string("k"));
     assert_eq!(get(&done(HttpCallDriver::refused(&r, None)).unwrap_err(), "key"), Value::Null);
 }
 
@@ -978,8 +978,8 @@ fn control_a_miss_right_after_a_grant_is_a_refusal_not_another_grant() {
     let step = revived.resume(HttpAnswer::SecretSet(Ok(())));
     assert!(matches!(step, HttpStep::Ask(HttpAsk::Secret { .. })));
     let err = done(revived.resume(HttpAnswer::Secret(Ok(None)))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("unconfigured".into()));
-    assert_eq!(get(&err, "credential"), Value::String(oauth_cache_name()));
+    assert_eq!(get(&err, "kind"), Value::string("unconfigured"));
+    assert_eq!(get(&err, "credential"), Value::string(oauth_cache_name()));
 }
 
 // --- H.7 P4: the driver asks the host for entropy -----------------------------------------------------------
@@ -1042,13 +1042,13 @@ fn credentials_are_asked_before_the_boundary() {
 fn a_failed_or_short_random_answer_fails_the_call() {
     let (mut d, _) = HttpCallDriver::start(multipart_spec("related"), egress(), Some("k".into()));
     let err = done(d.resume(HttpAnswer::Random(Err("no entropy".into())))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("failed".into()));
-    assert_eq!(get(&err, "error"), Value::String("no entropy".into()));
-    assert_eq!(get(&err, "key"), Value::String("k".into()));
+    assert_eq!(get(&err, "kind"), Value::string("failed"));
+    assert_eq!(get(&err, "error"), Value::string("no entropy"));
+    assert_eq!(get(&err, "key"), Value::string("k"));
 
     let (mut d, _) = HttpCallDriver::start(multipart_spec("related"), egress(), None);
     let err = done(d.resume(HttpAnswer::Random(Ok(vec![1, 2, 3])))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("failed".into()));
+    assert_eq!(get(&err, "kind"), Value::string("failed"));
 }
 
 #[test]
@@ -1149,7 +1149,7 @@ fn a_retryable_reply_is_asked_again_with_a_growing_delay_then_given_up_on() {
     assert_eq!(delay, Some(200));
     let last = done(d.resume(HttpAnswer::Http(Ok(response(500, &[], "down"))))).unwrap();
     assert_eq!(get(&last, "status"), Value::Number(500.0));
-    assert_eq!(get(&last, "key"), Value::String("r".into()));
+    assert_eq!(get(&last, "key"), Value::string("r"));
 }
 
 #[test]
@@ -1192,7 +1192,7 @@ fn a_retry_that_succeeds_returns_that_reply() {
     let (mut d, _) = HttpCallDriver::start(retrying(json!({})), egress(), None);
     http_ask_delay(d.resume(HttpAnswer::Http(Ok(response(502, &[], "")))));
     let ok = done(d.resume(HttpAnswer::Http(Ok(response(200, &[], "fine"))))).unwrap();
-    assert_eq!(get(&ok, "body"), Value::String("fine".into()));
+    assert_eq!(get(&ok, "body"), Value::string("fine"));
 }
 
 #[test]
@@ -1201,12 +1201,12 @@ fn a_timeout_is_retried_only_when_listed_and_other_failures_never() {
     let (_, delay) = http_ask_delay(d.resume(HttpAnswer::Http(Err(TransportError::TimedOut))));
     assert_eq!(delay, Some(100));
     let err = done(d.resume(HttpAnswer::Http(Err(TransportError::Failed("reset".into()))))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("failed".into()));
+    assert_eq!(get(&err, "kind"), Value::string("failed"));
 
     let only_5xx = spec(json!({"retry": {"max": 2, "on": ["5xx"], "backoffMs": 100}}));
     let (mut d, _) = HttpCallDriver::start(only_5xx, egress(), None);
     let err = done(d.resume(HttpAnswer::Http(Err(TransportError::TimedOut)))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("timeout".into()));
+    assert_eq!(get(&err, "kind"), Value::string("timeout"));
 }
 
 #[test]
@@ -1394,16 +1394,16 @@ fn a_link_header_page_resolves_against_the_host_not_the_prefix() {
 #[test]
 fn a_missing_credential_is_unconfigured_and_names_the_credential_everything_else_is_not() {
     let payload = refusal_payload(&HttpRefusal::CredentialMissing("SENDGRID_KEY".into()));
-    assert_eq!(get(&payload, "kind"), Value::String("unconfigured".into()));
-    assert_eq!(get(&payload, "credential"), Value::String("SENDGRID_KEY".into()));
-    assert_eq!(get(&payload, "error"), Value::String("credential missing: SENDGRID_KEY".into()));
+    assert_eq!(get(&payload, "kind"), Value::string("unconfigured"));
+    assert_eq!(get(&payload, "credential"), Value::string("SENDGRID_KEY"));
+    assert_eq!(get(&payload, "error"), Value::string("credential missing: SENDGRID_KEY"));
     for other in [
         HttpRefusal::EgressDenied("o".into()),
         HttpRefusal::OriginEscape("p".into()),
         HttpRefusal::Invalid("i".into()),
     ] {
         let payload = refusal_payload(&other);
-        assert_eq!(get(&payload, "kind"), Value::String("refused".into()));
+        assert_eq!(get(&payload, "kind"), Value::string("refused"));
         assert_eq!(get(&payload, "credential"), Value::Null);
     }
 }
@@ -1413,9 +1413,9 @@ fn a_missing_credential_finishes_the_driver_as_unconfigured_with_the_key() {
     let s = spec(json!({"auth": {"scheme": "bearer", "credential": "TOKEN"}}));
     let (mut d, _) = HttpCallDriver::start(s, egress(), Some("k".into()));
     let err = done(d.resume(HttpAnswer::Secret(Ok(None)))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("unconfigured".into()));
-    assert_eq!(get(&err, "credential"), Value::String("TOKEN".into()));
-    assert_eq!(get(&err, "key"), Value::String("k".into()));
+    assert_eq!(get(&err, "kind"), Value::string("unconfigured"));
+    assert_eq!(get(&err, "credential"), Value::string("TOKEN"));
+    assert_eq!(get(&err, "key"), Value::string("k"));
 }
 
 // --- H.7 P1: token-exchange ---------------------------------------------------------------------------------
@@ -1521,7 +1521,7 @@ fn a_margin_at_or_past_the_lifetime_stores_for_zero_ms_and_a_missing_access_fiel
     d.resume(ok_secret("alice"));
     http_ask(d.resume(ok_secret("s3cret")));
     let err = done(d.resume(HttpAnswer::Http(Ok(response(200, &[], r#"{"access_token":"T"}"#))))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("failed".into()));
+    assert_eq!(get(&err, "kind"), Value::string("failed"));
     assert!(matches!(get(&err, "error"), Value::String(m) if m.contains("token")));
 }
 
@@ -1531,14 +1531,14 @@ fn a_missing_slot_credential_or_a_refused_exchange_url_ends_the_call() {
     d.resume(HttpAnswer::Secret(Ok(None)));
     d.resume(ok_secret("alice"));
     let err = done(d.resume(HttpAnswer::Secret(Ok(None)))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("unconfigured".into()));
-    assert_eq!(get(&err, "credential"), Value::String("PASS".into()));
+    assert_eq!(get(&err, "kind"), Value::string("unconfigured"));
+    assert_eq!(get(&err, "credential"), Value::string("PASS"));
 
     let (mut d, _) = HttpCallDriver::start(spec(json!({"auth": login_auth()})), egress(), None);
     d.resume(HttpAnswer::Secret(Ok(None)));
     d.resume(ok_secret("alice"));
     let err = done(d.resume(ok_secret("s3cret"))).unwrap_err();
-    assert_eq!(get(&err, "kind"), Value::String("refused".into()), "tokenUrl is outside egress");
+    assert_eq!(get(&err, "kind"), Value::string("refused"), "tokenUrl is outside egress");
 }
 
 #[test]
@@ -1956,12 +1956,12 @@ mod grant_request_contract {
         assert_eq!(http_ask_delay(d.resume(HttpAnswer::Http(Err(TransportError::Failed("reset".into()))))),
             (request, Some(11)));
         assert_eq!(get(&done(d.resume(HttpAnswer::Http(Err(TransportError::Failed("reset again".into()))))).unwrap_err(), "kind"),
-            Value::String("failed".into()));
+            Value::string("failed"));
         for (error, kind) in [(TransportError::TimedOut, "timeout"),
             (TransportError::Refused("host refusal".into()), "refused")] {
             let (mut d, _) = HttpCallDriver::start(spec(json!({"retry":policy.clone()})), egress(), None);
             assert_eq!(get(&done(d.resume(HttpAnswer::Http(Err(error)))).unwrap_err(), "kind"),
-                Value::String(kind.into()));
+                Value::string(kind));
         }
         for answer in [HttpAnswer::Secret(Err("vault unavailable".into())), HttpAnswer::Secret(Ok(None))] {
             let (mut d, step) = HttpCallDriver::start(spec(json!({"auth":{"scheme":"bearer","credential":"TOKEN"},
@@ -1986,7 +1986,7 @@ mod grant_request_contract {
         }
         let reply = done(d.resume(HttpAnswer::Http(Ok(response(500, &[], "exhausted"))))).unwrap();
         assert_eq!(get(&reply, "status"), Value::Number(500.0));
-        assert_eq!(get(&reply, "key"), Value::String("scheduled".into()));
+        assert_eq!(get(&reply, "key"), Value::string("scheduled"));
         for policy in [json!({"max":1,"on":["5xx"],"scheduleMs":[0]}),
             json!({"max":1,"on":["5xx"],"backoffMs":0})] {
             let (mut d, step) = HttpCallDriver::start(spec(json!({"retry":policy})), egress(), None);
@@ -2010,7 +2010,7 @@ mod grant_request_contract {
                 }
                 let expected = if terminal == TransportError::TimedOut { "timeout" } else { "failed" };
                 let err = done(d.resume(HttpAnswer::Http(Err(terminal)))).unwrap_err();
-                assert_eq!(get(&err, "kind"), Value::String(expected.into()));
+                assert_eq!(get(&err, "kind"), Value::string(expected));
             }
             let call = spec(json!({"retry":{"max":3,"on":["5xx","failed","timeout"],
                 "scheduleMs":[100,500,1500],"noResponseMax":2}}));
@@ -2091,7 +2091,7 @@ mod grant_request_contract {
         assert_eq!(header(&resource, "X-Resource"), Some("resource-only"));
         assert_eq!(header(&resource, "X-Grant"), None);
         assert_eq!(get(&done(d.resume(HttpAnswer::Http(Ok(response(200, &[], "done"))))).unwrap(), "key"),
-            Value::String("grant-job".into()));
+            Value::string("grant-job"));
     }
 
     #[test]
@@ -2111,8 +2111,8 @@ mod grant_request_contract {
                 assert_eq!(http_ask_delay(d.resume(answer.clone())), (grant.clone(), Some(delay)));
             }
             let err = done(d.resume(answer)).unwrap_err();
-            assert_eq!(get(&err, "kind"), Value::String(kind.into()));
-            assert_eq!(get(&err, "key"), Value::String("failed-grant".into()));
+            assert_eq!(get(&err, "kind"), Value::string(kind));
+            assert_eq!(get(&err, "key"), Value::string("failed-grant"));
             assert!(d.take_secrets().is_empty());
         }
     }
@@ -2139,7 +2139,7 @@ mod grant_request_contract {
                         HttpStep::Ask(HttpAsk::SecretSet { .. })));
                 } else {
                     let err = done(d.resume(HttpAnswer::Http(Err(TransportError::TimedOut)))).unwrap_err();
-                    assert_eq!(get(&err, "kind"), Value::String("timeout".into()));
+                    assert_eq!(get(&err, "kind"), Value::string("timeout"));
                     assert!(d.take_secrets().is_empty());
                 }
             }
@@ -2306,7 +2306,7 @@ mod grant_request_contract {
         d.resume(HttpAnswer::Secret(Ok(None)));
         d.resume(ok_secret("alice"));
         let refused = done(d.resume(ok_secret("s3cret"))).unwrap_err();
-        assert_eq!(get(&refused, "kind"), Value::String("refused".into()));
+        assert_eq!(get(&refused, "kind"), Value::string("refused"));
         for answer in [
             HttpAnswer::Http(Err(TransportError::Refused("private resolved address".into()))),
             HttpAnswer::Http(Ok(response(200, &[], "not JSON"))),
@@ -2405,7 +2405,7 @@ mod grant_request_contract {
                         (request.clone(), Some(final_delay)));
                     let reply = done(d.resume(HttpAnswer::Http(Ok(response(503, &[], "exhausted"))))).unwrap();
                     assert_eq!(get(&reply, "status"), Value::Number(503.0));
-                    assert_eq!(get(&reply, "key"), Value::String("revived-resource".into()));
+                    assert_eq!(get(&reply, "key"), Value::string("revived-resource"));
                 }
             }
         }
@@ -2521,10 +2521,10 @@ fn a_non_2xx_grant_exposes_its_body_text_a_2xx_grant_never_does() {
         done(d.resume(HttpAnswer::Http(Ok(response(status, &[], body))))).unwrap_err()
     };
     let rejected = grant_failure(401, r#"{"error":"invalid_grant"}"#);
-    assert_eq!(get(&rejected, "grantBody"), Value::String(r#"{"error":"invalid_grant"}"#.into()));
+    assert_eq!(get(&rejected, "grantBody"), Value::string(r#"{"error":"invalid_grant"}"#));
     assert_eq!(get(&rejected, "grantStatus"), Value::Number(401.0));
     let empty = grant_failure(500, "");
-    assert_eq!(get(&empty, "grantBody"), Value::String(String::new()));
+    assert_eq!(get(&empty, "grantBody"), Value::string(String::new()));
     let malformed_2xx = grant_failure(200, r#"{"access_token":"SECRET-TOKEN"}"#);
     assert_eq!(get(&malformed_2xx, "grantBody"), Value::Null);
     assert!(!format!("{malformed_2xx:?}").contains("SECRET-TOKEN"));
@@ -2551,7 +2551,7 @@ mod failure_wire {
     }
 
     fn text(s: &str) -> Value {
-        Value::String(s.into())
+        Value::string(s)
     }
 
     fn spec(request: serde_json::Value) -> HttpCallSpec {
@@ -2699,7 +2699,7 @@ mod token_rotate {
     }
 
     fn text(s: &str) -> Value {
-        Value::String(s.into())
+        Value::string(s)
     }
 
     fn parse(auth: serde_json::Value) -> Result<HttpCallSpec, HttpRefusal> {
@@ -2966,8 +2966,8 @@ mod dynamic_origin {
     fn refused(step: HttpStep) {
         match step {
             HttpStep::Done(Err(payload)) => {
-                assert_eq!(get(&payload, "kind"), Value::String("refused".into()));
-                assert_eq!(get(&payload, "key"), Value::String("k".into()));
+                assert_eq!(get(&payload, "kind"), Value::string("refused"));
+                assert_eq!(get(&payload, "key"), Value::string("k"));
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -3201,9 +3201,9 @@ mod oauth_client {
         let step = d.resume(HttpAnswer::Secret(Ok(Some("id".into()))));
         assert!(matches!(step, HttpStep::Ask(HttpAsk::Secret { ref name, .. }) if name == "CSEC"));
         let HttpStep::Done(Err(payload)) = d.resume(HttpAnswer::Secret(Ok(None))) else { panic!("fails") };
-        assert_eq!(payload.get_path("kind"), Some(&Value::String("oauth".into())));
-        assert_eq!(payload.get_path("reason"), Some(&Value::String("unconfigured-client".into())));
-        assert_eq!(payload.get_path("code"), Some(&Value::String("NOT_CONFIGURED".into())));
+        assert_eq!(payload.get_path("kind"), Some(&Value::string("oauth")));
+        assert_eq!(payload.get_path("reason"), Some(&Value::string("unconfigured-client")));
+        assert_eq!(payload.get_path("code"), Some(&Value::string("NOT_CONFIGURED")));
     }
 }
 

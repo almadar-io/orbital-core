@@ -158,7 +158,7 @@ impl Operator for TimeRelativeOp {
         } else {
             phrase((ms / (365.0 * day)).round() as i64, "year")
         };
-        Ok(Value::String(out))
+        Ok(Value::string(out))
     }
 }
 
@@ -173,7 +173,7 @@ impl Operator for FormatCreditCardOp {
             .filter(|c| c.is_ascii_digit())
             .collect();
         if digits.len() <= 4 {
-            return Ok(Value::String(digits));
+            return Ok(Value::string(digits));
         }
         let last4 = &digits[digits.len() - 4..];
         let mut groups: Vec<String> = Vec::new();
@@ -185,7 +185,7 @@ impl Operator for FormatCreditCardOp {
             i += g;
         }
         groups.push(last4.to_string());
-        Ok(Value::String(groups.join(" ")))
+        Ok(Value::string(groups.join(" ")))
     }
 }
 

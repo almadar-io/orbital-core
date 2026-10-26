@@ -100,7 +100,7 @@ impl PlainTcp {
         stream.awaiting = Some(Awaiting::Connect);
         let ask = os_ask(
             OsOp::TcpConnect,
-            vec![Value::String(target.host().to_string()), Value::Number(f64::from(target.port()))],
+            vec![Value::string(target.host().to_string()), Value::Number(f64::from(target.port()))],
         );
         (stream, ask)
     }
@@ -132,7 +132,7 @@ impl ByteStream for PlainTcp {
             Err(event) => return event,
         };
         self.awaiting = Some(Awaiting::Send);
-        os_ask(OsOp::Send, vec![sock, Value::String(codec::base64_encode(bytes))])
+        os_ask(OsOp::Send, vec![sock, Value::string(codec::base64_encode(bytes))])
     }
 
     fn recv(&mut self) -> StreamEvent {
@@ -258,7 +258,7 @@ mod tests {
     }
 
     fn sock_reply() -> DriverAnswer {
-        DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([("sock".to_string(), Value::Number(7.0))]))))
+        DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".to_string(), Value::Number(7.0))]))))
     }
 
     #[test]
@@ -266,17 +266,17 @@ mod tests {
         let (mut stream, first) = PlainTcp::connect("redis://cache.internal", &egress());
         assert_eq!(
             first,
-            os(OsOp::TcpConnect, vec![Value::String("cache.internal".to_string()), Value::Number(6379.0)])
+            os(OsOp::TcpConnect, vec![Value::string("cache.internal"), Value::Number(6379.0)])
         );
         assert_eq!(stream.resume(sock_reply()), StreamEvent::Connected);
         assert_eq!(
             stream.send(b"PING"),
-            os(OsOp::Send, vec![Value::Number(7.0), Value::String("UElORw==".to_string())])
+            os(OsOp::Send, vec![Value::Number(7.0), Value::string("UElORw==")])
         );
         assert_eq!(stream.resume(DriverAnswer::Os(Ok(Value::Null))), StreamEvent::Sent);
         assert_eq!(stream.recv(), os(OsOp::Recv, vec![Value::Number(7.0), Value::Number(16384.0)]));
-        let reply = Value::Object(ValueMap::from_iter([
-            ("data".to_string(), Value::String("K1BPTkcNCg==".to_string())),
+        let reply = Value::object(ValueMap::from_iter([
+            ("data".to_string(), Value::String(("K1BPTkcNCg==".to_string()).into())),
             ("eof".to_string(), Value::Bool(false)),
         ]));
         assert_eq!(stream.resume(DriverAnswer::Os(Ok(reply))), StreamEvent::Data(b"+PONG\r\n".to_vec()));
@@ -289,8 +289,8 @@ mod tests {
         let (mut stream, _) = PlainTcp::connect("redis://cache.internal", &egress());
         stream.resume(sock_reply());
         stream.recv();
-        let reply = Value::Object(ValueMap::from_iter([
-            ("data".to_string(), Value::String(String::new())),
+        let reply = Value::object(ValueMap::from_iter([
+            ("data".to_string(), Value::String(String::new().into())),
             ("eof".to_string(), Value::Bool(true)),
         ]));
         assert_eq!(stream.resume(DriverAnswer::Os(Ok(reply))), StreamEvent::Eof);

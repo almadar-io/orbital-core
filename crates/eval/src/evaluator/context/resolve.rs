@@ -48,18 +48,27 @@ impl BindingContext {
                     self.prev_states
                         .iter()
                         .cloned()
-                        .map(Value::String)
+                        .map(Value::string)
                         .collect(),
                 ))
             }
             "fromState" if rest.is_none() => {
-                return Some(self.from_state.clone().map_or(Value::Null, Value::String))
+                return Some(self.from_state.clone().map_or(Value::Null, Value::string))
             }
             "toState" if rest.is_none() => {
-                return Some(self.to_state.clone().map_or(Value::Null, Value::String))
+                return Some(self.to_state.clone().map_or(Value::Null, Value::string))
             }
-            // Check locals
-            _ => self.locals.get(root)?,
+            // Check locals, then the scope's read-once local
+            _ => match self.locals.get(root) {
+                Some(local) => local,
+                None => {
+                    let taken = self.take_linear(root)?;
+                    return match rest {
+                        Some(rest_path) => taken.get_path_owned(rest_path),
+                        None => Some(taken),
+                    };
+                }
+            },
         };
 
         // If there's a rest path, traverse it (owned walk so array `length`/
@@ -314,7 +323,7 @@ impl BindingContext {
                         // both shapes.
                         Some(resolved) => match resolved {
                             Value::Object(_) | Value::Array(_) => {
-                                walk.expanding.push(s.clone());
+                                walk.expanding.push(s.clone().into_inner());
                                 let out = self.resolve_value_guarded(&resolved, walk).into_owned();
                                 walk.expanding.pop();
                                 Cow::Owned(out)
@@ -325,7 +334,7 @@ impl BindingContext {
                                 if walk.expanding.iter().any(|t| t == s) {
                                     Cow::Borrowed(value)
                                 } else {
-                                    walk.expanding.push(s.clone());
+                                    walk.expanding.push(s.clone().into_inner());
                                     let out =
                                         self.resolve_value_guarded(&resolved, walk).into_owned();
                                     walk.expanding.pop();
@@ -344,7 +353,7 @@ impl BindingContext {
                     if interpolated == *s {
                         Cow::Borrowed(value)
                     } else {
-                        Cow::Owned(Value::String(interpolated))
+                        Cow::Owned(Value::string(interpolated))
                     }
                 } else {
                     Cow::Borrowed(value)
@@ -355,18 +364,18 @@ impl BindingContext {
                 for (key, val) in map {
                     if self.is_unset_config_binding(val) {
                         resolved_map
-                            .get_or_insert_with(|| map.clone())
+                            .get_or_insert_with(|| map.clone().into_inner())
                             .shift_remove(key);
                         continue;
                     }
                     if let Cow::Owned(new_val) = self.resolve_value_guarded(val, walk) {
                         resolved_map
-                            .get_or_insert_with(|| map.clone())
+                            .get_or_insert_with(|| map.clone().into_inner())
                             .insert(key.clone(), new_val);
                     }
                 }
                 match resolved_map {
-                    Some(m) => Cow::Owned(Value::Object(m)),
+                    Some(m) => Cow::Owned(Value::object(m)),
                     None => Cow::Borrowed(value),
                 }
             }
@@ -418,15 +427,15 @@ impl BindingContext {
                 let mut resolved_arr: Option<Vec<Value>> = None;
                 for (i, val) in arr.iter().enumerate() {
                     if self.is_unset_config_binding(val) {
-                        resolved_arr.get_or_insert_with(|| arr.clone())[i] = Value::Null;
+                        resolved_arr.get_or_insert_with(|| arr.clone().into_inner())[i] = Value::Null;
                         continue;
                     }
                     if let Cow::Owned(new_val) = self.resolve_value_guarded(val, walk) {
-                        resolved_arr.get_or_insert_with(|| arr.clone())[i] = new_val;
+                        resolved_arr.get_or_insert_with(|| arr.clone().into_inner())[i] = new_val;
                     }
                 }
                 match resolved_arr {
-                    Some(a) => Cow::Owned(Value::Array(a)),
+                    Some(a) => Cow::Owned(Value::array(a)),
                     None => Cow::Borrowed(value),
                 }
             }
@@ -464,7 +473,7 @@ impl BindingContext {
                         && (next.starts_with("@config.")
                             || next.starts_with("@callsitePayload.")) =>
                 {
-                    current = next;
+                    current = next.into_inner();
                 }
                 Some(_) => return false,
             }

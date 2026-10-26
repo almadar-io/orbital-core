@@ -37,7 +37,7 @@ pub fn capture_callsite_payload(expr: &mut SExpression) {
     match expr {
         SExpression::String(s) => {
             if let Some(rest) = s.strip_prefix(PAYLOAD_PREFIX) {
-                *s = format!("{CALLSITE_PAYLOAD_PREFIX}{rest}");
+                *s = format!("{CALLSITE_PAYLOAD_PREFIX}{rest}").into();
             }
         }
         SExpression::Array(items) => items.iter_mut().for_each(capture_callsite_payload),
@@ -78,9 +78,9 @@ pub fn retag_callsite_payload(
             if let Some(rest) = rest {
                 let is_local = local_fields.contains(payload_field_head(rest));
                 *s = if is_local {
-                    format!("{PAYLOAD_PREFIX}{rest}")
+                    format!("{PAYLOAD_PREFIX}{rest}").into()
                 } else {
-                    format!("{CALLSITE_PAYLOAD_PREFIX}{rest}")
+                    format!("{CALLSITE_PAYLOAD_PREFIX}{rest}").into()
                 };
             }
         }
@@ -207,7 +207,7 @@ pub fn resolve_config_ref_event_name(
         return Err(ConfigRefEventError::NoDefault);
     }
     match effective_config.get(knob) {
-        Some(SExpression::String(s)) => Ok(s.clone()),
+        Some(SExpression::String(s)) => Ok(s.clone().into_inner()),
         _ => Err(ConfigRefEventError::NotString),
     }
 }
@@ -521,7 +521,7 @@ pub struct PayloadField {
 /// shape (array/object/null) has no literal spelling and never matches.
 pub(super) fn config_literal_spelling(value: &SExpression) -> Option<String> {
     match value {
-        SExpression::String(s) => Some(s.clone()),
+        SExpression::String(s) => Some(s.clone().into_inner()),
         SExpression::Bool(b) => Some(b.to_string()),
         SExpression::Number(n) if n.fract() == 0.0 && n.abs() < i64::MAX as f64 => {
             Some((*n as i64).to_string())

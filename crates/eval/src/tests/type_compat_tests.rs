@@ -5,7 +5,7 @@ use std::prelude::v1::*;
 fn literal_value_type_defers_operator_calls_but_types_literals() {
     use crate::literal_type::literal_value_type;
     use orbital_core_base::schema::sexpr::SExpression;
-    let s = |x: &str| SExpression::String(x.to_string());
+    let s = |x: &str| SExpression::string(x.to_string());
 
     // Operator applications are computed expressions → defer (None), so the
     // caller routes them to the expression inferencer instead of comparing a

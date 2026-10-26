@@ -75,7 +75,7 @@ pub(super) fn arg_bytes(args: &[Value], i: usize, op: OsOp) -> Result<Vec<u8>, O
 
 /// The run-time value of `bytes`: standard padded base64.
 pub(super) fn bytes_value(bytes: &[u8]) -> Value {
-    Value::String(STANDARD.encode(bytes))
+    Value::string(STANDARD.encode(bytes))
 }
 
 #[cfg(test)]
@@ -85,7 +85,7 @@ mod tests {
     const OP: OsOp = OsOp::ReadFile;
 
     fn s(text: &str) -> Value {
-        Value::String(text.to_string())
+        Value::string(text.to_string())
     }
 
     #[test]

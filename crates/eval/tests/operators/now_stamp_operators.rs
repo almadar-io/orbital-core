@@ -31,7 +31,7 @@ fn a_lambda_child_context_inherits_the_stamp() {
     );
     assert_eq!(
         out,
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(STAMP),
             Value::Number(STAMP),
             Value::Number(STAMP)
@@ -86,7 +86,7 @@ fn is_today_and_today_are_relative_to_the_stamp_day() {
 fn relative_formatting_measures_from_the_stamp() {
     assert_eq!(
         eval_at(STAMP, serde_json::json!(["time/relative", STAMP])),
-        Value::String("just now".into())
+        Value::string("just now")
     );
     let three_days = eval_at(
         STAMP,
@@ -113,7 +113,7 @@ fn an_unstamped_context_reads_the_wall_clock() {
 #[test]
 fn relative_formatting_uses_the_runtime_buckets() {
     let rel = |offset: f64| eval_at(STAMP, serde_json::json!(["time/relative", STAMP + offset]));
-    let s = |text: &str| Value::String(text.into());
+    let s = |text: &str| Value::string(text);
     assert_eq!(rel(-30_000.0), s("just now"));
     assert_eq!(rel(-45.0 * 60_000.0), s("45 minutes ago"));
     assert_eq!(rel(-60_000.0), s("1 minute ago"));

@@ -7,8 +7,9 @@ use super::*;
 // ---------------------------------------------------------------------------------------------------------------
 
 /// `expr` with each `@config.<knob>` read as the trait's resolved config holds it for the run (call-site overrides
-/// are folded in): a scalar default is that constant, no default reads null, and a default bound at run time
-/// (`@user.…`, a forward) or a structured one is unresolved. A knob the trait does not declare is left as written.
+/// are folded in): a scalar default is that constant, a closed call (`(> 30 0)`, a call site's folded forward) is that
+/// call, no default reads null, and a default bound at run time (`@user.…`, a forward) or a structured one is
+/// unresolved. A knob the trait does not declare is left as written.
 pub(super) fn config_read(td: &TraitDefinition, expr: &SExpression) -> SExpression {
     let Some(config) = td.config.as_ref() else {
         return expr.clone();
@@ -19,9 +20,20 @@ pub(super) fn config_read(td: &TraitDefinition, expr: &SExpression) -> SExpressi
             None | Some(SExpression::Null) => SExpression::Null,
             Some(v @ (SExpression::Number(_) | SExpression::Bool(_))) => v.clone(),
             Some(SExpression::String(s)) if !s.starts_with('@') => SExpression::String(s.clone()),
+            Some(call @ SExpression::Array(_)) if closed(call) => call.clone(),
             Some(other) => unresolved(&format!("@config.{knob} = {}", canonical(other))),
         })
     })
+}
+
+/// Whether `expr` reads no binding: every string leaf is a literal.
+fn closed(expr: &SExpression) -> bool {
+    match expr {
+        SExpression::String(s) => !s.starts_with('@'),
+        SExpression::Array(items) => items.iter().all(closed),
+        SExpression::Object(map) => map.values().all(closed),
+        _ => true,
+    }
 }
 
 pub(super) fn configured(td: &TraitDefinition, mut o: Obligation) -> Obligation {
@@ -31,13 +43,13 @@ pub(super) fn configured(td: &TraitDefinition, mut o: Obligation) -> Obligation 
 }
 
 pub(super) fn bind(root: &str, field: &str) -> SExpression {
-    SExpression::String(format!("{root}.{field}"))
+    SExpression::string(format!("{root}.{field}"))
 }
 
 pub fn unresolved(what: &str) -> SExpression {
     SExpression::Array(vec![
-        SExpression::String(UNRESOLVED.to_string()),
-        SExpression::String(what.to_string()),
+        SExpression::string(UNRESOLVED.to_string()),
+        SExpression::string(what.to_string()),
     ])
 }
 
@@ -77,7 +89,7 @@ pub fn subst_fields(
     root: &str,
     value: &dyn Fn(&str) -> Option<SExpression>,
 ) -> SExpression {
-    subst_record(expr, root, value, &SExpression::String(root.to_string()))
+    subst_record(expr, root, value, &SExpression::string(root.to_string()))
 }
 
 pub(super) fn subst_record(
@@ -105,7 +117,7 @@ pub(super) fn subst_record(
                 (None, _) => expr.clone(),
                 (Some(v), None) => v,
                 (Some(SExpression::String(b)), Some(t)) if b.starts_with('@') => {
-                    SExpression::String(format!("{b}.{t}"))
+                    SExpression::string(format!("{b}.{t}"))
                 }
                 (Some(_), Some(_)) => unresolved(s),
             }

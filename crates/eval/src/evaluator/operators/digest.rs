@@ -15,7 +15,7 @@ fn encode_digest(bytes: &[u8], encoding: &str) -> Option<String> {
 }
 
 fn digest_text(bytes: &[u8], encoding: &str, op: &str) -> EvalResult {
-    encode_digest(bytes, encoding).map(Value::String).ok_or_else(|| {
+    encode_digest(bytes, encoding).map(Value::string).ok_or_else(|| {
         OrbitalError::Eval(EvalError::InvalidArgument(format!(
             "{op}: encoding must be \"hex\" or \"base64\", got \"{encoding}\""
         )))
@@ -23,12 +23,12 @@ fn digest_text(bytes: &[u8], encoding: &str, op: &str) -> EvalResult {
 }
 
 fn digest_or_null(bytes: &[u8], encoding: &str) -> EvalResult {
-    Ok(encode_digest(bytes, encoding).map_or(Value::Null, Value::String))
+    Ok(encode_digest(bytes, encoding).map_or(Value::Null, Value::string))
 }
 
 fn string_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<String, OrbitalError> {
     match eval_expr(arg, ctx)? {
-        Value::String(s) => Ok(s),
+        Value::String(s) => Ok(s.into_inner()),
         other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
             "{op}: expected a string argument, got {}",
             other.type_name()
@@ -42,7 +42,7 @@ impl Operator for StrEncodeUriComponentOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/encode-uri-component", == 1);
         let s = string_arg(&args[0], ctx, "str/encode-uri-component")?;
-        Ok(Value::String(codec::encode_uri_component(&s)))
+        Ok(Value::string(codec::encode_uri_component(&s)))
     }
 }
 
@@ -61,7 +61,7 @@ impl Operator for StrDecodeUriComponentOp {
                 ))))
             }
         };
-        Ok(codec::decode_uri_component(&s).map_or(Value::Null, Value::String))
+        Ok(codec::decode_uri_component(&s).map_or(Value::Null, Value::string))
     }
 }
 
@@ -87,7 +87,7 @@ impl Operator for Base64EncodeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "base64/encode", == 1);
         let s = string_arg(&args[0], ctx, "base64/encode")?;
-        Ok(Value::String(codec::base64_encode(s.as_bytes())))
+        Ok(Value::string(codec::base64_encode(s.as_bytes())))
     }
 }
 
@@ -103,7 +103,7 @@ impl Operator for Base64DecodeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "base64/decode", == 1);
         let s = string_arg(&args[0], ctx, "base64/decode")?;
-        Ok(decode_base64_text(&s).map_or(Value::Null, Value::String))
+        Ok(decode_base64_text(&s).map_or(Value::Null, Value::string))
     }
 }
 
@@ -186,7 +186,7 @@ impl Operator for HashScryptOp {
         let key = codec::scrypt_api_key(s.as_bytes(), &salt).map_err(|e| {
             OrbitalError::Eval(EvalError::InvalidArgument(format!("hash/scrypt: {e}")))
         })?;
-        Ok(Value::String(codec::hex(&key)))
+        Ok(Value::string(codec::hex(&key)))
     }
 }
 
@@ -218,7 +218,7 @@ impl Operator for HashPbkdf2Op {
             return Ok(Value::Null);
         };
         let key = codec::pbkdf2_hmac_sha256(&password, &salt, iterations, length as usize);
-        Ok(Value::String(codec::base64_encode(&key)))
+        Ok(Value::string(codec::base64_encode(&key)))
     }
 }
 
@@ -253,12 +253,12 @@ fn codec_setting(options: &Value, key: &str, default: u32, max: u32, min: u32, o
 fn codec_answer(answer: Result<codec::CodecDecoded, codec::CodecFailure>, options: &Value) -> EvalResult {
     if options.as_object().and_then(|fields| fields.get("result")) == Some(&Value::Bool(true)) {
         let (ok, data, crc, code) = match answer {
-            Ok(decoded) => (true, Value::String(codec::base64_encode(&decoded.data)), decoded.crc.map(|crc| Value::Number(f64::from(crc))).unwrap_or(Value::Null), Value::Null),
-            Err(error) => (false, Value::Null, Value::Null, Value::String(error.code().to_string())),
+            Ok(decoded) => (true, Value::string(codec::base64_encode(&decoded.data)), decoded.crc.map(|crc| Value::Number(f64::from(crc))).unwrap_or(Value::Null), Value::Null),
+            Err(error) => (false, Value::Null, Value::Null, Value::string(error.code().to_string())),
         };
         return Ok(Value::Object([("ok", Value::Bool(ok)), ("data", data), ("crc", crc), ("code", code)].into_iter().map(|(key, value)| (key.to_string(), value)).collect()));
     }
-    Ok(answer.map_or(Value::Null, |decoded| Value::String(codec::base64_encode(&decoded.data))))
+    Ok(answer.map_or(Value::Null, |decoded| Value::string(codec::base64_encode(&decoded.data))))
 }
 
 fn compress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult {
@@ -373,7 +373,7 @@ mod tests {
 
     fn sha256(form: serde_json::Value) -> String {
         match eval(form) {
-            Ok(Value::String(s)) => s,
+            Ok(Value::String(s)) => s.into_inner(),
             other => panic!("expected a digest, got {other:?}"),
         }
     }
@@ -538,7 +538,7 @@ mod tests {
             assert_eq!(structured.as_object().unwrap().get("data"), Some(&packed));
             let refused = eval(serde_json::json!([format!("{family}/decompress"), packed, 4, { "result": true }])).unwrap();
             assert_eq!(refused.as_object().unwrap().get("ok"), Some(&Value::Bool(false)));
-            assert_eq!(refused.as_object().unwrap().get("code"), Some(&Value::String("output-limit".into())));
+            assert_eq!(refused.as_object().unwrap().get("code"), Some(&Value::string("output-limit")));
             assert_eq!(refused.as_object().unwrap().get("data"), Some(&Value::Null));
         }
         for call in [

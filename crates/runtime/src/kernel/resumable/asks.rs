@@ -238,7 +238,7 @@ pub fn substrate_completion_event(site: &CallSite, key: &str, outcome: Result<Va
     };
     let payload = match payload {
         Value::Object(mut fields) => {
-            fields.insert("key".to_string(), Value::String(key.to_string()));
+            fields.insert("key".to_string(), Value::string(key.to_string()));
             Value::Object(fields)
         }
         other => other,
@@ -251,23 +251,23 @@ pub fn completion_event(
     key: &str,
     outcome: Result<Value, OsError>,
 ) -> Option<(String, Value)> {
-    let key = Value::String(key.to_string());
+    let key = Value::string(key.to_string());
     match outcome {
         Ok(result) => {
             let mut fields = match result {
                 Value::Object(fields) => fields,
-                other => ValueMap::from_iter([("value".to_string(), other)]),
+                other => ValueMap::from_iter([("value".to_string(), other)]).into(),
             };
             fields.insert("key".to_string(), key);
             Some((site.emit.success.clone()?, Value::Object(fields)))
         }
         Err(error) => Some((
             site.emit.failure.clone()?,
-            Value::Object(ValueMap::from_iter([
-                ("error".to_string(), Value::String(error.message)),
+            Value::object(ValueMap::from_iter([
+                ("error".to_string(), Value::String(error.message.into())),
                 (
                     "kind".to_string(),
-                    Value::String(error.kind.as_str().to_string()),
+                    Value::String(error.kind.as_str().to_string().into()),
                 ),
                 ("key".to_string(), key),
             ])),

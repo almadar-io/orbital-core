@@ -122,7 +122,7 @@ fn json_nodes_keeps_operator_shaped_lists_as_data() {
     let Value::Array(items) = nodes else { panic!("json/nodes did not return a list") };
     let calls: Vec<&Value> = items
         .iter()
-        .filter(|item| matches!(item, Value::Array(parts) if parts.first() == Some(&Value::String("call-service".into()))))
+        .filter(|item| matches!(item, Value::Array(parts) if parts.first() == Some(&Value::string("call-service"))))
         .collect();
     assert_eq!(calls.len(), 1);
     assert_eq!(items.len(), 9);
@@ -130,8 +130,8 @@ fn json_nodes_keeps_operator_shaped_lists_as_data() {
 
 #[test]
 fn json_nodes_of_a_scalar_is_that_scalar_alone() {
-    assert_eq!(nodes_of(json!("leaf")).unwrap(), Value::Array(vec![Value::String("leaf".into())]));
-    assert_eq!(nodes_of(json!([])).unwrap(), Value::Array(vec![Value::Array(vec![])]));
+    assert_eq!(nodes_of(json!("leaf")).unwrap(), Value::array(vec![Value::String("leaf".into())]));
+    assert_eq!(nodes_of(json!([])).unwrap(), Value::array(vec![Value::Array(vec![].into())]));
 }
 
 #[test]

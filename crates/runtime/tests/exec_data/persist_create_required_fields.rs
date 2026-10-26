@@ -18,7 +18,7 @@ fn obj(pairs: &[(&str, Value)]) -> Value {
     for (k, v) in pairs {
         m.insert((*k).to_string(), v.clone());
     }
-    Value::Object(m)
+    Value::object(m)
 }
 
 /// `content` is a plain required column. `priority` is required but declares
@@ -171,7 +171,7 @@ fn persist_create_with_all_required_fields_succeeds() {
             "CREATE",
             obj(&[(
                 "data",
-                obj(&[("content", Value::String("hello".to_string()))]),
+                obj(&[("content", Value::string("hello"))]),
             )]),
         )
         .unwrap();
@@ -202,7 +202,7 @@ fn persist_create_default_and_intrinsic_required_fields_are_never_reported_missi
             "CREATE",
             obj(&[(
                 "data",
-                obj(&[("content", Value::String("hello again".to_string()))]),
+                obj(&[("content", Value::string("hello again"))]),
             )]),
         )
         .unwrap();
@@ -229,7 +229,7 @@ fn persist_create_merged_from_required_field_is_never_reported_missing() {
             "CREATE",
             obj(&[(
                 "data",
-                obj(&[("content", Value::String("hi".to_string()))]),
+                obj(&[("content", Value::string("hi"))]),
             )]),
         )
         .unwrap();

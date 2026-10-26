@@ -47,7 +47,7 @@ impl AgentPortFailure {
 }
 
 fn text(s: &str) -> Value {
-    Value::String(s.to_string())
+    Value::string(s.to_string())
 }
 
 fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
@@ -55,7 +55,7 @@ fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     for (key, value) in pairs {
         map.insert(key.to_string(), value);
     }
-    Value::Object(map)
+    Value::object(map)
 }
 
 fn through_json<T: serde::Serialize>(value: &T) -> Value {
@@ -71,9 +71,9 @@ fn refusal(error: &str, issues: Option<Vec<Value>>) -> Value {
     map.insert("ok".to_string(), Value::Bool(false));
     map.insert("error".to_string(), text(error));
     if let Some(issues) = issues {
-        map.insert("issues".to_string(), Value::Array(issues));
+        map.insert("issues".to_string(), Value::array(issues));
     }
-    Value::Object(map)
+    Value::object(map)
 }
 
 /// One declared input with its qualified address and the JSON Schema of its payload; `payload` states the
@@ -105,7 +105,7 @@ pub fn reflect_input(input: &ExternalInput, payload: Option<&[PayloadField]>) ->
         "parameters".to_string(),
         payload_schema_to_json_schema(payload),
     );
-    Value::Object(map)
+    Value::object(map)
 }
 
 const INPUTS_OPTIONS: [&str; 4] = ["select", "state", "stats", "trace"];
@@ -139,7 +139,7 @@ pub fn inputs_reads(args: &[Value]) -> Result<InputsReads, String> {
         Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Some(*n as usize),
         Some(_) => return Err("program/inputs: trace must be a whole number of steps".to_string()),
     };
-    Ok(InputsReads { state, stats, trace })
+    Ok(InputsReads { state: state.map(|v| v.into_inner()), stats, trace })
 }
 
 const SELECT_SHAPE: &str = "program/inputs: select must be a list of { event, payload? }";
@@ -188,7 +188,7 @@ fn select_option(raw: Option<&Value>) -> Result<Vec<Selection>, String> {
             ),
         };
         chosen.push(Selection {
-            event: event.clone(),
+            event: event.clone().into_inner(),
             payload,
         });
     }
@@ -233,7 +233,7 @@ pub fn plan_inputs(
             "entities",
             Value::Array(entities.iter().map(|e| text(e)).collect()),
         ),
-        ("selected", Value::Array(selected)),
+        ("selected", Value::array(selected)),
     ]))
 }
 
@@ -278,11 +278,11 @@ pub fn payload_schema_to_json_schema(fields: &[PayloadField]) -> Value {
     if !fields.is_empty() {
         out.insert("additionalProperties".to_string(), Value::Bool(false));
     }
-    out.insert("properties".to_string(), Value::Object(properties));
+    out.insert("properties".to_string(), Value::object(properties));
     if !required.is_empty() {
-        out.insert("required".to_string(), Value::Array(required));
+        out.insert("required".to_string(), Value::array(required));
     }
-    Value::Object(out)
+    Value::object(out)
 }
 
 fn payload_field_to_json_schema(field: &PayloadField) -> Value {
@@ -294,7 +294,7 @@ fn payload_field_to_json_schema(field: &PayloadField) -> Value {
             if let Some(json) = json_type_of(element) {
                 base.insert("type".to_string(), text(json));
             }
-            Value::Object(base)
+            Value::object(base)
         }
     };
     if let (Some(values), Value::Object(map)) = (&field.values, &mut shape) {
@@ -524,7 +524,7 @@ pub fn issues_value(issues: &[PayloadIssue], root: &Value) -> Vec<Value> {
                     map.insert("received".to_string(), text(json_kind(sent)));
                 }
             }
-            Value::Object(map)
+            Value::object(map)
         })
         .collect()
 }
@@ -617,15 +617,15 @@ fn inbound_plan(options: &ValueMap) -> Result<DispatchPlan, String> {
     };
     let body = match options.get("body") {
         None | Some(Value::Null) => String::new(),
-        Some(Value::String(body)) => body.clone(),
+        Some(Value::String(body)) => body.clone().into_inner(),
         Some(_) => return Err(INBOUND_SHAPE.to_string()),
     };
     let headers = match options.get("headers") {
         None | Some(Value::Null) => ValueMap::default(),
-        Some(Value::Object(headers)) if headers.values().all(|v| v.as_str().is_some()) => headers.clone(),
+        Some(Value::Object(headers)) if headers.values().all(|v| v.as_str().is_some()) => headers.clone().into_inner(),
         Some(_) => return Err(INBOUND_SHAPE.to_string()),
     };
-    Ok(DispatchPlan::Inbound { name: name.clone(), body, headers })
+    Ok(DispatchPlan::Inbound { name: name.clone().into_inner(), body, headers })
 }
 
 enum Arguments {
@@ -635,7 +635,7 @@ enum Arguments {
 
 fn arguments_of(raw: Option<&Value>) -> Result<Arguments, String> {
     match raw {
-        None | Some(Value::Null) => Ok(Arguments::Payload(Value::Object(ValueMap::default()))),
+        None | Some(Value::Null) => Ok(Arguments::Payload(Value::object(ValueMap::default()))),
         Some(Value::String(source)) => {
             let source = if source.is_empty() {
                 "{}"
@@ -777,10 +777,10 @@ pub fn plan_dispatch(
             let Some(orbital) = caller_orbital else {
                 return failed("program/dispatch: a request addressed at the calling trait needs the trait's orbital".to_string());
             };
-            request.insert("orbital".to_string(), Value::String(orbital.to_string()));
-            request.insert("targetTrait".to_string(), Value::String(caller_trait.to_string()));
+            request.insert("orbital".to_string(), Value::string(orbital.to_string()));
+            request.insert("targetTrait".to_string(), Value::string(caller_trait.to_string()));
             request.insert("event".to_string(), Value::String(address.clone()));
-            address = format!("{orbital}.{caller_trait}.{address}");
+            address = format!("{orbital}.{caller_trait}.{address}").into();
         } else if !(request.contains_key("orbital") && request.contains_key("event")) {
             return failed("program/dispatch: an event request names its orbital and event".to_string());
         }
@@ -834,14 +834,14 @@ pub fn read_named_target(args: &[Value], readable: &[String]) -> Result<String, 
         ));
     };
     if readable.contains(name) {
-        return Ok(name.clone());
+        return Ok(name.clone().into_inner());
     }
     let message = format!("persist/read-named: '{name}' is not a persisted entity of this program");
     Err(AgentPortFailure {
         error: message.clone(),
         errors: vec![object([
             ("code", text(UNKNOWN_ENTITY_CODE)),
-            ("message", Value::String(message)),
+            ("message", Value::string(message)),
         ])],
     })
 }
@@ -851,7 +851,7 @@ pub fn read_named_result(entity: &str, rows: Vec<Value>) -> Value {
     object([
         ("entity", text(entity)),
         ("count", Value::Number(rows.len() as f64)),
-        ("rows", Value::Array(rows)),
+        ("rows", Value::array(rows)),
     ])
 }
 
@@ -1022,13 +1022,13 @@ mod tests {
         let sent = serde_json::from_value::<Value>(serde_json::json!({ "n": "x" })).unwrap();
         let issues = issues_value(&payload_issues(&fields, &sent), &sent);
         assert_eq!(
-            as_json(&Value::Array(issues)),
+            as_json(&Value::array(issues)),
             serde_json::json!([{ "path": "n", "reason": "wrong-type", "expected": "number", "received": "string" }])
         );
-        let empty = Value::Object(ValueMap::default());
+        let empty = Value::object(ValueMap::default());
         let issues = issues_value(&payload_issues(&fields, &empty), &empty);
         assert_eq!(
-            as_json(&Value::Array(issues)),
+            as_json(&Value::array(issues)),
             serde_json::json!([{ "path": "n", "reason": "missing" }])
         );
     }

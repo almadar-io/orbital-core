@@ -24,7 +24,7 @@ pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSour
     let mut src: ValueMap = ValueMap::default();
     let mut put_str = |key: &str, v: &Option<String>| {
         if let Some(v) = v {
-            src.insert(key.to_string(), Value::String(v.clone()));
+            src.insert(key.to_string(), Value::string(v.clone()));
         }
     };
     put_str("orbital", &source.orbital);
@@ -42,10 +42,10 @@ pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSour
         src.insert("dispatched".to_string(), Value::Bool(v));
     }
     let mut record = ValueMap::default();
-    record.insert("event".to_string(), Value::String(event.to_string()));
+    record.insert("event".to_string(), Value::string(event.to_string()));
     record.insert("payload".to_string(), payload.clone());
-    record.insert("source".to_string(), Value::Object(src));
-    Value::Object(record)
+    record.insert("source".to_string(), Value::object(src));
+    Value::object(record)
 }
 
 /// `Array<{ trait: string; from: string; event?: string }>` — stateless
@@ -533,7 +533,7 @@ impl HopEffect {
         let (head, args) = match &run.effect {
             orbital_core_base::schema::sexpr::SExpression::Array(items) => match items.split_first() {
                 Some((orbital_core_base::schema::sexpr::SExpression::String(head), rest)) => (
-                    head.clone(),
+                    head.to_string(),
                     rest.iter().cloned().map(Value::from).collect(),
                 ),
                 _ => (
@@ -807,7 +807,7 @@ impl EventResponse {
                 if !entity_by_trait.contains_key(trait_name) {
                     let mut fields = ValueMap::default();
                     fields.reserve(result.written_values().count() + 1);
-                    entity_by_trait.insert(trait_name.to_string(), Value::Object(fields));
+                    entity_by_trait.insert(trait_name.to_string(), Value::object(fields));
                 }
                 if let Some(Value::Object(fields)) = entity_by_trait.get_mut(trait_name) {
                     fields.extend(result.written_values().map(|(k, v)| (k.clone(), v.clone())));

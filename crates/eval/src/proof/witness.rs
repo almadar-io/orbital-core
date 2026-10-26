@@ -231,7 +231,7 @@ fn candidate_set(guard: &SExpression) -> Option<(Vec<String>, Vec<String>)> {
                 | (SExpression::String(lit), SExpression::String(p))
                     if !lit.starts_with('@') =>
                 {
-                    payload_path(p).map(|path| (path, vec![lit.clone()]))
+                    payload_path(p).map(|path| (path, vec![lit.to_string()]))
                 }
                 _ => None,
             }
@@ -480,9 +480,9 @@ fn rename_var(expr: &SExpression, name: &str) -> SExpression {
         SExpression::String(s) => {
             let own = format!("@{name}");
             if *s == own {
-                SExpression::String("@payload".to_string())
+                SExpression::string("@payload")
             } else if let Some(rest) = s.strip_prefix(&format!("{own}.")) {
-                SExpression::String(format!("@payload.{rest}"))
+                SExpression::string(format!("@payload.{rest}"))
             } else {
                 expr.clone()
             }
@@ -528,7 +528,7 @@ fn solve_quantifier(
     else {
         return false;
     };
-    if function.first() != Some(&SExpression::String("fn".to_string())) || function.len() < 3 {
+    if function.first() != Some(&SExpression::string("fn")) || function.len() < 3 {
         return false;
     }
     let predicate = rename_var(body, name);
@@ -593,7 +593,7 @@ fn solve_literal_quantifier(
     let (Some(SExpression::String(name)), Some(body)) = (function.get(1), function.last()) else {
         return false;
     };
-    if function.first() != Some(&SExpression::String("fn".to_string())) || function.len() < 3 {
+    if function.first() != Some(&SExpression::string("fn")) || function.len() < 3 {
         return false;
     }
     let any_element = some == want;
@@ -673,7 +673,7 @@ pub fn substitute_var(expr: &SExpression, name: &str, value: &SExpression) -> SE
         SExpression::String(s) if *s == own => value.clone(),
         SExpression::String(s) => match (s.strip_prefix(&format!("{own}.")), value) {
             (Some(rest), SExpression::String(v)) if v.starts_with('@') => {
-                SExpression::String(format!("{v}.{rest}"))
+                SExpression::string(format!("{v}.{rest}"))
             }
             (Some(rest), SExpression::Object(map)) => {
                 let mut cur = SExpression::Object(map.clone());
@@ -732,7 +732,7 @@ fn solve_let(
         let (Some(SExpression::String(name)), Some(value)) = (pair.first(), pair.get(1)) else {
             return false;
         };
-        pairs.push((name.clone(), value.clone()));
+        pairs.push((name.clone().into_inner(), value.clone()));
     }
     for i in 0..pairs.len() {
         for j in (i + 1)..pairs.len() {
@@ -778,7 +778,7 @@ pub fn literal_json(expr: &SExpression) -> Option<serde_json::Value> {
         SExpression::Null => Some(serde_json::Value::Null),
         SExpression::Bool(b) => Some(serde_json::Value::Bool(*b)),
         SExpression::Number(n) => Some(number_json(*n)),
-        SExpression::String(s) if !s.starts_with('@') => Some(serde_json::Value::String(s.clone())),
+        SExpression::String(s) if !s.starts_with('@') => Some(serde_json::Value::String(s.clone().into_inner())),
         _ => None,
     }
 }

@@ -57,7 +57,7 @@ impl NodeLowerer {
                         .iter()
                         .filter_map(|v| {
                             if let SExpression::String(s) = v {
-                                Some(s.clone())
+                                Some(s.to_string())
                             } else {
                                 None
                             }

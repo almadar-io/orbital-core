@@ -93,7 +93,7 @@ pub(super) fn mounts(op: OsOp) -> Result<Value, OsError> {
 
 pub(super) fn disk_io(op: OsOp) -> Result<Value, OsError> {
     let devices = procfs::disk_io(&read_small(op, "/proc/diskstats")?);
-    Ok(object([("devices", Value::Array(devices))]))
+    Ok(object([("devices", Value::array(devices))]))
 }
 
 pub(super) fn network_interfaces(op: OsOp) -> Result<Value, OsError> {
@@ -113,7 +113,7 @@ pub(super) fn network_interfaces(op: OsOp) -> Result<Value, OsError> {
 
 pub(super) fn network_stats(op: OsOp) -> Result<Value, OsError> {
     let stats = procfs::net_dev(&read_small(op, "/proc/net/dev")?);
-    Ok(object([("interfaces", Value::Object(stats))]))
+    Ok(object([("interfaces", Value::object(stats))]))
 }
 
 pub(super) fn network_connected(op: OsOp) -> Result<Value, OsError> {

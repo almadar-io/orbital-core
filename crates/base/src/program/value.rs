@@ -14,6 +14,184 @@ use std::sync::Arc;
 /// them in the order the fields were written, as the JS evaluator does.
 pub type ValueMap = crate::collections::IndexMap<String, Value>;
 
+/// A copy-on-write handle: cloning shares the data; a write through `DerefMut` copies only when it is shared.
+/// It is how a value's lists and records are held, so reading one is a reference-count bump, not a deep copy,
+/// and an accumulator written in a loop is updated in place.
+#[derive(Default, PartialEq, Eq, PartialOrd, Hash)]
+pub struct Shared<T>(Arc<T>);
+
+impl<T> Shared<T> {
+    pub fn new(value: T) -> Self {
+        Shared(Arc::new(value))
+    }
+
+    /// Whether `a` and `b` hold the same allocation.
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        Arc::ptr_eq(&a.0, &b.0)
+    }
+}
+
+impl<T: Clone> Shared<T> {
+    /// The data, moved out when this is its only handle, else copied.
+    pub fn into_inner(self) -> T {
+        Arc::unwrap_or_clone(self.0)
+    }
+}
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Shared(Arc::clone(&self.0))
+    }
+}
+
+impl<T> std::ops::Deref for Shared<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Clone> std::ops::DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl<T: fmt::Display> fmt::Display for Shared<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl PartialEq<str> for Shared<String> {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for Shared<String> {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for Shared<String> {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<Shared<String>> for String {
+    fn eq(&self, other: &Shared<String>) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl PartialEq<Shared<String>> for str {
+    fn eq(&self, other: &Shared<String>) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<Shared<String>> for &str {
+    fn eq(&self, other: &Shared<String>) -> bool {
+        *self == other.as_str()
+    }
+}
+
+impl From<Shared<String>> for String {
+    fn from(text: Shared<String>) -> Self {
+        text.into_inner()
+    }
+}
+
+impl From<&Shared<String>> for String {
+    fn from(text: &Shared<String>) -> Self {
+        text.as_str().to_owned()
+    }
+}
+
+impl AsRef<str> for Shared<String> {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::borrow::Borrow<str> for Shared<String> {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<&str> for Shared<String> {
+    fn from(text: &str) -> Self {
+        Shared::new(text.to_string())
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for Shared<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<T> From<T> for Shared<T> {
+    fn from(value: T) -> Self {
+        Shared::new(value)
+    }
+}
+
+impl<T, A> FromIterator<A> for Shared<T>
+where
+    T: FromIterator<A>,
+{
+    fn from_iter<I: IntoIterator<Item = A>>(iter: I) -> Self {
+        Shared::new(iter.into_iter().collect())
+    }
+}
+
+impl<T: Clone + IntoIterator> IntoIterator for Shared<T> {
+    type Item = T::Item;
+    type IntoIter = T::IntoIter;
+    fn into_iter(self) -> T::IntoIter {
+        self.into_inner().into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Shared<T>
+where
+    &'a T: IntoIterator,
+{
+    type Item = <&'a T as IntoIterator>::Item;
+    type IntoIter = <&'a T as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        (&*self.0).into_iter()
+    }
+}
+
+impl<'a, T: Clone> IntoIterator for &'a mut Shared<T>
+where
+    &'a mut T: IntoIterator,
+{
+    type Item = <&'a mut T as IntoIterator>::Item;
+    type IntoIter = <&'a mut T as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        Arc::make_mut(&mut self.0).into_iter()
+    }
+}
+
+impl<T: Serialize> Serialize for Shared<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Shared<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        T::deserialize(deserializer).map(Shared::new)
+    }
+}
+
 /// Runtime value resulting from S-expression evaluation
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum Value {
@@ -25,11 +203,11 @@ pub enum Value {
     /// Numeric value (all numbers are f64 for simplicity)
     Number(f64),
     /// String value
-    String(String),
+    String(Shared<String>),
     /// Array of values
-    Array(Vec<Value>),
+    Array(Shared<Vec<Value>>),
     /// Object/map of values
-    Object(ValueMap),
+    Object(Shared<ValueMap>),
     /// Lambda function (params, body)
     Lambda {
         params: Vec<String>,
@@ -109,11 +287,11 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor {
     }
 
     fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Value, E> {
-        Ok(Value::String(value.to_owned()))
+        Ok(Value::string(value.to_owned()))
     }
 
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Value, E> {
-        Ok(Value::String(value))
+        Ok(Value::string(value))
     }
 
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
@@ -121,7 +299,7 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor {
         while let Some(item) = seq.next_element::<Value>()? {
             items.push(item);
         }
-        Ok(Value::Array(items))
+        Ok(Value::array(items))
     }
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
@@ -129,7 +307,7 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor {
         while let Some((key, value)) = map.next_entry::<String, Value>()? {
             object.insert(key, value);
         }
-        Ok(Value::Object(object))
+        Ok(Value::object(object))
     }
 }
 
@@ -183,6 +361,18 @@ pub fn split_path(path: &str) -> Vec<std::borrow::Cow<'_, str>> {
 }
 
 impl Value {
+    pub fn array(items: impl Into<Shared<Vec<Value>>>) -> Value {
+        Value::Array(items.into())
+    }
+
+    pub fn object(fields: impl Into<Shared<ValueMap>>) -> Value {
+        Value::Object(fields.into())
+    }
+
+    pub fn string(text: impl Into<Shared<String>>) -> Value {
+        Value::String(text.into())
+    }
+
     /// Check if value is null
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
@@ -257,7 +447,7 @@ impl Value {
             Value::Null => "null".to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Number(n) => crate::str_utils::js_number_string(*n),
-            Value::String(s) => s.clone(),
+            Value::String(s) => s.clone().into_inner(),
             Value::Array(_) | Value::Object(_) => crate::json_value::js_json_string(self),
             Value::Lambda { params, .. } => format!("<fn({})>", params.join(", ")),
         }
@@ -384,7 +574,7 @@ impl Value {
                 match current {
                     Value::Object(obj) => {
                         if !obj.contains_key(part.as_ref()) {
-                            obj.insert(part.to_string(), Value::Object(ValueMap::default()));
+                            obj.insert(part.to_string(), Value::object(ValueMap::default()));
                         }
                         match obj.get_mut(part.as_ref()) {
                             Some(v) => current = v,
@@ -525,7 +715,7 @@ impl From<SExpression> for Value {
             SExpression::Null => Value::Null,
             SExpression::Bool(b) => Value::Bool(b),
             SExpression::Number(n) => Value::Number(n),
-            SExpression::String(s) => Value::String(s),
+            SExpression::String(s) => Value::string(s),
             SExpression::Array(arr) => Value::Array(arr.into_iter().map(Value::from).collect()),
             SExpression::Object(obj) => {
                 Value::Object(obj.into_iter().map(|(k, v)| (k, Value::from(v))).collect())
@@ -541,7 +731,7 @@ impl From<Value> for SExpression {
             Value::Null => SExpression::Null,
             Value::Bool(b) => SExpression::Bool(b),
             Value::Number(n) => SExpression::Number(n),
-            Value::String(s) => SExpression::String(s),
+            Value::String(s) => SExpression::string(s.into_inner()),
             Value::Array(arr) => {
                 SExpression::Array(arr.into_iter().map(SExpression::from).collect())
             }
@@ -552,12 +742,12 @@ impl From<Value> for SExpression {
             ),
             // Lambda cannot be directly converted to SExpression (would need ["fn", params, body])
             Value::Lambda { params, body } => {
-                let mut arr = vec![SExpression::String("fn".to_string())];
+                let mut arr = vec![SExpression::string("fn")];
                 if params.len() == 1 {
-                    arr.push(SExpression::String(params[0].clone()));
+                    arr.push(SExpression::string(params[0].clone()));
                 } else {
                     arr.push(SExpression::Array(
-                        params.into_iter().map(SExpression::String).collect(),
+                        params.into_iter().map(SExpression::string).collect(),
                     ));
                 }
                 arr.push((*body).clone());
@@ -594,13 +784,13 @@ impl From<f64> for Value {
 
 impl From<&str> for Value {
     fn from(s: &str) -> Self {
-        Value::String(s.to_string())
+        Value::string(s.to_string())
     }
 }
 
 impl From<String> for Value {
     fn from(s: String) -> Self {
-        Value::String(s)
+        Value::string(s)
     }
 }
 
@@ -636,7 +826,7 @@ mod tests {
 
     #[test]
     fn get_and_set_path_agree_on_an_escaped_dot() {
-        let mut v = Value::Object(ValueMap::default());
+        let mut v = Value::object(ValueMap::default());
         assert!(v.set_path(r"a.b\.c", Value::Number(1.0)));
         assert_eq!(v.get_path(r"a.b\.c"), Some(&Value::Number(1.0)));
         assert_eq!(v.get_path_owned(r"a.b\.c"), Some(Value::Number(1.0)));
@@ -669,30 +859,30 @@ mod tests {
         assert!(!Value::Number(0.0).is_truthy());
         assert!(Value::Number(1.0).is_truthy());
         assert!(Value::Number(-1.0).is_truthy());
-        assert!(!Value::String("".to_string()).is_truthy());
-        assert!(Value::String("hello".to_string()).is_truthy());
-        assert!(!Value::Array(vec![]).is_truthy());
-        assert!(Value::Array(vec![Value::Null]).is_truthy());
+        assert!(!Value::string("").is_truthy());
+        assert!(Value::string("hello").is_truthy());
+        assert!(!Value::array(vec![]).is_truthy());
+        assert!(Value::array(vec![Value::Null]).is_truthy());
     }
 
     #[test]
     fn test_get_path() {
         let mut obj = ValueMap::default();
         let mut address = ValueMap::default();
-        address.insert("city".to_string(), Value::String("NYC".to_string()));
-        address.insert("zip".to_string(), Value::String("10001".to_string()));
-        obj.insert("name".to_string(), Value::String("John".to_string()));
-        obj.insert("address".to_string(), Value::Object(address));
+        address.insert("city".to_string(), Value::string("NYC"));
+        address.insert("zip".to_string(), Value::string("10001"));
+        obj.insert("name".to_string(), Value::string("John"));
+        obj.insert("address".to_string(), Value::object(address));
 
-        let value = Value::Object(obj);
+        let value = Value::object(obj);
 
         assert_eq!(
             value.get_path("name"),
-            Some(&Value::String("John".to_string()))
+            Some(&Value::string("John"))
         );
         assert_eq!(
             value.get_path("address.city"),
-            Some(&Value::String("NYC".to_string()))
+            Some(&Value::string("NYC"))
         );
         assert_eq!(value.get_path("address.country"), None);
         assert_eq!(value.get_path("nonexistent"), None);
@@ -704,14 +894,14 @@ mod tests {
         // segments still index; nested objects still traverse. Pins the owned walk
         // `BindingContext::resolve` uses so a length badge bound to a fetched
         // collection renders a number, not the literal token.
-        let data = Value::Array(vec![
-            Value::String("a".to_string()),
-            Value::String("b".to_string()),
-            Value::String("c".to_string()),
+        let data = Value::array(vec![
+            Value::String(("a".to_string()).into()),
+            Value::String(("b".to_string()).into()),
+            Value::String(("c".to_string()).into()),
         ]);
         let mut root = ValueMap::default();
         root.insert("data".to_string(), data);
-        let value = Value::Object(root);
+        let value = Value::object(root);
 
         assert_eq!(
             value.get_path_owned("data.length"),
@@ -720,7 +910,7 @@ mod tests {
         assert_eq!(value.get_path_owned("data.count"), Some(Value::Number(3.0)));
         assert_eq!(
             value.get_path_owned("data.1"),
-            Some(Value::String("b".to_string()))
+            Some(Value::string("b"))
         );
         // length is terminal — anything past it does not resolve.
         assert_eq!(value.get_path_owned("data.length.foo"), None);
@@ -733,8 +923,8 @@ mod tests {
     #[test]
     fn test_get_path_owned_empty_array_length_is_zero() {
         let mut root = ValueMap::default();
-        root.insert("data".to_string(), Value::Array(vec![]));
-        let value = Value::Object(root);
+        root.insert("data".to_string(), Value::array(vec![]));
+        let value = Value::object(root);
         assert_eq!(
             value.get_path_owned("data.length"),
             Some(Value::Number(0.0))
@@ -743,37 +933,37 @@ mod tests {
 
     #[test]
     fn test_set_path() {
-        let mut value = Value::Object(ValueMap::default());
+        let mut value = Value::object(ValueMap::default());
 
-        assert!(value.set_path("name", Value::String("John".to_string())));
+        assert!(value.set_path("name", Value::string("John")));
         assert_eq!(
             value.get_path("name"),
-            Some(&Value::String("John".to_string()))
+            Some(&Value::string("John"))
         );
 
-        assert!(value.set_path("address.city", Value::String("NYC".to_string())));
+        assert!(value.set_path("address.city", Value::string("NYC")));
         assert_eq!(
             value.get_path("address.city"),
-            Some(&Value::String("NYC".to_string()))
+            Some(&Value::string("NYC"))
         );
     }
 
     #[test]
     fn test_loose_eq() {
-        assert!(Value::Number(1.0).loose_eq(&Value::String("1".to_string())));
+        assert!(Value::Number(1.0).loose_eq(&Value::string("1")));
         assert!(Value::Bool(true).loose_eq(&Value::Number(1.0)));
         assert!(Value::Bool(false).loose_eq(&Value::Number(0.0)));
-        assert!(!Value::Number(1.0).loose_eq(&Value::String("2".to_string())));
+        assert!(!Value::Number(1.0).loose_eq(&Value::string("2")));
     }
 
     #[test]
     fn an_empty_string_is_a_present_value_not_null() {
-        let empty = Value::String(String::new());
+        let empty = Value::string(String::new());
         assert!(!Value::Null.loose_eq(&empty));
         assert!(!empty.loose_eq(&Value::Null));
         assert!(Value::Null.loose_eq(&Value::Null), "control: null is null");
-        assert!(empty.loose_eq(&Value::String(String::new())), "control: \"\" is \"\"");
-        assert!(!Value::Null.loose_eq(&Value::String("x".to_string())), "control: null is not a non-empty string");
+        assert!(empty.loose_eq(&Value::string(String::new())), "control: \"\" is \"\"");
+        assert!(!Value::Null.loose_eq(&Value::string("x")), "control: null is not a non-empty string");
     }
 
     #[test]
@@ -783,7 +973,7 @@ mod tests {
             Some(std::cmp::Ordering::Less)
         );
         assert_eq!(
-            Value::String("a".to_string()).compare(&Value::String("b".to_string())),
+            Value::string("a").compare(&Value::string("b")),
             Some(std::cmp::Ordering::Less)
         );
     }

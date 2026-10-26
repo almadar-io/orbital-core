@@ -71,13 +71,13 @@ impl EvalContextWire {
             builder = builder.pages(pages);
         }
         if let Some(state) = self.state {
-            builder = builder.state(Value::String(state));
+            builder = builder.state(Value::string(state));
         }
         if let Some(now) = self.now {
             builder = builder.now(now);
         }
         if let Some(locale) = self.locale {
-            builder = builder.locale(Value::String(locale));
+            builder = builder.locale(Value::string(locale));
         }
         if let Some(messages) = self.messages {
             builder = builder.messages(messages);
@@ -431,7 +431,7 @@ pub fn resolve_row_binding_json(term: &str, bindings_json: &str) -> Result<Strin
             },
             Some(value) if is_scalar(&value) => RowBindingWire::Value { value },
             Some(Value::Array(items)) if items.iter().all(is_scalar) => {
-                RowBindingWire::List { values: items }
+                RowBindingWire::List { values: items.into_inner() }
             }
             Some(Value::Array(_)) => RowBindingWire::Inexpressible {
                 detail: format!("{term} is not a list of scalars"),
@@ -543,7 +543,7 @@ enum Ended {
 
 impl EffectRun {
     fn mirror(&mut self) {
-        self.ctx.set_entity(Value::Object(self.entity.clone()));
+        self.ctx.set_entity(Value::object(self.entity.clone()));
     }
 
     /// A leaf effect's value expression, traced under the effect's own paths: the root entered, the expression at
@@ -596,11 +596,11 @@ impl EffectRun {
                 let event = event.clone();
                 match rest.get(1) {
                     Some(payload) => self.leaf(payload, 2, &[1], move |run, value| {
-                        run.emitted.push(EmittedEffectWire { event, payload: Some(value) });
+                        run.emitted.push(EmittedEffectWire { event: event.into_inner(), payload: Some(value) });
                         Ended::Executed
                     }),
                     None => {
-                        self.emitted.push(EmittedEffectWire { event, payload: None });
+                        self.emitted.push(EmittedEffectWire { event: event.into_inner(), payload: None });
                         (
                             Ended::Executed,
                             vec![
@@ -682,9 +682,9 @@ pub fn trace_effects_json(context_json: &str, effects_json: &str) -> Result<Stri
     let effects: Vec<SExpression> = parse(effects_json, "effects")?;
     let entity = match ctx.entity.as_value() {
         Value::Object(map) => map.clone(),
-        _ => ValueMap::default(),
+        _ => ValueMap::default().into(),
     };
-    let mut run = EffectRun { ctx, entity, emitted: Vec::new(), writes: Vec::new() };
+    let mut run = EffectRun { ctx, entity: entity.into_inner(), emitted: Vec::new(), writes: Vec::new() };
     run.mirror();
     let mut traced = Vec::with_capacity(effects.len());
     for effect in &effects {
@@ -697,7 +697,7 @@ pub fn trace_effects_json(context_json: &str, effects_json: &str) -> Result<Stri
         let (kind, args) = match effect {
             SExpression::Array(items) => (
                 match items.first() {
-                    Some(SExpression::String(head)) => head.clone(),
+                    Some(SExpression::String(head)) => head.to_string(),
                     _ => "unknown".to_string(),
                 },
                 items.iter().skip(1).cloned().collect(),
@@ -716,7 +716,7 @@ pub fn trace_effects_json(context_json: &str, effects_json: &str) -> Result<Stri
             .collect();
         traced.push(EffectTraceWire { kind, args, status, error, eval_trace: (!trace.is_empty()).then_some(trace) });
     }
-    to_json(&TraceEffectsWire { effects: traced, emitted: run.emitted, writes: run.writes, entity: Value::Object(run.entity) })
+    to_json(&TraceEffectsWire { effects: traced, emitted: run.emitted, writes: run.writes, entity: Value::object(run.entity) })
 }
 
 #[cfg(test)]

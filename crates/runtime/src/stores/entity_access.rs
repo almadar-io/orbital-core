@@ -84,7 +84,7 @@ pub fn collect_user_field_literals(expr: &SExpression, out: &mut HashMap<String,
                                 if !s.starts_with('@') {
                                     let set = out.entry(field.to_string()).or_default();
                                     if !set.contains(s) {
-                                        set.push(s.clone());
+                                        set.push(s.clone().into_inner());
                                     }
                                 }
                             }
@@ -432,7 +432,7 @@ pub fn apply_derived(
     let evaluator = Evaluator::new();
     for (name, expr) in derived {
         let mut row_ctx = ctx.clone();
-        row_ctx.set_entity(Value::Object(fields.clone()));
+        row_ctx.set_entity(Value::object(fields.clone()));
         let value = evaluator.evaluate(expr, &row_ctx).map_err(|err| {
             DerivedFailure(format!(
                 "persist {operation:?} {entity_type}: derived field `{name}` could not be computed ({err})"
@@ -440,7 +440,7 @@ pub fn apply_derived(
         })?;
         fields.insert(name.clone(), value);
     }
-    Ok(Value::Object(fields))
+    Ok(Value::object(fields))
 }
 
 /// Names of the entity's `@intrinsic` fields.
@@ -515,40 +515,40 @@ mod tests {
 
     fn row(id: &str, owner: &str) -> Value {
         let mut m = ValueMap::default();
-        m.insert("id".to_string(), Value::String(id.to_string()));
-        m.insert("memberId".to_string(), Value::String(owner.to_string()));
-        Value::Object(m)
+        m.insert("id".to_string(), Value::string(id.to_string()));
+        m.insert("memberId".to_string(), Value::string(owner.to_string()));
+        Value::object(m)
     }
 
     fn viewer(id: &str) -> Value {
         let mut m = ValueMap::default();
-        m.insert("id".to_string(), Value::String(id.to_string()));
-        Value::Object(m)
+        m.insert("id".to_string(), Value::string(id.to_string()));
+        Value::object(m)
     }
 
     /// `["=", "@entity.memberId", "@user.id"]` — the ownership-scoping shape.
     fn owner_predicate() -> Value {
-        Value::Array(vec![
-            Value::String("=".to_string()),
-            Value::String("@entity.memberId".to_string()),
-            Value::String("@user.id".to_string()),
+        Value::array(vec![
+            Value::String(("=".to_string()).into()),
+            Value::String(("@entity.memberId".to_string()).into()),
+            Value::String(("@user.id".to_string()).into()),
         ])
     }
 
     fn status_open_predicate() -> Value {
-        Value::Array(vec![
-            Value::String("=".to_string()),
-            Value::String("@entity.status".to_string()),
-            Value::String("open".to_string()),
+        Value::array(vec![
+            Value::String(("=".to_string()).into()),
+            Value::String(("@entity.status".to_string()).into()),
+            Value::String(("open".to_string()).into()),
         ])
     }
 
     fn row_with_status(id: &str, owner: &str, status: &str) -> Value {
         let mut m = ValueMap::default();
-        m.insert("id".to_string(), Value::String(id.to_string()));
-        m.insert("memberId".to_string(), Value::String(owner.to_string()));
-        m.insert("status".to_string(), Value::String(status.to_string()));
-        Value::Object(m)
+        m.insert("id".to_string(), Value::string(id.to_string()));
+        m.insert("memberId".to_string(), Value::string(owner.to_string()));
+        m.insert("status".to_string(), Value::string(status.to_string()));
+        Value::object(m)
     }
 
     #[test]
@@ -637,7 +637,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].get_path("id"),
-            Some(&Value::String("r1".to_string()))
+            Some(&Value::string("r1"))
         );
     }
 

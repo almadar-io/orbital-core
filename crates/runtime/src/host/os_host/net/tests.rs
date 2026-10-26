@@ -8,7 +8,7 @@ use {
 };
 
 fn s(text: &str) -> Value {
-    Value::String(text.to_string())
+    Value::string(text.to_string())
 }
 
 fn n(v: i64) -> Value {
@@ -374,7 +374,7 @@ fn listening_needs_the_listen_grant_the_program_check_requires_and_a_tcp_grant_a
     use orbital_core_base::schema::sexpr::SExpression;
     let program_needs = os_requirements(
         OsOp::TcpListen,
-        &[SExpression::String("127.0.0.1".into()), SExpression::Number(0.0)],
+        &[SExpression::string("127.0.0.1"), SExpression::Number(0.0)],
     );
     assert_eq!(
         program_needs,
@@ -441,7 +441,7 @@ fn close_removes_the_socket_and_later_use_is_closed() {
         let closed = answer(OsOp::Close, std::slice::from_ref(&sock), None, None, host)
             .expect("a socket")
             .expect("closed");
-        assert_eq!(closed, Value::Object(ValueMap::default()));
+        assert_eq!(closed, Value::object(ValueMap::default()));
         assert_eq!(
             kind_of(ask(host, OsOp::Send, &[sock.clone(), s("aGk=")])),
             OsErrorKind::Closed
@@ -556,7 +556,7 @@ fn udp_bind_sendto_recvfrom_round_trip() {
         peer.send_to(b"yo", from).expect("reply");
         let got = ask(host, OsOp::Recvfrom, &[sock.clone(), n(64)]).expect("recvfrom");
         assert_eq!(field(&got, "data"), bytes_value(b"yo"));
-        assert_eq!(field(&got, "peer"), Value::String(peer_addr.to_string()));
+        assert_eq!(field(&got, "peer"), Value::string(peer_addr.to_string()));
         let other = ask(
             host,
             OsOp::Sendto,
@@ -615,7 +615,7 @@ fn dns_resolve_needs_a_name_grant_and_filters_by_family() {
         grants(&[("127.0.0.1:0".to_string(), &[NetKind::Udp])]),
         |host| {
             let lit = ask(host, OsOp::DnsResolve, &[s("127.0.0.1")]).expect("literal");
-            assert_eq!(field(&lit, "addresses"), Value::Array(vec![s("127.0.0.1")]));
+            assert_eq!(field(&lit, "addresses"), Value::array(vec![s("127.0.0.1")]));
         },
     );
 }
@@ -663,7 +663,7 @@ fn shutdown_ends_the_stream_and_a_datagram_socket_is_not_a_stream() {
         let sock = field(&opened, "sock");
         assert_eq!(
             ask(host, OsOp::Shutdown, std::slice::from_ref(&sock)).expect("shutdown"),
-            Value::Object(ValueMap::default())
+            Value::object(ValueMap::default())
         );
         let after = kind_of(ask(host, OsOp::Send, &[sock, s("aGk=")]));
         assert!(

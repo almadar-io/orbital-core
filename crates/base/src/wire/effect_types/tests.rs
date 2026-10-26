@@ -238,7 +238,7 @@ fn parse_host_effects_read_their_argument_and_emit() {
     .unwrap();
     match parse_effect(&check).unwrap() {
         Effect::AccessCheck { request, emit } => {
-            assert_eq!(request.get_path("entity"), Some(&Value::String("Note".into())));
+            assert_eq!(request.get_path("entity"), Some(&Value::string("Note")));
             assert_eq!(emit.and_then(|e| e.failure).as_deref(), Some("F"));
         }
         other => panic!("expected AccessCheck, got {other:?}"),
@@ -255,13 +255,13 @@ fn parse_redis_reads_the_command_the_connection_options_the_key_and_the_routes()
     .unwrap();
     match parse_effect(&expr).unwrap() {
         Effect::Redis { origin, command, options, key, emit } => {
-            assert_eq!(origin, Value::String("redis://cache.internal".to_string()));
-            assert_eq!(command, Value::Array(vec![Value::String("GET".to_string()), Value::String("k".to_string())]));
+            assert_eq!(origin, Value::string("redis://cache.internal"));
+            assert_eq!(command, Value::array(vec![Value::String(("GET".to_string()).into()), Value::String(("k".to_string()).into())]));
             let options = options.as_object().cloned().unwrap();
-            assert_eq!(options.get("auth"), Some(&Value::String("PW".to_string())));
+            assert_eq!(options.get("auth"), Some(&Value::string("PW")));
             assert_eq!(options.get("db"), Some(&Value::Number(2.0)));
             assert!(options.get("key").is_none() && options.get("emit").is_none());
-            assert_eq!(key, Some(Value::String("c1".to_string())));
+            assert_eq!(key, Some(Value::string("c1")));
             let emit = emit.unwrap();
             assert_eq!((emit.success.as_deref(), emit.failure.as_deref()), (Some("S"), Some("F")));
         }
@@ -294,13 +294,13 @@ fn parse_postgres_reads_sql_params_connection_options_key_and_routes() {
     .unwrap();
     match parse_effect(&expr).unwrap() {
         Effect::Postgres { origin, sql, params, options, key, emit } => {
-            assert_eq!(origin, Value::String("postgres://db.internal:5432".to_string()));
-            assert_eq!(sql, Value::String("SELECT $1::int".to_string()));
-            assert_eq!(params, Value::Array(vec![Value::Number(1.0)]));
+            assert_eq!(origin, Value::string("postgres://db.internal:5432"));
+            assert_eq!(sql, Value::string("SELECT $1::int"));
+            assert_eq!(params, Value::array(vec![Value::Number(1.0)]));
             let options = options.as_object().cloned().unwrap();
-            assert_eq!(options.get("database"), Some(&Value::String("main".to_string())));
+            assert_eq!(options.get("database"), Some(&Value::string("main")));
             assert!(options.get("key").is_none() && options.get("emit").is_none());
-            assert_eq!(key, Some(Value::String("q1".to_string())));
+            assert_eq!(key, Some(Value::string("q1")));
             assert_eq!(emit.and_then(|e| e.failure).as_deref(), Some("F"));
         }
         other => panic!("expected Postgres, got {other:?}"),
@@ -342,7 +342,7 @@ fn parse_os_effects_read_args_key_and_emit_and_every_op_is_known() {
         Effect::Os { op, args, key, emit } => {
             assert_eq!(op, OsOp::Spawn);
             assert_eq!(args.len(), 3);
-            assert_eq!(key, Some(Value::String("p".to_string())));
+            assert_eq!(key, Some(Value::string("p")));
             let emit = emit.unwrap();
             assert_eq!((emit.success.as_deref(), emit.on_message.as_deref()), (Some("S"), Some("M")));
         }
@@ -370,7 +370,7 @@ fn parse_os_effects_refuse_the_wrong_arity_and_the_unknown_ops_still_fall_to_cus
 fn parse_cancel_call() {
     let expr: SExpression = serde_json::from_str(r#"["cancel-call", "batch-1"]"#).unwrap();
     match parse_effect(&expr).unwrap() {
-        Effect::CancelCall { key } => assert_eq!(key, Value::String("batch-1".into())),
+        Effect::CancelCall { key } => assert_eq!(key, Value::string("batch-1")),
         other => panic!("expected CancelCall, got {other:?}"),
     }
     assert!(is_known_effect_name("cancel-call"));
@@ -409,9 +409,9 @@ fn parse_browser_prompt_and_embed_carry_their_key_and_routes() {
     .unwrap();
     match parse_effect(&prompt).unwrap() {
         Effect::BrowserPrompt { text, schema, key, emit } => {
-            assert_eq!(text, Value::String("@payload.text".into()));
-            assert_eq!(schema, Value::String("{}".into()));
-            assert_eq!(key, Some(Value::String("batch-1".into())));
+            assert_eq!(text, Value::string("@payload.text"));
+            assert_eq!(schema, Value::string("{}"));
+            assert_eq!(key, Some(Value::string("batch-1")));
             assert_eq!(emit.unwrap().cancelled.as_deref(), Some("STOP"));
         }
         other => panic!("expected BrowserPrompt, got {other:?}"),
@@ -433,8 +433,8 @@ fn parse_browser_tab_effects_carry_their_request_key_and_routes() {
     match parse_effect(&query).unwrap() {
         Effect::BrowserTab { op, request, key, emit } => {
             assert_eq!(op, crate::tab::TabOp::Query);
-            assert_eq!(request.as_object().and_then(|o| o.get("selector")), Some(&Value::String(".r".into())));
-            assert_eq!(key, Some(Value::String("q-1".into())));
+            assert_eq!(request.as_object().and_then(|o| o.get("selector")), Some(&Value::string(".r")));
+            assert_eq!(key, Some(Value::string("q-1")));
             assert_eq!(emit.unwrap().cancelled.as_deref(), Some("STOP"));
         }
         other => panic!("expected BrowserTab, got {other:?}"),
@@ -515,7 +515,7 @@ fn a_trailing_where_is_the_persist_guard_never_positional() {
     assert_eq!((g, id.as_deref()), (Some(lambda.clone()), Some("@payload.id")));
     let (g, id, data) = guard(&parse(r#"["persist", "update", "T", "@payload.data", {"where": ["fn", "row", ["=", "@row.used", false]], "emit": {"success": "OK"}}]"#));
     assert_eq!((g, id), (Some(lambda), None));
-    assert_eq!(data, Value::String("@payload.data".to_string()));
+    assert_eq!(data, Value::string("@payload.data"));
     let (g, _, _) = guard(&parse(r#"["persist", "delete", "T", "@payload.id"]"#));
     assert_eq!(g, None);
 }
@@ -548,7 +548,7 @@ fn test_parse_persist_update_with_trailing_emit_options_is_not_misread_as_id_dat
             );
             assert_eq!(
                 data,
-                Value::String("@payload.data".to_string()),
+                Value::string("@payload.data"),
                 "the real data token, not the trailing {{emit}} object"
             );
             assert_eq!(
@@ -648,7 +648,7 @@ fn test_parse_set() {
     match effect {
         Effect::Set { path, value } => {
             assert_eq!(path, "@entity.status");
-            assert_eq!(value, Value::String("active".to_string()));
+            assert_eq!(value, Value::string("active"));
         }
         _ => panic!("Expected Set effect"),
     }
@@ -823,7 +823,7 @@ fn a_substrate_ops_options_key_is_kept_beside_its_emit() {
     match parse_effect(&expr).unwrap() {
         Effect::Custom { args, key, emit, .. } => {
             assert_eq!(args.len(), 2, "the options object is not an argument");
-            assert_eq!(key, Some(Value::String("@payload.k".to_string())));
+            assert_eq!(key, Some(Value::string("@payload.k")));
             assert_eq!(emit.expect("emit parsed").success.as_deref(), Some("DONE"));
         }
         other => panic!("expected Custom, got {other:?}"),
@@ -898,7 +898,7 @@ fn test_parse_fetch_by_id() {
             ..
         } => {
             assert_eq!(entity_type, "User");
-            assert_eq!(id, Some(Value::String("user-123".to_string())));
+            assert_eq!(id, Some(Value::string("user-123")));
             assert!(filter.is_none());
         }
         _ => panic!("Expected Fetch effect"),

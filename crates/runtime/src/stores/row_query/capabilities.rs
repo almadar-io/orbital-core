@@ -323,7 +323,7 @@ pub(super) fn value_kind_unsupported(restrictions: &[OperatorValueKinds], predic
         }
         RowPredicate::HasElement { value, .. } => refuses(RowOperator::HasElement, &[value]),
         RowPredicate::Contains { text, .. } => {
-            refuses(RowOperator::Contains, &[&Value::String(text.clone())])
+            refuses(RowOperator::Contains, &[&Value::string(text.clone())])
         }
         RowPredicate::All { of } | RowPredicate::Any { of } => {
             of.iter().any(|p| value_kind_unsupported(restrictions, p))

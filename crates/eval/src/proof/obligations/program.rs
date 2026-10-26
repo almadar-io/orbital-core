@@ -27,6 +27,8 @@ pub(super) struct Step<'a> {
     pub(super) to: Option<&'a str>,
     pub(super) guard: Option<&'a SExpression>,
     pub(super) effects: &'a [SExpression],
+    /// The arm's own `@ensures`; a tick has none.
+    pub(super) ensures: &'a [SExpression],
 }
 
 pub(super) fn steps(td: &TraitDefinition) -> Vec<Step<'_>> {
@@ -39,6 +41,7 @@ pub(super) fn steps(td: &TraitDefinition) -> Vec<Step<'_>> {
             to: Some(&t.to),
             guard: t.guard.as_ref(),
             effects: t.effects.as_deref().unwrap_or(&[]),
+            ensures: t.ensures.as_deref().unwrap_or(&[]),
         });
     }
     for tick in td.ticks.iter().flatten() {
@@ -58,6 +61,7 @@ pub(super) fn steps(td: &TraitDefinition) -> Vec<Step<'_>> {
             to: None,
             guard: tick.guard.as_ref(),
             effects: &tick.effects,
+            ensures: &[],
         });
     }
     out
@@ -213,7 +217,7 @@ impl<'a> Program<'a> {
                                     None => old.unwrap_or_else(|| default_of(def, f)),
                                 },
                                 Data::Whole(SExpression::String(b)) if b.starts_with('@') => {
-                                    to_row(&SExpression::String(format!("{b}.{f}")))
+                                    to_row(&SExpression::string(format!("{b}.{f}")))
                                 }
                                 Data::Whole(other) => {
                                     unresolved(&format!("{f} of {}", canonical(other)))
@@ -221,7 +225,7 @@ impl<'a> Program<'a> {
                                 Data::Merge(b, over) => match (over.get(f), b) {
                                     (Some(v), _) => to_row(v),
                                     (None, SExpression::String(b)) if b.starts_with('@') => {
-                                        to_row(&SExpression::String(format!("{b}.{f}")))
+                                        to_row(&SExpression::string(format!("{b}.{f}")))
                                     }
                                     (None, other) => {
                                         unresolved(&format!("{f} of {}", canonical(other)))
@@ -449,8 +453,14 @@ impl<'a> Program<'a> {
         for td in self.traits.iter().filter(|t| t.name == trait_name) {
             let linked = td.linked_entity.as_deref().and_then(|e| self.entity(e));
             let set_fields = fields_set_anywhere(td);
-            for step in steps(td) {
-                if step.event != Some(event) || step.to != Some(to) || !step.from.contains(&from) {
+            let arms: Vec<Step<'_>> = steps(td)
+                .into_iter()
+                .filter(|step| step.event == Some(event) && step.to == Some(to) && step.from.contains(&from))
+                .collect();
+            // An arm's own `@ensures` binds that arm; a spec transition, which no arm carries, binds every arm.
+            let own = arms.iter().any(|step| step.ensures.contains(ensures));
+            for step in arms {
+                if own && !step.ensures.contains(ensures) {
                     continue;
                 }
                 let paths = match run(step.effects, td, step.event, self) {

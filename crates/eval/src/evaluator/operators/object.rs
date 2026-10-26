@@ -21,7 +21,7 @@ impl Operator for PathOp {
             .map(|arg| eval_expr(arg, ctx).map(|v| v.to_string_value()))
             .collect();
 
-        Ok(Value::String(segments?.join(".")))
+        Ok(Value::string(segments?.join(".")))
     }
 }
 
@@ -40,11 +40,11 @@ impl Operator for ObjectEntriesOp {
             Value::Object(map) => {
                 let entries: Vec<Value> = map
                     .into_iter()
-                    .map(|(k, v)| Value::Array(vec![Value::String(k), v]))
+                    .map(|(k, v)| Value::array(vec![Value::String(k.into()), v]))
                     .collect();
-                Ok(Value::Array(entries))
+                Ok(Value::array(entries))
             }
-            Value::Null => Ok(Value::Array(vec![])),
+            Value::Null => Ok(Value::array(vec![])),
             _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "object".to_string(),
                 actual: obj.type_name().to_string(),
@@ -73,7 +73,7 @@ impl Operator for ObjectSetOp {
 
         let mut result = match obj {
             Value::Object(o) => Value::Object(o),
-            Value::Null => Value::Object(ValueMap::default()),
+            Value::Null => Value::object(ValueMap::default()),
             _ => {
                 return Err(OrbitalError::Eval(EvalError::TypeMismatch {
                     expected: "object".to_string(),
@@ -139,7 +139,7 @@ impl Operator for ObjectMergeOp {
         if refused {
             return Ok(Value::Null);
         }
-        Ok(Value::Object(result))
+        Ok(Value::object(result))
     }
 }
 
@@ -178,7 +178,7 @@ impl Operator for ObjectFromEntriesOp {
             }
         }
 
-        Ok(Value::Object(result))
+        Ok(Value::object(result))
     }
 }
 
@@ -196,7 +196,7 @@ impl Operator for ObjectDeepMergeOp {
                     (Some(Value::Object(base_obj)), Value::Object(overlay_obj)) => {
                         result.insert(
                             key,
-                            Value::Object(deep_merge(base_obj.clone(), overlay_obj.clone())?),
+                            Value::object(deep_merge((**base_obj).clone(), (**overlay_obj).clone())?),
                         );
                     }
                     _ => {
@@ -216,7 +216,7 @@ impl Operator for ObjectDeepMergeOp {
         for arg in args {
             let val = eval_expr(arg, ctx)?;
             match val {
-                Value::Object(obj) => match deep_merge(result.clone(), obj) {
+                Value::Object(obj) => match deep_merge(result.clone(), obj.into_inner()) {
                     Some(merged) => result = merged,
                     None => refused = true,
                 },
@@ -233,7 +233,7 @@ impl Operator for ObjectDeepMergeOp {
         if refused {
             return Ok(Value::Null);
         }
-        Ok(Value::Object(result))
+        Ok(Value::object(result))
     }
 }
 
@@ -273,7 +273,7 @@ impl Operator for ObjectPickOp {
             }
         }
 
-        Ok(Value::Object(result))
+        Ok(Value::object(result))
     }
 }
 
@@ -311,7 +311,7 @@ impl Operator for ObjectOmitOp {
             .filter(|(k, _)| !omit_keys.contains(k))
             .collect();
 
-        Ok(Value::Object(result))
+        Ok(Value::object(result))
     }
 }
 
@@ -344,13 +344,13 @@ impl Operator for ObjectMapValuesOp {
                 child_ctx.set_local(&params[0], value);
             }
             if params.len() > 1 {
-                child_ctx.set_local(&params[1], Value::String(key.clone()));
+                child_ctx.set_local(&params[1], Value::string(key.clone()));
             }
             let new_value = eval_expr(&body, &child_ctx)?;
             result.insert(key, new_value);
         }
 
-        Ok(Value::Object(result))
+        Ok(Value::object(result))
     }
 }
 
@@ -376,7 +376,7 @@ impl Operator for ObjectFilterOp {
         for (key, value) in source {
             let should_include = super::array::apply_callback(
                 &args[1],
-                vec![Value::String(key.clone()), value.clone()],
+                vec![Value::string(key.clone()), value.clone()],
                 ctx,
             )?;
             if should_include.is_truthy() {
@@ -384,7 +384,7 @@ impl Operator for ObjectFilterOp {
             }
         }
 
-        Ok(Value::Object(result))
+        Ok(Value::object(result))
     }
 }
 
@@ -418,7 +418,7 @@ impl Operator for ObjectMapKeysOp {
         for (key, value) in source {
             let mut child_ctx = ctx.child();
             if !params.is_empty() {
-                child_ctx.set_local(&params[0], Value::String(key));
+                child_ctx.set_local(&params[0], Value::string(key));
             }
             if params.len() > 1 {
                 child_ctx.set_local(&params[1], value.clone());
@@ -431,7 +431,7 @@ impl Operator for ObjectMapKeysOp {
         if refused {
             return Ok(Value::Null);
         }
-        Ok(Value::Object(result))
+        Ok(Value::object(result))
     }
 }
 
@@ -504,10 +504,10 @@ impl Operator for ObjectKeysOp {
         let obj = eval_expr(&args[0], ctx)?;
         match obj {
             Value::Object(map) => {
-                let keys: Vec<Value> = map.keys().map(|k| Value::String(k.clone())).collect();
-                Ok(Value::Array(keys))
+                let keys: Vec<Value> = map.keys().map(|k| Value::string(k.clone())).collect();
+                Ok(Value::array(keys))
             }
-            Value::Null => Ok(Value::Array(vec![])),
+            Value::Null => Ok(Value::array(vec![])),
             _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "object".to_string(),
                 actual: obj.type_name().to_string(),
@@ -524,10 +524,10 @@ impl Operator for ObjectValuesOp {
         let obj = eval_expr(&args[0], ctx)?;
         match obj {
             Value::Object(map) => {
-                let values: Vec<Value> = map.into_values().collect();
-                Ok(Value::Array(values))
+                let values: Vec<Value> = map.into_inner().into_values().collect();
+                Ok(Value::array(values))
             }
-            Value::Null => Ok(Value::Array(vec![])),
+            Value::Null => Ok(Value::array(vec![])),
             _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "object".to_string(),
                 actual: obj.type_name().to_string(),

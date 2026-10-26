@@ -13,7 +13,7 @@ fn try_rewrite_rebuilds_bottom_up_in_walk_order_and_keeps_what_enter_keeps() {
             entered.push(node.clone());
             Ok(if node.operator() == Some("quote") { RewriteVisit::Keep } else { RewriteVisit::Descend })
         },
-        |node| Ok(if node.as_str() == Some("a") { SExpression::String("A".into()) } else { node }),
+        |node| Ok(if node.as_str() == Some("a") { SExpression::string("A") } else { node }),
     );
     assert_eq!(rewritten.unwrap(), rewrite_input(serde_json::json!(["A", ["quote", ["a"]], {"k": ["A", 1], "j": "A"}, "b"])));
     let order: Vec<String> = entered.iter().map(|n| serde_json::to_string(n).unwrap()).collect();
@@ -44,7 +44,7 @@ fn try_rewrite_stops_at_the_first_error_in_walk_order() {
 fn try_rewrite_of_a_tree_deeper_than_a_small_stack_completes() {
     let mut deep = SExpression::Number(0.0);
     for _ in 0..100_000 {
-        deep = SExpression::Array(vec![SExpression::String("do".into()), deep]);
+        deep = SExpression::Array(vec![SExpression::string("do"), deep]);
     }
     let rewritten = std::thread::Builder::new()
         .stack_size(256 * 1024)
@@ -90,7 +90,7 @@ fn every_variant_reads_from_json_and_integers_are_numbers() {
     assert_eq!(items[3], SExpression::Number(-2.0));
     assert_eq!(items[4], SExpression::Number(1.5));
     assert_eq!(items[5], SExpression::Number(18446744073709551615u64 as f64));
-    assert_eq!(items[6], SExpression::String("@a.b".into()));
+    assert_eq!(items[6], SExpression::string("@a.b"));
     assert_eq!(items[7], SExpression::Array(vec![]));
     let object = items[8].as_object().unwrap();
     assert_eq!(object.keys().collect::<Vec<_>>(), ["z", "a"]);
@@ -234,9 +234,9 @@ fn canonical_json_sorts_object_keys_so_emission_is_byte_stable() {
         let mut map = SObject::default();
         map.insert("zebra".to_string(), SExpression::Number(1.0));
         map.insert("alpha".to_string(), SExpression::Bool(true));
-        map.insert("middle".to_string(), SExpression::String("x".to_string()));
+        map.insert("middle".to_string(), SExpression::string("x"));
         let expr = SExpression::Array(vec![
-            SExpression::String("=".to_string()),
+            SExpression::string("="),
             SExpression::Object(map),
         ]);
         serde_json::to_string(&expr.to_canonical_json()).expect("serializes")
@@ -255,11 +255,11 @@ fn canonical_json_sorts_object_keys_so_emission_is_byte_stable() {
 #[test]
 fn canonical_json_round_trips_nested_arrays_and_scalars() {
     let expr = SExpression::Array(vec![
-        SExpression::String("or".to_string()),
+        SExpression::string("or"),
         SExpression::Array(vec![
-            SExpression::String("=".to_string()),
-            SExpression::String("@user.role".to_string()),
-            SExpression::String("supervisor".to_string()),
+            SExpression::string("="),
+            SExpression::string("@user.role"),
+            SExpression::string("supervisor"),
         ]),
         SExpression::Null,
     ]);
@@ -373,12 +373,12 @@ fn passthrough_arg_follows_only_identity_kinds() {
     let filtered = sx(r#"["array/filter", "LIST", ["fn", "i", true]]"#);
     assert_eq!(
         filtered.passthrough_arg(&WALK),
-        Some(&SExpression::String("LIST".into()))
+        Some(&SExpression::string("LIST"))
     );
     let bound = sx(r#"["let", [["x", 1]], "BODY"]"#);
     assert_eq!(
         bound.passthrough_arg(&WALK),
-        Some(&SExpression::String("BODY".into()))
+        Some(&SExpression::string("BODY"))
     );
     for other in [
         r#"["array/concat", "A", "B"]"#,
@@ -441,7 +441,7 @@ fn value_leaves_skip_dead_branches_only_when_asked() {
     };
     assert_eq!(
         expr.value_leaves(&folding),
-        vec![&SExpression::String("LIVE".into())]
+        vec![&SExpression::string("LIVE")]
     );
     let only_then = sx(r#"["if", "", "DEAD"]"#);
     assert!(only_then.value_leaves(&folding).is_empty());
@@ -454,7 +454,7 @@ fn value_leaves_mut_reaches_every_source_and_allows_rewrite() {
     );
     for leaf in expr.value_leaves_mut(&WALK) {
         if let SExpression::String(s) = leaf {
-            *s = format!("rw-{s}");
+            *s = format!("rw-{s}").into();
         }
     }
     assert_eq!(
@@ -525,9 +525,9 @@ fn is_statically_true_is_the_dual_of_is_statically_false() {
     let not = SExpression::Array(vec![lit("not"), SExpression::Bool(false)]);
     assert!(not.is_statically_true());
     assert!(!SExpression::Bool(false).is_statically_true());
-    assert!(!SExpression::String(String::new()).is_statically_true());
+    assert!(!SExpression::string(String::new()).is_statically_true());
     assert!(!SExpression::Null.is_statically_true());
-    assert!(!SExpression::String("@config.knob".to_string()).is_statically_true());
+    assert!(!SExpression::string("@config.knob").is_statically_true());
 }
 
 #[test]
@@ -536,11 +536,11 @@ fn is_statically_false_true_for_bool_false() {
 }
 
 fn eq(op: &str, a: SExpression, b: SExpression) -> SExpression {
-    SExpression::Array(vec![SExpression::String(op.to_string()), a, b])
+    SExpression::Array(vec![SExpression::string(op.to_string()), a, b])
 }
 
 fn lit(v: &str) -> SExpression {
-    SExpression::String(v.to_string())
+    SExpression::string(v.to_string())
 }
 
 #[test]
@@ -568,12 +568,12 @@ fn double_equals_still_folds() {
 fn is_statically_false_true_for_empty_string() {
     // A `string`-typed config knob defaulting to "" folds to this, not
     // `Bool(false)` — the "optional slot unfulfilled" contract.
-    assert!(SExpression::String(String::new()).is_statically_false());
+    assert!(SExpression::string(String::new()).is_statically_false());
 }
 
 #[test]
 fn is_statically_false_false_for_non_empty_string() {
-    assert!(!SExpression::String("hi".to_string()).is_statically_false());
+    assert!(!SExpression::string("hi").is_statically_false());
 }
 
 #[test]
@@ -604,7 +604,7 @@ fn is_statically_false_true_for_empty_array_literal() {
 #[test]
 fn is_statically_false_false_for_binding_string() {
     // `@`-prefixed strings are bindings, not literals — undecidable.
-    assert!(!SExpression::String("@config.knob".to_string()).is_statically_false());
+    assert!(!SExpression::string("@config.knob").is_statically_false());
 }
 
 fn reads(node: serde_json::Value) -> Vec<String> {

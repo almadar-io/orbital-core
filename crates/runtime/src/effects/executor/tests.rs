@@ -78,7 +78,7 @@ fn cancel_call_on_a_list_asks_the_service_handler_to_abort_each_key_in_order() {
     let svc = Arc::new(RecordingService::default());
     let executor = EffectExecutor::server().with_service_handler(svc.clone());
     let effect = Effect::CancelCall {
-        key: Value::Array(vec!["a".into(), "b".into()]),
+        key: Value::array(vec!["a".into(), "b".into()]),
     };
     assert!(executor.execute(&effect, &BindingContext::new()).is_executed());
     assert_eq!(*svc.cancelled.lock(), vec!["a".to_string(), "b".to_string()]);
@@ -89,7 +89,7 @@ fn cancel_call_on_a_list_with_a_non_string_member_fails_before_cancelling_any() 
     let svc = Arc::new(RecordingService::default());
     let executor = EffectExecutor::server().with_service_handler(svc.clone());
     let effect = Effect::CancelCall {
-        key: Value::Array(vec!["a".into(), Value::Number(3.0)]),
+        key: Value::array(vec!["a".into(), Value::Number(3.0)]),
     };
     let result = executor.execute(&effect, &BindingContext::new());
     assert!(!result.is_executed(), "{result:?}");
@@ -145,8 +145,8 @@ fn test_persist_server_only() {
         entity_type: "User".to_string(),
         data: Value::Object({
             let mut m = ValueMap::default();
-            m.insert("name".to_string(), Value::String("John".to_string()));
-            m
+            m.insert("name".to_string(), Value::string("John"));
+            m.into()
         }),
         id: None,
         emit: None,
@@ -166,9 +166,9 @@ fn row_of(pairs: &[(&str, &str)]) -> Value {
     Value::Object({
         let mut m = ValueMap::default();
         for (k, v) in pairs {
-            m.insert((*k).to_string(), Value::String((*v).to_string()));
+            m.insert((*k).to_string(), Value::string((*v).to_string()));
         }
-        m
+        m.into()
     })
 }
 
@@ -203,7 +203,7 @@ fn test_persist_create_on_a_taken_id_fails_duplicate_id() {
     assert!(result.is_failed());
     assert_eq!(result.code, Some(ServerEffectCode::DuplicateId));
     let stored = persistence.read("Mix", "mix").unwrap();
-    assert_eq!(stored.as_object().unwrap()["title"], Value::String("one".into()));
+    assert_eq!(stored.as_object().unwrap()["title"], Value::string("one"));
     let minted = persist_effect(PersistOperation::Create, row_of(&[("title", "free")]));
     assert!(executor.execute(&minted, &ctx).is_executed());
     assert!(executor.execute(&minted, &ctx).is_executed());
@@ -228,9 +228,9 @@ fn test_persist_upsert_creates_then_replaces_the_whole_row() {
     assert!(result.is_executed(), "{result:?}");
     let stored = persistence.read("Mix", "mix").unwrap();
     let fields = stored.as_object().unwrap();
-    assert_eq!(fields["title"], Value::String("two".into()));
+    assert_eq!(fields["title"], Value::string("two"));
     assert!(!fields.contains_key("tone"), "replaced whole: {fields:?}");
-    assert_eq!(fields["createdAt"], Value::String("2026-01-01".into()));
+    assert_eq!(fields["createdAt"], Value::string("2026-01-01"));
     let keyless = persist_effect(PersistOperation::Upsert, row_of(&[("title", "x")]));
     let failed = executor.execute(&keyless, &ctx);
     assert!(failed.is_failed());
@@ -252,8 +252,8 @@ fn test_persist_update_data_carries_its_own_id_with_trailing_emit_options() {
             "Ticket",
             &Value::Object({
                 let mut m = ValueMap::default();
-                m.insert("subject".to_string(), Value::String("original".to_string()));
-                m
+                m.insert("subject".to_string(), Value::string("original"));
+                m.into()
             }),
         )
         .unwrap();
@@ -276,9 +276,9 @@ fn test_persist_update_data_carries_its_own_id_with_trailing_emit_options() {
         entity_type: "Ticket".to_string(),
         data: Value::Object({
             let mut m = ValueMap::default();
-            m.insert("id".to_string(), Value::String(ticket_id.clone()));
-            m.insert("subject".to_string(), Value::String("edited".to_string()));
-            m
+            m.insert("id".to_string(), Value::string(ticket_id.clone()));
+            m.insert("subject".to_string(), Value::string("edited"));
+            m.into()
         }),
         id: None,
         emit: None,
@@ -325,17 +325,17 @@ fn test_persist_create_data_call_expression_is_evaluated_not_left_literal() {
     let executor = EffectExecutor::server().with_persistence(persistence.clone());
 
     let raw = SExpression::Array(vec![
-        SExpression::String("persist".to_string()),
-        SExpression::String("create".to_string()),
-        SExpression::String("ChatMessage".to_string()),
+        SExpression::string("persist"),
+        SExpression::string("create"),
+        SExpression::string("ChatMessage"),
         SExpression::Array(vec![
-            SExpression::String("object/merge".to_string()),
-            SExpression::String("@payload.data".to_string()),
+            SExpression::string("object/merge"),
+            SExpression::string("@payload.data"),
             SExpression::Object({
                 let mut m = orbital_core_base::schema::sexpr::SObject::default();
                 m.insert(
                     "sender".to_string(),
-                    SExpression::String("@user.id".to_string()),
+                    SExpression::string("@user.id"),
                 );
                 m
             }),
@@ -345,15 +345,15 @@ fn test_persist_create_data_call_expression_is_evaluated_not_left_literal() {
         orbital_core_base::effect_types::parse_effect(&raw).expect("parse_persist must recognize this shape");
 
     let mut payload_data = ValueMap::default();
-    payload_data.insert("content".to_string(), Value::String("hello".to_string()));
+    payload_data.insert("content".to_string(), Value::string("hello"));
     let mut payload = ValueMap::default();
-    payload.insert("data".to_string(), Value::Object(payload_data));
+    payload.insert("data".to_string(), Value::object(payload_data));
     let mut user = ValueMap::default();
-    user.insert("id".to_string(), Value::String("user-42".to_string()));
+    user.insert("id".to_string(), Value::string("user-42"));
 
     let ctx = orbital_core_eval::evaluator::context::BindingContextBuilder::new()
-        .payload(Value::Object(payload))
-        .user(Value::Object(user))
+        .payload(Value::object(payload))
+        .user(Value::object(user))
         .build();
 
     let result = executor.execute(&effect, &ctx);
@@ -394,12 +394,12 @@ fn test_persist_denied_delete_is_failed_not_executed() {
             "Note",
             &Value::Object({
                 let mut m = ValueMap::default();
-                m.insert("id".to_string(), Value::String("note-1".to_string()));
+                m.insert("id".to_string(), Value::string("note-1"));
                 m.insert(
                     "authorId".to_string(),
-                    Value::String("author-1".to_string()),
+                    Value::string("author-1"),
                 );
-                m
+                m.into()
             }),
         )
         .unwrap();
@@ -408,10 +408,10 @@ fn test_persist_denied_delete_is_failed_not_executed() {
     policies.insert(
         "Note".to_string(),
         crate::entity_access::EntityAccessPolicies {
-            delete: Some(Value::Array(vec![
-                Value::String("=".to_string()),
-                Value::String("@entity.authorId".to_string()),
-                Value::String("@user.id".to_string()),
+            delete: Some(Value::array(vec![
+                Value::String(("=".to_string()).into()),
+                Value::String(("@entity.authorId".to_string()).into()),
+                Value::String(("@user.id".to_string()).into()),
             ])),
             ..Default::default()
         },
@@ -425,8 +425,8 @@ fn test_persist_denied_delete_is_failed_not_executed() {
     // policy must reject this row.
     let viewer = Value::Object({
         let mut m = ValueMap::default();
-        m.insert("id".to_string(), Value::String("someone-else".to_string()));
-        m
+        m.insert("id".to_string(), Value::string("someone-else"));
+        m.into()
     });
     let ctx = orbital_core_eval::evaluator::context::BindingContextBuilder::new()
         .user(viewer)
@@ -460,7 +460,7 @@ fn test_render_ui_client_only() {
 
     let effect = Effect::RenderUi {
         slot: "main".to_string(),
-        content: Value::Object(ValueMap::default()),
+        content: Value::object(ValueMap::default()),
     };
 
     // Server no-ops
@@ -507,8 +507,8 @@ fn test_in_memory_persistence() {
     // Create
     let data = Value::Object({
         let mut m = ValueMap::default();
-        m.insert("name".to_string(), Value::String("John".to_string()));
-        m
+        m.insert("name".to_string(), Value::string("John"));
+        m.into()
     });
     let created = persistence.create("User", &data).unwrap();
     let id = created
@@ -523,19 +523,19 @@ fn test_in_memory_persistence() {
     let read = persistence.read("User", id).unwrap();
     assert_eq!(
         read.as_object().unwrap().get("name").unwrap(),
-        &Value::String("John".to_string())
+        &Value::string("John")
     );
 
     // Update
     let update_data = Value::Object({
         let mut m = ValueMap::default();
-        m.insert("name".to_string(), Value::String("Jane".to_string()));
-        m
+        m.insert("name".to_string(), Value::string("Jane"));
+        m.into()
     });
     let updated = persistence.update("User", id, &update_data).unwrap();
     assert_eq!(
         updated.as_object().unwrap().get("name").unwrap(),
-        &Value::String("Jane".to_string())
+        &Value::string("Jane")
     );
 
     // Delete
@@ -586,9 +586,9 @@ fn test_fetch_effect_server() {
             "User",
             &Value::Object({
                 let mut m = ValueMap::default();
-                m.insert("id".to_string(), Value::String("user-1".to_string()));
-                m.insert("name".to_string(), Value::String("John".to_string()));
-                m
+                m.insert("id".to_string(), Value::string("user-1"));
+                m.insert("name".to_string(), Value::string("John"));
+                m.into()
             }),
         )
         .unwrap();
@@ -597,9 +597,9 @@ fn test_fetch_effect_server() {
             "User",
             &Value::Object({
                 let mut m = ValueMap::default();
-                m.insert("id".to_string(), Value::String("user-2".to_string()));
-                m.insert("name".to_string(), Value::String("Jane".to_string()));
-                m
+                m.insert("id".to_string(), Value::string("user-2"));
+                m.insert("name".to_string(), Value::string("Jane"));
+                m.into()
             }),
         )
         .unwrap();
@@ -643,9 +643,9 @@ fn test_fetch_effect_by_id() {
             "User",
             &Value::Object({
                 let mut m = ValueMap::default();
-                m.insert("id".to_string(), Value::String("user-123".to_string()));
-                m.insert("name".to_string(), Value::String("John".to_string()));
-                m
+                m.insert("id".to_string(), Value::string("user-123"));
+                m.insert("name".to_string(), Value::string("John"));
+                m.into()
             }),
         )
         .unwrap();
@@ -657,7 +657,7 @@ fn test_fetch_effect_by_id() {
     // Test fetch by ID
     let effect = Effect::Fetch {
         entity_type: "User".to_string(),
-        id: Some(Value::String("user-123".to_string())),
+        id: Some(Value::string("user-123")),
         filter: None,
         limit: None,
         offset: None,
@@ -676,7 +676,7 @@ fn test_fetch_effect_by_id() {
     assert_eq!(arr.len(), 1);
     assert_eq!(
         arr[0].as_object().unwrap().get("name").unwrap(),
-        &Value::String("John".to_string())
+        &Value::string("John")
     );
 }
 
@@ -719,15 +719,15 @@ fn test_fetch_filter_resolves_frame_ref_against_issuing_context() {
             let mut rows = vec![
                 Value::Object({
                     let mut m = ValueMap::default();
-                    m.insert("id".to_string(), Value::String("r1".to_string()));
-                    m.insert("channel".to_string(), Value::String("general".to_string()));
-                    m
+                    m.insert("id".to_string(), Value::string("r1"));
+                    m.insert("channel".to_string(), Value::string("general"));
+                    m.into()
                 }),
                 Value::Object({
                     let mut m = ValueMap::default();
-                    m.insert("id".to_string(), Value::String("r2".to_string()));
-                    m.insert("channel".to_string(), Value::String("random".to_string()));
-                    m
+                    m.insert("id".to_string(), Value::string("r2"));
+                    m.insert("channel".to_string(), Value::string("random"));
+                    m.into()
                 }),
             ];
             crate::entity_access::apply_read_access(
@@ -748,23 +748,23 @@ fn test_fetch_filter_resolves_frame_ref_against_issuing_context() {
     // row-scoped LHS stays verbatim, issuing-frame RHS resolves before the
     // per-row evaluation. Previously both sides re-scoped to the row and
     // this self-comparison never matched.
-    let filter = Value::Array(vec![
-        Value::String("=".to_string()),
+    let filter = Value::array(vec![
+        Value::String(("=".to_string()).into()),
         Value::Array(vec![
-            Value::String("object/get".to_string()),
-            Value::String("@entity".to_string()),
-            Value::String("channel".to_string()),
-        ]),
-        Value::String("@entity.activeChannel".to_string()),
+            Value::String(("object/get".to_string()).into()),
+            Value::String(("@entity".to_string()).into()),
+            Value::String(("channel".to_string()).into()),
+        ].into()),
+        Value::String(("@entity.activeChannel".to_string()).into()),
     ]);
 
     let issuing_entity = Value::Object({
         let mut m = ValueMap::default();
         m.insert(
             "activeChannel".to_string(),
-            Value::String("general".to_string()),
+            Value::string("general"),
         );
-        m
+        m.into()
     });
     let ctx = orbital_core_eval::evaluator::context::BindingContextBuilder::new()
         .entity(issuing_entity)
@@ -791,7 +791,7 @@ fn test_fetch_filter_resolves_frame_ref_against_issuing_context() {
     assert_eq!(arr.len(), 1);
     assert_eq!(
         arr[0].get_path("id"),
-        Some(&Value::String("r1".to_string()))
+        Some(&Value::string("r1"))
     );
 }
 
@@ -817,21 +817,21 @@ fn test_fetch_policy_predicate_stays_row_scoped() {
             let mut rows = vec![
                 Value::Object({
                     let mut m = ValueMap::default();
-                    m.insert("id".to_string(), Value::String("r1".to_string()));
-                    m.insert("ownerId".to_string(), Value::String("user-1".to_string()));
-                    m
+                    m.insert("id".to_string(), Value::string("r1"));
+                    m.insert("ownerId".to_string(), Value::string("user-1"));
+                    m.into()
                 }),
                 Value::Object({
                     let mut m = ValueMap::default();
-                    m.insert("id".to_string(), Value::String("r2".to_string()));
-                    m.insert("ownerId".to_string(), Value::String("user-2".to_string()));
-                    m
+                    m.insert("id".to_string(), Value::string("r2"));
+                    m.insert("ownerId".to_string(), Value::string("user-2"));
+                    m.into()
                 }),
             ];
-            let policy = Value::Array(vec![
-                Value::String("=".to_string()),
-                Value::String("@entity.ownerId".to_string()),
-                Value::String("@user.id".to_string()),
+            let policy = Value::array(vec![
+                Value::String(("=".to_string()).into()),
+                Value::String(("@entity.ownerId".to_string()).into()),
+                Value::String(("@user.id".to_string()).into()),
             ]);
             crate::entity_access::apply_read_access(
                 &mut rows,
@@ -849,8 +849,8 @@ fn test_fetch_policy_predicate_stays_row_scoped() {
 
     let viewer = Value::Object({
         let mut m = ValueMap::default();
-        m.insert("id".to_string(), Value::String("user-1".to_string()));
-        m
+        m.insert("id".to_string(), Value::string("user-1"));
+        m.into()
     });
     let ctx = orbital_core_eval::evaluator::context::BindingContextBuilder::new()
         .user(viewer)
@@ -878,7 +878,7 @@ fn test_fetch_policy_predicate_stays_row_scoped() {
     assert_eq!(arr.len(), 1);
     assert_eq!(
         arr[0].get_path("id"),
-        Some(&Value::String("r1".to_string()))
+        Some(&Value::string("r1"))
     );
 }
 
@@ -1254,7 +1254,7 @@ mod in_memory_read_access {
         let executor = EffectExecutor::server().with_fetch_handler(handler);
         let effect = Effect::Fetch {
             entity_type: "Note".to_string(),
-            id: id.map(|s| Value::String(s.to_string())),
+            id: id.map(|s| Value::string(s.to_string())),
             filter: filter.map(v),
             limit: limit.map(|n| Value::Number(n as f64)),
             offset: offset.map(|n| Value::Number(n as f64)),
@@ -1599,7 +1599,7 @@ mod fetch_option_evaluation {
             .map(|rows| {
                 rows.iter()
                     .filter_map(|row| match row.get_path("id") {
-                        Some(Value::String(id)) => Some(id.clone()),
+                        Some(Value::String(id)) => Some(id.to_string()),
                         _ => None,
                     })
                     .collect()
@@ -1698,7 +1698,7 @@ mod fetch_option_evaluation {
         );
         assert_eq!(count(&r), 1);
         let row = r.return_value.unwrap().as_array().unwrap()[0].clone();
-        assert_eq!(row.get_path("id"), Some(&Value::String("r3".to_string())));
+        assert_eq!(row.get_path("id"), Some(&Value::string("r3")));
     }
 
     #[test]

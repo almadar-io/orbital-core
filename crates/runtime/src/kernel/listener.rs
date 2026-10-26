@@ -147,7 +147,7 @@ impl ListenerManager {
                         mapped.insert(key.clone(), value);
                     }
                 }
-                Value::Object(mapped)
+                Value::object(mapped)
             } else {
                 event.payload.clone()
             };
@@ -395,14 +395,14 @@ mod tests {
             .unwrap();
 
         let mut payload1 = ValueMap::default();
-        payload1.insert("status".to_string(), Value::String("pending".to_string()));
-        bus.emit(Event::new("USER_UPDATED", Value::Object(payload1)));
+        payload1.insert("status".to_string(), Value::string("pending"));
+        bus.emit(Event::new("USER_UPDATED", Value::object(payload1)));
 
         assert_eq!(triggered.load(Ordering::SeqCst), 0);
 
         let mut payload2 = ValueMap::default();
-        payload2.insert("status".to_string(), Value::String("active".to_string()));
-        bus.emit(Event::new("USER_UPDATED", Value::Object(payload2)));
+        payload2.insert("status".to_string(), Value::string("active"));
+        bus.emit(Event::new("USER_UPDATED", Value::object(payload2)));
 
         assert_eq!(triggered.load(Ordering::SeqCst), 1);
     }
@@ -444,9 +444,9 @@ mod tests {
             .unwrap();
 
         let mut payload = ValueMap::default();
-        payload.insert("id".to_string(), Value::String("user-123".to_string()));
-        payload.insert("name".to_string(), Value::String("John".to_string()));
-        bus.emit(Event::new("USER_CREATED", Value::Object(payload)));
+        payload.insert("id".to_string(), Value::string("user-123"));
+        payload.insert("name".to_string(), Value::string("John"));
+        bus.emit(Event::new("USER_CREATED", Value::object(payload)));
 
         let received = received_payload.read();
         if let Value::Object(obj) = &*received {

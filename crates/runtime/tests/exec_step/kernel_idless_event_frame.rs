@@ -17,7 +17,7 @@ fn obj(pairs: &[(&str, Value)]) -> Value {
     for (k, v) in pairs {
         m.insert((*k).to_string(), v.clone());
     }
-    Value::Object(m)
+    Value::object(m)
 }
 
 fn frame_schema() -> OrbitalSchema {
@@ -73,7 +73,7 @@ fn idless_event_emits_the_value_set_earlier_in_the_same_transition() {
             "WidgetShow",
             None,
             "INIT",
-            obj(&[("v", Value::String("hello".to_string()))]),
+            obj(&[("v", Value::string("hello"))]),
         )
         .unwrap();
     assert!(result.executed, "the transition must fire");
@@ -89,7 +89,7 @@ fn idless_event_emits_the_value_set_earlier_in_the_same_transition() {
 
     assert_eq!(
         emitted.as_object().and_then(|m| m.get("x")),
-        Some(&Value::String("hello".to_string())),
+        Some(&Value::string("hello")),
         "the id-less per-trait frame must carry the value set earlier in the same transition"
     );
 }

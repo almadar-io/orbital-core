@@ -256,7 +256,7 @@ impl Fold<'_> {
     fn step(&self, frame: Frame<'_>) -> EvalResult {
         let mut results = frame.results.into_iter();
         let child_results = match frame.plan {
-            Plan::Leaf => Value::Object(ValueMap::default()),
+            Plan::Leaf => Value::object(ValueMap::default()),
             Plan::List => Value::Array(results.collect()),
             Plan::Map(keys) => Value::Object(keys.into_iter().zip(results).collect()),
             Plan::Fields(slots) => {
@@ -269,7 +269,7 @@ impl Fold<'_> {
                     };
                     out.insert(key, result);
                 }
-                Value::Object(out)
+                Value::object(out)
             }
         };
         let mut step_ctx = self.ctx.child();

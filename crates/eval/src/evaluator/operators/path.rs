@@ -21,7 +21,7 @@ fn cell_value(c: Cell) -> Value {
     let mut m = ValueMap::default();
     m.insert("x".to_string(), Value::Number(c.x as f64));
     m.insert("y".to_string(), Value::Number(c.y as f64));
-    Value::Object(m)
+    Value::object(m)
 }
 
 fn read_cell(v: &Value) -> Cell {
@@ -171,7 +171,7 @@ impl Operator for PathAstarOp {
             }
         }
 
-        Ok(Value::Array(vec![]))
+        Ok(Value::array(vec![]))
     }
 }
 

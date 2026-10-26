@@ -289,10 +289,10 @@ mod tests {
         let runtime = OrbitalClientRuntime::new();
 
         let mut data = ValueMap::default();
-        data.insert("id".to_string(), Value::String("test-1".to_string()));
+        data.insert("id".to_string(), Value::string("test-1"));
         data.insert("value".to_string(), Value::Number(42.0));
 
-        runtime.cache_entity("Counter", "test-1", Value::Object(data));
+        runtime.cache_entity("Counter", "test-1", Value::object(data));
 
         let cached = runtime.get_cached_entity("Counter", "test-1");
         assert!(cached.is_some());
@@ -307,15 +307,15 @@ mod tests {
         let runtime = OrbitalClientRuntime::new();
 
         let mut user = ValueMap::default();
-        user.insert("id".to_string(), Value::String("user-1".to_string()));
-        user.insert("name".to_string(), Value::String("Test User".to_string()));
+        user.insert("id".to_string(), Value::string("user-1"));
+        user.insert("name".to_string(), Value::string("Test User"));
 
-        runtime.set_current_user(Value::Object(user));
+        runtime.set_current_user(Value::object(user));
 
         let current = runtime.get_current_user();
         match current {
             Value::Object(obj) => {
-                assert_eq!(obj.get("id"), Some(&Value::String("user-1".to_string())));
+                assert_eq!(obj.get("id"), Some(&Value::string("user-1")));
             }
             _ => panic!("Expected object"),
         }

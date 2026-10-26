@@ -111,7 +111,7 @@ pub struct HttpCallDriver {
 
 pub(crate) fn with_key(mut payload: Value, key: &Option<String>) -> Value {
     if let Value::Object(map) = &mut payload {
-        map.insert("key".to_string(), key.clone().map_or(Value::Null, Value::String));
+        map.insert("key".to_string(), key.clone().map_or(Value::Null, Value::string));
     }
     payload
 }
@@ -334,7 +334,7 @@ impl HttpCallDriver {
         let payload = match rejected {
             Some(resp) => {
                 let payload = set_field(payload, "grantStatus", Value::Number(f64::from(resp.status)));
-                set_field(payload, "grantBody", Value::String(resp.text().into_owned()))
+                set_field(payload, "grantBody", Value::string(resp.text().into_owned()))
             }
             None => payload,
         };
@@ -348,7 +348,7 @@ impl HttpCallDriver {
             Phase::Reply => "request",
             _ => return payload,
         };
-        set_field(payload, "phase", Value::String(phase.to_string()))
+        set_field(payload, "phase", Value::string(phase.to_string()))
     }
 
     pub(super) fn refuse(&mut self, refusal: HttpRefusal) -> HttpStep {
@@ -563,8 +563,8 @@ impl HttpCallDriver {
         self.secrets.resource_request = Some(request.clone());
         if self.spec.presign.is_some() {
             let mut payload = ValueMap::default();
-            payload.insert("url".into(), Value::String(request.url));
-            return self.done(Ok(Value::Object(payload)));
+            payload.insert("url".into(), Value::string(request.url));
+            return self.done(Ok(Value::object(payload)));
         }
         self.phase = Phase::Reply;
         if self.spec.delivery == HttpDelivery::Beacon {
@@ -712,7 +712,7 @@ impl HttpCallDriver {
         };
         self.done(Ok(object(vec![
             ("sent", Value::Bool(sent)),
-            ("via", Value::String(via.to_string())),
+            ("via", Value::string(via.to_string())),
             ("status", status),
         ])))
     }
@@ -751,17 +751,17 @@ impl HttpCallDriver {
         let token = if paginate.style == PageStyle::LinkHeader {
             next_link(&resp)
         } else {
-            match evaluator.evaluate(&SExpression::from(paginate.next.clone()), &ctx) {
+            (match evaluator.evaluate(&SExpression::from(paginate.next.clone()), &ctx) {
                 Ok(Value::Null) => None,
                 Ok(Value::String(s)) => Some(s),
-                Ok(Value::Number(n)) => Some(js_number_string(n)),
+                Ok(Value::Number(n)) => Some(js_number_string(n)).map(Into::into),
                 Ok(_) => {
                     return self.fail(TransportError::Failed(
                         "paginate.next did not produce a string, number or null".to_string(),
                     ))
                 }
                 Err(e) => return self.fail(TransportError::Failed(format!("paginate.next: {e}"))),
-            }
+            }).map(|v| v.into_inner())
         };
         match token {
             None => self.finish_pages(payload),
@@ -778,7 +778,7 @@ impl HttpCallDriver {
     pub(super) fn finish_pages(&mut self, last: Value) -> HttpStep {
         let paged = object(vec![
             ("pages", Value::Number(f64::from(self.pages))),
-            ("items", Value::Array(std::mem::take(&mut self.items))),
+            ("items", Value::array(std::mem::take(&mut self.items))),
             ("last", last),
         ]);
         self.done(Ok(paged))

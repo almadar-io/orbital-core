@@ -193,7 +193,7 @@ fn field_definition_unset_options_omit_nulls() {
         required: Some(false),
         primary_key: None,
         unique: None,
-        default: Some(SExpression::String("active".to_string())),
+        default: Some(SExpression::string("active")),
         values: Some(vec!["active".to_string(), "archived".to_string()]),
         relation: None,
         items: None,

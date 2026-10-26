@@ -89,7 +89,7 @@ impl RuntimeKernel {
             result.effect_runs.iter().map(|run| &run.effect).collect();
         let composed = super::callsite_capture::embedded_by_effects(&def, &authored);
         let payload = match result.payload.as_ref() {
-            Value::Null => Value::Object(ValueMap::default()),
+            Value::Null => Value::object(ValueMap::default()),
             other => other.clone(),
         };
         let visited = Arc::new(orbital_core_base::sync::Mutex::new(HashSet::new()));
@@ -273,7 +273,7 @@ impl RuntimeKernel {
                 for trait_name in bound_to(key) {
                     let row = rows
                         .entry(trait_name)
-                        .or_insert_with(|| Value::Object(ValueMap::default()));
+                        .or_insert_with(|| Value::object(ValueMap::default()));
                     if let Value::Object(fields) = row {
                         fields.extend(frame_fields.iter().map(|(k, v)| (k.clone(), (**v).clone())));
                     }
@@ -298,7 +298,7 @@ impl RuntimeKernel {
                 for trait_name in bound_to(&key) {
                     let row = rows
                         .entry(trait_name)
-                        .or_insert_with(|| Value::Object(ValueMap::default()));
+                        .or_insert_with(|| Value::object(ValueMap::default()));
                     if let Value::Object(row_fields) = row {
                         row_fields.extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
                         if let Some(id) = &id {

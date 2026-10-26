@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn recording_a_delivery_never_deep_copies_the_log_a_view_shares() {
-        let body = Arc::new(SExpression::String("x".to_string()));
+        let body = Arc::new(SExpression::string("x"));
         let held = Arc::new(Value::Lambda {
             params: vec!["x".to_string()],
             body: Arc::clone(&body),
@@ -99,7 +99,7 @@ mod tests {
     /// still copies nothing.
     #[test]
     fn a_view_kept_past_the_record_keeps_its_prefix_without_a_copy() {
-        let body = Arc::new(SExpression::String("x".to_string()));
+        let body = Arc::new(SExpression::string("x"));
         let held = Arc::new(Value::Lambda {
             params: vec!["x".to_string()],
             body: Arc::clone(&body),

@@ -583,7 +583,7 @@ mod tests {
     }
 
     fn failure(error: &OsError) -> Value {
-        Value::String(error.message.clone())
+        Value::string(error.message.clone())
     }
 
     impl Toy {
@@ -592,10 +592,10 @@ mod tests {
             let step = match tcp_target_allowed(target, egress) {
                 Ok(_) => DriverStep::Ask(DriverAsk::Os {
                     op: OsOp::Send,
-                    args: vec![handle(), Value::String("PING".to_string())],
+                    args: vec![handle(), Value::string("PING")],
                     key: None,
                 }),
-                Err(refusal) => DriverStep::Done(Err(Value::String(refusal.message()))),
+                Err(refusal) => DriverStep::Done(Err(Value::string(refusal.message()))),
             };
             (toy, step)
         }
@@ -615,7 +615,7 @@ mod tests {
                 (Phase::Received, DriverAnswer::Os(Ok(reply))) => DriverStep::Done(Ok(reply)),
                 (_, DriverAnswer::Os(Err(error))) => DriverStep::Done(Err(failure(&error))),
                 (_, other) => {
-                    DriverStep::Done(Err(Value::String(format!("unexpected answer {other:?}"))))
+                    DriverStep::Done(Err(Value::string(format!("unexpected answer {other:?}"))))
                 }
             }
         }
@@ -651,7 +651,7 @@ mod tests {
     fn sent() -> Exchange {
         os_exchange(
             OsOp::Send,
-            Value::String("PING".to_string()),
+            Value::string("PING"),
             Ok(Value::Null),
         )
     }
@@ -663,11 +663,11 @@ mod tests {
             os_exchange(
                 OsOp::Recv,
                 Value::Number(4.0),
-                Ok(Value::String("PONG".to_string())),
+                Ok(Value::string("PONG")),
             ),
         ];
         let (end, pending) = run(journal, "redis://cache.internal");
-        assert_eq!(end, DriveEnd::Done(Ok(Value::String("PONG".to_string()))));
+        assert_eq!(end, DriveEnd::Done(Ok(Value::string("PONG"))));
         assert!(pending.is_empty());
     }
 
@@ -692,7 +692,7 @@ mod tests {
         let refusal = OsError::new(OsErrorKind::Denied, "tcp-send refused");
         let journal = vec![os_exchange(
             OsOp::Send,
-            Value::String("PING".to_string()),
+            Value::string("PING"),
             Err(refusal.clone()),
         )];
         let (end, pending) = run(journal, "redis://cache.internal");
@@ -706,16 +706,16 @@ mod tests {
         assert_eq!(
             end,
             DriveEnd::Done(Err(Value::String(
-                "egress denied: redis://other.internal:6379".to_string()
+                ("egress denied: redis://other.internal:6379".to_string()).into()
             )))
         );
         assert!(pending.is_empty());
     }
 
     fn beacon_driver() -> (crate::http_request::HttpCallDriver, DriverStep) {
-        let request = Value::Object(orbital_core_base::value::ValueMap::from_iter([(
+        let request = Value::object(orbital_core_base::value::ValueMap::from_iter([(
             "text".to_string(),
-            Value::String("hello".to_string()),
+            Value::String(("hello".to_string()).into()),
         )]));
         let spec = crate::http_request::parse_beacon_call("https://api.example.com/log", &request)
             .expect("beacon spec");

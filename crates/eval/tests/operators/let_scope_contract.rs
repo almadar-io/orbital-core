@@ -6,7 +6,7 @@ fn args(value: Json) -> Vec<SExpression> {
 }
 
 fn evaluate(arguments: Vec<SExpression>, ctx: &BindingContext) -> Result<Value, OrbitalError> {
-    let mut call = vec![SExpression::String("let".into())];
+    let mut call = vec![SExpression::string("let")];
     call.extend(arguments);
     Evaluator::new().evaluate(&SExpression::Array(call), ctx)
 }
@@ -45,7 +45,7 @@ fn sequential_binding_view_omits_malformed_entries_and_extra_slots() {
     assert_eq!(view.bindings.len(), 1);
     assert_eq!(view.bindings[0].0, "kept");
     assert_eq!(view.bindings[0].1, &SExpression::Number(1.0));
-    assert_eq!(view.body, &SExpression::String("@kept".into()));
+    assert_eq!(view.body, &SExpression::string("@kept"));
     assert!(std::ptr::eq(view.body, &arguments[1]));
 }
 
@@ -91,7 +91,7 @@ fn real_let_initializers_see_earlier_values_and_shadow_after_evaluation() {
         [["x", ["+", "@x", 1]], ["y", ["+", "@x", 2]], ["x", ["+", "@y", 3]]],
         ["list", "@x", "@y", "@outer"]
     ])), &ctx).unwrap();
-    assert_eq!(result, Value::Array(vec![Value::Number(106.0), Value::Number(103.0), Value::Number(9.0)]));
+    assert_eq!(result, Value::array(vec![Value::Number(106.0), Value::Number(103.0), Value::Number(9.0)]));
     assert_eq!(ctx.resolve_binding("@x"), Some(Value::Number(100.0)));
     assert_eq!(ctx.resolve_binding("@outer"), Some(Value::Number(9.0)));
     assert_eq!(ctx.resolve_binding("@y"), None);

@@ -138,7 +138,7 @@ impl OirExpr {
         use crate::schema::sexpr::SExpression as S;
         let arr = |head: &str, parts: Vec<S>| {
             let mut v = Vec::with_capacity(parts.len() + 1);
-            v.push(S::String(head.to_string()));
+            v.push(S::String(head.to_string().into()));
             v.extend(parts);
             S::Array(v)
         };
@@ -146,8 +146,8 @@ impl OirExpr {
             OirExpr::Null => S::Null,
             OirExpr::Bool { value } => S::Bool(*value),
             OirExpr::Number { value } => S::Number(*value),
-            OirExpr::String { value } => S::String(value.clone()),
-            OirExpr::Binding { binding } => S::String(binding.to_string()),
+            OirExpr::String { value } => S::String(value.clone().into()),
+            OirExpr::Binding { binding } => S::String(binding.to_string().into()),
             OirExpr::Array { items } => {
                 let mut v = Vec::with_capacity(items.len());
                 for it in items {
@@ -209,9 +209,9 @@ impl OirExpr {
             }
             OirExpr::Lambda { params, body } => {
                 let params_sexpr = if params.len() == 1 {
-                    S::String(params[0].clone())
+                    S::String((params[0].clone()).into())
                 } else {
-                    S::Array(params.iter().map(|p| S::String(p.clone())).collect())
+                    S::Array(params.iter().map(|p| S::String(p.clone().into())).collect())
                 };
                 arr("fn", vec![params_sexpr, body.to_sexpression()?])
             }
@@ -225,7 +225,7 @@ impl OirExpr {
                     source.to_sexpression()?,
                     arr(
                         "fn",
-                        vec![S::String(variable.clone()), body.to_sexpression()?],
+                        vec![S::String(variable.clone().into()), body.to_sexpression()?],
                     ),
                 ],
             ),
@@ -239,7 +239,7 @@ impl OirExpr {
                     source.to_sexpression()?,
                     arr(
                         "fn",
-                        vec![S::String(variable.clone()), predicate.to_sexpression()?],
+                        vec![S::String(variable.clone().into()), predicate.to_sexpression()?],
                     ),
                 ],
             ),
@@ -257,8 +257,8 @@ impl OirExpr {
                         "fn",
                         vec![
                             S::Array(vec![
-                                S::String(accumulator.clone()),
-                                S::String(variable.clone()),
+                                S::String(accumulator.clone().into()),
+                                S::String(variable.clone().into()),
                             ]),
                             body.to_sexpression()?,
                         ],
@@ -1075,7 +1075,7 @@ mod tests {
         fn heads(expr: &S, out: &mut Vec<String>) {
             if let S::Array(items) = expr {
                 if let Some(S::String(head)) = items.first() {
-                    out.push(head.clone());
+                    out.push(head.clone().into_inner());
                 }
                 for item in items {
                     heads(item, out);

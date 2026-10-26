@@ -53,7 +53,7 @@ impl Operator for BytesFromStringOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/from-string", == 1);
         match eval_expr(&args[0], ctx)? {
-            Value::String(s) => Ok(Value::String(codec::base64_encode(s.as_bytes()))),
+            Value::String(s) => Ok(Value::string(codec::base64_encode(s.as_bytes()))),
             other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
                 "bytes/from-string: expected a string argument, got {}",
                 other.type_name()
@@ -70,7 +70,7 @@ impl Operator for BytesToStringOp {
         let Some(data) = bytes_arg_or_none(&args[0], ctx, "bytes/to-string")? else {
             return Ok(Value::Null);
         };
-        Ok(String::from_utf8(data).map_or(Value::Null, Value::String))
+        Ok(String::from_utf8(data).map_or(Value::Null, Value::string))
     }
 }
 
@@ -80,7 +80,7 @@ impl Operator for BytesFromBase64Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/from-base64", == 1);
         Ok(bytes_arg_or_none(&args[0], ctx, "bytes/from-base64")?
-            .map_or(Value::Null, |data| Value::String(codec::base64_encode(&data))))
+            .map_or(Value::Null, |data| Value::string(codec::base64_encode(&data))))
     }
 }
 
@@ -90,7 +90,7 @@ impl Operator for BytesToBase64Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/to-base64", == 1);
         let data = bytes_arg(&args[0], ctx, "bytes/to-base64")?;
-        Ok(Value::String(codec::base64_encode(&data)))
+        Ok(Value::string(codec::base64_encode(&data)))
     }
 }
 
@@ -128,9 +128,9 @@ impl Operator for BytesSliceOp {
             data.len()
         };
         if from >= to {
-            return Ok(Value::String(String::new()));
+            return Ok(Value::string(String::new()));
         }
-        Ok(Value::String(codec::base64_encode(&data[from..to])))
+        Ok(Value::string(codec::base64_encode(&data[from..to])))
     }
 }
 
@@ -144,7 +144,7 @@ impl Operator for BytesConcatOp {
         for part in parts {
             joined.extend(decode_value(part, "bytes/concat")?);
         }
-        Ok(Value::String(codec::base64_encode(&joined)))
+        Ok(Value::string(codec::base64_encode(&joined)))
     }
 }
 
@@ -292,7 +292,7 @@ impl Operator for BytesWriteUintOp {
         if !big {
             field.reverse();
         }
-        Ok(Value::String(codec::base64_encode(&field)))
+        Ok(Value::string(codec::base64_encode(&field)))
     }
 }
 
@@ -307,7 +307,7 @@ mod tests {
 
     fn text(form: serde_json::Value) -> String {
         match eval(form) {
-            Ok(Value::String(s)) => s,
+            Ok(Value::String(s)) => s.into_inner(),
             other => panic!("expected a string, got {other:?}"),
         }
     }

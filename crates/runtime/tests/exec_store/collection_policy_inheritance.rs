@@ -20,7 +20,7 @@ use orbital_core_runtime::entity_access::{resolve_collection_inheritance, Entity
 use orbital_core_base::value::Value;
 
 fn policy(marker: &str) -> Value {
-    Value::String(marker.to_string())
+    Value::string(marker.to_string())
 }
 
 fn declared(collection: &str, read: &str) -> EntityAccessPolicies {

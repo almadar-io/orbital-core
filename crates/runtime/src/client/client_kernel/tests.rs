@@ -283,13 +283,13 @@ fn a_local_seed_posts_the_server_work_its_cascade_reaches() {
 #[test]
 fn client_kernel_persisted_awaited_posts_leg_and_folds() {
     let mut row = ValueMap::default();
-    row.insert("id".to_string(), Value::String("n-1".to_string()));
+    row.insert("id".to_string(), Value::string("n-1"));
     row.insert(
         "title".to_string(),
-        Value::String("From server".to_string()),
+        Value::string("From server"),
     );
     let mut data = HashMap::new();
-    data.insert("Note".to_string(), vec![Value::Object(row)]);
+    data.insert("Note".to_string(), vec![Value::object(row)]);
 
     let server_response = EventResponse {
         success: true,
@@ -328,7 +328,7 @@ fn client_kernel_persisted_awaited_posts_leg_and_folds() {
     let folded = kernel.embedded.entities().read("Note", "n-1").unwrap();
     assert_eq!(
         folded.as_object().and_then(|o| o.get("title")),
-        Some(&Value::String("From server".to_string()))
+        Some(&Value::string("From server"))
     );
 
     // The echoed CREATED was already locally delivered (it cascaded to Watcher

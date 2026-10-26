@@ -179,9 +179,9 @@ mod tests {
             .enumerate()
             .map(|(i, role)| {
                 let mut m = ValueMap::default();
-                m.insert("id".to_string(), Value::String(format!("Person-{}", i + 1)));
-                m.insert("role".to_string(), Value::String((*role).to_string()));
-                Value::Object(m)
+                m.insert("id".to_string(), Value::string(format!("Person-{}", i + 1)));
+                m.insert("role".to_string(), Value::string((*role).to_string()));
+                Value::object(m)
             })
             .collect()
     }
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(by_id, by_role);
         assert_eq!(
             by_id.get_path("role"),
-            Some(&Value::String("moderator".to_string()))
+            Some(&Value::string("moderator"))
         );
     }
 
@@ -219,7 +219,7 @@ mod tests {
             resolve_persona_spec("{\"id\":\"patient-7\",\"role\":\"patient\"}", &[]).unwrap();
         assert_eq!(
             user.get_path("role"),
-            Some(&Value::String("patient".to_string()))
+            Some(&Value::string("patient"))
         );
     }
 
@@ -267,13 +267,13 @@ mod tests {
         assert_eq!(roster.len(), 2);
         assert_eq!(
             roster[0].get_path("id"),
-            Some(&Value::String("ada".to_string()))
+            Some(&Value::string("ada"))
         );
         // An instance without an authored id gets the mock id family, counted over
         // id-less instances only (as the runtime's mock store mints it).
         assert_eq!(
             roster[1].get_path("id"),
-            Some(&Value::String("Person Id 1".to_string()))
+            Some(&Value::string("Person Id 1"))
         );
     }
 

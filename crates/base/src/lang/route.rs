@@ -26,7 +26,7 @@ pub fn extract_static_path_prefix(expr: &SExpression) -> Option<String> {
     };
     match (arr.first(), arr.get(1)) {
         (Some(SExpression::String(op)), Some(SExpression::String(first))) if op == "str/concat" => {
-            Some(first.clone())
+            Some(first.clone().into_inner())
         }
         _ => None,
     }

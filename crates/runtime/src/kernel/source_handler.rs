@@ -142,7 +142,7 @@ impl EntitySourceHandler {
             values: reference
                 .ids
                 .iter()
-                .map(|id| Value::String(id.clone()))
+                .map(|id| Value::string(id.clone()))
                 .collect(),
         };
         let uncounted =

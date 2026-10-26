@@ -144,7 +144,7 @@ prob_op!(ProbSampleOp, "prob/sample", 2, |args, ctx| {
         out.push(eval_expr(&args[1], ctx)?);
         i += 1.0;
     }
-    Ok(Value::Array(out))
+    Ok(Value::array(out))
 });
 
 /// One sample of a model: `set @entity.field` writes the sample's own copy of the entity, under the flat key JS wrote.
@@ -171,7 +171,7 @@ fn run_model(expr: &SExpression, ctx: &mut BindingContext) -> EvalResult {
                 if let Some(field) = target.strip_prefix("@entity.") {
                     let mut entity = match ctx.entity.as_value() {
                         Value::Object(map) => map.clone(),
-                        _ => ValueMap::default(),
+                        _ => ValueMap::default().into(),
                     };
                     entity.insert(field.to_string(), value);
                     ctx.set_entity(Value::Object(entity));
@@ -215,7 +215,7 @@ fn rejection_samples(args: &[SExpression], ctx: &BindingContext) -> Result<(Vec<
         let mut sample = ctx.child();
         sample.set_entity(match ctx.entity.as_value() {
             Value::Object(map) => Value::Object(map.clone()),
-            _ => Value::Object(ValueMap::default()),
+            _ => Value::object(ValueMap::default()),
         });
         ctx.prob().take_rejected();
         run_model(&args[0], &mut sample)?;
@@ -232,12 +232,12 @@ fn rejection_samples(args: &[SExpression], ctx: &BindingContext) -> Result<(Vec<
 }
 
 prob_op!(ProbPosteriorOp, "prob/posterior", 4, |args, ctx| {
-    Ok(Value::Array(rejection_samples(args, ctx)?.0))
+    Ok(Value::array(rejection_samples(args, ctx)?.0))
 });
 
 prob_op!(ProbInferOp, "prob/infer", 4, |args, ctx| {
     let (accepted, n) = rejection_samples(args, ctx)?;
-    let samples = numbers(Value::Array(accepted))?;
+    let samples = numbers(Value::array(accepted))?;
     let count = samples.len() as f64;
     let (mean, variance, rate) = if samples.is_empty() {
         (0.0, 0.0, 0.0)
@@ -254,7 +254,7 @@ prob_op!(ProbInferOp, "prob/infer", 4, |args, ctx| {
         Value::Array(samples.into_iter().map(Value::Number).collect()),
     );
     out.insert("acceptRate".to_string(), Value::Number(rate));
-    Ok(Value::Object(out))
+    Ok(Value::object(out))
 });
 
 fn mean_of(samples: &[f64]) -> f64 {
@@ -285,9 +285,9 @@ prob_op!(ProbHistogramOp, "prob/histogram", 2, |args, ctx| {
     }
     let mut out = ValueMap::default();
     if samples.is_empty() {
-        out.insert("binEdges".to_string(), Value::Array(vec![]));
-        out.insert("counts".to_string(), Value::Array(vec![]));
-        return Ok(Value::Object(out));
+        out.insert("binEdges".to_string(), Value::array(vec![]));
+        out.insert("counts".to_string(), Value::array(vec![]));
+        return Ok(Value::object(out));
     }
     let min = samples.iter().copied().fold(f64::INFINITY, f64::min);
     let max = samples.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -309,7 +309,7 @@ prob_op!(ProbHistogramOp, "prob/histogram", 2, |args, ctx| {
         "counts".to_string(),
         Value::Array(counts.into_iter().map(Value::Number).collect()),
     );
-    Ok(Value::Object(out))
+    Ok(Value::object(out))
 });
 
 fn sorted(mut samples: Vec<f64>) -> Vec<f64> {
@@ -343,13 +343,13 @@ prob_op!(ProbCredibleIntervalOp, "prob/credible-interval", 2, |args, ctx| {
         return Ok(Value::Null);
     }
     if samples.is_empty() {
-        return Ok(Value::Array(vec![Value::Number(0.0), Value::Number(0.0)]));
+        return Ok(Value::array(vec![Value::Number(0.0), Value::Number(0.0)]));
     }
     let samples = sorted(samples);
     let last = (samples.len() - 1) as f64;
     let lo = ((alpha / 2.0) * last).floor() as usize;
     let hi = ((1.0 - alpha / 2.0) * last).ceil() as usize;
-    Ok(Value::Array(vec![Value::Number(samples[lo]), Value::Number(samples[hi])]))
+    Ok(Value::array(vec![Value::Number(samples[lo]), Value::Number(samples[hi])]))
 });
 
 #[cfg(test)]

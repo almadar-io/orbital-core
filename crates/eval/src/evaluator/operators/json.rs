@@ -22,7 +22,7 @@ fn json_to_value(json: serde_json::Value) -> Value {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(b),
         serde_json::Value::Number(n) => Value::Number(n.as_f64().unwrap_or_default()),
-        serde_json::Value::String(s) => Value::String(s),
+        serde_json::Value::String(s) => Value::string(s),
         serde_json::Value::Array(items) => {
             Value::Array(items.into_iter().map(json_to_value).collect())
         }
@@ -75,7 +75,7 @@ fn run_time_shape(arg: &SExpression) -> Result<Option<(String, std::rc::Rc<Decla
     Ok(match parse_compat_type(text) {
         CompatType::Ty(OirType::Union { variants }) if variants.is_empty() => None,
         CompatType::Ty(declared) => Some((
-            text.clone(),
+            text.clone().into_inner(),
             std::rc::Rc::new(DeclaredShape { version: None, name: None, ty: declared, named: Default::default() }),
         )),
         _ => None,
@@ -120,7 +120,7 @@ impl Operator for JsonNodesOp {
             }
             nodes.push(value);
         }
-        Ok(Value::Array(nodes))
+        Ok(Value::array(nodes))
     }
 }
 
@@ -149,9 +149,9 @@ impl Operator for JsonStringifyOp {
         let json = value_to_json(&val);
         let json = if sorted { crate::util::canonical_json::canonical_json(&json) } else { json };
         Ok(Value::String(if pretty {
-            orbital_core_base::json_value::js_json_string_pretty(&json)
+            orbital_core_base::json_value::js_json_string_pretty(&json).into()
         } else {
-            orbital_core_base::json_value::js_json_string(&json)
+            orbital_core_base::json_value::js_json_string(&json).into()
         }))
     }
 }

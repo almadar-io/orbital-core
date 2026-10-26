@@ -329,9 +329,9 @@ impl ServiceHandler for Llm {
         let mut out = ValueMap::new();
         out.insert(
             "embeddings".to_string(),
-            Value::Array(vec![Value::Number(1.0)]),
+            Value::array(vec![Value::Number(1.0)]),
         );
-        Ok(Value::Object(out))
+        Ok(Value::object(out))
     }
     fn cancel(&self, _key: &str) -> Result<(), String> {
         Ok(())
@@ -347,10 +347,10 @@ impl SubstrateHandler for Host {
         if self.fail {
             return Err(SubstrateFailure {
                 message: format!("{op} refused"),
-                errors: vec![Value::String("ORB_X".into())],
+                errors: vec![Value::string("ORB_X")],
             });
         }
-        Ok(Value::String("ok".into()))
+        Ok(Value::string("ok"))
     }
 }
 

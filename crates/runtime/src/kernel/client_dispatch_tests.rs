@@ -397,9 +397,9 @@ fn client_env_runtime_optimistic_snapshot_and_restore() {
 fn render_ui_runs_locally_in_client_env() {
     let (kernel, _collector) = client_kernel_with(render_ui_schema());
     let mut payload = ValueMap::default();
-    payload.insert("title".to_string(), Value::String("Hello".to_string()));
+    payload.insert("title".to_string(), Value::string("Hello"));
     let outcomes = kernel
-        .dispatch("RenderTrait", None, "SHOW", Value::Object(payload))
+        .dispatch("RenderTrait", None, "SHOW", Value::object(payload))
         .unwrap();
     let response = EventResponse::from_process_results(&outcomes, "RenderTrait", "SHOW");
     let effects = response
@@ -419,7 +419,7 @@ fn render_ui_runs_locally_in_client_env() {
         .cloned();
     assert_eq!(
         title,
-        Some(Value::String("Hello".to_string())),
+        Some(Value::string("Hello")),
         "the binding must be RESOLVED (not the literal '@payload.title' token), \
              even though this kernel is Client-env with no render handler configured"
     );
@@ -481,7 +481,7 @@ fn current_theme_binding_resolves_in_render_ui() {
         .cloned();
     assert_eq!(
         theme,
-        Some(Value::String("clay-light".to_string())),
+        Some(Value::string("clay-light")),
         "the @currentTheme sigil must resolve to the declared app-level theme key, \
              not round-trip as the literal '@currentTheme' token"
     );
@@ -635,7 +635,7 @@ fn control_a_program_with_no_labeled_root_page_has_no_entries() {
         }]
     }))
     .unwrap();
-    assert_eq!(rendered_items(schema), Some(Value::Array(Vec::new())));
+    assert_eq!(rendered_items(schema), Some(Value::array(Vec::new())));
 }
 
 fn i18n_schema(locales: bool) -> OrbitalSchema {
@@ -723,10 +723,10 @@ fn i18n_t_renders_the_dispatch_viewers_locale() {
     kernel.set_messages(vec!["en".into(), "ar".into()], i18n_catalogs());
     let _locale = kernel.enter_locale(Some("ar")).unwrap();
     let config = rendered_config(&kernel);
-    assert_eq!(field(&config, "title"), Value::String("مرحبا".into()));
-    assert_eq!(field(&config, "count"), Value::String("3 منشورات".into()));
-    assert_eq!(field(&config, "className"), Value::String("".into()));
-    assert_eq!(field(&config, "lang"), Value::String("ar".into()));
+    assert_eq!(field(&config, "title"), Value::string("مرحبا"));
+    assert_eq!(field(&config, "count"), Value::string("3 منشورات"));
+    assert_eq!(field(&config, "className"), Value::string(""));
+    assert_eq!(field(&config, "lang"), Value::string("ar"));
 }
 
 #[test]
@@ -734,8 +734,8 @@ fn control_i18n_t_without_a_viewer_locale_renders_the_first_declared() {
     let kernel = server_kernel_with(i18n_schema(true));
     kernel.set_messages(vec!["en".into(), "ar".into()], i18n_catalogs());
     let config = rendered_config(&kernel);
-    assert_eq!(field(&config, "title"), Value::String("Hello".into()));
-    assert_eq!(field(&config, "lang"), Value::String("en".into()));
+    assert_eq!(field(&config, "title"), Value::string("Hello"));
+    assert_eq!(field(&config, "lang"), Value::string("en"));
 }
 
 #[test]
@@ -759,19 +759,19 @@ fn edge_a_program_without_locales_accepts_any_viewer_locale() {
 fn apply_server_response_merges_data_and_states() {
     let kernel = server_kernel_with(server_response_schema());
     let mut row = ValueMap::default();
-    row.insert("id".to_string(), Value::String("n-1".to_string()));
+    row.insert("id".to_string(), Value::string("n-1"));
     row.insert(
         "title".to_string(),
-        Value::String("From server".to_string()),
+        Value::string("From server"),
     );
     let mut data = HashMap::new();
-    data.insert("Note".to_string(), vec![Value::Object(row)]);
+    data.insert("Note".to_string(), vec![Value::object(row)]);
 
     let mut entity_by_trait = ValueMap::default();
     let mut listener_entity = ValueMap::default();
-    listener_entity.insert("id".to_string(), Value::String("singleton".to_string()));
-    listener_entity.insert("note".to_string(), Value::String("n-1".to_string()));
-    entity_by_trait.insert("Listener".to_string(), Value::Object(listener_entity));
+    listener_entity.insert("id".to_string(), Value::string("singleton"));
+    listener_entity.insert("note".to_string(), Value::string("n-1"));
+    entity_by_trait.insert("Listener".to_string(), Value::object(listener_entity));
 
     let mut states = HashMap::new();
     states.insert("Listener".to_string(), "ponged".to_string());
@@ -793,12 +793,12 @@ fn apply_server_response_merges_data_and_states() {
     let note = kernel.entity_source().read("Note", "n-1").unwrap();
     assert_eq!(
         note.as_object().unwrap().get("title"),
-        Some(&Value::String("From server".to_string()))
+        Some(&Value::string("From server"))
     );
     let listener_frame = kernel.snapshot_trait("Listener", None).entity;
     assert_eq!(
         listener_frame.as_object().unwrap().get("note"),
-        Some(&Value::String("n-1".to_string()))
+        Some(&Value::string("n-1"))
     );
     assert_eq!(
         kernel
@@ -1028,7 +1028,7 @@ fn client_env_local_seed_posts_its_cascade_server_work() {
             "Composer",
             None,
             "DRAFT",
-            Value::Object(ValueMap::from_iter([("value".to_string(), Value::from("hi"))])),
+            Value::object(ValueMap::from_iter([("value".to_string(), Value::from("hi"))])),
             None,
         )
         .unwrap();
@@ -1345,7 +1345,7 @@ fn client_env_leg_carries_the_row_the_event_was_dispatched_against() {
             "Composer",
             None,
             "DRAFT",
-            Value::Object(ValueMap::from_iter([("value".to_string(), Value::from("hi"))])),
+            Value::object(ValueMap::from_iter([("value".to_string(), Value::from("hi"))])),
             None,
         )
         .unwrap();

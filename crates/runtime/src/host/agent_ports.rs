@@ -63,7 +63,7 @@ pub fn dispatch_outcome(response: &EventResponse) -> Value {
     match dispatch_failure(response) {
         Some(error) => {
             map.insert("ok".to_string(), Value::Bool(false));
-            map.insert("error".to_string(), Value::String(error));
+            map.insert("error".to_string(), Value::string(error));
         }
         None => {
             let emitted = response
@@ -71,18 +71,18 @@ pub fn dispatch_outcome(response: &EventResponse) -> Value {
                 .iter()
                 .map(|e| {
                     let mut event = ValueMap::default();
-                    event.insert("event".to_string(), Value::String(e.event.clone()));
+                    event.insert("event".to_string(), Value::string(e.event.clone()));
                     if let Some(payload) = &e.payload {
                         event.insert("payload".to_string(), payload.clone());
                     }
-                    Value::Object(event)
+                    Value::object(event)
                 })
                 .collect();
             map.insert("ok".to_string(), Value::Bool(true));
             map.insert("emitted".to_string(), Value::Array(emitted));
         }
     }
-    Value::Object(map)
+    Value::object(map)
 }
 
 /// A `program/*` answer as its asker reads it, answered in place or deferred alike: a `program/dispatch` declared
@@ -109,19 +109,19 @@ pub fn completion_result(op: &str, value: Value) -> Value {
     let mut payload = ValueMap::default();
     payload.insert("result".to_string(), value);
     if let Some(text) = text {
-        payload.insert("text".to_string(), Value::String(text));
+        payload.insert("text".to_string(), Value::string(text));
     }
-    Value::Object(payload)
+    Value::object(payload)
 }
 
 /// The failure payload of a substrate or program op's completion: `{ error }`, plus `errors` when the op gave any.
 pub fn failure_payload(failure: &crate::effects::executor::SubstrateFailure) -> Value {
     let mut payload = ValueMap::default();
-    payload.insert("error".to_string(), Value::String(failure.message.clone()));
+    payload.insert("error".to_string(), Value::string(failure.message.clone()));
     if !failure.errors.is_empty() {
-        payload.insert("errors".to_string(), Value::Array(failure.errors.clone()));
+        payload.insert("errors".to_string(), Value::array(failure.errors.clone()));
     }
-    Value::Object(payload)
+    Value::object(payload)
 }
 
 #[cfg(test)]
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn a_dispatch_answer_is_shaped_by_its_ask_whether_answered_in_place_or_deferred() {
         let response = || serde_json::from_value::<Value>(serde_json::to_value(EventResponse { success: true, transitioned: true, ..EventResponse::default() }).unwrap()).unwrap();
-        let text = |s: &str| Value::String(s.to_string());
+        let text = |s: &str| Value::string(s.to_string());
         let object = |json: Json| serde_json::from_value::<Value>(json).unwrap();
         let shaped = |args: Vec<Value>| program_answer("program/dispatch", &args, response()).map(|v| norm(serde_json::to_value(&v).unwrap()));
         let shaped_from = |answer: Result<Value, crate::effects::executor::SubstrateFailure>| norm(serde_json::to_value(answer.expect("shaped")).unwrap());
@@ -186,9 +186,9 @@ mod tests {
         counted.insert("to".to_string(), text("idle"));
         counted.insert("event".to_string(), text("GO"));
         counted.insert("firedArm".to_string(), Value::Number(1.0));
-        counted.insert("effects".to_string(), Value::Array(Vec::new()));
+        counted.insert("effects".to_string(), Value::array(Vec::new()));
         let Value::Object(mut with_arm) = response() else { panic!("a response is a record") };
-        with_arm.insert("transitions".to_string(), Value::Array(vec![Value::Object(counted)]));
+        with_arm.insert("transitions".to_string(), Value::array(vec![Value::Object(counted.into())]));
         assert_eq!(
             shaped_from(program_answer("program/dispatch", &[text("O.T.GO"), object(serde_json::json!({}))], Value::Object(with_arm))),
             outcome,

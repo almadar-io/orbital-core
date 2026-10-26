@@ -48,10 +48,10 @@ fn answer_context(cx: &Cx<'_>, args: &[Value]) -> Option<Result<Value, OsError>>
 
 fn obj<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     Value::Object(
-        pairs
+        (pairs
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
-            .collect::<ValueMap>(),
+            .collect::<ValueMap>()).into(),
     )
 }
 
@@ -60,7 +60,7 @@ fn num(n: u64) -> Value {
 }
 
 fn text(path: &Path) -> Value {
-    Value::String(path.to_string_lossy().into_owned())
+    Value::string(path.to_string_lossy().into_owned())
 }
 
 fn lexical(path: &Path) -> Option<PathBuf> {
@@ -141,7 +141,7 @@ fn millis(sec: i64, nsec: i64) -> Value {
 
 fn stat_value(md: &fs::Metadata) -> Value {
     obj([
-        ("kind", Value::String(kind_of(md.file_type()).to_string())),
+        ("kind", Value::string(kind_of(md.file_type()).to_string())),
         ("size", num(md.len())),
         ("mode", num(u64::from(md.mode() & 0o7777))),
         ("uid", num(u64::from(md.uid()))),

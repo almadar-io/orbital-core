@@ -188,7 +188,7 @@ pub fn inbound_payload<'a>(
             Some(Value::String(prev)) => format!("{prev}, {value}"),
             _ => value.to_string(),
         };
-        lowered.insert(key, Value::String(joined));
+        lowered.insert(key, Value::string(joined));
     }
     let verified = route.verifies.as_ref().and_then(|v| {
         let seen = lowered.get(&v.header).and_then(Value::as_str).unwrap_or("");
@@ -196,13 +196,13 @@ pub fn inbound_payload<'a>(
     });
     let body = serde_json::from_str::<Value>(raw_body).unwrap_or(Value::Null);
     let mut payload = ValueMap::default();
-    payload.insert("headers".to_string(), Value::Object(lowered));
+    payload.insert("headers".to_string(), Value::object(lowered));
     payload.insert("body".to_string(), body);
-    payload.insert("rawBody".to_string(), Value::String(raw_body.to_string()));
+    payload.insert("rawBody".to_string(), Value::string(raw_body.to_string()));
     if let Some(verified) = verified {
         payload.insert("verified".to_string(), Value::Bool(verified));
     }
-    Value::Object(payload)
+    Value::object(payload)
 }
 
 /// The trait that handles `event` as an inbound hook, when a client-facing request names it (`trait_name` is
@@ -252,7 +252,7 @@ pub fn answer_of<'a>(route: &InboundRoute, emits: impl IntoIterator<Item = (&'a 
         (Some(s), Some(b), Ok(stderr), Ok(headers)) if s.fract() == 0.0 && (100.0..=599.0).contains(&s) => InboundAnswer {
             status: s as u16,
             body: b.to_string(),
-            stderr,
+            stderr: stderr.map(|v| v.into_inner()),
             headers,
         },
         _ => dispatch_failed("inbound-answer-invalid"),
@@ -361,11 +361,11 @@ mod tests {
         );
         assert_eq!(
             payload.get_path("headers.x-goog-channel-id"),
-            Some(&Value::String("c1".into()))
+            Some(&Value::string("c1"))
         );
-        assert_eq!(payload.get_path("headers.accept"), Some(&Value::String("a, b".into())));
+        assert_eq!(payload.get_path("headers.accept"), Some(&Value::string("a, b")));
         assert_eq!(payload.get_path("body.k"), Some(&Value::Number(1.0)));
-        assert_eq!(payload.get_path("rawBody"), Some(&Value::String(r#"{"k":1}"#.into())));
+        assert_eq!(payload.get_path("rawBody"), Some(&Value::string(r#"{"k":1}"#)));
     }
 
     #[test]
@@ -373,7 +373,7 @@ mod tests {
         for raw in ["", "not json"] {
             let payload = inbound_payload(&route(), [], raw, None);
             assert_eq!(payload.get_path("body"), Some(&Value::Null), "{raw}");
-            assert_eq!(payload.get_path("rawBody"), Some(&Value::String(raw.into())), "{raw}");
+            assert_eq!(payload.get_path("rawBody"), Some(&Value::string(raw)), "{raw}");
         }
     }
 

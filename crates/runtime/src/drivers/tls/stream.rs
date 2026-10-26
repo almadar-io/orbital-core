@@ -107,7 +107,7 @@ impl TlsStream {
         let ask = os_ask(
             OsOp::TcpConnect,
             vec![
-                Value::String(stream.host.clone()),
+                Value::string(stream.host.clone()),
                 Value::Number(f64::from(target.port())),
             ],
         );
@@ -292,7 +292,7 @@ impl TlsStream {
                         OsOp::Send,
                         vec![
                             self.sock.clone(),
-                            Value::String(codec::base64_encode(&bytes)),
+                            Value::string(codec::base64_encode(&bytes)),
                         ],
                     );
                 }
@@ -359,7 +359,7 @@ impl TlsStream {
         self.awaiting = Some(Awaiting::Alert);
         os_ask(
             OsOp::Send,
-            vec![self.sock.clone(), Value::String(codec::base64_encode(&alert))],
+            vec![self.sock.clone(), Value::string(codec::base64_encode(&alert))],
         )
     }
 }
@@ -374,9 +374,9 @@ impl Driver for TlsStream {
                 DriverStep::Done(Ok(Value::Null))
             }
             TlsEvent::Data(bytes) => {
-                DriverStep::Done(Ok(Value::String(codec::base64_encode(&bytes))))
+                DriverStep::Done(Ok(Value::string(codec::base64_encode(&bytes))))
             }
-            TlsEvent::Failed(message) => DriverStep::Done(Err(Value::String(message))),
+            TlsEvent::Failed(message) => DriverStep::Done(Err(Value::string(message))),
         }
     }
 }
@@ -614,7 +614,7 @@ mod tests {
                 IoRequest::Os {
                     op: OsOp::TcpConnect,
                     ..
-                } => IoAnswer::Os(Ok(Value::Object(ValueMap::from_iter([(
+                } => IoAnswer::Os(Ok(Value::object(ValueMap::from_iter([(
                     "sock".to_string(),
                     Value::Number(1.0),
                 )])))),
@@ -629,7 +629,7 @@ mod tests {
                     let bytes = codec::base64_decode(text).expect("base64");
                     self.server.receive(&bytes);
                     self.sent.push(bytes);
-                    IoAnswer::Os(Ok(Value::Object(ValueMap::from_iter([(
+                    IoAnswer::Os(Ok(Value::object(ValueMap::from_iter([(
                         "bytes".to_string(),
                         Value::Number(0.0),
                     )]))))
@@ -644,10 +644,10 @@ mod tests {
                     };
                     let data = self.server.take(want as usize);
                     assert!(!data.is_empty(), "the client read with nothing to read");
-                    IoAnswer::Os(Ok(Value::Object(ValueMap::from_iter([
+                    IoAnswer::Os(Ok(Value::object(ValueMap::from_iter([
                         (
                             "data".to_string(),
-                            Value::String(codec::base64_encode(&data)),
+                            Value::String(codec::base64_encode(&data).into()),
                         ),
                         ("eof".to_string(), Value::Bool(false)),
                     ]))))
@@ -701,10 +701,10 @@ mod tests {
                     self.advance(event)
                 }
                 TlsEvent::Closed => DriverStep::Done(Ok(Value::String(
-                    String::from_utf8_lossy(&self.got).into_owned(),
+                    String::from_utf8_lossy(&self.got).into_owned().into(),
                 ))),
-                TlsEvent::Eof => DriverStep::Done(Err(Value::String("eof".to_string()))),
-                TlsEvent::Failed(message) => DriverStep::Done(Err(Value::String(message))),
+                TlsEvent::Eof => DriverStep::Done(Err(Value::string("eof"))),
+                TlsEvent::Failed(message) => DriverStep::Done(Err(Value::string(message))),
             }
         }
     }
@@ -763,7 +763,7 @@ mod tests {
         let run = live(7, NOW);
         assert_eq!(
             run.end,
-            DriveEnd::Done(Ok(Value::String("pong".to_string())))
+            DriveEnd::Done(Ok(Value::string("pong")))
         );
         assert!(
             run.sent.len() >= 3,
@@ -790,7 +790,7 @@ mod tests {
         let other = live(8, NOW);
         assert_eq!(
             other.end,
-            DriveEnd::Done(Ok(Value::String("pong".to_string())))
+            DriveEnd::Done(Ok(Value::string("pong")))
         );
         assert_ne!(run.sent[0], other.sent[0]);
 
@@ -829,7 +829,7 @@ mod tests {
         let run = live(7, NOT_BEFORE + 1);
         assert_eq!(
             run.end,
-            DriveEnd::Done(Ok(Value::String("pong".to_string())))
+            DriveEnd::Done(Ok(Value::string("pong")))
         );
     }
 
@@ -838,7 +838,7 @@ mod tests {
         let (end, step_end) = step_of(Vec::new(), &["rediss://other.internal:6379".to_string()]);
         assert_eq!(
             end,
-            DriveEnd::Done(Err(Value::String(format!("egress denied: {ORIGIN}"))))
+            DriveEnd::Done(Err(Value::string(format!("egress denied: {ORIGIN}"))))
         );
         assert!(step_end.pending.is_empty());
     }

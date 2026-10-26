@@ -3,7 +3,7 @@ use std::path::Path;
 use {crate::os_host::OsHandles, orbital_core_base::os_grants::OsGrants};
 
 fn s(v: &str) -> Value {
-    Value::String(v.to_string())
+    Value::string(v.to_string())
 }
 
 fn all_sys() -> OsGrants {
@@ -525,7 +525,7 @@ fn mounts_skip_virtual_file_systems_and_decode_spaces() {
     assert_eq!(field(&mounts[1], "mountPoint"), s("/mnt/my disk"));
     assert_eq!(
         field(&mounts[0], "options"),
-        Value::Array(vec![s("rw"), s("noatime")])
+        Value::array(vec![s("rw"), s("noatime")])
     );
 }
 
@@ -574,7 +574,7 @@ fn diskstats_net_dev_and_route_parse_to_the_closed_shapes() {
     assert_eq!(field(&eth, "txBytes"), Value::Number(2000.0));
     assert_eq!(field(&eth, "rxErrors"), Value::Number(2.0));
     assert_eq!(field(&eth, "txPackets"), Value::Number(20.0));
-    assert!(conforms(&Value::Object(stats), &Shape::Map(COUNTERS)));
+    assert!(conforms(&Value::object(stats), &Shape::Map(COUNTERS)));
 
     let route = "Iface\tDestination\tGateway\tFlags\neth0\t0001A8C0\t00000000\t0001\neth0\t00000000\t0100A8C0\t0003\n";
     assert_eq!(

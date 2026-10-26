@@ -76,10 +76,10 @@ mod tests {
     #[test]
     fn extracts_children_array() {
         let props = obj(vec![
-            ("type", Value::String("stack".into())),
+            ("type", Value::string("stack")),
             (
                 "children",
-                Value::Array(vec![
+                Value::array(vec![
                     obj(vec![("type", Value::String("button".into()))]),
                     obj(vec![("type", Value::String("button".into()))]),
                 ]),
@@ -89,7 +89,7 @@ mod tests {
         assert_eq!(kids.len(), 2);
         assert_eq!(
             kids[0].0.as_object().and_then(|o| o.get("type")),
-            Some(&Value::String("button".into()))
+            Some(&Value::string("button"))
         );
         assert_eq!(kids[0].1, None, "inline child inherits parent source");
     }
@@ -98,7 +98,7 @@ mod tests {
     fn no_children_is_empty() {
         let empty = ValueMap::default();
         assert!(
-            child_patterns(&obj(vec![("type", Value::String("button".into()))]), &empty).is_empty()
+            child_patterns(&obj(vec![("type", Value::string("button"))]), &empty).is_empty()
         );
         assert!(child_patterns(&Value::Null, &empty).is_empty());
     }
@@ -110,11 +110,11 @@ mod tests {
         let mut index = ValueMap::default();
         index.insert(
             "Search".to_string(),
-            obj(vec![("type", Value::String("table-view".into()))]),
+            obj(vec![("type", Value::string("table-view"))]),
         );
         let props = obj(vec![(
             "children",
-            Value::Array(vec![
+            Value::array(vec![
                 Value::String("@trait.Search".into()),  // resolves
                 Value::String("@trait.Missing".into()), // dropped (not in index)
                 obj(vec![("type", Value::String("button".into()))]),
@@ -148,11 +148,11 @@ mod tests {
         let mut index = ValueMap::default();
         index.insert(
             "Popover1".to_string(),
-            obj(vec![("type", Value::String("popover".into()))]),
+            obj(vec![("type", Value::string("popover"))]),
         );
         let props = obj(vec![(
             "children",
-            Value::Array(vec![Value::String("@trait.Popover1".into())]),
+            Value::array(vec![Value::String("@trait.Popover1".into())]),
         )]);
         let kids = child_patterns(&props, &index);
         assert_eq!(kids.len(), 1, "overlay peer present in index resolves");
@@ -195,10 +195,10 @@ mod tests {
         };
 
         let props = obj(vec![
-            ("type", Value::String("stack".into())),
+            ("type", Value::string("stack")),
             (
                 "children",
-                Value::Array(vec![
+                Value::array(vec![
                     obj(vec![("type", Value::String("button".into()))]),
                     obj(vec![("type", Value::String("button".into()))]),
                     obj(vec![("type", Value::String("button".into()))]),
@@ -224,7 +224,7 @@ mod tests {
         };
 
         let mut tc = ValueMap::default();
-        tc.insert("Catalog".to_string(), obj(vec![("type", Value::String("stack".into()))]));
+        tc.insert("Catalog".to_string(), obj(vec![("type", Value::string("stack"))]));
 
         let entities = HashMap::new();
         let editing = None;
@@ -246,7 +246,7 @@ mod tests {
 
         let props = obj(vec![(
             "children",
-            Value::Array(vec![
+            Value::array(vec![
                 Value::String("@trait.Catalog".into()),            // → source switches to Catalog
                 obj(vec![("type", Value::String("button".into()))]), // inline → inherits Layout
             ]),

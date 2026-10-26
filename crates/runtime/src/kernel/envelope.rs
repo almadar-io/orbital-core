@@ -66,7 +66,7 @@ pub(crate) fn mapped_listen_payload(
                     mapped.insert(key.clone(), value);
                 }
             }
-            Value::Object(mapped)
+            Value::object(mapped)
         }
         None => source_payload.clone(),
     }

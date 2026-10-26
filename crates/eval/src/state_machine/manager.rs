@@ -308,7 +308,7 @@ impl StateMachineManager {
         entity_stores: &Arc<HashMap<String, Vec<Value>>>,
     ) -> BindingContext {
         let mut builder =
-            BindingContextBuilder::new().state(Value::String(state.current_state.clone()));
+            BindingContextBuilder::new().state(Value::string(state.current_state.clone()));
 
         if let Some(entity_data) = &state.entity_data {
             builder = builder.entity(entity_data.clone());
@@ -612,7 +612,7 @@ mod tests {
         let mut manager = StateMachineManager::new();
         manager.register_trait(create_user_management_trait());
 
-        let payload = EventPayload::new("REGISTER", Value::Object(ValueMap::default()));
+        let payload = EventPayload::new("REGISTER", Value::object(ValueMap::default()));
         let result = manager
             .process_event("UserManagement", None, &payload)
             .unwrap();
@@ -631,7 +631,7 @@ mod tests {
         manager.register_trait(create_user_management_trait());
 
         // First go to registering state
-        let payload = EventPayload::new("REGISTER", Value::Object(ValueMap::default()));
+        let payload = EventPayload::new("REGISTER", Value::object(ValueMap::default()));
         manager
             .process_event("UserManagement", None, &payload)
             .unwrap();
@@ -640,15 +640,15 @@ mod tests {
         let mut inner_data = ValueMap::default();
         inner_data.insert(
             "email".to_string(),
-            Value::String("test@example.com".to_string()),
+            Value::string("test@example.com"),
         );
-        inner_data.insert("name".to_string(), Value::String("Test User".to_string()));
-        inner_data.insert("id".to_string(), Value::String("user-123".to_string()));
+        inner_data.insert("name".to_string(), Value::string("Test User"));
+        inner_data.insert("id".to_string(), Value::string("user-123"));
 
         let mut data = ValueMap::default();
-        data.insert("data".to_string(), Value::Object(inner_data));
+        data.insert("data".to_string(), Value::object(inner_data));
 
-        let save_payload = EventPayload::new("SAVE", Value::Object(data));
+        let save_payload = EventPayload::new("SAVE", Value::object(data));
         let result = manager
             .process_event("UserManagement", None, &save_payload)
             .unwrap();
@@ -664,20 +664,20 @@ mod tests {
         manager.register_trait(create_user_management_trait());
 
         // Go to registering state
-        let payload = EventPayload::new("REGISTER", Value::Object(ValueMap::default()));
+        let payload = EventPayload::new("REGISTER", Value::object(ValueMap::default()));
         manager
             .process_event("UserManagement", None, &payload)
             .unwrap();
 
         // Try to save with empty email (should fail guard @payload.data.email != "")
         let mut inner_data = ValueMap::default();
-        inner_data.insert("email".to_string(), Value::String("".to_string()));
-        inner_data.insert("name".to_string(), Value::String("Test User".to_string()));
+        inner_data.insert("email".to_string(), Value::string(""));
+        inner_data.insert("name".to_string(), Value::string("Test User"));
 
         let mut data = ValueMap::default();
-        data.insert("data".to_string(), Value::Object(inner_data));
+        data.insert("data".to_string(), Value::object(inner_data));
 
-        let save_payload = EventPayload::new("SAVE", Value::Object(data));
+        let save_payload = EventPayload::new("SAVE", Value::object(data));
         let result = manager
             .process_event("UserManagement", None, &save_payload)
             .unwrap();
@@ -706,13 +706,13 @@ mod tests {
             .unwrap();
 
         // Move user-1 to viewing
-        let view_payload = EventPayload::new("VIEW", Value::Object(ValueMap::default()));
+        let view_payload = EventPayload::new("VIEW", Value::object(ValueMap::default()));
         manager
             .process_event("UserManagement", Some("user-1"), &view_payload)
             .unwrap();
 
         // Move user-2 to registering
-        let register_payload = EventPayload::new("REGISTER", Value::Object(ValueMap::default()));
+        let register_payload = EventPayload::new("REGISTER", Value::object(ValueMap::default()));
         manager
             .process_event("UserManagement", Some("user-2"), &register_payload)
             .unwrap();
@@ -747,7 +747,7 @@ mod tests {
         manager.register_trait(create_user_management_trait());
 
         // Move to a different state
-        let view_payload = EventPayload::new("VIEW", Value::Object(ValueMap::default()));
+        let view_payload = EventPayload::new("VIEW", Value::object(ValueMap::default()));
         manager
             .process_event("UserManagement", None, &view_payload)
             .unwrap();
@@ -792,7 +792,7 @@ mod tests {
             .process_event(
                 "UserManagement",
                 None,
-                &EventPayload::new("REGISTER", Value::Object(ValueMap::default())),
+                &EventPayload::new("REGISTER", Value::object(ValueMap::default())),
             )
             .unwrap();
         assert!(result.executed);
@@ -808,19 +808,19 @@ mod tests {
         let mut inner_data = ValueMap::default();
         inner_data.insert(
             "email".to_string(),
-            Value::String("new@example.com".to_string()),
+            Value::string("new@example.com"),
         );
-        inner_data.insert("name".to_string(), Value::String("New User".to_string()));
-        inner_data.insert("id".to_string(), Value::String("user-new".to_string()));
+        inner_data.insert("name".to_string(), Value::string("New User"));
+        inner_data.insert("id".to_string(), Value::string("user-new"));
 
         let mut data = ValueMap::default();
-        data.insert("data".to_string(), Value::Object(inner_data));
+        data.insert("data".to_string(), Value::object(inner_data));
 
         let result = manager
             .process_event(
                 "UserManagement",
                 None,
-                &EventPayload::new("SAVE", Value::Object(data)),
+                &EventPayload::new("SAVE", Value::object(data)),
             )
             .unwrap();
         assert!(result.executed);
@@ -838,7 +838,7 @@ mod tests {
             .process_event(
                 "UserManagement",
                 None,
-                &EventPayload::new("VIEW", Value::Object(ValueMap::default())),
+                &EventPayload::new("VIEW", Value::object(ValueMap::default())),
             )
             .unwrap();
         assert!(result.executed);
@@ -855,7 +855,7 @@ mod tests {
             .process_event(
                 "UserManagement",
                 None,
-                &EventPayload::new("EDIT", Value::Object(ValueMap::default())),
+                &EventPayload::new("EDIT", Value::object(ValueMap::default())),
             )
             .unwrap();
         assert!(result.executed);
@@ -872,7 +872,7 @@ mod tests {
             .process_event(
                 "UserManagement",
                 None,
-                &EventPayload::new("CANCEL", Value::Object(ValueMap::default())),
+                &EventPayload::new("CANCEL", Value::object(ValueMap::default())),
             )
             .unwrap();
         assert!(result.executed);
@@ -889,7 +889,7 @@ mod tests {
             .process_event(
                 "UserManagement",
                 None,
-                &EventPayload::new("BACK", Value::Object(ValueMap::default())),
+                &EventPayload::new("BACK", Value::object(ValueMap::default())),
             )
             .unwrap();
         assert!(result.executed);
@@ -993,14 +993,14 @@ mod tests {
         manager.register_trait(create_gated_trait());
 
         let mut user = ValueMap::default();
-        user.insert("id".to_string(), Value::String("u1".to_string()));
-        user.insert("role".to_string(), Value::String("clinician".to_string()));
+        user.insert("id".to_string(), Value::string("u1"));
+        user.insert("role".to_string(), Value::string("clinician"));
         let mut config = ValueMap::default();
         config.insert("limit".to_string(), Value::Number(10.0));
 
         let ctx = BindingContextBuilder::new()
-            .user(Value::Object(user))
-            .config(Value::Object(config))
+            .user(Value::object(user))
+            .config(Value::object(config))
             .build();
 
         let payload = EventPayload::new("CLOSE", Value::Null);
@@ -1016,10 +1016,10 @@ mod tests {
 
         // A different role fails the same guard through the same path.
         let mut other_user = ValueMap::default();
-        other_user.insert("id".to_string(), Value::String("u2".to_string()));
-        other_user.insert("role".to_string(), Value::String("member".to_string()));
+        other_user.insert("id".to_string(), Value::string("u2"));
+        other_user.insert("role".to_string(), Value::string("member"));
         let other_ctx = BindingContextBuilder::new()
-            .user(Value::Object(other_user))
+            .user(Value::object(other_user))
             .build();
 
         let mut manager2 = StateMachineManager::new();

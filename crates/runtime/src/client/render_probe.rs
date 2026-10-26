@@ -699,7 +699,7 @@ fn node_fact(
                 binding(EntityBindingKind::ContextUnresolved, b, 0, false)
             }
             Some(Value::String(entity_type)) => {
-                let rows = entities_cache.get(entity_type).map_or(0, Vec::len);
+                let rows = entities_cache.get(entity_type.as_str()).map_or(0, Vec::len);
                 tracing::debug!(
                     target: orbital_core_base::logging::ns::UI_DATA_GRID,
                     pattern, entity = %entity_type, rows, "data-bound:check",

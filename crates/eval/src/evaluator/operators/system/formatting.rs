@@ -20,7 +20,7 @@ impl Operator for FormatOrdinalOp {
             (3, _) => "rd",
             _ => "th",
         };
-        Ok(Value::String(format!("{}{}", num, suffix)))
+        Ok(Value::string(format!("{}{}", num, suffix)))
     }
 }
 
@@ -33,6 +33,6 @@ impl Operator for FormatPluralOp {
         let singular = eval_expr(&args[1], ctx)?.to_string_value();
         let plural = eval_expr(&args[2], ctx)?.to_string_value();
         let word = if count == 1 { singular } else { plural };
-        Ok(Value::String(format!("{} {}", count, word)))
+        Ok(Value::string(format!("{} {}", count, word)))
     }
 }

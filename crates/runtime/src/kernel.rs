@@ -212,13 +212,13 @@ fn take_awaiting_sidecar(payload: Value) -> (Value, Option<HashSet<String>>) {
 fn with_awaiting_sidecar(payload: Value, awaiting: &HashSet<String>) -> Value {
     let mut map = match payload {
         Value::Object(map) => map,
-        _ => ValueMap::default(),
+        _ => ValueMap::default().into(),
     };
     let mut list: Vec<&String> = awaiting.iter().collect();
     list.sort();
     map.insert(
         "_awaitingInit".to_string(),
-        Value::Array(list.into_iter().map(|t| Value::String(t.clone())).collect()),
+        Value::Array(list.into_iter().map(|t| Value::string(t.clone())).collect()),
     );
     Value::Object(map)
 }
@@ -232,7 +232,7 @@ fn listen_guard_passes(
 ) -> bool {
     let mut ctx = BindingContextBuilder::new()
         .payload(source_payload.clone())
-        .state(Value::String(from.to_string()))
+        .state(Value::string(from.to_string()))
         .build();
     ctx.from_state = Some(from.to_string());
     ctx.set_config(config);
@@ -617,7 +617,7 @@ impl RuntimeKernel {
             store_seeds: Arc::new(orbital_core_base::sync::Mutex::new(std::collections::VecDeque::new())),
             theme_presets: Arc::new(RwLock::new(ThemePresets::new())),
             theme_mode: Arc::new(RwLock::new(None)),
-            nav_pages: Arc::new(RwLock::new(Value::Array(Vec::new()))),
+            nav_pages: Arc::new(RwLock::new(Value::array(Vec::new()))),
             mount: Arc::new(RwLock::new(MountLifecycle::default())),
             renders: Arc::new(RwLock::new(RenderStore::default())),
         }
@@ -818,7 +818,7 @@ impl PendingSets {
     fn insert(&mut self, field: String, value: Value) {
         self.sets.insert(field.clone(), value.clone());
         if !self.view.set_field(field, value) {
-            self.view = SharedEntity::from_value(Value::Object(self.sets.clone()));
+            self.view = SharedEntity::from_value(Value::object(self.sets.clone()));
         }
     }
 }
@@ -833,7 +833,7 @@ fn declared_defaults(def: &EntityDefinition) -> Value {
     if defaults.is_empty() {
         Value::Null
     } else {
-        Value::Object(defaults)
+        Value::object(defaults)
     }
 }
 
@@ -863,19 +863,19 @@ fn app_nav_items(schema: &OrbitalSchema) -> Vec<Value> {
                 continue;
             }
             let mut item = ValueMap::from_iter([
-                ("href".to_string(), Value::String(page.path.clone())),
-                ("label".to_string(), Value::String(label.clone())),
+                ("href".to_string(), Value::string(page.path.clone())),
+                ("label".to_string(), Value::string(label.clone())),
             ]);
             if let Some(icon) = &page.icon {
-                item.insert("icon".to_string(), Value::String(icon.clone()));
+                item.insert("icon".to_string(), Value::string(icon.clone()));
             }
             if let Some(roles) = &page.roles {
                 item.insert(
                     "roles".to_string(),
-                    Value::Array(roles.iter().cloned().map(Value::String).collect()),
+                    Value::Array(roles.iter().cloned().map(Value::string).collect()),
                 );
             }
-            items.push(Value::Object(item));
+            items.push(Value::object(item));
         }
     }
     items
@@ -896,7 +896,7 @@ fn merge_nav_items(current: &Value, added: Vec<Value>) -> Value {
             .into_iter()
             .filter(|item| href(item).is_some_and(|h| listed.insert(h))),
     );
-    Value::Array(items)
+    Value::array(items)
 }
 
 use super::callsite_capture;

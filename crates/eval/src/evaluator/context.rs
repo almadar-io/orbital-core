@@ -166,6 +166,15 @@ pub struct BindingContext {
     prob: Arc<ProbState>,
     /// The dispatch's seed source for an unseeded `prob/*` stream; `None` in a pure evaluation.
     prob_entropy: Option<EntropySource>,
+    /// A local the scope reads at most once (a reduce accumulator its body reads once): the read moves it out,
+    /// so a write to it (`array/append @acc …`) is in place instead of a copy of the whole accumulator.
+    linear: Option<Arc<LinearLocal>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct LinearLocal {
+    name: String,
+    slot: std::sync::Mutex<Option<Value>>,
 }
 
 /// One scope's local bindings over its parent's. `None` marks a binding removed in this scope.
@@ -394,7 +403,21 @@ impl BindingContext {
             secrets: Arc::clone(&self.secrets),
             prob: Arc::clone(&self.prob),
             prob_entropy: self.prob_entropy.clone(),
+            linear: self.linear.clone(),
         }
+    }
+
+    /// Bind `name` to `value` for a single read: the read takes it. Only for a local the scope reads once
+    /// and never rebinds (the caller checks); a local of the same name in an inner scope still wins.
+    pub fn set_linear_local(&mut self, name: &str, value: Value) -> &mut Self {
+        self.linear = Some(Arc::new(LinearLocal { name: name.to_string(), slot: std::sync::Mutex::new(Some(value)) }));
+        self
+    }
+
+    /// The linear local `name`, moved out, once.
+    pub(super) fn take_linear(&self, name: &str) -> Option<Value> {
+        let linear = self.linear.as_ref().filter(|l| l.name == name)?;
+        linear.slot.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
     /// Create a child context with a specific item bound (for map/filter)

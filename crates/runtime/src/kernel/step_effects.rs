@@ -103,7 +103,7 @@ impl RuntimeKernel {
 
         (
             effect_results,
-            Value::Object(entity_data.sets),
+            Value::object(entity_data.sets),
             runs,
             failure,
         )

@@ -443,7 +443,7 @@ impl Operator for TimeFormatOp {
 
         if let Some(format_expr) = args.get(1) {
             let format = eval_expr(format_expr, ctx)?.to_string_value();
-            return Ok(format_timestamp_tokens(ts, &format).map_or(Value::Null, Value::String));
+            return Ok(format_timestamp_tokens(ts, &format).map_or(Value::Null, Value::string));
         }
 
         // Basic formatting - convert to ISO date string
@@ -483,7 +483,7 @@ impl Operator for TimeFormatOp {
         let minutes = (remaining_ms / (60 * 1000)) % 60;
         let seconds = (remaining_ms / 1000) % 60;
 
-        Ok(Value::String(format!(
+        Ok(Value::string(format!(
             "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
             year,
             month,
@@ -773,7 +773,7 @@ impl Operator for TimeDurationOp {
             parts.push(format!("{}s", seconds));
         }
 
-        Ok(Value::String(parts.join(" ")))
+        Ok(Value::string(parts.join(" ")))
     }
 }
 

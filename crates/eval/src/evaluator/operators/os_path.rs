@@ -14,7 +14,7 @@ use super::*;
 
 fn path_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<String, OrbitalError> {
     match eval_expr(arg, ctx)? {
-        Value::String(s) => Ok(s),
+        Value::String(s) => Ok(s.into_inner()),
         other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
             "{op}: expected a string path, got {}",
             other.type_name()
@@ -145,7 +145,7 @@ impl Operator for OsPathJoinOp {
             .iter()
             .map(|a| path_arg(a, ctx, "os/path-join"))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Value::String(join(&parts)))
+        Ok(Value::string(join(&parts)))
     }
 }
 
@@ -154,7 +154,7 @@ pub struct OsPathNormalizeOp;
 impl Operator for OsPathNormalizeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-normalize", == 1);
-        Ok(Value::String(normalize(&path_arg(
+        Ok(Value::string(normalize(&path_arg(
             &args[0],
             ctx,
             "os/path-normalize",
@@ -167,7 +167,7 @@ pub struct OsPathBaseOp;
 impl Operator for OsPathBaseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-base", == 1);
-        Ok(Value::String(base(&path_arg(
+        Ok(Value::string(base(&path_arg(
             &args[0],
             ctx,
             "os/path-base",
@@ -180,7 +180,7 @@ pub struct OsPathDirOp;
 impl Operator for OsPathDirOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-dir", == 1);
-        Ok(Value::String(dir(&path_arg(&args[0], ctx, "os/path-dir")?)))
+        Ok(Value::string(dir(&path_arg(&args[0], ctx, "os/path-dir")?)))
     }
 }
 
@@ -189,7 +189,7 @@ pub struct OsPathExtOp;
 impl Operator for OsPathExtOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-ext", == 1);
-        Ok(Value::String(ext(&path_arg(&args[0], ctx, "os/path-ext")?)))
+        Ok(Value::string(ext(&path_arg(&args[0], ctx, "os/path-ext")?)))
     }
 }
 
@@ -201,7 +201,7 @@ impl Operator for OsPathRelativeOp {
         let from = path_arg(&args[0], ctx, "os/path-relative")?;
         let to = path_arg(&args[1], ctx, "os/path-relative")?;
         relative(&from, &to)
-            .map(Value::String)
+            .map(Value::string)
             .map_err(|message| invalid("os/path-relative", message))
     }
 }
@@ -230,7 +230,7 @@ mod tests {
 
     fn text(form: serde_json::Value) -> String {
         match eval(form) {
-            Ok(Value::String(s)) => s,
+            Ok(Value::String(s)) => s.into_inner(),
             other => panic!("expected a string, got {other:?}"),
         }
     }

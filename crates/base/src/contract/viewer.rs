@@ -44,7 +44,7 @@ fn texts_of(items: &[Value], at: &str) -> Result<Vec<String>, String> {
     items
         .iter()
         .map(|item| match item {
-            Value::String(text) => Ok(text.clone()),
+            Value::String(text) => Ok(text.to_string()),
             _ => Err(format!("viewer claim {at}: a list claim holds only text")),
         })
         .collect()
@@ -54,7 +54,7 @@ fn json_of(value: &Value, at: &str) -> Result<serde_json::Value, String> {
     Ok(match value {
         Value::Null => serde_json::Value::Null,
         Value::Bool(flag) => serde_json::Value::Bool(*flag),
-        Value::String(text) => serde_json::Value::String(text.clone()),
+        Value::String(text) => serde_json::Value::String(text.clone().into_inner()),
         Value::Number(number) if number.fract() == 0.0 && number.abs() < 9_007_199_254_740_992.0 => {
             serde_json::Value::from(*number as i64)
         }
@@ -85,7 +85,7 @@ impl Viewer {
         let text = |key: &str| -> Result<Option<String>, String> {
             match map.get(key) {
                 None | Some(Value::Null) => Ok(None),
-                Some(Value::String(text)) => Ok(Some(text.clone())),
+                Some(Value::String(text)) => Ok(Some(text.clone().into_inner())),
                 Some(_) => Err(format!("viewer: @user.{key} is not text")),
             }
         };
@@ -119,20 +119,20 @@ impl Viewer {
     /// The flat `@user` value of this viewer. `Err` when a claim repeats a named field or another claim.
     pub fn to_user(&self) -> Result<Value, String> {
         let mut map = ValueMap::default();
-        map.insert("id".to_string(), Value::String(self.id.clone()));
+        map.insert("id".to_string(), Value::string(self.id.clone()));
         for (key, field) in [
             ("email", &self.email),
             ("name", &self.name),
             ("role", &self.role),
         ] {
             if let Some(text) = field {
-                map.insert(key.to_string(), Value::String(text.clone()));
+                map.insert(key.to_string(), Value::string(text.clone()));
             }
         }
         if let Some(permissions) = &self.permissions {
             map.insert(
                 "permissions".to_string(),
-                Value::Array(permissions.iter().cloned().map(Value::String).collect()),
+                Value::Array(permissions.iter().cloned().map(Value::string).collect()),
             );
         }
         for claim in &self.claims {
@@ -143,7 +143,7 @@ impl Viewer {
                 .map_err(|e| format!("viewer claim {}: {e}", claim.name))?;
             map.insert(claim.name.clone(), value);
         }
-        Ok(Value::Object(map))
+        Ok(Value::object(map))
     }
 }
 
@@ -254,7 +254,7 @@ mod tests {
         assert!(Viewer::from_user(&user(json!({ "id": "u", "permissions": "all" }))).is_err());
         let mut nan = user(json!({ "id": "u" }));
         if let Value::Object(map) = &mut nan {
-            map.insert("score".to_string(), Value::Array(vec![Value::Number(f64::NAN)]));
+            map.insert("score".to_string(), Value::array(vec![Value::Number(f64::NAN)]));
         }
         assert!(Viewer::from_user(&nan).unwrap_err().contains("score"));
         assert!(Viewer::from_user(&user(json!([]))).is_err());

@@ -104,28 +104,28 @@ impl DeliveryRefused {
         let mut to = ValueMap::default();
         to.insert(
             "instance".to_string(),
-            Value::String(self.to.instance.clone()),
+            Value::string(self.to.instance.clone()),
         );
         to.insert(
             "orbital".to_string(),
-            Value::String(self.to.orbital.clone()),
+            Value::string(self.to.orbital.clone()),
         );
         if let Some(trait_name) = &self.to.trait_name {
-            to.insert("trait".to_string(), Value::String(trait_name.clone()));
+            to.insert("trait".to_string(), Value::string(trait_name.clone()));
         }
         let mut payload = ValueMap::default();
-        payload.insert("id".to_string(), Value::String(self.id.clone()));
-        payload.insert("to".to_string(), Value::Object(to));
-        payload.insert("event".to_string(), Value::String(self.event.clone()));
+        payload.insert("id".to_string(), Value::string(self.id.clone()));
+        payload.insert("to".to_string(), Value::object(to));
+        payload.insert("event".to_string(), Value::string(self.event.clone()));
         payload.insert(
             "reason".to_string(),
-            Value::String(self.reason.as_str().to_string()),
+            Value::string(self.reason.as_str().to_string()),
         );
         payload.insert(
             "causalId".to_string(),
-            Value::String(self.causal_id.clone()),
+            Value::string(self.causal_id.clone()),
         );
-        Value::Object(payload)
+        Value::object(payload)
     }
 }
 

@@ -185,7 +185,7 @@ impl NativeHost {
             });
             let first = match worker.answer(&request) {
                 IoAnswer::Http(reply) => DriverAnswer::Http(reply),
-                _ => return Err(Value::String("native HTTP stream did not return an HTTP answer".into())),
+                _ => return Err(Value::string("native HTTP stream did not return an HTTP answer")),
             };
             let port = IoPort::new(worker.source.clone(), None, worker.substrate.clone());
             port.set_call_site(Some(site));
@@ -198,7 +198,7 @@ impl NativeHost {
                     drive(&port, &mut *resumed, step, DriveContext { principal: principal.as_deref(), key: Some(&key) })
                 });
                 if let Some(error) = end.diverged {
-                    return Err(Value::String(error.to_string()));
+                    return Err(Value::string(error.to_string()));
                 }
                 journal = end.journal;
                 if !end.pending.is_empty() {
@@ -210,7 +210,7 @@ impl NativeHost {
                 }
                 return match outcome {
                     DriveEnd::Done(result) => result,
-                    _ => Err(Value::String("native HTTP continuation has an unanswered host request".into())),
+                    _ => Err(Value::string("native HTTP continuation has an unanswered host request")),
                 };
             }
         }))
@@ -263,7 +263,7 @@ pub(crate) mod tests {
 
     impl SubstrateHandler for Echo {
         fn run(&self, op: &str, args: &[Value]) -> Result<Value, SubstrateFailure> {
-            Ok(Value::String(format!("{op}/{}", args.len())))
+            Ok(Value::string(format!("{op}/{}", args.len())))
         }
     }
 
@@ -398,7 +398,7 @@ pub(crate) mod tests {
         assert!(matches!(host.answer(&keyed("program/read", Some("k1"))), IoAnswer::ServiceDeferred));
         let (key, outcome) = settled.recv_timeout(std::time::Duration::from_secs(2)).expect("the deferred op settles");
         assert_eq!(key, "k1");
-        assert_eq!(outcome, Ok(object(&[("result", Value::String("program/read/1".to_string()))])));
+        assert_eq!(outcome, Ok(object(&[("result", Value::string("program/read/1"))])));
     }
 
     #[test]
@@ -419,11 +419,11 @@ pub(crate) mod tests {
         let (host, settled) = sinking_host(true);
         let mut ask = keyed("program/dispatch", Some("k1"));
         if let IoRequest::Substrate { args, .. } = &mut ask {
-            *args = vec![object(&[("inbound", Value::String("hook".to_string())), ("body", Value::String(String::new())), ("headers", object(&[]))])];
+            *args = vec![object(&[("inbound", Value::string("hook")), ("body", Value::string(String::new())), ("headers", object(&[]))])];
         }
         assert!(matches!(host.answer(&ask), IoAnswer::ServiceDeferred));
         let (_, outcome) = settled.recv_timeout(std::time::Duration::from_secs(2)).expect("the deferred op settles");
-        let answer = Value::String("program/dispatch/1".to_string());
-        assert_eq!(outcome, Ok(object(&[("result", answer), ("text", Value::String("\"program/dispatch/1\"".to_string()))])));
+        let answer = Value::string("program/dispatch/1");
+        assert_eq!(outcome, Ok(object(&[("result", answer), ("text", Value::string("\"program/dispatch/1\""))])));
     }
 }

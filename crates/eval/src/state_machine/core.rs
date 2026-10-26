@@ -428,8 +428,8 @@ mod tests {
 
     fn key(k: &str) -> EventPayload {
         let mut data = ValueMap::default();
-        data.insert("key".to_string(), Value::String(k.to_string()));
-        EventPayload::new("KEY", Value::Object(data))
+        data.insert("key".to_string(), Value::string(k.to_string()));
+        EventPayload::new("KEY", Value::object(data))
     }
 
     /// `modal_machine` with its first guard replaced by one the evaluator cannot run.
@@ -525,7 +525,7 @@ mod tests {
             .process_event(
                 &create_test_state_machine(),
                 "browsing",
-                &EventPayload::new("REGISTER", Value::Object(ValueMap::default())),
+                &EventPayload::new("REGISTER", Value::object(ValueMap::default())),
                 &BindingContext::new(),
             )
             .unwrap();
@@ -560,7 +560,7 @@ mod tests {
         let sm = create_test_state_machine();
         let ctx = BindingContext::new();
 
-        let payload = EventPayload::new("REGISTER", Value::Object(ValueMap::default()));
+        let payload = EventPayload::new("REGISTER", Value::object(ValueMap::default()));
         let result = core.process_event(&sm, "browsing", &payload, &ctx).unwrap();
 
         assert!(result.executed);
@@ -579,15 +579,15 @@ mod tests {
         let mut inner_data = ValueMap::default();
         inner_data.insert(
             "email".to_string(),
-            Value::String("test@example.com".to_string()),
+            Value::string("test@example.com"),
         );
-        inner_data.insert("name".to_string(), Value::String("Test User".to_string()));
-        inner_data.insert("id".to_string(), Value::String("user-123".to_string()));
+        inner_data.insert("name".to_string(), Value::string("Test User"));
+        inner_data.insert("id".to_string(), Value::string("user-123"));
 
         let mut data = ValueMap::default();
-        data.insert("data".to_string(), Value::Object(inner_data));
+        data.insert("data".to_string(), Value::object(inner_data));
 
-        let payload = EventPayload::new("SAVE", Value::Object(data));
+        let payload = EventPayload::new("SAVE", Value::object(data));
         let result = core
             .process_event(&sm, "registering", &payload, &ctx)
             .unwrap();
@@ -609,13 +609,13 @@ mod tests {
 
         // Empty email should fail the guard (@payload.data.email != "")
         let mut inner_data = ValueMap::default();
-        inner_data.insert("email".to_string(), Value::String("".to_string()));
-        inner_data.insert("name".to_string(), Value::String("Test User".to_string()));
+        inner_data.insert("email".to_string(), Value::string(""));
+        inner_data.insert("name".to_string(), Value::string("Test User"));
 
         let mut data = ValueMap::default();
-        data.insert("data".to_string(), Value::Object(inner_data));
+        data.insert("data".to_string(), Value::object(inner_data));
 
-        let payload = EventPayload::new("SAVE", Value::Object(data));
+        let payload = EventPayload::new("SAVE", Value::object(data));
         let result = core
             .process_event(&sm, "registering", &payload, &ctx)
             .unwrap();
@@ -649,7 +649,7 @@ mod tests {
         let sm = create_test_state_machine();
         let ctx = BindingContext::new();
 
-        let payload = EventPayload::new("UNKNOWN_EVENT", Value::Object(ValueMap::default()));
+        let payload = EventPayload::new("UNKNOWN_EVENT", Value::object(ValueMap::default()));
         let result = core.process_event(&sm, "browsing", &payload, &ctx).unwrap();
 
         assert!(!result.executed);
@@ -669,7 +669,7 @@ mod tests {
         let sm = create_test_state_machine();
         let ctx = BindingContext::new();
 
-        let payload = EventPayload::new("CANCEL", Value::Object(ValueMap::default()));
+        let payload = EventPayload::new("CANCEL", Value::object(ValueMap::default()));
         let result = core
             .process_event(&sm, "registering", &payload, &ctx)
             .unwrap();
@@ -738,7 +738,7 @@ mod tests {
         sm.transitions[0].event_id = Some("evt-register".to_string());
 
         let ctx = BindingContext::new();
-        let payload = EventPayload::new("REGISTER", Value::Object(ValueMap::default()));
+        let payload = EventPayload::new("REGISTER", Value::object(ValueMap::default()));
         let result = core.process_event(&sm, "browsing", &payload, &ctx).unwrap();
 
         assert!(result.executed);
@@ -751,7 +751,7 @@ mod tests {
         let sm = create_test_state_machine(); // no event ids anywhere
         let ctx = BindingContext::new();
 
-        let payload = EventPayload::new("VIEW", Value::Object(ValueMap::default()));
+        let payload = EventPayload::new("VIEW", Value::object(ValueMap::default()));
         let result = core.process_event(&sm, "browsing", &payload, &ctx).unwrap();
 
         assert!(result.executed);

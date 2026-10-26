@@ -146,7 +146,7 @@ fn refused(message: impl Into<String>) -> FlowStep {
 }
 
 fn object(entries: Vec<(&str, Value)>) -> Value {
-    Value::Object(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect::<ValueMap>())
+    Value::object(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect::<ValueMap>())
 }
 
 /// A connection row as the payload a program reads.
@@ -162,7 +162,7 @@ pub fn row_value(row: &OAuthConnectionRow) -> Value {
 }
 
 fn text(value: &str) -> Value {
-    Value::String(value.to_string())
+    Value::string(value.to_string())
 }
 
 fn opt_text(value: Option<&str>) -> Value {
@@ -289,7 +289,7 @@ pub fn plan_authorize(client: &Value, options: &Value) -> Result<AuthorizePlan, 
         Some(Value::Array(list)) => list
             .iter()
             .map(|item| match item {
-                Value::String(scope) => Ok(scope.clone()),
+                Value::String(scope) => Ok(scope.to_string()),
                 _ => Err(bad_scope()),
             })
             .collect::<Result<Vec<_>, _>>()?,
@@ -305,7 +305,7 @@ pub fn plan_authorize(client: &Value, options: &Value) -> Result<AuthorizePlan, 
         Some(Value::Object(params)) => params
             .iter()
             .map(|(name, value)| match value {
-                Value::String(text) => Ok((name.clone(), text.clone())),
+                Value::String(text) => Ok((name.clone(), text.to_string())),
                 Value::Number(n) => Ok((name.clone(), orbital_core_base::str_utils::js_number_string(*n))),
                 Value::Bool(b) => Ok((name.clone(), b.to_string())),
                 _ => Err(authorize_fault("params must be strings, numbers or booleans")),
@@ -315,7 +315,7 @@ pub fn plan_authorize(client: &Value, options: &Value) -> Result<AuthorizePlan, 
     };
     Ok(AuthorizePlan {
         client,
-        options: AuthorizeOptions { redirect_uri: redirect_uri.clone(), scopes, subject, params },
+        options: AuthorizeOptions { redirect_uri: redirect_uri.clone().into_inner(), scopes, subject: subject.map(|v| v.into_inner()), params },
     })
 }
 

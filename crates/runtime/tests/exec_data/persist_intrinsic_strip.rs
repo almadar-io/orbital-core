@@ -64,7 +64,7 @@ fn run(events: &[&str]) -> Vec<Value> {
                 "Composer",
                 Some("singleton"),
                 event,
-                Value::Object(ValueMap::new()),
+                Value::object(ValueMap::new()),
             )
             .unwrap();
     }

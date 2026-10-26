@@ -61,7 +61,7 @@ impl Session for EmbeddedSession {
         let wire = serde_json::to_value(&wire).map_err(|e| e.to_string())?;
         let mut states = Map::new();
         for name in &self.orbital_traits {
-            let state = self.kernel.get_state(name, Some("singleton"));
+            let state = self.kernel.get_state(name, None);
             if !state.is_empty() {
                 states.insert(name.clone(), Json::String(state));
             }

@@ -152,7 +152,7 @@ impl RuntimeKernel {
         match locale {
             Some(locale) => {
                 let messages = i18n.catalogs.get(&locale).cloned().unwrap_or_default();
-                builder.locale(Value::String(locale)).messages(messages)
+                builder.locale(Value::string(locale)).messages(messages)
             }
             None => builder,
         }
@@ -258,7 +258,7 @@ impl RuntimeKernel {
         };
         let row = match &item.payload {
             Some(Value::Object(fields)) => Value::Object(fields.clone()),
-            _ => Value::Object(ValueMap::default()),
+            _ => Value::object(ValueMap::default()),
         };
         let mut rows = vec![row];
         self.retain_readable_by(&entity, &mut rows, viewer);

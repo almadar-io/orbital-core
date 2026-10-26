@@ -84,8 +84,8 @@ fn judge(o: &obligations::Obligation) -> Verdict {
     let mut parts = Vec::new();
     for len in &lens {
         let nonneg = orbital_core_base::schema::sexpr::SExpression::Array(vec![
-            orbital_core_base::schema::sexpr::SExpression::String(">=".to_string()),
-            orbital_core_base::schema::sexpr::SExpression::String(formula::array_len_var(len)),
+            orbital_core_base::schema::sexpr::SExpression::string(">="),
+            orbital_core_base::schema::sexpr::SExpression::string(formula::array_len_var(len)),
             orbital_core_base::schema::sexpr::SExpression::Number(0.0),
         ]);
         match t.truthy(&nonneg) {
@@ -94,8 +94,8 @@ fn judge(o: &obligations::Obligation) -> Verdict {
         }
     }
     match t.truthy(&orbital_core_base::schema::sexpr::SExpression::Array(vec![
-        orbital_core_base::schema::sexpr::SExpression::String(">".to_string()),
-        orbital_core_base::schema::sexpr::SExpression::String("@now".to_string()),
+        orbital_core_base::schema::sexpr::SExpression::string(">"),
+        orbital_core_base::schema::sexpr::SExpression::string("@now"),
         orbital_core_base::schema::sexpr::SExpression::Number(0.0),
     ])) {
         Some(f) => parts.push(f),

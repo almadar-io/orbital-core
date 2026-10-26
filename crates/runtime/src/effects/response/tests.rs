@@ -368,9 +368,9 @@ fn client_effects_from_render_ui_and_emit_split_correctly() {
     result.effect_results = vec![
         EffectResult::executed(Effect::RenderUi {
             slot: "modal".to_string(),
-            content: Value::Object(ValueMap::from_iter([(
+            content: Value::object(ValueMap::from_iter([(
                 "type".to_string(),
-                Value::String("form".to_string()),
+                Value::String(("form".to_string()).into()),
             )])),
         }),
         EffectResult::executed(Effect::Emit {

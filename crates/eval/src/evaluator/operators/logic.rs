@@ -206,6 +206,6 @@ pub struct ListOp;
 impl Operator for ListOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         let items: Result<Vec<Value>, _> = args.iter().map(|a| eval_expr(a, ctx)).collect();
-        Ok(Value::Array(items?))
+        Ok(Value::array(items?))
     }
 }

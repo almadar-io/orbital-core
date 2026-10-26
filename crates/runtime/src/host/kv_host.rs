@@ -305,9 +305,9 @@ fn batch_ops(op: OsOp, args: &[Value]) -> Result<Vec<BatchOp>, OsError> {
                         )
                     })?;
                     check_json(op, value, &format!("ops[{i}].value"))?;
-                    Ok(BatchOp::Put(key.clone(), value.clone()))
+                    Ok(BatchOp::Put(key.clone().into_inner(), value.clone()))
                 }
-                Some(Value::String(kind)) if kind == "delete" => Ok(BatchOp::Delete(key.clone())),
+                Some(Value::String(kind)) if kind == "delete" => Ok(BatchOp::Delete(key.clone().into_inner())),
                 _ => Err(fail(
                     op,
                     OsErrorKind::Invalid,
@@ -320,10 +320,10 @@ fn batch_ops(op: OsOp, args: &[Value]) -> Result<Vec<BatchOp>, OsError> {
 
 fn obj<const N: usize>(fields: [(&str, Value); N]) -> Value {
     Value::Object(
-        fields
+        (fields
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
-            .collect::<ValueMap>(),
+            .collect::<ValueMap>()).into(),
     )
 }
 
@@ -389,7 +389,7 @@ pub fn answer(op: OsOp, args: &[Value], host: &OsHost<'_>) -> Result<Value, OsEr
             let value = args[2].clone();
             stores.with_table(op, store, |table| {
                 table.insert(key.clone(), value);
-                Ok((obj([("storedKey", Value::String(key))]), true))
+                Ok((obj([("storedKey", Value::string(key))]), true))
             })
         }
         OsOp::KvDelete => {
@@ -410,9 +410,9 @@ pub fn answer(op: OsOp, args: &[Value], host: &OsHost<'_>) -> Result<Value, OsEr
                     .range(prefix.to_string()..)
                     .take_while(|(k, _)| k.as_bytes().starts_with(prefix.as_bytes()))
                     .take(limit.unwrap_or(usize::MAX))
-                    .map(|(k, v)| obj([("key", Value::String(k.clone())), ("value", v.clone())]))
+                    .map(|(k, v)| obj([("key", Value::string(k.clone())), ("value", v.clone())]))
                     .collect();
-                Ok((obj([("entries", Value::Array(entries))]), false))
+                Ok((obj([("entries", Value::array(entries))]), false))
             })
         }
         OsOp::KvBatch => {

@@ -36,7 +36,7 @@ fn ctx_with(values: &[Value]) -> BindingContext {
         .enumerate()
         .map(|(i, v)| (format!("h{i}"), v.clone()))
         .collect();
-    c.set_entity(Value::Object(entity));
+    c.set_entity(Value::object(entity));
     c
 }
 
@@ -57,10 +57,10 @@ fn every_case_instantiates_to_the_fixture_result() {
     for c in cases() {
         let (body, holes) = quasiquote_of(&c.ir).expect("fixture ir is a quasiquote");
         let mut ir = vec![
-            SExpression::String(QUASIQUOTE_HEAD.into()),
-            SExpression::String(body.into()),
+            SExpression::string(QUASIQUOTE_HEAD),
+            SExpression::string(body),
         ];
-        ir.extend((0..holes.len()).map(|i| SExpression::String(format!("@entity.h{i}"))));
+        ir.extend((0..holes.len()).map(|i| SExpression::string(format!("@entity.h{i}"))));
         let got = eval_expr(&SExpression::Array(ir), &ctx_with(&c.values)).unwrap();
         assert_eq!(got, c.result, "instantiate `{}`", c.name);
     }

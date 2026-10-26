@@ -29,10 +29,10 @@ fn nested_sampler_lowering_fits_an_ordinary_worker_stack() {
 fn syntax_names_and_discarded_type_metadata_are_not_lowered_as_children() {
     let expr = call("let", vec![
         SExpression::Array(vec![SExpression::Array(vec![
-            SExpression::String("if".into()), SExpression::Number(7.0),
+            SExpression::string("if"), SExpression::Number(7.0),
         ])]),
         call("typed", vec![
-            SExpression::String("@local.if".into()), call("if", vec![]),
+            SExpression::string("@local.if"), call("if", vec![]),
         ]),
     ]);
     let expected = OirExpr::call("let", vec![
@@ -117,7 +117,7 @@ fn synthesized_http_pagination_keeps_quoted_callbacks_and_request_fields() {
 }
 
 fn call(op: &str, args: Vec<SExpression>) -> SExpression {
-    let mut items = vec![SExpression::String(op.into())];
+    let mut items = vec![SExpression::string(op)];
     items.extend(args);
     SExpression::Array(items)
 }
@@ -135,7 +135,7 @@ fn lowered_log_level(args: Vec<SExpression>) -> Result<orbital_core_base::ir::ef
 #[test]
 fn a_log_lowers_its_trailing_level() {
     use orbital_core_base::ir::effects::OirLogLevel;
-    let level = |l: &str| lowered_log_level(vec![SExpression::String("m".into()), SExpression::String(l.into())]).unwrap();
+    let level = |l: &str| lowered_log_level(vec![SExpression::string("m"), SExpression::string(l)]).unwrap();
     assert_eq!(level("debug"), OirLogLevel::Debug);
     assert_eq!(level("warn"), OirLogLevel::Warn);
     assert_eq!(level("error"), OirLogLevel::Error);
@@ -143,14 +143,14 @@ fn a_log_lowers_its_trailing_level() {
 
 #[test]
 fn control_a_log_without_a_level_lowers_as_info() {
-    let level = lowered_log_level(vec![SExpression::String("m".into())]).unwrap();
+    let level = lowered_log_level(vec![SExpression::string("m")]).unwrap();
     assert_eq!(level, orbital_core_base::ir::effects::OirLogLevel::Info);
 }
 
 #[test]
 fn a_log_level_outside_the_four_is_refused() {
-    assert!(lowered_log_level(vec![SExpression::String("m".into()), SExpression::String("loud".into())]).is_err());
-    assert!(lowered_log_level(vec![SExpression::String("m".into()), SExpression::Number(1.0)]).is_err());
+    assert!(lowered_log_level(vec![SExpression::string("m"), SExpression::string("loud")]).is_err());
+    assert!(lowered_log_level(vec![SExpression::string("m"), SExpression::Number(1.0)]).is_err());
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn an_operator_call_lowers_and_keeps_its_bindings() {
         "+",
         vec![
             SExpression::Number(1.0),
-            SExpression::String("@entity.count".into()),
+            SExpression::string("@entity.count"),
         ],
     ))
     .expect("lowers");
@@ -170,7 +170,7 @@ fn an_operator_call_lowers_and_keeps_its_bindings() {
 }
 
 fn bindings_of(op: &str, n: usize) -> Result<Vec<String>, LowerError> {
-    let args = (0..n).map(|i| SExpression::String(format!("@entity.a{i}"))).collect();
+    let args = (0..n).map(|i| SExpression::string(format!("@entity.a{i}"))).collect();
     let lowered = lower_sexpr(&call(op, args))?;
     let mut names: Vec<String> = lowered.collect_bindings().iter().map(|b| b.path.join(".")).collect();
     names.sort();
@@ -258,9 +258,9 @@ fn a_malformed_call_is_an_invalid_sexpr_error() {
 
 #[test]
 fn the_list_marker_is_stripped_and_nothing_else() {
-    let marked = [SExpression::String("list".into()), SExpression::Number(1.0)];
+    let marked = [SExpression::string("list"), SExpression::Number(1.0)];
     assert_eq!(strip_literal_list_marker(&marked), &marked[1..]);
-    let bare = [SExpression::String("+".into()), SExpression::Number(1.0)];
+    let bare = [SExpression::string("+"), SExpression::Number(1.0)];
     assert_eq!(strip_literal_list_marker(&bare), &bare[..]);
 }
 

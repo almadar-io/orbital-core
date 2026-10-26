@@ -15,13 +15,13 @@ pub fn refusal_payload(message: &str, key: Option<&str>) -> Value {
 }
 
 fn key_value(key: Option<&str>) -> Value {
-    key.map_or(Value::Null, |k| Value::String(k.to_string()))
+    key.map_or(Value::Null, |k| Value::string(k.to_string()))
 }
 
 fn failure_payload(kind: TabFailureKind, message: &str, key: Option<&str>) -> Value {
-    Value::Object(ValueMap::from_iter([
-        ("error".to_string(), Value::String(message.to_string())),
-        ("kind".to_string(), Value::String(kind.as_str().to_string())),
+    Value::object(ValueMap::from_iter([
+        ("error".to_string(), Value::String(message.to_string().into())),
+        ("kind".to_string(), Value::String(kind.as_str().to_string().into())),
         ("key".to_string(), key_value(key)),
     ]))
 }
@@ -70,9 +70,9 @@ fn command(tab: i64, command: TabCommand) -> DriverStep {
 }
 
 fn element_ref(tab: i64, element_id: &str) -> Value {
-    Value::Object(ValueMap::from_iter([
+    Value::object(ValueMap::from_iter([
         ("tab".to_string(), Value::Number(tab as f64)),
-        ("elementId".to_string(), Value::String(element_id.to_string())),
+        ("elementId".to_string(), Value::String(element_id.to_string().into())),
     ]))
 }
 
@@ -138,7 +138,7 @@ impl TabDriver {
     }
 
     fn done_apply_many(&self, applied: Vec<Value>, missing: Vec<Value>) -> DriverStep {
-        self.ok(vec![("applied", Value::Array(applied)), ("missing", Value::Array(missing))])
+        self.ok(vec![("applied", Value::array(applied)), ("missing", Value::array(missing))])
     }
 }
 
@@ -154,10 +154,10 @@ fn tab_infos(reply: &Value, pattern: Option<&str>) -> Option<Vec<Value>> {
         if pattern.is_some_and(|p| !matches_pattern(p, &url)) {
             continue;
         }
-        tabs.push(Value::Object(ValueMap::from_iter([
+        tabs.push(Value::object(ValueMap::from_iter([
             ("tab".to_string(), Value::Number(tab as f64)),
-            ("url".to_string(), Value::String(url)),
-            ("title".to_string(), Value::String(title)),
+            ("url".to_string(), Value::String(url.into())),
+            ("title".to_string(), Value::String(title.into())),
             ("active".to_string(), Value::Bool(active)),
         ])));
     }
@@ -191,7 +191,7 @@ impl Driver for TabDriver {
             State::List { pattern } => match result {
                 Err(f) => self.fail(f.kind, &f.message),
                 Ok(reply) => match tab_infos(&reply, pattern.as_deref()) {
-                    Some(tabs) => self.ok(vec![("tabs", Value::Array(tabs))]),
+                    Some(tabs) => self.ok(vec![("tabs", Value::array(tabs))]),
                     None => self.malformed(TabOp::List, "tabs that are not { tab, url, title, active }"),
                 },
             },
@@ -208,7 +208,7 @@ impl Driver for TabDriver {
             },
             State::Navigate { url } => match result {
                 Err(f) => self.fail(f.kind, &f.message),
-                Ok(_) => self.ok(vec![("url", Value::String(url))]),
+                Ok(_) => self.ok(vec![("url", Value::string(url))]),
             },
             State::Query { tab, selector, fields, limit, wait_ms, phase } => {
                 let again = |driver: &mut Self, phase: QueryPhase, wait_ms: Option<u64>, step: DriverStep| {
@@ -241,14 +241,14 @@ impl Driver for TabDriver {
                     }
                     (_, Err(f)) => self.fail(f.kind, &f.message),
                     (_, Ok(reply)) => match elements_of(&reply) {
-                        Some(elements) => self.ok(vec![("tab", Value::Number(tab as f64)), ("elements", Value::Array(elements))]),
+                        Some(elements) => self.ok(vec![("tab", Value::Number(tab as f64)), ("elements", Value::array(elements))]),
                         None => self.malformed(TabOp::Query, "elements that are not { elementId, fields }"),
                     },
                 }
             }
             State::Watch { watch_id } => match result {
                 Err(f) => self.fail(f.kind, &f.message),
-                Ok(_) => self.ok(vec![("watchId", Value::String(watch_id))]),
+                Ok(_) => self.ok(vec![("watchId", Value::string(watch_id))]),
             },
             State::Unwatch => match result {
                 Err(f) => self.fail(f.kind, &f.message),
@@ -263,8 +263,8 @@ impl Driver for TabDriver {
                     Some(applied) => self.ok(vec![
                         ("applied", Value::Bool(applied)),
                         ("tab", Value::Number(tab as f64)),
-                        ("elementId", Value::String(element_id)),
-                        ("treatment", Value::String(treatment)),
+                        ("elementId", Value::string(element_id)),
+                        ("treatment", Value::string(treatment)),
                     ]),
                     None => self.malformed(TabOp::Apply, "a result that is not true or false"),
                 },
@@ -297,7 +297,7 @@ impl Driver for TabDriver {
                     Some(done) => self.ok(vec![
                         ("done", Value::Bool(done)),
                         ("tab", Value::Number(tab as f64)),
-                        ("elementId", Value::String(element_id)),
+                        ("elementId", Value::string(element_id)),
                     ]),
                     None => self.malformed(TabOp::Act, "a result that is not true or false"),
                 },
@@ -307,8 +307,8 @@ impl Driver for TabDriver {
                 Ok(reply) => match reply.as_str().and_then(|url| url.strip_prefix(format.data_url_prefix())).filter(|image| !image.is_empty()) {
                     Some(image) => self.ok(vec![
                         ("tab", Value::Number(tab as f64)),
-                        ("format", Value::String(format.as_str().to_string())),
-                        ("image", Value::String(image.to_string())),
+                        ("format", Value::string(format.as_str().to_string())),
+                        ("image", Value::string(image.to_string())),
                     ]),
                     None => self.malformed(TabOp::Capture, &format!("an image that is not a {} data URL", format.as_str())),
                 },
@@ -446,7 +446,7 @@ mod tests {
         let out = done_ok(step);
         assert_eq!(get(&out, "tab"), &Value::Number(7.0));
         assert_eq!(get(&out, "elements"), &elements);
-        assert_eq!(get(&out, "key"), &Value::String("q-1".to_string()));
+        assert_eq!(get(&out, "key"), &Value::string("q-1"));
     }
 
     #[test]
@@ -468,8 +468,8 @@ mod tests {
         let (asks, step) = run(accepted, vec![Err(not_ready()), Ok(wait)]);
         assert_eq!(asks.len(), 2);
         let failure = done_err(step);
-        assert_eq!(get(&failure, "kind"), &Value::String("not-ready".to_string()));
-        assert_eq!(get(&failure, "error"), &Value::String("Tab 4 did not load its page within 30ms".to_string()));
+        assert_eq!(get(&failure, "kind"), &Value::string("not-ready"));
+        assert_eq!(get(&failure, "error"), &Value::string("Tab 4 did not load its page within 30ms"));
     }
 
     #[test]
@@ -477,7 +477,7 @@ mod tests {
         let accepted = call(TabOp::Query, json!({ "tab": 4, "selector": ".item", "fields": {} })).unwrap();
         let (asks, step) = run(accepted, vec![Err(not_ready())]);
         assert_eq!(asks.len(), 1);
-        assert_eq!(get(&done_err(step), "kind"), &Value::String("not-ready".to_string()));
+        assert_eq!(get(&done_err(step), "kind"), &Value::string("not-ready"));
     }
 
     #[test]
@@ -486,7 +486,7 @@ mod tests {
         let wait = value(json!({ "ready": true, "waitedMs": 10 }));
         let (asks, step) = run(accepted, vec![Err(not_ready()), Ok(wait), Err(not_ready())]);
         assert_eq!(asks.len(), 3);
-        assert_eq!(get(&done_err(step), "kind"), &Value::String("not-ready".to_string()));
+        assert_eq!(get(&done_err(step), "kind"), &Value::string("not-ready"));
     }
 
     #[test]
@@ -494,9 +494,9 @@ mod tests {
         let accepted = call(TabOp::Query, json!({ "tab": 4, "selector": ".item", "fields": {} })).unwrap();
         let (_, step) = run(accepted, vec![Ok(value(json!([{ "elementId": 1 }])))]);
         let failure = done_err(step);
-        assert_eq!(get(&failure, "kind"), &Value::String("failed".to_string()));
+        assert_eq!(get(&failure, "kind"), &Value::string("failed"));
         let (_, step) = run(call(TabOp::List, json!({})).unwrap(), vec![Ok(value(json!("no")))]);
-        assert_eq!(get(&done_err(step), "kind"), &Value::String("failed".to_string()));
+        assert_eq!(get(&done_err(step), "kind"), &Value::string("failed"));
     }
 
     #[test]
@@ -512,7 +512,7 @@ mod tests {
         let TabAsk::Watch { watch_id, match_pattern, deliver, .. } = &asks[0] else { panic!("expected a watch ask") };
         assert_eq!(match_pattern, "https://example.com/*");
         assert_eq!((deliver.orbital.as_str(), deliver.trait_name.as_str(), deliver.event.as_str()), ("Feed", "Watch", "ITEM_SEEN"));
-        assert_eq!(get(&done_ok(step), "watchId"), &Value::String(watch_id.clone()));
+        assert_eq!(get(&done_ok(step), "watchId"), &Value::string(watch_id.clone()));
         let id_of = |event: &str, selector: &str, caller: &str| match run(watch(event, selector, caller), vec![Ok(Value::Null)]).0.remove(0) {
             TabAsk::Watch { watch_id, .. } => watch_id,
             other => panic!("{other:?}"),
@@ -540,8 +540,8 @@ mod tests {
         assert!(matches!(&asks[0], TabAsk::Command { tab: 3, command: TabCommand::Apply(a) } if a.styles.len() == 1));
         let out = done_ok(step);
         assert_eq!(get(&out, "applied"), &Value::Bool(true));
-        assert_eq!(get(&out, "treatment"), &Value::String("hide".to_string()));
-        assert_eq!(get(&out, "elementId"), &Value::String("el-2".to_string()));
+        assert_eq!(get(&out, "treatment"), &Value::string("hide"));
+        assert_eq!(get(&out, "elementId"), &Value::string("el-2"));
         let (_, step) = run(call(TabOp::Act, json!({ "tab": 3, "elementId": "el-2", "action": "focus" })).unwrap(), vec![Ok(Value::Bool(true))]);
         let out = done_ok(step);
         assert_eq!(get(&out, "done"), &Value::Bool(true));
@@ -552,25 +552,25 @@ mod tests {
     fn capture_asks_for_the_tab_in_its_format_and_hands_back_the_image_without_its_data_url_prefix() {
         let (asks, step) = run(
             call(TabOp::Capture, json!({ "tab": 5, "format": "jpeg", "quality": 70 })).unwrap(),
-            vec![Ok(Value::String("data:image/jpeg;base64,/9j/4AAQ".to_string()))],
+            vec![Ok(Value::string("data:image/jpeg;base64,/9j/4AAQ"))],
         );
         assert_eq!(asks, vec![TabAsk::Capture { tab: 5, format: TabImageFormat::Jpeg, quality: Some(70) }]);
         let out = done_ok(step);
         assert_eq!(get(&out, "tab"), &Value::Number(5.0));
-        assert_eq!(get(&out, "format"), &Value::String("jpeg".to_string()));
-        assert_eq!(get(&out, "image"), &Value::String("/9j/4AAQ".to_string()));
+        assert_eq!(get(&out, "format"), &Value::string("jpeg"));
+        assert_eq!(get(&out, "image"), &Value::string("/9j/4AAQ"));
     }
 
     #[test]
     fn control_a_capture_reply_in_another_format_or_empty_is_malformed_and_a_host_failure_keeps_its_kind() {
         for reply in ["data:image/png;base64,iVBOR", "data:image/jpeg;base64,", "not a url"] {
-            let (_, step) = run(call(TabOp::Capture, json!({ "tab": 1, "format": "jpeg" })).unwrap(), vec![Ok(Value::String(reply.to_string()))]);
+            let (_, step) = run(call(TabOp::Capture, json!({ "tab": 1, "format": "jpeg" })).unwrap(), vec![Ok(Value::string(reply.to_string()))]);
             let failure = done_err(step);
-            assert_eq!(get(&failure, "kind"), &Value::String("failed".to_string()), "{reply}");
+            assert_eq!(get(&failure, "kind"), &Value::string("failed"), "{reply}");
         }
         let hidden = TabFailure::new(TabFailureKind::NotReady, "Tab 1 cannot be captured");
         let (_, step) = run(call(TabOp::Capture, json!({ "tab": 1 })).unwrap(), vec![Err(hidden)]);
-        assert_eq!(get(&done_err(step), "kind"), &Value::String("not-ready".to_string()));
+        assert_eq!(get(&done_err(step), "kind"), &Value::string("not-ready"));
     }
 
     #[test]
@@ -578,8 +578,8 @@ mod tests {
         let gone = TabFailure::new(TabFailureKind::NotFound, "No page element el-9");
         let (_, step) = run(call(TabOp::Apply, json!({ "tab": 3, "elementId": "el-9", "treatment": "hide" })).unwrap(), vec![Err(gone)]);
         let failure = done_err(step);
-        assert_eq!(get(&failure, "kind"), &Value::String("not-found".to_string()));
-        assert_eq!(get(&failure, "error"), &Value::String("No page element el-9".to_string()));
+        assert_eq!(get(&failure, "kind"), &Value::string("not-found"));
+        assert_eq!(get(&failure, "error"), &Value::string("No page element el-9"));
     }
 
     #[test]
@@ -624,7 +624,7 @@ mod tests {
         let (asks, step) = run(call(TabOp::ApplyMany, json!({ "items": [] })).unwrap(), Vec::new());
         assert!(asks.is_empty());
         let out = done_ok(step);
-        assert_eq!(get(&out, "applied"), &Value::Array(Vec::new()));
+        assert_eq!(get(&out, "applied"), &Value::array(Vec::new()));
     }
 
     #[test]
@@ -633,7 +633,7 @@ mod tests {
         assert_eq!(asks, vec![TabAsk::Close { tab: 9 }]);
         assert_eq!(get(&done_ok(step), "closed"), &Value::Bool(true));
         let (_, step) = run(call(TabOp::Navigate, json!({ "tab": 9, "url": "https://example.com/x" })).unwrap(), vec![Ok(Value::Null)]);
-        assert_eq!(get(&done_ok(step), "url"), &Value::String("https://example.com/x".to_string()));
+        assert_eq!(get(&done_ok(step), "url"), &Value::string("https://example.com/x"));
     }
 
     #[test]
@@ -641,8 +641,8 @@ mod tests {
         let accepted = parse_tab_call(TabOp::Close, &value(json!({ "tab": 9 })), None, Some("k")).unwrap();
         let (_, step) = run(accepted, vec![Err(TabFailure::new(TabFailureKind::Unavailable, "no tabs"))]);
         let failure = done_err(step);
-        assert_eq!(get(&failure, "kind"), &Value::String("unavailable".to_string()));
-        assert_eq!(get(&failure, "key"), &Value::String("k".to_string()));
+        assert_eq!(get(&failure, "kind"), &Value::string("unavailable"));
+        assert_eq!(get(&failure, "key"), &Value::string("k"));
         assert_eq!(refusal_payload("bad", None), value(json!({ "error": "bad", "kind": "invalid", "key": null })));
     }
 }

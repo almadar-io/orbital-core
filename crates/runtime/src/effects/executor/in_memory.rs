@@ -45,7 +45,7 @@ impl PersistenceHandler for InMemoryPersistence {
 
         let mut record = data.clone();
         if let Some(obj) = record.as_object_mut() {
-            obj.insert("id".to_string(), Value::String(id.clone()));
+            obj.insert("id".to_string(), Value::string(id.clone()));
         }
 
         collection.insert(id.clone(), record.clone());
@@ -182,8 +182,8 @@ pub(super) fn interpolate_filter_trait_refs(value: &Value, ctx: &BindingContext)
         }
         Value::Array(arr) => {
             if arr.len() >= 2
-                && arr[0] == Value::String("object/get".to_string())
-                && arr[1] == Value::String("@entity".to_string())
+                && arr[0] == Value::string("object/get")
+                && arr[1] == Value::string("@entity")
             {
                 return value.clone();
             }

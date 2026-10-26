@@ -166,7 +166,7 @@ pub(super) fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     for (key, value) in pairs {
         map.insert(key.to_string(), value);
     }
-    Value::Object(map)
+    Value::object(map)
 }
 
 fn count(n: usize) -> Value {
@@ -417,7 +417,7 @@ fn recvfrom_on(socket: UdpSocket, want: usize) -> Result<Value, OsError> {
     let (read, peer) = socket.recv_from(&mut buf).map_err(|e| io_error(OsOp::Recvfrom, &e))?;
     Ok(object([
         ("data", bytes_value(&buf[..read])),
-        ("peer", Value::String(peer.to_string())),
+        ("peer", Value::string(peer.to_string())),
     ]))
 }
 
@@ -466,7 +466,7 @@ fn deliver_connection(
     let conn = socks.insert(SockEntry::Stream(stream));
     let event = object([
         ("sock", Value::Number(conn as f64)),
-        ("peer", Value::String(peer.to_string())),
+        ("peer", Value::string(peer.to_string())),
     ]);
     if completions.message(key, lease, site, event) {
         return true;
@@ -518,7 +518,7 @@ pub(super) fn listen(
     }
     Ok(object([
         ("sock", Value::Number(id as f64)),
-        ("address", Value::String(local.ip().to_string())),
+        ("address", Value::string(local.ip().to_string())),
         ("port", count(usize::from(local.port()))),
     ]))
 }
@@ -613,7 +613,7 @@ fn dns_resolve(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     }
     let addresses = seen
         .iter()
-        .map(|ip| Value::String(ip.to_string()))
+        .map(|ip| Value::string(ip.to_string()))
         .collect();
     Ok(object([("addresses", Value::Array(addresses))]))
 }

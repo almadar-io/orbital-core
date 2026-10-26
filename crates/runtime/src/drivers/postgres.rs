@@ -50,7 +50,7 @@ pub fn bind_text(value: &Value) -> Option<String> {
         Value::Null => None,
         Value::Bool(b) => Some(b.to_string()),
         Value::Number(n) => Some(js_number_string(*n)),
-        Value::String(s) => Some(s.clone()),
+        Value::String(s) => Some(s.clone().into_inner()),
         Value::Array(items) => Some(array_literal(items)),
         Value::Object(_) => serde_json::to_string(value).ok(),
         Value::Lambda { .. } => None,
@@ -135,7 +135,7 @@ pub fn parse_postgres_call(origin: &Value, sql: &Value, params: &Value, options:
         Some(0) => return invalid("postgres: options.timeoutMs must be above zero"),
         other => other,
     };
-    Ok(PostgresCallSpec { origin: origin.clone(), sql: sql.clone(), params: binds, auth, user, database, tls, timeout_ms })
+    Ok(PostgresCallSpec { origin: origin.clone().into_inner(), sql: sql.clone().into_inner(), params: binds, auth, user: user.into_inner(), database: database.map(|v| v.into_inner()), tls, timeout_ms })
 }
 
 // ---- messages ----
@@ -407,7 +407,7 @@ fn scalar_value(oid: u32, text: &str) -> Result<Value, ValueProblem> {
             if n.abs() <= MAX_SAFE_INTEGER {
                 Value::Number(n as f64)
             } else {
-                Value::String(text.to_string())
+                Value::string(text.to_string())
             }
         }
         700 | 701 => match text.parse::<f64>() {
@@ -420,17 +420,17 @@ fn scalar_value(oid: u32, text: &str) -> Result<Value, ValueProblem> {
                 return problem("a bytea value has an odd number of hex digits");
             }
             let bytes: Result<Vec<u8>, _> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16)).collect();
-            Value::String(codec::base64_encode(&bytes.map_err(|_| ValueProblem("a bytea value is not hex".to_string()))?))
+            Value::string(codec::base64_encode(&bytes.map_err(|_| ValueProblem("a bytea value is not hex".to_string()))?))
         }
         1184 => {
             if text.ends_with("infinity") {
-                Value::String(text.to_string())
+                Value::string(text.to_string())
             } else {
-                Value::String(timestamptz_iso(text)?)
+                Value::string(timestamptz_iso(text)?)
             }
         }
-        1114 => Value::String(text.replacen(' ', "T", 1)),
-        _ => Value::String(text.to_string()),
+        1114 => Value::string(text.replacen(' ', "T", 1)),
+        _ => Value::string(text.to_string()),
     })
 }
 
@@ -461,7 +461,7 @@ fn array_level(element: u32, chars: &[char], at: &mut usize, depth: usize) -> Re
         match chars.get(*at) {
             Some('}') => {
                 *at += 1;
-                return Ok(Value::Array(items));
+                return Ok(Value::array(items));
             }
             Some(',') => *at += 1,
             Some('{') => items.push(array_level(element, chars, at, depth + 1)?),
@@ -522,15 +522,15 @@ pub fn result_value(columns: &[Column], rows: &[Vec<Option<Vec<u8>>>], tag: Opti
         for (column, cell) in columns.iter().zip(row) {
             object.insert(column.name.clone(), cell_value(column.type_oid, cell.as_deref())?);
         }
-        out_rows.push(Value::Object(object));
+        out_rows.push(Value::object(object));
     }
     let counted = tag.and_then(|t| t.rsplit(' ').next()).and_then(|n| n.parse::<f64>().ok()).unwrap_or(rows.len() as f64);
     let columns_value = columns
         .iter()
-        .map(|c| Value::Object(ValueMap::from_iter([("name".to_string(), Value::String(c.name.clone())), ("typeOid".to_string(), Value::Number(f64::from(c.type_oid)))])))
+        .map(|c| Value::object(ValueMap::from_iter([("name".to_string(), Value::String(c.name.clone().into())), ("typeOid".to_string(), Value::Number(f64::from(c.type_oid)))])))
         .collect();
-    Ok(Value::Object(ValueMap::from_iter([
-        ("rows".to_string(), Value::Array(out_rows)),
+    Ok(Value::object(ValueMap::from_iter([
+        ("rows".to_string(), Value::Array(out_rows.into())),
         ("rowCount".to_string(), Value::Number(counted)),
         ("columns".to_string(), Value::Array(columns_value)),
     ])))
@@ -953,7 +953,7 @@ impl PostgresDriver {
         }
         let outcome = match result_value(&self.columns, &self.rows, self.tag.as_deref()) {
             Ok(Value::Object(mut result)) => {
-                result.insert("key".to_string(), self.key.clone().map_or(Value::Null, Value::String));
+                result.insert("key".to_string(), self.key.clone().map_or(Value::Null, Value::string));
                 Ok(Value::Object(result))
             }
             Ok(other) => Ok(other),
@@ -1073,7 +1073,7 @@ mod tests {
     use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 
     fn text(s: &str) -> Value {
-        Value::String(s.to_string())
+        Value::string(s.to_string())
     }
 
     fn egress() -> Vec<String> {
@@ -1200,7 +1200,7 @@ mod tests {
             let answer = match &ask {
                 DriverAsk::Secret { .. } => DriverAnswer::Secret(Ok(password.map(str::to_string))),
                 DriverAsk::Random { bytes } => DriverAnswer::Random(Ok(vec![7u8; *bytes as usize])),
-                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))])))),
+                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))])))),
                 DriverAsk::Os { op: OsOp::Send, args, .. } => {
                     let Value::String(b64) = &args[1] else { panic!("send data") };
                     sent.push(base64_decode(b64).expect("base64"));
@@ -1208,12 +1208,12 @@ mod tests {
                 }
                 DriverAsk::Os { op: OsOp::Recv, .. } => {
                     let Some(reply) = replies.next() else { return (asks, step, sent) };
-                    DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([
+                    DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([
                         ("data".to_string(), text(&base64_encode(&reply(&sent)))),
                         ("eof".to_string(), Value::Bool(false)),
                     ]))))
                 }
-                DriverAsk::Os { op: OsOp::Close, .. } => DriverAnswer::Os(Ok(Value::Object(ValueMap::default()))),
+                DriverAsk::Os { op: OsOp::Close, .. } => DriverAnswer::Os(Ok(Value::object(ValueMap::default()))),
                 DriverAsk::Clock => DriverAnswer::Clock(Ok(1_760_000_000_000)),
                 other => panic!("unexpected ask {other:?}"),
             };
@@ -1282,14 +1282,14 @@ mod tests {
         let result = done_ok(&step);
         assert_eq!(field(result, "rowCount"), &Value::Number(1.0));
         let row = field(result, "rows");
-        assert_eq!(row, &Value::Array(vec![Value::Object(ValueMap::from_iter([
+        assert_eq!(row, &Value::array(vec![Value::Object(ValueMap::from_iter([
             ("n".to_string(), Value::Number(42.0)),
             ("t".to_string(), Value::Null),
             ("z".to_string(), Value::Null),
-        ]))]));
+        ]).into())]));
         assert_eq!(
             field(result, "columns"),
-            &Value::Array(vec!["n", "t", "z"].into_iter().zip([23.0, 25.0, 23.0]).map(|(n, o)| Value::Object(ValueMap::from_iter([
+            &Value::Array(vec!["n", "t", "z"].into_iter().zip([23.0, 25.0, 23.0]).map(|(n, o)| Value::object(ValueMap::from_iter([
                 ("name".to_string(), text(n)),
                 ("typeOid".to_string(), Value::Number(o)),
             ]))).collect())
@@ -1509,7 +1509,7 @@ mod tests {
         for _ in 0..8 {
             let DriverStep::Ask(ask) = step.clone() else { break };
             let answer = match ask {
-                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))])))),
+                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))])))),
                 DriverAsk::Os { op: OsOp::Recv, .. } => DriverAnswer::Os(Err(OsError::new(OsErrorKind::Timeout, "os/recv: timed out"))),
                 DriverAsk::Os { op: OsOp::Close, .. } => {
                     closed = true;
@@ -1535,7 +1535,7 @@ mod tests {
         let ok = parse_postgres_call(
             &text("postgres://h"),
             &text("SELECT $1"),
-            &Value::Array(vec![Value::Number(1.5), Value::Bool(true), Value::Null, text("s"), Value::Array(vec![text("a\"b"), Value::Null])]),
+            &Value::array(vec![Value::Number(1.5), Value::Bool(true), Value::Null, text("s"), Value::Array(vec![text("a\"b"), Value::Null].into())]),
             &options(vec![("user", text("app")), ("auth", text("PW")), ("database", text("d")), ("tls", Value::Bool(true)), ("timeoutMs", Value::Number(5000.0))]),
         )
         .expect("parses");
@@ -1544,15 +1544,15 @@ mod tests {
         let call = |sql: &str, params: Value, opts: Value| parse_postgres_call(&text("postgres://h"), &text(sql), &params, &opts);
         let user = options(vec![("user", text("app"))]);
         for (sql, why) in [("DELETE FROM t", "Only SELECT"), ("SELECT 1; SELECT 2", "single statement"), ("SELECT * INTO c FROM t", "INTO")] {
-            let error = call(sql, Value::Array(Vec::new()), user.clone()).expect_err(sql);
+            let error = call(sql, Value::array(Vec::new()), user.clone()).expect_err(sql);
             assert!(error.message().contains("Read-only violation") && error.message().contains(why), "{}", error.message());
         }
-        assert!(call("SELECT 1", Value::Array(Vec::new()), user.clone()).is_ok());
+        assert!(call("SELECT 1", Value::array(Vec::new()), user.clone()).is_ok());
         assert!(call("SELECT 1", text("x"), user.clone()).is_err(), "params are a list");
-        assert!(call("SELECT 1", Value::Array(Vec::new()), options(vec![])).is_err(), "a user is required");
-        assert!(call("SELECT 1", Value::Array(Vec::new()), options(vec![("user", text("a")), ("timeout", Value::Number(1.0))])).is_err());
-        assert!(call("SELECT 1", Value::Array(Vec::new()), options(vec![("user", text("a")), ("timeoutMs", Value::Number(0.0))])).is_err());
-        assert!(call("SELECT 1", Value::Array(Vec::new()), options(vec![("user", text("a")), ("tls", text("yes"))])).is_err());
+        assert!(call("SELECT 1", Value::array(Vec::new()), options(vec![])).is_err(), "a user is required");
+        assert!(call("SELECT 1", Value::array(Vec::new()), options(vec![("user", text("a")), ("timeout", Value::Number(1.0))])).is_err());
+        assert!(call("SELECT 1", Value::array(Vec::new()), options(vec![("user", text("a")), ("timeoutMs", Value::Number(0.0))])).is_err());
+        assert!(call("SELECT 1", Value::array(Vec::new()), options(vec![("user", text("a")), ("tls", text("yes"))])).is_err());
     }
 
     #[test]
@@ -1597,15 +1597,15 @@ mod tests {
     #[test]
     fn arrays_decode_to_nested_lists_of_typed_elements() {
         let array = |oid: u32, t: &str| cell_value(oid, Some(t.as_bytes())).expect(t);
-        assert_eq!(array(1007, "{1,2,NULL}"), Value::Array(vec![Value::Number(1.0), Value::Number(2.0), Value::Null]));
-        assert_eq!(array(1009, "{\"a b\",NULL,\"q\\\"x\",plain}"), Value::Array(vec![text("a b"), Value::Null, text("q\"x"), text("plain")]));
-        assert_eq!(array(1000, "{t,f}"), Value::Array(vec![Value::Bool(true), Value::Bool(false)]));
-        assert_eq!(array(1007, "{{1,2},{3,4}}"), Value::Array(vec![Value::Array(vec![Value::Number(1.0), Value::Number(2.0)]), Value::Array(vec![Value::Number(3.0), Value::Number(4.0)])]));
-        assert_eq!(array(1007, "{}"), Value::Array(Vec::new()));
-        assert_eq!(array(1016, "{1,2}"), Value::Array(vec![Value::Number(1.0), Value::Number(2.0)]));
+        assert_eq!(array(1007, "{1,2,NULL}"), Value::array(vec![Value::Number(1.0), Value::Number(2.0), Value::Null]));
+        assert_eq!(array(1009, "{\"a b\",NULL,\"q\\\"x\",plain}"), Value::array(vec![text("a b"), Value::Null, text("q\"x"), text("plain")]));
+        assert_eq!(array(1000, "{t,f}"), Value::array(vec![Value::Bool(true), Value::Bool(false)]));
+        assert_eq!(array(1007, "{{1,2},{3,4}}"), Value::array(vec![Value::Array(vec![Value::Number(1.0), Value::Number(2.0)].into()), Value::Array(vec![Value::Number(3.0), Value::Number(4.0)].into())]));
+        assert_eq!(array(1007, "{}"), Value::array(Vec::new()));
+        assert_eq!(array(1016, "{1,2}"), Value::array(vec![Value::Number(1.0), Value::Number(2.0)]));
         assert!(cell_value(1007, Some(b"{{{{1}}}}")).is_err(), "deeper than the limit");
         assert!(cell_value(1007, Some(b"{1,2")).is_err());
-        assert_eq!(array(1007, "[0:1]={5,6}"), Value::Array(vec![Value::Number(5.0), Value::Number(6.0)]), "the bounds prefix is dropped");
+        assert_eq!(array(1007, "[0:1]={5,6}"), Value::array(vec![Value::Number(5.0), Value::Number(6.0)]), "the bounds prefix is dropped");
     }
 
     #[test]

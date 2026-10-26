@@ -40,7 +40,7 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
                 .transpose()?,
             options: options.map(|o| orbital_core_base::client_effect::NavigateOptions {
                 crumb: o.crumb.map(|c| {
-                    ctx.resolve_value(&Value::String(c))
+                    ctx.resolve_value(&Value::string(c))
                         .into_owned()
                         .to_string_value()
                 }),
@@ -148,7 +148,7 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
         Effect::CancelCall { key } => Effect::CancelCall {
             key: match ctx.resolve_value_checked(&key)?.into_owned() {
                 list @ Value::Array(_) => list,
-                other => Value::String(other.to_string_value()),
+                other => Value::string(other.to_string_value()),
             },
         },
         Effect::Os {
@@ -313,11 +313,11 @@ pub(super) fn resolved_when_run(effect: &Effect) -> bool {
 pub(super) fn os_failure(effect: &Effect, error: &OsError) -> EffectResult {
     http_failure(
         effect,
-        Value::Object(ValueMap::from_iter([
-            ("error".to_string(), Value::String(error.message.clone())),
+        Value::object(ValueMap::from_iter([
+            ("error".to_string(), Value::String(error.message.clone().into())),
             (
                 "kind".to_string(),
-                Value::String(error.kind.as_str().to_string()),
+                Value::String(error.kind.as_str().to_string().into()),
             ),
         ])),
     )
@@ -407,7 +407,7 @@ pub(super) fn resolve_render_slot(slot: String, ctx: &BindingContext) -> Result<
         return Ok(slot);
     }
     match ctx.resolve_binding(&slot) {
-        Some(Value::String(name)) if !name.is_empty() => Ok(name),
+        Some(Value::String(name)) if !name.is_empty() => Ok(name.into_inner()),
         other => Err(EvalError::InvalidArgument(format!(
             "render-ui slot {slot} must name a slot, got {}",
             other.map_or_else(|| "nothing".to_string(), |v| v.to_string_value())
@@ -418,5 +418,5 @@ pub(super) fn resolve_render_slot(slot: String, ctx: &BindingContext) -> Result<
 pub(super) fn resolve_call_key(key: &Value, ctx: &BindingContext) -> Result<Value, EvalError> {
     let value = ctx.resolve_value_checked(key)?;
     orbital_core_base::effect_types::call_key_text(&value)
-        .map(|text| Value::String(text.to_string()))
+        .map(|text| Value::string(text.to_string()))
 }

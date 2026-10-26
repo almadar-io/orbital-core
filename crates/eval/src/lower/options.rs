@@ -28,7 +28,7 @@ impl NodeLowerer {
         let read_str = |key: &str| -> Result<Option<String>, LowerError> {
             match emit_entry.get(key) {
                 None | Some(SExpression::Null) => Ok(None),
-                Some(SExpression::String(s)) => Ok(Some(s.clone())),
+                Some(SExpression::String(s)) => Ok(Some(s.clone().into_inner())),
                 Some(other) => Err(LowerError::InvalidSExpr(format!(
                     "emit.{} must be a string event name, got {:?}",
                     key, other
@@ -125,7 +125,7 @@ impl NodeLowerer {
     /// bare "Expected string" with no context (T-RESOLVE-OPAQUE).
     pub(super) fn sexpr_as_str(&self, sexpr: &SExpression, what: &str) -> Result<String, LowerError> {
         match sexpr {
-            SExpression::String(s) => Ok(s.clone()),
+            SExpression::String(s) => Ok(s.clone().into_inner()),
             other => {
                 let shape = match other {
                     SExpression::Object(_) => "an object",

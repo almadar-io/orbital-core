@@ -59,7 +59,7 @@ impl Fx {
     }
 
     fn s(&self, rel: &str) -> Value {
-        Value::String(self.p(rel).to_string_lossy().into_owned())
+        Value::string(self.p(rel).to_string_lossy().into_owned())
     }
 
     fn call(&self, op: OsOp, args: Vec<Value>) -> Result<Value, OsError> {
@@ -94,7 +94,7 @@ impl Fx {
 }
 
 fn st(text: &str) -> Value {
-    Value::String(text.to_string())
+    Value::string(text.to_string())
 }
 
 fn n(v: i64) -> Value {
@@ -119,7 +119,7 @@ fn num_of(value: &Value) -> f64 {
 
 fn str_of(value: &Value) -> String {
     match value {
-        Value::String(s) => s.clone(),
+        Value::String(s) => s.clone().into_inner(),
         other => panic!("{other:?}"),
     }
 }
@@ -561,7 +561,7 @@ fn list_dir_is_sorted_with_kinds() {
     symlink("a", fx.p("d")).expect("link");
     let listing = fx.ok(
         OsOp::ListDir,
-        vec![Value::String(fx.root.to_string_lossy().into_owned())],
+        vec![Value::string(fx.root.to_string_lossy().into_owned())],
     );
     let Value::Array(entries) = get(&listing, "entries") else {
         panic!()
@@ -600,7 +600,7 @@ fn glob_matches_sorted_and_filters_to_granted_results() {
     write(&fx.p("b/three.txt"), b"");
     let all = paths_of(&fx.ok(
         OsOp::Glob,
-        vec![Value::String(format!("{}/**/*.txt", fx.root.display()))],
+        vec![Value::string(format!("{}/**/*.txt", fx.root.display()))],
     ));
     let want: Vec<String> = ["a/deep/two.txt", "a/one.txt", "b/three.txt"]
         .iter()
@@ -609,12 +609,12 @@ fn glob_matches_sorted_and_filters_to_granted_results() {
     assert_eq!(all, want);
     let shallow = paths_of(&fx.ok(
         OsOp::Glob,
-        vec![Value::String(format!("{}/*/*.txt", fx.root.display()))],
+        vec![Value::string(format!("{}/*/*.txt", fx.root.display()))],
     ));
     assert_eq!(shallow, [want[1].clone(), want[2].clone()]);
     assert!(paths_of(&fx.ok(
         OsOp::Glob,
-        vec![Value::String(format!("{}/nomatch/*", fx.root.display()))]
+        vec![Value::string(format!("{}/nomatch/*", fx.root.display()))]
     ))
     .is_empty());
 }
@@ -630,7 +630,7 @@ fn glob_never_returns_ungranted_or_escaping_paths() {
     symlink(out_root.join("secret.txt"), fx.p("a/leak.txt")).expect("link");
     let fx =
         fx.with_grants(|root| vec![grant(format!("{}/a/**", root.display()), &[FsMode::Read])]);
-    let pattern = |p: String| vec![Value::String(p)];
+    let pattern = |p: String| vec![Value::string(p)];
     let got = paths_of(&fx.ok(
         OsOp::Glob,
         pattern(format!("{}/a/*.txt", fx.root.display())),
@@ -659,7 +659,7 @@ fn glob_never_returns_ungranted_or_escaping_paths() {
 #[test]
 fn mktemp_makes_unique_files_inside_the_directory() {
     let fx = Fx::new();
-    let dir = Value::String(fx.root.to_string_lossy().into_owned());
+    let dir = Value::string(fx.root.to_string_lossy().into_owned());
     let mut seen = std::collections::HashSet::new();
     for _ in 0..20 {
         let made = str_of(get(
@@ -851,13 +851,13 @@ fn empty_grants_deny_every_path_op_before_touching_the_target() {
             OsOp::Mktemp,
             vec![
                 st("p"),
-                Value::String(fx.root.to_string_lossy().into_owned()),
+                Value::string(fx.root.to_string_lossy().into_owned()),
             ],
         ),
         (OsOp::Realpath, vec![f()]),
         (
             OsOp::Chdir,
-            vec![Value::String(fx.root.to_string_lossy().into_owned())],
+            vec![Value::string(fx.root.to_string_lossy().into_owned())],
         ),
         (OsOp::Stat, vec![f()]),
         (OsOp::Lstat, vec![f()]),
@@ -876,7 +876,7 @@ fn empty_grants_deny_every_path_op_before_touching_the_target() {
     assert_eq!(
         fx.kind(
             OsOp::ListDir,
-            vec![Value::String(fx.root.to_string_lossy().into_owned())]
+            vec![Value::string(fx.root.to_string_lossy().into_owned())]
         ),
         OsErrorKind::Denied
     );
@@ -961,7 +961,7 @@ fn dot_dot_traversal_out_of_the_grant_is_denied() {
     fs::create_dir(fx.p("in")).expect("dir");
     write(&fx.p("secret"), b"s");
     let fx = fx.with_grants(|root| vec![grant(format!("{}/in/**", root.display()), &ALL)]);
-    let sneaky = Value::String(format!("{}/in/../secret", fx.root.display()));
+    let sneaky = Value::string(format!("{}/in/../secret", fx.root.display()));
     assert_eq!(
         fx.kind(OsOp::ReadFile, vec![sneaky.clone()]),
         OsErrorKind::Denied
@@ -984,7 +984,7 @@ fn a_path_built_under_a_covered_root_cannot_climb_out_of_it() {
     write(&fx.p("secret"), b"s");
     let fx = fx.with_grants(|root| vec![grant(format!("{}/in/**", root.display()), &ALL)]);
     let root = format!("{}/in/", fx.root.display());
-    let built = |tail: &str| Value::String(format!("{root}{tail}"));
+    let built = |tail: &str| Value::string(format!("{root}{tail}"));
     assert_eq!(data_of(&fx.ok(OsOp::ReadFile, vec![built("a")])), b"a");
     assert_eq!(fx.kind(OsOp::ReadFile, vec![built("../secret")]), OsErrorKind::Denied);
     assert_eq!(fx.kind(OsOp::ReadFile, vec![built("../../../../etc/passwd")]), OsErrorKind::Denied);
@@ -1092,7 +1092,7 @@ fn watching_files_is_unsupported_until_the_streaming_host_exists() {
     let e = fx
         .call(
             OsOp::WatchFiles,
-            vec![st("/x/**"), Value::Object(ValueMap::default())],
+            vec![st("/x/**"), Value::object(ValueMap::default())],
         )
         .expect_err("unsupported");
     assert_eq!(e.kind, OsErrorKind::Unsupported);
@@ -1218,7 +1218,7 @@ mod finite_fs_completion {
                 if kind == "unknown" {
                     assert_eq!(result, Err(OsError::new(OsErrorKind::Closed, "os/close: not an open handle")));
                 } else {
-                    assert_eq!(result, Ok(Value::Object(ValueMap::default())));
+                    assert_eq!(result, Ok(Value::object(ValueMap::default())));
                 }
                 assert!(!handles.fs.fds.contains(fd));
                 assert!(!handles.net.socks.contains(fd));

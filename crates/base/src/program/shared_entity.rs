@@ -153,10 +153,10 @@ impl SharedEntity {
             Repr::Object(fields, whole) => match whole.get() {
                 Some(value) => (**value).clone(),
                 None => Value::Object(
-                    fields
+                    (fields
                         .iter()
                         .map(|(k, v)| (k.clone(), (**v).clone()))
-                        .collect::<ValueMap>(),
+                        .collect::<ValueMap>()).into(),
                 ),
             },
             Repr::Other(v) => (**v).clone(),
@@ -169,10 +169,10 @@ impl SharedEntity {
             Repr::Null => &NULL,
             Repr::Object(fields, whole) => whole.get_or_init(|| {
                 Arc::new(Value::Object(
-                    fields
+                    (fields
                         .iter()
                         .map(|(k, v)| (k.clone(), (**v).clone()))
-                        .collect::<ValueMap>(),
+                        .collect::<ValueMap>()).into(),
                 ))
             }),
             Repr::Other(v) => v,

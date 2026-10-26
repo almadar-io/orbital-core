@@ -622,11 +622,11 @@ fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
                 match ctx.resolve_binding(s) {
                     Some(value) => Ok(value),
                     // A client-only frame reference stays for the client to embed, as the value resolver keeps it.
-                    None if s.starts_with("@trait.") => Ok(Value::String(s.clone())),
+                    None if s.starts_with("@trait.") => Ok(Value::string(s.clone())),
                     None => Ok(Value::Null),
                 }
             } else {
-                Ok(Value::String(s.clone()))
+                Ok(Value::string(s.clone()))
             }
         }
 
@@ -636,13 +636,13 @@ fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
             for (k, v) in obj {
                 result.insert(k.clone(), eval_expr(v, ctx)?);
             }
-            Ok(Value::Object(result))
+            Ok(Value::object(result))
         }
 
         // Array - either a function call or a literal array
         SExpression::Array(arr) => {
             if arr.is_empty() {
-                return Ok(Value::Array(vec![]));
+                return Ok(Value::array(vec![]));
             }
 
             // Check if this is a function call (first element is a string operator)
@@ -669,13 +669,13 @@ fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
                     && orbital_core_base::language::registry::get_operator(op).is_none()
                     && !orbital_core_base::effect_types::is_known_effect_name(op)
                 {
-                    return Err(EvalError::UnknownOperator(op.clone()).into());
+                    return Err(EvalError::UnknownOperator(op.clone().into_inner()).into());
                 }
             }
 
             // Literal array - evaluate all elements
             let values: Result<Vec<Value>, _> = arr.iter().map(|e| eval_expr(e, ctx)).collect();
-            Ok(Value::Array(values?))
+            Ok(Value::array(values?))
         }
     }
 }

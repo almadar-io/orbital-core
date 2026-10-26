@@ -230,7 +230,7 @@ impl Operator for MapOp {
                 .enumerate()
                 .map(|(i, item)| apply_callback(&args[1], vec![item, Value::Number(i as f64)], ctx))
                 .collect();
-            return Ok(Value::Array(results?));
+            return Ok(Value::array(results?));
         }
 
         // Legacy: a raw body expression evaluated with `@item`/`@index` bound.
@@ -244,7 +244,7 @@ impl Operator for MapOp {
             })
             .collect();
 
-        Ok(Value::Array(results?))
+        Ok(Value::array(results?))
     }
 }
 
@@ -279,7 +279,7 @@ impl Operator for FilterOp {
                     }
                 })
                 .collect();
-            return Ok(Value::Array(results?));
+            return Ok(Value::array(results?));
         }
 
         // Legacy: raw body predicate evaluated with `@item` bound.
@@ -298,7 +298,7 @@ impl Operator for FilterOp {
             })
             .collect();
 
-        Ok(Value::Array(results?))
+        Ok(Value::array(results?))
     }
 }
 
@@ -357,10 +357,10 @@ impl Operator for ArraySliceOp {
         };
 
         if start_idx >= end_idx {
-            return Ok(Value::Array(vec![]));
+            return Ok(Value::array(vec![]));
         }
 
-        Ok(Value::Array(array[start_idx..end_idx].to_vec()))
+        Ok(Value::array(array[start_idx..end_idx].to_vec()))
     }
 }
 
@@ -376,7 +376,7 @@ impl Operator for ArrayConcatOp {
                 _ => result.push(val),
             }
         }
-        Ok(Value::Array(result))
+        Ok(Value::array(result))
     }
 }
 
@@ -460,7 +460,7 @@ impl Operator for ArraySortOp {
             match &key {
                 Some(k) => v
                     .as_object()
-                    .and_then(|o| o.get(k))
+                    .and_then(|o| o.get(k.as_str()))
                     .cloned()
                     .unwrap_or(Value::Null),
                 None => v.clone(),
@@ -499,7 +499,7 @@ impl Operator for ArrayUniqueOp {
             }
         }
 
-        Ok(Value::Array(result))
+        Ok(Value::array(result))
     }
 }
 
@@ -657,7 +657,7 @@ impl Operator for ArrayFlattenOp {
                 other => result.push(other),
             }
         }
-        Ok(Value::Array(result))
+        Ok(Value::array(result))
     }
 }
 
@@ -692,10 +692,10 @@ impl Operator for ArrayZipOp {
         let result: Vec<Value> = array1
             .into_iter()
             .zip(array2)
-            .map(|(a, b)| Value::Array(vec![a, b]))
+            .map(|(a, b)| Value::array(vec![a, b]))
             .collect();
 
-        Ok(Value::Array(result))
+        Ok(Value::array(result))
     }
 }
 
@@ -774,7 +774,7 @@ impl Operator for ArrayGroupByOp {
             return Ok(Value::Object(
                 groups
                     .into_iter()
-                    .map(|(k, v)| (k, Value::Array(v)))
+                    .map(|(k, v)| (k, Value::array(v)))
                     .collect(),
             ));
         }
@@ -796,10 +796,10 @@ impl Operator for ArrayGroupByOp {
 
         let result: ValueMap = groups
             .into_iter()
-            .map(|(k, v)| (k, Value::Array(v)))
+            .map(|(k, v)| (k, Value::array(v)))
             .collect();
 
-        Ok(Value::Object(result))
+        Ok(Value::object(result))
     }
 }
 
@@ -814,7 +814,7 @@ impl Operator for ArrayTakeOp {
         let array = require_array!(arr);
 
         let result: Vec<Value> = array.into_iter().take(n).collect();
-        Ok(Value::Array(result))
+        Ok(Value::array(result))
     }
 }
 
@@ -829,7 +829,7 @@ impl Operator for ArrayDropOp {
         let array = require_array!(arr);
 
         let result: Vec<Value> = array.into_iter().skip(n).collect();
-        Ok(Value::Array(result))
+        Ok(Value::array(result))
     }
 }
 
@@ -858,7 +858,7 @@ impl Operator for ArrayRangeOp {
         };
 
         if step == 0.0 {
-            return Ok(Value::Array(vec![]));
+            return Ok(Value::array(vec![]));
         }
 
         let mut result = Vec::new();
@@ -876,7 +876,7 @@ impl Operator for ArrayRangeOp {
             }
         }
 
-        Ok(Value::Array(result))
+        Ok(Value::array(result))
     }
 }
 
@@ -936,7 +936,7 @@ impl Operator for ArrayRejectOp {
             }
         }
 
-        Ok(Value::Array(result))
+        Ok(Value::array(result))
     }
 }
 
@@ -971,9 +971,9 @@ impl Operator for ArrayPartitionOp {
             }
         }
 
-        Ok(Value::Array(vec![
-            Value::Array(matches),
-            Value::Array(non_matches),
+        Ok(Value::array(vec![
+            Value::array(matches),
+            Value::array(non_matches),
         ]))
     }
 }
@@ -991,7 +991,7 @@ impl Operator for ArrayTakeLastOp {
         let len = array.len();
         let skip = len.saturating_sub(n);
         let result: Vec<Value> = array.into_iter().skip(skip).collect();
-        Ok(Value::Array(result))
+        Ok(Value::array(result))
     }
 }
 
@@ -1008,7 +1008,7 @@ impl Operator for ArrayDropLastOp {
         let len = array.len();
         let take = len.saturating_sub(n);
         let result: Vec<Value> = array.into_iter().take(take).collect();
-        Ok(Value::Array(result))
+        Ok(Value::array(result))
     }
 }
 
@@ -1021,13 +1021,42 @@ impl Operator for ArrayRepeatOp {
         let n = require_number!(eval_expr(&args[1], ctx)?) as usize;
 
         let result: Vec<Value> = std::iter::repeat_n(value, n).collect();
-        Ok(Value::Array(result))
+        Ok(Value::array(result))
     }
 }
 
 // ============================================================================
 // Reduce Operator (Phase 1)
 // ============================================================================
+
+/// Whether `body` reads `@name` exactly once, outside any nested lambda (which may run many times), and never
+/// names `name` bare (a binding of its own, which would shadow it): then that read is the value's last use.
+fn read_once(body: &SExpression, name: &str) -> bool {
+    fn walk(node: &SExpression, name: &str, in_lambda: bool, reads: &mut usize) -> bool {
+        match node {
+            SExpression::String(text) => {
+                if text == name {
+                    return false;
+                }
+                let token = format!("@{name}");
+                let found = text
+                    .match_indices(&token)
+                    .filter(|(i, _)| !text[i + token.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+                    .count();
+                *reads += found;
+                !(in_lambda && found > 0)
+            }
+            SExpression::Array(items) => {
+                let lambda = matches!(items.first(), Some(SExpression::String(head)) if head == "fn" || head == "lambda");
+                items.iter().all(|item| walk(item, name, in_lambda || lambda, reads))
+            }
+            SExpression::Object(fields) => fields.values().all(|value| walk(value, name, in_lambda, reads)),
+            _ => true,
+        }
+    }
+    let mut reads = 0;
+    walk(body, name, false, &mut reads) && reads == 1
+}
 
 pub struct ReduceOp;
 impl Operator for ReduceOp {
@@ -1047,7 +1076,12 @@ impl Operator for ReduceOp {
 
                 // Bind parameters: first param is accumulator, second is current item
                 if !params.is_empty() {
-                    child_ctx.set_local(&params[0], std::mem::replace(&mut accumulator, Value::Null));
+                    let acc = std::mem::replace(&mut accumulator, Value::Null);
+                    if read_once(&body, &params[0]) {
+                        child_ctx.set_linear_local(&params[0], acc);
+                    } else {
+                        child_ctx.set_local(&params[0], acc);
+                    }
                 }
                 if params.len() >= 2 {
                     child_ctx.set_local(&params[1], item);
@@ -1062,10 +1096,16 @@ impl Operator for ReduceOp {
         // Legacy: a raw body expression evaluated with `@acc`/`@item` bound,
         // mirroring MapOp's raw-body branch and the JS evaluator's fallback.
         let reducer = &args[2];
+        let linear = read_once(reducer, "acc");
         let mut accumulator = initial;
         for item in array {
             let mut child_ctx = ctx.child();
-            child_ctx.set_local("acc", std::mem::replace(&mut accumulator, Value::Null));
+            let acc = std::mem::replace(&mut accumulator, Value::Null);
+            if linear {
+                child_ctx.set_linear_local("acc", acc);
+            } else {
+                child_ctx.set_local("acc", acc);
+            }
             child_ctx.set_local("item", item);
             accumulator = eval_expr(reducer, &child_ctx)?;
         }
@@ -1238,7 +1278,7 @@ impl Operator for ArrayNearestOp {
         result.insert("index".to_string(), Value::Number(best_idx as f64));
         result.insert("score".to_string(), Value::Number(best_score));
         result.insert("margin".to_string(), Value::Number(margin));
-        Ok(Value::Object(result))
+        Ok(Value::object(result))
     }
 }
 

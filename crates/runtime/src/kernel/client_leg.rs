@@ -121,7 +121,7 @@ impl RuntimeKernel {
                 map.insert("_awaitingInit".to_string(), awaiting.clone());
                 Some(Value::Object(map))
             }
-            Value::Null => Some(Value::Object(ValueMap::from_iter([(
+            Value::Null => Some(Value::object(ValueMap::from_iter([(
                 "_awaitingInit".to_string(),
                 awaiting.clone(),
             )]))),
@@ -316,7 +316,7 @@ impl RuntimeKernel {
             .cloned()
             .collect();
         names.sort();
-        Value::Array(names.into_iter().map(Value::String).collect())
+        Value::Array(names.into_iter().map(Value::string).collect())
     }
 
     /// The legs a fold's own arms owe the host, one per trait whose arm delegated an effect: a trait

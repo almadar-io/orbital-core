@@ -182,8 +182,8 @@ impl ServiceCaller {
             _ => None,
         };
         Some(Self {
-            principal: principal.clone(),
-            role,
+            principal: principal.clone().into_inner(),
+            role: role.map(|v| v.into_inner()),
         })
     }
 }

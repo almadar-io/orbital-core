@@ -81,18 +81,18 @@ impl RuntimeKernel {
 
         // `@payload` is this event's own payload; an absent one reads `{}` (drift D-2).
         let effective_payload = if payload.is_null() {
-            Value::Object(ValueMap::default())
+            Value::object(ValueMap::default())
         } else {
             Value::clone(&payload)
         };
 
         let ctx = BindingContextBuilder::new()
             .payload(effective_payload.clone())
-            .state(Value::String(current_state.current_state.clone()))
+            .state(Value::string(current_state.current_state.clone()))
             .user(self.current_user.read().clone())
             .now(stamp.now)
             .current_theme(Value::String(
-                self.resolve_current_theme_for_trait(trait_name).key,
+                (self.resolve_current_theme_for_trait(trait_name).key).into(),
             ))
             .pages(self.nav_pages.read().clone());
         let mut ctx = self.with_viewer_i18n(ctx).build();
@@ -153,7 +153,7 @@ impl RuntimeKernel {
                 .new_state
                 .clone()
                 .unwrap_or(current_state.current_state.clone());
-            ctx.set_state(Value::String(new_state.clone()));
+            ctx.set_state(Value::string(new_state.clone()));
             ctx.from_state = Some(current_state.current_state.clone());
             ctx.to_state = Some(new_state.clone());
             *self.step_site.write() = Some((trait_name.to_string(), follow_on));

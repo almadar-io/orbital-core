@@ -75,7 +75,7 @@ fn with_awaiting_init(payload: Value, awaiting: Value) -> Value {
             map.insert("_awaitingInit".to_string(), awaiting);
             Value::Object(map)
         }
-        Value::Null => Value::Object(ValueMap::from_iter([("_awaitingInit".to_string(), awaiting)])),
+        Value::Null => Value::object(ValueMap::from_iter([("_awaitingInit".to_string(), awaiting)])),
         other => other,
     }
 }

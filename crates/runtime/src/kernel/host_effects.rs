@@ -87,7 +87,7 @@ impl RuntimeKernel {
         };
         EffectResult::executed_with_value(
             effect.clone(),
-            Value::Object(ValueMap::from_iter([(
+            Value::object(ValueMap::from_iter([(
                 "allowed".to_string(),
                 Value::Bool(allowed),
             )])),
@@ -111,9 +111,9 @@ impl RuntimeKernel {
         match self.io.random(count) {
             Ok(raw) => EffectResult::executed_with_value(
                 effect.clone(),
-                Value::Object(ValueMap::from_iter([(
+                Value::object(ValueMap::from_iter([(
                     "value".to_string(),
-                    Value::String(codec::base64url_encode(&raw)),
+                    Value::String(codec::base64url_encode(&raw).into()),
                 )])),
             ),
             Err(message) => EffectResult::failed(effect.clone(), &message),
@@ -132,10 +132,10 @@ impl RuntimeKernel {
                             fields.insert("key".to_string(), key.clone());
                             Value::Object(fields)
                         }
-                        _ => Value::Object(ValueMap::from_iter([
+                        _ => Value::object(ValueMap::from_iter([
                             (
                                 "error".to_string(),
-                                Value::String(result.error.clone().unwrap_or_default()),
+                                Value::String(result.error.clone().unwrap_or_default().into()),
                             ),
                             ("key".to_string(), key.clone()),
                         ])),
@@ -195,11 +195,11 @@ impl RuntimeKernel {
                 match answer {
                     Ok(standing) => EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::Object(ValueMap::from_iter([
+                        Value::object(ValueMap::from_iter([
                             ("connected".to_string(), Value::Bool(standing.connected)),
                             (
                                 "label".to_string(),
-                                Value::String(standing.label.unwrap_or_default()),
+                                Value::String(standing.label.unwrap_or_default().into()),
                             ),
                         ])),
                     ),
@@ -224,13 +224,13 @@ impl RuntimeKernel {
                     Ok(reply) => EffectResult::executed_with_value(effect.clone(), reply),
                     Err(refusal) => http_failure(
                         effect,
-                        Value::Object(ValueMap::from_iter([
-                            ("error".to_string(), Value::String(refusal.message)),
+                        Value::object(ValueMap::from_iter([
+                            ("error".to_string(), Value::String(refusal.message.into())),
                             (
                                 "code".to_string(),
                                 refusal
                                     .code
-                                    .map_or(Value::Null, |code| Value::String(code.to_string())),
+                                    .map_or(Value::Null, |code| Value::String(code.to_string().into())),
                             ),
                         ])),
                     ),
@@ -461,12 +461,12 @@ impl RuntimeKernel {
         }
         let keyed = |payload: Value| match (key, payload) {
             (Some(key), Value::Object(mut fields)) => {
-                fields.insert("key".to_string(), Value::String(key.to_string()));
+                fields.insert("key".to_string(), Value::string(key.to_string()));
                 Value::Object(fields)
             }
-            (Some(key), other) => Value::Object(ValueMap::from_iter([
+            (Some(key), other) => Value::object(ValueMap::from_iter([
                 ("value".to_string(), other),
-                ("key".to_string(), Value::String(key.to_string())),
+                ("key".to_string(), Value::String(key.to_string().into())),
             ])),
             (None, payload) => payload,
         };
@@ -553,14 +553,14 @@ impl RuntimeKernel {
     /// payload echoes the key (`null` unkeyed); a failure names its kind (`unconfigured`, `unavailable`, `failed`).
     pub(super) fn run_on_device_model(&self, effect: &Effect, key: Option<&str>) -> EffectResult {
         use super::resumable::{ModelFailure, ModelFailureKind};
-        let key_value = key.map_or(Value::Null, |k| Value::String(k.to_string()));
+        let key_value = key.map_or(Value::Null, |k| Value::string(k.to_string()));
         let failed = |failure: ModelFailure| {
             let mut result = EffectResult::failed(effect.clone(), &failure.message);
-            result.return_value = Some(Value::Object(ValueMap::from_iter([
-                ("error".to_string(), Value::String(failure.message)),
+            result.return_value = Some(Value::object(ValueMap::from_iter([
+                ("error".to_string(), Value::String(failure.message.into())),
                 (
                     "kind".to_string(),
-                    Value::String(failure.kind.as_str().to_string()),
+                    Value::String(failure.kind.as_str().to_string().into()),
                 ),
                 ("key".to_string(), key_value.clone()),
             ])));
@@ -577,8 +577,8 @@ impl RuntimeKernel {
                 match self.io.prompt(text, schema, key) {
                     Ok(reply) => EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::Object(ValueMap::from_iter([
-                            ("reply".to_string(), Value::String(reply)),
+                        Value::object(ValueMap::from_iter([
+                            ("reply".to_string(), Value::String(reply.into())),
                             ("key".to_string(), key_value),
                         ])),
                     ),
@@ -599,8 +599,8 @@ impl RuntimeKernel {
                 if texts.is_empty() {
                     return EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::Object(ValueMap::from_iter([
-                            ("embeddings".to_string(), Value::Array(Vec::new())),
+                        Value::object(ValueMap::from_iter([
+                            ("embeddings".to_string(), Value::Array(Vec::new().into())),
                             ("key".to_string(), key_value),
                         ])),
                     );
@@ -608,7 +608,7 @@ impl RuntimeKernel {
                 match self.io.embed(&texts, key) {
                     Ok(vectors) => EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::Object(ValueMap::from_iter([
+                        Value::object(ValueMap::from_iter([
                             (
                                 "embeddings".to_string(),
                                 Value::Array(
@@ -702,9 +702,9 @@ impl RuntimeKernel {
         let failed = |message: &str| {
             let mut result = EffectResult::failed(effect.clone(), message);
             if let Some(key) = &key {
-                result.return_value = Some(Value::Object(ValueMap::from_iter([
-                    ("error".to_string(), Value::String(message.to_string())),
-                    ("key".to_string(), Value::String(key.clone())),
+                result.return_value = Some(Value::object(ValueMap::from_iter([
+                    ("error".to_string(), Value::String(message.to_string().into())),
+                    ("key".to_string(), Value::String(key.clone().into())),
                 ])));
             }
             result
@@ -723,17 +723,17 @@ impl RuntimeKernel {
                     (
                         "hostname".to_string(),
                         Value::String(if pick(PageFactField::Hostname) {
-                            facts.hostname
+                            facts.hostname.into()
                         } else {
-                            String::new()
+                            String::new().into()
                         }),
                     ),
                     (
                         "referrer".to_string(),
                         Value::String(if pick(PageFactField::Referrer) {
-                            facts.referrer
+                            facts.referrer.into()
                         } else {
-                            String::new()
+                            String::new().into()
                         }),
                     ),
                     (
@@ -745,9 +745,9 @@ impl RuntimeKernel {
                     ),
                 ]);
                 if let Some(key) = &key {
-                    payload.insert("key".to_string(), Value::String(key.clone()));
+                    payload.insert("key".to_string(), Value::string(key.clone()));
                 }
-                EffectResult::executed_with_value(effect.clone(), Value::Object(payload))
+                EffectResult::executed_with_value(effect.clone(), Value::object(payload))
             }
             Err(message) => failed(&message),
         }

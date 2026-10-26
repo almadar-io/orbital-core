@@ -31,7 +31,7 @@ use orbital_core_eval::evaluator::context::BindingContext;
 fn binding_tokens(value: &Value, out: &mut std::collections::HashSet<String>) {
     match value {
         Value::String(s) if BindingContext::binding_token_end(s, 0) == Some(s.len()) => {
-            out.insert(s.clone());
+            out.insert(s.clone().into_inner());
         }
         Value::Array(items) => items.iter().for_each(|item| binding_tokens(item, out)),
         Value::Object(map) => map.values().for_each(|item| binding_tokens(item, out)),
@@ -47,7 +47,7 @@ fn leaves_unresolved(
     ctx: &BindingContext,
 ) -> bool {
     match value {
-        Value::String(s) => written.contains(s) && ctx.resolve_binding(s).is_none(),
+        Value::String(s) => written.contains(s.as_str()) && ctx.resolve_binding(s).is_none(),
         Value::Array(items) => items
             .iter()
             .any(|item| leaves_unresolved(item, written, ctx)),
@@ -61,7 +61,7 @@ fn leaves_unresolved(
 fn failure_result(effect: &Effect, failure: AgentPortFailure) -> EffectResult {
     let mut result = EffectResult::failed(effect.clone(), &failure.error);
     if !failure.errors.is_empty() {
-        result.return_value = Some(Value::Array(failure.errors));
+        result.return_value = Some(Value::array(failure.errors));
     }
     result
 }
@@ -187,20 +187,20 @@ impl RuntimeKernel {
                 for (entity_id, state) in instances {
                     let snapshot = self.snapshot_trait(trait_name, entity_id.as_deref());
                     let mut row = ValueMap::default();
-                    row.insert("trait".to_string(), Value::String(trait_name.clone()));
+                    row.insert("trait".to_string(), Value::string(trait_name.clone()));
                     row.insert(
                         "entityId".to_string(),
-                        Value::String(entity_id.map_or_else(|| "singleton".to_string(), |id| crate::process_result::public_entity_id(&id).to_string())),
+                        Value::string(entity_id.map_or_else(|| "singleton".to_string(), |id| crate::process_result::public_entity_id(&id).to_string())),
                     );
-                    row.insert("state".to_string(), Value::String(state));
+                    row.insert("state".to_string(), Value::string(state));
                     row.insert("entity".to_string(), snapshot.entity);
-                    traits.push(Value::Object(row));
+                    traits.push(Value::object(row));
                 }
             }
             let mut state = ValueMap::default();
-            state.insert("orbital".to_string(), Value::String(detail.name));
-            state.insert("traits".to_string(), Value::Array(traits));
-            answer.insert("state".to_string(), Value::Object(state));
+            state.insert("orbital".to_string(), Value::string(detail.name));
+            state.insert("traits".to_string(), Value::array(traits));
+            answer.insert("state".to_string(), Value::object(state));
         }
         if reads.stats {
             let stats = self.stats();
@@ -213,14 +213,14 @@ impl RuntimeKernel {
             ] {
                 counters.insert(name.to_string(), Value::Number(count as f64));
             }
-            answer.insert("stats".to_string(), Value::Object(counters));
+            answer.insert("stats".to_string(), Value::object(counters));
         }
         if let Some(steps) = reads.trace {
             let mut ask = ValueMap::default();
             ask.insert("trace".to_string(), Value::Number(steps as f64));
             let trace = self
                 .io
-                .run("program/inputs", &[Value::Object(ask)])
+                .run("program/inputs", &[Value::object(ask)])
                 .map_err(|failure| AgentPortFailure {
                     error: failure.message,
                     errors: failure.errors,
@@ -270,7 +270,7 @@ impl RuntimeKernel {
         let fetched = self.effect_executor.execute(&fetch, ctx);
         match (&fetched.outcome, fetched.return_value) {
             (EffectOutcome::Executed, Some(Value::Array(rows))) => {
-                EffectResult::executed_with_value(effect.clone(), read_named_result(&entity, rows))
+                EffectResult::executed_with_value(effect.clone(), read_named_result(&entity, rows.into_inner()))
             }
             (EffectOutcome::Executed, _) => EffectResult::failed(
                 effect.clone(),
@@ -305,18 +305,18 @@ impl RuntimeKernel {
                 return EffectResult::executed_with_value(effect.clone(), answer)
             }
             DispatchPlan::Dispatch { input, payload } => vec![
-                Value::String(format!("{}.{}.{}", input.orbital, input.trait_name, input.event)),
+                Value::string(format!("{}.{}.{}", input.orbital, input.trait_name, input.event)),
                 payload,
             ],
             DispatchPlan::Request { payload, options } => {
-                vec![args.first().cloned().unwrap_or(Value::Null), payload, Value::Object(options)]
+                vec![args.first().cloned().unwrap_or(Value::Null), payload, Value::object(options)]
             }
             DispatchPlan::Inbound { name, body, headers } => {
                 let mut ask = ValueMap::default();
-                ask.insert("inbound".to_string(), Value::String(name));
-                ask.insert("body".to_string(), Value::String(body));
-                ask.insert("headers".to_string(), Value::Object(headers));
-                vec![Value::Object(ask)]
+                ask.insert("inbound".to_string(), Value::string(name));
+                ask.insert("body".to_string(), Value::string(body));
+                ask.insert("headers".to_string(), Value::object(headers));
+                vec![Value::object(ask)]
             }
         };
         match self

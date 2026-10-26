@@ -14,12 +14,12 @@ impl Operator for FnOp {
 
         // Parse parameters
         let params = match &args[0] {
-            SExpression::String(name) => vec![name.clone()],
+            SExpression::String(name) => vec![name.to_string()],
             SExpression::Array(arr) => arr
                 .iter()
                 .filter_map(|p| {
                     if let SExpression::String(s) = p {
-                        Some(s.clone())
+                        Some(s.to_string())
                     } else {
                         None
                     }
@@ -223,7 +223,7 @@ impl Operator for BehaviorRefOp {
                 expected:
                     "a behavior specifier (<prefix>/<name>, std/behaviors/<name> or ./<dir>/<name>)"
                         .to_string(),
-                actual: spec,
+                actual: spec.into_inner(),
             })
         })
     }

@@ -173,7 +173,7 @@ fn test(asks: &dyn AdminAsks, catalog: &Catalog, service: &str) -> Result<Value,
 }
 
 fn counts(rotated: &RotateCounts) -> Value {
-    Value::Object(ValueMap::from_iter([
+    Value::object(ValueMap::from_iter([
         ("rotated".to_string(), Value::Number(rotated.rotated as f64)),
         ("alreadyCurrent".to_string(), Value::Number(rotated.already_current as f64)),
         ("unreadable".to_string(), Value::Number(rotated.unreadable as f64)),
@@ -210,14 +210,14 @@ pub fn run(
             require_store(asks, "")?;
             admin::settable(&catalog()?, service()?, env_var()?)?;
             let removed = asks.store_remove(env_var()?).map_err(host)?;
-            Ok(Value::Object(ValueMap::from_iter([("removed".to_string(), Value::Bool(removed))])))
+            Ok(Value::object(ValueMap::from_iter([("removed".to_string(), Value::Bool(removed))])))
         }
         CredentialAdminOp::Test => test(asks, &catalog()?, service()?),
         CredentialAdminOp::Mode => {
             let requested = parsed.mode.as_deref().ok_or_else(|| missing("mode"))?;
             admin::requested_mode(requested)?;
             let now = asks.mode_write(requested).map_err(host)?;
-            Ok(Value::Object(ValueMap::from_iter([("mode".to_string(), Value::String(now))])))
+            Ok(Value::object(ValueMap::from_iter([("mode".to_string(), Value::String(now.into()))])))
         }
         CredentialAdminOp::Rotate => {
             require_store(asks, "")?;
@@ -348,7 +348,7 @@ mod tests {
     }
 
     fn object(pairs: &[(&str, &str)]) -> Value {
-        Value::Object(pairs.iter().map(|(k, v)| (k.to_string(), Value::String(v.to_string()))).collect())
+        Value::Object(pairs.iter().map(|(k, v)| (k.to_string(), Value::string(v.to_string()))).collect())
     }
 
     fn caller(role: Option<&str>) -> ServiceCaller {
@@ -367,7 +367,7 @@ mod tests {
     fn a_set_stores_through_the_host_and_answers_the_masked_tail_only() {
         let host = Host::with_store(true);
         let reply = run_with(&host, CredentialAdminOp::Set, &object(&[("service", "apikeys"), ("envVar", "SALT"), ("value", "salt-value-1111")]), Some("admin")).unwrap();
-        assert_eq!(get(&reply, "last4"), &Value::String("1111".into()));
+        assert_eq!(get(&reply, "last4"), &Value::string("1111"));
         assert!(!format!("{reply:?}").contains("salt-value"));
         assert_eq!(host.store.as_ref().unwrap().borrow().len(), 1);
     }
@@ -402,14 +402,14 @@ mod tests {
     fn list_masks_stored_values_and_reads_the_environment_only_where_the_store_is_silent() {
         let host = Host::with_store(true).env("SALT", "env-salt-0042");
         host.seed("apikeys", "SALT", "stored-salt-9876");
-        let reply = run_with(&host, CredentialAdminOp::List, &Value::Object(ValueMap::default()), None).unwrap();
+        let reply = run_with(&host, CredentialAdminOp::List, &Value::object(ValueMap::default()), None).unwrap();
         let entry = &get(&reply, "entries").as_array().unwrap()[0];
-        assert_eq!(get(entry, "source"), &Value::String("store".into()));
-        assert_eq!(get(entry, "last4"), &Value::String("9876".into()));
+        assert_eq!(get(entry, "source"), &Value::string("store"));
+        assert_eq!(get(entry, "last4"), &Value::string("9876"));
         assert!(!host.asked.borrow().iter().any(|ask| ask == "secret:SALT:-"), "a stored name is not read from the environment");
         let bare = Host::with_store(true).env("SALT", "env-salt-0042");
-        let reply = run_with(&bare, CredentialAdminOp::List, &Value::Object(ValueMap::default()), None).unwrap();
-        assert_eq!(get(&get(&reply, "entries").as_array().unwrap()[0], "last4"), &Value::String("0042".into()));
+        let reply = run_with(&bare, CredentialAdminOp::List, &Value::object(ValueMap::default()), None).unwrap();
+        assert_eq!(get(&get(&reply, "entries").as_array().unwrap()[0], "last4"), &Value::string("0042"));
     }
 
     #[test]
@@ -423,7 +423,7 @@ mod tests {
             "Mocked integrations are not permitted when NODE_ENV=production."
         );
         let reply = run(&managed, CredentialAdminOp::Mode, &object(&[("mode", "real")]), Some(&caller(Some("admin"))), &|| Ok(catalog_of())).unwrap();
-        assert_eq!(get(&reply, "mode"), &Value::String("real".into()));
+        assert_eq!(get(&reply, "mode"), &Value::string("real"));
     }
 
     #[test]

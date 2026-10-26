@@ -121,9 +121,9 @@ impl TraitValueRef {
 
     /// The wire object `{"behavior", "trait"}`.
     pub fn to_value(&self) -> Value {
-        Value::Object(ValueMap::from_iter([
-            ("behavior".to_string(), Value::String(self.behavior.clone())),
-            ("trait".to_string(), Value::String(self.trait_name.clone())),
+        Value::object(ValueMap::from_iter([
+            ("behavior".to_string(), Value::String(self.behavior.clone().into())),
+            ("trait".to_string(), Value::String(self.trait_name.clone().into())),
         ]))
     }
 
@@ -138,8 +138,8 @@ impl TraitValueRef {
             return None;
         };
         (is_behavior_specifier(behavior) && is_pascal(trait_name)).then(|| Self {
-            behavior: behavior.clone(),
-            trait_name: trait_name.clone(),
+            behavior: behavior.clone().into_inner(),
+            trait_name: trait_name.clone().into_inner(),
         })
     }
 }
@@ -204,7 +204,7 @@ fn field_name(field: &Value) -> Option<&str> {
 fn merge_fields_by_name(base: Option<&Value>, next: &[Value]) -> Vec<Value> {
     let mut out = match base {
         Some(Value::Array(items)) => items.clone(),
-        _ => Vec::new(),
+        _ => Vec::new().into(),
     };
     for field in next {
         let at =
@@ -214,7 +214,7 @@ fn merge_fields_by_name(base: Option<&Value>, next: &[Value]) -> Vec<Value> {
             None => out.push(field.clone()),
         }
     }
-    out
+    out.into_inner()
 }
 
 /// `behavior/apply` on a trait value: `config`, `events` and `fields` merge
@@ -228,7 +228,7 @@ pub fn apply_trait_overrides(value: &Value, overrides: &Value) -> Option<Value> 
     let (Value::Object(base), Value::Object(over)) = (value, overrides) else {
         return None;
     };
-    merge_trait_overrides(base, over).map(Value::Object)
+    merge_trait_overrides(base, over).map(Value::object)
 }
 
 /// `behavior/apply` on an orbital value — the §8b merge table: the map keys
@@ -267,7 +267,7 @@ pub fn apply_orbital_overrides(value: &Value, overrides: &Value) -> Option<Value
             };
             out.insert(
                 key.to_string(),
-                Value::Array(merge_fields_by_name(base.get(key), next)),
+                Value::array(merge_fields_by_name(base.get(key), next)),
             );
         }
     }
@@ -282,7 +282,7 @@ pub fn apply_orbital_overrides(value: &Value, overrides: &Value) -> Option<Value
         };
         let mut traits = match base.get("traits") {
             Some(Value::Object(old)) => old.clone(),
-            _ => ValueMap::default(),
+            _ => ValueMap::default().into(),
         };
         for (name, entry) in new_traits {
             let Value::Object(entry) = entry else {
@@ -290,11 +290,11 @@ pub fn apply_orbital_overrides(value: &Value, overrides: &Value) -> Option<Value
             };
             let prior = match traits.get(name) {
                 Some(Value::Object(old)) => old.clone(),
-                _ => ValueMap::default(),
+                _ => ValueMap::default().into(),
             };
             traits.insert(
                 name.clone(),
-                Value::Object(merge_trait_overrides(&prior, entry)?),
+                Value::object(merge_trait_overrides(&prior, entry)?),
             );
         }
         out.insert("traits".to_string(), Value::Object(traits));
@@ -342,9 +342,9 @@ impl OrbitalValueRef {
 
     /// The wire object `{"behavior", "orbital"}`.
     pub fn to_value(&self) -> Value {
-        Value::Object(ValueMap::from_iter([
-            ("behavior".to_string(), Value::String(self.behavior.clone())),
-            ("orbital".to_string(), Value::String(self.orbital.clone())),
+        Value::object(ValueMap::from_iter([
+            ("behavior".to_string(), Value::String(self.behavior.clone().into())),
+            ("orbital".to_string(), Value::String(self.orbital.clone().into())),
         ]))
     }
 
@@ -359,8 +359,8 @@ impl OrbitalValueRef {
             return None;
         };
         (is_behavior_specifier(behavior) && is_pascal(orbital)).then(|| Self {
-            behavior: behavior.clone(),
-            orbital: orbital.clone(),
+            behavior: behavior.clone().into_inner(),
+            orbital: orbital.clone().into_inner(),
         })
     }
 }
@@ -537,9 +537,9 @@ pub fn is_orbital_value(value: &Value) -> bool {
 /// valid specifier, `None` otherwise. Twin of `@almadar/core` `behaviorRef`.
 pub fn behavior_ref(specifier: &str) -> Option<Value> {
     is_behavior_specifier(specifier).then(|| {
-        Value::Object(ValueMap::from_iter([(
+        Value::object(ValueMap::from_iter([(
             "behavior".to_string(),
-            Value::String(specifier.to_string()),
+            Value::String(specifier.to_string().into()),
         )]))
     })
 }
@@ -581,7 +581,7 @@ pub fn apply_behavior_ref_overrides(value: &Value, overrides: &Value) -> Option<
     if over.len() != 1 || !is_bridge(bridge) {
         return None;
     }
-    Some(Value::Object(ValueMap::from_iter([
+    Some(Value::object(ValueMap::from_iter([
         ("behavior".to_string(), value_map.get("behavior")?.clone()),
         ("bridge".to_string(), bridge.clone()),
     ])))

@@ -74,7 +74,7 @@ fn thread_loads(initial_filter_value: &str, active_channel: &str) -> Vec<String>
         })
         .flat_map(|rows| match rows {
             Value::Array(rows) => rows,
-            _ => Vec::new(),
+            _ => Vec::new().into(),
         })
         .filter_map(|row| {
             row.get_path("id")

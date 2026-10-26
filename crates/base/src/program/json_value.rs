@@ -20,7 +20,7 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
                     .unwrap_or(serde_json::Value::Null)
             }
         }
-        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::String(s) => serde_json::Value::String(s.clone().into_inner()),
         Value::Array(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Object(map) => serde_json::Value::Object(
             map.iter()
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn js_json_string_writes_numbers_as_ecmascript() {
-        let value = Value::Array(vec![
+        let value = Value::array(vec![
             Value::Number(1e19),
             Value::Number(1e-6),
             Value::Number(1.0),

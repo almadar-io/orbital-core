@@ -33,7 +33,7 @@ pub fn format_sexpr(expr: &SExpression) -> String {
 
 /// A body that is not JSON (never written by the encoder) prints as its string.
 fn raw_body(body: &str) -> String {
-    format_atom(&SExpression::String(body.to_string()))
+    format_atom(&SExpression::string(body.to_string()))
 }
 
 fn format_template(expr: &SExpression, holes: &[SExpression]) -> String {
@@ -57,7 +57,7 @@ fn format_template(expr: &SExpression, holes: &[SExpression]) -> String {
 fn format_list(items: &[SExpression], each: &dyn Fn(&SExpression) -> String) -> String {
     match items.first() {
         Some(SExpression::String(op)) => {
-            let parts: Vec<String> = std::iter::once(op.clone())
+            let parts: Vec<String> = std::iter::once(op.to_string())
                 .chain(items[1..].iter().map(each))
                 .collect();
             format!("({})", parts.join(" "))
@@ -87,7 +87,7 @@ fn format_atom(expr: &SExpression) -> String {
         SExpression::Null => "null".to_string(),
         SExpression::Bool(b) => b.to_string(),
         SExpression::Number(n) => js_number_string(*n),
-        SExpression::String(s) if s.starts_with('@') => s.clone(),
+        SExpression::String(s) if s.starts_with('@') => s.clone().into_inner(),
         SExpression::String(s) => serde_json::to_string(s).expect("a string always serializes"),
         SExpression::Array(_) | SExpression::Object(_) => format_sexpr(expr),
     }

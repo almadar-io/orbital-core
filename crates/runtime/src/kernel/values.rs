@@ -56,7 +56,7 @@ pub(super) fn value_to_sexpr(value: &Value) -> SExpression {
 /// `persona::identity_roster`, which materializes the same authored `instances`.
 pub(crate) fn sexpr_to_value(sexpr: &SExpression) -> Value {
     match sexpr {
-        SExpression::String(s) => Value::String(s.clone()),
+        SExpression::String(s) => Value::string(s.clone()),
         SExpression::Number(n) => Value::Number(*n),
         SExpression::Bool(b) => Value::Bool(*b),
         SExpression::Null => Value::Null,
@@ -66,7 +66,7 @@ pub(crate) fn sexpr_to_value(sexpr: &SExpression) -> Value {
                 .iter()
                 .map(|(k, v)| (k.clone(), sexpr_to_value(v)))
                 .collect();
-            Value::Object(map)
+            Value::object(map)
         }
     }
 }

@@ -475,7 +475,7 @@ impl EffectExecutor {
                                     .update(
                                         &op.entity,
                                         op.row_id.as_deref().unwrap_or(""),
-                                        &Value::Object(restore),
+                                        &Value::object(restore),
                                     )
                                     .map(|_| ())
                             }

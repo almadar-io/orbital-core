@@ -79,8 +79,8 @@ impl<'a> Cx<'a> {
             .into_iter()
             .map(|(name, kind)| {
                 obj([
-                    ("name", Value::String(name)),
-                    ("kind", Value::String(kind.to_string())),
+                    ("name", Value::string(name)),
+                    ("kind", Value::string(kind.to_string())),
                 ])
             })
             .collect();
@@ -102,7 +102,7 @@ impl<'a> Cx<'a> {
         let found = self.expand(&pattern, true)?;
         Ok(obj([(
             "paths",
-            Value::Array(found.into_iter().map(Value::String).collect()),
+            Value::Array(found.into_iter().map(Value::string).collect()),
         )]))
     }
 
@@ -129,7 +129,7 @@ impl<'a> Cx<'a> {
             .into_iter()
             .filter_map(|p| {
                 let rel = Path::new(&p).strip_prefix(&root).ok()?.to_string_lossy().into_owned();
-                Some(Value::String(if rel.is_empty() { ".".to_string() } else { rel }))
+                Some(Value::string(if rel.is_empty() { ".".to_string() } else { rel }))
             })
             .collect();
         Ok(obj([("paths", Value::Array(relative))]))

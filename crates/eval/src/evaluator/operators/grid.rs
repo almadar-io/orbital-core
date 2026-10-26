@@ -128,7 +128,7 @@ impl Operator for GridNeighborsOp {
             out.push(cell(cx - 1.0, cy + 1.0));
             out.push(cell(cx - 1.0, cy - 1.0));
         }
-        Ok(Value::Array(out))
+        Ok(Value::array(out))
     }
 }
 
@@ -157,7 +157,7 @@ impl Operator for GridCellsInRadiusOp {
             }
             dy += 1;
         }
-        Ok(Value::Array(out))
+        Ok(Value::array(out))
     }
 }
 
@@ -192,7 +192,7 @@ impl Operator for GridLineOp {
                 y0 += sy;
             }
         }
-        Ok(Value::Array(out))
+        Ok(Value::array(out))
     }
 }
 

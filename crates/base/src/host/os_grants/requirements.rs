@@ -179,7 +179,7 @@ pub(super) enum FsTarget {
 pub(super) fn anchored_target(anchor: GrantAnchor, path: Option<&SExpression>, deferred: Deferred) -> FsTarget {
     match path {
         None => FsTarget::AnchoredExact(anchor, String::new()),
-        Some(SExpression::String(p)) if !p.starts_with('@') => FsTarget::AnchoredExact(anchor, p.clone()),
+        Some(SExpression::String(p)) if !p.starts_with('@') => FsTarget::AnchoredExact(anchor, p.clone().into_inner()),
         Some(expr) => {
             let root: String = concat_static_prefix(expr, deferred)
                 .filter(|prefix| !prefix.iter().any(deferred))
@@ -275,11 +275,11 @@ pub(super) fn glob_prefix(glob: &str) -> String {
 pub(super) fn anchored_glob_need(anchor: GrantAnchor, pattern: Option<&SExpression>, deferred: Deferred) -> OsRequirement {
     let written = match pattern {
         Some(SExpression::String(p)) if !p.starts_with('@') => p.clone(),
-        Some(expr) => match anchored_target(anchor.clone(), Some(expr), deferred) {
+        Some(expr) => (match anchored_target(anchor.clone(), Some(expr), deferred) {
             FsTarget::AnchoredTree(_, root) => format!("{root}*"),
             _ => String::new(),
-        },
-        None => String::new(),
+        }).into(),
+        None => String::new().into(),
     };
     let mut segments: Vec<&str> = written.split('/').collect();
     segments.pop();
@@ -311,7 +311,7 @@ pub(super) fn spawn_needs(args: &[SExpression], command: usize, options: usize, 
         Some(Ok(Some((anchor, path)))) => match path {
             None => needs.push(OsRequirement::ExecAnchored { anchor, path: None }),
             Some(SExpression::String(p)) if !p.starts_with('@') => {
-                needs.push(OsRequirement::ExecAnchored { anchor, path: Some(p.clone()) })
+                needs.push(OsRequirement::ExecAnchored { anchor, path: Some(p.clone().into_inner()) })
             }
             Some(_) => return Err(command),
         },
@@ -325,7 +325,7 @@ pub(super) fn spawn_needs(args: &[SExpression], command: usize, options: usize, 
         for (key, value) in option_map {
             match (key.as_str(), value) {
                 ("cwd", SExpression::String(path)) if !path.starts_with('@') => {
-                    needs.push(OsRequirement::Fs { path: path.clone(), mode: FsMode::Read });
+                    needs.push(OsRequirement::Fs { path: path.clone().into_inner(), mode: FsMode::Read });
                 }
                 ("cwd", SExpression::Object(_)) => match anchored_sexpr(value) {
                     Ok(Some((anchor, path))) => {
@@ -481,7 +481,7 @@ pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> R
         match AnchoredPath::from_value(value) {
             Some(anchored) => match unset(&anchored.anchor) {
                 Some(absent) => Err(absent),
-                None => anchors.resolve_path(&anchored).map(|p| Some(Value::String(p))).map_err(refuse),
+                None => anchors.resolve_path(&anchored).map(|p| Some(Value::string(p))).map_err(refuse),
             },
             None => Ok(None),
         }
@@ -517,7 +517,7 @@ pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> R
                 let port: u16 = text.parse().map_err(|_| refuse(format!("the port {text:?} is not a port number")))?;
                 Value::Number(f64::from(port))
             } else {
-                Value::String(text)
+                Value::string(text)
             };
         }
     }

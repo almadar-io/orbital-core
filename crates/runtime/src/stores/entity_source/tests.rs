@@ -6,7 +6,7 @@ fn obj(pairs: &[(&str, Value)]) -> Value {
     for (k, v) in pairs {
         m.insert((*k).to_string(), v.clone());
     }
-    Value::Object(m)
+    Value::object(m)
 }
 
 /// Entities bound to one `persistent:` collection share ONE store (JS
@@ -21,8 +21,8 @@ fn collection_mates_share_one_store() {
         .create(
             "Deal",
             &obj(&[
-                ("id", Value::String("d1".into())),
-                ("owner", Value::String("u1".into())),
+                ("id", Value::string("d1")),
+                ("owner", Value::string("u1")),
             ]),
         )
         .expect("create");
@@ -34,13 +34,13 @@ fn collection_mates_share_one_store() {
             .expect("read")
             .as_object()
             .and_then(|o| o.get("owner")),
-        Some(&Value::String("u1".into()))
+        Some(&Value::string("u1"))
     );
     cache
         .write(
             "PipelineDeal",
             "d1",
-            &obj(&[("stage", Value::String("won".into()))]),
+            &obj(&[("stage", Value::string("won"))]),
         )
         .expect("write");
     assert_eq!(
@@ -49,7 +49,7 @@ fn collection_mates_share_one_store() {
             .expect("read")
             .as_object()
             .and_then(|o| o.get("stage")),
-        Some(&Value::String("won".into()))
+        Some(&Value::string("won"))
     );
     cache.delete("PipelineDeal", "d1").expect("delete");
     assert!(
@@ -63,10 +63,10 @@ fn control_an_unbound_entity_keeps_its_own_store() {
     let cache = InMemoryEntityCache::new();
     cache.bind_collection("Deal", "deals");
     cache
-        .create("Deal", &obj(&[("id", Value::String("d1".into()))]))
+        .create("Deal", &obj(&[("id", Value::string("d1"))]))
         .expect("create");
     cache
-        .create("Note", &obj(&[("id", Value::String("n1".into()))]))
+        .create("Note", &obj(&[("id", Value::string("n1"))]))
         .expect("create");
     assert_eq!(cache.list("Note").expect("list").len(), 1);
     assert_eq!(cache.list("Deal").expect("list").len(), 1);
@@ -85,8 +85,8 @@ fn write_merges_into_existing_record() {
             "BoardView",
             "singleton",
             &obj(&[
-                ("title", Value::String("Activity".to_string())),
-                ("filterKind", Value::String("all".to_string())),
+                ("title", Value::string("Activity")),
+                ("filterKind", Value::string("all")),
             ]),
         )
         .unwrap();
@@ -96,16 +96,16 @@ fn write_merges_into_existing_record() {
         .write(
             "BoardView",
             "singleton",
-            &obj(&[("boards", Value::Array(vec![Value::Number(1.0)]))]),
+            &obj(&[("boards", Value::array(vec![Value::Number(1.0)]))]),
         )
         .unwrap();
 
     let got = cache.read("BoardView", "singleton").unwrap();
     let m = got.as_object().unwrap();
-    assert_eq!(m["boards"], Value::Array(vec![Value::Number(1.0)])); // new field
-    assert_eq!(m["title"], Value::String("Activity".to_string())); // preserved
-    assert_eq!(m["filterKind"], Value::String("all".to_string())); // preserved
-    assert_eq!(m["id"], Value::String("singleton".to_string())); // stamped
+    assert_eq!(m["boards"], Value::array(vec![Value::Number(1.0)])); // new field
+    assert_eq!(m["title"], Value::string("Activity")); // preserved
+    assert_eq!(m["filterKind"], Value::string("all")); // preserved
+    assert_eq!(m["id"], Value::string("singleton")); // stamped
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn write_first_record_inserts() {
     let got = cache.read("E", "singleton").unwrap();
     let m = got.as_object().unwrap();
     assert_eq!(m["a"], Value::Bool(true));
-    assert_eq!(m["id"], Value::String("singleton".to_string()));
+    assert_eq!(m["id"], Value::string("singleton"));
 }
 
 /// Rows list in insertion order, as the JS store's `Map` does: an update keeps
@@ -141,8 +141,8 @@ fn list_keeps_insertion_order_through_update_and_delete() {
     let ids = ["e", "a", "d", "b", "c", "f", "h", "g"];
     for id in ids {
         let mut row = ValueMap::default();
-        row.insert("id".to_string(), Value::String(id.to_string()));
-        cache.create("Item", &Value::Object(row)).unwrap();
+        row.insert("id".to_string(), Value::string(id.to_string()));
+        cache.create("Item", &Value::object(row)).unwrap();
     }
     let listed = |cache: &InMemoryEntityCache| -> Vec<String> {
         cache
@@ -156,7 +156,7 @@ fn list_keeps_insertion_order_through_update_and_delete() {
 
     let mut patch = ValueMap::default();
     patch.insert("n".to_string(), Value::Number(1.0));
-    cache.write("Item", "d", &Value::Object(patch)).unwrap();
+    cache.write("Item", "d", &Value::object(patch)).unwrap();
     cache.delete("Item", "b").unwrap();
     assert_eq!(listed(&cache), ["e", "a", "d", "c", "f", "h", "g"]);
 }
@@ -170,13 +170,13 @@ fn a_refusing_store_fails_a_create_on_a_taken_id() {
         .create(
             "Deal",
             &obj(&[
-                ("id", Value::String("d1".into())),
+                ("id", Value::string("d1")),
                 ("n", Value::Number(1.0)),
             ]),
         )
         .expect("first create");
     let err = cache
-        .create("PipelineDeal", &obj(&[("id", Value::String("d1".into()))]))
+        .create("PipelineDeal", &obj(&[("id", Value::string("d1"))]))
         .expect_err("the id is taken through the collection mate");
     assert!(err.contains("already exists"), "{err}");
     assert_eq!(
@@ -199,7 +199,7 @@ fn control_the_client_cache_merges_a_create_on_a_taken_id() {
         .create(
             "Deal",
             &obj(&[
-                ("id", Value::String("d1".into())),
+                ("id", Value::string("d1")),
                 ("n", Value::Number(1.0)),
             ]),
         )
@@ -208,7 +208,7 @@ fn control_the_client_cache_merges_a_create_on_a_taken_id() {
         .create(
             "Deal",
             &obj(&[
-                ("id", Value::String("d1".into())),
+                ("id", Value::string("d1")),
                 ("m", Value::Number(2.0)),
             ]),
         )
@@ -229,7 +229,7 @@ fn entity_types_names_each_store_once() {
     cache.bind_collection("PipelineDeal", "deals");
     for (entity, id) in [("Deal", "d1"), ("PipelineDeal", "d2"), ("Note", "n1")] {
         cache
-            .create(entity, &obj(&[("id", Value::String(id.into()))]))
+            .create(entity, &obj(&[("id", Value::string(id))]))
             .unwrap();
     }
     let mut types = cache.entity_types();

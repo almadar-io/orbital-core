@@ -35,7 +35,7 @@ fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     for (key, value) in pairs {
         map.insert(key.to_string(), value);
     }
-    Value::Object(map)
+    Value::object(map)
 }
 
 fn num(v: f64) -> Value {
@@ -43,7 +43,7 @@ fn num(v: f64) -> Value {
 }
 
 fn text(v: impl Into<String>) -> Value {
-    Value::String(v.into())
+    Value::string(v.into())
 }
 
 fn round1(v: f64) -> f64 {
@@ -244,7 +244,7 @@ mod procfs {
                 "options".to_string(),
                 Value::Array(parts[3].split(',').map(text).collect()),
             );
-            out.push(Value::Object(mount));
+            out.push(Value::object(mount));
         }
         out
     }
@@ -288,7 +288,7 @@ mod procfs {
             stat.insert("writesCompleted".to_string(), Value::Number(at(7)));
             stat.insert("readBytes".to_string(), Value::Number(at(5) * 512.0));
             stat.insert("writeBytes".to_string(), Value::Number(at(9) * 512.0));
-            out.push(Value::Object(stat));
+            out.push(Value::object(stat));
         }
         out
     }
@@ -312,7 +312,7 @@ mod procfs {
             counters.insert("txPackets".to_string(), Value::Number(at(9)));
             counters.insert("rxErrors".to_string(), Value::Number(at(2)));
             counters.insert("txErrors".to_string(), Value::Number(at(10)));
-            stats.insert(name.to_string(), Value::Object(counters));
+            stats.insert(name.to_string(), Value::object(counters));
         }
         stats
     }
@@ -462,10 +462,10 @@ mod native {
                 ("device", text(field(&entry.f_mntfromname))),
                 ("mountPoint", text(field(&entry.f_mntonname))),
                 ("filesystem", text(fs_type)),
-                ("options", Value::Array(options)),
+                ("options", Value::array(options)),
             ]));
         }
-        Ok(Value::Array(out))
+        Ok(Value::array(out))
     }
 
     struct Seen {

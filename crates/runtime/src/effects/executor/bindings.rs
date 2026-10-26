@@ -51,7 +51,7 @@ impl EffectExecutor {
             Some(expr) => {
                 let sexpr: SExpression = expr.clone().into();
                 match Evaluator::new().evaluate(&sexpr, ctx).map_err(|e| e.to_string())? {
-                    Value::String(s) => Ok(Some(s)),
+                    Value::String(s) => Ok(Some(s.into_inner())),
                     Value::Number(n) if n.fract() == 0.0 => Ok(Some((n as i64).to_string())),
                     other => Err(format!(
                         "fetch id expression resolved to {other:?}, which is not a string or integer"
@@ -103,7 +103,7 @@ impl EffectExecutor {
             Value::Number(n) if n >= 1.0 && n.fract() == 0.0 => n as usize,
             _ => return Err("nearest `k` must be a positive integer".to_string()),
         };
-        Ok(Some(Box::new(RowNearest { field, vector, k })))
+        Ok(Some(Box::new(RowNearest { field: field.into_inner(), vector, k })))
     }
 
     /// A fetch `limit`/`offset`, evaluated at execution; only a positive number applies (as `effect-stage.ts`).

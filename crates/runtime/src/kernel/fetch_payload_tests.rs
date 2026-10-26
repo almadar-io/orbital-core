@@ -97,7 +97,7 @@ fn a_by_id_hit_carries_the_row_itself() {
         Value::Object(m) => m.get("id").cloned(),
         _ => None,
     });
-    assert_eq!(row, Some(Value::String("b".to_string())));
+    assert_eq!(row, Some(Value::string("b")));
     assert_eq!(field(&p, "totalCount"), Some(&Value::Number(1.0)));
 }
 

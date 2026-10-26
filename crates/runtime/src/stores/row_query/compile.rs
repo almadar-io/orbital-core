@@ -127,7 +127,7 @@ pub(super) fn term(value: &Value, ctx: &BindingContext) -> Result<Term, Fail> {
     match value {
         Value::String(s) if s.starts_with('@') => match ctx.resolve_binding(s) {
             Some(resolved) => scalar_const(resolved).map(Term::Const),
-            None => Err(Fail::Unresolved(s.clone())),
+            None => Err(Fail::Unresolved(s.clone().into_inner())),
         },
         Value::String(s) if s.contains('@') => Err(shape("a string with an embedded binding")),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
@@ -150,7 +150,7 @@ pub(super) fn list_of(value: &Value, ctx: &BindingContext) -> Result<Vec<Value>,
         Value::String(s) if s.starts_with('@') => match ctx.resolve_binding(s) {
             Some(Value::Array(items)) => items,
             Some(_) => return Err(shape("the list binding is not a list")),
-            None => return Err(Fail::Unresolved(s.clone())),
+            None => return Err(Fail::Unresolved(s.clone().into_inner())),
         },
         _ => return Err(shape("the list is not a list")),
     };
@@ -159,7 +159,7 @@ pub(super) fn list_of(value: &Value, ctx: &BindingContext) -> Result<Vec<Value>,
         .map(|item| match item {
             Value::String(s) if s.starts_with('@') => match ctx.resolve_binding(s) {
                 Some(v) => scalar_const(v),
-                None => Err(Fail::Unresolved(s.clone())),
+                None => Err(Fail::Unresolved(s.clone().into_inner())),
             },
             Value::String(s) if s.contains('@') => Err(shape("a string with an embedded binding")),
             other => scalar_const(other.clone()),
@@ -372,7 +372,7 @@ pub(super) fn compile_expr(
                         erroring_leaf(&field, required, exact)?;
                         return Ok(RowPredicate::Contains {
                             field,
-                            text,
+                            text: text.into_inner(),
                             case_sensitive: true,
                         });
                     }
@@ -387,7 +387,7 @@ pub(super) fn compile_expr(
                                 }
                                 return Ok(RowPredicate::Contains {
                                     field,
-                                    text,
+                                    text: text.into_inner(),
                                     case_sensitive: false,
                                 });
                             }
@@ -460,19 +460,19 @@ pub fn lower_object_filter(filter: &Value) -> std::borrow::Cow<'_, Value> {
     if map.is_empty() {
         return Cow::Owned(Value::Bool(true));
     }
-    let mut conjunction = vec![Value::String("and".to_string())];
+    let mut conjunction = vec![Value::string("and")];
     for (field, value) in map {
-        conjunction.push(Value::Array(vec![
-            Value::String("=".to_string()),
+        conjunction.push(Value::array(vec![
+            Value::String(("=".to_string()).into()),
             Value::Array(vec![
-                Value::String("object/get".to_string()),
-                Value::String("@entity".to_string()),
-                Value::String(field.clone()),
-            ]),
+                Value::String(("object/get".to_string()).into()),
+                Value::String(("@entity".to_string()).into()),
+                Value::String(field.clone().into()),
+            ].into()),
             value.clone(),
         ]));
     }
-    Cow::Owned(Value::Array(conjunction))
+    Cow::Owned(Value::array(conjunction))
 }
 
 /// The `RowOrder` of a fetch's `(field, descending)` spec.

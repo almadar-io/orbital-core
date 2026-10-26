@@ -22,7 +22,7 @@ fn obj(pairs: &[(&str, Value)]) -> Value {
     for (k, v) in pairs {
         m.insert((*k).to_string(), v.clone());
     }
-    Value::Object(m)
+    Value::object(m)
 }
 
 /// One trait, one transition: stamp the payload's row id onto `@entity`, set a
@@ -116,8 +116,8 @@ fn persist_sees_the_row_id_set_earlier_in_the_same_transition() {
         .create(
             "Policy",
             &obj(&[
-                ("id", Value::String("Policy-1".to_string())),
-                ("status", Value::String("active".to_string())),
+                ("id", Value::string("Policy-1")),
+                ("status", Value::string("active")),
             ]),
         )
         .unwrap();
@@ -128,7 +128,7 @@ fn persist_sees_the_row_id_set_earlier_in_the_same_transition() {
             "PolicyManage",
             Some("singleton"),
             "ARCHIVE",
-            obj(&[("id", Value::String("Policy-1".to_string()))]),
+            obj(&[("id", Value::string("Policy-1"))]),
         )
         .unwrap();
     assert!(result.executed, "the transition must fire");
@@ -149,7 +149,7 @@ fn persist_sees_the_row_id_set_earlier_in_the_same_transition() {
     let fields = row.as_object().expect("the row must still exist");
     assert_eq!(
         fields.get("status"),
-        Some(&Value::String("archived".to_string())),
+        Some(&Value::string("archived")),
         "the update must have landed on the payload's row"
     );
 }
@@ -164,7 +164,7 @@ fn a_set_value_reads_a_field_set_earlier_in_the_same_transition() {
             "PolicyManage",
             Some("singleton"),
             "ARCHIVE",
-            Value::Object(ValueMap::new()),
+            Value::object(ValueMap::new()),
         )
         .unwrap();
     assert!(result.executed);
@@ -180,7 +180,7 @@ fn a_set_value_reads_a_field_set_earlier_in_the_same_transition() {
         .expect("the mirroring set must be reported");
     assert_eq!(
         mirror,
-        Value::String("archived".to_string()),
+        Value::string("archived"),
         "`@entity.status` must resolve to the value set one effect earlier"
     );
 }

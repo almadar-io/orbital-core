@@ -20,7 +20,7 @@ pub(super) fn config_defaults_value<T: std::borrow::Borrow<TraitDefinition>>(
         }
     }
     resolve_config_forwards(&mut map, all_traits);
-    Value::Object(map)
+    Value::object(map)
 }
 
 /// A config value that is exactly a `@user.<path>` binding reads the viewer one hop; a field the viewer
@@ -44,7 +44,7 @@ pub(super) fn bind_user_forwards(config: Value, user: &Value) -> Value {
         }
         *value = match user.get_path(path) {
             Some(read @ (Value::String(_) | Value::Number(_) | Value::Bool(_))) => read.clone(),
-            _ => Value::String(String::new()),
+            _ => Value::string(String::new()),
         };
     }
     Value::Object(map)

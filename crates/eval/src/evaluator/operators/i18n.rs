@@ -22,7 +22,7 @@ impl Operator for I18nTOp {
                 }
             }
         }
-        Ok(Value::String(out))
+        Ok(Value::string(out))
     }
 }
 
@@ -37,7 +37,7 @@ mod tests {
 
     fn ctx(locale: &str, messages: &[(&str, &str)]) -> crate::evaluator::context::BindingContext {
         BindingContextBuilder::new()
-            .locale(Value::String(locale.into()))
+            .locale(Value::string(locale))
             .messages(
                 messages
                     .iter()
@@ -55,7 +55,7 @@ mod tests {
     fn resolves_the_active_locales_message() {
         let c = ctx("ar", &[("home:hero.title", "مرحبا")]);
         let v = eval_expr(&call(serde_json::json!(["i18n/t", "home:hero.title"])), &c).unwrap();
-        assert_eq!(v, Value::String("مرحبا".into()));
+        assert_eq!(v, Value::string("مرحبا"));
     }
 
     #[test]
@@ -66,14 +66,14 @@ mod tests {
             &c,
         )
         .unwrap();
-        assert_eq!(v, Value::String("3 posts by Osama".into()));
+        assert_eq!(v, Value::string("3 posts by Osama"));
     }
 
     #[test]
     fn control_another_locales_catalog_gives_another_message() {
         let en = ctx("en", &[("home:hero.title", "Hello")]);
         let v = eval_expr(&call(serde_json::json!(["i18n/t", "home:hero.title"])), &en).unwrap();
-        assert_eq!(v, Value::String("Hello".into()));
+        assert_eq!(v, Value::string("Hello"));
     }
 
     #[test]
@@ -87,6 +87,6 @@ mod tests {
     fn the_locale_binding_reads_the_active_locale() {
         let c = ctx("sl", &[]);
         let v = eval_expr(&call(serde_json::json!("@locale")), &c).unwrap();
-        assert_eq!(v, Value::String("sl".into()));
+        assert_eq!(v, Value::string("sl"));
     }
 }

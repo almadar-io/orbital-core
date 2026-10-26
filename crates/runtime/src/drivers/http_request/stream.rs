@@ -4,9 +4,9 @@ use super::*;
 
 pub(super) fn stream_event(data: String, event: Option<String>, id: Option<String>) -> Value {
     object(vec![
-        ("data", Value::String(data)),
-        ("event", event.map_or(Value::Null, Value::String)),
-        ("id", id.map_or(Value::Null, Value::String)),
+        ("data", Value::string(data)),
+        ("event", event.map_or(Value::Null, Value::string)),
+        ("id", id.map_or(Value::Null, Value::string)),
     ])
 }
 

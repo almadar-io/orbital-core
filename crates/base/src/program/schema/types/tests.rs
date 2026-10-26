@@ -370,7 +370,7 @@ fn config_field_default_null_round_trips_as_some_null_not_none() {
         nullable: None,
         additional_properties: None,
         field_type: "trait".to_string(),
-        default: Some(SExpression::String("@trait.DefaultForm".to_string())),
+        default: Some(SExpression::string("@trait.DefaultForm")),
         label: None,
         description: None,
         synonyms: None,
@@ -398,7 +398,7 @@ fn config_field_default_null_round_trips_as_some_null_not_none() {
     for (field, expected) in [
         (
             bound,
-            Some(SExpression::String("@trait.DefaultForm".to_string())),
+            Some(SExpression::string("@trait.DefaultForm")),
         ),
         (unbound, Some(SExpression::Null)),
         (no_default, None),
@@ -446,7 +446,7 @@ fn retag_callsite_payload_keeps_local_field_as_payload() {
     let mut e = SExpression::Object(
         [(
             "entity".to_string(),
-            SExpression::String("@callsitePayload.data".to_string()),
+            SExpression::string("@callsitePayload.data"),
         )]
         .into_iter()
         .collect(),
@@ -455,7 +455,7 @@ fn retag_callsite_payload_keeps_local_field_as_payload() {
     if let SExpression::Object(m) = &e {
         assert_eq!(
             m["entity"],
-            SExpression::String("@payload.data".to_string())
+            SExpression::string("@payload.data")
         );
     } else {
         panic!("shape changed");
@@ -468,25 +468,25 @@ fn retag_callsite_payload_captures_nonlocal_field() {
     // INIT {}) → the field must come from the composing event → capture.
     // Preserves the legit `content={?error}` embed case.
     let local: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut e = SExpression::String("@payload.error".to_string());
+    let mut e = SExpression::string("@payload.error");
     retag_callsite_payload(&mut e, &local);
-    assert_eq!(e, SExpression::String("@callsitePayload.error".to_string()));
+    assert_eq!(e, SExpression::string("@callsitePayload.error"));
     // idempotent + source-agnostic: an already-captured token stays captured.
     retag_callsite_payload(&mut e, &local);
-    assert_eq!(e, SExpression::String("@callsitePayload.error".to_string()));
+    assert_eq!(e, SExpression::string("@callsitePayload.error"));
 }
 
 #[test]
 fn retag_callsite_payload_uses_field_head_for_dotted_and_indexed_paths() {
     let local: std::collections::HashSet<String> = ["row".to_string()].into_iter().collect();
-    let mut dotted = SExpression::String("@callsitePayload.row.name".to_string());
+    let mut dotted = SExpression::string("@callsitePayload.row.name");
     retag_callsite_payload(&mut dotted, &local);
-    assert_eq!(dotted, SExpression::String("@payload.row.name".to_string()));
-    let mut indexed = SExpression::String("@payload.data[0].id".to_string());
+    assert_eq!(dotted, SExpression::string("@payload.row.name"));
+    let mut indexed = SExpression::string("@payload.data[0].id");
     retag_callsite_payload(&mut indexed, &local); // data not local → capture
     assert_eq!(
         indexed,
-        SExpression::String("@callsitePayload.data[0].id".to_string())
+        SExpression::string("@callsitePayload.data[0].id")
     );
 }
 

@@ -149,7 +149,7 @@ fn binding_path_every_case_evaluates_as_the_fixture_says() {
     let f = path_fixture();
     let c = path_ctx(&f);
     for case in &f.cases {
-        let expr = SExpression::String(case.binding.clone());
+        let expr = SExpression::string(case.binding.clone());
         let got = eval_expr(&expr, &c).unwrap();
         let want = if case.found {
             serde_json::from_value(case.value.clone().unwrap()).unwrap()

@@ -106,7 +106,7 @@ pub(super) fn exec(
             yes.conds.push(cond.clone());
             let mut no = path;
             no.conds.push(SExpression::Array(vec![
-                SExpression::String("not".to_string()),
+                SExpression::string("not"),
                 cond,
             ]));
             let (then, otherwise): (&[SExpression], &[SExpression]) = if head == "if" {
@@ -236,11 +236,11 @@ pub(super) fn exec(
                     let id = id.or_else(|| match &data {
                         Data::Fields(m) => m.get("id").cloned(),
                         Data::Whole(SExpression::String(b)) if b.starts_with('@') => {
-                            Some(SExpression::String(format!("{b}.id")))
+                            Some(SExpression::string(format!("{b}.id")))
                         }
                         Data::Merge(b, over) => over.get("id").cloned().or_else(|| match b {
                             SExpression::String(b) if b.starts_with('@') => {
-                                Some(SExpression::String(format!("{b}.id")))
+                                Some(SExpression::string(format!("{b}.id")))
                             }
                             _ => None,
                         }),
@@ -334,11 +334,11 @@ pub(super) fn target_entity(td: &TraitDefinition, expr: &SExpression) -> Option<
         return None;
     };
     if !s.starts_with('@') {
-        return Some(s.clone());
+        return Some(s.clone().into_inner());
     }
     let knob = s.strip_prefix("@config.")?;
     match td.config.as_ref()?.get(knob)?.default.as_ref()? {
-        SExpression::String(v) if !v.starts_with('@') => Some(v.clone()),
+        SExpression::String(v) if !v.starts_with('@') => Some(v.clone().into_inner()),
         _ => None,
     }
 }

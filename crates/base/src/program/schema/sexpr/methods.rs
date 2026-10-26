@@ -3,6 +3,10 @@
 use super::*;
 
 impl SExpression {
+    pub fn string(text: impl Into<crate::value::Shared<String>>) -> SExpression {
+        SExpression::String(text.into())
+    }
+
     /// A rewrite of the tree without recursion, so its depth is bounded by the heap, not the thread stack: `enter`
     /// runs on every node in pre-order, `exit` on every descended node once its children are rewritten, in the order
     /// a recursive walk visits them (the first error is the one a recursive walk would raise).
@@ -69,7 +73,7 @@ impl SExpression {
             SExpression::Number(n) => serde_json::Number::from_f64(*n)
                 .map(serde_json::Value::Number)
                 .unwrap_or(serde_json::Value::Null),
-            SExpression::String(s) => serde_json::Value::String(s.clone()),
+            SExpression::String(s) => serde_json::Value::String(s.clone().into_inner()),
             SExpression::Array(items) => {
                 serde_json::Value::Array(items.iter().map(Self::to_canonical_json).collect())
             }

@@ -475,7 +475,7 @@ fn object(pairs: Vec<(&str, Value)>) -> Value {
 }
 
 fn text(value: &str) -> Value {
-    Value::String(value.to_string())
+    Value::string(value.to_string())
 }
 
 /// The environment names `list_report` will read, in the order it reads them: a declared credential no stored row
@@ -532,14 +532,14 @@ pub fn list_report(catalog: &Catalog, filter: Option<&str>, facts: &ListFacts<'_
             };
             configured.push((format!("{service}\u{0}{}", d.env_var), source != "none"));
             entries.push(object(vec![
-                ("id", Value::String(format!("{service}/{}", d.env_var))),
+                ("id", Value::string(format!("{service}/{}", d.env_var))),
                 ("service", text(service)),
                 ("envVar", text(&d.env_var)),
                 ("required", Value::Bool(d.required)),
                 ("description", text(&d.description)),
                 ("configured", Value::Bool(source != "none")),
                 ("source", text(source)),
-                ("last4", Value::String(last4)),
+                ("last4", Value::string(last4)),
             ]));
         }
     }
@@ -548,7 +548,7 @@ pub fn list_report(catalog: &Catalog, filter: Option<&str>, facts: &ListFacts<'_
             continue;
         }
         entries.push(object(vec![
-            ("id", Value::String(format!("{}/{}", entry.service, entry.env_var))),
+            ("id", Value::string(format!("{}/{}", entry.service, entry.env_var))),
             ("service", text(&entry.service)),
             ("envVar", text(&entry.env_var)),
             ("required", Value::Bool(false)),
@@ -600,14 +600,14 @@ pub fn list_report(catalog: &Catalog, filter: Option<&str>, facts: &ListFacts<'_
             ("mocked", Value::Bool(mocked)),
             ("status", text(status)),
             ("backend", text(catalog.backend_of(service))),
-            ("needs", Value::String(needs)),
+            ("needs", Value::string(needs)),
         ]));
     }
     object(vec![
         ("enabled", Value::Bool(facts.store.is_some_and(|s| s.enabled))),
         ("mode", text(mode_name(facts.mock))),
-        ("services", Value::Array(services)),
-        ("entries", Value::Array(entries)),
+        ("services", Value::array(services)),
+        ("entries", Value::array(entries)),
     ])
 }
 
@@ -665,10 +665,10 @@ pub fn test_report(catalog: &Catalog, service: &str, resolves: &dyn Fn(&str) -> 
     object(vec![
         ("service", text(service)),
         ("configured", Value::Bool(configured)),
-        ("missing", Value::Array(missing.into_iter().map(Value::String).collect())),
+        ("missing", Value::Array(missing.into_iter().map(Value::string).collect())),
         ("probed", Value::Bool(false)),
         ("ok", Value::Bool(configured)),
-        ("message", Value::String(message)),
+        ("message", Value::string(message)),
     ])
 }
 
@@ -678,7 +678,7 @@ pub fn saved_report(service: &str, env_var: &str, value: &str) -> Value {
         ("saved", Value::Bool(true)),
         ("service", text(service)),
         ("envVar", text(env_var)),
-        ("last4", Value::String(last4(value))),
+        ("last4", Value::string(last4(value))),
     ])
 }
 
@@ -738,7 +738,7 @@ mod tests {
     fn a_request_is_checked_against_its_closed_string_contract() {
         let ok = parse_request(
             CredentialAdminOp::Set,
-            &Value::Object(ValueMap::from_iter([
+            &Value::object(ValueMap::from_iter([
                 ("service".into(), text("apikeys")),
                 ("envVar".into(), text("SALT")),
                 ("value".into(), text("v")),
@@ -746,19 +746,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ok.env_var.as_deref(), Some("SALT"));
-        let missing = parse_request(CredentialAdminOp::Set, &Value::Object(ValueMap::from_iter([("service".into(), text("a"))]))).unwrap_err();
+        let missing = parse_request(CredentialAdminOp::Set, &Value::object(ValueMap::from_iter([("service".into(), text("a"))]))).unwrap_err();
         assert_eq!(
             missing.message,
             "Validation failed for credential-set: envVar: Missing required parameter: envVar; value: Missing required parameter: value"
         );
         assert_eq!(missing.code, Some(VALIDATION_CODE));
-        let typed = parse_request(CredentialAdminOp::Test, &Value::Object(ValueMap::from_iter([("service".into(), Value::Number(5.0))]))).unwrap_err();
+        let typed = parse_request(CredentialAdminOp::Test, &Value::object(ValueMap::from_iter([("service".into(), Value::Number(5.0))]))).unwrap_err();
         assert_eq!(typed.message, "Validation failed for credential-test: service: Expected string, got number");
-        let extra = parse_request(CredentialAdminOp::List, &Value::Object(ValueMap::from_iter([("extra".into(), Value::Bool(true))]))).unwrap_err();
+        let extra = parse_request(CredentialAdminOp::List, &Value::object(ValueMap::from_iter([("extra".into(), Value::Bool(true))]))).unwrap_err();
         assert_eq!(extra.message, "Validation failed for credential-list: extra: Unknown parameter: extra (declared: service)");
         assert!(parse_request(CredentialAdminOp::Rotate, &Value::Null).is_ok());
-        assert!(parse_request(CredentialAdminOp::Rotate, &Value::Object(ValueMap::from_iter([("force".into(), Value::Bool(true))]))).is_err());
-        assert!(parse_request(CredentialAdminOp::List, &Value::String("x".into())).is_err());
+        assert!(parse_request(CredentialAdminOp::Rotate, &Value::object(ValueMap::from_iter([("force".into(), Value::Bool(true))]))).is_err());
+        assert!(parse_request(CredentialAdminOp::List, &Value::string("x")).is_err());
     }
 
     #[test]
@@ -835,7 +835,7 @@ mod tests {
         assert_eq!(last4("ab"), "ab");
         assert_eq!(last4(""), "");
         let report = saved_report("apikeys", "SALT", "secret-value-9876");
-        assert_eq!(field(&report, "last4"), &Value::String("9876".into()));
+        assert_eq!(field(&report, "last4"), &Value::string("9876"));
         assert!(!format!("{report:?}").contains("secret-value"));
     }
 
@@ -852,19 +852,19 @@ mod tests {
         let env = |name: &str| (name == "Q_A").then(|| "env-value-0042".to_string());
         let report = list_report(&catalog, None, &facts(Some(&store), &env));
         let entries = field(&report, "entries").as_array().unwrap();
-        let by_id = |id: &str| entries.iter().find(|e| field(e, "id") == &Value::String(id.into())).unwrap();
-        assert_eq!(field(by_id("apikeys/SALT"), "source"), &Value::String("store".into()));
-        assert_eq!(field(by_id("apikeys/SALT"), "last4"), &Value::String("1234".into()));
-        assert_eq!(field(by_id("queue/Q_A"), "source"), &Value::String("env".into()));
-        assert_eq!(field(by_id("queue/Q_A"), "last4"), &Value::String("0042".into()));
-        assert_eq!(field(by_id("queue/Q_B"), "source"), &Value::String("none".into()));
-        assert_eq!(field(by_id("database/ORDERS_DB_URL"), "description"), &Value::String("Stored connection reference".into()));
+        let by_id = |id: &str| entries.iter().find(|e| field(e, "id") == &Value::string(id)).unwrap();
+        assert_eq!(field(by_id("apikeys/SALT"), "source"), &Value::string("store"));
+        assert_eq!(field(by_id("apikeys/SALT"), "last4"), &Value::string("1234"));
+        assert_eq!(field(by_id("queue/Q_A"), "source"), &Value::string("env"));
+        assert_eq!(field(by_id("queue/Q_A"), "last4"), &Value::string("0042"));
+        assert_eq!(field(by_id("queue/Q_B"), "source"), &Value::string("none"));
+        assert_eq!(field(by_id("database/ORDERS_DB_URL"), "description"), &Value::string("Stored connection reference"));
         assert_eq!(field(&report, "enabled"), &Value::Bool(true));
         let hidden = list_report(&catalog, Some("queue"), &ListFacts { store: Some(&store), store_first: true, env: &env, mock: false });
-        assert_eq!(field(&hidden.get_path("entries").unwrap().as_array().unwrap()[0], "source"), &Value::String("none".into()));
+        assert_eq!(field(&hidden.get_path("entries").unwrap().as_array().unwrap()[0], "source"), &Value::string("none"));
         let none = list_report(&catalog, None, &facts(None, &no_env));
         assert_eq!(field(&none, "enabled"), &Value::Bool(false));
-        assert!(none.get_path("entries").unwrap().as_array().unwrap().iter().all(|e| field(e, "source") == &Value::String("none".into())));
+        assert!(none.get_path("entries").unwrap().as_array().unwrap().iter().all(|e| field(e, "source") == &Value::string("none")));
     }
 
     #[test]
@@ -872,21 +872,21 @@ mod tests {
         let catalog = catalog();
         let status = |report: &Value, id: &str| {
             let rows = field(report, "services").as_array().unwrap().clone();
-            let row = rows.into_iter().find(|r| field(r, "id") == &Value::String(id.into())).unwrap();
+            let row = rows.into_iter().find(|r| field(r, "id") == &Value::string(id)).unwrap();
             (field(&row, "status").clone(), field(&row, "needs").clone())
         };
         let store = StoreView { enabled: true, entries: vec![StoredEntry { service: "apikeys".into(), env_var: "SALT".into(), last4: "1234".into() }] };
         let report = list_report(&catalog, None, &facts(Some(&store), &no_env));
-        assert_eq!(status(&report, "apikeys"), (Value::String("real".into()), Value::String(String::new())));
-        assert_eq!(status(&report, "queue"), (Value::String("not configured".into()), Value::String("one of Q_A / Q_B".into())));
-        assert_eq!(status(&report, "hosting").0, Value::String("not configured".into()), "nothing declared, nothing to be configured");
+        assert_eq!(status(&report, "apikeys"), (Value::string("real"), Value::string(String::new())));
+        assert_eq!(status(&report, "queue"), (Value::string("not configured"), Value::string("one of Q_A / Q_B")));
+        assert_eq!(status(&report, "hosting").0, Value::string("not configured"), "nothing declared, nothing to be configured");
         let queue_env = |name: &str| (name == "Q_B").then(|| "x".to_string());
-        assert_eq!(status(&list_report(&catalog, None, &facts(Some(&store), &queue_env)), "queue").0, Value::String("real".into()));
+        assert_eq!(status(&list_report(&catalog, None, &facts(Some(&store), &queue_env)), "queue").0, Value::string("real"));
         let missing = list_report(&catalog, None, &facts(None, &no_env));
-        assert_eq!(status(&missing, "apikeys"), (Value::String("not configured".into()), Value::String("SALT".into())));
+        assert_eq!(status(&missing, "apikeys"), (Value::string("not configured"), Value::string("SALT")));
         let mock = list_report(&catalog, None, &ListFacts { store: Some(&store), store_first: false, env: &no_env, mock: true });
-        assert_eq!(status(&mock, "apikeys").0, Value::String("mocked".into()));
-        assert_eq!(status(&mock, "queue").0, Value::String("not configured".into()), "an unconfigured service is never mocked");
+        assert_eq!(status(&mock, "apikeys").0, Value::string("mocked"));
+        assert_eq!(status(&mock, "queue").0, Value::string("not configured"), "an unconfigured service is never mocked");
         assert!(list_report(&catalog, Some("knowledge"), &facts(None, &no_env)).get_path("services").and_then(|v| v.as_array().map(Vec::is_empty)).unwrap_or(false), "knowledge is no listed service");
     }
 
@@ -897,8 +897,8 @@ mod tests {
         assert_eq!(field(&present, "ok"), &Value::Bool(true));
         assert_eq!(field(&present, "probed"), &Value::Bool(false));
         let absent = test_report(&catalog, "apikeys", &|_| false);
-        assert_eq!(field(&absent, "message"), &Value::String("Missing required credentials: SALT".into()));
-        assert_eq!(field(&absent, "missing"), &Value::Array(vec![Value::String("SALT".into())]));
+        assert_eq!(field(&absent, "message"), &Value::string("Missing required credentials: SALT"));
+        assert_eq!(field(&absent, "missing"), &Value::array(vec![Value::String("SALT".into())]));
         let unknown = test_report(&catalog, "nonexistent", &|_| false);
         assert_eq!(field(&unknown, "ok"), &Value::Bool(true));
     }
@@ -914,11 +914,11 @@ mod tests {
         assert!(test_subjects(&catalog, "nothing-declared").is_empty());
         let none = test_report(&catalog, "MailOrbital", &|_| false);
         assert_eq!(field(&none, "ok"), &Value::Bool(false));
-        assert_eq!(field(&none, "message"), &Value::String("None of the declared credentials is set: RESEND, SENDGRID".into()));
-        assert_eq!(field(&none, "missing"), &Value::Array(vec![Value::String("RESEND".into()), Value::String("SENDGRID".into())]));
+        assert_eq!(field(&none, "message"), &Value::string("None of the declared credentials is set: RESEND, SENDGRID"));
+        assert_eq!(field(&none, "missing"), &Value::array(vec![Value::String("RESEND".into()), Value::String("SENDGRID".into())]));
         let one = test_report(&catalog, "MailOrbital", &|name| name == "SENDGRID");
         assert_eq!(field(&one, "ok"), &Value::Bool(true));
-        assert_eq!(field(&one, "missing"), &Value::Array(Vec::new()));
+        assert_eq!(field(&one, "missing"), &Value::array(Vec::new()));
         assert_eq!(field(&test_report(&catalog, "nothing-declared", &|_| false), "ok"), &Value::Bool(true));
     }
 

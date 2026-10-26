@@ -46,7 +46,7 @@ impl EffectExecutor {
         let lambda = guard.as_array().filter(|items| items.len() == 3 && items[0].as_str() == Some("fn"));
         let (param, body) = match lambda {
             Some(items) => match (&items[1], &items[2]) {
-                (Value::String(param), body) => (param.clone(), body),
+                (Value::String(param), body) => (param.to_string(), body),
                 (Value::Array(params), body) if params.len() == 1 && params[0].as_str().is_some() => {
                     (params[0].as_str().unwrap_or_default().to_string(), body)
                 }
@@ -166,7 +166,7 @@ impl EffectExecutor {
                 for (field, value) in data.as_object().cloned().unwrap_or_default() {
                     merged.insert(field, value);
                 }
-                let computed = apply_derived(&scope.derived, &Value::Object(merged), ctx, operation, entity_type)
+                let computed = apply_derived(&scope.derived, &Value::object(merged), ctx, operation, entity_type)
                     .map_err(|f| DerivedFault::Failed(f.0))?;
                 let mut patch = data.as_object().cloned().unwrap_or_default();
                 for (name, _) in &scope.derived {
@@ -175,7 +175,7 @@ impl EffectExecutor {
                     }
                 }
                 view.insert(key, Some(computed));
-                Ok(Value::Object(patch))
+                Ok(Value::object(patch))
             }
             PersistOperation::Delete => {
                 if let Ok(entity_id) = self.resolve_id(id, ctx) {
@@ -466,7 +466,7 @@ impl EffectExecutor {
             row.insert("createdAt".to_string(), created_at.clone());
         }
         persistence.delete(entity_type, id)?;
-        persistence.create(entity_type, &Value::Object(row))
+        persistence.create(entity_type, &Value::object(row))
     }
 
     /// One persist whose `data` is already evaluated: the access-policy gate,

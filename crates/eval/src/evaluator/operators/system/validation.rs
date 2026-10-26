@@ -376,7 +376,7 @@ pub(super) fn rule_list(field: &str, list: Vec<Value>) -> Result<FieldRules, Orb
             Value::Array(parts) => {
                 let mut parts = parts.into_iter();
                 match parts.next() {
-                    Some(Value::String(name)) => Ok((name, parts.collect())),
+                    Some(Value::String(name)) => Ok((name.into_inner(), parts.collect())),
                     _ => Err(broken("a list without a rule name")),
                 }
             }
@@ -409,7 +409,7 @@ pub(super) fn rules_by_field(expr: &SExpression, ctx: &BindingContext) -> Result
                             for part in &parts[1..] {
                                 out.push(eval_expr(part, ctx)?);
                             }
-                            Ok(Value::Array(out))
+                            Ok(Value::array(out))
                         }
                         _ => Ok(Value::Null),
                     })
@@ -422,7 +422,7 @@ pub(super) fn rules_by_field(expr: &SExpression, ctx: &BindingContext) -> Result
         Value::Object(fields) => fields
             .into_iter()
             .map(|(field, list)| match list {
-                Value::Array(rules) => Ok((field.clone(), rule_list(&field, rules)?)),
+                Value::Array(rules) => Ok((field.clone(), rule_list(&field, rules.into_inner())?)),
                 other => Err(mismatch(other.type_name())),
             })
             .collect(),
@@ -433,7 +433,7 @@ pub(super) fn rules_by_field(expr: &SExpression, ctx: &BindingContext) -> Result
 
 pub(super) fn eval_literal_head(head: &SExpression) -> Value {
     match head {
-        SExpression::String(name) => Value::String(name.clone()),
+        SExpression::String(name) => Value::string(name.clone()),
         _ => Value::Null,
     }
 }
@@ -490,14 +490,14 @@ impl Operator for ValidateCheckOp {
                 .unwrap_or(Value::Null);
             for (name, rule_args) in rules {
                 if rule_holds(&name, &field_value, &rule_args)? == Some(false) {
-                    errors.push(Value::String(format!("{field}: {name} validation failed")));
+                    errors.push(Value::string(format!("{field}: {name} validation failed")));
                 }
             }
         }
         let mut out = ValueMap::default();
         out.insert("valid".to_string(), Value::Bool(errors.is_empty()));
-        out.insert("errors".to_string(), Value::Array(errors));
-        Ok(Value::Object(out))
+        out.insert("errors".to_string(), Value::array(errors));
+        Ok(Value::object(out))
     }
 }
 

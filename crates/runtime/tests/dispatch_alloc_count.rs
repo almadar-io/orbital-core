@@ -109,6 +109,18 @@ fn schema() -> OrbitalSchema {
     .unwrap()
 }
 
+/// A value rebuilt list by list and record by record: what one copy of it costs, now that a clone shares.
+fn deep_copy(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::array(items.iter().map(deep_copy).collect::<Vec<_>>()),
+        Value::Object(fields) => Value::object(
+            fields.iter().map(|(k, v)| (k.clone(), deep_copy(v))).collect::<orbital_core_base::value::ValueMap>(),
+        ),
+        Value::String(text) => Value::string(text.as_str()),
+        other => other.clone(),
+    }
+}
+
 fn count<R>(f: impl FnOnce() -> R) -> (usize, R) {
     let before = ALLOCS.load(Ordering::SeqCst);
     let r = f();
@@ -146,7 +158,8 @@ fn search_dispatch_allocation_count_is_pinned() {
 }
 
 // 1405 (was 1510): a step binds `@entity` as the kernel holds it and a `set` writes one field (G-ORBITAL-CORE-049, 2026-10-25).
-const PINNED_SEARCH: usize = 1405;
+// 985: copy-on-write `Value` and `SExpression` strings, lists and maps (P-014, 2026-10-26).
+const PINNED_SEARCH: usize = 985;
 
 fn fetch_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
@@ -204,7 +217,8 @@ fn fetch_dispatch_allocation_count_is_pinned() {
 
 // 746 (was 1258): a dispatch clones the kernel's one `prob/*` seed source instead of building one (G-ORBITAL-CORE-029, 2026-10-18).
 // 738: G-ORBITAL-CORE-049, 2026-10-25; +1 the seed's shared payload `Arc`, which spares every step a deep copy.
-const PINNED_FETCH: usize = 738;
+// 201: copy-on-write `Value` and `SExpression` strings, lists and maps (P-014, 2026-10-26).
+const PINNED_FETCH: usize = 201;
 
 #[test]
 fn read_access_allocation_count_is_pinned() {
@@ -250,7 +264,8 @@ fn read_access_allocation_count_is_pinned() {
     );
 }
 
-const PINNED_READ_ACCESS: usize = 969;
+// 683: copy-on-write `Value` and `SExpression` strings, lists and maps (P-014, 2026-10-26).
+const PINNED_READ_ACCESS: usize = 683;
 
 const REPLAY_ROWS: usize = 1000;
 const REPLAY_WRITES: usize = 6;
@@ -331,7 +346,8 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
 // 174201 (was 331144): each suspension records the transition its step committed (two names and a box, G-CROSS-259), and a dispatch
 // clones the kernel's one `prob/*` seed source (G-ORBITAL-CORE-029), 2026-10-18.
 // 174041: G-ORBITAL-CORE-049, 2026-10-25; +1 the seed's shared payload `Arc`, which spares every step a deep copy.
-const PINNED_REPLAY: usize = 174041;
+// 11189: copy-on-write `Value` and `SExpression` strings, lists and maps (P-014, 2026-10-26).
+const PINNED_REPLAY: usize = 11189;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)
@@ -665,7 +681,7 @@ fn reading_one_key_of_a_bound_map_does_not_copy_the_map() {
     let small = map_of(2, 4);
     let as_value = serde_json::from_value::<Value>(large.clone()).unwrap();
     let before = BYTES.load(Ordering::SeqCst);
-    let copy = as_value.clone();
+    let copy = deep_copy(&as_value);
     let one_copy = BYTES.load(Ordering::SeqCst) - before;
     drop(copy);
     for through_let in [false, true] {
@@ -724,7 +740,7 @@ fn reading_part_of_a_bound_list_or_map_does_not_copy_it() {
     let one_copy = |value: &serde_json::Value| {
         let as_value = serde_json::from_value::<Value>(value.clone()).unwrap();
         let before = BYTES.load(Ordering::SeqCst);
-        let copy = as_value.clone();
+        let copy = deep_copy(&as_value);
         let spent = BYTES.load(Ordering::SeqCst) - before;
         drop(copy);
         spent
@@ -792,7 +808,7 @@ fn a_reduce_binds_its_accumulator_without_copying_it() {
     let large = map_of(1024, 64);
     let as_value = serde_json::from_value::<Value>(large.clone()).unwrap();
     let before = BYTES.load(Ordering::SeqCst);
-    let copy = as_value.clone();
+    let copy = deep_copy(&as_value);
     let one_copy = BYTES.load(Ordering::SeqCst) - before;
     drop(copy);
     let extra = spent(&large).saturating_sub(spent(&map_of(2, 4)));
@@ -847,7 +863,7 @@ fn a_callback_binds_each_element_once() {
     let one_copy = |value: &serde_json::Value| {
         let as_value = serde_json::from_value::<Value>(value.clone()).unwrap();
         let before = BYTES.load(Ordering::SeqCst);
-        let copy = as_value.clone();
+        let copy = deep_copy(&as_value);
         let spent = BYTES.load(Ordering::SeqCst) - before;
         drop(copy);
         spent
@@ -947,11 +963,32 @@ fn a_fan_out_does_not_copy_the_payload_once_per_listener() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let none = fanout_peak_ratio(0);
     let one = fanout_peak_ratio(1);
-    let many = fanout_peak_ratio(24);
+    let many = fanout_peak_ratio(45);
     println!("FANOUT_PEAK none={none:.1} one={one:.1} many={many:.1}");
-    // Each listener still adds one copy: its step result's payload, which the response's transition record carries
-    // (the wire contract); the queued item, delivery record and @prevEvents entry are shared (G-ORBITAL-CORE-051).
-    let per_listener = (many - one) / 23.0;
-    assert!(one < none + 4.0, "control: one listener adds at most a few payload copies: {none:.1}x -> {one:.1}x");
-    assert!(per_listener < 1.5, "each listener holds {per_listener:.2} payload copies at peak (was 3.8 before sharing)");
+    assert!(one < none + 2.0, "control: one listener adds at most a couple of payload copies: {none:.1}x -> {one:.1}x");
+    assert!(many < 2.0, "45 listeners hold {many:.2} payload copies at peak (was 3.8 per listener before sharing)");
+}
+
+/// Bytes allocated evaluating `(array/reduce (array/range 0 n) [] (array/append @acc @item))`.
+fn reduce_append_bytes(n: usize) -> usize {
+    use orbital_core_base::schema::sexpr::SExpression;
+    use orbital_core_eval::evaluator::context::BindingContextBuilder;
+    let expr: SExpression = serde_json::from_value(json!(
+        ["array/reduce", ["array/range", 0, n], [], ["array/append", "@acc", "@item"]]
+    ))
+    .unwrap();
+    let ctx = BindingContextBuilder::new().build();
+    let before = BYTES.load(Ordering::SeqCst);
+    let out = orbital_core_eval::evaluator::operators::eval_expr(&expr, &ctx).unwrap();
+    let bytes = BYTES.load(Ordering::SeqCst) - before;
+    assert_eq!(out.as_array().map(|a| a.len()), Some(n));
+    bytes
+}
+
+#[test]
+fn a_reduce_that_appends_to_its_accumulator_allocates_linearly() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (small, large) = (reduce_append_bytes(256), reduce_append_bytes(512));
+    println!("REDUCE_APPEND_BYTES 256={small} 512={large}");
+    assert!(large * 10 < small * 30, "doubling the list must not quadruple the bytes: {small} -> {large}");
 }

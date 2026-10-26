@@ -168,9 +168,9 @@ pub fn apply_write(
             };
             let mut fields = match data {
                 Value::Object(o) => o.clone(),
-                _ => orbital_core_base::value::ValueMap::default(),
+                _ => orbital_core_base::value::ValueMap::default().into(),
             };
-            fields.insert("id".to_string(), Value::String(id.clone()));
+            fields.insert("id".to_string(), Value::string(id.clone()));
             let row = Value::Object(fields);
             table.insert(id, Arc::new(row.clone()));
             RowWriteOutcome::Created { row }
@@ -189,9 +189,9 @@ pub fn apply_write(
             };
             let mut fields = match data {
                 Value::Object(o) => o.clone(),
-                _ => orbital_core_base::value::ValueMap::default(),
+                _ => orbital_core_base::value::ValueMap::default().into(),
             };
-            fields.insert("id".to_string(), Value::String(id.clone()));
+            fields.insert("id".to_string(), Value::string(id.clone()));
             let kept = table.get(&id).map(|existing| {
                 existing
                     .as_object()
@@ -222,14 +222,14 @@ pub fn apply_write(
             }
             let mut fields = match &*before {
                 Value::Object(o) => o.clone(),
-                _ => orbital_core_base::value::ValueMap::default(),
+                _ => orbital_core_base::value::ValueMap::default().into(),
             };
             if let Value::Object(incoming) = data {
                 for (k, v) in incoming {
                     fields.insert(k.clone(), v.clone());
                 }
             }
-            fields.insert("id".to_string(), Value::String(id.clone()));
+            fields.insert("id".to_string(), Value::string(id.clone()));
             let row = Value::Object(fields);
             table.insert(id.clone(), Arc::new(row.clone()));
             RowWriteOutcome::Updated {
@@ -257,7 +257,7 @@ pub fn apply_write(
                         message: "rekey needs an object row".to_string(),
                     };
                 };
-                moved.insert("id".to_string(), Value::String(new_id.clone()));
+                moved.insert("id".to_string(), Value::string(new_id.clone()));
                 let moved = Arc::new(Value::Object(moved));
                 let original = std::mem::take(table);
                 for (key, row) in original {

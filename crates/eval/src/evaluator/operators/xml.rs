@@ -189,11 +189,11 @@ fn to_value(node: Node) -> Value {
     let text = collapse(&node.full);
     let own_has_text = node.own.chars().any(|c| !is_xml_space(c));
     if node.attrs.is_empty() && (node.children.is_empty() || own_has_text) {
-        return Value::String(text);
+        return Value::string(text);
     }
     let mut object = ValueMap::default();
     for (key, value) in node.attrs {
-        object.insert(format!("@{key}"), Value::String(value));
+        object.insert(format!("@{key}"), Value::string(value));
     }
     let leaf_or_mixed = node.children.is_empty() || own_has_text;
     for (name, child) in node.children {
@@ -202,7 +202,7 @@ fn to_value(node: Node) -> Value {
             Some(Value::Array(items)) => items.push(value),
             Some(existing) => {
                 let first = std::mem::replace(existing, Value::Null);
-                *existing = Value::Array(vec![first, value]);
+                *existing = Value::array(vec![first, value]);
             }
             None => {
                 object.insert(name, value);
@@ -210,9 +210,9 @@ fn to_value(node: Node) -> Value {
         }
     }
     if leaf_or_mixed && !text.is_empty() {
-        object.insert("#text".to_string(), Value::String(text));
+        object.insert("#text".to_string(), Value::string(text));
     }
-    Value::Object(object)
+    Value::object(object)
 }
 
 pub fn parse_xml(text: &str) -> Result<Value, OrbitalError> {
@@ -240,7 +240,7 @@ fn apply_list_paths(value: &mut Value, paths: &[Vec<String>]) {
                 if paths.iter().any(|p| p.len() == 1 && p[0] == head)
                     && !matches!(child, Value::Array(_))
                 {
-                    *child = Value::Array(vec![std::mem::replace(child, Value::Null)]);
+                    *child = Value::array(vec![std::mem::replace(child, Value::Null)]);
                 }
                 let rest: Vec<Vec<String>> = paths
                     .iter()
@@ -267,7 +267,7 @@ fn list_paths_of(value: Value) -> Result<Vec<Vec<String>>, OrbitalError> {
             Value::Array(segments) => segments
                 .into_iter()
                 .map(|s| match s {
-                    Value::String(name) => Ok(name),
+                    Value::String(name) => Ok(name.into_inner()),
                     _ => Err(malformed()),
                 })
                 .collect(),

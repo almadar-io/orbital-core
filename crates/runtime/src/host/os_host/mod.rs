@@ -340,14 +340,14 @@ mod tests {
         let paths = |answer: Value| -> Vec<String> {
             let Value::Object(map) = answer else { panic!("{answer:?}") };
             let Some(Value::Array(items)) = map.get("paths") else { panic!("{map:?}") };
-            items.iter().map(|v| match v { Value::String(s) => s.clone(), other => panic!("{other:?}") }).collect()
+            items.iter().map(|v| match v { Value::String(s) => s.to_string(), other => panic!("{other:?}") }).collect()
         };
         assert_eq!(paths(glob("*/package.json").expect("depth 1")), ["a/package.json"]);
         assert_eq!(paths(glob("**/*").expect("deep")), ["a/package.json", "b/c/package.json", "package.json"], "control: matches the grant does not cover are dropped");
         assert_eq!(paths(glob("*/*.txt").expect("ungranted")), Vec::<String>::new(), "control: nothing granted matches");
         assert_eq!(glob("../*").expect_err("climbs").kind, OsErrorKind::Denied, "edge: a glob climbing above the anchor");
         assert_eq!(glob("a/../../*").expect_err("climbs").kind, OsErrorKind::Denied, "edge: a `..` escape inside the pattern");
-        let plain = os_answer(OsOp::Glob, vec![Value::String(format!("{}/*/package.json", work.display()))], &grants, &handles);
+        let plain = os_answer(OsOp::Glob, vec![Value::string(format!("{}/*/package.json", work.display()))], &grants, &handles);
         assert_eq!(plain.expect_err("plain").kind, OsErrorKind::Denied, "control: a plain pattern still needs read on its prefix");
         let unset = os_answer(OsOp::Glob, vec![anchored_value(serde_json::json!({"anchor": {"env": "ORB_L2_NEVER_SET"}, "path": "*"}))], &grants, &OsHandles::default());
         assert_eq!(unset.expect_err("unset").kind, OsErrorKind::NotFound, "edge: an unset env anchor names nothing");
@@ -361,28 +361,28 @@ mod tests {
             ..OsAnchors::default()
         };
         let unset = anchored_value(serde_json::json!({"anchor": {"env": "ORB_L18_NEVER_SET"}}));
-        let e = resolve_anchored_args(OsOp::Spawn, &[unset, Value::Array(Vec::new())], &anchors).expect_err("unset");
+        let e = resolve_anchored_args(OsOp::Spawn, &[unset, Value::array(Vec::new())], &anchors).expect_err("unset");
         assert_eq!(e.kind, OsErrorKind::NotFound);
         let empty = anchored_value(serde_json::json!({"anchor": {"env": "ORB_L19_EMPTY"}}));
-        let e = resolve_anchored_args(OsOp::Spawn, &[empty, Value::Array(Vec::new())], &anchors).expect_err("empty");
+        let e = resolve_anchored_args(OsOp::Spawn, &[empty, Value::array(Vec::new())], &anchors).expect_err("empty");
         assert_eq!(e.kind, OsErrorKind::NotFound, "an empty value names nothing either");
         let relative = anchored_value(serde_json::json!({"anchor": {"env": "ORB_L19_RELATIVE"}}));
-        let e = resolve_anchored_args(OsOp::Spawn, &[relative, Value::Array(Vec::new())], &anchors).expect_err("relative");
+        let e = resolve_anchored_args(OsOp::Spawn, &[relative, Value::array(Vec::new())], &anchors).expect_err("relative");
         assert_eq!(e.kind, OsErrorKind::Denied, "control: a relative value is refused");
         let beside = anchored_value(serde_json::json!({"anchor": "exe-dir", "path": "bun"}));
-        let args = resolve_anchored_args(OsOp::Spawn, &[beside, Value::Array(Vec::new())], &anchors).expect("control: a set anchor resolves");
-        assert_eq!(args[0], Value::String("/opt/orb/bun".into()));
+        let args = resolve_anchored_args(OsOp::Spawn, &[beside, Value::array(Vec::new())], &anchors).expect("control: a set anchor resolves");
+        assert_eq!(args[0], Value::string("/opt/orb/bun"));
     }
 
     #[test]
     fn an_env_anchored_port_is_the_boot_value_as_a_number() {
         let anchors = OsAnchors { env: EnvSnapshot::from_pairs([("PORT".to_string(), "8080".to_string()), ("BAD".to_string(), "x".to_string())]), ..OsAnchors::default() };
         let port = anchored_value(serde_json::json!({"anchor": {"env": "PORT"}}));
-        let args = resolve_anchored_args(OsOp::TcpListen, &[Value::String("127.0.0.1".into()), port.clone()], &anchors).unwrap();
+        let args = resolve_anchored_args(OsOp::TcpListen, &[Value::string("127.0.0.1"), port.clone()], &anchors).unwrap();
         assert_eq!(args[1], Value::Number(8080.0));
         assert_eq!(resolve_anchored_args(OsOp::Getenv, &[port.clone()], &anchors).unwrap()[0], port, "control: not a net or path position");
         let bad = anchored_value(serde_json::json!({"anchor": {"env": "BAD"}}));
-        assert!(resolve_anchored_args(OsOp::TcpListen, &[Value::String("h".into()), bad], &anchors).is_err());
+        assert!(resolve_anchored_args(OsOp::TcpListen, &[Value::string("h"), bad], &anchors).is_err());
     }
 
     #[test]

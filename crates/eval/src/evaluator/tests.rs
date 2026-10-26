@@ -44,7 +44,7 @@ fn a_hyphenated_payload_key_is_addressable_by_a_binding() {
             r#"["str/concat", "@payload.headers.x-goog-resource-state", "!"]"#,
             &ctx
         ),
-        Value::String("sync!".to_string())
+        Value::string("sync!")
     );
 }
 
@@ -95,8 +95,8 @@ fn data_array_contract_unregistered_head_is_data() {
     match v {
         Value::Array(items) => {
             assert_eq!(items.len(), 2, "data array keeps its shape");
-            assert_eq!(items[0], Value::String("static".to_string()));
-            assert_eq!(items[1], Value::String("walk".to_string()));
+            assert_eq!(items[0], Value::string("static"));
+            assert_eq!(items[1], Value::string("walk"));
         }
         other => panic!("unregistered head must yield a data array, got {other:?}"),
     }
@@ -108,7 +108,7 @@ fn data_array_contract_nested_calls_still_evaluate() {
     let v = eval(r#"["frames", ["+", 1, 2]]"#);
     match v {
         Value::Array(items) => {
-            assert_eq!(items[0], Value::String("frames".to_string()));
+            assert_eq!(items[0], Value::string("frames"));
             assert_eq!(items[1], Value::Number(3.0));
         }
         other => panic!("expected data array with evaluated element, got {other:?}"),
@@ -228,7 +228,7 @@ fn test_or() {
 #[test]
 fn test_and_or_return_operand_values() {
     assert_eq!(eval(r#"["or", 0, 42]"#), Value::Number(42.0));
-    assert_eq!(eval(r#"["and", "y", "x"]"#), Value::String("x".to_string()));
+    assert_eq!(eval(r#"["and", "y", "x"]"#), Value::string("x"));
     assert_eq!(eval(r#"["or", 0, null, 7]"#), Value::Number(7.0));
     assert_eq!(eval(r#"["and", 1, 0, 5]"#), Value::Number(0.0));
     assert_eq!(eval(r#"["or", 0, null]"#), Value::Null);
@@ -266,11 +266,11 @@ fn test_not() {
 fn test_if() {
     assert_eq!(
         eval(r#"["if", true, "yes", "no"]"#),
-        Value::String("yes".to_string())
+        Value::string("yes")
     );
     assert_eq!(
         eval(r#"["if", false, "yes", "no"]"#),
-        Value::String("no".to_string())
+        Value::string("no")
     );
     assert_eq!(eval(r#"["if", false, "yes"]"#), Value::Null); // No else
 }
@@ -319,7 +319,7 @@ fn test_includes() {
 fn test_concat() {
     assert_eq!(
         eval(r#"["str/concat", "hello", " ", "world"]"#),
-        Value::String("hello world".to_string())
+        Value::string("hello world")
     );
 }
 
@@ -330,7 +330,7 @@ fn test_concat() {
 fn concat_conformance_str_concat_joins_mixed_args() {
     assert_eq!(
         eval(r#"["str/concat", "x=", "1", " y=", "2"]"#),
-        Value::String("x=1 y=2".to_string())
+        Value::string("x=1 y=2")
     );
 }
 
@@ -338,7 +338,7 @@ fn concat_conformance_str_concat_joins_mixed_args() {
 fn concat_conformance_array_concat_concatenates_arrays() {
     assert_eq!(
         eval(r#"["array/concat", [1, 2], [3, 4]]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0),
@@ -362,17 +362,17 @@ fn concat_conformance_bare_concat_errors() {
 fn test_upper_lower() {
     assert_eq!(
         eval(r#"["upper", "hello"]"#),
-        Value::String("HELLO".to_string())
+        Value::string("HELLO")
     );
     assert_eq!(
         eval(r#"["lower", "HELLO"]"#),
-        Value::String("hello".to_string())
+        Value::string("hello")
     );
 }
 
 #[test]
 fn as_call_key_is_the_identity_on_a_non_empty_string() {
-    assert_eq!(eval(r#"["as", "search", "CallKey"]"#), Value::String("search".to_string()));
+    assert_eq!(eval(r#"["as", "search", "CallKey"]"#), Value::string("search"));
 }
 
 #[test]
@@ -428,15 +428,15 @@ fn the_semantic_validators_read_the_one_pattern_table() {
 fn json_parse_object_array_scalar_nested() {
     let mut obj = ValueMap::default();
     obj.insert("a".to_string(), Value::Number(1.0));
-    obj.insert("b".to_string(), Value::String("x".to_string()));
+    obj.insert("b".to_string(), Value::string("x"));
     assert_eq!(
         eval(r#"["json/parse", "{\"a\": 1, \"b\": \"x\"}", "Row"]"#),
-        Value::Object(obj)
+        Value::object(obj)
     );
 
     assert_eq!(
         eval(r#"["json/parse", "[1, 2, 3]", "Row"]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0),
@@ -446,23 +446,23 @@ fn json_parse_object_array_scalar_nested() {
     assert_eq!(eval(r#"["json/parse", "42", "Row"]"#), Value::Number(42.0));
     assert_eq!(
         eval(r#"["json/parse", "\"hello\"", "Row"]"#),
-        Value::String("hello".to_string())
+        Value::string("hello")
     );
     assert_eq!(eval(r#"["json/parse", "true", "Row"]"#), Value::Bool(true));
     assert_eq!(eval(r#"["json/parse", "null", "Row"]"#), Value::Null);
 
-    let tags = Value::Array(vec![
-        Value::String("a".to_string()),
-        Value::String("b".to_string()),
+    let tags = Value::array(vec![
+        Value::String(("a".to_string()).into()),
+        Value::String(("b".to_string()).into()),
     ]);
     let mut row = ValueMap::default();
     row.insert("id".to_string(), Value::Number(1.0));
     row.insert("tags".to_string(), tags);
     let mut rows = ValueMap::default();
-    rows.insert("rows".to_string(), Value::Array(vec![Value::Object(row)]));
+    rows.insert("rows".to_string(), Value::array(vec![Value::Object(row.into())]));
     assert_eq!(
         eval(r#"["json/parse", "{\"rows\": [{\"id\": 1, \"tags\": [\"a\", \"b\"]}]}", "Row"]"#),
-        Value::Object(rows)
+        Value::object(rows)
     );
 }
 
@@ -517,10 +517,10 @@ fn json_parse_value_not_of_its_shape_takes_the_failure_path() {
 
 #[test]
 fn control_json_parse_shape_without_a_run_time_declaration_is_unchanged() {
-    assert_eq!(parse_as(r#""abc""#, "Row".into()), Value::String("abc".to_string()));
+    assert_eq!(parse_as(r#""abc""#, "Row".into()), Value::string("abc"));
     assert_eq!(
         parse_as("[1]", "Row".into()),
-        Value::Array(vec![Value::Number(1.0)])
+        Value::array(vec![Value::Number(1.0)])
     );
 }
 
@@ -576,7 +576,7 @@ fn json_parse_program_alias_checks_through_nested_and_recursive_aliases() {
         parse_in_program(r#"{"rows": [], "changes": [{"id": "c", "row": {"a": [1, [false]]}}]}"#, "RowFile"),
         Value::Null
     );
-    assert_eq!(parse_in_program(r#"{"a": 1}"#, "Row"), Value::Object(ValueMap::from_iter([("a".to_string(), Value::Number(1.0))])));
+    assert_eq!(parse_in_program(r#"{"a": 1}"#, "Row"), Value::object(ValueMap::from_iter([("a".to_string(), Value::Number(1.0))])));
 }
 
 #[test]
@@ -588,7 +588,7 @@ fn json_parse_recursive_alias_checks_every_level() {
 #[test]
 fn control_json_parse_recursive_alias_accepts_a_member_at_every_level() {
     assert!(matches!(parse_in_program(r#"[1, ["x", [2]]]"#, "RowCell"), Value::Array(ref v) if v.len() == 2));
-    assert_eq!(parse_in_program(r#""x""#, "RowCell"), Value::String("x".to_string()));
+    assert_eq!(parse_in_program(r#""x""#, "RowCell"), Value::string("x"));
 }
 
 #[test]
@@ -625,8 +625,8 @@ fn control_json_parse_program_alias_accepts_a_member_of_a_closed_string_set() {
 
 #[test]
 fn control_json_parse_undeclared_alias_name_stays_unchecked() {
-    assert_eq!(parse_in_program("[1]", "Other"), Value::Array(vec![Value::Number(1.0)]));
-    assert_eq!(parse_in_program(r#""abc""#, "Other"), Value::String("abc".to_string()));
+    assert_eq!(parse_in_program("[1]", "Other"), Value::array(vec![Value::Number(1.0)]));
+    assert_eq!(parse_in_program(r#""abc""#, "Other"), Value::string("abc"));
 }
 
 // G-ORB-452: each element of a list declared `[OrbValue]` matches the recursive union on its own.
@@ -695,8 +695,8 @@ fn json_stringify_sorted_and_pretty_options() {
 
 #[test]
 fn control_json_stringify_without_options_keeps_insertion_order_compact() {
-    assert_eq!(eval(r#"["json/stringify", {"b": 1, "a": 2}]"#), Value::String(r#"{"b":1,"a":2}"#.to_string()));
-    assert_eq!(eval(r#"["json/stringify", {"b": 1}, {"pretty": false}]"#), Value::String(r#"{"b":1}"#.to_string()));
+    assert_eq!(eval(r#"["json/stringify", {"b": 1, "a": 2}]"#), Value::string(r#"{"b":1,"a":2}"#.to_string()));
+    assert_eq!(eval(r#"["json/stringify", {"b": 1}, {"pretty": false}]"#), Value::string(r#"{"b":1}"#.to_string()));
 }
 
 #[test]
@@ -709,7 +709,7 @@ fn json_stringify_refuses_an_option_that_is_not_a_boolean() {
 fn json_stringify_round_trip() {
     assert_eq!(
         eval(r#"["json/stringify", {"a": 1}]"#),
-        Value::String("{\"a\":1}".to_string())
+        Value::string("{\"a\":1}")
     );
     let s = match eval(r#"["json/stringify", {"id": 7, "flags": [true, false]}]"#) {
         Value::String(s) => s,
@@ -729,7 +729,7 @@ fn json_stringify_round_trip() {
 fn test_trim() {
     assert_eq!(
         eval(r#"["trim", "  hello  "]"#),
-        Value::String("hello".to_string())
+        Value::string("hello")
     );
 }
 
@@ -737,15 +737,15 @@ fn test_trim() {
 fn test_split_join() {
     assert_eq!(
         eval(r#"["split", "a,b,c", ","]"#),
-        Value::Array(vec![
-            Value::String("a".to_string()),
-            Value::String("b".to_string()),
-            Value::String("c".to_string()),
+        Value::array(vec![
+            Value::String(("a".to_string()).into()),
+            Value::String(("b".to_string()).into()),
+            Value::String(("c".to_string()).into()),
         ])
     );
     assert_eq!(
         eval(r#"["join", ["a", "b", "c"], "-"]"#),
-        Value::String("a-b-c".to_string())
+        Value::string("a-b-c")
     );
 }
 
@@ -806,7 +806,7 @@ fn test_do() {
 fn test_when() {
     assert_eq!(
         eval(r#"["when", true, "yes"]"#),
-        Value::String("yes".to_string())
+        Value::string("yes")
     );
     assert_eq!(eval(r#"["when", false, "yes"]"#), Value::Null);
 }
@@ -834,13 +834,13 @@ fn test_binding_resolution() {
     let mut data = ValueMap::default();
     data.insert(
         "email".to_string(),
-        Value::String("test@example.com".to_string()),
+        Value::string("test@example.com"),
     );
     data.insert("connectionSlots".to_string(), Value::Number(10.0));
-    payload.insert("data".to_string(), Value::Object(data));
+    payload.insert("data".to_string(), Value::object(data));
 
     let ctx = BindingContextBuilder::new()
-        .payload(Value::Object(payload))
+        .payload(Value::object(payload))
         .build();
 
     assert_eq!(
@@ -865,13 +865,13 @@ fn test_complex_guard_from_orbital_pattern() {
     let mut data = ValueMap::default();
     data.insert(
         "email".to_string(),
-        Value::String("test@example.com".to_string()),
+        Value::string("test@example.com"),
     );
-    data.insert("name".to_string(), Value::String("Test User".to_string()));
-    payload.insert("data".to_string(), Value::Object(data));
+    data.insert("name".to_string(), Value::string("Test User"));
+    payload.insert("data".to_string(), Value::object(data));
 
     let ctx = BindingContextBuilder::new()
-        .payload(Value::Object(payload))
+        .payload(Value::object(payload))
         .build();
 
     let guard =
@@ -881,12 +881,12 @@ fn test_complex_guard_from_orbital_pattern() {
     // Test with empty email
     let mut payload2 = ValueMap::default();
     let mut data2 = ValueMap::default();
-    data2.insert("email".to_string(), Value::String("".to_string()));
-    data2.insert("name".to_string(), Value::String("Test User".to_string()));
-    payload2.insert("data".to_string(), Value::Object(data2));
+    data2.insert("email".to_string(), Value::string(""));
+    data2.insert("name".to_string(), Value::string("Test User"));
+    payload2.insert("data".to_string(), Value::object(data2));
 
     let ctx2 = BindingContextBuilder::new()
-        .payload(Value::Object(payload2))
+        .payload(Value::object(payload2))
         .build();
 
     assert_eq!(eval_with_ctx(guard, &ctx2), Value::Bool(false));
@@ -899,10 +899,10 @@ fn test_connection_slots_guard() {
     let mut payload = ValueMap::default();
     let mut data = ValueMap::default();
     data.insert("connectionSlots".to_string(), Value::Number(50.0));
-    payload.insert("data".to_string(), Value::Object(data));
+    payload.insert("data".to_string(), Value::object(data));
 
     let ctx = BindingContextBuilder::new()
-        .payload(Value::Object(payload))
+        .payload(Value::object(payload))
         .build();
 
     assert_eq!(
@@ -925,21 +925,21 @@ fn test_dunbar_number_guard() {
             let mut c = ValueMap::default();
             c.insert(
                 "requesterId".to_string(),
-                Value::String("user-1".to_string()),
+                Value::string("user-1"),
             );
             c.insert(
                 "status".to_string(),
-                Value::String(if i < 30 { "accepted" } else { "pending" }.to_string()),
+                Value::string(if i < 30 { "accepted" } else { "pending" }.to_string()),
             );
-            Value::Object(c)
+            Value::object(c)
         })
         .collect();
 
     let mut user = ValueMap::default();
-    user.insert("id".to_string(), Value::String("user-1".to_string()));
+    user.insert("id".to_string(), Value::string("user-1"));
 
     let ctx = BindingContextBuilder::new()
-        .user(Value::Object(user))
+        .user(Value::object(user))
         .entity_store("Connection", connections)
         .build();
 
@@ -1042,7 +1042,7 @@ fn test_reduce_concat_strings() {
     let result = eval(
         r#"["reduce", ["a", "b", "c"], "", ["fn", ["acc", "x"], ["str/concat", "@acc", "@x"]]]"#,
     );
-    assert_eq!(result, Value::String("abc".to_string()));
+    assert_eq!(result, Value::string("abc"));
 }
 
 #[test]
@@ -1092,7 +1092,7 @@ fn test_object_values() {
 #[test]
 fn test_object_get_simple() {
     let result = eval(r#"["object/get", {"name": "John", "age": 30}, "name"]"#);
-    assert_eq!(result, Value::String("John".to_string()));
+    assert_eq!(result, Value::string("John"));
 }
 
 #[test]
@@ -1100,7 +1100,7 @@ fn test_object_get_nested() {
     let result = eval(
         r#"["object/get", {"user": {"name": "John", "address": {"city": "NYC"}}}, "user.address.city"]"#,
     );
-    assert_eq!(result, Value::String("NYC".to_string()));
+    assert_eq!(result, Value::string("NYC"));
 }
 
 #[test]
@@ -1112,7 +1112,7 @@ fn test_object_get_missing() {
 #[test]
 fn test_object_keys_null() {
     let result = eval(r#"["object/keys", null]"#);
-    assert_eq!(result, Value::Array(vec![]));
+    assert_eq!(result, Value::array(vec![]));
 }
 
 // ========================================================================
@@ -1149,7 +1149,7 @@ fn test_time_now_alias() {
 fn test_array_slice() {
     assert_eq!(
         eval(r#"["slice", [1, 2, 3, 4, 5], 1, 4]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(2.0),
             Value::Number(3.0),
             Value::Number(4.0)
@@ -1157,7 +1157,7 @@ fn test_array_slice() {
     );
     assert_eq!(
         eval(r#"["slice", [1, 2, 3, 4, 5], 2]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(3.0),
             Value::Number(4.0),
             Value::Number(5.0)
@@ -1166,7 +1166,7 @@ fn test_array_slice() {
     // Negative indices
     assert_eq!(
         eval(r#"["slice", [1, 2, 3, 4, 5], -2]"#),
-        Value::Array(vec![Value::Number(4.0), Value::Number(5.0)])
+        Value::array(vec![Value::Number(4.0), Value::Number(5.0)])
     );
 }
 
@@ -1174,7 +1174,7 @@ fn test_array_slice() {
 fn test_array_concat() {
     assert_eq!(
         eval(r#"["array/concat", [1, 2], [3, 4]]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0),
@@ -1187,7 +1187,7 @@ fn test_array_concat() {
 fn test_array_append() {
     assert_eq!(
         eval(r#"["append", [1, 2], 3]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0)
@@ -1199,7 +1199,7 @@ fn test_array_append() {
 fn test_array_sort() {
     assert_eq!(
         eval(r#"["sort", [3, 1, 4, 1, 5, 9, 2, 6]]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(1.0),
             Value::Number(2.0),
@@ -1216,7 +1216,7 @@ fn test_array_sort() {
 fn test_array_unique() {
     assert_eq!(
         eval(r#"["unique", [1, 2, 2, 3, 3, 3, 4]]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0),
@@ -1373,7 +1373,7 @@ fn test_str_ends_with() {
 fn test_str_replace() {
     assert_eq!(
         eval(r#"["replace", "hello world world", "world", "universe"]"#),
-        Value::String("hello universe world".to_string())
+        Value::string("hello universe world")
     );
 }
 
@@ -1381,7 +1381,7 @@ fn test_str_replace() {
 fn test_str_replace_all() {
     assert_eq!(
         eval(r#"["replaceAll", "hello world world", "world", "universe"]"#),
-        Value::String("hello universe universe".to_string())
+        Value::string("hello universe universe")
     );
 }
 
@@ -1391,7 +1391,7 @@ fn test_str_template() {
         eval(
             r#"["template", "Hello {{name}}, you are {{age}} years old", {"name": "John", "age": 30}]"#
         ),
-        Value::String("Hello John, you are 30 years old".to_string())
+        Value::string("Hello John, you are 30 years old")
     );
 }
 
@@ -1548,17 +1548,17 @@ fn test_time_format_two_arg_token_form() {
     // Epoch 0 = 1970-01-01T00:00:00Z, a Thursday.
     assert_eq!(
         eval(r#"["time/format", 0, "YYYY-MM-DD"]"#),
-        Value::String("1970-01-01".to_string())
+        Value::string("1970-01-01")
     );
     assert_eq!(
         eval(r#"["time/format", 0, "ddd, MMM D, YYYY"]"#),
-        Value::String("Thu, Jan 1, 1970".to_string())
+        Value::string("Thu, Jan 1, 1970")
     );
     // Longest-token-first: "MMMM"/"dddd" must not be read as "MM"+"MM"
     // or "M" repeated, and "MM" must not consume the head of "MMM".
     assert_eq!(
         eval(r#"["time/format", 0, "dddd, MMMM D, YYYY"]"#),
-        Value::String("Thursday, January 1, 1970".to_string())
+        Value::string("Thursday, January 1, 1970")
     );
 }
 
@@ -1666,7 +1666,7 @@ fn test_validate_pattern() {
 fn test_array_prepend() {
     assert_eq!(
         eval(r#"["prepend", [2, 3], 1]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0)
@@ -1674,7 +1674,7 @@ fn test_array_prepend() {
     );
     assert_eq!(
         eval(r#"["array/prepend", [], "first"]"#),
-        Value::Array(vec![Value::String("first".to_string())])
+        Value::array(vec![Value::String(("first".to_string()).into())])
     );
 }
 
@@ -1682,7 +1682,7 @@ fn test_array_prepend() {
 fn test_array_insert() {
     assert_eq!(
         eval(r#"["insert", [1, 3], 1, 2]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0)
@@ -1690,10 +1690,10 @@ fn test_array_insert() {
     );
     assert_eq!(
         eval(r#"["array/insert", ["a", "c"], 1, "b"]"#),
-        Value::Array(vec![
-            Value::String("a".to_string()),
-            Value::String("b".to_string()),
-            Value::String("c".to_string())
+        Value::array(vec![
+            Value::String(("a".to_string()).into()),
+            Value::String(("b".to_string()).into()),
+            Value::String(("c".to_string()).into())
         ])
     );
 }
@@ -1702,13 +1702,13 @@ fn test_array_insert() {
 fn test_array_remove() {
     assert_eq!(
         eval(r#"["remove", [1, 2, 3], 1]"#),
-        Value::Array(vec![Value::Number(1.0), Value::Number(3.0)])
+        Value::array(vec![Value::Number(1.0), Value::Number(3.0)])
     );
     assert_eq!(
         eval(r#"["array/remove", ["a", "b", "c"], 0]"#),
-        Value::Array(vec![
-            Value::String("b".to_string()),
-            Value::String("c".to_string())
+        Value::array(vec![
+            Value::String(("b".to_string()).into()),
+            Value::String(("c".to_string()).into())
         ])
     );
 }
@@ -1717,7 +1717,7 @@ fn test_array_remove() {
 fn test_array_reverse() {
     assert_eq!(
         eval(r#"["reverse", [1, 2, 3]]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(3.0),
             Value::Number(2.0),
             Value::Number(1.0)
@@ -1725,10 +1725,10 @@ fn test_array_reverse() {
     );
     assert_eq!(
         eval(r#"["array/reverse", ["a", "b", "c"]]"#),
-        Value::Array(vec![
-            Value::String("c".to_string()),
-            Value::String("b".to_string()),
-            Value::String("a".to_string())
+        Value::array(vec![
+            Value::String(("c".to_string()).into()),
+            Value::String(("b".to_string()).into()),
+            Value::String(("a".to_string()).into())
         ])
     );
 }
@@ -1738,7 +1738,7 @@ fn test_array_flatten() {
     // One-level flatten
     assert_eq!(
         eval(r#"["flatten", [[1, 2], [3, 4]]]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0),
@@ -1754,7 +1754,7 @@ fn test_array_zip() {
         assert_eq!(arr.len(), 2);
         if let Value::Array(ref first) = arr[0] {
             assert_eq!(first[0], Value::Number(1.0));
-            assert_eq!(first[1], Value::String("a".to_string()));
+            assert_eq!(first[1], Value::string("a"));
         }
     }
 }
@@ -1798,7 +1798,7 @@ fn test_array_group_by() {
 fn test_array_take() {
     assert_eq!(
         eval(r#"["take", [1, 2, 3, 4, 5], 3]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0)
@@ -1806,7 +1806,7 @@ fn test_array_take() {
     );
     assert_eq!(
         eval(r#"["array/take", [1, 2], 5]"#),
-        Value::Array(vec![Value::Number(1.0), Value::Number(2.0)])
+        Value::array(vec![Value::Number(1.0), Value::Number(2.0)])
     );
 }
 
@@ -1814,20 +1814,20 @@ fn test_array_take() {
 fn test_array_drop() {
     assert_eq!(
         eval(r#"["drop", [1, 2, 3, 4, 5], 2]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(3.0),
             Value::Number(4.0),
             Value::Number(5.0)
         ])
     );
-    assert_eq!(eval(r#"["array/drop", [1, 2], 5]"#), Value::Array(vec![]));
+    assert_eq!(eval(r#"["array/drop", [1, 2], 5]"#), Value::array(vec![]));
 }
 
 #[test]
 fn test_array_range() {
     assert_eq!(
         eval(r#"["range", 1, 5]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0),
@@ -1836,7 +1836,7 @@ fn test_array_range() {
     );
     assert_eq!(
         eval(r#"["range", 0, 3]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(0.0),
             Value::Number(1.0),
             Value::Number(2.0)
@@ -1852,11 +1852,11 @@ fn test_array_range() {
 fn test_str_slice() {
     assert_eq!(
         eval(r#"["str/slice", "hello world", 0, 5]"#),
-        Value::String("hello".to_string())
+        Value::string("hello")
     );
     assert_eq!(
         eval(r#"["str/slice", "hello", 2]"#),
-        Value::String("llo".to_string())
+        Value::string("llo")
     );
 }
 
@@ -1864,11 +1864,11 @@ fn test_str_slice() {
 fn test_str_pad_start() {
     assert_eq!(
         eval(r#"["padStart", "5", 3, "0"]"#),
-        Value::String("005".to_string())
+        Value::string("005")
     );
     assert_eq!(
         eval(r#"["str/padStart", "hello", 10, "-"]"#),
-        Value::String("-----hello".to_string())
+        Value::string("-----hello")
     );
 }
 
@@ -1876,11 +1876,11 @@ fn test_str_pad_start() {
 fn test_str_pad_end() {
     assert_eq!(
         eval(r#"["padEnd", "5", 3, "0"]"#),
-        Value::String("500".to_string())
+        Value::string("500")
     );
     assert_eq!(
         eval(r#"["str/padEnd", "hi", 5, "."]"#),
-        Value::String("hi...".to_string())
+        Value::string("hi...")
     );
 }
 
@@ -1888,11 +1888,11 @@ fn test_str_pad_end() {
 fn test_str_capitalize() {
     assert_eq!(
         eval(r#"["capitalize", "hello"]"#),
-        Value::String("Hello".to_string())
+        Value::string("Hello")
     );
     assert_eq!(
         eval(r#"["str/capitalize", "WORLD"]"#),
-        Value::String("World".to_string())
+        Value::string("World")
     );
 }
 
@@ -1900,11 +1900,11 @@ fn test_str_capitalize() {
 fn test_str_truncate() {
     assert_eq!(
         eval(r#"["truncate", "hello world", 5]"#),
-        Value::String("hello...".to_string())
+        Value::string("hello...")
     );
     assert_eq!(
         eval(r#"["str/truncate", "hi", 10]"#),
-        Value::String("hi".to_string())
+        Value::string("hi")
     );
 }
 
@@ -2182,7 +2182,7 @@ fn test_array_reject() {
     // Reject keeps elements that DON'T match the predicate
     assert_eq!(
         eval(r#"["reject", [1, 2, 3, 4, 5], ["fn", ["x"], [">", "@x", 3]]]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0)
@@ -2210,11 +2210,11 @@ fn test_array_partition() {
 fn test_array_take_last() {
     assert_eq!(
         eval(r#"["takeLast", [1, 2, 3, 4, 5], 2]"#),
-        Value::Array(vec![Value::Number(4.0), Value::Number(5.0)])
+        Value::array(vec![Value::Number(4.0), Value::Number(5.0)])
     );
     assert_eq!(
         eval(r#"["array/takeLast", [1, 2], 5]"#),
-        Value::Array(vec![Value::Number(1.0), Value::Number(2.0)])
+        Value::array(vec![Value::Number(1.0), Value::Number(2.0)])
     );
 }
 
@@ -2222,7 +2222,7 @@ fn test_array_take_last() {
 fn test_array_drop_last() {
     assert_eq!(
         eval(r#"["dropLast", [1, 2, 3, 4, 5], 2]"#),
-        Value::Array(vec![
+        Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
             Value::Number(3.0)
@@ -2230,7 +2230,7 @@ fn test_array_drop_last() {
     );
     assert_eq!(
         eval(r#"["array/dropLast", [1, 2], 5]"#),
-        Value::Array(vec![])
+        Value::array(vec![])
     );
 }
 
@@ -2238,10 +2238,10 @@ fn test_array_drop_last() {
 fn test_array_repeat() {
     assert_eq!(
         eval(r#"["array/repeat", "x", 3]"#),
-        Value::Array(vec![
-            Value::String("x".to_string()),
-            Value::String("x".to_string()),
-            Value::String("x".to_string())
+        Value::array(vec![
+            Value::String(("x".to_string()).into()),
+            Value::String(("x".to_string()).into()),
+            Value::String(("x".to_string()).into())
         ])
     );
 }
@@ -2254,7 +2254,7 @@ fn test_array_repeat() {
 fn test_str_trim_start() {
     assert_eq!(
         eval(r#"["trimStart", "  hello  "]"#),
-        Value::String("hello  ".to_string())
+        Value::string("hello  ")
     );
 }
 
@@ -2262,7 +2262,7 @@ fn test_str_trim_start() {
 fn test_str_trim_end() {
     assert_eq!(
         eval(r#"["trimEnd", "  hello  "]"#),
-        Value::String("  hello".to_string())
+        Value::string("  hello")
     );
 }
 
@@ -2270,7 +2270,7 @@ fn test_str_trim_end() {
 fn test_str_repeat() {
     assert_eq!(
         eval(r#"["str/repeat", "ab", 3]"#),
-        Value::String("ababab".to_string())
+        Value::string("ababab")
     );
 }
 
@@ -2278,7 +2278,7 @@ fn test_str_repeat() {
 fn test_str_reverse() {
     assert_eq!(
         eval(r#"["str/reverse", "hello"]"#),
-        Value::String("olleh".to_string())
+        Value::string("olleh")
     );
 }
 
@@ -2286,7 +2286,7 @@ fn test_str_reverse() {
 fn test_str_title_case() {
     assert_eq!(
         eval(r#"["titleCase", "hello world"]"#),
-        Value::String("Hello World".to_string())
+        Value::string("Hello World")
     );
 }
 
@@ -2294,11 +2294,11 @@ fn test_str_title_case() {
 fn test_str_camel_case() {
     assert_eq!(
         eval(r#"["camelCase", "hello-world"]"#),
-        Value::String("helloWorld".to_string())
+        Value::string("helloWorld")
     );
     assert_eq!(
         eval(r#"["str/camelCase", "Hello World"]"#),
-        Value::String("helloWorld".to_string())
+        Value::string("helloWorld")
     );
 }
 
@@ -2306,11 +2306,11 @@ fn test_str_camel_case() {
 fn test_str_kebab_case() {
     assert_eq!(
         eval(r#"["kebabCase", "helloWorld"]"#),
-        Value::String("hello-world".to_string())
+        Value::string("hello-world")
     );
     assert_eq!(
         eval(r#"["str/kebabCase", "Hello World"]"#),
-        Value::String("hello-world".to_string())
+        Value::string("hello-world")
     );
 }
 
@@ -2318,11 +2318,11 @@ fn test_str_kebab_case() {
 fn test_str_snake_case() {
     assert_eq!(
         eval(r#"["snakeCase", "helloWorld"]"#),
-        Value::String("hello_world".to_string())
+        Value::string("hello_world")
     );
     assert_eq!(
         eval(r#"["str/snakeCase", "Hello World"]"#),
-        Value::String("hello_world".to_string())
+        Value::string("hello_world")
     );
 }
 
@@ -2330,15 +2330,15 @@ fn test_str_snake_case() {
 fn test_str_default() {
     assert_eq!(
         eval(r#"["str/default", "", "fallback"]"#),
-        Value::String("fallback".to_string())
+        Value::string("fallback")
     );
     assert_eq!(
         eval(r#"["str/default", "hello", "fallback"]"#),
-        Value::String("hello".to_string())
+        Value::string("hello")
     );
     assert_eq!(
         eval(r#"["str/default", null, "fallback"]"#),
-        Value::String("fallback".to_string())
+        Value::string("fallback")
     );
 }
 
@@ -2438,12 +2438,12 @@ fn test_time_duration() {
     // 3661 seconds = 1h 1m 1s
     assert_eq!(
         eval(r#"["time/duration", 3661000]"#),
-        Value::String("1h 1m 1s".to_string())
+        Value::string("1h 1m 1s")
     );
     // 90061 seconds = 1d 1h 1m 1s
     assert_eq!(
         eval(r#"["duration", 90061000]"#),
-        Value::String("1d 1h 1m 1s".to_string())
+        Value::string("1d 1h 1m 1s")
     );
 }
 
@@ -2860,7 +2860,7 @@ fn tree_fold_translates_a_nested_predicate_bottom_up() {
             { "kind": "compare", "field": "c", "op": ">", "value": "3" } ] } } ] });
     assert_eq!(
         fold_with(pred, step, "RowPredicate", &predicate_definition()).unwrap(),
-        Value::String("(a==1 AND NOT (b<2 OR c>3))".into())
+        Value::string("(a==1 AND NOT (b<2 OR c>3))")
     );
 }
 
@@ -3010,7 +3010,7 @@ fn tree_fold_folds_nested_maps_bottom_up_with_the_node_in_scope() {
     let value = serde_json::json!({ "outer": { "inner": { "leaf": "v" } } });
     assert_eq!(
         fold_with(value, step, "IrExpr", &ir_expr_definition()),
-        Ok(Value::String("outer=inner=leaf=v".into()))
+        Ok(Value::string("outer=inner=leaf=v"))
     );
 }
 

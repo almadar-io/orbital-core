@@ -281,12 +281,12 @@ pub fn token_exchange_request(
     let secret = ex.client_secret.as_ref().map(|slot| credential(secrets, slot)).transpose()?;
     let mut fields: Vec<(String, Value)> = Vec::new();
     if let Some(grant_type) = ex.grant.grant_type() {
-        fields.push(("grant_type".to_string(), Value::String(grant_type.to_string())));
+        fields.push(("grant_type".to_string(), Value::string(grant_type.to_string())));
     }
     for (name, field) in &ex.fields {
         let value = match field {
             TokenField::Literal(value) => value.clone(),
-            TokenField::Slot(slot) => Value::String(credential(secrets, slot)?),
+            TokenField::Slot(slot) => Value::string(credential(secrets, slot)?),
             TokenField::JwtAssertion { key, alg, claims } => {
                 let raw = credential(secrets, key)?;
                 let parsed = crate::jwt::ServiceAccountKey::parse(&raw).or_else(|_| {
@@ -309,7 +309,7 @@ pub fn token_exchange_request(
                 let payload = serde_json::Value::Object(payload).to_string();
                 let assertion = crate::jwt::compact(*alg, &payload, &pem)
                     .map_err(|_| HttpRefusal::Invalid("invalid service-account signing key".to_string()))?;
-                Value::String(assertion)
+                Value::string(assertion)
             }
         };
         fields.push((name.clone(), value));
@@ -322,8 +322,8 @@ pub fn token_exchange_request(
                 format!("Basic {}", codec::base64_encode(format!("{id}:{secret}").as_bytes())),
             )),
             Some(ClientAuth::Post) => {
-                fields.push(("client_id".to_string(), Value::String(id)));
-                fields.push(("client_secret".to_string(), Value::String(secret)));
+                fields.push(("client_id".to_string(), Value::string(id)));
+                fields.push(("client_secret".to_string(), Value::string(secret)));
             }
             None => {}
         }
@@ -413,7 +413,7 @@ pub fn reply_payload(resp: &HttpResponse, as_: ResponseAs) -> Value {
             Some(Value::String(prev)) => format!("{prev}, {value}"),
             _ => value.clone(),
         };
-        headers.insert(name, Value::String(joined));
+        headers.insert(name, Value::string(joined));
     }
     let body = match as_ {
         ResponseAs::Text => resp.text().into_owned(),
@@ -421,16 +421,16 @@ pub fn reply_payload(resp: &HttpResponse, as_: ResponseAs) -> Value {
     };
     object(vec![
         ("status", Value::Number(f64::from(resp.status))),
-        ("headers", Value::Object(headers)),
-        ("body", Value::String(body)),
+        ("headers", Value::object(headers)),
+        ("body", Value::string(body)),
     ])
 }
 
 pub(super) fn failure_value(error: String, kind: &str, credential: Option<String>) -> Value {
     object(vec![
-        ("error", Value::String(error)),
-        ("kind", Value::String(kind.to_string())),
-        ("credential", credential.map_or(Value::Null, Value::String)),
+        ("error", Value::string(error)),
+        ("kind", Value::string(kind.to_string())),
+        ("credential", credential.map_or(Value::Null, Value::string)),
         ("phase", Value::Null),
         ("grantStatus", Value::Null),
         ("grantBody", Value::Null),
@@ -449,8 +449,8 @@ pub(super) fn set_field(mut payload: Value, name: &str, value: Value) -> Value {
 /// A failure of the OAuth flow: the fixed safe message, its public `code` and the closed `reason`.
 pub fn oauth_failure_payload(error: &str, code: &str, reason: &str) -> Value {
     let payload = failure_value(error.to_string(), "oauth", None);
-    let payload = set_field(payload, "code", Value::String(code.to_string()));
-    set_field(payload, "reason", Value::String(reason.to_string()))
+    let payload = set_field(payload, "code", Value::string(code.to_string()));
+    set_field(payload, "reason", Value::string(reason.to_string()))
 }
 
 /// The host has no port for a capability the call needs.

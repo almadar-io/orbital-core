@@ -37,10 +37,10 @@ fn wrapper_forward_chains_to_host_default() {
     // so the host knob must be exposed under its own name…
     assert_eq!(
         o.get("buttonLabel"),
-        Some(&Value::String("Export".to_string()))
+        Some(&Value::string("Export"))
     );
     // …and the forwarding field is collapsed too.
-    assert_eq!(o.get("label"), Some(&Value::String("Export".to_string())));
+    assert_eq!(o.get("label"), Some(&Value::string("Export")));
 }
 
 /// A host call-site override of the knob flows through to the child — the
@@ -54,7 +54,7 @@ fn wrapper_forward_picks_up_host_override() {
     let cfg = config_defaults_value(&button, &all);
     assert_eq!(
         cfg.as_object().unwrap().get("buttonLabel"),
-        Some(&Value::String("Download CSV".to_string())),
+        Some(&Value::string("Download CSV")),
     );
 }
 
@@ -67,7 +67,7 @@ fn wrapper_forward_unresolved_when_no_host_knob() {
     let cfg = config_defaults_value(&button, &all);
     assert_eq!(
         cfg.as_object().unwrap().get("label"),
-        Some(&Value::String("@config.buttonLabel".to_string())),
+        Some(&Value::string("@config.buttonLabel")),
     );
 }
 
@@ -79,6 +79,6 @@ fn self_forward_terminates() {
     let cfg = config_defaults_value(&t, &all);
     assert_eq!(
         cfg.as_object().unwrap().get("x"),
-        Some(&Value::String("@config.x".to_string())),
+        Some(&Value::string("@config.x")),
     );
 }

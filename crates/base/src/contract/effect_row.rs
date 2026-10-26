@@ -312,7 +312,7 @@ impl SExpression {
                             let entities = crate::persist_batch::batch_entities(ops);
                             if entities.is_empty() {
                                 out.push(EffectUse {
-                                    kind: op.clone(),
+                                    kind: op.clone().into_inner(),
                                     resource: None,
                                     resolved: true,
                                     site,
@@ -320,7 +320,7 @@ impl SExpression {
                             }
                             for entity in entities {
                                 out.push(EffectUse {
-                                    kind: op.clone(),
+                                    kind: op.clone().into_inner(),
                                     resource: Some(entity.to_string()),
                                     resolved: true,
                                     site,
@@ -329,7 +329,7 @@ impl SExpression {
                         } else if is_known_effect_name(op) {
                             let (resource, resolved) = effect_resource(op, &arr[1..]);
                             out.push(EffectUse {
-                                kind: op.clone(),
+                                kind: op.clone().into_inner(),
                                 resource,
                                 resolved,
                                 site,

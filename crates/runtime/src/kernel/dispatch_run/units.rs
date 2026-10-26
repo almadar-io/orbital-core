@@ -413,7 +413,7 @@ impl RuntimeKernel {
                 &child,
                 Some(eid),
                 event,
-                Arc::new(Value::Object(ValueMap::default())),
+                Arc::new(Value::object(ValueMap::default())),
                 None,
                 false,
                 Some(&composed_with),

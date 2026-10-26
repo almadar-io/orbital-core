@@ -73,17 +73,17 @@ fn control_ordinary_keys_including_look_alikes_are_written() {
 
 #[test]
 fn str_template_substitutes_double_braces_and_leaves_single_braces_and_unknown_keys() {
-    assert_eq!(ok(r#"["str/template", "Hello, {{name}}!", {"name": "World"}]"#), Value::String("Hello, World!".into()));
-    assert_eq!(ok(r#"["str/template", "Hello, {name}!", {"name": "World"}]"#), Value::String("Hello, {name}!".into()));
-    assert_eq!(ok(r#"["str/template", "{{a}} {{b}}", {"a": 1}]"#), Value::String("1 {{b}}".into()));
+    assert_eq!(ok(r#"["str/template", "Hello, {{name}}!", {"name": "World"}]"#), Value::string("Hello, World!"));
+    assert_eq!(ok(r#"["str/template", "Hello, {name}!", {"name": "World"}]"#), Value::string("Hello, {name}!"));
+    assert_eq!(ok(r#"["str/template", "{{a}} {{b}}", {"a": 1}]"#), Value::string("1 {{b}}"));
 }
 
 #[test]
 fn str_truncate_keeps_len_characters_then_appends_the_suffix() {
-    assert_eq!(ok(r#"["str/truncate", "Hello World", 8, "..."]"#), Value::String("Hello Wo...".into()));
-    assert_eq!(ok(r#"["str/truncate", "Hello World", 8]"#), Value::String("Hello Wo...".into()));
-    assert_eq!(ok(r#"["str/truncate", "Hello", 8, "..."]"#), Value::String("Hello".into()));
-    assert_eq!(ok(r#"["str/truncate", "Hello Wo", 8, "..."]"#), Value::String("Hello Wo".into()));
+    assert_eq!(ok(r#"["str/truncate", "Hello World", 8, "..."]"#), Value::string("Hello Wo..."));
+    assert_eq!(ok(r#"["str/truncate", "Hello World", 8]"#), Value::string("Hello Wo..."));
+    assert_eq!(ok(r#"["str/truncate", "Hello", 8, "..."]"#), Value::string("Hello"));
+    assert_eq!(ok(r#"["str/truncate", "Hello Wo", 8, "..."]"#), Value::string("Hello Wo"));
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn validate_check_min_max_range_rules_run_as_rules_not_as_calls() {
     assert_eq!(map["valid"], Value::Bool(false));
     assert_eq!(
         map["errors"],
-        Value::Array(vec![
+        Value::array(vec![
             Value::String("age: min validation failed".into()),
             Value::String("n: max validation failed".into()),
         ])
@@ -200,8 +200,8 @@ fn an_unsupported_locale_or_currency_answers_null_not_a_fallback() {
     assert_eq!(ok(r#"["format/number", 1, {"locale": "xx-YY"}]"#), Value::Null);
     assert_eq!(ok(r#"["format/currency", 1, "XYZ"]"#), Value::Null);
     assert_eq!(ok(r#"["format/currency", 1, "USD", "de-DE"]"#), Value::Null);
-    assert_eq!(ok(r#"["format/number", 1, {"locale": "de-DE"}]"#), Value::String("1".into()));
-    assert_eq!(ok(r#"["format/currency", 1, "USD"]"#), Value::String("$1.00".into()));
+    assert_eq!(ok(r#"["format/number", 1, {"locale": "de-DE"}]"#), Value::string("1"));
+    assert_eq!(ok(r#"["format/currency", 1, "USD"]"#), Value::string("$1.00"));
 }
 
 #[test]
@@ -219,10 +219,10 @@ fn bad_fraction_digits_answer_null() {
 
 #[test]
 fn format_number_honors_minimum_and_maximum_fraction_digits() {
-    assert_eq!(ok(r#"["format/number", 5, {"minimumFractionDigits": 2, "maximumFractionDigits": 4}]"#), Value::String("5.00".into()));
-    assert_eq!(ok(r#"["format/number", 5.123456, {"minimumFractionDigits": 5}]"#), Value::String("5.12346".into()));
-    assert_eq!(ok(r#"["format/number", 5.123456, {"maximumFractionDigits": 1}]"#), Value::String("5.1".into()));
-    assert_eq!(ok(r#"["format/number", 5.123456, {"decimals": 2, "maximumFractionDigits": 1}]"#), Value::String("5.12".into()));
+    assert_eq!(ok(r#"["format/number", 5, {"minimumFractionDigits": 2, "maximumFractionDigits": 4}]"#), Value::string("5.00"));
+    assert_eq!(ok(r#"["format/number", 5.123456, {"minimumFractionDigits": 5}]"#), Value::string("5.12346"));
+    assert_eq!(ok(r#"["format/number", 5.123456, {"maximumFractionDigits": 1}]"#), Value::string("5.1"));
+    assert_eq!(ok(r#"["format/number", 5.123456, {"decimals": 2, "maximumFractionDigits": 1}]"#), Value::string("5.12"));
 }
 
 fn value(json: &str) -> Value {

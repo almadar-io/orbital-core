@@ -169,7 +169,7 @@ pub fn row_set_marker(reference: &RowSetRef) -> Value {
             .and_then(|json| serde_json::from_value(json).ok())
             .unwrap_or(Value::Null),
     );
-    Value::Object(leaf)
+    Value::object(leaf)
 }
 
 // ----- predicate evaluation -------------------------------------------------------------------
@@ -271,7 +271,7 @@ impl RowPredicate {
 /// The row's `id` as text; empty when it has none.
 pub fn row_id(row: &Value) -> String {
     match row_field(row, "id") {
-        Some(Value::String(s)) => s.clone(),
+        Some(Value::String(s)) => s.clone().into_inner(),
         Some(other) if !other.is_null() => other.to_string(),
         _ => String::new(),
     }
@@ -350,11 +350,11 @@ mod nearest_tests {
 
     fn row(id: &str, embedding: Option<Value>) -> Arc<Value> {
         let mut map = crate::value::ValueMap::default();
-        map.insert("id".to_string(), Value::String(id.to_string()));
+        map.insert("id".to_string(), Value::string(id.to_string()));
         if let Some(v) = embedding {
             map.insert("embedding".to_string(), v);
         }
-        Arc::new(Value::Object(map))
+        Arc::new(Value::object(map))
     }
 
     fn vec_of(xs: &[f64]) -> Value {

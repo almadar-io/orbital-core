@@ -24,15 +24,15 @@ fn tags() -> Vec<Value> {
 fn a_projected_id_takes_the_first_row_id_and_an_array_wraps_it() {
     let rows = tags();
     let out = projected_payload(&fields(), |t| (t == "Tag").then_some(rows.as_slice()));
-    assert_eq!(out.get("tagId"), Some(&Value::String("Tag-1".into())));
-    assert_eq!(out.get("tagIds"), Some(&Value::Array(vec![Value::String("Tag-1".into())])));
+    assert_eq!(out.get("tagId"), Some(&Value::string("Tag-1")));
+    assert_eq!(out.get("tagIds"), Some(&Value::array(vec![Value::String("Tag-1".into())])));
 }
 
 #[test]
 fn a_projection_of_another_field_takes_that_column() {
     let rows = tags();
     let out = projected_payload(&fields(), |t| (t == "Tag").then_some(rows.as_slice()));
-    assert_eq!(out.get("tagName"), Some(&Value::String("urgent".into())));
+    assert_eq!(out.get("tagName"), Some(&Value::string("urgent")));
 }
 
 #[test]
@@ -62,14 +62,14 @@ mod through_mapping {
     }
 
     fn mapping(pairs: &[(&str, &str)]) -> orbital_core_base::schema::SObject {
-        pairs.iter().map(|(k, v)| (k.to_string(), SExpression::String(v.to_string()))).collect()
+        pairs.iter().map(|(k, v)| (k.to_string(), SExpression::string(v.to_string()))).collect()
     }
 
     #[test]
     fn a_source_field_passed_into_a_projected_target_field_takes_its_projected_value() {
         let rows = tags();
         let out = projected_through_mapping(&target(), &mapping(&[("tagId", "@payload.id")]), |t| (t == "Tag").then_some(rows.as_slice()));
-        assert_eq!(out.get("id"), Some(&Value::String("Tag-1".into())));
+        assert_eq!(out.get("id"), Some(&Value::string("Tag-1")));
     }
 
     #[test]
@@ -84,7 +84,7 @@ mod through_mapping {
         let rows = tags();
         let computed: orbital_core_base::schema::SObject = orbital_core_base::schema::SObject::from([(
             "tagId".to_string(),
-            SExpression::Array(vec![SExpression::String("str/concat".into()), SExpression::String("@payload.id".into())]),
+            SExpression::Array(vec![SExpression::string("str/concat"), SExpression::string("@payload.id")]),
         )]);
         let out = projected_through_mapping(&target(), &computed, |t| (t == "Tag").then_some(rows.as_slice()));
         assert!(out.is_empty());

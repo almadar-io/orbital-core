@@ -28,15 +28,15 @@ pub fn instance_rows(
                 minted += 1;
                 row.insert(
                     "id".to_string(),
-                    Value::String(mock_row_id(entity_name, minted)),
+                    Value::string(mock_row_id(entity_name, minted)),
                 );
             }
             for key in ["createdAt", "updatedAt"] {
                 if row.get(key).is_none_or(is_blank) {
-                    row.insert(key.to_string(), Value::String(now_iso.to_string()));
+                    row.insert(key.to_string(), Value::string(now_iso.to_string()));
                 }
             }
-            Value::Object(row)
+            Value::object(row)
         })
         .collect()
 }

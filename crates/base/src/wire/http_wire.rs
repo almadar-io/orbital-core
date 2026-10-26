@@ -386,7 +386,7 @@ pub fn closed_keys(map: &ValueMap, allowed: &[&str], what: &str) -> Result<(), H
 
 pub fn text_field(map: &ValueMap, key: &str, what: &str) -> Result<String, HttpRefusal> {
     match map.get(key) {
-        Some(Value::String(s)) => Ok(s.clone()),
+        Some(Value::String(s)) => Ok(s.clone().into_inner()),
         _ => invalid(format!("{what}.{key} must be a string")),
     }
 }
@@ -407,7 +407,7 @@ pub fn parse_credential_status_slot(selection: &Value) -> Result<CredentialSlot,
     let message = "credential-status: expected { credential, scope: app | user }";
     match selection {
         Value::String(name) => Ok(CredentialSlot {
-            name: name.clone(),
+            name: name.clone().into_inner(),
             scope: SecretScope::User,
         }),
         Value::Object(slot) if slot.contains_key("scope") => {
@@ -453,7 +453,7 @@ pub fn parse_http_headers(value: Option<&Value>) -> Result<Vec<(String, String)>
                 match value {
                     Value::String(s) => {
                         check_header(name, s)?;
-                        out.push((name.clone(), s.clone()));
+                        out.push((name.clone(), s.to_string()));
                     }
                     _ => return invalid("HTTP header values must be strings"),
                 }

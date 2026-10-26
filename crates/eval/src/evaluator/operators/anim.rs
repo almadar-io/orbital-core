@@ -58,7 +58,7 @@ impl Operator for AnimSheetRectOp {
         m.insert("sy".to_string(), Value::Number(sy));
         m.insert("sw".to_string(), Value::Number(frame_w));
         m.insert("sh".to_string(), Value::Number(frame_h));
-        Ok(Value::Object(m))
+        Ok(Value::object(m))
     }
 }
 
@@ -102,6 +102,6 @@ impl Operator for AnimDirectionFromDeltaOp {
                 _ => "right",
             }
         };
-        Ok(Value::String(dir.to_string()))
+        Ok(Value::string(dir.to_string()))
     }
 }

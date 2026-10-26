@@ -82,7 +82,7 @@ impl ClientEffect {
                 options,
             } => Some(ClientEffect::Navigate {
                 path: path.clone(),
-                params: params.as_ref().map(|p| Value::Object(p.clone())),
+                params: params.as_ref().map(|p| Value::object(p.clone())),
                 options: options.clone(),
             }),
             Effect::NavigateBack => Some(ClientEffect::NavigateBack),
@@ -252,9 +252,9 @@ mod tests {
     fn render_ui_arity_3() {
         let effect = ClientEffect::RenderUi {
             slot: "main".to_string(),
-            config: Some(Value::Object(ValueMap::from_iter([(
+            config: Some(Value::object(ValueMap::from_iter([(
                 "type".to_string(),
-                Value::String("card".to_string()),
+                Value::String(("card".to_string()).into()),
             )]))),
         };
         roundtrip(&effect, r#"["render-ui","main",{"type":"card"}]"#);
@@ -283,9 +283,9 @@ mod tests {
     fn navigate_arity_3() {
         let effect = ClientEffect::Navigate {
             path: "/notes/:id".to_string(),
-            params: Some(Value::Object(ValueMap::from_iter([(
+            params: Some(Value::object(ValueMap::from_iter([(
                 "id".to_string(),
-                Value::String("42".to_string()),
+                Value::String(("42".to_string()).into()),
             )]))),
             options: None,
         };
@@ -310,9 +310,9 @@ mod tests {
     fn navigate_arity_4() {
         let effect = ClientEffect::Navigate {
             path: "/notes/:id".to_string(),
-            params: Some(Value::Object(ValueMap::from_iter([(
+            params: Some(Value::object(ValueMap::from_iter([(
                 "id".to_string(),
-                Value::String("42".to_string()),
+                Value::String(("42".to_string()).into()),
             )]))),
             options: Some(NavigateOptions {
                 crumb: Some("Note 42".to_string()),
@@ -343,9 +343,9 @@ mod tests {
     fn from_effect_render_ui() {
         let effect = Effect::RenderUi {
             slot: "main".to_string(),
-            content: Value::Object(ValueMap::from_iter([(
+            content: Value::object(ValueMap::from_iter([(
                 "type".to_string(),
-                Value::String("card".to_string()),
+                Value::String(("card".to_string()).into()),
             )])),
         };
         let client = ClientEffect::from_effect(&effect).unwrap();
@@ -353,9 +353,9 @@ mod tests {
             client,
             ClientEffect::RenderUi {
                 slot: "main".to_string(),
-                config: Some(Value::Object(ValueMap::from_iter([(
+                config: Some(Value::object(ValueMap::from_iter([(
                     "type".to_string(),
-                    Value::String("card".to_string())
+                    Value::String(("card".to_string()).into())
                 )]))),
             }
         );
@@ -426,9 +426,9 @@ mod tests {
     fn render_ui_value_is_the_pattern_and_an_empty_object_for_none() {
         let effect = ClientEffect::RenderUi {
             slot: "modal".to_string(),
-            config: Some(Value::Object(ValueMap::from_iter([(
+            config: Some(Value::object(ValueMap::from_iter([(
                 "type".to_string(),
-                Value::String("form".to_string()),
+                Value::String(("form".to_string()).into()),
             )]))),
         };
         assert_eq!(

@@ -78,7 +78,7 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 if !rest.is_empty() {
-                    values.push(Value::Object(rest));
+                    values.push(Value::object(rest));
                 }
             }
             Some(Effect::Custom {
@@ -376,7 +376,7 @@ pub(super) fn parse_http(args: &[SExpression]) -> Option<Effect> {
     let request = args
         .get(3)
         .map(|e| Value::from(e.clone()))
-        .unwrap_or_else(|| Value::Object(ValueMap::default()));
+        .unwrap_or_else(|| Value::object(ValueMap::default()));
     let options = args.get(4).map(|e| Value::from(e.clone()));
     let key = options
         .as_ref()
@@ -423,9 +423,9 @@ pub(super) fn parse_redis(args: &[SExpression]) -> Option<Effect> {
     Some(Effect::Redis {
         origin: Value::from(args[0].clone()),
         command: Value::from(args[1].clone()),
-        options: Value::Object(options),
+        options: Value::object(options),
         key,
-        emit: parse_emit_config(&Value::Object(routes)),
+        emit: parse_emit_config(&Value::object(routes)),
     })
 }
 
@@ -460,9 +460,9 @@ pub(super) fn parse_postgres(args: &[SExpression]) -> Option<Effect> {
         origin: Value::from(args[0].clone()),
         sql: Value::from(args[1].clone()),
         params: Value::from(args[2].clone()),
-        options: Value::Object(options),
+        options: Value::object(options),
         key,
-        emit: parse_emit_config(&Value::Object(routes)),
+        emit: parse_emit_config(&Value::object(routes)),
     })
 }
 
@@ -692,7 +692,7 @@ pub(super) fn parse_navigate(args: &[SExpression]) -> Option<Effect> {
     let path = args[0].as_str()?.to_string();
     let params = args.get(1).and_then(|e| {
         if let Value::Object(obj) = Value::from(e.clone()) {
-            Some(obj)
+            Some(obj.into_inner())
         } else {
             None
         }

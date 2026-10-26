@@ -72,10 +72,10 @@ pub fn parse_csv(text: &str) -> Vec<Value> {
         for (index, name) in header.iter().enumerate() {
             row.insert(
                 name.clone(),
-                Value::String(cells.get(index).cloned().unwrap_or_default()),
+                Value::string(cells.get(index).cloned().unwrap_or_default()),
             );
         }
-        Value::Object(row)
+        Value::object(row)
     })
     .collect()
 }
@@ -85,9 +85,9 @@ impl Operator for CsvParseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "csv/parse", 1);
         let Value::String(text) = eval_expr(&args[0], ctx)? else {
-            return Ok(Value::Array(Vec::new()));
+            return Ok(Value::array(Vec::new()));
         };
-        Ok(Value::Array(parse_csv(&text)))
+        Ok(Value::array(parse_csv(&text)))
     }
 }
 
@@ -102,7 +102,7 @@ mod tests {
                 Value::Object(map) => map
                     .into_iter()
                     .map(|(k, v)| match v {
-                        Value::String(s) => (k, s),
+                        Value::String(s) => (k, s.into_inner()),
                         other => panic!("cell is not a string: {other:?}"),
                     })
                     .collect(),

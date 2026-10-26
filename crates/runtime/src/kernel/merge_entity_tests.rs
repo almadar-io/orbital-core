@@ -5,7 +5,7 @@ fn obj(pairs: &[(&str, Value)]) -> Value {
     for (k, v) in pairs {
         m.insert((*k).to_string(), v.clone());
     }
-    Value::Object(m)
+    Value::object(m)
 }
 
 /// Non-empty incoming payload always wins (and is what gets persisted by the
@@ -27,22 +27,22 @@ fn obj(pairs: &[(&str, Value)]) -> Value {
 #[test]
 fn merge_entity_preserves_untouched_and_overrides_set() {
     let base = obj(&[
-        ("id", Value::String("singleton".to_string())),
-        ("filterKind", Value::String("all".to_string())),
-        ("title", Value::String("Activity".to_string())),
+        ("id", Value::string("singleton")),
+        ("filterKind", Value::string("all")),
+        ("title", Value::string("Activity")),
     ]);
-    let set = obj(&[("filterKind", Value::String("created".to_string()))]);
+    let set = obj(&[("filterKind", Value::string("created"))]);
     let merged = merge_entity(&base, &set);
     let m = merged.as_object().unwrap();
-    assert_eq!(m["filterKind"], Value::String("created".to_string())); // overridden
-    assert_eq!(m["title"], Value::String("Activity".to_string())); // preserved
-    assert_eq!(m["id"], Value::String("singleton".to_string())); // preserved
+    assert_eq!(m["filterKind"], Value::string("created")); // overridden
+    assert_eq!(m["title"], Value::string("Activity")); // preserved
+    assert_eq!(m["id"], Value::string("singleton")); // preserved
 }
 
 #[test]
 fn merge_entity_empty_set_returns_base() {
     let base = obj(&[("a", Value::Number(1.0))]);
-    assert_eq!(merge_entity(&base, &Value::Object(ValueMap::default())), base);
+    assert_eq!(merge_entity(&base, &Value::object(ValueMap::default())), base);
     assert_eq!(merge_entity(&base, &Value::Null), base);
 }
 

@@ -339,7 +339,7 @@ pub fn resolve_row_set_markers(
     ) -> Result<crate::row_query::RowPage, String>,
 ) -> Value {
     if let Some(reference) = crate::row_query::as_row_set_marker(props) {
-        return Value::Array(resolve(&reference).map(|page| page.rows).unwrap_or_default());
+        return Value::array(resolve(&reference).map(|page| page.rows).unwrap_or_default());
     }
     match props {
         Value::Array(items) => Value::Array(
@@ -364,9 +364,9 @@ pub fn resolve_row_set_markers(
 pub fn get_entity_rows_from(props: &Value, entities: &HashMap<String, Vec<Value>>) -> Vec<Value> {
     if let Some(obj) = props.as_object() {
         match obj.get("entity") {
-            Some(Value::Array(rows)) => return rows.clone(),
+            Some(Value::Array(rows)) => return rows.clone().into_inner(),
             Some(Value::String(entity)) if !entity.is_empty() => {
-                if let Some(cached) = entities.get(entity) {
+                if let Some(cached) = entities.get(entity.as_str()) {
                     if !cached.is_empty() {
                         return cached.clone();
                     }
@@ -388,7 +388,7 @@ pub fn get_entity_rows_from(props: &Value, entities: &HashMap<String, Vec<Value>
 pub fn get_entity_rows(props: &Value, ctx: &RenderContext<'_>) -> Vec<Value> {
     if let Some(obj) = props.as_object() {
         match obj.get("entity") {
-            Some(Value::Array(rows)) => return rows.clone(),
+            Some(Value::Array(rows)) => return rows.clone().into_inner(),
             Some(Value::String(entity)) if !entity.is_empty() => {
                 if let Some(cached) = ctx.entity_data(entity) {
                     if !cached.is_empty() {
@@ -446,7 +446,7 @@ pub fn substitute_row_bindings(spec: &Value, param: &str, row: &Value) -> Value 
                     return get_path(row, path).unwrap_or(Value::Null);
                 }
             }
-            Value::String(s.to_string())
+            Value::string(s.to_string())
         }
         Value::Array(arr) => {
             Value::Array(arr.iter().map(|v| substitute_row_bindings(v, param, row)).collect())
@@ -456,7 +456,7 @@ pub fn substitute_row_bindings(spec: &Value, param: &str, row: &Value) -> Value 
             for (k, v) in obj {
                 out.insert(k.clone(), substitute_row_bindings(v, param, row));
             }
-            Value::Object(out)
+            Value::object(out)
         }
         other => other.clone(),
     }
@@ -510,9 +510,9 @@ pub fn render_item_children(
 pub fn get_columns(props: &Value, rows: &[Value]) -> Vec<Value> {
     let spec = |key: &str, label: &str| -> Value {
         let mut o = ValueMap::default();
-        o.insert("key".to_string(), Value::String(key.to_string()));
-        o.insert("label".to_string(), Value::String(label.to_string()));
-        Value::Object(o)
+        o.insert("key".to_string(), Value::string(key.to_string()));
+        o.insert("label".to_string(), Value::string(label.to_string()));
+        Value::object(o)
     };
     let from_arr = |arr: &[Value]| -> Vec<Value> {
         arr.iter()
@@ -788,7 +788,7 @@ pub fn format_value(value: &Value) -> String {
                 format!("{:.2}", n)
             }
         }
-        Value::String(s) => s.clone(),
+        Value::String(s) => s.clone().into_inner(),
         Value::Array(arr) => format!("[{} items]", arr.len()),
         Value::Object(obj) => format!("{{{} fields}}", obj.len()),
         Value::Lambda { params, .. } => format!("[lambda({} params)]", params.len()),
@@ -804,7 +804,7 @@ pub fn inject_entity_data(pattern: &mut Value, entity_type: &str, data: &[Value]
         // Check if this pattern references the entity type
         if let Some(pattern_entity) = obj.get("entity").and_then(|v| v.as_str()) {
             if pattern_entity == entity_type {
-                obj.insert("data".to_string(), Value::Array(data.to_vec()));
+                obj.insert("data".to_string(), Value::array(data.to_vec()));
             }
         }
     }
@@ -823,13 +823,13 @@ pub fn build_form_payload(form_data: &HashMap<String, String>) -> Value {
         } else if let Ok(num) = value.parse::<f64>() {
             Value::Number(num)
         } else {
-            Value::String(value.clone())
+            Value::string(value.clone())
         };
 
         payload.insert(key.clone(), parsed_value);
     }
 
-    Value::Object(payload)
+    Value::object(payload)
 }
 
 /// Convert serde_json::Value to crate::Value
@@ -838,7 +838,7 @@ pub fn from_json(json: serde_json::Value) -> Value {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(b),
         serde_json::Value::Number(n) => Value::Number(n.as_f64().unwrap_or(0.0)),
-        serde_json::Value::String(s) => Value::String(s),
+        serde_json::Value::String(s) => Value::string(s),
         serde_json::Value::Array(arr) => Value::Array(arr.into_iter().map(from_json).collect()),
         serde_json::Value::Object(obj) => {
             Value::Object(obj.into_iter().map(|(k, v)| (k, from_json(v))).collect())
@@ -852,7 +852,7 @@ pub fn to_json(value: &Value) -> serde_json::Value {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),
         Value::Number(n) => serde_json::json!(*n),
-        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::String(s) => serde_json::Value::String(s.clone().into_inner()),
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(to_json).collect()),
         Value::Object(obj) => {
             serde_json::Value::Object(obj.iter().map(|(k, v)| (k.clone(), to_json(v))).collect())
@@ -960,7 +960,7 @@ mod tests {
         });
         assert_eq!(
             resolved.as_object().unwrap().get("entity"),
-            Some(&Value::Array(rows))
+            Some(&Value::array(rows))
         );
         assert_eq!(get_string(&resolved, "title"), Some("T".to_string()));
     }
@@ -970,7 +970,7 @@ mod tests {
         let resolved = resolve_row_set_markers(&marker_props(), &|_| Err("host down".into()));
         assert_eq!(
             resolved.as_object().unwrap().get("entity"),
-            Some(&Value::Array(Vec::new()))
+            Some(&Value::array(Vec::new()))
         );
         let plain = json_value(r#"{"entity":[{"id":"a"}],"x":{"y":[1,2]}}"#);
         assert_eq!(resolve_row_set_markers(&plain, &|_| Err("unused".into())), plain);
@@ -1043,7 +1043,7 @@ mod tests {
         assert_eq!(format_value(&Value::Bool(true)), "Yes");
         assert_eq!(format_value(&Value::Number(42.0)), "42");
         assert_eq!(format_value(&Value::Number(2.5)), "2.50");
-        assert_eq!(format_value(&Value::String("hello".to_string())), "hello");
+        assert_eq!(format_value(&Value::string("hello")), "hello");
     }
 
     #[test]
@@ -1101,7 +1101,7 @@ mod tests {
         let payload = build_form_payload(&form_data);
         let obj = payload.as_object().unwrap();
 
-        assert_eq!(obj.get("name"), Some(&Value::String("Alice".to_string())));
+        assert_eq!(obj.get("name"), Some(&Value::string("Alice")));
         assert_eq!(obj.get("age"), Some(&Value::Number(30.0)));
         assert_eq!(obj.get("active"), Some(&Value::Bool(true)));
     }

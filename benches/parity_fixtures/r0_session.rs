@@ -70,7 +70,7 @@ impl Session for KernelSession {
         let response = serde_json::to_value(&response).map_err(|e| e.to_string())?;
         let mut states = Map::new();
         for name in &self.orbital_traits {
-            if let Some(state) = self.kernel.get_state(name, Some("singleton")) {
+            if let Some(state) = self.kernel.get_state(name, None) {
                 states.insert(name.clone(), Json::String(state.current_state));
             }
         }

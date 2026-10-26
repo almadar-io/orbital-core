@@ -21,7 +21,7 @@ fn unknown_string_heads_keep_all_literal_array_elements() {
     assert!(matches!(&items[1], OirExpr::Binding { binding } if binding.path.is_empty()));
     let payload = Value::Object([("totalCount".into(), Value::Number(7.0))].into_iter().collect());
     let ctx = BindingContextBuilder::new().payload(payload.clone()).build();
-    assert_eq!(Evaluator::new().evaluate(&expr, &ctx).unwrap(), Value::Array(vec![Value::String("ordinary literal".into()), payload]));
+    assert_eq!(Evaluator::new().evaluate(&expr, &ctx).unwrap(), Value::array(vec![Value::String("ordinary literal".into()), payload]));
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn an_unknown_namespaced_head_is_refused_by_the_kernel_not_read_as_data() {
     let error = Evaluator::new().evaluate(&unknown, &ctx).expect_err("an unknown operator is refused");
     assert!(error.to_string().contains("example/unknown"), "{error}");
     let data: SExpression = serde_json::from_value(json!(["ordinary literal", 1])).unwrap();
-    assert_eq!(Evaluator::new().evaluate(&data, &ctx).unwrap(), Value::Array(vec![Value::String("ordinary literal".into()), Value::Number(1.0)]), "control: a head with no namespace stays data");
+    assert_eq!(Evaluator::new().evaluate(&data, &ctx).unwrap(), Value::array(vec![Value::String("ordinary literal".into()), Value::Number(1.0)]), "control: a head with no namespace stays data");
     let known: SExpression = serde_json::from_value(json!(["math/abs", -2])).unwrap();
     assert_eq!(Evaluator::new().evaluate(&known, &ctx).unwrap(), Value::Number(2.0), "control: a known namespaced operator runs");
 }
@@ -66,7 +66,7 @@ fn an_unknown_namespaced_head_is_refused_by_the_kernel_not_read_as_data() {
 fn substring_with_its_start_past_its_end_answers_empty_text_instead_of_panicking() {
     let ctx = BindingContextBuilder::new().build();
     let backwards: SExpression = serde_json::from_value(json!(["substring", "abcdef", 4, 2])).unwrap();
-    assert_eq!(Evaluator::new().evaluate(&backwards, &ctx).unwrap(), Value::String(String::new()));
+    assert_eq!(Evaluator::new().evaluate(&backwards, &ctx).unwrap(), Value::string(String::new()));
     let forwards: SExpression = serde_json::from_value(json!(["substring", "abcdef", 1, 3])).unwrap();
-    assert_eq!(Evaluator::new().evaluate(&forwards, &ctx).unwrap(), Value::String("bc".into()), "control: an ordered range");
+    assert_eq!(Evaluator::new().evaluate(&forwards, &ctx).unwrap(), Value::string("bc"), "control: an ordered range");
 }

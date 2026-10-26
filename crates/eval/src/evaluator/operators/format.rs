@@ -195,7 +195,7 @@ impl Operator for FormatNumberOp {
         let options = match args.get(1) {
             Some(expr) => match eval_expr(expr, ctx)? {
                 Value::Object(map) => map,
-                Value::Null => ValueMap::default(),
+                Value::Null => ValueMap::default().into(),
                 other => {
                     return Err(OrbitalError::Eval(EvalError::TypeMismatch {
                         expected: "object".to_string(),
@@ -203,7 +203,7 @@ impl Operator for FormatNumberOp {
                     }))
                 }
             },
-            None => ValueMap::default(),
+            None => ValueMap::default().into(),
         };
         let locale = match options.get("locale") {
             None | Some(Value::Null) => &EN,
@@ -225,7 +225,7 @@ impl Operator for FormatNumberOp {
             (Digits::Absent, Digits::Absent, Digits::Set(max)) => (0, max),
             (Digits::Absent, Digits::Absent, Digits::Absent) => (0, 3),
         };
-        Ok(Value::String(render(n, locale, min, max, 0)))
+        Ok(Value::string(render(n, locale, min, max, 0)))
     }
 }
 
@@ -245,7 +245,7 @@ impl Operator for FormatPercentOp {
             }
             None => 0,
         };
-        Ok(Value::String(format!("{}%", render(n, &EN, decimals, decimals, 2))))
+        Ok(Value::string(format!("{}%", render(n, &EN, decimals, decimals, 2))))
     }
 }
 
@@ -267,7 +267,7 @@ impl Operator for FormatCurrencyOp {
             return Ok(Value::Null);
         };
         let amount = render(n, &EN, *digits, *digits, 0);
-        Ok(Value::String(match amount.strip_prefix('-') {
+        Ok(Value::string(match amount.strip_prefix('-') {
             Some(rest) => format!("-{symbol}{rest}"),
             None => format!("{symbol}{amount}"),
         }))
@@ -316,12 +316,12 @@ impl Operator for FormatBytesOp {
             return Ok(Value::Null);
         }
         if bytes == 0.0 {
-            return Ok(Value::String("0 B".to_string()));
+            return Ok(Value::string("0 B"));
         }
         const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
         let step = ((bytes.ln() / 1024f64.ln()).floor() as i64).clamp(0, 5) as usize;
         if step == 0 {
-            return Ok(Value::String(format!("{} B", js_number(bytes))));
+            return Ok(Value::string(format!("{} B", js_number(bytes))));
         }
         let value = bytes / 1024f64.powi(step as i32);
         let text = if value >= 10.0 {
@@ -331,7 +331,7 @@ impl Operator for FormatBytesOp {
         } else {
             to_fixed(value, 1)
         };
-        Ok(Value::String(format!("{text} {}", UNITS[step])))
+        Ok(Value::string(format!("{text} {}", UNITS[step])))
     }
 }
 
@@ -348,11 +348,11 @@ impl Operator for FormatListOp {
         let items: Vec<String> = match value {
             Value::Array(items) => items.iter().map(Value::to_string_value).collect(),
             Value::Null => Vec::new(),
-            other => return Ok(Value::String(other.to_string_value())),
+            other => return Ok(Value::string(other.to_string_value())),
         };
-        Ok(Value::String(match items.len() {
+        Ok(Value::string(match items.len() {
             0 => String::new(),
-            1 => items[0].clone(),
+            1 => items[0].to_string(),
             2 => format!("{} {style} {}", items[0], items[1]),
             _ => format!("{}, {style} {}", items[..items.len() - 1].join(", "), items[items.len() - 1]),
         }))
@@ -379,6 +379,6 @@ impl Operator for FormatPhoneOp {
         } else {
             text
         };
-        Ok(Value::String(formatted))
+        Ok(Value::string(formatted))
     }
 }

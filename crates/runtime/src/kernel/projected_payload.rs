@@ -31,7 +31,7 @@ pub fn projected_payload<'a>(
             .cloned()
             .unwrap_or(Value::Null);
         let value = if field.field_type.starts_with('[') {
-            Value::Array(vec![value])
+            Value::array(vec![value])
         } else {
             value
         };
@@ -79,6 +79,6 @@ mod tests {
         assert!(projected_payload(&[field.clone()], |_| panic!("Named source is not a row projection")).is_empty());
         field.projected_from.as_mut().unwrap().field = Some("label".into());
         let rows = vec![serde_json::from_value(serde_json::json!({"label":"kept"})).unwrap()];
-        assert_eq!(projected_payload(&[field], |_| Some(&rows))["row"], Value::String("kept".into()));
+        assert_eq!(projected_payload(&[field], |_| Some(&rows))["row"], Value::string("kept"));
     }
 }

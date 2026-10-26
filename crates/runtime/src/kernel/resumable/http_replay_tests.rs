@@ -199,7 +199,7 @@ fn keys(events: &[Value]) -> Vec<Value> {
     events
         .iter()
         .map(|e| match e {
-            Value::Object(fields) => fields.get("key").cloned().unwrap_or(Value::String("absent".into())),
+            Value::Object(fields) => fields.get("key").cloned().unwrap_or(Value::string("absent")),
             other => panic!("event is not an object: {other:?}"),
         })
         .collect()
@@ -208,7 +208,7 @@ fn keys(events: &[Value]) -> Vec<Value> {
 #[test]
 fn a_blocking_stream_answer_carries_the_key_the_framer_adds_flush_included() {
     let events = streamed(Some("job"));
-    assert_eq!(keys(&events), vec![Value::String("job".into()); 2]);
+    assert_eq!(keys(&events), vec![Value::string("job"); 2]);
 }
 
 #[test]
@@ -308,20 +308,20 @@ fn a_random_ask_is_journaled_and_replayed_without_asking_again() {
 }
 
 fn os_ask(op: OsOp, path: &str) -> IoRequest {
-    IoRequest::Os { op, args: vec![Value::String(path.to_string())], key: None, site: None }
+    IoRequest::Os { op, args: vec![Value::string(path.to_string())], key: None, site: None }
 }
 
 fn os_ok() -> IoAnswer {
-    IoAnswer::Os(Ok(Value::Object(orbital_core_base::value::ValueMap::from_iter([(
+    IoAnswer::Os(Ok(Value::object(orbital_core_base::value::ValueMap::from_iter([(
         "data".to_string(),
-        Value::String("hi".to_string()),
+        Value::String(("hi".to_string()).into()),
     )]))))
 }
 
 #[test]
 fn an_os_ask_is_journaled_and_replayed_without_asking_again() {
     let port = port();
-    let args = [Value::String("/a".to_string())];
+    let args = [Value::string("/a")];
     let recorded = vec![Exchange::new(os_ask(OsOp::ReadFile, "/a"), os_ok())];
     let (out, end) = port.run_step(recorded.clone(), || port.os(OsOp::ReadFile, &args, None));
     assert_eq!(out.map(|v| v.get_path("data").map(Value::to_string_value)), Ok(Some("hi".to_string())));
@@ -332,10 +332,10 @@ fn an_os_ask_is_journaled_and_replayed_without_asking_again() {
 fn a_changed_os_ask_is_diverged() {
     let port = port();
     let recorded = vec![Exchange::new(os_ask(OsOp::ReadFile, "/a"), os_ok())];
-    let other_path = [Value::String("/b".to_string())];
+    let other_path = [Value::string("/b")];
     let (_, end) = port.run_step(recorded.clone(), || port.os(OsOp::ReadFile, &other_path, None));
     assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
-    let same_path = [Value::String("/a".to_string())];
+    let same_path = [Value::string("/a")];
     let (_, end) = port.run_step(recorded.clone(), || port.os(OsOp::WriteFile, &same_path, None));
     assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
     let (_, end) = port.run_step(recorded, || port.os(OsOp::ReadFile, &same_path, Some("k")));
@@ -347,7 +347,7 @@ fn an_os_failure_answer_replays_as_the_same_failure() {
     let port = port();
     let failure = OsError::new(OsErrorKind::NotFound, "no such file");
     let recorded = vec![Exchange::new(os_ask(OsOp::Stat, "/gone"), IoAnswer::Os(Err(failure.clone())))];
-    let (out, end) = port.run_step(recorded, || port.os(OsOp::Stat, &[Value::String("/gone".to_string())], None));
+    let (out, end) = port.run_step(recorded, || port.os(OsOp::Stat, &[Value::string("/gone")], None));
     assert_eq!(out, Err(failure));
     assert!(end.diverged.is_none());
 }
@@ -543,7 +543,7 @@ fn keyed(key: &str) -> IoRequest {
 fn answered(key: &str, text: &str) -> Exchange {
     Exchange::new(
         keyed(key),
-        IoAnswer::Service(Ok(Value::String(text.into()))),
+        IoAnswer::Service(Ok(Value::string(text))),
     )
 }
 
@@ -610,7 +610,7 @@ fn control_an_unkeyed_ask_after_keyed_ones_is_withheld_and_not_recorded() {
 #[test]
 fn a_keyed_call_is_served_its_answer_by_key_whatever_order_the_journal_holds() {
     let port = port();
-    let expected = (Ok(Value::String("A".into())), Ok(Value::String("B".into())));
+    let expected = (Ok(Value::string("A")), Ok(Value::string("B")));
     for journal in [
         vec![answered("a", "A"), answered("b", "B")],
         vec![answered("b", "B"), answered("a", "A")],
@@ -652,7 +652,7 @@ fn a_key_used_twice_in_one_step_is_a_visible_error_and_the_first_call_stands() {
     let (out, end) = port.run_step(vec![answered("a", "A")], || {
         (call_keyed(&port, "a"), call_keyed(&port, "a"))
     });
-    assert_eq!(out.0, Ok(Value::String("A".into())));
+    assert_eq!(out.0, Ok(Value::string("A")));
     assert!(
         out.1
             .as_ref()
@@ -701,7 +701,7 @@ fn a_cancelled_call_replays_without_diverging_from_the_answers_of_the_others() {
         let kept = call_keyed(&port, "b");
         (kept, port.cancel("a"))
     });
-    assert_eq!(out, (Ok(Value::String("B".into())), Ok(())));
+    assert_eq!(out, (Ok(Value::string("B")), Ok(())));
     assert!(end.pending.is_empty() && end.diverged.is_none());
 }
 
@@ -765,7 +765,7 @@ fn a_keyed_os_or_http_ask_may_be_left_pending_and_an_unkeyed_one_may_not() {
     };
     let os = |key: Option<&str>| IoRequest::Os {
         op: OsOp::Getenv,
-        args: vec![Value::String("HOME".into())],
+        args: vec![Value::string("HOME")],
         key: key.map(str::to_string),
         site: None,
     };

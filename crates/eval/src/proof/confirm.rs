@@ -15,7 +15,7 @@ fn to_value(v: &ModelValue) -> Value {
     match v {
         ModelValue::Null => Value::Null,
         ModelValue::Num(r) => Value::Number(r.to_f64()),
-        ModelValue::Str(s) => Value::String(s.clone()),
+        ModelValue::Str(s) => Value::string(s.clone()),
         ModelValue::Bool(b) => Value::Bool(*b),
     }
 }
@@ -30,9 +30,9 @@ fn insert_path(target: &mut ValueMap, path: &[&str], value: Value) {
     }
     let child = target
         .entry(head.to_string())
-        .or_insert_with(|| Value::Object(ValueMap::default()));
+        .or_insert_with(|| Value::object(ValueMap::default()));
     if !matches!(child, Value::Object(_)) {
-        *child = Value::Object(ValueMap::default());
+        *child = Value::object(ValueMap::default());
     }
     if let Value::Object(map) = child {
         insert_path(map, tail, value);
@@ -60,7 +60,7 @@ pub fn roots(model: &Model) -> BTreeMap<String, ValueMap> {
                         insert_path(
                             out.entry(root.to_string()).or_default(),
                             rest,
-                            Value::Array(vec![Value::Null; count as usize]),
+                            Value::array(vec![Value::Null; count as usize]),
                         );
                     }
                 }
@@ -100,7 +100,7 @@ pub fn confirms(model: &Model, assumptions: &[SExpression], goal: &SExpression) 
     }
     let mut builder = BindingContextBuilder::new();
     for (root, map) in roots(model) {
-        let value = Value::Object(map);
+        let value = Value::object(map);
         builder = match root.as_str() {
             "entity" => builder.entity(value),
             "payload" => builder.payload(value),
@@ -125,7 +125,7 @@ pub fn counterexample(model: &Model) -> serde_json::Value {
         let name = root.strip_prefix("__").unwrap_or(&root).to_string();
         out.insert(
             name,
-            serde_json::to_value(Value::Object(map)).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(Value::object(map)).unwrap_or(serde_json::Value::Null),
         );
     }
     serde_json::Value::Object(out)

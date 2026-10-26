@@ -39,7 +39,7 @@ struct Subscription {
 /// });
 ///
 /// // Emit an event
-/// bus.emit(Event::new("USER_REGISTERED", Value::String("user-123".to_string())));
+/// bus.emit(Event::new("USER_REGISTERED", Value::string("user-123")));
 ///
 /// // Unsubscribe
 /// bus.off(sub_id);
@@ -352,10 +352,10 @@ mod tests {
             *received_clone.write() = Some(event.payload.clone());
         });
 
-        bus.emit(Event::new("TEST_EVENT", Value::String("hello".to_string())));
+        bus.emit(Event::new("TEST_EVENT", Value::string("hello")));
 
         let payload = received.read().clone();
-        assert_eq!(payload, Some(Value::String("hello".to_string())));
+        assert_eq!(payload, Some(Value::string("hello")));
     }
 
     #[test]

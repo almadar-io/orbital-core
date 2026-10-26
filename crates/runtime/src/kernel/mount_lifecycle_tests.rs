@@ -135,12 +135,12 @@ fn a_seed_waits_for_the_receivers_own_init() {
 /// A server host follows the client's mount from each leg's
 /// `_awaitingInit` (JS twin: `riya-level-seed-reaches-the-body.test.ts`).
 fn leg(awaiting: &[&str]) -> Value {
-    Value::Object(ValueMap::from_iter([(
+    Value::object(ValueMap::from_iter([(
         "_awaitingInit".to_string(),
         Value::Array(
             awaiting
                 .iter()
-                .map(|t| Value::String(t.to_string()))
+                .map(|t| Value::String(t.to_string().into()))
                 .collect(),
         ),
     )]))

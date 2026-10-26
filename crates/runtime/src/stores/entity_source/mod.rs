@@ -196,7 +196,7 @@ enum IndexKey {
 
 fn index_key(value: &Value) -> Option<IndexKey> {
     match value {
-        Value::String(s) => Some(IndexKey::Text(s.clone())),
+        Value::String(s) => Some(IndexKey::Text(s.clone().into_inner())),
         Value::Bool(b) => Some(IndexKey::Flag(*b)),
         Value::Number(n) if !n.is_nan() => {
             let canonical = if *n == 0.0 { 0.0 } else { *n };
@@ -530,7 +530,7 @@ impl EntitySource for InMemoryEntityCache {
         };
         let mut record = merged;
         if let Some(obj) = record.as_object_mut() {
-            obj.insert("id".to_string(), Value::String(id.to_string()));
+            obj.insert("id".to_string(), Value::string(id.to_string()));
         }
         let row = Arc::new(record.clone());
         let was = type_cache.insert(id.to_string(), row.clone());
@@ -551,7 +551,7 @@ impl EntitySource for InMemoryEntityCache {
         let data = match data {
             Value::Object(obj) if !obj.contains_key("id") => {
                 let mut obj = obj.clone();
-                obj.insert("id".to_string(), Value::String(id.clone()));
+                obj.insert("id".to_string(), Value::string(id.clone()));
                 Value::Object(obj)
             }
             other => other.clone(),
@@ -571,7 +571,7 @@ impl EntitySource for InMemoryEntityCache {
         }
         let mut record = data.clone();
         if let Some(obj) = record.as_object_mut() {
-            obj.insert("id".to_string(), Value::String(id.clone()));
+            obj.insert("id".to_string(), Value::string(id.clone()));
         }
         let row = Arc::new(record.clone());
         match index_key {

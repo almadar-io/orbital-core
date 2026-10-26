@@ -322,7 +322,7 @@ impl EffectExecutor {
 
         if let Some(handler) = &self.game_handler {
             match handler.spawn(entity_type, props) {
-                Ok(id) => EffectResult::executed_with_value(effect, Value::String(id)),
+                Ok(id) => EffectResult::executed_with_value(effect, Value::string(id)),
                 Err(e) => EffectResult::failed(effect, &e),
             }
         } else {
@@ -384,7 +384,7 @@ impl EffectExecutor {
                     Err(failure) => {
                         let mut result = EffectResult::failed(effect, &failure.message);
                         if !failure.errors.is_empty() {
-                            result.return_value = Some(Value::Array(failure.errors));
+                            result.return_value = Some(Value::array(failure.errors));
                         }
                         result
                     }

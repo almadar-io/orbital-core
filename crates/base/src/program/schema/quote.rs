@@ -27,7 +27,7 @@ fn canonical(expr: &SExpression) -> serde_json::Value {
         SExpression::Number(n) => serde_json::Number::from_f64(*n)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        SExpression::String(s) => serde_json::Value::String(s.clone()),
+        SExpression::String(s) => serde_json::Value::String(s.clone().into_inner()),
         SExpression::Array(items) => {
             serde_json::Value::Array(items.iter().map(canonical).collect())
         }
@@ -58,8 +58,8 @@ pub fn decode_quote_body(body: &str) -> Option<SExpression> {
 /// The IR call `["quote", <body>]` for `expr`.
 pub fn quote_expr(expr: &SExpression) -> SExpression {
     SExpression::Array(vec![
-        SExpression::String(QUOTE_HEAD.to_string()),
-        SExpression::String(encode_quote_body(expr)),
+        SExpression::string(QUOTE_HEAD.to_string()),
+        SExpression::string(encode_quote_body(expr)),
     ])
 }
 
@@ -153,7 +153,7 @@ fn extract_holes(
         }
         holes.push(items[1].clone());
         return Ok(SExpression::Array(vec![
-            SExpression::String(UNQUOTE_HEAD.to_string()),
+            SExpression::string(UNQUOTE_HEAD.to_string()),
             SExpression::Number((holes.len() - 1) as f64),
         ]));
     }
@@ -186,8 +186,8 @@ pub fn quasiquote_expr(template: &SExpression) -> Result<SExpression, Quasiquote
     let mut holes = Vec::new();
     let body = encode_quote_body(&extract_holes(template, &mut holes)?);
     let mut items = vec![
-        SExpression::String(QUASIQUOTE_HEAD.to_string()),
-        SExpression::String(body),
+        SExpression::string(QUASIQUOTE_HEAD.to_string()),
+        SExpression::string(body),
     ];
     items.extend(holes);
     Ok(SExpression::Array(items))

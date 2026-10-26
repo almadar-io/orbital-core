@@ -83,7 +83,7 @@ const ECMA_NUMBER_TEXT: [(f64, &str); 14] = [
 fn eval_text(expr: Json) -> String {
     let ctx = BindingContextBuilder::new().build();
     match Evaluator::new().evaluate(&serde_json::from_value(expr.clone()).unwrap(), &ctx) {
-        Ok(Value::String(s)) => s,
+        Ok(Value::String(s)) => s.into_inner(),
         other => panic!("{expr}: {other:?}"),
     }
 }
@@ -131,7 +131,7 @@ fn control_a_non_finite_number_stringifies_as_json_null() {
     for expr in [inf.clone(), serde_json::json!(["-", inf, inf])] {
         let stringified = serde_json::json!(["json/stringify", {"n": expr}]);
         let result = Evaluator::new().evaluate(&serde_json::from_value(stringified).unwrap(), &ctx);
-        assert_eq!(result.unwrap(), Value::String("{\"n\":null}".to_string()));
+        assert_eq!(result.unwrap(), Value::string("{\"n\":null}"));
     }
 }
 
@@ -231,12 +231,12 @@ fn division_and_range_failures_answer_null_with_a_good_control() {
     assert_eq!(eval_any(serde_json::json!(["bit/shl", 1, 3])), Value::Number(8.0));
     assert_eq!(eval_any(serde_json::json!(["bytes/at", "aGk=", 1])), Value::Number(105.0));
     assert_eq!(eval_any(serde_json::json!(["bytes/read-uint", "EjQ=", 0, 2, "be"])), Value::Number(4660.0));
-    assert_eq!(eval_any(serde_json::json!(["bytes/write-uint", 255, 1, "be"])), Value::String("/w==".into()));
+    assert_eq!(eval_any(serde_json::json!(["bytes/write-uint", 255, 1, "be"])), Value::string("/w=="));
     assert!(matches!(eval_any(serde_json::json!(["hash/pbkdf2", "cGFzc3dvcmQ=", "c2FsdA==", 1, 32])), Value::String(_)));
-    assert_eq!(eval_any(serde_json::json!(["format/number", 1234, {"decimals": 1}])), Value::String("1,234.0".into()));
-    assert_eq!(eval_any(serde_json::json!(["format/percent", 0.5, 1])), Value::String("50.0%".into()));
-    assert_eq!(eval_any(serde_json::json!(["format/currency", 1, "USD"])), Value::String("$1.00".into()));
-    assert_eq!(eval_any(serde_json::json!(["format/bytes", 2048])), Value::String("2 KB".into()));
+    assert_eq!(eval_any(serde_json::json!(["format/number", 1234, {"decimals": 1}])), Value::string("1,234.0"));
+    assert_eq!(eval_any(serde_json::json!(["format/percent", 0.5, 1])), Value::string("50.0%"));
+    assert_eq!(eval_any(serde_json::json!(["format/currency", 1, "USD"])), Value::string("$1.00"));
+    assert_eq!(eval_any(serde_json::json!(["format/bytes", 2048])), Value::string("2 KB"));
     assert_eq!(eval_any(serde_json::json!(["prob/percentile", [1, 3], 50])), Value::Number(2.0));
     assert!(matches!(eval_any(serde_json::json!(["prob/histogram", [1, 2], 2])), Value::Object(_)));
     assert!(matches!(eval_any(serde_json::json!(["prob/credible-interval", [1, 2, 3], 0.5])), Value::Array(_)));

@@ -39,7 +39,7 @@ impl NodeLowerer {
             .collect();
 
         fn as_list(tuple: &SExpression) -> SExpression {
-            let mut items = vec![SExpression::String("list".to_string())];
+            let mut items = vec![SExpression::string("list")];
             if let SExpression::Array(t) = tuple {
                 items.extend(t.iter().cloned());
             }
@@ -177,7 +177,7 @@ impl NodeLowerer {
                         .iter()
                         .filter_map(|v| {
                             if let SExpression::String(s) = v {
-                                Some(s.clone())
+                                Some(s.to_string())
                             } else {
                                 None
                             }

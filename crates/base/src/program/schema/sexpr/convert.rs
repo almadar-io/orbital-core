@@ -59,13 +59,13 @@ impl From<f64> for SExpression {
 
 impl From<&str> for SExpression {
     fn from(s: &str) -> Self {
-        SExpression::String(s.to_string())
+        SExpression::string(s.to_string())
     }
 }
 
 impl From<String> for SExpression {
     fn from(s: String) -> Self {
-        SExpression::String(s)
+        SExpression::string(s)
     }
 }
 

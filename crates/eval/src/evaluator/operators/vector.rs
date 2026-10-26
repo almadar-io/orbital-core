@@ -29,14 +29,14 @@ pub fn make_vec(x: f64, y: f64, z: f64, with_z: bool) -> Value {
     if with_z {
         m.insert("z".to_string(), Value::Number(z));
     }
-    Value::Object(m)
+    Value::object(m)
 }
 
 /// Evaluate an argument and require it to be an object (returns empty map when not).
 pub fn eval_obj(arg: &SExpression, ctx: &BindingContext) -> Result<ValueMap, OrbitalError> {
     let v = eval_expr(arg, ctx)?;
     match v {
-        Value::Object(o) => Ok(o),
+        Value::Object(o) => Ok(o.into_inner()),
         _ => Ok(ValueMap::default()),
     }
 }

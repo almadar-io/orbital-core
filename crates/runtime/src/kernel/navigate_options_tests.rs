@@ -6,9 +6,9 @@ use super::*;
 #[test]
 fn navigate_carries_crumb_options() {
     let mut payload = ValueMap::default();
-    payload.insert("title".to_string(), Value::String("My Note".to_string()));
+    payload.insert("title".to_string(), Value::string("My Note"));
     let ctx = BindingContextBuilder::new()
-        .payload(Value::Object(payload))
+        .payload(Value::object(payload))
         .build();
 
     let effect = Effect::Navigate {
@@ -52,5 +52,5 @@ fn control_a_well_typed_call_in_navigate_params_resolves_to_its_value() {
     let Ok(Effect::Navigate { params: Some(params), .. }) = resolve_effect_bindings(effect, &BindingContextBuilder::new().build()) else {
         panic!("expected resolved navigate params");
     };
-    assert_eq!(params.get("tags"), Some(&Value::String("a, b".to_string())));
+    assert_eq!(params.get("tags"), Some(&Value::string("a, b")));
 }

@@ -121,15 +121,15 @@ impl RuntimeKernel {
         }
 
         // A tick has no payload (drift D-2).
-        let tick_payload = Value::Object(ValueMap::default());
+        let tick_payload = Value::object(ValueMap::default());
 
         let ctx = BindingContextBuilder::new()
             .payload(tick_payload)
-            .state(Value::String(current_state.clone()))
+            .state(Value::string(current_state.clone()))
             .user(self.current_user.read().clone())
             .now(stamp.now)
             .current_theme(Value::String(
-                self.resolve_current_theme_for_trait(trait_name).key,
+                (self.resolve_current_theme_for_trait(trait_name).key).into(),
             ))
             .pages(self.nav_pages.read().clone());
         let mut ctx = self.with_viewer_i18n(ctx).build();

@@ -261,10 +261,10 @@ impl<'a> Translator<'a> {
                 };
                 let present = self.null_of(name).negate()?;
                 let value = match info.sort {
-                    Sort::Bool => Formula::atom(Atom::Bool(name.clone())),
+                    Sort::Bool => Formula::atom(Atom::Bool(name.clone().into_inner())),
                     Sort::Num => Formula::atom(Atom::Lin(Lin::var(name), Rel::Eq)).negate()?,
                     Sort::Str(_) => Formula::Lit(
-                        Atom::StrEq(STerm::Var(name.clone()), STerm::Lit(String::new())),
+                        Atom::StrEq(STerm::Var(name.clone().into_inner()), STerm::Lit(String::new())),
                         false,
                     ),
                 };
@@ -280,7 +280,7 @@ impl<'a> Translator<'a> {
                         [SExpression::Object(record), SExpression::String(key)]
                             if !key.starts_with('@') =>
                         {
-                            Some(Formula::Const(record.contains_key(key)))
+                            Some(Formula::Const(record.contains_key(key.as_str())))
                         }
                         _ => Some(self.opaque(expr)),
                     },
@@ -405,12 +405,12 @@ impl<'a> Translator<'a> {
                     return None;
                 }
                 let cond = SExpression::Array(vec![
-                    SExpression::String(">=".to_string()),
+                    SExpression::string(">="),
                     args[0].clone(),
                     SExpression::Number(0.0),
                 ]);
                 let negated = SExpression::Array(vec![
-                    SExpression::String("-".to_string()),
+                    SExpression::string("-"),
                     SExpression::Number(0.0),
                     args[0].clone(),
                 ]);
@@ -430,7 +430,7 @@ impl<'a> Translator<'a> {
                 }
                 let cmp = if op.ends_with("max") { ">=" } else { "<=" };
                 let cond = SExpression::Array(vec![
-                    SExpression::String(cmp.to_string()),
+                    SExpression::string(cmp.to_string()),
                     args[0].clone(),
                     args[1].clone(),
                 ]);
@@ -455,7 +455,7 @@ impl<'a> Translator<'a> {
                     sort: Sort::Num, ..
                 }) => Some(NumTerm {
                     lin: Lin::var(name),
-                    bare: Some(name.clone()),
+                    bare: Some(name.clone().into_inner()),
                 }),
                 _ => None,
             },
@@ -604,10 +604,10 @@ impl<'a> Translator<'a> {
             SExpression::String(name) if name.starts_with('@') => match self.info(name) {
                 Some(VarInfo {
                     sort: Sort::Str(_), ..
-                }) => Some(STerm::Var(name.clone())),
+                }) => Some(STerm::Var(name.clone().into_inner())),
                 _ => None,
             },
-            SExpression::String(s) => Some(STerm::Lit(s.clone())),
+            SExpression::String(s) => Some(STerm::Lit(s.clone().into_inner())),
             _ => None,
         }
     }
@@ -619,7 +619,7 @@ impl<'a> Translator<'a> {
             SExpression::String(name) if name.starts_with('@') => match self.info(name) {
                 Some(VarInfo {
                     sort: Sort::Bool, ..
-                }) => Some((Some(name.clone()), true)),
+                }) => Some((Some(name.clone().into_inner()), true)),
                 _ => None,
             },
             _ => None,

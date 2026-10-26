@@ -254,16 +254,16 @@ pub(super) fn parse_jwt_bearer(map: &ValueMap) -> Result<TokenExchange, HttpRefu
     let grant = non_empty_text(map, "grant", "auth")?
         .unwrap_or_else(|| "urn:ietf:params:oauth:grant-type:jwt-bearer".to_string());
     let mut form = ValueMap::default();
-    form.insert("grant_type".to_string(), Value::String(grant));
+    form.insert("grant_type".to_string(), Value::string(grant));
     if let Some(scope) = non_empty_text(map, "scope", "auth")? {
-        form.insert("scope".to_string(), Value::String(scope));
+        form.insert("scope".to_string(), Value::string(scope));
     }
     let mut body = ValueMap::default();
-    body.insert("form".to_string(), Value::Object(form));
+    body.insert("form".to_string(), Value::object(form));
     let mut exchange = ValueMap::default();
-    exchange.insert("scheme".to_string(), Value::String("token-exchange".to_string()));
-    exchange.insert("tokenUrl".to_string(), Value::String(token_url.clone()));
-    exchange.insert("body".to_string(), Value::Object(body));
+    exchange.insert("scheme".to_string(), Value::string("token-exchange"));
+    exchange.insert("tokenUrl".to_string(), Value::string(token_url.clone()));
+    exchange.insert("body".to_string(), Value::object(body));
     for name in ["expiresMarginMs", "storeAs", "grantRequest", "onUnauthorized"] {
         if let Some(value) = map.get(name) {
             exchange.insert(name.to_string(), value.clone());
@@ -393,7 +393,7 @@ pub fn parse_oauth_client(value: &Value) -> Result<OAuthClientDecl, HttpRefusal>
         other => return invalid(format!("auth.client.clientAuth must be basic, post or none, not `{other}`")),
     };
     let server = match (map.get("issuer"), map.get("endpoints")) {
-        (Some(Value::String(issuer)), None) if !issuer.is_empty() => OAuthServerDecl::Issuer(issuer.clone()),
+        (Some(Value::String(issuer)), None) if !issuer.is_empty() => OAuthServerDecl::Issuer(issuer.clone().into_inner()),
         (None, Some(Value::Object(endpoints))) => {
             closed_keys(endpoints, &["authorization", "token", "revocation", "userinfo"], "auth.client.endpoints")?;
             let optional = |key: &str| -> Result<Option<String>, HttpRefusal> {

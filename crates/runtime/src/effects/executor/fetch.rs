@@ -130,7 +130,7 @@ impl EffectExecutor {
                         total,
                         "Fetch effect executed"
                     );
-                    EffectResult::executed_fetch(effect, Value::Array(rows), entity_type, counted(total))
+                    EffectResult::executed_fetch(effect, Value::array(rows), entity_type, counted(total))
                 }
                 Err(e) => {
                     error!(entity_type = entity_type, error = %e, "Fetch effect failed");

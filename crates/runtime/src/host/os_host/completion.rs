@@ -569,7 +569,7 @@ mod tests {
     }
 
     fn exited(code: f64) -> Value {
-        Value::Object(ValueMap::from_iter([("code".to_string(), Value::Number(code))]))
+        Value::object(ValueMap::from_iter([("code".to_string(), Value::Number(code))]))
     }
 
     #[test]
@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(payload.get_path("code"), Some(&Value::Number(3.0)));
         assert_eq!(
             payload.get_path("key"),
-            Some(&Value::String("k1".to_string()))
+            Some(&Value::string("k1"))
         );
     }
 
@@ -593,11 +593,11 @@ mod tests {
         assert_eq!(event, "BAD");
         assert_eq!(
             payload.get_path("kind"),
-            Some(&Value::String("closed".to_string()))
+            Some(&Value::string("closed"))
         );
         assert_eq!(
             payload.get_path("key"),
-            Some(&Value::String("k1".to_string()))
+            Some(&Value::string("k1"))
         );
         assert!(payload.get_path("error").is_some());
     }
@@ -741,7 +741,7 @@ mod tests {
     }
 
     fn viewer(id: &str) -> Value {
-        Value::Object(ValueMap::from_iter([("id".to_string(), Value::String(id.to_string()))]))
+        Value::object(ValueMap::from_iter([("id".to_string(), Value::String(id.to_string().into()))]))
     }
 
     #[test]
@@ -878,7 +878,7 @@ mod tests {
         let got = fired.0.into_inner();
         let (event, payload) = got[0].clone().expect("routed");
         assert_eq!(event, "MSG");
-        assert_eq!(payload.get_path("key"), Some(&Value::String("s".to_string())));
+        assert_eq!(payload.get_path("key"), Some(&Value::string("s")));
         assert!(got[1].is_none(), "control: a stream with no onMessage route fires nothing");
     }
 

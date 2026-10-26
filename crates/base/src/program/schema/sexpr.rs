@@ -37,7 +37,7 @@ pub enum SExpression {
     /// Numeric value (integers and floats)
     Number(f64),
     /// String value (may contain @bindings)
-    String(String),
+    String(crate::value::Shared<String>),
     /// Array - either a function call `[op, ...args]` or a list
     Array(Vec<SExpression>),
     /// Object - key-value map
@@ -90,11 +90,11 @@ impl<'de> serde::de::Visitor<'de> for SExpressionVisitor {
     }
 
     fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<SExpression, E> {
-        Ok(SExpression::String(value.to_owned()))
+        Ok(SExpression::string(value))
     }
 
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<SExpression, E> {
-        Ok(SExpression::String(value))
+        Ok(SExpression::string(value))
     }
 
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<SExpression, A::Error> {

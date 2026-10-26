@@ -750,11 +750,11 @@ impl NodeLowerer {
                 let mut params = Vec::new();
                 for p in param_slice {
                     match p {
-                        SExpression::String(s) => params.push(s.clone()),
+                        SExpression::String(s) => params.push(s.to_string()),
                         SExpression::Array(ps) => {
                             for pp in ps {
                                 if let SExpression::String(s) = pp {
-                                    params.push(s.clone());
+                                    params.push(s.to_string());
                                 }
                             }
                         }
@@ -838,7 +838,7 @@ impl ExprLowerer {
             SExpression::Null => OirValue::Null,
             SExpression::Bool(b) => OirValue::Bool(*b),
             SExpression::Number(n) => OirValue::Number(*n),
-            SExpression::String(s) => OirValue::String(s.clone()),
+            SExpression::String(s) => OirValue::String(s.clone().into_inner()),
             SExpression::Array(arr) => {
                 OirValue::Array(arr.iter().map(|v| self.sexpr_to_value(v)).collect())
             }

@@ -535,7 +535,7 @@ fn exact_legacy_two_to_64_delay_saturates_but_the_next_float_is_rejected() {
             if field == "backoffMs" {
                 Value::Number(boundary)
             } else {
-                Value::Array(vec![Value::Number(boundary)])
+                Value::array(vec![Value::Number(boundary)])
             },
         );
         let expected = HttpRetry {
@@ -569,7 +569,7 @@ fn exact_legacy_two_to_64_delay_saturates_but_the_next_float_is_rejected() {
             if field == "backoffMs" {
                 Value::Number(above)
             } else {
-                Value::Array(vec![Value::Number(above)])
+                Value::array(vec![Value::Number(above)])
             },
         );
         let Value::Object(map) = &value else {

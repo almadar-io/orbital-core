@@ -32,7 +32,7 @@ pub fn tcp_target_allowed(origin: &str, egress: &[String]) -> Result<OriginParts
 pub(super) fn scalar_text(value: &Value, what: &str) -> Result<Option<String>, HttpRefusal> {
     match value {
         Value::Null => Ok(None),
-        Value::String(s) => Ok(Some(s.clone())),
+        Value::String(s) => Ok(Some(s.clone().into_inner())),
         Value::Number(n) => Ok(Some(js_number_string(*n))),
         Value::Bool(b) => Ok(Some(b.to_string())),
         _ => invalid(format!("{what} must be a string, number, boolean, null or a list of them")),
@@ -75,7 +75,7 @@ pub(super) fn slot_field(map: &ValueMap, key: &str, what: &str) -> Result<Creden
 pub(super) fn non_empty_text(map: &ValueMap, key: &str, what: &str) -> Result<Option<String>, HttpRefusal> {
     match map.get(key) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
+        Some(Value::String(s)) if !s.is_empty() => Ok(Some(s.clone().into_inner())),
         Some(_) => invalid(format!("{what}.{key} must be a non-empty string")),
     }
 }
@@ -129,7 +129,7 @@ pub(super) fn parse_multipart(value: &Value) -> Result<HttpBodySpec, HttpRefusal
                 for (name, value) in map {
                     match value {
                         Value::String(v) if is_header_name(name) && is_header_value(v) => {
-                            headers.push((name.clone(), v.clone()))
+                            headers.push((name.clone(), v.to_string()))
                         }
                         _ => return invalid("multipart part header needs a token name and a single-line string value"),
                     }
@@ -138,7 +138,7 @@ pub(super) fn parse_multipart(value: &Value) -> Result<HttpBodySpec, HttpRefusal
             Some(_) => return invalid("multipart part headers must be an object"),
         }
         let content = match (part.get("text"), part.get("bytes")) {
-            (Some(Value::String(text)), None) => PartContent::Text(text.clone()),
+            (Some(Value::String(text)), None) => PartContent::Text(text.clone().into_inner()),
             (None, Some(Value::String(b64))) => match codec::base64_decode(b64) {
                 Ok(bytes) => PartContent::Bytes(bytes),
                 Err(e) => return invalid(format!("multipart part bytes are not base64: {e}")),
@@ -183,7 +183,7 @@ pub(super) fn parse_paginate(value: &Value) -> Result<HttpPaginate, HttpRefusal>
     };
     Ok(HttpPaginate {
         style,
-        param,
+        param: param.map(|v| v.into_inner()),
         next,
         collect,
         max,
@@ -280,7 +280,7 @@ pub fn parse_http_call(
         },
         Some("form") => HttpBodySpec::Form(pairs_of(&map["form"], "form")?),
         Some("text") => match &map["text"] {
-            Value::String(s) => HttpBodySpec::Text(s.clone()),
+            Value::String(s) => HttpBodySpec::Text(s.clone().into_inner()),
             _ => return invalid("text body must be a string"),
         },
         Some("bytes") => match &map["bytes"] {
@@ -403,9 +403,9 @@ pub fn parse_beacon_call(url: &str, request: &Value) -> Result<HttpCallSpec, Htt
     body.insert("text".to_string(), Value::String(text.clone()));
     body.insert(
         "headers".to_string(),
-        Value::Object(ValueMap::from_iter([("Content-Type".to_string(), Value::String("text/plain".to_string()))])),
+        Value::object(ValueMap::from_iter([("Content-Type".to_string(), Value::String(("text/plain".to_string()).into()))])),
     );
-    let mut spec = parse_http_call(HttpMethod::Post, origin, &path, &Value::Object(body))?;
+    let mut spec = parse_http_call(HttpMethod::Post, origin, &path, &Value::object(body))?;
     spec.delivery = HttpDelivery::Beacon;
     Ok(spec)
 }

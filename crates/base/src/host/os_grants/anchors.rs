@@ -243,7 +243,7 @@ pub(super) fn anchor_from_value(value: &Value) -> Option<GrantAnchor> {
         Value::String(word) if word == "exe-dir" => Some(GrantAnchor::ExeDir),
         Value::String(word) if word == "cwd" => Some(GrantAnchor::Cwd),
         Value::Object(map) if map.len() == 1 => match map.get("env") {
-            Some(Value::String(name)) => Some(GrantAnchor::Env(name.clone())),
+            Some(Value::String(name)) => Some(GrantAnchor::Env(name.clone().into_inner())),
             _ => None,
         },
         _ => None,
@@ -255,7 +255,7 @@ pub(super) fn anchor_from_sexpr(expr: &SExpression) -> Option<GrantAnchor> {
         SExpression::String(word) if word == "exe-dir" => Some(GrantAnchor::ExeDir),
         SExpression::String(word) if word == "cwd" => Some(GrantAnchor::Cwd),
         SExpression::Object(map) if map.len() == 1 => match map.get("env") {
-            Some(SExpression::String(name)) if !name.starts_with('@') => Some(GrantAnchor::Env(name.clone())),
+            Some(SExpression::String(name)) if !name.starts_with('@') => Some(GrantAnchor::Env(name.clone().into_inner())),
             _ => None,
         },
         _ => None,
@@ -280,7 +280,7 @@ impl AnchoredPath {
             Some(Value::String(p)) => Some(p.clone()),
             Some(_) => return None,
         };
-        Some(Self { anchor, path })
+        Some(Self { anchor, path: path.map(|v| v.into_inner()) })
     }
 }
 

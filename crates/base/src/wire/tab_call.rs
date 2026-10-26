@@ -208,7 +208,7 @@ fn present<'a>(map: &'a ValueMap, field: &str) -> Option<&'a Value> {
 
 fn text(name: &str, map: &ValueMap, field: &str) -> Result<String, String> {
     match present(map, field) {
-        Some(Value::String(s)) => Ok(s.clone()),
+        Some(Value::String(s)) => Ok(s.clone().into_inner()),
         _ => Err(format!("{name}: '{field}' must be a string")),
     }
 }
@@ -216,7 +216,7 @@ fn text(name: &str, map: &ValueMap, field: &str) -> Result<String, String> {
 fn opt_text(name: &str, map: &ValueMap, field: &str) -> Result<Option<String>, String> {
     match present(map, field) {
         None => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(Value::String(s)) => Ok(Some(s.clone().into_inner())),
         Some(_) => Err(format!("{name}: '{field}' must be a string")),
     }
 }
@@ -265,7 +265,7 @@ fn opt_text_map(name: &str, map: &ValueMap, field: &str) -> Result<Vec<(String, 
         Some(Value::Object(entries)) => entries
             .iter()
             .map(|(k, v)| match v {
-                Value::String(s) => Ok((k.clone(), s.clone())),
+                Value::String(s) => Ok((k.clone(), s.to_string())),
                 _ => Err(format!("{name}: '{field}.{k}' must be a string")),
             })
             .collect(),

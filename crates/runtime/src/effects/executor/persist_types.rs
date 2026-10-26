@@ -56,21 +56,21 @@ pub(super) fn batch_entry(b: &BatchOp, result: &EffectResult) -> Value {
         (
             Some(Value::Object(row)),
             PersistOperation::Create | PersistOperation::Upsert | PersistOperation::Update,
-        ) => row.clone(),
+        ) => row.clone().into_inner(),
         (_, PersistOperation::Create | PersistOperation::Upsert | PersistOperation::Update) => {
             b.data.as_object().cloned().unwrap_or_default()
         }
         _ => ValueMap::default(),
     };
-    entry.insert("action".to_string(), Value::String(b.action.clone()));
-    entry.insert("entityType".to_string(), Value::String(b.entity.clone()));
+    entry.insert("action".to_string(), Value::string(b.action.clone()));
+    entry.insert("entityType".to_string(), Value::string(b.entity.clone()));
     if let Some(id) = &b.row_id {
-        entry.insert("id".to_string(), Value::String(id.clone()));
+        entry.insert("id".to_string(), Value::string(id.clone()));
     }
     if b.operation == PersistOperation::Delete {
         entry.insert("deleted".to_string(), Value::Bool(true));
     }
-    Value::Object(entry)
+    Value::object(entry)
 }
 
 pub(super) fn batch_summary(effect: Effect, completed: Vec<Value>, total: usize) -> EffectResult {
@@ -80,8 +80,8 @@ pub(super) fn batch_summary(effect: Effect, completed: Vec<Value>, total: usize)
         Value::Number(completed.len() as f64),
     );
     summary.insert("totalCount".to_string(), Value::Number(total as f64));
-    summary.insert("operations".to_string(), Value::Array(completed));
-    EffectResult::executed_with_value(effect, Value::Object(summary))
+    summary.insert("operations".to_string(), Value::array(completed));
+    EffectResult::executed_with_value(effect, Value::object(summary))
 }
 
 /// Order rows by `order` (missing values last in both directions, ties by `id` ascending, as the compiled
@@ -105,9 +105,9 @@ pub(crate) fn page_ordered_rows(
 /// `body` with the lambda's row parameter (`@row`, `@row.f`) read as the row (`@entity`, `@entity.f`).
 pub(super) fn bind_row_param(body: &Value, param: &str) -> Value {
     match body {
-        Value::String(s) if s == param => Value::String("@entity".to_string()),
+        Value::String(s) if s == param => Value::string("@entity"),
         Value::String(s) => match s.strip_prefix(param).and_then(|rest| rest.strip_prefix('.')) {
-            Some(path) => Value::String(format!("@entity.{path}")),
+            Some(path) => Value::string(format!("@entity.{path}")),
             None => body.clone(),
         },
         Value::Array(items) => Value::Array(items.iter().map(|item| bind_row_param(item, param)).collect()),

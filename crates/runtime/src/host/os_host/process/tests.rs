@@ -5,7 +5,7 @@ use crate::resumable::{CallRoutes, IoAnswer, IoRequest};
 use orbital_core_base::os_grants::{FsGrant, OsGrants};
 
 fn s(t: &str) -> Value {
-    Value::String(t.to_string())
+    Value::string(t.to_string())
 }
 
 fn list(items: &[&str]) -> Value {
@@ -298,9 +298,9 @@ fn environ_lists_only_granted_names() {
         ..OsGrants::default()
     };
     let r = call(&g, &h, OsOp::Environ, vec![]).expect("environ");
-    assert_eq!(field(&r, "names"), Value::Array(vec![s("PATH")]));
+    assert_eq!(field(&r, "names"), Value::array(vec![s("PATH")]));
     let none = call(&OsGrants::default(), &h, OsOp::Environ, vec![]).expect("environ");
-    assert_eq!(field(&none, "names"), Value::Array(vec![]));
+    assert_eq!(field(&none, "names"), Value::array(vec![]));
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn the_setenv_overlay_reaches_spawn_but_not_the_process_environment() {
     let names = call(&g, &h, OsOp::Environ, vec![]).expect("environ");
     assert_eq!(
         field(&names, "names"),
-        Value::Array(vec![s("ZZ_OVERLAY_T")])
+        Value::array(vec![s("ZZ_OVERLAY_T")])
     );
     let r = spawn_out(&g, &h, "printf %s \"$ZZ_OVERLAY_T\"", &[], vec![]);
     assert_eq!(read_all(&h, int(field(&r, "stdout"))), b"v1");
@@ -443,9 +443,9 @@ fn current_exe_answers_the_running_binary_as_an_absolute_path_under_no_grant() {
     let h = OsHandles::default();
     let r = call(&OsGrants::default(), &h, OsOp::CurrentExe, vec![]).expect("current-exe");
     let Value::String(path) = field(&r, "path") else { panic!("a path string") };
-    assert!(std::path::Path::new(&path).is_absolute(), "{path}");
-    assert_eq!(std::path::PathBuf::from(&path), std::env::current_exe().expect("exe"));
-    assert!(std::path::Path::new(&path).is_file(), "control: it names an existing binary");
+    assert!(std::path::Path::new(path.as_str()).is_absolute(), "{path}");
+    assert_eq!(std::path::PathBuf::from(path.as_str()), std::env::current_exe().expect("exe"));
+    assert!(std::path::Path::new(path.as_str()).is_file(), "control: it names an existing binary");
 }
 
 #[test]

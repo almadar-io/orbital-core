@@ -473,14 +473,14 @@ pub fn declared_shape(arg: &SExpression) -> Result<std::rc::Rc<DeclaredShape>, O
     let SExpression::String(text) = arg else {
         return Err(OrbitalError::Eval(EvalError::InvalidArgument("typed: the declared type must be JSON text".into())));
     };
-    if let Some(known) = DECLARED.with(|d| d.borrow().get(text).cloned()) {
+    if let Some(known) = DECLARED.with(|d| d.borrow().get(text.as_str()).cloned()) {
         return Ok(known);
     }
     let shape = DeclaredShape::read(text).map_err(|error| {
         OrbitalError::Eval(EvalError::InvalidArgument(format!("typed: the declared type is not a type: {error}")))
     })?;
     let shape = std::rc::Rc::new(shape);
-    DECLARED.with(|d| d.borrow_mut().insert(text.clone(), std::rc::Rc::clone(&shape)));
+    DECLARED.with(|d| d.borrow_mut().insert(text.clone().into_inner(), std::rc::Rc::clone(&shape)));
     Ok(shape)
 }
 
@@ -879,7 +879,7 @@ mod tests {
             {"name":"id","fieldType":{"kind":"string"},"required":false},
             {"name":"token","fieldType":{"kind":"optional","inner":{"kind":"string"}},"required":true}
         ],"additional":{"kind":"number"}}});
-        let declaration = SExpression::String(shape.to_string());
+        let declaration = SExpression::string(shape.to_string());
         for (value, accepted) in [
             (serde_json::json!({"token":null,"id":"","extra":2}), true),
             (serde_json::json!({"token":"ok"}), true),
@@ -893,12 +893,12 @@ mod tests {
             let quoted = orbital_core_base::schema::quote::quote_expr(&literal);
             let typed = TypedOp.evaluate(&[quoted, declaration.clone()], &context);
             assert_eq!(typed.is_ok(), accepted, "typed {value}: {typed:?}");
-            let parsed = JsonParseOp.evaluate(&[SExpression::String(value.to_string()), declaration.clone()], &context).unwrap();
+            let parsed = JsonParseOp.evaluate(&[SExpression::string(value.to_string()), declaration.clone()], &context).unwrap();
             assert_eq!(!parsed.is_null(), accepted, "parse {value}: {parsed:?}");
         }
-        let legacy = SExpression::String(serde_json::json!({"type":{"kind":"string"}}).to_string());
+        let legacy = SExpression::string(serde_json::json!({"type":{"kind":"string"}}).to_string());
         assert!(TypedOp.evaluate(&[SExpression::Null, legacy], &context).is_ok(), "old unmarked null semantics remain");
-        let strict = SExpression::String(serde_json::json!({"version":1,"type":{"kind":"string"}}).to_string());
+        let strict = SExpression::string(serde_json::json!({"version":1,"type":{"kind":"string"}}).to_string());
         assert!(TypedOp.evaluate(&[SExpression::Null, strict], &context).is_err(), "new nonnull root refuses null");
     }
 
@@ -908,17 +908,17 @@ mod tests {
         use crate::evaluator::operators::{Operator, cast::TypedOp, json::JsonParseOp};
         let context = BindingContext::new();
         for name in [r#""bad\q""#, r#""unterminated"#, r#""a" |"#] {
-            let declaration = SExpression::String(serde_json::json!({"version":1,"type":{"kind":"enum","name":name}}).to_string());
-            assert!(TypedOp.evaluate(&[SExpression::String("anything".into()), declaration.clone()], &context).is_err(), "{name}");
-            let parsed = JsonParseOp.evaluate(&[SExpression::String("\"anything\"".into()), declaration], &context).unwrap();
+            let declaration = SExpression::string(serde_json::json!({"version":1,"type":{"kind":"enum","name":name}}).to_string());
+            assert!(TypedOp.evaluate(&[SExpression::string("anything"), declaration.clone()], &context).is_err(), "{name}");
+            let parsed = JsonParseOp.evaluate(&[SExpression::string("\"anything\""), declaration], &context).unwrap();
             assert!(parsed.is_null(), "{name}: {parsed:?}");
-            let legacy = SExpression::String(serde_json::json!({"type":{"kind":"enum","name":name}}).to_string());
-            assert!(TypedOp.evaluate(&[SExpression::String("anything".into()), legacy], &context).is_ok());
+            let legacy = SExpression::string(serde_json::json!({"type":{"kind":"enum","name":name}}).to_string());
+            assert!(TypedOp.evaluate(&[SExpression::string("anything"), legacy], &context).is_ok());
         }
-        let nominal = SExpression::String(serde_json::json!({"version":1,"type":{"kind":"enum","name":"Status"}}).to_string());
-        assert!(TypedOp.evaluate(&[SExpression::String("ready".into()), nominal], &context).is_ok());
-        let old_quoted = SExpression::String(serde_json::json!({"version":1,"type":{"kind":"enum","name":"\"line1\nline2\" | \"ready\""}}).to_string());
-        assert!(TypedOp.evaluate(&[SExpression::String("line1\nline2".into()), old_quoted], &context).is_ok());
+        let nominal = SExpression::string(serde_json::json!({"version":1,"type":{"kind":"enum","name":"Status"}}).to_string());
+        assert!(TypedOp.evaluate(&[SExpression::string("ready"), nominal], &context).is_ok());
+        let old_quoted = SExpression::string(serde_json::json!({"version":1,"type":{"kind":"enum","name":"\"line1\nline2\" | \"ready\""}}).to_string());
+        assert!(TypedOp.evaluate(&[SExpression::string("line1\nline2"), old_quoted], &context).is_ok());
     }
 
     #[test]
@@ -927,7 +927,7 @@ mod tests {
             serde_json::json!({"version":2,"kind":"string"}),
             serde_json::json!({"version":2,"type":{"kind":"string"},"kind":"string"}),
         ] {
-            assert!(declared_shape(&SExpression::String(wire.to_string())).is_err(), "{wire}");
+            assert!(declared_shape(&SExpression::string(wire.to_string())).is_err(), "{wire}");
         }
     }
 
@@ -949,7 +949,7 @@ mod tests {
     }
 
     fn s(t: &str) -> Value {
-        Value::String(t.to_string())
+        Value::string(t.to_string())
     }
 
     #[test]
@@ -964,9 +964,9 @@ mod tests {
         }
         assert!(value_of_declared(&num(1.0), &OirType::Bytes, &named).is_err());
         let bytes = OirType::array(OirType::Bytes);
-        assert!(value_of_declared(&Value::Array(vec![s("AA==")]), &bytes, &named).is_ok());
+        assert!(value_of_declared(&Value::array(vec![s("AA==")]), &bytes, &named).is_ok());
         assert_eq!(
-            misfit_of_declared(&Value::Array(vec![s("AA=="), s("invalid bytes")]), &bytes, &named),
+            misfit_of_declared(&Value::array(vec![s("AA=="), s("invalid bytes")]), &bytes, &named),
             Some(("[1]".to_string(), "string"))
         );
     }
@@ -1000,7 +1000,7 @@ mod tests {
             json!([{ "name": "v", "type": { "kind": "union", "of": ["string", { "kind": "array", "of": { "kind": "var", "name": "T" } }] } }]),
             Some(1),
         );
-        assert!(check(&list_or_string, &[Value::Array(vec![])]).is_ok());
+        assert!(check(&list_or_string, &[Value::array(vec![])]).is_ok());
         assert_eq!(
             check(&list_or_string, &[num(1.0)]).unwrap_err().to_string(),
             "Evaluation error: Type mismatch: expected string | array, got number"
@@ -1053,18 +1053,18 @@ mod tests {
             ]),
             Some(2),
         );
-        assert!(check(&op, &[Value::Array(vec![num(1.0)]), num(2.0)]).is_ok());
+        assert!(check(&op, &[Value::array(vec![num(1.0)]), num(2.0)]).is_ok());
         assert_eq!(
-            check(&op, &[Value::Array(vec![num(1.0)]), s("x")])
+            check(&op, &[Value::array(vec![num(1.0)]), s("x")])
                 .unwrap_err()
                 .to_string(),
             "Evaluation error: Type mismatch: expected number, got string"
         );
         assert!(
-            check(&op, &[Value::Array(vec![]), s("x")]).is_ok(),
+            check(&op, &[Value::array(vec![]), s("x")]).is_ok(),
             "an empty list binds nothing"
         );
-        assert!(check(&op, &[Value::Array(vec![Value::Null, num(1.0)]), num(2.0)]).is_ok());
+        assert!(check(&op, &[Value::array(vec![Value::Null, num(1.0)]), num(2.0)]).is_ok());
         assert!(
             check(&op, &[num(5.0), num(2.0)]).is_err(),
             "a non-list for `[T]`"
@@ -1088,13 +1088,13 @@ mod tests {
     }
 
     fn pair(a: Value, b: Value) -> Value {
-        Value::Array(vec![a, b])
+        Value::array(vec![a, b])
     }
 
     #[test]
     fn a_list_of_heterogeneous_tuples_is_a_list() {
         let op = list_of_var;
-        let entries = Value::Array(vec![
+        let entries = Value::array(vec![
             pair(s("a"), num(1.0)),
             pair(s("b"), s("x")),
             pair(s("c"), num(2.0)),
@@ -1103,11 +1103,11 @@ mod tests {
             check_rt(op(), &[entries]).map_err(|e| e.to_string()),
             Ok(())
         );
-        let same_shape = Value::Array(vec![pair(s("a"), num(1.0)), pair(s("b"), num(2.0))]);
+        let same_shape = Value::array(vec![pair(s("a"), num(1.0)), pair(s("b"), num(2.0))]);
         assert!(check_rt(op(), &[same_shape]).is_ok());
-        let records = Value::Array(vec![
-            Value::Object(ValueMap::default()),
-            Value::Object(ValueMap::default()),
+        let records = Value::array(vec![
+            Value::Object(ValueMap::default().into()),
+            Value::Object(ValueMap::default().into()),
         ]);
         assert!(check_rt(op(), &[records]).is_ok());
     }
@@ -1121,7 +1121,7 @@ mod tests {
 
     #[test]
     fn a_body_that_is_a_list_of_unlike_items_is_one_value_of_an_unevaluated_variable() {
-        let tuple = Value::Array(vec![s("create"), s("Row"), num(1.0)]);
+        let tuple = Value::array(vec![s("create"), s("Row"), num(1.0)]);
         assert_eq!(
             check_rt(sexpr_of_var(), &[tuple]).map_err(|e| e.to_string()),
             Ok(())
@@ -1143,14 +1143,14 @@ mod tests {
     fn op_tuple(action: &str, widths: usize) -> Value {
         let mut items = vec![s(action), s("Row"), s("id")];
         if widths > 3 {
-            items.push(Value::Object(ValueMap::default()));
+            items.push(Value::object(ValueMap::default()));
         }
-        Value::Array(items)
+        Value::array(items)
     }
 
     #[test]
     fn a_list_of_op_tuples_of_unlike_widths_is_a_list() {
-        let ops = Value::Array(vec![
+        let ops = Value::array(vec![
             op_tuple("delete", 3),
             op_tuple("update", 4),
             op_tuple("delete", 3),
@@ -1159,12 +1159,12 @@ mod tests {
             check_rt(list_of_var(), &[ops.clone()]).map_err(|e| e.to_string()),
             Ok(())
         );
-        let updates = Value::Array(vec![op_tuple("update", 4), op_tuple("update", 4)]);
+        let updates = Value::array(vec![op_tuple("update", 4), op_tuple("update", 4)]);
         assert_eq!(
             check_rt(append(), &[updates, op_tuple("delete", 3)]).map_err(|e| e.to_string()),
             Ok(())
         );
-        let deletes = Value::Array(vec![op_tuple("delete", 3)]);
+        let deletes = Value::array(vec![op_tuple("delete", 3)]);
         assert_eq!(
             check_rt(append(), &[deletes, op_tuple("update", 4)]).map_err(|e| e.to_string()),
             Ok(())
@@ -1179,23 +1179,23 @@ mod tests {
                 Some(1),
             )
         };
-        let create = Value::Array(vec![s("create"), s("Row"), Value::Object(ValueMap::default())]);
-        let rekey = Value::Array(vec![op_tuple("delete", 3), create]);
-        let set = Value::Array(vec![op_tuple("update", 4)]);
-        let groups = Value::Array(vec![Value::Array(vec![rekey]), Value::Array(vec![set])]);
+        let create = Value::array(vec![s("create"), s("Row"), Value::Object(ValueMap::default().into())]);
+        let rekey = Value::array(vec![op_tuple("delete", 3), create]);
+        let set = Value::array(vec![op_tuple("update", 4)]);
+        let groups = Value::array(vec![Value::Array(vec![rekey].into()), Value::Array(vec![set].into())]);
         assert_eq!(check_rt(flatten(), &[groups]).map_err(|e| e.to_string()), Ok(()));
-        let unlike = Value::Array(vec![
-            Value::Array(vec![Value::Array(vec![num(1.0)])]),
-            Value::Array(vec![Value::Array(vec![s("x")])]),
+        let unlike = Value::array(vec![
+            Value::Array(vec![Value::Array(vec![num(1.0)].into())].into()),
+            Value::Array(vec![Value::Array(vec![s("x")].into())].into()),
         ]);
         assert!(check_rt(flatten(), &[unlike]).is_err(), "control: lists of unlike scalars stay two types");
     }
 
     #[test]
     fn control_op_tuples_of_unlike_widths_do_not_join_a_list_of_scalars() {
-        let numbers = Value::Array(vec![num(1.0), num(2.0)]);
+        let numbers = Value::array(vec![num(1.0), num(2.0)]);
         assert!(check_rt(append(), &[numbers, op_tuple("update", 4)]).is_err());
-        let mixed = Value::Array(vec![op_tuple("update", 4), num(1.0)]);
+        let mixed = Value::array(vec![op_tuple("update", 4), num(1.0)]);
         assert!(check_rt(list_of_var(), &[mixed]).is_err());
     }
 
@@ -1214,28 +1214,28 @@ mod tests {
 
     #[test]
     fn a_pair_of_unlike_types_is_indexed_by_array_nth() {
-        let entry = Value::Array(vec![s("a"), Value::Object(ValueMap::default())]);
+        let entry = Value::array(vec![s("a"), Value::Object(ValueMap::default().into())]);
         assert_eq!(check_rt(nth(), &[entry, num(1.0)]).map_err(|e| e.to_string()), Ok(()));
-        let entry = Value::Array(vec![s("a"), num(1.0)]);
+        let entry = Value::array(vec![s("a"), num(1.0)]);
         assert_eq!(check_rt(nth(), &[entry, num(1.0)]).map_err(|e| e.to_string()), Ok(()));
-        let numbers = Value::Array(vec![num(1.0), num(2.0)]);
+        let numbers = Value::array(vec![num(1.0), num(2.0)]);
         assert_eq!(check_rt(nth(), &[numbers, num(0.0)]).map_err(|e| e.to_string()), Ok(()));
     }
 
     #[test]
     fn control_an_operator_without_the_each_position_still_refuses_an_unlike_pair() {
-        let entry = Value::Array(vec![s("a"), num(1.0)]);
+        let entry = Value::array(vec![s("a"), num(1.0)]);
         assert!(check_rt(list_of_var(), &[entry]).is_err());
-        assert!(check_rt(nth(), &[Value::Array(vec![s("a")]), s("0")]).is_err(), "a non-number index is refused");
+        assert!(check_rt(nth(), &[Value::array(vec![s("a")]), s("0")]).is_err(), "a non-number index is refused");
     }
 
     #[test]
     fn control_a_mixed_scalar_list_is_still_refused() {
         let op = list_of_var;
-        assert!(check_rt(op(), &[Value::Array(vec![num(1.0), s("a")])]).is_err());
-        let lists = Value::Array(vec![
-            Value::Array(vec![num(1.0)]),
-            Value::Array(vec![s("a")]),
+        assert!(check_rt(op(), &[Value::array(vec![num(1.0), s("a")])]).is_err());
+        let lists = Value::array(vec![
+            Value::Array(vec![num(1.0)].into()),
+            Value::Array(vec![s("a")].into()),
         ]);
         assert!(check_rt(op(), &[lists]).is_err());
     }
@@ -1248,10 +1248,10 @@ mod tests {
                 Some(1),
             )
         };
-        assert!(check_rt(op(), &[Value::Array(vec![pair(s("a"), num(1.0))])]).is_ok());
-        let short = Value::Array(vec![pair(s("a"), num(1.0)), Value::Array(vec![s("b")])]);
+        assert!(check_rt(op(), &[Value::array(vec![pair(s("a"), num(1.0))])]).is_ok());
+        let short = Value::array(vec![pair(s("a"), num(1.0)), Value::Array(vec![s("b")].into())]);
         assert!(check_rt(op(), &[short]).is_err());
-        let mismatched = Value::Array(vec![pair(s("a"), num(1.0)), pair(s("b"), s("x"))]);
+        let mismatched = Value::array(vec![pair(s("a"), num(1.0)), pair(s("b"), s("x"))]);
         assert!(check_rt(op(), &[mismatched]).is_err());
     }
 
@@ -1266,7 +1266,7 @@ mod tests {
 
     #[test]
     fn pairs_whose_values_differ_in_type_are_entries_of_a_record() {
-        let mixed = Value::Array(vec![
+        let mixed = Value::array(vec![
             pair(s("a"), num(1.0)),
             pair(s("b"), s("x")),
             pair(s("c"), Value::Bool(true)),
@@ -1275,13 +1275,13 @@ mod tests {
             check_rt(from_entries(), &[mixed]).map_err(|e| e.to_string()),
             Ok(())
         );
-        let same = Value::Array(vec![pair(s("a"), num(1.0)), pair(s("b"), num(2.0))]);
+        let same = Value::array(vec![pair(s("a"), num(1.0)), pair(s("b"), num(2.0))]);
         assert!(check_rt(from_entries(), &[same]).is_ok());
     }
 
     #[test]
     fn control_pairs_whose_keys_differ_in_type_are_still_refused() {
-        let keys = Value::Array(vec![pair(s("a"), num(1.0)), pair(num(2.0), num(3.0))]);
+        let keys = Value::array(vec![pair(s("a"), num(1.0)), pair(num(2.0), num(3.0))]);
         assert_eq!(
             check_rt(from_entries(), &[keys]).unwrap_err().to_string(),
             "Evaluation error: Type mismatch: expected string, got number"
@@ -1300,7 +1300,7 @@ mod tests {
 
     #[test]
     fn a_pair_of_other_value_types_appends_to_a_list_of_pairs() {
-        let acc = Value::Array(vec![pair(s("a"), num(1.0))]);
+        let acc = Value::array(vec![pair(s("a"), num(1.0))]);
         assert_eq!(
             check_rt(append(), &[acc.clone(), pair(s("b"), s("x"))]).map_err(|e| e.to_string()),
             Ok(())
@@ -1310,16 +1310,16 @@ mod tests {
 
     #[test]
     fn control_a_pair_does_not_append_to_a_list_of_numbers_or_of_triples() {
-        let numbers = Value::Array(vec![num(1.0), num(2.0)]);
+        let numbers = Value::array(vec![num(1.0), num(2.0)]);
         assert!(check_rt(append(), &[numbers, pair(s("b"), num(2.0))]).is_err());
-        let strings = Value::Array(vec![pair(s("a"), s("b"))]);
+        let strings = Value::array(vec![pair(s("a"), s("b"))]);
         assert!(check_rt(append(), &[strings, pair(num(1.0), num(2.0))]).is_err());
     }
 
     #[test]
     fn a_tuple_of_another_width_joins_a_list_of_tuples() {
-        let pairs = Value::Array(vec![pair(s("a"), num(1.0))]);
-        let triple = Value::Array(vec![s("b"), num(2.0), s("c")]);
+        let pairs = Value::array(vec![pair(s("a"), num(1.0))]);
+        let triple = Value::array(vec![s("b"), num(2.0), s("c")]);
         assert!(check_rt(append(), &[pairs, triple]).is_ok());
     }
 
@@ -1329,9 +1329,9 @@ mod tests {
             json!([{ "name": "obj", "type": { "kind": "var", "name": "R", "bound": { "kind": "record" } } }]),
             Some(1),
         );
-        assert!(check(&op, &[Value::Object(ValueMap::default())]).is_ok());
+        assert!(check(&op, &[Value::object(ValueMap::default())]).is_ok());
         assert_eq!(
-            check(&op, &[Value::Array(vec![])]).unwrap_err().to_string(),
+            check(&op, &[Value::array(vec![])]).unwrap_err().to_string(),
             "Evaluation error: Type mismatch: expected object, got array"
         );
     }
@@ -1341,7 +1341,7 @@ mod tests {
         let strings = Value::Array((0..500).map(|i| s(&i.to_string())).collect());
         let numbers = Value::Array((0..500).map(|i| num(i as f64)).collect());
         let bools = Value::Array((0..500).map(|i| Value::Bool(i % 2 == 0)).collect());
-        let records = Value::Array((0..500).map(|_| Value::Object(ValueMap::default())).collect());
+        let records = Value::Array((0..500).map(|_| Value::object(ValueMap::default())).collect());
         for list in [strings, numbers, bools, records] {
             assert!(check_rt(list_of_var(), &[list]).is_ok());
         }
@@ -1349,18 +1349,18 @@ mod tests {
 
     #[test]
     fn one_unlike_element_after_a_long_run_raises_the_same_error_as_in_a_short_list() {
-        let short = Value::Array(vec![s("a"), num(1.0)]);
+        let short = Value::array(vec![s("a"), num(1.0)]);
         let mut long: Vec<Value> = (0..500).map(|i| s(&i.to_string())).collect();
         long.push(num(1.0));
         long.push(s("tail"));
         let expected = check_rt(list_of_var(), &[short]).unwrap_err().to_string();
-        let got = check_rt(list_of_var(), &[Value::Array(long)]).unwrap_err().to_string();
+        let got = check_rt(list_of_var(), &[Value::array(long)]).unwrap_err().to_string();
         assert_eq!(got, expected);
     }
 
     #[test]
     fn nulls_among_a_homogeneous_list_do_not_change_its_type() {
-        let list = Value::Array(vec![s("a"), Value::Null, s("b"), Value::Null]);
+        let list = Value::array(vec![s("a"), Value::Null, s("b"), Value::Null]);
         assert!(check_rt(list_of_var(), &[list]).is_ok());
     }
 
@@ -1375,9 +1375,9 @@ mod tests {
                 Some(2),
             )
         };
-        let strings = Value::Array(vec![s("a"), s("b")]);
-        let empty = Value::Array(vec![]);
-        let nulls = Value::Array(vec![Value::Null, Value::Null]);
+        let strings = Value::array(vec![s("a"), s("b")]);
+        let empty = Value::array(vec![]);
+        let nulls = Value::array(vec![Value::Null, Value::Null]);
         assert!(check_rt(op(), &[strings.clone(), empty]).is_ok());
         assert!(check_rt(op(), &[nulls, strings]).is_ok());
     }
@@ -1387,18 +1387,18 @@ mod tests {
         let row = || pair(s("a"), num(1.0));
         let rows = Value::Array((0..200).map(|_| row()).collect());
         assert!(check_rt(list_of_var(), &[rows]).is_ok());
-        let with_null = Value::Array(vec![pair(s("a"), Value::Null), pair(s("b"), Value::Null), pair(s("c"), Value::Null)]);
+        let with_null = Value::array(vec![pair(s("a"), Value::Null), pair(s("b"), Value::Null), pair(s("c"), Value::Null)]);
         assert!(check_rt(list_of_var(), &[with_null]).is_ok());
-        let mut unlike: Vec<Value> = (0..200).map(|_| Value::Array(vec![s("a")])).collect();
-        unlike.push(Value::Array(vec![num(1.0)]));
-        assert!(check_rt(list_of_var(), &[Value::Array(unlike)]).is_err());
+        let mut unlike: Vec<Value> = (0..200).map(|_| Value::array(vec![s("a")])).collect();
+        unlike.push(Value::array(vec![num(1.0)]));
+        assert!(check_rt(list_of_var(), &[Value::array(unlike)]).is_err());
     }
 
     #[test]
     fn rows_that_differ_only_after_many_repeats_are_still_tuples_of_one_list() {
         let mut rows: Vec<Value> = (0..200).map(|_| pair(s("a"), num(1.0))).collect();
         rows.push(pair(s("b"), s("x")));
-        assert!(check_rt(list_of_var(), &[Value::Array(rows)]).is_ok());
+        assert!(check_rt(list_of_var(), &[Value::array(rows)]).is_ok());
     }
 
     #[test]
@@ -1410,9 +1410,9 @@ mod tests {
             )
         };
         let mut rows: Vec<Value> = (0..200).map(|_| pair(s("a"), num(1.0))).collect();
-        assert!(check_rt(op(), &[Value::Array(rows.clone())]).is_ok());
+        assert!(check_rt(op(), &[Value::array(rows.clone())]).is_ok());
         rows.push(pair(s("b"), s("x")));
-        assert!(check_rt(op(), &[Value::Array(rows)]).is_err());
+        assert!(check_rt(op(), &[Value::array(rows)]).is_err());
     }
 
     fn record_or_list_bound() -> serde_json::Value {
@@ -1434,7 +1434,7 @@ mod tests {
     }
 
     fn object() -> Value {
-        Value::Object(ValueMap::default())
+        Value::object(ValueMap::default())
     }
 
     fn same_verdict(op: &EmbeddedOperator, args: &[Value]) {
@@ -1455,7 +1455,7 @@ mod tests {
         let op = object_get();
         assert!(check_rt(op.clone(), &[object(), s("a"), num(1.0)]).is_ok());
         assert!(check_rt(op.clone(), &[object(), s("a")]).is_ok());
-        assert!(check_rt(op.clone(), &[Value::Array(vec![num(1.0)]), s("0")]).is_ok());
+        assert!(check_rt(op.clone(), &[Value::array(vec![num(1.0)]), s("0")]).is_ok());
         same_verdict(&op, &[object(), s("a"), s("fallback")]);
         same_verdict(&op, &[object(), num(3.0)]);
     }
@@ -1473,8 +1473,8 @@ mod tests {
     #[test]
     fn control_array_len_still_refuses_a_list_of_unlike_items() {
         let op = list_of_var();
-        assert!(check_rt(op.clone(), &[Value::Array(vec![num(1.0), s("b")])]).is_err());
-        assert!(check_rt(op, &[Value::Array(vec![num(1.0), num(2.0)])]).is_ok());
+        assert!(check_rt(op.clone(), &[Value::array(vec![num(1.0), s("b")])]).is_err());
+        assert!(check_rt(op, &[Value::array(vec![num(1.0), num(2.0)])]).is_ok());
     }
 
     #[test]
@@ -1490,7 +1490,7 @@ mod tests {
         assert!(check_rt(op.clone(), &[object(), num(1.0)]).is_err());
         same_verdict(&op, &[object(), num(1.0)]);
         same_verdict(&op, &[object(), s("x")]);
-        same_verdict(&op, &[object(), Value::Array(vec![num(1.0)])]);
+        same_verdict(&op, &[object(), Value::array(vec![num(1.0)])]);
     }
 
     #[test]
@@ -1500,7 +1500,7 @@ mod tests {
             None,
         );
         assert!(check_rt(op.clone(), &[object(), object(), object()]).is_ok());
-        same_verdict(&op, &[object(), Value::Array(vec![num(1.0)])]);
+        same_verdict(&op, &[object(), Value::array(vec![num(1.0)])]);
         same_verdict(&op, &[object(), num(1.0)]);
     }
 
@@ -1509,7 +1509,7 @@ mod tests {
         let op = operator(json!([{ "name": "r", "type": { "kind": "record" } }]), Some(1));
         assert!(check_rt(op.clone(), &[object()]).is_ok());
         same_verdict(&op, &[num(1.0)]);
-        same_verdict(&op, &[Value::Array(vec![])]);
+        same_verdict(&op, &[Value::array(vec![])]);
     }
 
     #[test]

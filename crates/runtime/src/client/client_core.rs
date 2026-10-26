@@ -292,7 +292,7 @@ impl ClientCore {
         if self.route_params.is_empty() {
             Value::Null
         } else {
-            Value::Object(self.route_params.clone())
+            Value::object(self.route_params.clone())
         }
     }
 
@@ -1007,7 +1007,7 @@ fn route_params(pattern: &str, path: &str) -> Option<ValueMap> {
     for (r, a) in route.iter().zip(&actual) {
         match r.strip_prefix(':') {
             Some(name) => {
-                params.insert(name.to_string(), Value::String((*a).to_string()));
+                params.insert(name.to_string(), Value::string((*a).to_string()));
             }
             None if r == a => {}
             None => return None,

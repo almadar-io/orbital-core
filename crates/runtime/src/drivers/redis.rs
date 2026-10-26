@@ -42,7 +42,7 @@ pub fn parse_redis_call(origin: &Value, command: &Value, options: &Value) -> Res
     let mut words = Vec::with_capacity(items.len());
     for (at, item) in items.iter().enumerate() {
         match item {
-            Value::String(word) => words.push(word.clone()),
+            Value::String(word) => words.push(word.to_string()),
             _ => return invalid(format!("redis: command item {} must be text", at + 1)),
         }
     }
@@ -54,7 +54,7 @@ pub fn parse_redis_call(origin: &Value, command: &Value, options: &Value) -> Res
         Value::Object(map) => parse_options(map)?,
         _ => return invalid("redis: the options must be an object"),
     };
-    Ok(RedisCallSpec { origin: origin.clone(), command: words, auth, user, db })
+    Ok(RedisCallSpec { origin: origin.clone().into_inner(), command: words, auth, user, db })
 }
 
 type Connection = (Option<CredentialSlot>, Option<String>, Option<u32>);
@@ -71,7 +71,7 @@ fn parse_options(map: &ValueMap) -> Result<Connection, HttpRefusal> {
     };
     let user = match map.get("user") {
         None | Some(Value::Null) => None,
-        Some(Value::String(name)) if !name.is_empty() => Some(name.clone()),
+        Some(Value::String(name)) if !name.is_empty() => Some(name.to_string()),
         Some(_) => return invalid("redis: options.user must be a non-empty string"),
     };
     if user.is_some() && auth.is_none() {
@@ -275,20 +275,20 @@ fn list_value(items: &[Resp], depth: usize) -> Result<Value, ReplyProblem> {
     if depth > REDIS_REPLY_DEPTH {
         return Err(ReplyProblem::Unsupported(format!("the reply is nested deeper than {REDIS_REPLY_DEPTH} lists")));
     }
-    items.iter().map(|item| reply_value_at(item, depth)).collect::<Result<Vec<_>, _>>().map(Value::Array)
+    items.iter().map(|item| reply_value_at(item, depth)).collect::<Result<Vec<_>, _>>().map(Value::array)
 }
 
 fn reply_value_at(resp: &Resp, depth: usize) -> Result<Value, ReplyProblem> {
     match resp {
-        Resp::Simple(s) | Resp::BigNumber(s) => Ok(Value::String(s.clone())),
+        Resp::Simple(s) | Resp::BigNumber(s) => Ok(Value::string(s.clone())),
         Resp::Error(message) => Err(ReplyProblem::Server(message.clone())),
         Resp::BlobError(bytes) => Err(ReplyProblem::Server(utf8(bytes)?)),
         Resp::Integer(n) => integer_value(*n),
         Resp::Bulk(None) | Resp::Array(None) | Resp::Null => Ok(Value::Null),
-        Resp::Bulk(Some(bytes)) => Ok(Value::String(utf8(bytes)?)),
+        Resp::Bulk(Some(bytes)) => Ok(Value::string(utf8(bytes)?)),
         Resp::Verbatim(bytes) => {
             let body = bytes.get(4..).ok_or_else(|| ReplyProblem::Unsupported("a verbatim string is shorter than its format prefix".to_string()))?;
-            Ok(Value::String(utf8(body)?))
+            Ok(Value::string(utf8(body)?))
         }
         Resp::Double(d) => Ok(Value::Number(*d)),
         Resp::Boolean(b) => Ok(Value::Number(if *b { 1.0 } else { 0.0 })),
@@ -311,16 +311,16 @@ fn object(entries: Vec<(&str, Value)>) -> Value {
 }
 
 fn key_value(key: &Option<String>) -> Value {
-    key.clone().map_or(Value::Null, Value::String)
+    key.clone().map_or(Value::Null, Value::string)
 }
 
 /// A failure payload: `{ error, kind, code, credential, key }`.
 pub fn failure_payload(error: &str, kind: &str, code: Option<&str>, credential: Option<&str>, key: &Option<String>) -> Value {
     object(vec![
-        ("error", Value::String(error.to_string())),
-        ("kind", Value::String(kind.to_string())),
-        ("code", code.map_or(Value::Null, |c| Value::String(c.to_string()))),
-        ("credential", credential.map_or(Value::Null, |c| Value::String(c.to_string()))),
+        ("error", Value::string(error.to_string())),
+        ("kind", Value::string(kind.to_string())),
+        ("code", code.map_or(Value::Null, |c| Value::string(c.to_string()))),
+        ("credential", credential.map_or(Value::Null, |c| Value::string(c.to_string()))),
         ("key", key_value(key)),
     ])
 }
@@ -594,7 +594,7 @@ mod tests {
     use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 
     fn text(s: &str) -> Value {
-        Value::String(s.to_string())
+        Value::string(s.to_string())
     }
 
     fn words(items: &[&str]) -> Vec<String> {
@@ -614,7 +614,7 @@ mod tests {
     }
 
     fn sock() -> DriverAnswer {
-        DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))]))))
+        DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))]))))
     }
 
     fn ok() -> DriverAnswer {
@@ -622,14 +622,14 @@ mod tests {
     }
 
     fn data(bytes: &[u8]) -> DriverAnswer {
-        DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([
+        DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([
             ("data".to_string(), text(&codec::base64_encode(bytes))),
             ("eof".to_string(), Value::Bool(false)),
         ]))))
     }
 
     fn eof() -> DriverAnswer {
-        DriverAnswer::Os(Ok(Value::Object(ValueMap::from_iter([
+        DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([
             ("data".to_string(), text("")),
             ("eof".to_string(), Value::Bool(true)),
         ]))))
@@ -764,11 +764,11 @@ mod tests {
         let nested = Resp::Array(Some(vec![Resp::Bulk(None), Resp::Array(Some(vec![Resp::Integer(1)]))]));
         assert_eq!(
             reply_value(&nested),
-            Ok(Value::Array(vec![Value::Null, Value::Array(vec![Value::Number(1.0)])]))
+            Ok(Value::array(vec![Value::Null, Value::Array(vec![Value::Number(1.0)].into())]))
         );
         assert_eq!(
             reply_value(&Resp::Map(vec![(Resp::Simple("k".to_string()), Resp::Integer(1))])),
-            Ok(Value::Array(vec![text("k"), Value::Number(1.0)]))
+            Ok(Value::array(vec![text("k"), Value::Number(1.0)]))
         );
     }
 
@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn a_call_parses_its_command_and_connection_options() {
-        let options = Value::Object(ValueMap::from_iter([
+        let options = Value::object(ValueMap::from_iter([
             ("auth".to_string(), text("REDIS_PASSWORD")),
             ("user".to_string(), text("app")),
             ("db".to_string(), Value::Number(2.0)),
@@ -796,9 +796,9 @@ mod tests {
         assert_eq!(parsed.command, words(&["GET", "k"]));
         assert_eq!(parsed.auth, Some(CredentialSlot::from("REDIS_PASSWORD")));
         assert_eq!((parsed.user.as_deref(), parsed.db), (Some("app"), Some(2)));
-        let scoped = Value::Object(ValueMap::from_iter([(
+        let scoped = Value::object(ValueMap::from_iter([(
             "auth".to_string(),
-            Value::Object(ValueMap::from_iter([("credential".to_string(), text("TOKEN")), ("scope".to_string(), text("user"))])),
+            Value::Object(ValueMap::from_iter([("credential".to_string(), text("TOKEN")), ("scope".to_string(), text("user"))]).into()),
         )]));
         let parsed = parse_redis_call(&text("redis://h"), &list(&["PING"]), &scoped).expect("parses");
         assert_eq!(parsed.auth.map(|slot| slot.scope), Some(orbital_core_base::http_wire::SecretScope::User));
@@ -809,15 +809,15 @@ mod tests {
     fn controls_a_malformed_call_is_refused() {
         let origin = text("redis://h");
         let nothing = Value::Null;
-        for command in [Value::Array(Vec::new()), list(&[""]), Value::Array(vec![text("GET"), Value::Number(1.0)]), text("GET k")] {
+        for command in [Value::array(Vec::new()), list(&[""]), Value::array(vec![text("GET"), Value::Number(1.0)]), text("GET k")] {
             assert!(parse_redis_call(&origin, &command, &nothing).is_err(), "{command:?}");
         }
         assert!(parse_redis_call(&Value::Number(1.0), &list(&["PING"]), &nothing).is_err());
-        let user_alone = Value::Object(ValueMap::from_iter([("user".to_string(), text("app"))]));
+        let user_alone = Value::object(ValueMap::from_iter([("user".to_string(), text("app"))]));
         assert!(parse_redis_call(&origin, &list(&["PING"]), &user_alone).is_err());
-        let unknown = Value::Object(ValueMap::from_iter([("timeout".to_string(), Value::Number(1.0))]));
+        let unknown = Value::object(ValueMap::from_iter([("timeout".to_string(), Value::Number(1.0))]));
         assert!(parse_redis_call(&origin, &list(&["PING"]), &unknown).is_err());
-        let fractional = Value::Object(ValueMap::from_iter([("db".to_string(), Value::Number(1.5))]));
+        let fractional = Value::object(ValueMap::from_iter([("db".to_string(), Value::Number(1.5))]));
         assert!(parse_redis_call(&origin, &list(&["PING"]), &fractional).is_err());
     }
 
@@ -998,7 +998,7 @@ mod tests {
         let (_, step) = run(spec(&["MGET", "a", "b"]), None, vec![sock(), ok(), data(b"*2\r\n$1\r\nx\r\n$-1\r\n"), ok()]);
         assert_eq!(
             step,
-            DriverStep::Done(Ok(reply_payload(Value::Array(vec![text("x"), Value::Null]), Value::Null)))
+            DriverStep::Done(Ok(reply_payload(Value::array(vec![text("x"), Value::Null]), Value::Null)))
         );
     }
 

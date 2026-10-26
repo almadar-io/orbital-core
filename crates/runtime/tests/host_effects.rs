@@ -856,7 +856,7 @@ mod os_effects {
         use orbital_core_runtime::embed::wire::{IoAnswerWire, IoRequestWire};
         let request = IoRequest::Os {
             op: OsOp::TcpConnect,
-            args: vec![Value::String("db.internal".into()), Value::Number(5432.0)],
+            args: vec![Value::string("db.internal"), Value::Number(5432.0)],
             key: Some("k".into()),
             site: None,
         };
@@ -2013,7 +2013,7 @@ mod os_completion {
         let spawn = IoRequest::Os {
             op: OsOp::Spawn,
             args: vec![
-                Value::String("/bin/sh".into()),
+                Value::string("/bin/sh"),
                 serde_json::from_value(json!(["-c", "printf hi"])).unwrap(),
                 serde_json::from_value(json!({ "stdin": "null", "stdout": "pipe", "stderr": "null" })).unwrap(),
             ],
@@ -2103,9 +2103,9 @@ mod os_completion {
         assert!(summary.is_ok(), "{summary:?}");
         let held = wired.kernel.snapshot_trait("Sup", None);
         assert_eq!(held.state, "read");
-        assert_eq!(held.entity.get_path("data"), Some(&Value::String("aGVsbG8=".to_string())));
+        assert_eq!(held.entity.get_path("data"), Some(&Value::string("aGVsbG8=")));
         assert_eq!(held.entity.get_path("eof"), Some(&Value::Bool(false)));
-        assert_eq!(held.entity.get_path("key"), Some(&Value::String("f1".to_string())));
+        assert_eq!(held.entity.get_path("key"), Some(&Value::string("f1")));
         assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "exactly one completion");
     }
 
@@ -2117,7 +2117,7 @@ mod os_completion {
         wired.sink.drive(progress).unwrap();
         let held = wired.kernel.snapshot_trait("Sup", None);
         assert_eq!(held.state, "slurped", "answered within the SLURP_NOW dispatch");
-        assert_eq!(held.entity.get_path("data"), Some(&Value::String("aGVsbG8=".to_string())));
+        assert_eq!(held.entity.get_path("data"), Some(&Value::string("aGVsbG8=")));
         assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "no completion dispatch without a key");
     }
 
@@ -2133,8 +2133,8 @@ mod os_completion {
         assert!(summary.is_ok(), "{summary:?}");
         let held = wired.kernel.snapshot_trait("Sup", None);
         assert_eq!(held.state, "slurped");
-        assert_eq!(held.entity.get_path("data"), Some(&Value::String("aGVsbG8=".to_string())));
-        assert_eq!(held.entity.get_path("key"), Some(&Value::String("f2".to_string())));
+        assert_eq!(held.entity.get_path("data"), Some(&Value::string("aGVsbG8=")));
+        assert_eq!(held.entity.get_path("key"), Some(&Value::string("f2")));
         assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "exactly one completion");
     }
 
@@ -2148,7 +2148,7 @@ mod os_completion {
         let held = wired.kernel.snapshot_trait("Sup", None);
         assert_eq!(held.state, "recorded");
         assert_eq!(held.entity.get_path("code"), Some(&Value::Number(3.0)));
-        assert_eq!(held.entity.get_path("key"), Some(&Value::String("child".to_string())));
+        assert_eq!(held.entity.get_path("key"), Some(&Value::string("child")));
         assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "exactly one completion");
     }
 

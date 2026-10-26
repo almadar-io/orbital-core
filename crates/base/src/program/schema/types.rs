@@ -313,7 +313,8 @@ pub use state_machine::{
     StringOrArray, StringOrNumber, TickDefinition, TransitionDefinition,
 };
 pub use theme::{
-    css_time_ms, ColorTokens, DensityTokens, DiagramTokens, ElevationTokens, EnterAnimation,
+    css_time_ms, ColorTokens, DensityTokens, DiagramFillStyle, DiagramLabelCase, DiagramLabelFont,
+    DiagramLineCap, DiagramLineJoin, DiagramMarker, DiagramTokens, ElevationTokens, EnterAnimation,
     GeometryTokens, IconFamily, IconographyTokens, IllustrationStyle, IllustrationTokens,
     MotionDurationKey, MotionDurationPalette, MotionEasingKey, MotionEasingPalette,
     MotionEntryTokens, MotionIntent, MotionIntentMap, MotionShapeTokens, MotionTokens, SceneTokens,

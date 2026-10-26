@@ -26,7 +26,7 @@ fn named_fields(def: &EntityDefinition) -> impl Iterator<Item = (&str, &FieldDef
 
 fn ids_of(value: Option<&Value>) -> Vec<String> {
     match value {
-        Some(Value::String(id)) => vec![id.clone()],
+        Some(Value::String(id)) => vec![id.clone().into_inner()],
         Some(Value::Array(items)) => items
             .iter()
             .filter_map(|v| v.as_str().map(str::to_string))
@@ -154,7 +154,7 @@ pub fn populate_relations(
                             .collect();
                         map.insert(fk_field.to_string(), Value::Array(children));
                     } else if is_self {
-                        map.insert(fk_field.to_string(), Value::Array(Vec::new()));
+                        map.insert(fk_field.to_string(), Value::array(Vec::new()));
                     }
                 }
                 Some(copy)
@@ -171,7 +171,7 @@ pub fn populate_relations(
             let fk_value = row.get_path(fk_field).cloned();
             let attached = if to_one {
                 match &fk_value {
-                    Some(Value::String(id)) if related.contains_key(id) => hydrate(id, &lineage),
+                    Some(Value::String(id)) if related.contains_key(id.as_str()) => hydrate(id, &lineage),
                     _ => None,
                 }
             } else {
@@ -229,7 +229,7 @@ pub fn inject_relation_options(
 
 fn field_name(entry: &Value) -> Option<String> {
     match entry {
-        Value::String(name) => Some(name.clone()),
+        Value::String(name) => Some(name.clone().into_inner()),
         Value::Object(map) => ["field", "name", "key"]
             .iter()
             .find_map(|k| map.get(*k))
@@ -253,7 +253,7 @@ fn visit(source: &dyn EntitySource, targets: &HashMap<String, String>, node: &mu
             if consumes_fields && !map.contains_key("relationsData") {
                 let entries = match map.get("fields").or_else(|| map.get("columns")) {
                     Some(Value::Array(entries)) => entries.clone(),
-                    _ => Vec::new(),
+                    _ => Vec::new().into(),
                 };
                 let mut data: ValueMap = ValueMap::default();
                 for entry in &entries {
@@ -278,16 +278,16 @@ fn visit(source: &dyn EntitySource, targets: &HashMap<String, String>, node: &mu
                             let label = text("name")
                                 .or_else(|| text("title"))
                                 .unwrap_or_else(|| id.clone());
-                            Value::Object(ValueMap::from_iter([
-                                ("value".to_string(), Value::String(id)),
-                                ("label".to_string(), Value::String(label)),
+                            Value::object(ValueMap::from_iter([
+                                ("value".to_string(), Value::String(id.into())),
+                                ("label".to_string(), Value::String(label.into())),
                             ]))
                         })
                         .collect();
                     data.insert(name, Value::Array(options));
                 }
                 if !data.is_empty() {
-                    map.insert("relationsData".to_string(), Value::Object(data));
+                    map.insert("relationsData".to_string(), Value::object(data));
                 }
             }
             if let Some(children) = map.get_mut("children") {

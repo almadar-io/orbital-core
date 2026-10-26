@@ -60,7 +60,7 @@ fn object(fields: Vec<(&str, Value)>) -> Value {
     for (k, v) in fields {
         map.insert(k.to_string(), v);
     }
-    Value::Object(map)
+    Value::object(map)
 }
 
 fn number(n: i64) -> Value {
@@ -159,7 +159,7 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     };
     let opts = match arg_opt(args, 2) {
         None => None,
-        Some(Value::Object(m)) => Some(m),
+        Some(Value::Object(m)) => Some(&**m),
         Some(_) => return Err(invalid(op, "argument 3 must be an object")),
     };
     if let Some(m) = opts {
@@ -180,7 +180,7 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
                 .anchors
                 .expand(p)
                 .map_err(|m| invalid(op, m))?
-                .unwrap_or_else(|| std::path::PathBuf::from(p));
+                .unwrap_or_else(|| std::path::PathBuf::from(p.as_str()));
             if !host.grants.fs_allows_at(&dir, FsMode::Read, &host.handles.anchors) {
                 return Err(denied(op, &format!("cwd {p} is not granted for read")));
             }
@@ -215,7 +215,7 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
                 }
                 match value {
                     Value::String(v) if !v.contains('\0') => {
-                        vars.insert(name.clone(), v.clone());
+                        vars.insert(name.clone(), v.clone().into_inner());
                     }
                     Value::Null => {
                         if !host.grants.allows(&orbital_core_base::os_grants::OsRequirement::inherited_env(name)) {
@@ -456,7 +456,7 @@ fn getenv(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     let value = lookup_env(host, name).map_err(|e| io_error(op, &e))?;
     Ok(object(vec![(
         "value",
-        value.map_or(Value::Null, Value::String),
+        value.map_or(Value::Null, Value::string),
     )]))
 }
 
@@ -500,7 +500,7 @@ fn environ(host: &OsHost<'_>) -> Value {
     }
     object(vec![(
         "names",
-        Value::Array(names.into_iter().map(Value::String).collect()),
+        Value::Array(names.into_iter().map(Value::string).collect()),
     )])
 }
 
@@ -714,7 +714,7 @@ fn current_exe() -> Result<Value, OsError> {
     let op = OsOp::CurrentExe;
     let path = std::env::current_exe().map_err(|e| io_error(op, &e))?;
     match path.to_str() {
-        Some(p) => Ok(object(vec![("path", Value::String(p.to_string()))])),
+        Some(p) => Ok(object(vec![("path", Value::string(p.to_string()))])),
         None => Err(invalid(op, format!("{} is not UTF-8", path.display()))),
     }
 }

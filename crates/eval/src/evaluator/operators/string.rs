@@ -17,7 +17,7 @@ impl Operator for ConcatOp {
             let val = eval_expr(arg, ctx)?;
             result.push_str(&val.to_text());
         }
-        Ok(Value::String(result))
+        Ok(Value::string(result))
     }
 }
 
@@ -67,7 +67,7 @@ impl Operator for UpperOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "upper", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::String(val.to_text().to_uppercase()))
+        Ok(Value::string(val.to_text().to_uppercase()))
     }
 }
 
@@ -76,7 +76,7 @@ impl Operator for LowerOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "lower", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::String(val.to_text().to_lowercase()))
+        Ok(Value::string(val.to_text().to_lowercase()))
     }
 }
 
@@ -85,7 +85,7 @@ impl Operator for TrimOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "trim", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::String(val.to_text().trim().to_string()))
+        Ok(Value::string(val.to_text().trim().to_string()))
     }
 }
 
@@ -118,13 +118,13 @@ impl Operator for SplitOp {
         let delimiter = eval_expr(&args[1], ctx)?.to_text();
 
         let parts: Vec<Value> = if delimiter.is_empty() {
-            s.chars().map(|c| Value::String(c.to_string())).collect()
+            s.chars().map(|c| Value::string(c.to_string())).collect()
         } else {
             s.split(&delimiter)
-                .map(|p| Value::String(p.to_string()))
+                .map(|p| Value::string(p.to_string()))
                 .collect()
         };
-        Ok(Value::Array(parts))
+        Ok(Value::array(parts))
     }
 }
 
@@ -138,7 +138,7 @@ impl Operator for JoinOp {
         let array = require_array!(arr);
 
         let parts: Vec<String> = array.into_iter().map(|v| v.to_text()).collect();
-        Ok(Value::String(parts.join(&delimiter)))
+        Ok(Value::string(parts.join(&delimiter)))
     }
 }
 
@@ -198,7 +198,7 @@ impl Operator for StrReplaceOp {
         let s = eval_expr(&args[0], ctx)?.to_text();
         let old = eval_expr(&args[1], ctx)?.to_text();
         let new = eval_expr(&args[2], ctx)?.to_text();
-        Ok(Value::String(s.replacen(&old, &new, 1)))
+        Ok(Value::string(s.replacen(&old, &new, 1)))
     }
 }
 
@@ -223,7 +223,7 @@ impl Operator for StrReplacePatternOp {
         let Some(regex) = compile_shared_regex(&texts[1]) else {
             return Ok(Value::Null);
         };
-        Ok(Value::String(replace_each_match(
+        Ok(Value::string(replace_each_match(
             &regex, &texts[0], &texts[2],
         )))
     }
@@ -237,7 +237,7 @@ impl Operator for StrReplaceAllOp {
         let s = eval_expr(&args[0], ctx)?.to_text();
         let old = eval_expr(&args[1], ctx)?.to_text();
         let new = eval_expr(&args[2], ctx)?.to_text();
-        Ok(Value::String(s.replace(&old, &new)))
+        Ok(Value::string(s.replace(&old, &new)))
     }
 }
 
@@ -266,7 +266,7 @@ impl Operator for StrTemplateOp {
             result = result.replace(&placeholder, &value.to_text());
         }
 
-        Ok(Value::String(result))
+        Ok(Value::string(result))
     }
 }
 
@@ -322,7 +322,7 @@ impl Operator for StrSliceOp {
         };
 
         if start_idx >= end_idx {
-            return Ok(Value::String(String::new()));
+            return Ok(Value::string(String::new()));
         }
 
         Ok(Value::String(chars[start_idx..end_idx].iter().collect()))
@@ -346,11 +346,11 @@ impl Operator for StrPadStartOp {
 
         let current_len = s.chars().count();
         if current_len >= target_len {
-            return Ok(Value::String(s));
+            return Ok(Value::string(s));
         }
 
         let padding: String = std::iter::repeat_n(pad_char, target_len - current_len).collect();
-        Ok(Value::String(format!("{}{}", padding, s)))
+        Ok(Value::string(format!("{}{}", padding, s)))
     }
 }
 
@@ -371,11 +371,11 @@ impl Operator for StrPadEndOp {
 
         let current_len = s.chars().count();
         if current_len >= target_len {
-            return Ok(Value::String(s));
+            return Ok(Value::string(s));
         }
 
         let padding: String = std::iter::repeat_n(pad_char, target_len - current_len).collect();
-        Ok(Value::String(format!("{}{}", s, padding)))
+        Ok(Value::string(format!("{}{}", s, padding)))
     }
 }
 
@@ -387,14 +387,14 @@ impl Operator for StrCapitalizeOp {
         let s = eval_expr(&args[0], ctx)?.to_text();
 
         if s.is_empty() {
-            return Ok(Value::String(s));
+            return Ok(Value::string(s));
         }
 
         let mut chars = s.chars();
         let first = chars.next().unwrap().to_uppercase().to_string();
         let rest: String = chars.collect::<String>().to_lowercase();
 
-        Ok(Value::String(format!("{}{}", first, rest)))
+        Ok(Value::string(format!("{}{}", first, rest)))
     }
 }
 
@@ -415,12 +415,12 @@ impl Operator for StrTruncateOp {
 
         let char_count = s.chars().count();
         if char_count <= max_len {
-            return Ok(Value::String(s));
+            return Ok(Value::string(s));
         }
 
         // Truncate at max_len and append suffix
         let truncated: String = s.chars().take(max_len).collect();
-        Ok(Value::String(format!("{}{}", truncated, suffix)))
+        Ok(Value::string(format!("{}{}", truncated, suffix)))
     }
 }
 
@@ -434,7 +434,7 @@ impl Operator for StrTrimStartOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "trimStart", 1);
         let s = eval_expr(&args[0], ctx)?.to_text();
-        Ok(Value::String(s.trim_start().to_string()))
+        Ok(Value::string(s.trim_start().to_string()))
     }
 }
 
@@ -444,7 +444,7 @@ impl Operator for StrTrimEndOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "trimEnd", 1);
         let s = eval_expr(&args[0], ctx)?.to_text();
-        Ok(Value::String(s.trim_end().to_string()))
+        Ok(Value::string(s.trim_end().to_string()))
     }
 }
 
@@ -456,7 +456,7 @@ impl Operator for StrRepeatOp {
         let s = eval_expr(&args[0], ctx)?.to_text();
         let n = require_number!(eval_expr(&args[1], ctx)?) as usize;
 
-        Ok(Value::String(s.repeat(n)))
+        Ok(Value::string(s.repeat(n)))
     }
 }
 
@@ -491,7 +491,7 @@ impl Operator for StrTitleCaseOp {
             .collect::<Vec<_>>()
             .join(" ");
 
-        Ok(Value::String(result))
+        Ok(Value::string(result))
     }
 }
 
@@ -527,7 +527,7 @@ impl Operator for StrCamelCaseOp {
             })
             .collect();
 
-        Ok(Value::String(result))
+        Ok(Value::string(result))
     }
 }
 
@@ -558,7 +558,7 @@ impl Operator for StrKebabCaseOp {
             words.push(current_word.to_lowercase());
         }
 
-        Ok(Value::String(words.join("-")))
+        Ok(Value::string(words.join("-")))
     }
 }
 
@@ -589,7 +589,7 @@ impl Operator for StrSnakeCaseOp {
             words.push(current_word.to_lowercase());
         }
 
-        Ok(Value::String(words.join("_")))
+        Ok(Value::string(words.join("_")))
     }
 }
 
@@ -624,7 +624,7 @@ fn collate_text(
 ) -> Result<Option<String>, OrbitalError> {
     match eval_expr(arg, ctx)? {
         Value::Null => Ok(None),
-        Value::String(s) => Ok(Some(s)),
+        Value::String(s) => Ok(Some(s.into_inner())),
         other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
             "{op}: expected a string argument, got {}",
             other.type_name()
@@ -662,7 +662,7 @@ impl Operator for StrCollateKeyOp {
         };
         let mut key: Vec<u8> = Vec::new();
         let Ok(()) = root_collator().write_sort_key_to(&text, &mut key);
-        Ok(Value::String(orbital_core_base::codec::hex(&key)))
+        Ok(Value::string(orbital_core_base::codec::hex(&key)))
     }
 }
 

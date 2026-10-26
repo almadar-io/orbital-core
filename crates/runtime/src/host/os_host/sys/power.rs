@@ -99,5 +99,5 @@ pub(super) fn thermal_zones(op: OsOp) -> Result<Value, OsError> {
             ),
         ]));
     }
-    Ok(object([("zones", Value::Array(zones))]))
+    Ok(object([("zones", Value::array(zones))]))
 }

@@ -19,8 +19,8 @@ impl ServiceHandler for Llm {
             return Err("rate limited".to_string());
         }
         let mut out = ValueMap::new();
-        out.insert("embeddings".to_string(), Value::Array(vec![Value::Number(1.0)]));
-        Ok(Value::Object(out))
+        out.insert("embeddings".to_string(), Value::array(vec![Value::Number(1.0)]));
+        Ok(Value::object(out))
     }
     fn cancel(&self, _key: &str) -> Result<(), String> {
         Ok(())
@@ -34,9 +34,9 @@ struct Host {
 impl SubstrateHandler for Host {
     fn run(&self, op: &str, _args: &[Value]) -> Result<Value, SubstrateFailure> {
         if self.fail {
-            return Err(SubstrateFailure { message: format!("{op} refused"), errors: vec![Value::String("ORB_X".into())] });
+            return Err(SubstrateFailure { message: format!("{op} refused"), errors: vec![Value::string("ORB_X")] });
         }
-        Ok(Value::String("ok".into()))
+        Ok(Value::string("ok"))
     }
 }
 
@@ -665,7 +665,7 @@ mod substrate_arguments {
     impl SubstrateHandler for Recording {
         fn run(&self, _op: &str, args: &[Value]) -> Result<Value, SubstrateFailure> {
             self.seen.lock().push(args.to_vec());
-            Ok(Value::String("ok".into()))
+            Ok(Value::string("ok"))
         }
     }
 
@@ -677,7 +677,7 @@ mod substrate_arguments {
         k.dispatch("Runner", None, "GO", as_value_of(json!({ "program": "p" }))).unwrap();
         assert_eq!(
             *host.seen.lock(),
-            vec![vec![Value::String("p".into()), serde_json::from_value::<Value>(json!({ "nested": "p" })).unwrap()]]
+            vec![vec![Value::string("p"), serde_json::from_value::<Value>(json!({ "nested": "p" })).unwrap()]]
         );
     }
 

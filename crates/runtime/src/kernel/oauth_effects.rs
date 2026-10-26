@@ -4,15 +4,15 @@ use super::*;
 
 impl RuntimeKernel {
     pub(super) fn oauth_failed(effect: &Effect, reason: OAuthFailureReason) -> EffectResult {
-        let payload = Value::Object(ValueMap::from_iter([
+        let payload = Value::object(ValueMap::from_iter([
             (
                 "error".to_string(),
-                Value::String(reason.message().to_string()),
+                Value::String(reason.message().to_string().into()),
             ),
-            ("code".to_string(), Value::String(reason.code().to_string())),
+            ("code".to_string(), Value::String(reason.code().to_string().into())),
             (
                 "reason".to_string(),
-                Value::String(reason.as_str().to_string()),
+                Value::String(reason.as_str().to_string().into()),
             ),
         ]));
         http_failure(effect, payload)
@@ -30,7 +30,7 @@ impl RuntimeKernel {
         let key = match effect {
             Effect::OAuthAuthorize { key: Some(key), .. } => {
                 match orbital_core_base::effect_types::call_key_text(key) {
-                    Ok(text) => Value::String(text.to_string()),
+                    Ok(text) => Value::string(text.to_string()),
                     Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
                 }
             }
@@ -42,10 +42,10 @@ impl RuntimeKernel {
                 fields.insert("key".to_string(), key);
                 Value::Object(fields)
             }
-            _ => Value::Object(ValueMap::from_iter([
+            _ => Value::object(ValueMap::from_iter([
                 (
                     "error".to_string(),
-                    Value::String(result.error.clone().unwrap_or_default()),
+                    Value::String(result.error.clone().unwrap_or_default().into()),
                 ),
                 ("key".to_string(), key),
             ])),
@@ -206,10 +206,10 @@ impl RuntimeKernel {
         };
         EffectResult::executed_with_value(
             effect.clone(),
-            Value::Object(ValueMap::from_iter([
-                ("authUrl".to_string(), Value::String(auth_url)),
-                ("state".to_string(), Value::String(state)),
-                ("code".to_string(), Value::String(code)),
+            Value::object(ValueMap::from_iter([
+                ("authUrl".to_string(), Value::String(auth_url.into())),
+                ("state".to_string(), Value::String(state.into())),
+                ("code".to_string(), Value::String(code.into())),
             ])),
         )
     }

@@ -91,7 +91,7 @@ pub fn field_ref_name(x: &SExpression, binding: &str) -> Option<String> {
             if matches!(op, SExpression::String(s) if s == "object/get")
                 && matches!(b, SExpression::String(s) if s == binding) =>
         {
-            Some(f.clone())
+            Some(f.clone().into_inner())
         }
         _ => None,
     }
@@ -310,7 +310,7 @@ pub fn stamp_owner(
         if let Some(map) = row.as_object_mut() {
             for col in &cols {
                 if stamps_row(col, i) {
-                    map.insert((*col).to_string(), Value::String(viewer_id.to_string()));
+                    map.insert((*col).to_string(), Value::string(viewer_id.to_string()));
                 }
             }
         }

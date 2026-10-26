@@ -69,9 +69,9 @@ pub(super) fn keyed_call_completion_emit(
             let key = key?;
             (
                 emit.cancelled.clone()?,
-                Value::Object(ValueMap::from_iter([(
+                Value::object(ValueMap::from_iter([(
                     "key".to_string(),
-                    Value::String(key.to_string()),
+                    Value::String(key.to_string().into()),
                 )])),
             )
         }
@@ -120,7 +120,7 @@ pub(super) fn custom_key(effect: &Effect) -> Option<String> {
 pub(super) fn with_key(payload: Value, key: Option<&str>) -> Value {
     match (key, payload) {
         (Some(key), Value::Object(mut fields)) => {
-            fields.insert("key".to_string(), Value::String(key.to_string()));
+            fields.insert("key".to_string(), Value::string(key.to_string()));
             Value::Object(fields)
         }
         (_, payload) => payload,
@@ -160,12 +160,12 @@ pub(super) fn error_payload(result: &EffectResult, errors: Option<Value>) -> Val
     let mut payload = ValueMap::default();
     payload.insert(
         "error".to_string(),
-        Value::String(result.error.clone().unwrap_or_default()),
+        Value::string(result.error.clone().unwrap_or_default()),
     );
     if let Some(errors) = errors {
         payload.insert("errors".to_string(), errors);
     }
-    Value::Object(payload)
+    Value::object(payload)
 }
 
 pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<EffectResult> {
@@ -175,7 +175,7 @@ pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> 
             let rows = result
                 .return_value
                 .clone()
-                .unwrap_or_else(|| Value::Array(Vec::new()));
+                .unwrap_or_else(|| Value::array(Vec::new()));
             // The TS wire (`EffectExecutor.ts`): a by-id hit's `data` is the row itself.
             let by_id = matches!(&result.effect, Effect::Fetch { id: Some(_), .. });
             let data = match rows {
@@ -187,7 +187,7 @@ pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> 
             if let Some(total) = result.total_count {
                 payload.insert("totalCount".to_string(), Value::Number(total as f64));
             }
-            (event, Value::Object(payload))
+            (event, Value::object(payload))
         }
         EffectOutcome::Failed => {
             let mut payload = error_payload(result, None);
@@ -196,7 +196,7 @@ pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> 
                     "code".to_string(),
                     result
                         .code
-                        .map_or(Value::Null, |c| Value::String(c.as_str().to_string())),
+                        .map_or(Value::Null, |c| Value::string(c.as_str().to_string())),
                 );
             }
             (emit.failure.clone()?, payload)
@@ -222,13 +222,13 @@ pub(super) fn persist_completion_emit(
         EffectOutcome::Failed => {
             let mut payload = ValueMap::default();
             if let Some(err) = &result.error {
-                payload.insert("error".to_string(), Value::String(err.clone()));
+                payload.insert("error".to_string(), Value::string(err.clone()));
             }
             payload.insert(
                 "code".to_string(),
                 result
                     .code
-                    .map_or(Value::Null, |c| Value::String(c.as_str().to_string())),
+                    .map_or(Value::Null, |c| Value::string(c.as_str().to_string())),
             );
             if matches!(effect, Effect::PersistBatch { .. }) {
                 let at = result.batch_failure;
@@ -241,7 +241,7 @@ pub(super) fn persist_completion_emit(
                     Value::Number(at.map_or(0, |f| f.completed_count) as f64),
                 );
             }
-            (emit.failure.clone()?, Value::Object(payload))
+            (emit.failure.clone()?, Value::object(payload))
         }
         EffectOutcome::Executed => {
             let event = emit.success.clone()?;
@@ -256,11 +256,11 @@ pub(super) fn persist_completion_emit(
                     payload.insert(
                         "id".to_string(),
                         id.clone().map_or(Value::Null, |id| {
-                            ctx.resolve_value(&Value::String(id)).into_owned()
+                            ctx.resolve_value(&Value::string(id)).into_owned()
                         }),
                     );
                     payload.insert("deleted".to_string(), Value::Bool(true));
-                    Value::Object(payload)
+                    Value::object(payload)
                 }
                 _ => result.return_value.clone().unwrap_or(Value::Null),
             };

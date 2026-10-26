@@ -5,7 +5,7 @@ use std::prelude::v1::*;
 
 use serde::Serialize;
 use serde_json::{Map, Number, Value};
-use sha2::{Digest, Sha256};
+use xxhash_rust::xxh3::Xxh3;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -82,14 +82,14 @@ impl<'a> VisitFrame<'a> {
 }
 
 /// A set of deliveries under the `dispatch_visit_key` identity. Steps are filed by
-/// `(trait, event, from)` and each visit keeps only the SHA-256 of its canonical payload and
+/// `(trait, event, from)` and each visit keeps only the xxh3-128 of its canonical payload and
 /// frame, so a long loop over a large entity does not retain a copy of every frame it passed.
 /// A frame field's digest is kept for the value the field holds, so a field a step left
 /// unchanged is not digested again.
 #[derive(Debug, Default)]
 pub struct DispatchVisits {
-    steps: HashMap<String, HashSet<[u8; 32]>>,
-    fields: HashMap<String, (Arc<EvalValue>, [u8; 32])>,
+    steps: HashMap<String, HashSet<u128>>,
+    fields: HashMap<String, (Arc<EvalValue>, u128)>,
 }
 
 /// One step's identity, computed once: its `(trait, event, from)` and the digest of its payload and frame. A step asks
@@ -97,7 +97,7 @@ pub struct DispatchVisits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Visit {
     step: String,
-    digest: [u8; 32],
+    digest: u128,
 }
 
 impl DispatchVisits {
@@ -129,10 +129,10 @@ impl DispatchVisits {
         self.record(visit)
     }
 
-    /// SHA-256 over an injective encoding of the canonical payload and the frame: a field enters as the digest of
+    /// xxh3-128 over an injective encoding of the canonical payload and the frame: a field enters as the digest of
     /// its canonical value, so equal frames still digest equal and differing ones differ.
-    fn visit_digest(&mut self, payload: &EvalValue, frame: &VisitFrame<'_>) -> [u8; 32] {
-        let mut h = Sha256::new();
+    fn visit_digest(&mut self, payload: &EvalValue, frame: &VisitFrame<'_>) -> u128 {
+        let mut h = Xxh3::new();
         digest_value(&mut h, payload);
         match frame {
             VisitFrame::Null => h.update(b"n"),
@@ -147,42 +147,42 @@ impl DispatchVisits {
                 sorted.sort_by(|a, b| a.0.cmp(b.0));
                 for (name, value) in sorted {
                     digest_str(&mut h, name);
-                    h.update(self.field_digest(name, value));
+                    h.update(&self.field_digest(name, value).to_le_bytes());
                 }
             }
         }
-        h.finalize().into()
+        h.digest128()
     }
 
-    fn field_digest(&mut self, name: &str, value: &Arc<EvalValue>) -> [u8; 32] {
+    fn field_digest(&mut self, name: &str, value: &Arc<EvalValue>) -> u128 {
         if let Some((held, digest)) = self.fields.get(name) {
             if Arc::ptr_eq(held, value) {
                 return *digest;
             }
         }
-        let mut h = Sha256::new();
+        let mut h = Xxh3::new();
         digest_value(&mut h, value);
-        let digest: [u8; 32] = h.finalize().into();
+        let digest = h.digest128();
         self.fields.insert(name.to_string(), (Arc::clone(value), digest));
         digest
     }
 }
 
-fn digest_len(h: &mut Sha256, n: usize) {
-    h.update((n as u64).to_le_bytes());
+fn digest_len(h: &mut Xxh3, n: usize) {
+    h.update(&(n as u64).to_le_bytes());
 }
 
-fn digest_str(h: &mut Sha256, s: &str) {
+fn digest_str(h: &mut Xxh3, s: &str) {
     digest_len(h, s.len());
     h.update(s.as_bytes());
 }
 
-fn digest_number(h: &mut Sha256, n: &Number) {
+fn digest_number(h: &mut Xxh3, n: &Number) {
     h.update(b"#");
     digest_str(h, &canonical_number(n).to_string());
 }
 
-fn digest_value(h: &mut Sha256, value: &EvalValue) {
+fn digest_value(h: &mut Xxh3, value: &EvalValue) {
     match value {
         EvalValue::Lambda { .. } => {
             digest_json(h, &serde_json::to_value(value).unwrap_or(Value::Null))
@@ -215,7 +215,7 @@ fn digest_value(h: &mut Sha256, value: &EvalValue) {
     }
 }
 
-fn digest_json(h: &mut Sha256, value: &Value) {
+fn digest_json(h: &mut Xxh3, value: &Value) {
     match value {
         Value::Null => h.update(b"n"),
         Value::Bool(b) => h.update(if *b { b"t" } else { b"f" }),
@@ -353,7 +353,7 @@ mod tests {
                 Value::Null => EValue::Null,
                 Value::Bool(b) => EValue::Bool(b),
                 Value::Number(n) => EValue::Number(n.as_f64().unwrap_or(f64::NAN)),
-                Value::String(s) => EValue::String(s),
+                Value::String(s) => EValue::String(s.into()),
                 Value::Array(a) => EValue::Array(a.into_iter().map(conv).collect()),
                 Value::Object(o) => {
                     EValue::Object(o.into_iter().map(|(k, v)| (k, conv(v))).collect())
@@ -366,7 +366,7 @@ mod tests {
     fn lambda(param: &str) -> EValue {
         EValue::Lambda {
             params: vec![param.to_string()],
-            body: Arc::new(SExpression::String(param.to_string())),
+            body: Arc::new(SExpression::string(param.to_string())),
         }
     }
 
@@ -406,7 +406,7 @@ mod tests {
             lambda("x"),
             lambda("y"),
             ev(json!(["fn", ["x"], "x"])),
-            EValue::Array(vec![lambda("x")]),
+            EValue::Array(vec![lambda("x")].into()),
         ]);
         values
     }
@@ -469,15 +469,15 @@ mod tests {
 
     #[test]
     fn visits_hold_no_copy_of_a_payload_or_frame() {
-        let body = Arc::new(SExpression::String("x".to_string()));
+        let body = Arc::new(SExpression::string("x"));
         let held = || EValue::Lambda {
             params: vec!["x".to_string()],
             body: Arc::clone(&body),
         };
         let mut visits = DispatchVisits::default();
-        assert!(visits.insert("T", "E", "s", &held(), &frame(&EValue::Array(vec![held(), held()]))));
+        assert!(visits.insert("T", "E", "s", &held(), &frame(&EValue::Array(vec![held(), held()].into()))));
         assert_eq!(Arc::strong_count(&body), 1);
-        assert!(visits.contains("T", "E", "s", &held(), &frame(&EValue::Array(vec![held(), held()]))));
+        assert!(visits.contains("T", "E", "s", &held(), &frame(&EValue::Array(vec![held(), held()].into()))));
     }
 
     #[test]
