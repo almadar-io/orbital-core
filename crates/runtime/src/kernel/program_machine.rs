@@ -5,7 +5,7 @@ use std::prelude::v1::*;
 
 use crate::embed::eval_wire::EvalStepWire;
 use crate::process_result::{EffectRun, EffectRunStatus, ProcessEventResult};
-use crate::verify::plan_wire::{judge_propositions, PropositionObservation, PropositionVerdict};
+use crate::propositions::{judge_propositions, PropositionObservation, PropositionVerdict};
 use orbital_core_base::schema::types::TraitDefinition;
 use orbital_core_base::schema::SExpression;
 use orbital_core_base::value::Value;

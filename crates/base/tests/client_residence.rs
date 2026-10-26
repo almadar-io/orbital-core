@@ -70,6 +70,15 @@ fn the_entity_argument_table_matches_the_registry_positions() {
 }
 
 #[test]
+fn a_stream_runs_on_the_server_even_for_a_browser_stored_entity() {
+    let r = residence();
+    let table = orbital_core_base::language::registry::get_operator("fetch-stream").expect("fetch-stream");
+    assert_eq!((table.runs_on.as_deref(), table.entity_arg_position), (Some("server"), None), "its entity parameter names the streamed rows, not its site");
+    assert_eq!(effect_site("fetch-stream", &[sexpr(json!("LocalInvoice"))], &r), RunsOn::Server);
+    assert_eq!(effect_site("fetch", &[sexpr(json!("LocalInvoice"))], &r), RunsOn::Client, "control: fetch follows the entity");
+}
+
+#[test]
 fn a_data_effect_runs_where_its_entity_lives() {
     let r = residence();
     assert_eq!(effect_site("fetch", &[sexpr(json!("LocalInvoice"))], &r), RunsOn::Client);

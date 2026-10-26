@@ -15,8 +15,7 @@ use super::{
     SnapshotWire,
 };
 use crate::effects::response::{EventRequest, EventResponse};
-use crate::verify::flows::{AffordanceQuery, AffordanceStep, ReplayQuery, TransientOutcome, TransientQuery};
-use crate::verify::plan_wire::{Credit, CreditStep, Expectation, Observation, PlanOptions, PlanOutcome, PropositionObservation, PropositionVerdict, VerdictWire};
+use crate::propositions::{PropositionObservation, PropositionVerdict};
 
 
 use crate::embed::eval_wire::{EvalContextWire, EvalOutcomeWire, EvalTracedWire, GuardOutcomeWire, TraceEffectsWire, MutationOpWire, MutationVerdictWire, RowBindingWire};
@@ -115,21 +114,8 @@ fn kernel_wire_ts() -> String {
     collect.visit::<QueryCapabilities>();
     collect.visit::<WriteCapabilities>();
     collect.visit::<RowSetRef>();
-    collect.visit::<PlanOptions>();
-    collect.visit::<PlanOutcome>();
-    collect.visit::<Expectation>();
-    collect.visit::<Observation>();
-    collect.visit::<VerdictWire>();
     collect.visit::<PropositionObservation>();
     collect.visit::<PropositionVerdict>();
-    collect.visit::<CreditStep>();
-    collect.visit::<Credit>();
-    collect.visit::<AffordanceQuery>();
-    collect.visit::<AffordanceStep>();
-    collect.visit::<TransientQuery>();
-    collect.visit::<ReplayQuery>();
-    collect.visit::<crate::verify::plan_wire::PreambleEvent>();
-    collect.visit::<TransientOutcome>();
     collect.visit::<EvalContextWire>();
     collect.visit::<EvalOutcomeWire>();
     collect.visit::<GuardOutcomeWire>();
@@ -515,37 +501,8 @@ fn every_wire_type_is_declared() {
         "RowPage",
         "RowIdPage",
         "RowWriteOutcome",
-        "PlanOptions",
-        "PlanOutcome",
-        "PlanFailure",
-        "StepWire",
-        "Expectation",
-        "Observation",
-        "VerdictWire",
-        "VerdictReason",
         "PropositionObservation",
         "PropositionVerdict",
-        "CreditStep",
-        "EmitStep",
-        "EmitRowBinding",
-        "ContractEvents",
-        "ContractStep",
-        "AffordanceStep",
-        "TransientProbe",
-        "TransientFinding",
-        "CrudChain",
-        "ReplayQuery",
-        "PreambleEvent",
-        "TickStep",
-        "DataMutation",
-        "RowEstablish",
-        "Credit",
-        "TraitConfigVariants",
-        "InitCredit",
-        "Precondition",
-        "ArmConflict",
-        "FrameStatus",
-        "GapReason",
         "EvalContextWire",
         "EvalOutcomeWire",
         "GuardOutcomeWire",

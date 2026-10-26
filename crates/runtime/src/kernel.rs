@@ -1330,6 +1330,18 @@ impl RuntimeKernel {
         if let Some(sites) = schema.metadata.as_ref().and_then(|m| m.operator_sites.as_ref()) {
             orbital_core_base::runs_on::install_operator_sites(sites).map_err(KernelError::Internal)?;
         }
+        match schema.metadata.as_ref().and_then(|m| m.protocols.clone()) {
+            Some(rows) => orbital_core_base::protocols::install_program_protocols(rows).map_err(KernelError::Internal)?,
+            None => {
+                if let Err(e) = orbital_core_base::protocols::table() {
+                    return Err(KernelError::Internal(format!(
+                        "schema '{}': {}: {e}; the program carries no `_metadata.protocols`; compile it as a client program",
+                        schema.name,
+                        e.code()
+                    )));
+                }
+            }
+        }
         match schema.metadata.as_ref().and_then(|m| m.dispatch_facts.clone()) {
             Some(facts) => orbital_core_base::language::registry::install_dispatch_facts(facts).map_err(KernelError::Internal)?,
             None if orbital_core_base::language::registry::dispatch_facts().is_none() => {
@@ -1806,6 +1818,7 @@ impl RuntimeKernel {
         // frame tier on both paths.
         let entity_id = entity_id.unwrap_or("singleton");
         let stamp = self.begin_dispatch();
+        let _transition = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, "transition", trait_name = %trait_name, event = %event_name).entered();
 
         debug!(
             trait_name = %trait_name,
@@ -6208,12 +6221,12 @@ impl RuntimeKernel {
     /// What mounts when a host starts (EXEC-ENDPOINT-3): the traits of every endpoint whose
     /// protocol is served by `side`, plus every `boot` endpoint. The client side has no start mounts.
     pub fn boot_mounts(&self, side: orbital_core_base::protocols::ProtocolSide) -> Vec<crate::effects::response::MountSeed> {
-        use orbital_core_base::protocols::{protocol, ProtocolSide};
+        use orbital_core_base::protocols::{protocol_after_preflight, ProtocolSide};
         if side == ProtocolSide::Client {
             return Vec::new();
         }
         self.mounts_of(|page| {
-            protocol(page.protocol_name())
+            protocol_after_preflight(page.protocol_name())
                 .is_some_and(|spec| spec.side == side || spec.side == ProtocolSide::Start)
         })
     }

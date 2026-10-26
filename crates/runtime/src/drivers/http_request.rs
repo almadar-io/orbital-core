@@ -837,7 +837,7 @@ pub fn parse_oauth_client(value: &Value) -> Result<OAuthClientDecl, HttpRefusal>
     let Value::Object(map) = value else {
         return invalid("auth.client must be an object");
     };
-    closed_keys(map, OAuthClientDecl::KEYS, "auth.client")?;
+    closed_keys(map, &OAuthClientDecl::keys(), "auth.client")?;
     let tag = text_field(map, "tag", "auth.client")?;
     let tag = OAuthProvider::parse(&tag).ok_or_else(|| HttpRefusal::Invalid(format!("auth.client.tag must be google, github or auth0, not `{tag}`")))?;
     let mode = match text_field(map, "mode", "auth.client")?.as_str() {
@@ -883,14 +883,14 @@ pub fn parse_oauth_client(value: &Value) -> Result<OAuthClientDecl, HttpRefusal>
 
 fn parse_oauth_client_auth(map: &ValueMap) -> Result<HttpAuth, HttpRefusal> {
     let op_word = text_field(map, "op", "auth")?;
-    let op = OAuthOp::parse(&op_word).ok_or_else(|| HttpRefusal::Invalid(format!("auth.op must be one of {}, not `{op_word}`", OAuthOp::WORDS.join(", "))))?;
+    let op = OAuthOp::parse(&op_word).ok_or_else(|| HttpRefusal::Invalid(format!("auth.op must be one of {}, not `{op_word}`", OAuthOp::words().join(", "))))?;
     let (required, optional) = op.inputs();
     let mut allowed: Vec<&str> = vec!["scheme", "op", "client"];
     if op == OAuthOp::Code {
         allowed.push("clients");
     }
-    allowed.extend(required);
-    allowed.extend(optional);
+    allowed.extend(required.iter().copied());
+    allowed.extend(optional.iter().copied());
     closed_keys(map, &allowed, "auth")?;
     let (client, clients) = match (map.get("client"), map.get("clients")) {
         (Some(client), None) => (parse_oauth_client(client)?, Vec::new()),
@@ -913,7 +913,7 @@ fn parse_oauth_client_auth(map: &ValueMap) -> Result<HttpAuth, HttpRefusal> {
         (None, None) => return invalid("auth.client is required"),
     };
     for key in required {
-        if !map.contains_key(*key) {
+        if !map.contains_key(key) {
             return invalid(format!("auth op `{}` needs `{key}`", op.name()));
         }
     }
@@ -1051,7 +1051,7 @@ const OAUTH_ENDPOINT_STAND_IN: &str = "https://oauth-endpoint.invalid";
 /// endpoint named by WORD, so the call has no origin of its own and egress is checked on each built request.
 fn parse_oauth_endpoint_call(method: HttpMethod, word: &str, request: &Value) -> Result<HttpCallSpec, HttpRefusal> {
     let Some(kind) = OAuthEndpointKind::parse(word) else {
-        return invalid(format!("oauth-endpoint must be followed by one of {}, not `{word}`", OAuthEndpointKind::WORDS.join(", ")));
+        return invalid(format!("oauth-endpoint must be followed by one of {}, not `{word}`", OAuthEndpointKind::words().join(", ")));
     };
     let mut spec = parse_http_call(method, OAUTH_ENDPOINT_STAND_IN, &format!("/{word}"), request)?;
     match &spec.auth {
@@ -1065,7 +1065,7 @@ fn parse_oauth_endpoint_call(method: HttpMethod, word: &str, request: &Value) ->
     if method != expected {
         return invalid(format!("oauth-endpoint {word} is called with {}", expected.as_str()));
     }
-    spec.origin = OAuthEndpointKind::TARGET.to_string();
+    spec.origin = OAuthEndpointKind::target().to_string();
     spec.path = word.to_string();
     Ok(spec)
 }
@@ -1076,7 +1076,7 @@ pub fn parse_http_call(
     path: &str,
     request: &Value,
 ) -> Result<HttpCallSpec, HttpRefusal> {
-    if origin == OAuthEndpointKind::TARGET {
+    if origin == OAuthEndpointKind::target() {
         return parse_oauth_endpoint_call(method, path, request);
     }
     let Some((origin_parts, _)) = parse_origin_prefix(origin) else {
@@ -2157,7 +2157,7 @@ impl HttpCallDriver {
             principal,
             oauth: None,
         };
-        let step = if origin_allowed(&driver.spec.origin, &driver.egress) || driver.spec.origin == OAuthEndpointKind::TARGET {
+        let step = if origin_allowed(&driver.spec.origin, &driver.egress) || driver.spec.origin == OAuthEndpointKind::target() {
             driver.advance()
         } else {
             let origin = driver.spec.origin.clone();

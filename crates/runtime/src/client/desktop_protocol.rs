@@ -38,8 +38,6 @@ pub enum DesktopRequest {
     PaintCanvas { renderer: String, pattern: String, props: orbital_core_base::value::Value },
     /// One image per orbital under `out_dir`.
     Screenshot { renderer: String, item: String, schema: Box<OrbitalSchema>, out_dir: PathBuf },
-    /// One image per planned transition of the richest trait, plus a `frames.json` manifest.
-    Frames { renderer: String, item: String, schema: Box<OrbitalSchema>, out_dir: PathBuf },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

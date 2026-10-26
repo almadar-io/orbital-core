@@ -570,7 +570,15 @@
     "browser": "browser",
     "dispatch": "dispatch",
     "protocol": "protocol",
-    "input": "input"
+    "input": "input",
+    "additionalProperties": "additionalProperties",
+    "dispatchFacts": "dispatchFacts",
+    "links": "links",
+    "nullable": "nullable",
+    "operatorSites": "operatorSites",
+    "protocols": "protocols",
+    "record": "record",
+    "typeContractVersion": "typeContractVersion"
   },
   "operators": {
     "!=": "!=",

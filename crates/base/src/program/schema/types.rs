@@ -249,6 +249,10 @@ pub struct SchemaMetadata {
     /// The operator table's dispatch facts, written into a compiled client program for a browser kernel with no table.
     #[serde(rename = "dispatchFacts", default, skip_serializing_if = "Option::is_none")]
     pub dispatch_facts: Option<crate::language::registry::DispatchFacts>,
+
+    /// The endpoint protocol table, written into a compiled client program for a browser kernel with no installed core.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocols: Option<Vec<crate::protocols::ProtocolSpec>>,
 }
 
 /// One `@config.<knob>` → render-ui prop substitution recorded at inline time.
@@ -1518,9 +1522,9 @@ pub struct LazyPage {
     pub orbital: String,
     #[serde(rename = "orbRef")]
     pub orb_ref: String,
-    /// The link and navigate targets inside this page's resolved behavior, recorded at split time so
-    /// page reachability follows links between lazy pages. Never serialized: not part of the `.orb`.
-    #[serde(skip)]
+    /// The link and navigate targets inside this page's resolved behavior, sorted and unique, recorded at split time
+    /// so page reachability follows links between lazy pages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<String>,
 }
 

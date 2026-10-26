@@ -29,8 +29,8 @@ pub mod mock_random;
 pub mod payload_validation;
 #[path = "kernel/persona.rs"]
 pub mod persona;
-#[path = "kernel/planner.rs"]
-pub mod planner;
+#[path = "kernel/propositions.rs"]
+pub mod propositions;
 #[path = "kernel/process_result.rs"]
 pub mod process_result;
 #[path = "kernel/program_machine.rs"]
@@ -43,8 +43,6 @@ pub mod relations;
 pub mod resumable;
 #[path = "kernel/instances.rs"]
 pub mod instances;
-#[path = "kernel/synth.rs"]
-pub mod synth;
 #[path = "kernel/server_leg.rs"]
 pub mod server_leg;
 pub use orbital_core_base::shared_entity;
@@ -160,7 +158,6 @@ pub mod embed;
 // verify — Layer 2 render verification (EXEC-VERIFY)
 #[path = "verify/render_report.rs"]
 pub mod render_report;
-pub mod verify;
 
 pub use config::{DispatchClock, KernelConfig};
 pub use orbital_core_base::dispatch_mode::{compute as compute_dispatch_mode, DispatchMode};
@@ -184,7 +181,6 @@ pub use process_result::{
 };
 pub use projected_payload::projected_payload;
 pub use instances::{instance_rows, mock_row_id};
-pub use synth::sample_rows;
 pub use orbital_core_base::policy::{identity_entity_def, identity_entity_name, owner_columns_from_policy, owner_fields_from_schema, stamp_owner};
 pub use server_leg::ServerLegCollector;
 pub use orbital_core_base::theme::{resolve_theme, ResolvedTheme, ThemeError, ThemeMode, ThemePresets};

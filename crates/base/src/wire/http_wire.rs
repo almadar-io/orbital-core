@@ -291,13 +291,9 @@ fn http_default_port(scheme: &str) -> Option<u16> {
     }
 }
 
-/// The schemes a raw TCP protocol driver connects under, each with its default port.
+/// The schemes a raw TCP protocol driver connects under, each with its default port, as the operator table declares them (`defaultPorts`).
 pub fn tcp_default_port(scheme: &str) -> Option<u16> {
-    match scheme {
-        "redis" | "rediss" => Some(6379),
-        "postgres" | "postgresql" => Some(5432),
-        _ => None,
-    }
+    crate::language::registry::tcp_scheme_default_port(scheme)
 }
 
 fn egress_default_port(scheme: &str) -> Option<u16> {

@@ -305,6 +305,93 @@ pub struct EmbeddedOperator {
     /// The host that executes the effect (`program`: the shared program host, `runProgramEffect`; `os`: the `os/` family under a declared grant); absent when the runtime executes it.
     #[serde(default)]
     pub host: Option<String>,
+    /// What an `os/` or `kv/` call needs from the program's grants (`grant` in the operator table); `Some(vec![])` for
+    /// a call on a handle, `None` on every other operator.
+    #[serde(default)]
+    pub grant: Option<Vec<crate::os_grants::OsGrantNeed>>,
+    /// The `oauth-client` auth vocabulary (`oauth` in the operator table, on `http`).
+    #[serde(default)]
+    pub oauth: Option<EmbeddedOAuth>,
+    /// Set on the host effects (`closedCall` in the operator table): the validator holds the call to its declared
+    /// arity, options and request.
+    #[serde(rename = "closedCall", default)]
+    pub closed_call: Option<EmbeddedClosedCall>,
+    /// The default port of each URL scheme the operator connects under (`defaultPorts` in the operator table).
+    #[serde(rename = "defaultPorts", default)]
+    pub default_ports: HashMap<String, u16>,
+}
+
+/// What a host effect's call is held to beyond its parameter types.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EmbeddedClosedCall {
+    /// The first parameter is a request object: a literal one carries only its declared fields, every one not
+    /// listed as optional present.
+    #[serde(default)]
+    pub request: bool,
+    /// An integer literal at `arg` lies in `min..=max`.
+    #[serde(rename = "intRange", default)]
+    pub int_range: Option<EmbeddedIntRange>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct EmbeddedIntRange {
+    pub arg: usize,
+    pub min: i64,
+    pub max: i64,
+}
+
+impl EmbeddedOperator {
+    /// The trailing `options` parameter's field names (sorted) and its `emit` entry's field names (sorted): the keys a
+    /// closed call may carry.
+    pub fn option_keys(&self) -> Option<(Vec<&str>, Vec<&str>)> {
+        let param = self.params.last().filter(|param| param.name == "options")?;
+        let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) = &param.ty else {
+            return None;
+        };
+        let mut keys: Vec<&str> = fields.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut emit_keys: Vec<&str> = match fields.get("emit") {
+            Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. })) => fields.keys().map(String::as_str).collect(),
+            _ => Vec::new(),
+        };
+        emit_keys.sort_unstable();
+        Some((keys, emit_keys))
+    }
+
+    /// The first parameter's field names (sorted) and those of them that are required: a request object's contract.
+    pub fn request_fields(&self) -> Option<(Vec<&str>, Vec<&str>)> {
+        let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, optional, .. }) = &self.params.first()?.ty else {
+            return None;
+        };
+        let mut declared: Vec<&str> = fields.keys().map(String::as_str).collect();
+        declared.sort_unstable();
+        let required = declared.iter().copied().filter(|name| !optional.iter().any(|o| o == name)).collect();
+        Some((declared, required))
+    }
+}
+
+/// One `oauth-client` auth op: its input keys and the `oauth-endpoint` word it is sent to.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbeddedOAuthOp {
+    pub name: String,
+    #[serde(default)]
+    pub required: Vec<String>,
+    #[serde(default)]
+    pub optional: Vec<String>,
+    /// Absent for an op sent to a literal origin and path (`discovery`).
+    #[serde(default)]
+    pub endpoint: Option<String>,
+}
+
+/// The `oauth-client` auth vocabulary the operator table declares on `http`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbeddedOAuth {
+    /// The word that stands where an origin goes; the URL comes from the client's metadata.
+    #[serde(rename = "endpointTarget")]
+    pub endpoint_target: String,
+    #[serde(rename = "endpointKinds")]
+    pub endpoint_kinds: Vec<String>,
+    pub ops: Vec<EmbeddedOAuthOp>,
 }
 
 /// When a failable operator's result is not optional.
@@ -388,6 +475,52 @@ pub fn emit_slots() -> &'static HashSet<String> {
             }
         }
         slots
+    })
+}
+
+/// The default port the installed operator table declares for a raw TCP URL scheme (`redis`, `postgres`, …); `None`
+/// for any other scheme, or before a table is installed.
+pub fn tcp_scheme_default_port(scheme: &str) -> Option<u16> {
+    static PORTS: OnceLock<HashMap<String, u16>> = OnceLock::new();
+    crate::language_data::operator_data().ok()?;
+    PORTS
+        .get_or_init(|| operators().values().flat_map(|op| op.default_ports.iter().map(|(scheme, port)| (scheme.clone(), *port))).collect())
+        .get(scheme)
+        .copied()
+}
+
+/// The host effects the installed operator table holds to a closed call shape (`closedCall`).
+pub fn closed_call_effects() -> impl Iterator<Item = &'static str> {
+    operators().iter().filter(|(_, op)| op.closed_call.is_some()).map(|(name, _)| name.as_str())
+}
+
+/// The installed operator table's `oauth-client` vocabulary (declared on `http`).
+pub fn oauth_vocabulary() -> &'static EmbeddedOAuth {
+    get_operator("http")
+        .and_then(|op| op.oauth.as_ref())
+        .expect("the operator table declares the oauth-client vocabulary on `http`")
+}
+
+/// The keys of an OAuth client object, sorted: the fields of the `client` parameter of `oauth-authorize`.
+pub fn oauth_client_keys() -> Vec<&'static str> {
+    let param = get_operator("oauth-authorize")
+        .and_then(|op| op.params.iter().find(|p| p.name == "client"))
+        .expect("the operator table declares the `client` parameter of `oauth-authorize`");
+    let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) = &param.ty else {
+        panic!("the `client` parameter of `oauth-authorize` is an object");
+    };
+    let mut keys: Vec<&'static str> = fields.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    keys
+}
+
+/// Whether the installed operator table gives `name` an options parameter with an `emit` entry: the operators whose
+/// results route to events. `false` for a name the table does not know, or before it is loaded.
+pub fn takes_emit_options(name: &str) -> bool {
+    try_get_operator(name).is_some_and(|op| {
+        op.params.iter().any(|param| {
+            matches!(&param.ty, OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) if fields.contains_key("emit"))
+        })
     })
 }
 
@@ -1302,6 +1435,87 @@ mod tests {
         for op in ["os/path-join", "persist", "no/such"] {
             assert!(!from_os.contains(op), "control: {op}");
         }
+    }
+
+    #[test]
+    fn emit_capable_operators_are_the_ones_whose_parameters_take_an_emit_options_object() {
+        for op in [
+            "fetch", "persist", "ref", "call-service", "http", "redis", "postgres", "random-bytes", "credential-status",
+            "credential-forget", "credential-set", "access-check", "oauth-authorize", "oauth-connection-status",
+            "oauth-connection-forget", "os/read-file", "kv/get", "watch",
+        ] {
+            assert!(takes_emit_options(op), "{op} takes emit options");
+        }
+        for op in ["deref", "emit", "agent/invoke", "+", "no/such"] {
+            assert!(!takes_emit_options(op), "control: {op} takes none");
+        }
+    }
+
+    #[test]
+    fn the_oauth_vocabulary_is_the_installed_tables_and_only_http_carries_it() {
+        let oauth = oauth_vocabulary();
+        assert_eq!(oauth.endpoint_target, "oauth-endpoint");
+        assert_eq!(oauth.endpoint_kinds, ["token", "revocation", "userinfo"]);
+        let names: Vec<&str> = oauth.ops.iter().map(|op| op.name.as_str()).collect();
+        assert_eq!(names, ["discovery", "code", "connect", "refresh", "revoke", "userinfo"]);
+        let connect = oauth.ops.iter().find(|op| op.name == "connect").expect("connect");
+        assert_eq!(connect.required, ["code", "state", "provider"]);
+        assert_eq!(connect.endpoint.as_deref(), Some("token"));
+        assert_eq!(oauth.ops[0].endpoint, None, "control: discovery goes to a literal origin");
+        assert_eq!(oauth_client_keys(), ["clientAuth", "clientId", "clientSecret", "endpoints", "issuer", "mode", "tag"]);
+        let carriers: Vec<&str> = operators().iter().filter(|(_, op)| op.oauth.is_some()).map(|(name, _)| name.as_str()).collect();
+        assert_eq!(carriers, ["http"]);
+    }
+
+    #[test]
+    fn every_os_and_kv_operator_declares_a_grant_and_no_other_operator_does() {
+        for (name, op) in operators() {
+            let granted = matches!(op.host.as_deref(), Some("os" | "kv"));
+            assert_eq!(op.grant.is_some(), granted, "{name}");
+        }
+        assert_eq!(get_operator("os/read").and_then(|op| op.grant.as_deref()), Some(&[][..]), "a handle call needs nothing");
+    }
+
+    #[test]
+    fn the_host_effects_are_the_tables_closed_calls_with_their_option_keys_request_and_range() {
+        let mut names: Vec<&str> = closed_call_effects().collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "access-check", "credential-forget", "credential-list", "credential-mode", "credential-remove",
+                "credential-rotate", "credential-set", "credential-status", "credential-test", "random-bytes"
+            ]
+        );
+        let bytes = get_operator("random-bytes").expect("random-bytes");
+        let range = bytes.closed_call.as_ref().and_then(|c| c.int_range).expect("range");
+        assert_eq!((range.arg, range.min, range.max), (0, 1, 1024));
+        assert_eq!(bytes.option_keys(), Some((vec!["emit", "key"], vec!["failure", "success"])));
+        assert_eq!(get_operator("access-check").and_then(|op| op.option_keys()), Some((vec!["emit"], vec!["failure", "success"])), "control: only random-bytes is keyed");
+        let list = get_operator("credential-list").expect("list");
+        assert_eq!(list.request_fields(), Some((vec!["service"], vec![])), "service is optional");
+        assert_eq!(get_operator("credential-set").and_then(|op| op.request_fields()), Some((vec!["envVar", "service", "value"], vec!["envVar", "service", "value"])));
+        assert!(get_operator("credential-set").is_some_and(|op| op.closed_call.as_ref().is_some_and(|c| c.request)));
+        assert!(!get_operator("access-check").is_some_and(|op| op.closed_call.as_ref().is_some_and(|c| c.request)), "control: access-check's request is checked by its own contract");
+        assert_eq!(get_operator("fetch").map(|op| op.closed_call.is_none()), Some(true), "control: a data effect is not a host effect");
+    }
+
+    #[test]
+    fn tcp_default_ports_are_the_tables_per_scheme() {
+        for (scheme, port) in [("redis", 6379), ("rediss", 6379), ("postgres", 5432), ("postgresql", 5432)] {
+            assert_eq!(tcp_scheme_default_port(scheme), Some(port), "{scheme}");
+        }
+        for scheme in ["http", "https", "mysql", ""] {
+            assert_eq!(tcp_scheme_default_port(scheme), None, "control: {scheme}");
+        }
+        assert_eq!(get_operator("redis").map(|op| op.default_ports.len()), Some(2));
+        assert_eq!(get_operator("fetch").map(|op| op.default_ports.is_empty()), Some(true));
+    }
+
+    #[test]
+    fn oauth_authorize_options_take_a_key() {
+        let (keys, _) = get_operator("oauth-authorize").and_then(|op| op.option_keys()).expect("options");
+        assert_eq!(keys, ["emit", "key"]);
     }
 
     #[test]

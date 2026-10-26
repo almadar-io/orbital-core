@@ -5,6 +5,7 @@ use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 
+use crate::language::registry::{oauth_client_keys, oauth_vocabulary, EmbeddedOAuthOp};
 use crate::oauth_ask::OAuthProvider;
 use crate::oauth_wire::ClientAuth;
 use crate::http_wire::CredentialSlot;
@@ -22,7 +23,31 @@ pub enum OAuthOp {
 }
 
 impl OAuthOp {
-    pub const WORDS: &'static [&'static str] = &["discovery", "code", "connect", "refresh", "revoke", "userinfo"];
+    /// Every op the operator table declares on `http`, in its order.
+    pub fn words() -> Vec<&'static str> {
+        oauth_vocabulary().ops.iter().map(|op| op.name.as_str()).collect()
+    }
+
+    /// Every input key any op takes, in the table's order.
+    pub fn all_inputs() -> Vec<&'static str> {
+        let mut keys: Vec<&'static str> = Vec::new();
+        for op in &oauth_vocabulary().ops {
+            for key in op.required.iter().chain(op.optional.iter()) {
+                if !keys.contains(&key.as_str()) {
+                    keys.push(key.as_str());
+                }
+            }
+        }
+        keys
+    }
+
+    fn declared(self) -> &'static EmbeddedOAuthOp {
+        oauth_vocabulary()
+            .ops
+            .iter()
+            .find(|op| op.name == self.name())
+            .unwrap_or_else(|| panic!("the operator table declares no oauth-client op `{}`", self.name()))
+    }
 
     pub fn parse(word: &str) -> Option<Self> {
         match word {
@@ -47,26 +72,17 @@ impl OAuthOp {
         }
     }
 
-    /// The `oauth-endpoint` word the op is sent to; `discovery` goes to a literal origin and path.
+    /// The `oauth-endpoint` word the op is sent to (the table's `endpoint`); `discovery` goes to a literal origin and path.
     pub fn endpoint(self) -> Option<OAuthEndpointKind> {
-        match self {
-            Self::Discovery => None,
-            Self::Code | Self::Connect | Self::Refresh => Some(OAuthEndpointKind::Token),
-            Self::Revoke => Some(OAuthEndpointKind::Revocation),
-            Self::Userinfo => Some(OAuthEndpointKind::Userinfo),
-        }
+        self.declared().endpoint.as_deref().map(|word| {
+            OAuthEndpointKind::parse(word).unwrap_or_else(|| panic!("the operator table sends `{}` to an unknown endpoint `{word}`", self.name()))
+        })
     }
 
-    /// The input keys the op requires, then those it may carry.
-    pub fn inputs(self) -> (&'static [&'static str], &'static [&'static str]) {
-        match self {
-            Self::Discovery => (&[], &[]),
-            Self::Code => (&["code", "state"], &["subject"]),
-            Self::Connect => (&["code", "state", "provider"], &[]),
-            Self::Refresh => (&["refreshToken"], &[]),
-            Self::Revoke => (&["token"], &[]),
-            Self::Userinfo => (&["accessToken"], &[]),
-        }
+    /// The input keys the op requires, then those it may carry, as the operator table declares them.
+    pub fn inputs(self) -> (Vec<&'static str>, Vec<&'static str>) {
+        let op = self.declared();
+        (op.required.iter().map(String::as_str).collect(), op.optional.iter().map(String::as_str).collect())
     }
 }
 
@@ -80,8 +96,15 @@ pub enum OAuthEndpointKind {
 }
 
 impl OAuthEndpointKind {
-    pub const WORDS: &'static [&'static str] = &["token", "revocation", "userinfo"];
-    pub const TARGET: &'static str = "oauth-endpoint";
+    /// The words that may follow the endpoint target, as the operator table declares them.
+    pub fn words() -> Vec<&'static str> {
+        oauth_vocabulary().endpoint_kinds.iter().map(String::as_str).collect()
+    }
+
+    /// The word that stands where an origin goes: the URL comes from the client's metadata.
+    pub fn target() -> &'static str {
+        oauth_vocabulary().endpoint_target.as_str()
+    }
 
     pub fn parse(word: &str) -> Option<Self> {
         match word {
@@ -136,7 +159,10 @@ pub struct OAuthClientDecl {
 }
 
 impl OAuthClientDecl {
-    pub const KEYS: &'static [&'static str] = &["tag", "mode", "issuer", "endpoints", "clientId", "clientSecret", "clientAuth"];
+    /// The keys a client object may carry (sorted), read from the `client` parameter of `oauth-authorize`.
+    pub fn keys() -> Vec<&'static str> {
+        oauth_client_keys()
+    }
 }
 
 /// The caller-supplied inputs of one op (request inputs, not credentials).
@@ -157,4 +183,47 @@ pub struct OAuthInputs {
     pub token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_token: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OPS: [OAuthOp; 6] = [OAuthOp::Discovery, OAuthOp::Code, OAuthOp::Connect, OAuthOp::Refresh, OAuthOp::Revoke, OAuthOp::Userinfo];
+
+    #[test]
+    fn the_op_words_and_endpoint_words_are_the_tables_and_name_every_variant() {
+        assert_eq!(OAuthOp::words(), OPS.map(OAuthOp::name));
+        for op in OPS {
+            assert_eq!(OAuthOp::parse(op.name()), Some(op));
+        }
+        assert_eq!(OAuthOp::parse("introspect"), None, "control: a word the table does not declare");
+        assert_eq!(OAuthEndpointKind::words(), ["token", "revocation", "userinfo"]);
+        for word in OAuthEndpointKind::words() {
+            assert_eq!(OAuthEndpointKind::parse(word).map(OAuthEndpointKind::name), Some(word));
+        }
+        assert_eq!(OAuthEndpointKind::target(), "oauth-endpoint");
+    }
+
+    #[test]
+    fn each_op_reads_its_inputs_and_endpoint_from_the_table() {
+        assert_eq!(OAuthOp::Discovery.inputs(), (vec![], vec![]));
+        assert_eq!(OAuthOp::Code.inputs(), (vec!["code", "state"], vec!["subject"]));
+        assert_eq!(OAuthOp::Connect.inputs(), (vec!["code", "state", "provider"], vec![]));
+        assert_eq!(OAuthOp::Refresh.inputs(), (vec!["refreshToken"], vec![]));
+        assert_eq!(OAuthOp::Revoke.inputs(), (vec!["token"], vec![]));
+        assert_eq!(OAuthOp::Userinfo.inputs(), (vec!["accessToken"], vec![]));
+        assert_eq!(OAuthOp::Discovery.endpoint(), None);
+        for op in [OAuthOp::Code, OAuthOp::Connect, OAuthOp::Refresh] {
+            assert_eq!(op.endpoint(), Some(OAuthEndpointKind::Token));
+        }
+        assert_eq!(OAuthOp::Revoke.endpoint(), Some(OAuthEndpointKind::Revocation));
+        assert_eq!(OAuthOp::Userinfo.endpoint(), Some(OAuthEndpointKind::Userinfo));
+        assert_eq!(OAuthOp::all_inputs(), ["code", "state", "subject", "provider", "refreshToken", "token", "accessToken"]);
+    }
+
+    #[test]
+    fn the_client_keys_are_the_fields_of_the_oauth_authorize_client() {
+        assert_eq!(OAuthClientDecl::keys(), ["clientAuth", "clientId", "clientSecret", "endpoints", "issuer", "mode", "tag"]);
+    }
 }

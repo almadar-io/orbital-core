@@ -74,6 +74,8 @@ pub struct LanguageData {
     /// The program value types (`orbLanguage.programTypes`): the records `orbital`, `trait` and `behavior` values
     /// are, by name, in the `.orb` field-definition shape.
     pub program_types: String,
+    /// The endpoint protocol table (`orbLanguage.protocols`): the rows `crate::protocols` reads.
+    pub protocols: String,
     /// The theme presets (`orbLanguage.themes`, a directory of one
     /// `ThemeDefinition` per `.json` file), sorted by file name.
     pub themes: Vec<String>,
@@ -215,6 +217,11 @@ pub fn load_language_data_for(
         path: block.declared_path("programTypes").unwrap_or_default(),
         reason,
     })?;
+    let protocols = block.read("protocols")?;
+    crate::protocols::parse(&protocols).map_err(|reason| LanguageDataError::Invalid {
+        path: block.declared_path("protocols").unwrap_or_default(),
+        reason,
+    })?;
     Ok(LanguageData {
         patterns: block.read("patterns")?,
         component_mapping: block.read("componentMapping")?,
@@ -222,6 +229,7 @@ pub fn load_language_data_for(
         services: block.read("services")?,
         binding_rules: block.read("bindingRules")?,
         program_types,
+        protocols,
         themes: block.read_json_dir("themes")?,
         core_version: block.pkg.version,
         root: block.pkg.root,
@@ -504,7 +512,7 @@ pub fn preflight() -> Result<(), LanguageDataError> {
 /// (wasm): the same data the native loaders read, handed over as one JSON
 /// bundle the host assembles from ITS installed packages —
 /// `{ core: { version, compiler, patterns, componentMapping, eventContracts,
-/// services, bindingRules, programTypes, themes: [ThemeDefinition…] }, std: { version, compiler,
+/// services, bindingRules, programTypes, protocols, themes: [ThemeDefinition…] }, std: { version, compiler,
 /// operators }, vocabularies: [{ package, version, compiler, vocabulary }] }`.
 /// The same checks apply: each `compiler` range must accept this binary and the
 /// language packs must be unambiguous; the evaluator crate's wrapper also
@@ -563,6 +571,7 @@ pub fn language_bundle_json() -> Result<String, LanguageDataError> {
             "services": part("services", &language.services)?,
             "bindingRules": part("bindingRules", &language.binding_rules)?,
             "programTypes": part("programTypes", &language.program_types)?,
+            "protocols": part("protocols", &language.protocols)?,
             "themes": themes,
         },
         "std": {
@@ -644,6 +653,8 @@ pub fn parse_language_bundle(
     let program_types = text(core, "programTypes", "core")?;
     crate::language::program_types::parse(&program_types)
         .map_err(|reason| invalid(format!("`core.programTypes`: {reason}")))?;
+    let protocols = text(core, "protocols", "core")?;
+    crate::protocols::parse(&protocols).map_err(|reason| invalid(format!("`core.protocols`: {reason}")))?;
     let language = LanguageData {
         core_version: version(core, "core")?,
         root: PathBuf::new(),
@@ -653,6 +664,7 @@ pub fn parse_language_bundle(
         services: text(core, "services", "core")?,
         binding_rules: text(core, "bindingRules", "core")?,
         program_types,
+        protocols,
         themes,
     };
     let ops = OperatorData {

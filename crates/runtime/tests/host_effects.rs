@@ -432,6 +432,7 @@ mod credential_admin_effects {
             services: REGISTRY.into(),
             binding_rules: "{}".into(),
             program_types: "{}".into(),
+            protocols: r#"[{"name":"route","address":null,"viewer":true,"grant":null,"side":"client"}]"#.into(),
             themes: Vec::new(),
         });
     }
@@ -827,7 +828,7 @@ mod os_effects {
             assert_eq!(seen.len(), 1);
             let IoRequest::Os { op, args, key, site } = &seen[0] else { panic!("an os ask") };
             assert_eq!(*op, OsOp::StdinRead);
-            assert_eq!(serde_json::to_value(args).unwrap(), json!([2]));
+            assert_eq!(args, &vec![orbital_core_base::value::Value::Number(2.0)]);
             assert!(key.is_none() && site.is_none(), "plain stdin is one bounded read");
             assert_eq!(payload_of(&response, "OK"), payload);
             assert!(emitted(&response).iter().all(|(event, _)| *event != "BAD"));
@@ -1013,11 +1014,12 @@ mod lowering {
     }
 
     #[test]
-    fn every_os_effect_runs_on_the_server_and_a_pure_path_op_does_not_run_anywhere_in_particular() {
+    fn every_os_effect_runs_on_the_server_kv_on_either_side_and_a_pure_path_op_anywhere() {
         use orbital_core_base::runs_on::{runs_on, RunsOn};
         use orbital_core_base::os::OsOp;
         for op in OsOp::ALL {
-            assert_eq!(runs_on(op.name()), RunsOn::Server, "{}", op.name());
+            let site = if op.is_kv() { RunsOn::Any } else { RunsOn::Server };
+            assert_eq!(runs_on(op.name()), site, "{}: a kv store is reachable from both sides, every other os/* effect runs on the server", op.name());
         }
         assert_eq!(runs_on("os/path-join"), RunsOn::Any);
         assert_eq!(runs_on("os/fork"), RunsOn::Any);
@@ -1877,7 +1879,7 @@ mod os_completion {
         let (tx, done) = mpsc::channel();
         let tx = Mutex::new(tx);
         let on_done: Arc<CompletionDone> = Arc::new(
-            move |_site: &CallSite, event: &str, _: Option<&str>, result: Result<DispatchOutcomes, DispatchError>| {
+            move |_site: &CallSite, event: &str, _: &orbital_core_base::value::Value, _: Option<&str>, result: Result<DispatchOutcomes, DispatchError>| {
                 let summary = result.map(|outcomes| outcomes.len()).map_err(|error| error.to_string());
                 let _ = tx.lock().unwrap().send((event.to_string(), summary));
             },
@@ -1920,7 +1922,7 @@ mod os_completion {
             }
             other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
         });
-        let on_done: Arc<CompletionDone> = Arc::new(|_: &CallSite, _: &str, _: Option<&str>, _: Result<DispatchOutcomes, DispatchError>| {});
+        let on_done: Arc<CompletionDone> = Arc::new(|_: &CallSite, _: &str, _: &orbital_core_base::value::Value, _: Option<&str>, _: Result<DispatchOutcomes, DispatchError>| {});
         let sink = Arc::new(KernelCompletionSink::new(kernel.clone(), answer, on_done));
         let progress = kernel.start_dispatch("Sup", None, "GO", Value::Null, None, None).unwrap();
         sink.drive(progress).unwrap();
@@ -2418,7 +2420,15 @@ mod os_twin {
     fn the_embed_exports_name_the_deferring_ops_and_shape_a_completion_event() {
         use orbital_core_runtime::embed::{os_completion_event_json, os_deferring_ops_json};
         let names: Vec<String> = serde_json::from_str(&os_deferring_ops_json().unwrap()).unwrap();
-        assert_eq!(names, ["os/read", "os/wait", "os/stdin-read", "os/send", "os/recv", "os/recvfrom"]);
+        let finite_fs = [
+            "os/read-file", "os/write-file", "os/append-file", "os/open", "os/close", "os/read", "os/write", "os/seek",
+            "os/truncate", "os/fsync", "os/copy", "os/rename", "os/remove", "os/link", "os/symlink", "os/readlink",
+            "os/mkdir", "os/rmdir", "os/list-dir", "os/glob", "os/mktemp", "os/realpath", "os/chdir", "os/stat",
+            "os/lstat", "os/access", "os/exists", "os/chmod", "os/chown", "os/utimes",
+        ];
+        let rest = ["os/wait", "os/stdin-read", "os/send", "os/recv", "os/recvfrom", "os/irq-wait"];
+        assert_eq!(names, finite_fs.iter().chain(rest.iter()).copied().collect::<Vec<_>>());
+        assert!(!names.iter().any(|n| n == "os/cwd"), "control: os/cwd answers inline");
         let site = json!({ "trait": "Sup", "followOn": false, "emit": { "success": "DONE", "failure": "FAILED" } }).to_string();
         let ok = os_completion_event_json(&site, "k", &json!({ "ok": { "code": 3 } }).to_string()).unwrap();
         assert_eq!(serde_json::from_str::<Json>(&ok).unwrap(), json!({ "event": "DONE", "payload": { "code": 3.0, "key": "k" } }));

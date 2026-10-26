@@ -1154,6 +1154,7 @@ impl RuntimeKernel {
                 }
                 let visit = visited.visit(scope, event_name, &from, payload, &VisitFrame::of(&frame));
                 if visited.seen(&visit) {
+                    debug!(trait_name = %scope, event = %event_name, from = %from, "seed:visited-skip");
                     *idx += 1;
                     return Ok(Flow::More);
                 }
@@ -1381,6 +1382,7 @@ impl RuntimeKernel {
         let visit = (!item.completion)
             .then(|| visited.visit(&item.trait_name, &item.event, &from, &item.payload, &VisitFrame::of(&frame)));
         if visit.as_ref().is_some_and(|v| visited.seen(v)) {
+            debug!(trait_name = %item.trait_name, event = %item.event, from = %from, "fanout:visited-skip");
             return Ok(true);
         }
         let view = memory.view(&item.trait_name, &item.delivery);

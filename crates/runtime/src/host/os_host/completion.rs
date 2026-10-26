@@ -334,10 +334,10 @@ pub(super) enum RunLaterError {
 /// How a [`KernelCompletionSink`] answers the host asks of the completion's own dispatch.
 pub type CompletionAnswerer = dyn Fn(&IoRequest) -> IoAnswer + Send + Sync;
 
-/// Told how each completion dispatch ended: the call site, the event dispatched, the client whose request deferred
-/// the key (EXEC-QUEUE-10: where the completion's emits go), and its outcomes or error.
+/// Told how each completion dispatch ended: the call site, the event and payload dispatched, the client whose request
+/// deferred the key (EXEC-QUEUE-10: where the completion's result goes), and its outcomes or error.
 pub type CompletionDone =
-    dyn Fn(&CallSite, &str, Option<&str>, Result<DispatchOutcomes, DispatchError>) + Send + Sync;
+    dyn Fn(&CallSite, &str, &Value, Option<&str>, Result<DispatchOutcomes, DispatchError>) + Send + Sync;
 
 /// Dispatches a completion into a kernel as the event of the call's route: `emit.success` with the result
 /// merged with `key`, `emit.failure` with `{ error, kind, key }`. A call that declared no route for the
@@ -524,12 +524,12 @@ impl KernelCompletionSink {
                 &site.trait_name,
                 Some(site.entity_id.as_str()),
                 &event,
-                payload,
+                payload.clone(),
                 None,
                 None,
             )
             .and_then(|progress| drive_blocking(&self.kernel, progress, &answer));
-        (self.done)(site, &event, requester.client_id.as_deref(), result);
+        (self.done)(site, &event, &payload, requester.client_id.as_deref(), result);
     }
 }
 
@@ -665,7 +665,7 @@ mod tests {
             _ => IoAnswer::Service(Err("no host".to_string())),
         });
         let done: Arc<CompletionDone> =
-            Arc::new(|_, _, _, result| assert!(result.is_ok(), "{result:?}"));
+            Arc::new(|_, _, _, _, result| assert!(result.is_ok(), "{result:?}"));
         let sink = KernelCompletionSink::new(kernel.clone(), answer, done);
         let mut at_row = site(Some("OK"), None);
         at_row.trait_name = "Host".to_string();
@@ -698,7 +698,7 @@ mod tests {
         let answer: Arc<CompletionAnswerer> = Arc::new(|_| IoAnswer::Service(Err("no host".to_string())));
         let (told, ran) = std::sync::mpsc::channel();
         let told = Mutex::new(told);
-        let done: Arc<CompletionDone> = Arc::new(move |_, event, _, _| {
+        let done: Arc<CompletionDone> = Arc::new(move |_, event, _, _, _| {
             let _ = told.lock().send(event.to_string());
         });
         (Arc::new(KernelCompletionSink::new(kernel, answer, done)), ran)
@@ -719,7 +719,7 @@ mod tests {
         let (told, asked) = std::sync::mpsc::channel();
         let told = Mutex::new(told);
         let seen = Arc::downgrade(&kernel);
-        let done: Arc<CompletionDone> = Arc::new(move |_, event, client_id, _| {
+        let done: Arc<CompletionDone> = Arc::new(move |_, event, _, client_id, _| {
             let viewer = seen.upgrade().and_then(|k| k.thread_viewer()).map(|v| (*v).clone());
             let _ = told.lock().send((event.to_string(), client_id.map(str::to_string), viewer));
         });

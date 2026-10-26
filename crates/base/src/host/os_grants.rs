@@ -113,6 +113,39 @@ named_kinds!(DesktopKind {
     Power => "power",
 });
 
+/// One thing an `os/` or `kv/` call needs from the grants, as the operator table declares it (`grant` in the
+/// operator table): the access and which positional arguments hold the path, host, store or line. Reading the
+/// literal arguments, anchors and glob matching are the kernel's.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum OsGrantNeed {
+    Fs { access: FsMode, path: usize },
+    FsGlob { glob: usize },
+    FsOpen { path: usize, flags: usize },
+    Exec { command: usize, options: usize },
+    Env { name: usize },
+    Stdio { access: StdioKind },
+    Net {
+        access: Vec<NetKind>,
+        host: usize,
+        #[serde(default)]
+        port: Option<usize>,
+    },
+    Sys { access: SysKind },
+    Desktop { access: DesktopKind },
+    Kv { access: KvMode, store: usize },
+    Mmio { access: DevKind, base: usize, offset: usize, width: usize },
+    Irq { access: DevKind, line: usize },
+}
+
+/// The needs the installed operator table declares for `op`; empty for a call on a handle, whose grant was checked
+/// where the handle was made.
+pub fn os_grant_needs(op: OsOp) -> &'static [OsGrantNeed] {
+    crate::language::registry::get_operator(op.name())
+        .and_then(|operator| operator.grant.as_deref())
+        .unwrap_or_else(|| panic!("the operator table declares no `grant` for `{}`", op.name()))
+}
+
 /// A path glob (`**` any number of segments, `*` and `?` within one) and the modes it grants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FsGrant {
@@ -1298,8 +1331,13 @@ fn literal_int(args: &[SExpression], index: usize, deferred: Deferred) -> Result
     }
 }
 
-fn mmio_need(args: &[SExpression], kind: DevKind, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
-    let (base, offset, width) = (literal_int(args, 0, deferred)?, literal_int(args, 1, deferred)?, literal_int(args, 2, deferred)?);
+fn mmio_need(
+    args: &[SExpression],
+    (base, offset, width): (usize, usize, usize),
+    kind: DevKind,
+    deferred: Deferred,
+) -> Result<Vec<OsRequirement>, usize> {
+    let (base, offset, width) = (literal_int(args, base, deferred)?, literal_int(args, offset, deferred)?, literal_int(args, width, deferred)?);
     Ok(match (base, offset, width) {
         (Some(base), Some(offset), Some(width)) => {
             vec![OsRequirement::Dev { resource: DevResource::Mmio { base, offset, width }, kind }]
@@ -1308,8 +1346,8 @@ fn mmio_need(args: &[SExpression], kind: DevKind, deferred: Deferred) -> Result<
     })
 }
 
-fn irq_need(args: &[SExpression], kind: DevKind, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
-    Ok(literal_int(args, 0, deferred)?
+fn irq_need(args: &[SExpression], line: usize, kind: DevKind, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
+    Ok(literal_int(args, line, deferred)?
         .map(|line| OsRequirement::Dev { resource: DevResource::Irq { line }, kind })
         .into_iter()
         .collect())
@@ -1483,25 +1521,25 @@ fn open_modes(flags: &str) -> Vec<FsMode> {
     modes
 }
 
-fn spawn_needs(args: &[SExpression], deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
+fn spawn_needs(args: &[SExpression], command: usize, options: usize, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
     let mut needs = Vec::new();
-    match args.first().map(anchored_sexpr) {
-        Some(Err(())) => return Err(0),
+    match args.get(command).map(anchored_sexpr) {
+        Some(Err(())) => return Err(command),
         Some(Ok(Some((anchor, path)))) => match path {
             None => needs.push(OsRequirement::ExecAnchored { anchor, path: None }),
             Some(SExpression::String(p)) if !p.starts_with('@') => {
                 needs.push(OsRequirement::ExecAnchored { anchor, path: Some(p.clone()) })
             }
-            Some(_) => return Err(0),
+            Some(_) => return Err(command),
         },
         _ => {
-            if let Some(command) = literal(args, 0, deferred)? {
+            if let Some(command) = literal(args, command, deferred)? {
                 needs.push(OsRequirement::Exec { command: command.to_string() });
             }
         }
     }
-    if let Some(SExpression::Object(options)) = args.get(2) {
-        for (key, value) in options {
+    if let Some(SExpression::Object(option_map)) = args.get(options) {
+        for (key, value) in option_map {
             match (key.as_str(), value) {
                 ("cwd", SExpression::String(path)) if !path.starts_with('@') => {
                     needs.push(OsRequirement::Fs { path: path.clone(), mode: FsMode::Read });
@@ -1510,11 +1548,11 @@ fn spawn_needs(args: &[SExpression], deferred: Deferred) -> Result<Vec<OsRequire
                     Ok(Some((anchor, path))) => {
                         needs.push(fs_requirement(anchored_target(anchor, path, deferred), FsMode::Read))
                     }
-                    _ => return Err(2),
+                    _ => return Err(options),
                 },
                 ("cwd", SExpression::Null) => {}
                 ("cwd", value) if deferred(value) => {}
-                ("cwd", _) => return Err(2),
+                ("cwd", _) => return Err(options),
                 ("env", SExpression::Object(vars)) => {
                     for (name, value) in vars {
                         if matches!(value, SExpression::Null) {
@@ -1618,28 +1656,29 @@ fn literal_list_pick(expr: &SExpression) -> Option<Vec<SExpression>> {
 }
 
 /// The positional arguments of `op` that may be written as an anchored path (`{ anchor, path }`): the file targets,
-/// and the command of `os/spawn`. A host resolves them to absolute paths before the call runs; the `cwd` option of
-/// `os/spawn` may be one too.
-pub fn anchored_arg_positions(op: OsOp) -> &'static [usize] {
-    use OsOp::*;
-    match op {
-        ReadFile | Readlink | WatchFiles | ListDir | Realpath | Chdir | Stat | Lstat | Access | Exists | WriteFile
-        | AppendFile | Truncate | Open | Remove | Rmdir | Mkdir | Mktemp | Chmod | Chown | Utimes | Spawn => &[0],
-        Copy | Rename | Link => &[0, 1],
-        Symlink => &[1],
-        _ => &[],
-    }
+/// and the command of `os/spawn`, as the operator table's `grant` names them. A host resolves them to absolute
+/// paths before the call runs; the `cwd` option of `os/spawn` may be one too.
+pub fn anchored_arg_positions(op: OsOp) -> Vec<usize> {
+    let mut at: Vec<usize> = os_grant_needs(op)
+        .iter()
+        .filter_map(|need| match need {
+            OsGrantNeed::Fs { path, .. } | OsGrantNeed::FsOpen { path, .. } => Some(*path),
+            OsGrantNeed::Exec { command, .. } => Some(*command),
+            _ => None,
+        })
+        .collect();
+    at.sort_unstable();
+    at.dedup();
+    at
 }
 
 /// The host and port positions of `op` that may be written as an `env` anchor (`{ anchor: { env: NAME } }`); a host
 /// resolves them to the boot value (the port as a number) before the call runs.
 pub fn anchored_net_args(op: OsOp) -> Option<(usize, usize)> {
-    use OsOp::*;
-    match op {
-        TcpConnect | TcpListen | UdpBind => Some((0, 1)),
-        Sendto => Some((2, 3)),
+    os_grant_needs(op).iter().find_map(|need| match need {
+        OsGrantNeed::Net { host, port: Some(port), .. } => Some((*host, *port)),
         _ => None,
-    }
+    })
 }
 
 #[cfg(feature = "std")]
@@ -1665,15 +1704,16 @@ pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> R
         }
     };
     let mut out = args.to_vec();
-    for &at in anchored_arg_positions(op) {
+    for at in anchored_arg_positions(op) {
         if let Some(value) = out.get(at) {
             if let Some(resolved) = path(value)? {
                 out[at] = resolved;
             }
         }
     }
-    if op == OsOp::Spawn {
-        if let Some(Value::Object(options)) = out.get_mut(2) {
+    for need in os_grant_needs(op) {
+        let OsGrantNeed::Exec { options: at, .. } = need else { continue };
+        if let Some(Value::Object(options)) = out.get_mut(*at) {
             if let Some(cwd) = options.get("cwd") {
                 if let Some(resolved) = path(cwd)? {
                     options.insert("cwd".to_string(), resolved);
@@ -1701,8 +1741,8 @@ pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> R
     Ok(out)
 }
 
-fn kv_need(args: &[SExpression], mode: KvMode, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
-    Ok(literal(args, 0, deferred)?
+fn kv_need(args: &[SExpression], store: usize, mode: KvMode, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
+    Ok(literal(args, store, deferred)?
         .map(|store| OsRequirement::Kv { store: store.to_string(), mode })
         .into_iter()
         .collect())
@@ -1713,84 +1753,46 @@ fn requirements_of(
     args: &[SExpression],
     deferred: &dyn Fn(&SExpression) -> bool,
 ) -> Result<Vec<OsRequirement>, usize> {
-    use OsOp::*;
-    let sys = |kind| Ok(vec![OsRequirement::Sys { kind }]);
-    let desktop = |kind| Ok(vec![OsRequirement::Desktop { kind }]);
-    match op {
-        ReadFile | Readlink | WatchFiles | ListDir | Realpath | Chdir | Stat | Lstat | Access | Exists => {
-            fs_need(args, 0, FsMode::Read, deferred)
-        }
-        WriteFile | AppendFile | Truncate => fs_need(args, 0, FsMode::Write, deferred),
-        Open => {
+    let mut needs = Vec::new();
+    for need in os_grant_needs(op) {
+        needs.extend(need_of(need, args, deferred)?);
+    }
+    Ok(needs)
+}
+
+fn need_of(need: &OsGrantNeed, args: &[SExpression], deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
+    match need {
+        OsGrantNeed::Fs { access, path } => fs_need(args, *path, *access, deferred),
+        OsGrantNeed::FsGlob { glob } => match args.get(*glob).map(anchored_sexpr).transpose().map_err(|()| *glob)?.flatten() {
+            Some((anchor, pattern)) => Ok(vec![anchored_glob_need(anchor, pattern, deferred)]),
+            None => Ok(literal(args, *glob, deferred)?
+                .map(|text| OsRequirement::Fs { path: glob_prefix(text), mode: FsMode::Read })
+                .into_iter()
+                .collect()),
+        },
+        OsGrantNeed::FsOpen { path, flags } => {
             let mut needs = Vec::new();
-            if let (Some(target), Some(flags)) = (fs_target(args, 0, deferred)?, literal(args, 1, deferred)?) {
+            if let (Some(target), Some(flags)) = (fs_target(args, *path, deferred)?, literal(args, *flags, deferred)?) {
                 needs.extend(open_modes(flags).into_iter().map(|mode| fs_requirement(target.clone(), mode)));
             }
             Ok(needs)
         }
-        Copy => fs_need(args, 0, FsMode::Read, deferred).and_then(|mut n| {
-            n.extend(fs_need(args, 1, FsMode::Create, deferred)?);
-            Ok(n)
-        }),
-        Rename => fs_need(args, 0, FsMode::Remove, deferred).and_then(|mut n| {
-            n.extend(fs_need(args, 1, FsMode::Create, deferred)?);
-            Ok(n)
-        }),
-        Link => fs_need(args, 0, FsMode::Write, deferred).and_then(|mut n| {
-            n.extend(fs_need(args, 1, FsMode::Create, deferred)?);
-            Ok(n)
-        }),
-        Symlink => fs_need(args, 1, FsMode::Create, deferred),
-        Remove | Rmdir => fs_need(args, 0, FsMode::Remove, deferred),
-        Mkdir | Mktemp => fs_need(args, 0, FsMode::Create, deferred),
-        Chmod | Chown | Utimes => fs_need(args, 0, FsMode::Meta, deferred),
-        Glob => match args.first().map(anchored_sexpr).transpose().map_err(|()| 0usize)?.flatten() {
-            Some((anchor, pattern)) => Ok(vec![anchored_glob_need(anchor, pattern, deferred)]),
-            None => Ok(literal(args, 0, deferred)?
-                .map(|glob| OsRequirement::Fs { path: glob_prefix(glob), mode: FsMode::Read })
-                .into_iter()
-                .collect()),
-        },
-        Spawn => spawn_needs(args, deferred),
-        Getenv | Setenv | Unsetenv | WatchEnv => Ok(literal(args, 0, deferred)?
+        OsGrantNeed::Exec { command, options } => spawn_needs(args, *command, *options, deferred),
+        OsGrantNeed::Env { name } => Ok(literal(args, *name, deferred)?
             .map(|name| OsRequirement::Env { name: name.to_string() })
             .into_iter()
             .collect()),
-        StdinRead => Ok(vec![OsRequirement::Stdio { kind: StdioKind::In }]),
-        StdoutWrite => Ok(vec![OsRequirement::Stdio { kind: StdioKind::Out }]),
-        StderrWrite => Ok(vec![OsRequirement::Stdio { kind: StdioKind::Err }]),
-        TcpConnect => net_need(args, 0, 1, &[NetKind::Tcp], deferred),
-        TcpListen => net_need(args, 0, 1, &[NetKind::Listen], deferred),
-        UdpBind => net_need(args, 0, 1, &[NetKind::Udp], deferred),
-        Sendto => net_need(args, 2, 3, &[NetKind::Udp], deferred),
-        DnsResolve => Ok(literal(args, 0, deferred)?
-            .map(|host| OsRequirement::Net {
-                host: host.to_string(),
-                port: 0,
-                kinds: vec![NetKind::Tcp, NetKind::Udp],
-            })
+        OsGrantNeed::Stdio { access } => Ok(vec![OsRequirement::Stdio { kind: *access }]),
+        OsGrantNeed::Net { access, host, port: Some(port) } => net_need(args, *host, *port, access, deferred),
+        OsGrantNeed::Net { access, host, port: None } => Ok(literal(args, *host, deferred)?
+            .map(|name| OsRequirement::Net { host: name.to_string(), port: 0, kinds: access.clone() })
             .into_iter()
             .collect()),
-        Uid | Gid | Username | GroupOf | Hostname | Uname => sys(SysKind::Identity),
-        CpuUsage | Uptime | LoadAvg => sys(SysKind::Cpu),
-        MemoryInfo => sys(SysKind::Memory),
-        DiskUsage | Mounts | DiskIo => sys(SysKind::Disk),
-        NetworkInterfaces | NetworkStats | NetworkConnected | DefaultGateway => sys(SysKind::Network),
-        BatteryStatus | AcPower | ThermalZones => sys(SysKind::PowerState),
-        Notify => desktop(DesktopKind::Notify),
-        Speak => desktop(DesktopKind::Speak),
-        BrightnessGet | BrightnessSet => desktop(DesktopKind::Brightness),
-        VolumeGet | VolumeSet | VolumeMute => desktop(DesktopKind::Volume),
-        Suspend | Hibernate => desktop(DesktopKind::Power),
-        KvGet | KvScan => kv_need(args, KvMode::Read, deferred),
-        KvPut | KvDelete | KvBatch => kv_need(args, KvMode::Write, deferred),
-        MmioRead => mmio_need(args, DevKind::Read, deferred),
-        MmioWrite => mmio_need(args, DevKind::Write, deferred),
-        IrqWait => irq_need(args, DevKind::Wait, deferred),
-        IrqAck => irq_need(args, DevKind::Ack, deferred),
-        Close | Read | Write | Seek | Fsync | Cwd | Wait | Kill | Pid | Ppid | CurrentExe | WatchProcess
-        | WatchSignal | Environ | Isatty | TtySize | Send | Recv | Recvfrom | Shutdown | WatchPort
-        | ClockMonotonic | WatchCron => Ok(Vec::new()),
+        OsGrantNeed::Sys { access } => Ok(vec![OsRequirement::Sys { kind: *access }]),
+        OsGrantNeed::Desktop { access } => Ok(vec![OsRequirement::Desktop { kind: *access }]),
+        OsGrantNeed::Kv { access, store } => kv_need(args, *store, *access, deferred),
+        OsGrantNeed::Mmio { access, base, offset, width } => mmio_need(args, (*base, *offset, *width), *access, deferred),
+        OsGrantNeed::Irq { access, line } => irq_need(args, *line, *access, deferred),
     }
 }
 
@@ -2766,6 +2768,46 @@ mod tests {
         assert_eq!(anchored_arg_positions(OsOp::Rename), [0, 1]);
         assert!(anchored_arg_positions(OsOp::Getenv).is_empty());
     }
+
+    #[test]
+    fn every_os_operation_reads_its_needs_from_the_operator_table_at_arguments_that_exist() {
+        let mut handle_calls = Vec::new();
+        for op in OsOp::ALL {
+            let needs = os_grant_needs(*op);
+            if needs.is_empty() {
+                handle_calls.push(op.name());
+            }
+            for need in needs {
+                let positions: Vec<usize> = match need {
+                    OsGrantNeed::Fs { path, .. } => vec![*path],
+                    OsGrantNeed::FsGlob { glob } => vec![*glob],
+                    OsGrantNeed::FsOpen { path, flags } => vec![*path, *flags],
+                    OsGrantNeed::Exec { command, options } => vec![*command, *options],
+                    OsGrantNeed::Env { name } => vec![*name],
+                    OsGrantNeed::Net { host, port, .. } => std::iter::once(*host).chain(*port).collect(),
+                    OsGrantNeed::Kv { store, .. } => vec![*store],
+                    OsGrantNeed::Mmio { base, offset, width, .. } => vec![*base, *offset, *width],
+                    OsGrantNeed::Irq { line, .. } => vec![*line],
+                    OsGrantNeed::Stdio { .. } | OsGrantNeed::Sys { .. } | OsGrantNeed::Desktop { .. } => Vec::new(),
+                };
+                for at in positions {
+                    assert!(at < op.max_args(), "{} names argument {at}, past its {} arguments", op.name(), op.max_args());
+                }
+            }
+        }
+        handle_calls.sort_unstable();
+        let mut expected = vec![
+            "os/close", "os/read", "os/write", "os/seek", "os/fsync", "os/cwd", "os/wait", "os/kill", "os/pid", "os/ppid",
+            "os/current-exe", "os/watch-process", "os/watch-signal", "os/environ", "os/isatty", "os/tty-size", "os/send",
+            "os/recv", "os/recvfrom", "os/shutdown", "os/watch-port", "os/clock-monotonic", "os/watch-cron",
+        ];
+        expected.sort_unstable();
+        assert_eq!(handle_calls, expected, "only the handle and clock calls need nothing");
+        assert_eq!(os_grant_needs(OsOp::Rename), [OsGrantNeed::Fs { access: FsMode::Remove, path: 0 }, OsGrantNeed::Fs { access: FsMode::Create, path: 1 }]);
+        assert_eq!(os_grant_needs(OsOp::DnsResolve), [OsGrantNeed::Net { access: vec![NetKind::Tcp, NetKind::Udp], host: 0, port: None }]);
+        assert_ne!(os_grant_needs(OsOp::ReadFile), os_grant_needs(OsOp::WriteFile), "control: read and write differ");
+    }
+
 
     fn anet(host: NetPart, port: NetPart, kinds: &[NetKind]) -> OsGrants {
         OsGrants {

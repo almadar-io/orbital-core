@@ -131,6 +131,19 @@ pub struct LiveBroadcastItem {
     pub origin_client_id: Option<String>,
     #[serde(default, skip_serializing_if = "LiveTarget::is_peers")]
     pub target: LiveTarget,
+    /// Set when the item is a dispatch the host ran on its own (the JS `HostDispatchItem`): the client folds its
+    /// response and never runs it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<HostDispatch>,
+}
+
+/// A dispatch the host ran on its own, as the `{ type: dispatch }` `/api/events` frame carries it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostDispatch {
+    pub orbital_name: String,
+    pub request: Value,
+    pub response: Box<EventResponse>,
 }
 
 impl LiveBroadcastItem {
@@ -147,27 +160,39 @@ impl LiveBroadcastItem {
                     source: BusEventSource { persist_success: None, ..source.clone() },
                     origin_client_id: client_id.map(str::to_string),
                     target: LiveTarget::Peers,
+                    dispatch: None,
                 })
             })
             .collect()
     }
 
-    /// A deferred completion's sourced emits (EXEC-QUEUE-10): each goes to the connection whose request deferred the key.
-    pub fn answered(response: &EventResponse, client_id: &str) -> Vec<Self> {
-        response
-            .emitted_events
-            .iter()
-            .filter_map(|emitted| {
-                let source = emitted.source.as_ref()?;
-                Some(Self {
-                    event: emitted.event.clone(),
-                    payload: emitted.payload.clone(),
-                    source: BusEventSource { persist_success: None, ..source.clone() },
-                    origin_client_id: Some(client_id.to_string()),
-                    target: LiveTarget::Origin,
-                })
-            })
-            .collect()
+    /// A deferred completion's dispatch (EXEC-QUEUE-10): it goes to the connection whose request deferred the key,
+    /// which folds the response the way it folds its own request's. `request` is the `{ event, payload?, targetTrait,
+    /// entityId? }` the completion ran as.
+    pub fn dispatched(
+        orbital_name: String,
+        trait_name: &str,
+        event: &str,
+        payload: &Value,
+        entity_id: &str,
+        response: EventResponse,
+        client_id: &str,
+    ) -> Self {
+        let mut request = orbital_core_base::value::ValueMap::new();
+        request.insert("event".to_string(), Value::String(event.to_string()));
+        if !matches!(payload, Value::Null) {
+            request.insert("payload".to_string(), payload.clone());
+        }
+        request.insert("targetTrait".to_string(), Value::String(trait_name.to_string()));
+        request.insert("entityId".to_string(), Value::String(entity_id.to_string()));
+        Self {
+            event: event.to_string(),
+            payload: None,
+            source: BusEventSource::from_trait(trait_name.to_string()),
+            origin_client_id: Some(client_id.to_string()),
+            target: LiveTarget::Origin,
+            dispatch: Some(HostDispatch { orbital_name, request: Value::Object(request), response: Box::new(response) }),
+        }
     }
 
     /// A running call's live message (`emit.onMessage`): it goes to the connection of the request that made the call.
@@ -178,6 +203,7 @@ impl LiveBroadcastItem {
             source: BusEventSource::from_trait(trait_name),
             origin_client_id: client_id,
             target: LiveTarget::Origin,
+            dispatch: None,
         }
     }
 
@@ -207,6 +233,7 @@ mod tests {
             source: BusEventSource::from_trait("T"),
             origin_client_id: origin.map(str::to_string),
             target,
+            dispatch: None,
         }
     }
 
@@ -229,17 +256,23 @@ mod tests {
     }
 
     #[test]
-    fn a_deferred_completions_emits_reach_only_the_client_that_asked() {
+    fn a_deferred_completion_reaches_only_the_client_that_asked_as_a_dispatch_to_fold() {
         let mut response = EventResponse::success("idle");
-        response.emitted_events = vec![
-            EmittedEvent { event: "FILE_READ".to_string(), payload: None, source: Some(BusEventSource::from_trait("Reader")) },
-            EmittedEvent { event: "SAVED".to_string(), payload: None, source: Some(BusEventSource { persist_success: Some(true), ..BusEventSource::from_trait("Reader") }) },
-        ];
-        let items = LiveBroadcastItem::answered(&response, "tab-1");
-        assert_eq!(items.iter().map(|i| i.event.as_str()).collect::<Vec<_>>(), ["FILE_READ", "SAVED"]);
-        assert!(items.iter().all(|i| i.delivered_to(Some("tab-1"), |_| false)));
-        assert!(items.iter().all(|i| !i.delivered_to(Some("tab-2"), |_| true)), "control: another tab gets none of them");
-        assert!(items.iter().all(|i| i.source.persist_success.is_none()));
+        response.emitted_events = vec![EmittedEvent { event: "FILE_READ".to_string(), payload: None, source: Some(BusEventSource::from_trait("Reader")) }];
+        let payload = Value::Object(orbital_core_base::value::ValueMap::from_iter([("key".to_string(), Value::String("r1".to_string()))]));
+        let item = LiveBroadcastItem::dispatched("Files".to_string(), "Reader", "READ_DONE", &payload, "singleton", response.clone(), "tab-1");
+        assert!(item.delivered_to(Some("tab-1"), |_| false));
+        assert!(!item.delivered_to(Some("tab-2"), |_| true), "control: another tab does not get it");
+        let wire = serde_json::to_value(&item).unwrap();
+        assert_eq!(wire["dispatch"]["orbitalName"], "Files");
+        assert_eq!(wire["dispatch"]["request"], serde_json::json!({ "event": "READ_DONE", "payload": { "key": "r1" }, "targetTrait": "Reader", "entityId": "singleton" }));
+        assert_eq!(wire["dispatch"]["response"]["emittedEvents"][0]["event"], "FILE_READ");
+    }
+
+    #[test]
+    fn control_a_bus_item_carries_no_dispatch() {
+        let wire = serde_json::to_value(item(LiveTarget::Peers, Some("a"))).unwrap();
+        assert!(wire.get("dispatch").is_none(), "{wire}");
     }
 
     #[test]
@@ -285,6 +318,7 @@ mod tests {
             source: BusEventSource::from_trait("NotePersistor"),
             origin_client_id: Some("client-1".to_string()),
             target: LiveTarget::Peers,
+            dispatch: None,
         };
         let json = serde_json::to_string(&item).unwrap();
         let back: LiveBroadcastItem = serde_json::from_str(&json).unwrap();

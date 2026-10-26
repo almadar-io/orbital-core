@@ -12,7 +12,7 @@ use {
     orbital_core_base::schema::types::OrbitalSchema,
     orbital_core_base::value::Value,
     orbital_core_runtime::effects::response::{
-        EventRequest, EventResponse, TransitionRejectionCode,
+        EventRequest, EventResponse, LifecycleEvent, MountSeed, TransitionRejectionCode,
     },
 };
 
@@ -413,4 +413,53 @@ fn a_fork_answers_exactly_as_a_freshly_registered_server() {
     let forked = drive_rows(&template.fork_session().unwrap(), "CardOrbital", request());
     let fresh = drive_rows(&EmbeddedServer::new(carried_rows_schema()).unwrap(), "CardOrbital", request());
     assert_eq!(serde_json::to_value(&forked).unwrap(), serde_json::to_value(&fresh).unwrap());
+}
+
+fn holder_schema() -> OrbitalSchema {
+    let items: Vec<Json> = (0..20).map(|i| json!({ "k": format!("item-{i}") })).collect();
+    serde_json::from_value(json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "HolderOrbital",
+            "entity": { "name": "Ledger", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "count", "type": "number", "default": 0 },
+                { "name": "items", "type": "array", "default": items }
+            ] },
+            "traits": [{ "name": "Holder", "linkedEntity": "Ledger",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT", "effects": [["set", "@entity.count", 0]] },
+                        { "from": "idle", "to": "idle", "event": "BUMP", "effects": [["set", "@entity.count", ["+", "@entity.count", 1]]] }
+                    ] } }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn holder_mount() -> EventRequest {
+    EventRequest {
+        event: "INIT".to_string(),
+        mount: Some(vec![MountSeed { r#trait: "Holder".to_string(), event: LifecycleEvent::Init }]),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_mount_seed_returns_the_whole_row() {
+    let server = EmbeddedServer::new(holder_schema()).unwrap();
+    let mounted = drive_rows(&server, "HolderOrbital", holder_mount());
+    let holder = entity_of(&mounted, "Holder");
+    assert_eq!(holder["items"].as_array().map(Vec::len), Some(20), "{holder}");
+    assert!(holder.get("count").is_some(), "{holder}");
+}
+
+#[test]
+fn control_a_dispatch_after_the_mount_returns_only_what_it_wrote() {
+    let server = EmbeddedServer::new(holder_schema()).unwrap();
+    drive_rows(&server, "HolderOrbital", holder_mount());
+    let bump = EventRequest { event: "BUMP".to_string(), target_trait: Some("Holder".to_string()), ..Default::default() };
+    let holder = entity_of(&drive_rows(&server, "HolderOrbital", bump), "Holder");
+    assert!(holder.get("count").is_some(), "{holder}");
+    assert!(holder.get("items").is_none(), "the unchanged list rode the dispatch: {holder}");
 }

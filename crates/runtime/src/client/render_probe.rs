@@ -27,7 +27,7 @@ use crate::program_machine::{
 };
 use crate::render_report::{RenderReport, RenderVerdict};
 use orbital_core_base::drawable::{is_draw_host, is_drawable};
-use orbital_core_base::schema::types::OrbitalSchema;
+use orbital_core_base::schema::types::{OrbitalSchema, TraitDefinition, TraitReference};
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
 use std::collections::{HashMap, HashSet};
@@ -57,6 +57,61 @@ pub trait RenderTarget {
             "`{pattern}`: this renderer has no game-canvas probe"
         ))
     }
+}
+
+/// Every inline trait in `schema` (post-`uses` resolution they are all inline).
+fn inline_traits(schema: &OrbitalSchema) -> Vec<&TraitDefinition> {
+    schema
+        .orbitals
+        .iter()
+        .flat_map(|orbital| orbital.traits.iter())
+        .filter_map(|tr| match tr {
+            TraitReference::Inline(td) => Some(td),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `--trait NAME` resolves both spellings a trait carries post-resolve: its compiled, possibly orbital-prefixed
+/// name and the bare name it was authored under (`source_behavior.original_name`). Returns the canonical resolved
+/// names, deduplicated, in first-match order; a name matching no trait is an error listing the available ones.
+fn resolve_trait_names(schema: &OrbitalSchema, names: &[String]) -> Result<Vec<String>, String> {
+    let all = inline_traits(schema);
+    let mut resolved: Vec<String> = Vec::new();
+    for name in names {
+        let mut found = false;
+        for td in &all {
+            let matches = td.name == *name
+                || td
+                    .source_behavior
+                    .as_ref()
+                    .is_some_and(|s| s.original_name == *name);
+            if matches {
+                found = true;
+                if !resolved.iter().any(|r| r == &td.name) {
+                    resolved.push(td.name.clone());
+                }
+            }
+        }
+        if !found {
+            let mut available: Vec<&str> = all
+                .iter()
+                .map(|td| {
+                    td.source_behavior
+                        .as_ref()
+                        .map(|s| s.original_name.as_str())
+                        .unwrap_or(td.name.as_str())
+                })
+                .collect();
+            available.sort_unstable();
+            available.dedup();
+            return Err(format!(
+                "unknown --trait {name:?} — available traits: {}",
+                available.join(", ")
+            ));
+        }
+    }
+    Ok(resolved)
 }
 
 fn dedup_sorted(mut v: Vec<String>) -> Vec<String> {
@@ -101,9 +156,8 @@ where
     F: Fn(&OrbitalSchema, usize) -> Result<Arc<dyn ServerBridge>, String>,
 {
     let resolved_traits = traits
-        .map(|names| crate::planner::resolve_trait_names(&schema, names))
-        .transpose()
-        .map_err(|e| e.to_string())?;
+        .map(|names| resolve_trait_names(&schema, names))
+        .transpose()?;
     let scope: Option<HashSet<&str>> = resolved_traits
         .as_ref()
         .map(|names| names.iter().map(String::as_str).collect());

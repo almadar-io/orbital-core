@@ -116,6 +116,7 @@
           "from": "listing",
           "to": "listing",
           "event": "INIT",
+          "firedArm": 0,
           "effects": [
             {
               "type": "fetch",
@@ -188,7 +189,8 @@
               "from": "listing",
               "event": "INIT"
             }
-          ]
+          ],
+          "residence": "server"
         }
       }
     ],
@@ -298,6 +300,7 @@
           "from": "listing",
           "to": "creating",
           "event": "CREATE",
+          "firedArm": 0,
           "effects": [
             {
               "type": "render-ui",
@@ -488,6 +491,7 @@
           "from": "creating",
           "to": "listing",
           "event": "SAVE",
+          "firedArm": 0,
           "effects": [
             {
               "type": "persist",
@@ -512,6 +516,7 @@
           "from": "listing",
           "to": "listing",
           "event": "INIT",
+          "firedArm": 0,
           "effects": [
             {
               "type": "fetch",
@@ -592,7 +597,8 @@
               "from": "listing",
               "event": "INIT"
             }
-          ]
+          ],
+          "residence": "server"
         }
       }
     ],
@@ -655,7 +661,7 @@
           "main",
           {
             "entity": "Task",
-            "entityId": "@payload.row.id",
+            "entityId": null,
             "fields": [
               "title",
               "description",
@@ -690,7 +696,7 @@
             "main",
             {
               "entity": "Task",
-              "entityId": "@payload.row.id",
+              "entityId": null,
               "fields": [
                 "title",
                 "description",
@@ -711,6 +717,7 @@
           "from": "listing",
           "to": "editing",
           "event": "EDIT",
+          "firedArm": 0,
           "effects": [
             {
               "type": "fetch",
@@ -777,7 +784,8 @@
               "from": "listing",
               "event": "EDIT"
             }
-          ]
+          ],
+          "residence": "server"
         }
       }
     ],

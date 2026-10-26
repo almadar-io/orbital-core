@@ -140,9 +140,9 @@ fn schema_serde_keys_are_all_in_en_orb() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let mut keys = BTreeSet::new();
     for rel in [
-        "src/schema/types.rs",
-        "src/schema.rs",
-        "src/schema/sexpr.rs",
+        "src/program/schema/types.rs",
+        "src/program/schema/mod.rs",
+        "src/program/schema/sexpr.rs",
     ] {
         collect_file_keys(&Path::new(manifest_dir).join(rel), &mut keys);
     }

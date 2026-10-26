@@ -446,7 +446,7 @@ fn completion_sink(
         }),
         Arc::new({
             let seen = seen.clone();
-            move |_: &CallSite, _: &str, _: Option<&str>, result: Result<orbital_core_runtime::resumable::DispatchOutcomes, orbital_core_runtime::resumable::DispatchError>| {
+            move |_: &CallSite, _: &str, _: &orbital_core_base::value::Value, _: Option<&str>, result: Result<orbital_core_runtime::resumable::DispatchOutcomes, orbital_core_runtime::resumable::DispatchError>| {
                 seen.lock().unwrap().extend(added(&result.unwrap()));
             }
         }),
@@ -705,7 +705,7 @@ fn asking_kernel(keyed: bool) -> Asking {
     let sink = Arc::new(KernelCompletionSink::new(
         kernel.clone(),
         Arc::new(move |request: &orbital_core_runtime::resumable::IoRequest| native.answer(request)),
-        Arc::new(move |_: &orbital_core_runtime::resumable::CallSite, event: &str, _: Option<&str>, result: Result<orbital_core_runtime::resumable::DispatchOutcomes, orbital_core_runtime::resumable::DispatchError>| {
+        Arc::new(move |_: &orbital_core_runtime::resumable::CallSite, event: &str, _: &orbital_core_base::value::Value, _: Option<&str>, result: Result<orbital_core_runtime::resumable::DispatchOutcomes, orbital_core_runtime::resumable::DispatchError>| {
             let ran = result.unwrap().iter().filter(|(_, r)| r.executed).map(|(t, _)| t.clone()).collect();
             done.lock().unwrap().send((event.to_string(), ran)).unwrap();
         }),
@@ -851,7 +851,7 @@ fn live_kernel() -> Live {
     let sink = Arc::new(KernelCompletionSink::new(
         kernel.clone(),
         Arc::new(move |request: &orbital_core_runtime::resumable::IoRequest| native.answer(request)),
-        Arc::new(move |_: &orbital_core_runtime::resumable::CallSite, event: &str, _: Option<&str>, result: Result<orbital_core_runtime::resumable::DispatchOutcomes, orbital_core_runtime::resumable::DispatchError>| {
+        Arc::new(move |_: &orbital_core_runtime::resumable::CallSite, event: &str, _: &orbital_core_base::value::Value, _: Option<&str>, result: Result<orbital_core_runtime::resumable::DispatchOutcomes, orbital_core_runtime::resumable::DispatchError>| {
             let payload = result.unwrap().first().map(|(_, r)| serde_json::to_value(&*r.payload).unwrap()).unwrap_or_default();
             done.lock().unwrap().send((event.to_string(), payload)).unwrap();
         }),

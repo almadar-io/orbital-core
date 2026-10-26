@@ -44,6 +44,8 @@ mod tests {
         }
     }
 
+    const PROTOCOLS: &str = r#"[{"name":"route","address":null,"viewer":true,"grant":null,"side":"client"}]"#;
+
     fn install_core(root: &Path, version: &str, compiler: &str) -> PathBuf {
         let dir = root.join("node_modules/@almadar/core");
         fs::create_dir_all(dir.join("dist/patterns")).unwrap();
@@ -60,6 +62,7 @@ mod tests {
                     "services": "dist/patterns/services-registry.json",
                     "bindingRules": "dist/language/binding-rules.json",
                     "programTypes": "dist/language/program-types.json",
+                    "protocols": "dist/language/protocols.json",
                     "themes": "themes"
                 }
             })
@@ -85,6 +88,7 @@ mod tests {
             r#"{"OrbitalValue":{"type":"object","properties":{"behavior":{"type":"string","required":true}}}}"#,
         )
         .unwrap();
+        fs::write(dir.join("dist/language/protocols.json"), PROTOCOLS).unwrap();
         fs::create_dir_all(dir.join("themes")).unwrap();
         fs::write(
             dir.join("themes/zz-theme.json"),
@@ -106,6 +110,7 @@ mod tests {
         assert!(data.services.contains("services"));
         assert!(data.binding_rules.contains("\"zz\""));
         assert!(data.program_types.contains("OrbitalValue"));
+        assert_eq!(data.protocols, PROTOCOLS);
         assert_eq!(data.themes.len(), 1);
         assert!(data.themes[0].contains("zz-theme"));
     }
@@ -125,6 +130,27 @@ mod tests {
         fs::remove_file(dir.join("dist/language/program-types.json")).unwrap();
         let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
+    }
+
+    #[test]
+    fn edge_a_core_without_protocols_or_with_a_malformed_table_is_invalid() {
+        let tmp = Tmp::new("no-protocols");
+        let dir = install_core(&tmp.0, "10.1.0", ">=17.0.0");
+        fs::write(dir.join("dist/language/protocols.json"), "[]").unwrap();
+        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
+        assert!(err.to_string().contains("no rows"), "{err}");
+        fs::remove_file(dir.join("dist/language/protocols.json")).unwrap();
+        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
+        assert!(err.to_string().contains("protocols"), "{err}");
+
+        let manifest = dir.join("package.json");
+        let mut declared: Value = serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+        declared["orbLanguage"].as_object_mut().unwrap().remove("protocols");
+        fs::write(&manifest, declared.to_string()).unwrap();
+        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        assert!(err.to_string().contains("orbLanguage.protocols"), "{err}");
     }
 
     #[test]
@@ -411,6 +437,7 @@ mod tests {
                 "eventContracts": {"contracts": {}}, "services": {"services": {}},
                 "bindingRules": {"guard": {"allowed": ["zz"]}},
                 "programTypes": {"OrbitalValue": {"type": "object", "properties": {"behavior": {"type": "string", "required": true}}}},
+                "protocols": serde_json::from_str::<Value>(PROTOCOLS).unwrap(),
                 "themes": [{"name": "zz", "tokens": {}}]
             },
             "std": {
@@ -436,6 +463,7 @@ mod tests {
         assert!(lang.patterns.contains("\"p\""));
         assert!(lang.binding_rules.contains("\"zz\""));
         assert!(lang.program_types.contains("OrbitalValue"));
+        assert_eq!(lang.protocols, PROTOCOLS);
         assert_eq!(lang.themes.len(), 1);
         assert_eq!(ops.std_version, "8.2.0");
         assert!(ops.operators.contains("arithmetic"));
@@ -478,5 +506,13 @@ mod tests {
         v["core"]["programTypes"] = json!({"OrbitalValue": {"type": "nonsense"}});
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("OrbitalValue"), "{err}");
+        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        v["core"].as_object_mut().unwrap().remove("protocols");
+        let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
+        assert!(err.to_string().contains("core.protocols"), "{err}");
+        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        v["core"]["protocols"] = json!([]);
+        let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
+        assert!(err.to_string().contains("no rows"), "{err}");
     }
 }

@@ -241,6 +241,7 @@ fn install_core(root: &Path, version: &str) {
                 "services": "dist/patterns/services-registry.json",
                 "bindingRules": "dist/language/binding-rules.json",
                 "programTypes": "dist/language/program-types.json",
+                "protocols": "dist/language/protocols.json",
                 "themes": "themes"
             }
         })
@@ -263,6 +264,11 @@ fn install_core(root: &Path, version: &str) {
     fs::write(
         dir.join("dist/language/program-types.json"),
         r#"{"OrbitalValue":{"type":"object","properties":{"behavior":{"type":"string","required":true}}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("dist/language/protocols.json"),
+        r#"[{"name":"route","address":null,"viewer":true,"grant":null,"side":"client"}]"#,
     )
     .unwrap();
     fs::write(
