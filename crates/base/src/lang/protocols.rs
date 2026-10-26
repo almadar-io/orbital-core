@@ -182,6 +182,7 @@ mod tests {
         assert_eq!(names, ["route", "http", "stdio", "boot"]);
     }
 
+    // EXEC-ENDPOINT-1
     #[test]
     fn http_takes_a_host_port_path_address_with_host_and_port_required() {
         let rows = rows();

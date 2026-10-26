@@ -135,6 +135,28 @@ fn collect_file_keys(path: &Path, out: &mut BTreeSet<String>) {
     collect_struct_keys(&parsed.items, out);
 }
 
+/// A module file plus its child module files (`foo.rs` and `foo/*.rs`), so a
+/// split module is read whole; test modules hold no schema structs.
+fn collect_module_keys(path: &Path, out: &mut BTreeSet<String>) {
+    collect_file_keys(path, out);
+    let Ok(entries) = std::fs::read_dir(path.with_extension("")) else {
+        return;
+    };
+    let mut children: Vec<_> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .filter(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s != "tests" && !s.ends_with("_tests"))
+        })
+        .collect();
+    children.sort();
+    for child in children {
+        collect_file_keys(&child, out);
+    }
+}
+
 #[test]
 fn schema_serde_keys_are_all_in_en_orb() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -144,7 +166,7 @@ fn schema_serde_keys_are_all_in_en_orb() {
         "src/program/schema/mod.rs",
         "src/program/schema/sexpr.rs",
     ] {
-        collect_file_keys(&Path::new(manifest_dir).join(rel), &mut keys);
+        collect_module_keys(&Path::new(manifest_dir).join(rel), &mut keys);
     }
 
     let en = &tables::definitions()["en"];

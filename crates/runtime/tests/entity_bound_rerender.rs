@@ -139,6 +139,7 @@ fn bump(k: &RuntimeKernel, event: &str) -> EventResponse {
         .response
 }
 
+// EXEC-RENDER-1
 #[test]
 fn a_sibling_bound_to_the_shared_entity_repaints_when_another_trait_writes_it() {
     let (k, _) = mounted("runtime", true);

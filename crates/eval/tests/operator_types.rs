@@ -68,6 +68,7 @@ fn same(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     }
 }
 
+// EXEC-EVAL-1
 #[test]
 fn every_shared_case_agrees() {
     let fixture = fixture();

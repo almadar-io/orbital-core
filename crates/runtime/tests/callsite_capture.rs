@@ -1,3 +1,4 @@
+// EXEC-RENDER-8: a composing transition repaints its callsite-capture children on both roles.
 // `@callsitePayload.<field>` is the payload of the transition that composed a child trait into its embedder
 // (`@trait.Child` in that transition's `render-ui`). After the composing transition the server re-fires the
 // child's lifecycle arm under that payload, the capture is sticky for the child's own later runs, and a

@@ -1085,6 +1085,7 @@ mod browser_effects {
         ModelFailure::new(kind, message)
     }
 
+    // EXEC-HTTP-3
     #[test]
     fn a_prompt_asks_the_host_once_with_the_text_and_schema_and_emits_the_reply_with_a_null_key() {
         let (response, seen) = run(prompt(None), |_| IoAnswer::Prompt(Ok("{\"category\":\"a\"}".to_string())));

@@ -821,6 +821,7 @@ mod tests {
         assert!(parse_redis_call(&origin, &list(&["PING"]), &fractional).is_err());
     }
 
+    // EXEC-HTTP-4
     #[test]
     fn get_connects_sends_one_command_reads_the_reply_and_closes() {
         let (asks, step) = run(spec(&["GET", "k"]), None, vec![sock(), ok(), data(b"$3\r\nbar\r\n"), ok()]);

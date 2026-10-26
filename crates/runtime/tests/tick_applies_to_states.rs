@@ -64,6 +64,7 @@ fn a_tick_runs_while_its_trait_is_in_a_listed_state() {
     assert_eq!(beats(&kernel), Some(1.0));
 }
 
+// EXEC-TICK-1
 #[test]
 fn a_tick_is_skipped_while_its_trait_is_in_another_state() {
     let kernel = kernel(json!(["running"]));

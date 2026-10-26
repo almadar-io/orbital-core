@@ -231,6 +231,7 @@ fn value(json: &str) -> Value {
 
 /// A whole `@trait.X` string is a client-only frame reference: it evaluates to itself, as the value resolver and the
 /// embedded interpolation already keep it, so a branch an operator chooses still embeds the trait.
+// EXEC-EVAL-9
 #[test]
 fn a_trait_reference_evaluates_to_itself_inside_an_operator_branch() {
     assert_eq!(

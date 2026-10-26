@@ -117,6 +117,7 @@ fn payloads(k: &RuntimeKernel, event: &str) -> Vec<Json> {
         .collect()
 }
 
+// EXEC-QUEUE-5
 #[test]
 fn once_in_a_listen_when_admits_only_the_first_delivery_and_the_control_gets_all() {
     let k = kernel();
@@ -129,6 +130,7 @@ fn each_listener_keeps_its_own_log() {
     assert_eq!(payloads(&kernel(), "ACK_TWIN"), vec![json!({ "n": 1 })]);
 }
 
+// EXEC-STEP-2
 #[test]
 fn event_is_the_source_emit_guards_read_pre_commit_effects_post_commit() {
     assert_eq!(

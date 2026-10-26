@@ -2294,6 +2294,7 @@ fn hand_off_board() -> Setup {
     Setup::new(schema, &["Board"], vec![dispatch("Driver", "BUMP")])
 }
 
+// EXEC-STEP-10
 #[test]
 fn each_hop_of_a_cascade_records_the_entity_before_and_after_it() {
     let setup = hand_off_board();

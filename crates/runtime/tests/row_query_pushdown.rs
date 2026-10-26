@@ -1164,6 +1164,22 @@ fn a_conflict_re_reads_and_re_runs_the_batch() {
 }
 
 #[test]
+fn exec_store_5_a_conflict_on_every_attempt_fails_after_three_with_the_rows_kept_changing() {
+    let k = committing_kernel();
+    let host = seeded();
+    let (log, out) = fly(&k, "BUMP_ONE", &host, &|r| match r {
+        IoRequest::CommitRows { .. } => Some(IoAnswer::Committed(Ok(false))),
+        _ => None,
+    });
+    let log = data_requests(&log);
+    assert_eq!(commits(&log), 3, "at most three attempts: {log:?}");
+    let out = out.unwrap();
+    let errors: Vec<_> = out.iter().flat_map(|(_, r)| r.effect_results.iter()).filter(|e| e.is_failed()).filter_map(|e| e.error.clone()).collect();
+    assert!(errors.iter().any(|e| e.contains("the rows kept changing")), "{errors:?}");
+    assert_eq!(host.read("Ticket", "t1").unwrap().as_object().unwrap()["score"], Value::Number(3.0), "nothing applied");
+}
+
+#[test]
 fn the_wire_form_of_the_new_requests_and_answers_round_trips() {
     use orbital_core_runtime::embed::wire::{IoAnswerWire, IoRequestWire};
     let batch = RowWriteBatch {

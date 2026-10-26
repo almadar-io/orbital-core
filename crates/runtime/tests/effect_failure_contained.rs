@@ -178,3 +178,30 @@ fn control_an_emit_whose_payload_evaluates_is_emitted_resolved() {
     assert!(response.rejections.iter().flatten().all(|r| r.code != TransitionRejectionCode::EffectFailed));
     assert_eq!(emitted(&response, "RESPOND"), vec![json!({ "status": 403.0 })]);
 }
+
+fn effect_failed(response: &EventResponse) -> Option<String> {
+    response
+        .rejections
+        .iter()
+        .flatten()
+        .find(|r| r.code == TransitionRejectionCode::EffectFailed)
+        .map(|r| r.error.clone().unwrap_or_default())
+}
+
+#[test]
+#[ignore = "G-ORBITAL-CORE-069: navigate params reach the client unevaluated"]
+fn exec_eval_4_a_mistyped_call_in_navigate_params_is_the_effects_failure_and_paints_nothing() {
+    let response = run(schema(vec![
+        render("before"),
+        json!(["navigate", "/items", { "tags": ["str/join", ["array/filter", "not-a-list", ["fn", "x", true]], ", "] }]),
+    ]));
+    let error = effect_failed(&response).expect("an effect-failed rejection");
+    assert!(!error.is_empty());
+    assert_eq!(painted(&response, "Broken"), Vec::<String>::new());
+}
+
+#[test]
+fn exec_eval_4_control_well_typed_navigate_params_do_not_fail() {
+    let response = run(schema(vec![json!(["navigate", "/items", { "tags": ["str/join", ["array/filter", ["a", "b"], ["fn", "x", true]], ", "] }])]));
+    assert_eq!(effect_failed(&response), None);
+}
