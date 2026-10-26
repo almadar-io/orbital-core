@@ -791,7 +791,7 @@ impl From<&CallSite> for CallSiteWire {
             orbital: site.orbital.clone(),
             trait_name: site.trait_name.clone(),
             follow_on: site.follow_on,
-            entity_id: (site.entity_id != "singleton").then(|| site.entity_id.clone()),
+            entity_id: (site.entity_id != crate::process_result::RUNTIME_SINGLETON).then(|| site.entity_id.clone()),
             emit: CallRoutesWire {
                 success: site.emit.success.clone(),
                 failure: site.emit.failure.clone(),
@@ -808,7 +808,7 @@ impl From<CallSiteWire> for CallSite {
             orbital: site.orbital,
             trait_name: site.trait_name,
             follow_on: site.follow_on,
-            entity_id: site.entity_id.unwrap_or_else(|| "singleton".to_string()),
+            entity_id: site.entity_id.unwrap_or_else(|| crate::process_result::RUNTIME_SINGLETON.to_string()),
             emit: CallRoutes {
                 success: site.emit.success,
                 failure: site.emit.failure,
@@ -1529,11 +1529,11 @@ mod call_site_tests {
         let row = CallSiteWire::from(&site("row-7"));
         assert_eq!(row.entity_id.as_deref(), Some("row-7"));
         assert_eq!(CallSite::from(row).entity_id, "row-7");
-        let single = CallSiteWire::from(&site("singleton"));
+        let single = CallSiteWire::from(&site(crate::process_result::RUNTIME_SINGLETON));
         assert_eq!(single.entity_id, None, "the singleton is the absence of a frame on the wire");
-        assert_eq!(CallSite::from(single).entity_id, "singleton");
+        assert_eq!(CallSite::from(single).entity_id, crate::process_result::RUNTIME_SINGLETON);
         let old: CallSiteWire = serde_json::from_str(r#"{"trait":"Sup","followOn":false,"emit":{}}"#).expect("an older site parses");
-        assert_eq!(CallSite::from(old).entity_id, "singleton", "control: a site with no frame addresses the singleton");
+        assert_eq!(CallSite::from(old).entity_id, crate::process_result::RUNTIME_SINGLETON, "control: a site with no frame addresses the singleton");
     }
 }
 

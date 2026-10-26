@@ -458,6 +458,32 @@ impl EmbeddedKernel {
         self.apply_server_response_since(response, already_delivered, None)
     }
 
+    /// The mount a reconnecting client posts to rebuild its session (EXEC-DIST-9): `seeds` with the state and the frame this
+    /// client holds for each seeded trait, as the host trusts them. A trait the client holds nothing for is left out of
+    /// the carried copies, so the host runs its lifecycle event from defaults.
+    pub fn reseed_leg(&self, seeds: &[MountSeed], entity_id: Option<&str>) -> EventRequest {
+        let mut traits: Vec<crate::effects::response::TraitFrom> = Vec::new();
+        let mut rows = ValueMap::default();
+        for seed in seeds {
+            let held = self.kernel.snapshot_trait(&seed.r#trait, entity_id);
+            if !held.state.is_empty() {
+                traits.push(crate::effects::response::TraitFrom { r#trait: seed.r#trait.clone(), from: held.state, event: None });
+            }
+            if !held.entity.is_null() {
+                rows.insert(seed.r#trait.clone(), held.entity);
+            }
+        }
+        EventRequest {
+            event: seeds.first().map(|seed| seed.event.as_str().to_string()).unwrap_or_default(),
+            entity_id: entity_id.map(str::to_string),
+            client_id: Some(self.client_id.clone()),
+            mount: Some(seeds.to_vec()),
+            traits: (!traits.is_empty()).then_some(traits),
+            entity_by_trait: (!rows.is_empty()).then_some(rows),
+            ..Default::default()
+        }
+    }
+
     /// `leg` as a host that holds the circuit state takes it: no carried states, and only the rows of the `[shared]`
     /// frames its traits read, since a client-side write into a shared frame is the one piece of state that host lacks.
     pub fn stateful_leg(&self, mut leg: EventRequest) -> EventRequest {

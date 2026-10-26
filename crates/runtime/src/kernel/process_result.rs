@@ -5,10 +5,34 @@ use std::prelude::v1::*;
 use super::dispatch_memory::DispatchView;
 use super::shared_entity::SharedEntity;
 use orbital_core_base::effect_types::{Effect, EffectResult};
-use orbital_core_base::value::{Value, ValueMap};
+use orbital_core_base::value::Value;
 use orbital_core_base::schema::types::{FieldDefinition, PageRef};
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_eval::state_machine::types::ArmGuard;
+
+/// The entity key of a trait instance bound to no row: the `[runtime]` singleton. No row id can produce it, so a row whose
+/// id is literally `singleton` keeps its own frame and state (EXEC-DATA-2). Frames, states and held states all key by it.
+pub const RUNTIME_SINGLETON: &str = "\u{0}singleton";
+
+/// The one shared `Null` payload a step without a payload carries, so a tick or a repaint allocates none.
+pub(crate) fn null_payload() -> std::sync::Arc<Value> {
+    static NULL: std::sync::OnceLock<std::sync::Arc<Value>> = std::sync::OnceLock::new();
+    std::sync::Arc::clone(NULL.get_or_init(|| std::sync::Arc::new(Value::Null)))
+}
+
+/// The id a wire names the runtime singleton by: `singleton`.
+pub fn public_entity_id(entity_id: &str) -> &str {
+    if entity_id == RUNTIME_SINGLETON {
+        "singleton"
+    } else {
+        entity_id
+    }
+}
+
+/// The store row a frame key reads: the runtime singleton's row is `singleton`.
+pub(crate) fn store_row_id(entity_id: &str) -> &str {
+    public_entity_id(entity_id)
+}
 
 /// Result of processing an event through the runtime kernel.
 #[derive(Debug, Clone)]
@@ -76,20 +100,21 @@ pub struct ProcessEventResult {
     /// The payload this trait's `@callsitePayload` read during the step (its composer's), when it has one.
     pub callsite_payload: Option<Value>,
 
-    /// The fields this step's `set` effects wrote, in write order, last write wins; empty for a step that did not run
-    /// or wrote nothing. A dispatch response row is these plus the `id` (EXEC-DIST-7).
-    pub written: ValueMap,
-}
-
-/// The fields a step's captured `set`s name; empty for anything that is not an object.
-pub fn written_fields(captured: &Value) -> ValueMap {
-    match captured {
-        Value::Object(fields) => fields.clone(),
-        _ => ValueMap::default(),
-    }
+    /// The fields this step's `set` effects wrote, as the step captured them: the same `Arc`s `entity_data` holds, so a
+    /// step that writes a large field keeps one copy of it. Null for a step that did not run or wrote nothing. A
+    /// dispatch response row is these plus the `id` (EXEC-DIST-7).
+    pub written: SharedEntity,
 }
 
 impl ProcessEventResult {
+    /// The fields this step wrote, in write order, last write winning.
+    pub fn written_values(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.written
+            .fields()
+            .into_iter()
+            .flat_map(|fields| fields.iter().map(|(name, value)| (name, &**value)))
+    }
+
     /// The result as a dispatch keeps it among its outcomes: each `set` names its path, and the value it wrote is the one
     /// in `entity_data`, so a long cascade does not hold a second copy of every value it set.
     pub fn released(mut self) -> Self {

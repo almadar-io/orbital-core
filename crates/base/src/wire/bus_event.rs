@@ -83,7 +83,7 @@ pub struct EmittedEvent {
     pub source: Option<BusEventSource>,
 }
 
-/// `ServerEffectResult.code` — mirror of core's `"not-found" | "no-row-key" | "duplicate-id"`.
+/// `ServerEffectResult.code` — mirror of core's `"not-found" | "no-row-key" | "duplicate-id" | "denied" | "derived-failed"`.
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -94,6 +94,9 @@ pub enum ServerEffectCode {
     /// A declared access policy refused a persist (`AccessDenied`, or the host's `RowWriteOutcome::Refused`); the
     /// result also reports `denied: true`. Set from that typed fact only, never from message text.
     Denied,
+    /// A `@derived` field's expression could not be computed on the row being written, so nothing was written
+    /// (EXEC-STEP-8).
+    DerivedFailed,
 }
 
 impl ServerEffectCode {
@@ -104,6 +107,7 @@ impl ServerEffectCode {
             Self::NoRowKey => "no-row-key",
             Self::DuplicateId => "duplicate-id",
             Self::Denied => "denied",
+            Self::DerivedFailed => "derived-failed",
         }
     }
 }

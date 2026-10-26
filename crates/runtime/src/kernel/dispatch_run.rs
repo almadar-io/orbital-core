@@ -11,7 +11,7 @@ use super::*;
 use crate::effects::response::MountSeed;
 use crate::resumable::{
     accept_into, number_requests, DispatchContinuation, DispatchError, DispatchOutcomes, Exchange,
-    IoAnswer, IoReply, Progress, StoreAsk, StoreLeg,
+    IoAnswer, IoReply, IoRequest, PendingRequest, Progress, StoreAsk, StoreLeg,
 };
 use crate::row_query::RowWriteOutcome;
 use orbital_core_base::envelope::{DeliverRefusal, DeliverRefusalKind, Envelope, EnvelopeVerdict};
@@ -213,7 +213,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         event_name: &str,
     ) -> Vec<String> {
-        let eid = entity_id.unwrap_or("singleton");
+        let eid = entity_id.unwrap_or(crate::process_result::RUNTIME_SINGLETON);
         candidates
             .iter()
             .filter(|t| self.trait_handles(t, &self.current_state_name(t, Some(eid)), event_name))
@@ -227,7 +227,7 @@ impl RuntimeKernel {
         traits: &[String],
         entity_id: Option<&str>,
     ) -> HashMap<String, String> {
-        let eid = entity_id.unwrap_or("singleton");
+        let eid = entity_id.unwrap_or(crate::process_result::RUNTIME_SINGLETON);
         traits
             .iter()
             .map(|t| (t.clone(), self.current_state_name(t, Some(eid))))
@@ -342,8 +342,21 @@ impl RuntimeKernel {
                 mut continuation,
                 requests,
             } => {
-                let event = continuation.run.parked_event();
-                continuation.lane = lane.park(event);
+                if Self::parked_on_keyed_calls_only(&continuation, &requests) {
+                    let keys = requests
+                        .iter()
+                        .filter_map(|pending| match &pending.request {
+                            IoRequest::CallService { key, .. } => key.clone(),
+                            _ => None,
+                        })
+                        .collect();
+                    continuation.keyed = Some(self.keyed_parks.hold(keys));
+                    drop(lane);
+                } else {
+                    continuation.keyed = None;
+                    let event = continuation.run.parked_event();
+                    continuation.lane = lane.park(event);
+                }
                 Ok(Progress::Await {
                     continuation,
                     requests,
@@ -351,6 +364,21 @@ impl RuntimeKernel {
             }
             done => Ok(done),
         }
+    }
+
+    /// A dispatch parked only on keyed, routed `call-service` asks has reached the declared async boundary: it
+    /// commits and frees the lane, and its answer is handled as a dispatch queued behind the lane (EXEC-CONC-0). Any
+    /// unkeyed ask, or a store leg in flight, keeps the lane until the dispatch commits (EXEC-CONC-1).
+    fn parked_on_keyed_calls_only(continuation: &DispatchContinuation, requests: &[PendingRequest]) -> bool {
+        continuation.store.is_none()
+            && !requests.is_empty()
+            && requests.iter().all(|pending| match &pending.request {
+                IoRequest::CallService { key: Some(_), site: Some(site), .. } => {
+                    let routes = &site.emit;
+                    routes.success.is_some() || routes.failure.is_some() || routes.cancelled.is_some() || routes.on_message.is_some()
+                }
+                _ => false,
+            })
     }
 
     fn continuation_of(run: DispatchRun) -> DispatchContinuation {
@@ -363,6 +391,7 @@ impl RuntimeKernel {
             store: None,
             seeds: None,
             lane: None,
+            keyed: None,
         }
     }
 
@@ -426,7 +455,7 @@ impl RuntimeKernel {
             lifecycle_targets: Vec::new(),
             tick: Some(TickSeed {
                 name: tick_name.to_string(),
-                state_entity: entity_id.unwrap_or("singleton").to_string(),
+                state_entity: entity_id.unwrap_or(crate::process_result::RUNTIME_SINGLETON).to_string(),
                 all_rows: entity_id.is_none(),
             }),
         };
@@ -1093,7 +1122,7 @@ impl RuntimeKernel {
             lifecycle_targets,
             tick,
         } = plan;
-        let eid = entity_id.unwrap_or_else(|| "singleton".to_string());
+        let eid = entity_id.unwrap_or_else(|| crate::process_result::RUNTIME_SINGLETON.to_string());
         // A server leg carries the client's mount (`_awaitingInit`, never a
         // payload binding): deliveries held for a trait the client has since
         // initialized go out first, ahead of this request's seed.

@@ -90,7 +90,7 @@ fn client(schema: OrbitalSchema) -> RuntimeKernel {
 
 fn state(kernel: &RuntimeKernel, t: &str) -> String {
     kernel
-        .get_state(t, Some("singleton"))
+        .get_state(t, None)
         .unwrap()
         .current_state
 }

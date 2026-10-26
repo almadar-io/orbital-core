@@ -378,13 +378,29 @@ fn awaiting_call(
     }
 }
 
+/// Run `body` on its own thread and fail, not hang, when it has not finished in ten seconds: a dispatch parked on
+/// the kernel's lane never lets the next one in (EXEC-CONC-1).
+fn within<T: Send + 'static>(what: &str, body: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(body());
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(done) => done,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("{what}: still waiting after 10 s, the lane stayed held"),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("{what}: the body panicked"),
+    }
+}
+
 #[test]
 fn a_suspended_step_shows_its_target_state_to_an_overlapping_dispatch() {
-    let server = EmbeddedServer::new(overlap_schema()).unwrap();
-    let (_flight, _) = awaiting_call(server.start("Main", judge("CALL")).unwrap());
-    assert_eq!(server.get_state("Judge", None), "busy");
-    let ping = settle_other_asks(&server, server.start("Main", judge("PING")).unwrap());
-    assert!(ping.transitioned, "PING has an arm only from busy");
+    within("overlapping dispatch", || {
+        let server = EmbeddedServer::new(overlap_schema()).unwrap();
+        let (_flight, _) = awaiting_call(server.start("Main", judge("CALL")).unwrap());
+        assert_eq!(server.get_state("Judge", None), "busy");
+        let ping = settle_other_asks(&server, server.start("Main", judge("PING")).unwrap());
+        assert!(ping.transitioned, "PING has an arm only from busy");
+    });
 }
 
 #[test]
@@ -405,23 +421,116 @@ fn control_an_unmoved_call_finishes_from_the_state_it_entered() {
 
 #[test]
 fn a_call_result_after_another_dispatch_moved_the_trait_is_handled_from_the_moved_state() {
-    let server = EmbeddedServer::new(overlap_schema()).unwrap();
-    let (flight, requests) = awaiting_call(server.start("Main", judge("CALL")).unwrap());
-    let stop = settle_other_asks(&server, server.start("Main", judge("STOP")).unwrap());
-    assert!(stop.transitioned, "STOP has an arm only from busy");
-    assert_eq!(server.get_state("Judge", None), "idle");
-    let replies = requests
+    within("call result after a move", || {
+        let server = EmbeddedServer::new(overlap_schema()).unwrap();
+        let (flight, requests) = awaiting_call(server.start("Main", judge("CALL")).unwrap());
+        let stop = settle_other_asks(&server, server.start("Main", judge("STOP")).unwrap());
+        assert!(stop.transitioned, "STOP has an arm only from busy");
+        assert_eq!(server.get_state("Judge", None), "idle");
+        let replies = requests
+            .into_iter()
+            .map(|p| IoReply {
+                id: p.id,
+                answer: IoAnswer::ServiceCancelled,
+            })
+            .collect();
+        settle_other_asks(&server, server.resume(flight, replies).unwrap());
+        assert_eq!(
+            server.get_state("Judge", None),
+            "idle",
+            "the replayed CALL must not put the trait back to busy"
+        );
+        awaiting_call(server.start("Main", judge("CALL")).unwrap());
+    });
+}
+
+// EXEC-CONC-0/1: a KEYED ask commits its dispatch and frees the lane (the answer is handled as its own dispatch,
+// FIFO behind whatever holds the lane then); only an UNKEYED parked ask keeps the lane until the dispatch commits.
+fn lane_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Judge", "linkedEntity": "Job",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "busy" }],
+                      "transitions": [
+                          { "from": "idle", "to": "busy", "event": "CALL", "effects": [["call-service", "slow", "work", {}, { "key": "job", "emit": { "success": "DONE" } }]] },
+                          { "from": "busy", "to": "idle", "event": "DONE", "effects": [] }
+                      ] } },
+                { "name": "Slow", "linkedEntity": "Job",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "asked" }],
+                      "transitions": [
+                          { "from": "idle", "to": "asked", "event": "SLOW", "effects": [["call-service", "slow", "work", {}]] }
+                      ] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn answer_calls(requests: Vec<orbital_core_runtime::resumable::PendingRequest>) -> Vec<IoReply> {
+    requests
         .into_iter()
-        .map(|p| IoReply {
-            id: p.id,
-            answer: IoAnswer::ServiceCancelled,
-        })
-        .collect();
-    settle_other_asks(&server, server.resume(flight, replies).unwrap());
-    assert_eq!(
-        server.get_state("Judge", None),
-        "idle",
-        "the replayed CALL must not put the trait back to busy"
-    );
-    awaiting_call(server.start("Main", judge("CALL")).unwrap());
+        .map(|p| IoReply { id: p.id, answer: IoAnswer::Service(Ok(Value::Null)) })
+        .collect()
+}
+
+#[test]
+fn control_an_unkeyed_parked_ask_keeps_the_lane_until_its_dispatch_commits() {
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+    within("unkeyed lane control", || {
+        let server = Arc::new(EmbeddedServer::new(lane_schema()).unwrap());
+        let (flight, requests) = awaiting_call(server.start("Main", request("SLOW", "Slow")).unwrap());
+        let (tx, rx) = mpsc::channel();
+        let other = std::thread::spawn({
+            let server = server.clone();
+            move || {
+                let progress = server.start("Main", judge("CALL")).unwrap();
+                tx.send(()).unwrap();
+                awaiting_call(progress)
+            }
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "a dispatch entered while an unkeyed ask held the lane");
+        let done = server.resume(flight, answer_calls(requests)).unwrap();
+        assert!(matches!(done, ServerProgress::Done(_)));
+        rx.recv_timeout(Duration::from_secs(5)).expect("the lane was freed when the dispatch committed");
+        other.join().unwrap();
+    });
+}
+
+#[test]
+fn a_keyed_calls_answer_waits_its_turn_behind_a_dispatch_that_holds_the_lane() {
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+    within("keyed answer behind the lane holder", || {
+        let server = Arc::new(EmbeddedServer::new(lane_schema()).unwrap());
+        let (keyed_flight, keyed_requests) = awaiting_call(server.start("Main", judge("CALL")).unwrap());
+        let (slow_flight, slow_requests) = awaiting_call(server.start("Main", request("SLOW", "Slow")).unwrap());
+        let (tx, rx) = mpsc::channel();
+        let answered = std::thread::spawn({
+            let server = server.clone();
+            move || {
+                let progress = server.resume(keyed_flight, answer_calls(keyed_requests)).unwrap();
+                tx.send(()).unwrap();
+                progress
+            }
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "the keyed answer ran while an unkeyed ask held the lane");
+        assert!(matches!(server.resume(slow_flight, answer_calls(slow_requests)).unwrap(), ServerProgress::Done(_)));
+        rx.recv_timeout(Duration::from_secs(5)).expect("the keyed answer ran once the lane was free");
+        assert!(matches!(answered.join().unwrap(), ServerProgress::Done(_)));
+        assert_eq!(server.get_state("Judge", None), "idle");
+    });
+}
+
+#[test]
+fn a_keyed_call_leaves_the_lane_free_for_an_unkeyed_dispatch() {
+    within("keyed call frees the lane", || {
+        let server = EmbeddedServer::new(lane_schema()).unwrap();
+        awaiting_call(server.start("Main", judge("CALL")).unwrap());
+        awaiting_call(server.start("Main", request("SLOW", "Slow")).unwrap());
+    });
 }

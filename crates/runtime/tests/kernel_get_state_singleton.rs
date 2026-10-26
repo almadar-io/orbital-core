@@ -1,4 +1,4 @@
-//! A trait instance dispatched without an entity id lives under `"singleton"`; reading it without
+//! A trait instance dispatched without an entity id lives under the runtime singleton's reserved key (EXEC-DATA-2); reading it without
 //! an entity id must address the same instance (C ABI `get_state`/`snapshot`, `ClientRuntime`).
 
 use orbital_core_runtime::embed::EmbeddedKernel;
@@ -20,11 +20,18 @@ fn an_unaddressed_read_sees_the_state_an_unaddressed_dispatch_left() {
     k.dispatch("Driver", None, "INIT", Value::Null).unwrap();
     let singleton = k
         .kernel()
-        .get_state("Driver", Some("singleton"))
+        .get_state("Driver", None)
         .map(|s| s.current_state)
         .unwrap();
     assert_eq!(k.get_state("Driver", None), singleton);
     assert_eq!(k.snapshot().states["Driver"], singleton);
+}
+
+#[test]
+fn control_a_row_literally_named_singleton_is_not_the_unaddressed_instance() {
+    let k = kernel("rollback");
+    k.dispatch("Driver", None, "INIT", Value::Null).unwrap();
+    assert_eq!(k.get_state("Driver", Some("singleton")), "", "no dispatch addressed a row named singleton");
 }
 
 #[test]

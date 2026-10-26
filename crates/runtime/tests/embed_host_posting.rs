@@ -510,3 +510,40 @@ fn a_mount_seed_that_delegates_a_fetch_also_carries_its_shared_frame_to_a_statef
         .unwrap();
     assert_eq!(frame(&k, "Composer")["activeChannel"], json!("general"));
 }
+
+// A stateful host holds the circuit state, so a plain mount leg carries only the shared frame its seed ran from; the
+// frames and states of a reconnect travel on `reseed_leg` (EXEC-DIST-9).
+#[test]
+fn a_remount_leg_carries_the_shared_frame_the_client_holds() {
+    let (k, base) = mounted_composer();
+    k.apply_server_response_since(&host_answer("random"), &HashSet::new(), base.as_ref()).unwrap();
+    let again = k.dispatch_mount(&[seed("Thread")], None, Value::Null).unwrap();
+    let carried = again.stateful_legs[0].leg.entity_by_trait.clone().expect("the leg carries the client's frame");
+    assert_eq!(serde_json::to_value(&carried["Thread"]).unwrap()["activeChannel"], json!("random"));
+}
+
+#[test]
+fn control_a_first_mount_leg_carries_the_default_the_seed_ran_from() {
+    let k = EmbeddedKernel::new(composer_schema(), "c1").unwrap();
+    let fresh = k.dispatch_mount(&[seed("Thread")], None, Value::Null).unwrap();
+    let carried = fresh.stateful_legs[0].leg.entity_by_trait.clone().expect("a frame");
+    assert_eq!(serde_json::to_value(&carried["Thread"]).unwrap()["activeChannel"], json!(""));
+}
+
+#[test]
+fn a_reseed_leg_carries_the_state_and_frame_the_client_holds_for_each_seed() {
+    let (k, base) = mounted_composer();
+    k.apply_server_response_since(&host_answer("random"), &HashSet::new(), base.as_ref()).unwrap();
+    let leg = k.reseed_leg(&[seed("Thread")], None);
+    assert!(leg.mount.as_ref().is_some_and(|m| m.len() == 1));
+    assert!(leg.traits.as_ref().is_some_and(|t| t.iter().any(|f| f.r#trait == "Thread" && f.from == "idle")));
+    let carried = leg.entity_by_trait.expect("the client's frame");
+    assert_eq!(serde_json::to_value(&carried["Thread"]).unwrap()["activeChannel"], json!("random"));
+}
+
+#[test]
+fn control_a_reseed_leg_leaves_out_a_trait_the_client_holds_no_frame_for() {
+    let k = EmbeddedKernel::new(composer_schema(), "c1").unwrap();
+    let leg = k.reseed_leg(&[seed("Thread")], None);
+    assert!(leg.entity_by_trait.as_ref().is_none_or(|rows| !rows.contains_key("Thread")), "{:?}", leg.entity_by_trait);
+}

@@ -61,7 +61,7 @@ fn a_trait_drives_its_own_loop_to_completion_in_one_dispatch() {
     let e = emitted(&k);
     assert!(e.contains(&"DONE".to_string()), "{e:?}");
     assert_eq!(
-        k.get_state("Counter", Some("singleton"))
+        k.get_state("Counter", None)
             .unwrap()
             .current_state,
         "idle"

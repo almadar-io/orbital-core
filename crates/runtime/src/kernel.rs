@@ -12,7 +12,7 @@ use super::http_request;
 use super::listener::{ListenerManager, TriggerCallback};
 use super::process_result::{
     DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo,
-    written_fields, ProcessEventResult, RuntimeStats,
+    null_payload, store_row_id, ProcessEventResult, RuntimeStats, RUNTIME_SINGLETON,
 };
 use super::render_store::RenderStore;
 use super::resumable::{CallRoutes, CallSite, CallVerdict, IoPort, AWAITING_HOST};
@@ -268,6 +268,8 @@ pub struct RuntimeKernel {
     /// dispatch made it (EXEC-DIST-9). A thread with none is in the program session.
     session_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
     scratch_sessions: std::sync::atomic::AtomicU64,
+    /// Sessions whose states and frames were freed (EXEC-DIST-9); a request but a mount to one is refused. Never pruned.
+    ended_sessions: Arc<RwLock<HashSet<String>>>,
     /// The host runs an emit's listeners whenever it marks the emit `dispatched`, so a fold runs only the client-only ones.
     host_fans_out: std::sync::atomic::AtomicBool,
     /// Record each step's `@entity` after its effects ([`DeliveryEntry::entity_after`]); off unless a verifier asks.
@@ -353,6 +355,8 @@ pub struct RuntimeKernel {
     prob_entropy: EntropySource,
     /// The one dispatch lane (EXEC-CONC-1): a dispatch holds it from entry to commit.
     lane: Arc<lane::DispatchLane>,
+    /// Keys of the keyed calls whose asking dispatch is parked without the lane (EXEC-CONC-0/1).
+    pub(crate) keyed_parks: Arc<lane::KeyedParks>,
 }
 
 impl std::fmt::Debug for RuntimeKernel {
@@ -808,9 +812,11 @@ impl EntitySourceHandler {
             Some(page) => page,
             None => {
                 let mut entities = match id {
-                    Some(id) => match self.source.read(entity_type, id) {
-                        Ok(v) if !v.is_null() => vec![(*v).clone()],
-                        _ => Vec::new(),
+                    Some(id) => match self.source.find(entity_type, id) {
+                        Ok(Some(v)) if !v.is_null() => vec![(*v).clone()],
+                        Ok(_) => Vec::new(),
+                        Err(_) if self.io.suspended() => Vec::new(),
+                        Err(failure) => return Err(failure),
                     },
                     None => self
                         .source
@@ -1079,14 +1085,23 @@ impl Drop for SessionGuard {
             };
         }
         if let Some((frames, carried, states, session)) = self.scratch.take() {
-            let suffix = session_suffix(&session);
-            frames.write().retain(|(_, eid), _| !eid.ends_with(&suffix));
-            carried.write().retain(|(_, eid), _| !eid.ends_with(&suffix));
-            states
-                .write()
-                .retain_instances(|state| !state.entity_id.as_deref().is_some_and(|eid| eid.ends_with(&suffix)));
+            drop_session_instances(&frames, &carried, &states, &session);
         }
     }
+}
+
+fn drop_session_instances(
+    frames: &RwLock<HashMap<(String, String), SharedEntity>>,
+    carried: &RwLock<HashMap<(String, String), String>>,
+    states: &RwLock<StateMachineManager>,
+    session: &str,
+) {
+    let suffix = session_suffix(session);
+    frames.write().retain(|(_, eid), _| !eid.ends_with(&suffix));
+    carried.write().retain(|(_, eid), _| !eid.ends_with(&suffix));
+    states
+        .write()
+        .retain_instances(|state| !state.entity_id.as_deref().is_some_and(|eid| eid.ends_with(&suffix)));
 }
 
 const SESSION_SEPARATOR: char = '\u{1f}';
@@ -1213,7 +1228,9 @@ impl RuntimeKernel {
             viewer_by_thread: Arc::default(),
             session_by_thread: Arc::default(),
             scratch_sessions: std::sync::atomic::AtomicU64::new(0),
+            ended_sessions: Arc::default(),
             lane: Arc::default(),
+            keyed_parks: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
             record_entity_after: std::sync::atomic::AtomicBool::new(false),
             dispatch_now: Arc::new(RwLock::new(None)),
@@ -1441,6 +1458,7 @@ impl RuntimeKernel {
                                     .filter_map(|f| f.name.clone())
                                     .collect(),
                                 intrinsic_fields: crate::entity_access::intrinsic_field_names(def),
+                                derived_fields: crate::entity_access::derived_field_exprs(def),
                             },
                         );
                     }
@@ -1874,7 +1892,7 @@ impl RuntimeKernel {
         // row < id` precedence), with `OirEntity::frame_fields()` (the
         // `@intrinsic` fields) as the one allow-list for what belongs in the
         // frame tier on both paths.
-        let entity_id = entity_id.unwrap_or("singleton");
+        let entity_id = entity_id.unwrap_or(RUNTIME_SINGLETON);
         let stamp = self.begin_dispatch();
         let _transition = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, "transition", trait_name = %trait_name, event = %event_name).entered();
 
@@ -1996,8 +2014,8 @@ impl RuntimeKernel {
             // `@entity.<untouched-field>` (tabs `activeTab: @entity.filterKind`, board
             // `current*` card fields, …) reverts to a literal token. The merged value is
             // also what render-ui resolves against below and what the client receives.
-            let written = written_fields(&captured_entity_data);
             let captured_entity_data = SharedEntity::from_value(captured_entity_data);
+            let written = captured_entity_data.clone();
             let effective_entity = entity_data.merged(&captured_entity_data);
 
             // Resolve EVERY binding (@payload.X / @entity.X / @config.X / @state / @user)
@@ -2167,7 +2185,7 @@ impl RuntimeKernel {
                 cascade_cut: None,
                 consumed_emits: Vec::new(),
                 failure: None,
-                written: ValueMap::default(),
+                written: SharedEntity::null(),
                 callsite_payload: None,
             })
         }
@@ -2329,7 +2347,7 @@ impl RuntimeKernel {
         tick_name: &str,
     ) -> Result<ProcessEventResult, KernelError> {
         let _lane = self.lane.enter(turn)?;
-        let entity_id = entity_id.unwrap_or("singleton");
+        let entity_id = entity_id.unwrap_or(RUNTIME_SINGLETON);
         self.process_tick_in_dispatch(trait_name, entity_id, entity_id, tick_name)
             .map_err(Fault::into_kernel)
     }
@@ -2388,7 +2406,7 @@ impl RuntimeKernel {
                     .linked_entity
                     .clone()
                     .unwrap_or_else(|| trait_name.to_string()),
-                payload: Arc::new(Value::Null),
+                payload: null_payload(),
                 entry: None,
                 fired_arm: None,
                 transition_index: None,
@@ -2400,7 +2418,7 @@ impl RuntimeKernel {
                 cascade_cut: None,
                 consumed_emits: Vec::new(),
                 failure: None,
-                written: ValueMap::default(),
+                written: SharedEntity::null(),
                 callsite_payload: None,
             });
         }
@@ -2447,7 +2465,7 @@ impl RuntimeKernel {
                     effect_results: Vec::new(),
                     entity_data,
                     linked_entity: entity_type.to_string(),
-                    payload: Arc::new(Value::Null),
+                    payload: null_payload(),
                     entry: None,
                     fired_arm: None,
                     transition_index: None,
@@ -2459,7 +2477,7 @@ impl RuntimeKernel {
                     cascade_cut: None,
                     consumed_emits: Vec::new(),
                     failure: None,
-                    written: ValueMap::default(),
+                    written: SharedEntity::null(),
                     callsite_payload: None,
                 });
             }
@@ -2474,8 +2492,8 @@ impl RuntimeKernel {
         // Persist the MERGED entity (read-modify-write), not the partial — same
         // reasoning as process_event: a replace-write of only the tick's Set fields
         // would drop every untouched field on the next render.
-        let written = written_fields(&captured_entity_data);
         let captured_entity_data = SharedEntity::from_value(captured_entity_data);
+        let written = captured_entity_data.clone();
         let effective_entity = entity_data.merged(&captured_entity_data);
 
         ctx.set_entity_shared(effective_entity.clone());
@@ -2505,7 +2523,7 @@ impl RuntimeKernel {
             effect_results,
             entity_data: effective_entity,
             linked_entity: entity_type.to_string(),
-            payload: Arc::new(Value::Null),
+            payload: null_payload(),
             entry: None,
             fired_arm: None,
             transition_index: None,
@@ -2553,7 +2571,7 @@ impl RuntimeKernel {
         client_id: Option<&str>,
     ) -> Result<ClientDispatch, KernelError> {
         let lane = self.lane.enter(None)?;
-        let eid = entity_id.unwrap_or("singleton").to_string();
+        let eid = entity_id.unwrap_or(RUNTIME_SINGLETON).to_string();
 
         let trait_def = self
             .trait_definitions
@@ -2981,7 +2999,7 @@ impl RuntimeKernel {
         client_id: Option<&str>,
     ) -> Result<TickDispatch, KernelError> {
         let lane = self.lane.enter(None)?;
-        let eid = entity_id.unwrap_or("singleton").to_string();
+        let eid = entity_id.unwrap_or(RUNTIME_SINGLETON).to_string();
         let trait_def = self
             .trait_definitions
             .read()
@@ -3184,10 +3202,10 @@ impl RuntimeKernel {
 
     /// The key a trait instance's state is held under: its frame's session-folded entity id (the one fold, so state and
     /// frames cannot drift apart). `None` stays `None` in the program session.
-    fn state_key(&self, entity_id: Option<&str>) -> Option<String> {
+    fn state_key<'a>(&self, entity_id: Option<&'a str>) -> Option<std::borrow::Cow<'a, str>> {
         match self.thread_session() {
-            None => entity_id.map(str::to_string),
-            Some(_) => Some(self.session_eid(entity_id.unwrap_or("singleton"))),
+            None => entity_id.map(std::borrow::Cow::Borrowed),
+            Some(_) => Some(std::borrow::Cow::Owned(self.session_eid(entity_id.unwrap_or(RUNTIME_SINGLETON)))),
         }
     }
 
@@ -3227,7 +3245,7 @@ impl RuntimeKernel {
         let row_id = self.carried_rows.read().get(&slot).cloned();
         let row = self
             .entity_source
-            .read(entity_type, row_id.as_deref().unwrap_or(entity_id))
+            .read(entity_type, row_id.as_deref().unwrap_or(store_row_id(entity_id)))
             .ok()
             .map(|row| SharedEntity::from_value_ref(&row))
             .unwrap_or_default();
@@ -3284,7 +3302,7 @@ impl RuntimeKernel {
     /// dropped before the next is taken), so they trivially satisfy the order
     /// and can never deadlock against a concurrent `dispatch`/`process_event`.
     pub fn snapshot_trait(&self, trait_name: &str, entity_id: Option<&str>) -> TraitSnapshot {
-        let eid = entity_id.unwrap_or("singleton");
+        let eid = entity_id.unwrap_or(RUNTIME_SINGLETON);
         let state_key = self.state_key(Some(eid));
         let state = self
             .state_manager
@@ -3325,7 +3343,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         snapshot: TraitSnapshot,
     ) {
-        let eid = entity_id.unwrap_or("singleton");
+        let eid = entity_id.unwrap_or(RUNTIME_SINGLETON);
         if !snapshot.state.is_empty() {
             let mut state_manager = self.state_manager.write();
             let state_key = self.state_key(Some(eid));
@@ -3450,8 +3468,8 @@ impl RuntimeKernel {
                     .as_object()
                     .and_then(|o| o.get("id"))
                     .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| "singleton".to_string());
+                    .map(|id| if id == "singleton" { RUNTIME_SINGLETON.to_string() } else { id.to_string() })
+                    .unwrap_or_else(|| RUNTIME_SINGLETON.to_string());
                 self.write_trait_frame(
                     trait_name,
                     &entity_type,
@@ -3479,7 +3497,7 @@ impl RuntimeKernel {
                 let entity_id = self.state_key(Some(
                     trait_entity_ids
                         .get(trait_name)
-                        .map_or("singleton", String::as_str),
+                        .map_or(RUNTIME_SINGLETON, String::as_str),
                 ));
                 if state_manager
                     .get_or_create_state(trait_name, entity_id.as_deref())
@@ -3505,7 +3523,7 @@ impl RuntimeKernel {
             if !host_ran
                 && self.trait_handles(
                     &source_trait,
-                    &self.current_state_name(&source_trait, Some("singleton")),
+                    &self.current_state_name(&source_trait, Some(RUNTIME_SINGLETON)),
                     &ev.event,
                 )
             {
@@ -3550,7 +3568,7 @@ impl RuntimeKernel {
         // `dispatch`'s own single-`eid`-per-call model) — cascaded processing uses
         // the same id-less convention `process_event` already falls back to.
         self.run_cascade(
-            "singleton",
+            RUNTIME_SINGLETON,
             fanned.into(),
             &mut visited,
             already_delivered,
@@ -3670,9 +3688,9 @@ impl RuntimeKernel {
         CascadeItem {
             trait_name: child,
             event: String::new(),
-            payload: Arc::new(Value::Null),
-            delivery: Arc::new(Value::Null),
-            source_payload: Arc::new(Value::Null),
+            payload: null_payload(),
+            delivery: null_payload(),
+            source_payload: null_payload(),
             listen_guard: None,
             fans_out: false,
             repaint: Some(job),
@@ -3818,7 +3836,7 @@ impl RuntimeKernel {
             }
         };
         if whole_frames {
-            let eid = self.session_eid(entity_id.unwrap_or("singleton"));
+            let eid = self.session_eid(entity_id.unwrap_or(RUNTIME_SINGLETON));
             let frames = self.frames.read();
             for ((key, frame_eid), frame) in frames.iter() {
                 let Some(frame_fields) = frame.fields().filter(|f| !f.is_empty()) else {
@@ -3840,13 +3858,13 @@ impl RuntimeKernel {
             let mut written: orbital_core_base::collections::IndexMap<String, (ValueMap, Option<Value>)> =
                 Default::default();
             for (trait_name, outcome) in outcomes {
-                if !outcome.executed || outcome.written.is_empty() {
+                if !outcome.executed || outcome.written_values().next().is_none() {
                     continue;
                 }
                 let (fields, id) = written
                     .entry(self.trait_frame_key(trait_name))
                     .or_default();
-                fields.extend(outcome.written.iter().map(|(k, v)| (k.clone(), v.clone())));
+                fields.extend(outcome.written_values().map(|(k, v)| (k.clone(), v.clone())));
                 if id.is_none() {
                     *id = outcome.entity_data.get("id").filter(|id| !id.is_null()).cloned();
                 }
@@ -4781,7 +4799,7 @@ impl RuntimeKernel {
             .step_frame
             .read()
             .clone()
-            .unwrap_or_else(|| "singleton".to_string());
+            .unwrap_or_else(|| RUNTIME_SINGLETON.to_string());
         let orbital = self.emit_source(&trait_name).orbital;
         let routes = emit.map_or_else(CallRoutes::default, |e| CallRoutes {
             success: e.success.clone(),
@@ -6020,7 +6038,7 @@ impl RuntimeKernel {
     }
 
     pub fn get_state(&self, trait_name: &str, entity_id: Option<&str>) -> Option<TraitState> {
-        let state_key = self.state_key(Some(entity_id.unwrap_or("singleton")));
+        let state_key = self.state_key(Some(entity_id.unwrap_or(RUNTIME_SINGLETON)));
         self.state_manager
             .read()
             .get_state(trait_name, state_key.as_deref())
@@ -6036,7 +6054,7 @@ impl RuntimeKernel {
         entity_by_trait: Option<&ValueMap>,
         entity_id: Option<&str>,
     ) {
-        let eid = entity_id.unwrap_or("singleton");
+        let eid = entity_id.unwrap_or(RUNTIME_SINGLETON);
         for carried in traits {
             if !self.trait_definitions.read().contains_key(&carried.r#trait) {
                 continue;
@@ -6094,7 +6112,7 @@ impl RuntimeKernel {
 
     /// Reset a trait instance to its initial state.
     pub fn reset_state(&self, trait_name: &str, entity_id: Option<&str>) {
-        let state_key = self.state_key(Some(entity_id.unwrap_or("singleton")));
+        let state_key = self.state_key(Some(entity_id.unwrap_or(RUNTIME_SINGLETON)));
         let _ = self
             .state_manager
             .write()
@@ -6165,6 +6183,23 @@ impl RuntimeKernel {
             .read()
             .get(&orbital_core_base::sync::current_thread())
             .cloned()
+    }
+
+    /// Free `session`'s trait states and frames and mark it ended (EXEC-DIST-9): a request but a mount to it is refused
+    /// until a mount revives it.
+    pub fn free_session(&self, session: &str) {
+        drop_session_instances(&self.frames, &self.carried_rows, &self.state_manager, session);
+        self.ended_sessions.write().insert(session.to_string());
+    }
+
+    /// Whether `session` was freed and not revived since.
+    pub fn session_ended(&self, session: &str) -> bool {
+        self.ended_sessions.read().contains(session)
+    }
+
+    /// Open an ended `session` again: a mount that carries the client's own copy rebuilds it.
+    pub fn revive_session(&self, session: &str) {
+        self.ended_sessions.write().remove(session);
     }
 
     /// The sessions that hold a frame now, the program session excluded.
@@ -6606,6 +6641,12 @@ impl RuntimeKernel {
     }
 
     /// Access the config.
+    /// Block until no dispatch parked without the lane is waiting on the keyed call `key`: a completion for `key`
+    /// runs only after the dispatch that asked it has ended (EXEC-CONC-1).
+    pub fn wait_for_parked_key(&self, key: &str) {
+        self.keyed_parks.wait_settled(key);
+    }
+
     pub fn config(&self) -> &KernelConfig {
         &self.config
     }
@@ -8789,7 +8830,7 @@ mod client_dispatch_tests {
         kernel.dispatch("Move", None, "INIT", Value::Null).unwrap();
         assert_eq!(
             kernel
-                .get_state("Move", Some("singleton"))
+                .get_state("Move", None)
                 .unwrap()
                 .current_state,
             "idle"
@@ -8817,7 +8858,7 @@ mod client_dispatch_tests {
 
         assert_eq!(
             kernel
-                .get_state("Move", Some("singleton"))
+                .get_state("Move", None)
                 .unwrap()
                 .current_state,
             "moved"
@@ -8831,7 +8872,7 @@ mod client_dispatch_tests {
         kernel.restore_trait("Move", None, snapshot);
         assert_eq!(
             kernel
-                .get_state("Move", Some("singleton"))
+                .get_state("Move", None)
                 .unwrap()
                 .current_state,
             "idle"
@@ -9251,7 +9292,7 @@ mod client_dispatch_tests {
         );
         assert_eq!(
             kernel
-                .get_state("Listener", Some("singleton"))
+                .get_state("Listener", None)
                 .unwrap()
                 .current_state,
             "ponged"
@@ -9309,7 +9350,7 @@ mod client_dispatch_tests {
         let snapshot = dispatch.snapshot.expect("RuntimeOptimistic snapshot");
         assert_eq!(
             kernel
-                .get_state("Move", Some("singleton"))
+                .get_state("Move", None)
                 .unwrap()
                 .current_state,
             "moved"
@@ -9321,7 +9362,7 @@ mod client_dispatch_tests {
 
         assert_eq!(
             kernel
-                .get_state("Move", Some("singleton"))
+                .get_state("Move", None)
                 .unwrap()
                 .current_state,
             "idle"
@@ -9355,7 +9396,7 @@ mod client_dispatch_tests {
             cascade_cut: None,
             consumed_emits: Vec::new(),
             failure: None,
-            written: ValueMap::default(),
+            written: SharedEntity::null(),
             callsite_payload: None,
         };
         result.previous_state = "idle".to_string();
@@ -9931,7 +9972,7 @@ mod mount_lifecycle_tests {
     fn body_state(kernel: &RuntimeKernel) -> String {
         // No row yet = never touched = its initial state.
         kernel
-            .get_state("Body", Some("singleton"))
+            .get_state("Body", None)
             .map_or_else(|| "idle".to_string(), |s| s.current_state)
     }
 
@@ -10137,7 +10178,7 @@ mod host_entity_tests {
     }
 
     fn mode(kernel: &RuntimeKernel) -> DispatchMode {
-        kernel.trait_snapshot(Some("singleton"))["Pure"].1
+        kernel.trait_snapshot(None)["Pure"].1
     }
 
     #[test]

@@ -294,20 +294,30 @@ mod agent_ports {
         (snapshot.state, norm(entity["got"].clone()))
     }
 
+    // A binding whose root the kernel has not populated stays unresolved, and the call fails as it does on the JS path. A
+    // missing field of a held root reads null (resolve_value, 2026-10-25), so the call is judged by its own argument check.
     #[test]
     fn an_unresolved_binding_fails_the_call_as_it_does_on_the_js_path() {
         let fixture: Json = serde_json::from_str(VECTORS).unwrap();
-        for (op, args) in [
-            ("persist/read-named", json!(["@entity.unset"])),
-            ("program/dispatch", json!(["@payload.address", {}])),
-            ("program/inputs", json!([{ "select": [{ "event": "@payload.event" }] }])),
+        for (op, args, error) in [
+            ("persist/read-named", json!(["@entity.unset"]), "persist/read-named: arguments must be JSON data"),
+            (
+                "program/dispatch",
+                json!(["@payload.address", {}]),
+                "program/dispatch: the address must be text",
+            ),
+            (
+                "program/inputs",
+                json!([{ "select": [{ "event": "@payload.event" }] }]),
+                "program/inputs: select must be a list of { event, payload? }",
+            ),
         ] {
             let mut effect = vec![json!(op)];
             effect.extend(args.as_array().unwrap().iter().cloned());
             effect.push(options());
             let (state, got) = run_effect(&fixture, Json::Array(effect), json!({}));
             assert_eq!(state, "failed", "{op}");
-            assert_eq!(got, json!({ "error": format!("{op}: arguments must be JSON data") }), "{op}");
+            assert_eq!(got, json!({ "error": error }), "{op}");
         }
     }
 

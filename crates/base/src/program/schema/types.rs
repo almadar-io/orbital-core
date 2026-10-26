@@ -2539,6 +2539,12 @@ pub struct FieldDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intrinsic: Option<bool>,
 
+    /// `@derived <expr>`: a stored computed field. The kernel evaluates the expression on every write (create,
+    /// update, upsert, batch) after the row's own fields are set and before policies and invariants check, with
+    /// `@entity` bound to the row; the store keeps the value like any field. Never written by `set` or `persist`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived: Option<SExpression>,
+
     /// Human/semantic description — authored in `.lolo` as a trailing
     /// `@description "..."` annotation. Authoring/build-time metadata that flows
     /// to the factory-signature catalog, embeddings, and the curation field
@@ -5005,6 +5011,18 @@ mod tests {
         assert_eq!(elem.field_type, super::FieldType::Relation);
         assert_eq!(elem.relation.as_ref().unwrap().entity, "Order");
         assert_eq!(def.properties.as_ref().unwrap()["cursor"].field_type, super::FieldType::String);
+    }
+
+    #[test]
+    fn a_field_derived_expression_round_trips_and_skips_when_absent() {
+        use serde_json::json;
+        let field = json!({ "name": "emailKey", "type": "string", "derived": ["str/lower", ["object/get", "@entity", "email"]] });
+        let f: super::FieldDefinition = serde_json::from_value(field.clone()).unwrap();
+        assert!(f.derived.is_some());
+        assert_eq!(serde_json::to_value(&f).unwrap()["derived"], field["derived"]);
+        let plain: super::FieldDefinition = serde_json::from_value(json!({ "name": "email", "type": "string" })).unwrap();
+        assert!(plain.derived.is_none());
+        assert!(serde_json::to_value(&plain).unwrap().get("derived").is_none(), "control: absent stays absent");
     }
 
     #[test]

@@ -488,6 +488,29 @@ fn parked(kernel: &RuntimeKernel, event: &str) -> (orbital_core_runtime::resumab
     }
 }
 
+/// `ASK_KEYED`, its row asks answered by `store`, parked on its keyed call-service with the lane free (EXEC-CONC-0).
+fn parked_on_keyed_call(
+    kernel: &RuntimeKernel,
+    store: &Arc<dyn EntitySource>,
+) -> (orbital_core_runtime::resumable::DispatchContinuation, Vec<orbital_core_runtime::resumable::PendingRequest>) {
+    use orbital_core_runtime::resumable::{BlockingHost, IoReply, IoRequest, Progress};
+    let (mut continuation, mut requests) = parked(kernel, "ASK_KEYED");
+    while !requests.iter().any(|p| matches!(p.request, IoRequest::CallService { .. })) {
+        let replies = requests
+            .iter()
+            .map(|p| IoReply {
+                id: p.id,
+                answer: BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(&p.request),
+            })
+            .collect();
+        match kernel.resume(continuation, replies).unwrap() {
+            Progress::Await { continuation: c, requests: r } => (continuation, requests) = (c, r),
+            Progress::Done(_) => panic!("ASK_KEYED finished before its keyed ask"),
+        }
+    }
+    (continuation, requests)
+}
+
 const NOT_YET: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[test]
@@ -565,7 +588,9 @@ fn a_keyed_asks_completion_runs_as_its_own_dispatch_after_the_asking_dispatch_co
     let gate = Gate::new();
     let (kernel, store) = lane_kernel();
     let (sink, seen) = completion_sink(&kernel, &store, &gate);
-    let asking = parked(&kernel, "ASK_KEYED");
+    // A completion exists only once its key is deferred: the host registers the key before it answers (DispatchScope),
+    // so it arrives with the keyed ask outstanding, never while the asker is still on an earlier row ask.
+    let asking = parked_on_keyed_call(&kernel, &store);
     let completion = std::thread::spawn({
         let sink = sink.clone();
         move || sink.complete(&counter_site(), "k1", Ok(Value::Null))

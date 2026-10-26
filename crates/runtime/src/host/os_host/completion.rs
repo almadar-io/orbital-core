@@ -467,6 +467,15 @@ impl KernelCompletionSink {
         }
     }
 
+    /// Whether a deferred key of `session` is still wanted: a pending ask, an open stream or subscription. `live` is
+    /// the keys of every open call ([`Completions::live_keys`]).
+    pub fn session_pending(&self, session: &str, live: &[String]) -> bool {
+        self.requesters
+            .lock()
+            .iter()
+            .any(|(key, (requester, _))| requester.session.as_deref() == Some(session) && live.contains(key))
+    }
+
     /// The requester of `key`: taken for a finite ask, kept for a stream's later items.
     fn requester_of(&self, key: &str) -> Arc<Requester> {
         let mut requesters = self.requesters.lock();
@@ -489,6 +498,7 @@ impl KernelCompletionSink {
 
     /// Wait for the dispatch that deferred `key` to end, when one is still running.
     fn wait_for_owner(&self, key: &str) {
+        self.kernel.wait_for_parked_key(key);
         let owner = self.owners.lock().get(key).cloned();
         if let Some(owner) = owner {
             let mut over = owner.over.lock();

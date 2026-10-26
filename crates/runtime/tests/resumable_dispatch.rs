@@ -1039,10 +1039,16 @@ fn blocking_responses(setup: &Setup) -> Vec<Json> {
                 Step::Dispatch { trait_name, event } => (*trait_name, *event),
                 Step::Mount(list) => list[0],
             };
-            serde_json::to_value(orbital_core_runtime::effects::response::EventResponse::from_process_results(
-                &outcomes, t, e,
-            ))
-            .unwrap()
+            // A mount carries whole rows (EXEC-DIST-7); every other dispatch carries only what it wrote.
+            let response = match step {
+                Step::Mount(_) => orbital_core_runtime::effects::response::EventResponse::from_process_results_mount(
+                    &outcomes, t, e,
+                ),
+                Step::Dispatch { .. } => orbital_core_runtime::effects::response::EventResponse::from_process_results(
+                    &outcomes, t, e,
+                ),
+            };
+            serde_json::to_value(response).unwrap()
         })
         .collect()
 }

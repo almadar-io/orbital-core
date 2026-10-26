@@ -352,6 +352,7 @@ pub use orbital_core_runtime::listener::ListenerManager;
 pub use orbital_core_runtime::listener::TriggerCallback;
 pub use orbital_core_runtime::program_machine;
 pub use orbital_core_runtime::process_result::ProcessEventResult;
+pub use orbital_core_runtime::process_result::{public_entity_id, RUNTIME_SINGLETON};
 pub use orbital_core_runtime::render_report;
 pub use orbital_core_runtime::server_leg::ServerLegCollector;
 pub use orbital_core_runtime::tick_clock::Calendar;

@@ -115,14 +115,24 @@ fn edge_a_locale_the_program_does_not_declare_is_refused() {
     assert!(err.contains("\"fr\""), "{err}");
 }
 
-// A message the viewer's catalog lacks is a failed call, never a key painted as text (G-ORBITAL-CORE-033).
+// A message the viewer's catalog lacks answers null (`i18n/t` is a failable operator, owner ruling 2026-10-25), never a key
+// painted as text (G-ORBITAL-CORE-033): the slot paints null where the message would be, and the step does not fail.
+fn painted_children(response: &EventResponse) -> Vec<serde_json::Value> {
+    let effect = serde_json::to_value(&response.client_effects.as_ref().unwrap()[0]).unwrap();
+    effect[2]["children"].as_array().unwrap().clone()
+}
+
 #[test]
-fn control_without_installed_messages_the_render_fails_and_paints_nothing() {
+fn control_without_installed_messages_the_message_paints_null_not_the_key() {
     let bare = EmbeddedServer::new(schema()).unwrap();
     let response = init(&bare, Some("ar")).unwrap();
-    assert!(response.client_effects.as_ref().is_none_or(|e| e.is_empty()), "{:?}", response.client_effects);
-    let rejections = serde_json::to_string(&response.rejections).unwrap();
-    assert!(rejections.contains("effect-failed"), "{rejections}");
+    let children = painted_children(&response);
+    assert_eq!(children[0]["content"], serde_json::Value::Null, "{children:?}");
+    assert_eq!(children[1]["content"], serde_json::Value::Null, "{children:?}");
+    assert_eq!(children[2]["content"], "ar", "{children:?}");
+    let page = serde_json::to_string(&children).unwrap();
+    assert!(!page.contains("site:hero.title") && !page.contains("site:posts.count"), "{page}");
+    assert!(response.rejections.as_ref().is_none_or(|r| r.is_empty()), "{:?}", response.rejections);
 }
 
 // The client role paints the same `i18n/t` locally, from the catalogs its host installs (a browser kernel has no
@@ -141,9 +151,11 @@ fn the_client_role_paints_the_catalogs_its_host_installs() {
 }
 
 #[test]
-fn control_a_client_role_without_installed_messages_fails_the_render() {
+fn control_a_client_role_without_installed_messages_paints_null_not_the_key() {
     let kernel = orbital_core_runtime::embed::EmbeddedKernel::new(schema(), "c1").unwrap();
     let response = client_init(&kernel);
-    let rejections = serde_json::to_string(&response.rejections).unwrap();
-    assert!(rejections.contains("effect-failed"), "{rejections}");
+    let children = painted_children(&response);
+    assert_eq!(children[0]["content"], serde_json::Value::Null, "{children:?}");
+    assert_eq!(children[1]["content"], serde_json::Value::Null, "{children:?}");
+    assert!(response.rejections.as_ref().is_none_or(|r| r.is_empty()), "{:?}", response.rejections);
 }

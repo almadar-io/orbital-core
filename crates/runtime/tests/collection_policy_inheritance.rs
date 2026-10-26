@@ -34,6 +34,7 @@ fn declared(collection: &str, read: &str) -> EntityAccessPolicies {
         required_create_fields: Vec::new(),
         required_fields: Vec::new(),
         intrinsic_fields: Vec::new(),
+        derived_fields: Vec::new(),
     }
 }
 
@@ -48,6 +49,7 @@ fn undeclared(collection: Option<&str>) -> EntityAccessPolicies {
         required_create_fields: Vec::new(),
         required_fields: Vec::new(),
         intrinsic_fields: Vec::new(),
+        derived_fields: Vec::new(),
     }
 }
 

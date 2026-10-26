@@ -24,7 +24,7 @@ pub mod schema;
 pub mod slots;
 #[path = "program/stamp.rs"]
 pub mod stamp;
-#[path = "program/signature.rs"]
+#[path = "program/signature/mod.rs"]
 pub mod signature;
 
 // wire — the serde JSON boundary every argument and result crosses

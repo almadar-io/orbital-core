@@ -190,7 +190,7 @@ impl RuntimeKernel {
                     row.insert("trait".to_string(), Value::String(trait_name.clone()));
                     row.insert(
                         "entityId".to_string(),
-                        Value::String(entity_id.unwrap_or_else(|| "singleton".to_string())),
+                        Value::String(entity_id.map_or_else(|| "singleton".to_string(), |id| crate::process_result::public_entity_id(&id).to_string())),
                     );
                     row.insert("state".to_string(), Value::String(state));
                     row.insert("entity".to_string(), snapshot.entity);

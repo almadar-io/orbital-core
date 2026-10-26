@@ -2805,6 +2805,7 @@ mod tests {
             merged_from: None,
             projected_from: None,
             record: None,
+            derived: None,
         }
     }
 

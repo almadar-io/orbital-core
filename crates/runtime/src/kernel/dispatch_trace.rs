@@ -83,8 +83,8 @@ pub fn transition_of(
         executed: result.executed,
         fired_arm: result.fired_arm,
         transition_index: result.transition_index,
-        entity_id: result.entity_id.clone(),
-        state_entity_id: result.state_entity_id.clone(),
+        entity_id: crate::process_result::public_entity_id(&result.entity_id).to_string(),
+        state_entity_id: crate::process_result::public_entity_id(&result.state_entity_id).to_string(),
         guards: result.guards.iter().map(|g| format!("{g:?}")).collect(),
         guard_results: result
             .guards

@@ -814,6 +814,8 @@ pub struct DispatchContinuation {
     pub(crate) seeds: Option<std::collections::VecDeque<(String, StoreAsk)>>,
     /// The kernel's dispatch lane, held while this dispatch is parked (EXEC-CONC-1).
     pub(crate) lane: Option<crate::kernel::lane::LaneHold>,
+    /// The keyed calls this dispatch is parked on without the lane: their completions wait for it to end.
+    pub(crate) keyed: Option<crate::kernel::lane::KeyedHold>,
 }
 
 impl DispatchContinuation {

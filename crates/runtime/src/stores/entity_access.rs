@@ -180,6 +180,9 @@ pub struct EntityAccessPolicies {
     pub required_fields: Vec<String>,
     /// Names of this entity's `@intrinsic` fields — the trait's own frame, never a persisted column.
     pub intrinsic_fields: Vec<String>,
+    /// This entity's `@derived` fields as (name, expression), in declaration order: the kernel computes each on
+    /// every write, from the row being written, before the policies and required-column checks.
+    pub derived_fields: Vec<(String, SExpression)>,
 }
 
 impl EntityAccessPolicies {
@@ -397,6 +400,47 @@ pub fn check_mutation_access(
             )))
         }
     }
+}
+
+/// The entity's `@derived` fields as (name, expression), in declaration order.
+pub fn derived_field_exprs(entity: &EntityDefinition) -> Vec<(String, SExpression)> {
+    entity
+        .fields
+        .iter()
+        .filter_map(|f| Some((f.name.clone()?, f.derived.clone()?)))
+        .collect()
+}
+
+/// A `@derived` field whose expression could not be computed: the write fails, nothing is stored as null.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedFailure(pub String);
+
+/// `row` with every `@derived` field computed from it, in declaration order (a later field may read an earlier
+/// one). `@entity` is bound to the row as it stands; a value the caller supplied for a derived field is replaced.
+/// An expression that fails to evaluate is a [`DerivedFailure`] naming the field.
+pub fn apply_derived(
+    derived: &[(String, SExpression)],
+    row: &Value,
+    ctx: &BindingContext,
+    operation: PersistOperation,
+    entity_type: &str,
+) -> Result<Value, DerivedFailure> {
+    if derived.is_empty() {
+        return Ok(row.clone());
+    }
+    let mut fields = row.as_object().cloned().unwrap_or_default();
+    let evaluator = Evaluator::new();
+    for (name, expr) in derived {
+        let mut row_ctx = ctx.clone();
+        row_ctx.set_entity(Value::Object(fields.clone()));
+        let value = evaluator.evaluate(expr, &row_ctx).map_err(|err| {
+            DerivedFailure(format!(
+                "persist {operation:?} {entity_type}: derived field `{name}` could not be computed ({err})"
+            ))
+        })?;
+        fields.insert(name.clone(), value);
+    }
+    Ok(Value::Object(fields))
 }
 
 /// Names of the entity's `@intrinsic` fields.

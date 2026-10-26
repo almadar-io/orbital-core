@@ -759,7 +759,7 @@ impl EventResponse {
         };
         let mut data: HashMap<String, Vec<Value>> = HashMap::new();
         let mut data_refs: HashMap<String, orbital_core_base::row_set::RowSetRef> = HashMap::new();
-        let mut entity_by_trait: orbital_core_base::collections::IndexMap<String, Value> = indexmap::IndexMap::default();
+        let mut entity_by_trait: ValueMap = ValueMap::default();
         let mut client_effects: Vec<ClientEffect> = Vec::new();
         let mut client_effects_by_trait: Vec<ClientEffectByTrait> = Vec::new();
         let mut effect_results: Vec<ServerEffectResult> = Vec::new();
@@ -804,11 +804,13 @@ impl EventResponse {
                     entity_by_trait.insert(trait_name.to_string(), result.entity_data.to_value());
                 }
             } else if result.executed {
-                let row = entity_by_trait
-                    .entry(trait_name.to_string())
-                    .or_insert_with(|| Value::Object(ValueMap::default()));
-                if let Value::Object(fields) = row {
-                    fields.extend(result.written.iter().map(|(k, v)| (k.clone(), v.clone())));
+                if !entity_by_trait.contains_key(trait_name) {
+                    let mut fields = ValueMap::default();
+                    fields.reserve(result.written_values().count() + 1);
+                    entity_by_trait.insert(trait_name.to_string(), Value::Object(fields));
+                }
+                if let Some(Value::Object(fields)) = entity_by_trait.get_mut(trait_name) {
+                    fields.extend(result.written_values().map(|(k, v)| (k.clone(), v.clone())));
                     if let Some(id) = result.entity_data.get("id").filter(|id| !id.is_null()) {
                         fields.insert("id".to_string(), id.clone());
                     }
@@ -892,7 +894,6 @@ impl EventResponse {
         } else {
             Some(data_refs)
         };
-        let entity_by_trait: ValueMap = entity_by_trait.into_iter().collect();
         merged.entity_by_trait = if entity_by_trait.is_empty() {
             None
         } else {
@@ -1261,7 +1262,7 @@ mod tests {
             consumed_emits: Vec::new(),
             failure: None,
             callsite_payload: None,
-            written: ValueMap::default(),
+            written: crate::shared_entity::SharedEntity::null(),
         }
     }
 

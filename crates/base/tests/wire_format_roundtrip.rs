@@ -172,6 +172,7 @@ fn field_definition_unset_options_omit_nulls() {
         synonyms: None,
         projected_from: None,
         record: None,
+        derived: None,
     };
     let json = serde_json::to_string(&field).expect("serialize field");
     assert!(
@@ -202,6 +203,7 @@ fn field_definition_unset_options_omit_nulls() {
         synonyms: None,
         projected_from: None,
         record: None,
+        derived: None,
     };
     let json2 = serde_json::to_string(&field_with_default).expect("serialize populated field");
     assert!(

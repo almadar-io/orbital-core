@@ -13,7 +13,7 @@ use orbital_core_eval::evaluator::Evaluator;
 use orbital_core_base::value::Value;
 use orbital_core_base::events::types::Event;
 use orbital_core_base::events::bus::SharedEventBus;
-use crate::entity_access::{check_mutation_access, missing_required_fields, scope_fetched_rows, EntityAccessTable};
+use crate::entity_access::{apply_derived, check_mutation_access, missing_required_fields, scope_fetched_rows, EntityAccessTable};
 use crate::row_query::{compare_rows, compile_predicate, default_row_order, lower_object_filter, PredicateRole, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome};
 use orbital_core_base::row_set::{nearest_rows, RowDirection, RowNearest, RowOrder, RowPredicate, RowSetRef, RowTotalMode};
 use orbital_core_base::schema::sexpr::SExpression;
@@ -1147,6 +1147,76 @@ impl EffectExecutor {
             required_fields: policies.required_create_fields.clone(),
             declared_required: policies.required_fields.clone(),
             intrinsic: policies.intrinsic_fields.clone(),
+            derived: policies.derived_fields.clone(),
+        }
+    }
+
+    /// `data` with the entity's `@derived` fields computed from the row being written, so the policies, the
+    /// required-column check and the store all see them. A create or upsert computes from the incoming row; an
+    /// update computes from the row as it stands with the patch laid over it and adds the derived values to the
+    /// patch. The row as it stands is the batch's own earlier write when `view` holds one, else the stored row, so
+    /// a create followed by an update in one run recomputes from the created row. An expression that fails is a
+    /// named failure: nothing is written.
+    #[allow(clippy::too_many_arguments)]
+    fn with_derived(
+        &self,
+        persistence: &dyn PersistenceHandler,
+        operation: PersistOperation,
+        entity_type: &str,
+        data: Value,
+        id: Option<&str>,
+        scope: &PersistScope,
+        ctx: &BindingContext,
+        view: &mut RunRows,
+    ) -> Result<Value, DerivedFault> {
+        if scope.derived.is_empty() {
+            return Ok(data);
+        }
+        match operation {
+            PersistOperation::Create | PersistOperation::Upsert => {
+                let computed = apply_derived(&scope.derived, &data, ctx, operation, entity_type)
+                    .map_err(|f| DerivedFault::Failed(f.0))?;
+                if let Some(row_id) = Self::row_id_of(&computed) {
+                    view.insert((entity_type.to_string(), row_id.to_string()), Some(computed.clone()));
+                }
+                Ok(computed)
+            }
+            PersistOperation::Update => {
+                let Ok(entity_id) = self.resolve_update_id(id, &data, ctx) else {
+                    return Ok(data);
+                };
+                let key = (entity_type.to_string(), entity_id);
+                let existing = match view.get(&key) {
+                    Some(row) => row.clone(),
+                    None => persistence.find(entity_type, &key.1).map_err(DerivedFault::Store)?,
+                };
+                let Some(existing) = existing else {
+                    return Ok(data);
+                };
+                let mut merged = existing.as_object().cloned().unwrap_or_default();
+                for (field, value) in data.as_object().cloned().unwrap_or_default() {
+                    merged.insert(field, value);
+                }
+                let computed = apply_derived(&scope.derived, &Value::Object(merged), ctx, operation, entity_type)
+                    .map_err(|f| DerivedFault::Failed(f.0))?;
+                let mut patch = data.as_object().cloned().unwrap_or_default();
+                for (name, _) in &scope.derived {
+                    if let Some(value) = computed.as_object().and_then(|o| o.get(name)) {
+                        patch.insert(name.clone(), value.clone());
+                    }
+                }
+                view.insert(key, Some(computed));
+                Ok(Value::Object(patch))
+            }
+            PersistOperation::Delete => {
+                if let Ok(entity_id) = self.resolve_id(id, ctx) {
+                    if !entity_id.is_empty() {
+                        view.insert((entity_type.to_string(), entity_id), None);
+                    }
+                }
+                Ok(data)
+            }
+            PersistOperation::Read => Ok(data),
         }
     }
 
@@ -1445,6 +1515,26 @@ impl EffectExecutor {
         if let Some(persistence) = &self.persistence {
             let scope = self.persist_scope(entity_type, operation);
             let data = Self::without_intrinsic(resolved_data, &scope.intrinsic);
+            let data = match self.with_derived(
+                persistence.as_ref(),
+                operation,
+                entity_type,
+                data,
+                id,
+                &scope,
+                ctx,
+                &mut RunRows::new(),
+            ) {
+                Ok(data) => data,
+                Err(DerivedFault::Failed(message)) => {
+                    error!(entity_type = entity_type, error = %message, "Persist effect failed");
+                    return EffectResult::failed(effect, &message).with_code(ServerEffectCode::DerivedFailed);
+                }
+                Err(DerivedFault::Store(message)) => {
+                    error!(entity_type = entity_type, error = %message, "Persist effect failed");
+                    return EffectResult::failed(effect, &message);
+                }
+            };
             let resolved_data = &data;
             let policy = scope.policy.as_ref();
 
@@ -1598,6 +1688,7 @@ impl EffectExecutor {
         id: Option<&str>,
         ctx: &BindingContext,
         effect: Effect,
+        view: &mut RunRows,
     ) -> PersistPrep {
         if self.persistence.is_none() {
             return PersistPrep::Legacy;
@@ -1610,6 +1701,16 @@ impl EffectExecutor {
                 Some(code) => failed.with_code(code),
                 None => failed,
             }))
+        };
+        let data = match self.persistence.as_ref().map(|persistence| {
+            self.with_derived(persistence.as_ref(), operation, entity_type, data, id, &scope, ctx, view)
+        }) {
+            Some(Ok(data)) => data,
+            Some(Err(DerivedFault::Failed(message))) => {
+                return refuse(effect, message, Some(ServerEffectCode::DerivedFailed))
+            }
+            Some(Err(DerivedFault::Store(message))) => return refuse(effect, message, None),
+            None => return PersistPrep::Legacy,
         };
         let (op, row_id, guard) = match operation {
             PersistOperation::Read => return PersistPrep::Legacy,
@@ -1733,6 +1834,7 @@ impl EffectExecutor {
         }
         let mut out: Vec<Option<EffectResult>> = vec![None; effects.len()];
         let mut pending: Vec<(usize, PreparedWrite)> = Vec::new();
+        let mut run_rows = RunRows::new();
         for (k, effect) in effects.iter().enumerate() {
             let Effect::Persist {
                 operation,
@@ -1758,6 +1860,7 @@ impl EffectExecutor {
                 id.as_deref(),
                 ctx,
                 result_effect.clone(),
+                &mut run_rows,
             ) {
                 PersistPrep::Push(prepared) => pending.push((k, *prepared)),
                 PersistPrep::Refused(result) => out[k] = Some(*result),
@@ -1946,6 +2049,7 @@ impl EffectExecutor {
 
         let mut prepared: Vec<PreparedWrite> = Vec::with_capacity(total);
         let mut pushable = true;
+        let mut batch_rows = RunRows::new();
         for (k, b) in parsed.iter().enumerate().filter(|_| pushable) {
             match self.prepare_push(
                 b.operation,
@@ -1954,6 +2058,7 @@ impl EffectExecutor {
                 b.row_id.as_deref(),
                 ctx,
                 op_effect(b),
+                &mut batch_rows,
             ) {
                 PersistPrep::Push(p) => prepared.push(*p),
                 PersistPrep::Refused(refused) => {
@@ -2458,6 +2563,16 @@ impl std::fmt::Debug for EffectExecutor {
     }
 }
 
+/// The rows one run of persists has written so far, by (entity type, id); `None` is a row the run deleted. A
+/// `@derived` recompute reads these before the store, so the pushed path sees the run's own earlier writes.
+type RunRows = HashMap<(String, String), Option<Value>>;
+
+/// Why a derived-field step stopped a write: the expression failed (`derived-failed`), or the store read it needed did.
+enum DerivedFault {
+    Failed(String),
+    Store(String),
+}
+
 /// The access directive, required columns and `@intrinsic` fields that govern one persist.
 #[derive(Default)]
 struct PersistScope {
@@ -2465,6 +2580,7 @@ struct PersistScope {
     required_fields: Vec<String>,
     declared_required: Vec<String>,
     intrinsic: Vec<String>,
+    derived: Vec<(String, orbital_core_base::schema::sexpr::SExpression)>,
 }
 
 /// One evaluated persist, ready to be sent to the store as a conditional write.
@@ -3430,6 +3546,316 @@ mod tests {
             arr[0].get_path("id"),
             Some(&Value::String("r1".to_string()))
         );
+    }
+
+    /// `@derived` fields: the kernel computes them on every write path, from the row being written, before the
+    /// policies and the required-column check; an expression that fails fails the write.
+    mod derived_fields {
+        use super::*;
+        use crate::entity_access::EntityAccessPolicies;
+        use crate::entity_source::{EntitySource, InMemoryEntityCache};
+        use orbital_core_base::row_set::RowQuery;
+        use serde_json::json;
+
+        fn v(j: serde_json::Value) -> Value {
+            serde_json::from_value(j).unwrap()
+        }
+
+        fn s(j: serde_json::Value) -> SExpression {
+            serde_json::from_value(j).unwrap()
+        }
+
+        fn lower_email() -> SExpression {
+            s(json!(["str/lower", ["object/get", "@entity", "email"]]))
+        }
+
+        fn executor(
+            derived: Vec<(&str, SExpression)>,
+            create: Option<serde_json::Value>,
+            required: &[&str],
+        ) -> (EffectExecutor, Arc<InMemoryPersistence>) {
+            let persistence = Arc::new(InMemoryPersistence::new());
+            let mut table = EntityAccessTable::new();
+            table.insert(
+                "Person".to_string(),
+                EntityAccessPolicies {
+                    create: create.map(v),
+                    required_create_fields: required.iter().map(|r| r.to_string()).collect(),
+                    derived_fields: derived.into_iter().map(|(n, e)| (n.to_string(), e)).collect(),
+                    ..Default::default()
+                },
+            );
+            let executor = EffectExecutor::server()
+                .with_persistence(persistence.clone())
+                .with_entity_policies(Arc::new(RwLock::new(table)));
+            (executor, persistence)
+        }
+
+        fn persist(operation: PersistOperation, entity: &str, id: Option<&str>, data: serde_json::Value) -> Effect {
+            Effect::Persist {
+                operation,
+                entity_type: entity.to_string(),
+                data: v(data),
+                id: id.map(str::to_string),
+                emit: None,
+                guard: None,
+            }
+        }
+
+        fn stored(persistence: &InMemoryPersistence, id: &str) -> serde_json::Value {
+            serde_json::to_value(persistence.read("Person", id).unwrap()).unwrap()
+        }
+
+        #[test]
+        fn create_computes_the_derived_field_and_an_entity_without_one_stores_nothing_extra() {
+            let (executor, persistence) = executor(vec![("emailKey", lower_email())], None, &[]);
+            let ctx = BindingContext::new();
+            let made = executor.execute(&persist(PersistOperation::Create, "Person", None, json!({ "id": "p1", "email": "A@B.C" })), &ctx);
+            assert!(made.is_executed(), "{made:?}");
+            assert_eq!(stored(&persistence, "p1")["emailKey"], json!("a@b.c"));
+            let plain = executor.execute(&persist(PersistOperation::Create, "Other", None, json!({ "id": "o1", "email": "A@B.C" })), &ctx);
+            assert!(plain.is_executed(), "{plain:?}");
+            assert!(persistence.read("Other", "o1").unwrap().as_object().unwrap().get("emailKey").is_none(), "control: no derived field, none computed");
+        }
+
+        #[test]
+        fn a_value_the_caller_supplies_for_a_derived_field_is_replaced_by_the_computed_one() {
+            let (executor, persistence) = executor(vec![("emailKey", lower_email())], None, &[]);
+            let made = executor.execute(&persist(PersistOperation::Create, "Person", None, json!({ "id": "p1", "email": "A@B.C", "emailKey": "forged" })), &BindingContext::new());
+            assert!(made.is_executed(), "{made:?}");
+            assert_eq!(stored(&persistence, "p1")["emailKey"], json!("a@b.c"));
+        }
+
+        #[test]
+        fn update_recomputes_from_the_stored_row_with_the_patch_laid_over_it() {
+            let (executor, persistence) = executor(vec![("emailKey", lower_email())], None, &[]);
+            let ctx = BindingContext::new();
+            assert!(executor.execute(&persist(PersistOperation::Create, "Person", None, json!({ "id": "p1", "email": "A@B.C", "nick": "a" })), &ctx).is_executed());
+            let changed = executor.execute(&persist(PersistOperation::Update, "Person", Some("p1"), json!({ "email": "New@X.Y" })), &ctx);
+            assert!(changed.is_executed(), "{changed:?}");
+            assert_eq!(stored(&persistence, "p1")["emailKey"], json!("new@x.y"));
+            let other = executor.execute(&persist(PersistOperation::Update, "Person", Some("p1"), json!({ "nick": "z" })), &ctx);
+            assert!(other.is_executed(), "{other:?}");
+            let row = stored(&persistence, "p1");
+            assert_eq!((row["emailKey"].clone(), row["nick"].clone()), (json!("new@x.y"), json!("z")), "a patch that leaves email alone recomputes from the stored email");
+        }
+
+        #[test]
+        fn upsert_computes_on_both_the_create_and_the_replace() {
+            let (executor, persistence) = executor(vec![("emailKey", lower_email())], None, &[]);
+            let ctx = BindingContext::new();
+            assert!(executor.execute(&persist(PersistOperation::Upsert, "Person", None, json!({ "id": "p1", "email": "A@B.C" })), &ctx).is_executed());
+            assert_eq!(stored(&persistence, "p1")["emailKey"], json!("a@b.c"));
+            assert!(executor.execute(&persist(PersistOperation::Upsert, "Person", None, json!({ "id": "p1", "email": "Z@B.C" })), &ctx).is_executed());
+            assert_eq!(stored(&persistence, "p1")["emailKey"], json!("z@b.c"));
+        }
+
+        #[test]
+        fn every_op_of_a_batch_computes_and_a_batch_of_an_entity_without_one_is_unchanged() {
+            let (executor, persistence) = executor(vec![("emailKey", lower_email())], None, &[]);
+            let ctx = BindingContext::new();
+            let batch = Effect::PersistBatch {
+                ops: v(json!([
+                    ["create", "Person", { "id": "b1", "email": "ONE@X.Y" }],
+                    ["create", "Person", { "id": "b2", "email": "TWO@X.Y" }],
+                    ["update", "Person", "b1", { "email": "Uno@X.Y" }]
+                ])),
+                emit: None,
+            };
+            let result = executor.execute(&batch, &ctx);
+            assert!(result.is_executed(), "{result:?}");
+            assert_eq!(stored(&persistence, "b2")["emailKey"], json!("two@x.y"));
+            assert!(stored(&persistence, "b1").get("email").is_some());
+            let plain = Effect::PersistBatch { ops: v(json!([["create", "Other", { "id": "o1", "email": "A@B.C" }]])), emit: None };
+            assert!(executor.execute(&plain, &ctx).is_executed());
+            assert!(persistence.read("Other", "o1").unwrap().as_object().unwrap().get("emailKey").is_none());
+        }
+
+        #[test]
+        fn a_derived_field_may_read_another_field_and_an_earlier_derived_field() {
+            let (executor, persistence) = executor(
+                vec![
+                    ("emailKey", lower_email()),
+                    ("slug", s(json!(["str/concat", ["object/get", "@entity", "emailKey"], "-", ["object/get", "@entity", "nick"]]))),
+                ],
+                None,
+                &[],
+            );
+            let made = executor.execute(&persist(PersistOperation::Create, "Person", None, json!({ "id": "p1", "email": "A@B.C", "nick": "x" })), &BindingContext::new());
+            assert!(made.is_executed(), "{made:?}");
+            assert_eq!(stored(&persistence, "p1")["slug"], json!("a@b.c-x"));
+        }
+
+        #[test]
+        fn the_create_policy_and_the_required_check_see_the_computed_value() {
+            let policy = json!(["=", "@entity.emailKey", "a@b.c"]);
+            let (executor, persistence) = executor(vec![("emailKey", lower_email())], Some(policy), &["emailKey"]);
+            let ctx = BindingContext::new();
+            let allowed = executor.execute(&persist(PersistOperation::Create, "Person", None, json!({ "id": "p1", "email": "A@B.C" })), &ctx);
+            assert!(allowed.is_executed(), "required emailKey is not missing and the policy reads the computed key: {allowed:?}");
+            let denied = executor.execute(&persist(PersistOperation::Create, "Person", None, json!({ "id": "p2", "email": "Other@B.C" })), &ctx);
+            assert!(denied.is_failed());
+            assert_eq!(denied.code, Some(ServerEffectCode::Denied));
+            assert!(persistence.find("Person", "p2").unwrap().is_none(), "control: the denied row was not stored");
+        }
+
+        #[test]
+        fn an_expression_that_fails_fails_the_write_by_name_and_stores_nothing() {
+            let (executor, persistence) = executor(vec![("emailKey", s(json!(["no/such-operator", "@entity.email"])))], None, &[]);
+            let ctx = BindingContext::new();
+            for effect in [
+                persist(PersistOperation::Create, "Person", None, json!({ "id": "p1", "email": "a" })),
+                persist(PersistOperation::Upsert, "Person", None, json!({ "id": "p2", "email": "a" })),
+            ] {
+                let result = executor.execute(&effect, &ctx);
+                assert!(result.is_failed(), "{result:?}");
+                let message = result.error.clone().unwrap_or_default();
+                assert!(message.contains("derived field `emailKey`"), "named error: {message}");
+                assert_eq!(result.code, Some(ServerEffectCode::DerivedFailed), "{message}");
+            }
+            assert!(persistence.find("Person", "p1").unwrap().is_none() && persistence.find("Person", "p2").unwrap().is_none(), "nothing stored, no null");
+            let batch = Effect::PersistBatch { ops: v(json!([["create", "Person", { "id": "p3", "email": "a" }]])), emit: None };
+            let failed = executor.execute(&batch, &ctx);
+            assert!(failed.is_failed(), "{failed:?}");
+            assert_eq!(failed.code, Some(ServerEffectCode::DerivedFailed), "a batch op reports the same code");
+            assert!(persistence.find("Person", "p3").unwrap().is_none());
+        }
+
+        #[test]
+        fn control_a_valid_expression_reports_no_code() {
+            let (executor, _) = executor(vec![("emailKey", lower_email())], None, &[]);
+            let made = executor.execute(&persist(PersistOperation::Create, "Person", None, json!({ "id": "p1", "email": "A@B.C" })), &BindingContext::new());
+            assert!(made.is_executed() && made.code.is_none(), "{made:?}");
+        }
+
+        /// A store that runs conditional batches: the pushed path, where every op is prepared before any lands.
+        struct Pushing(Arc<InMemoryPersistence>);
+
+        impl PersistenceHandler for Pushing {
+            fn create(&self, entity_type: &str, data: &Value) -> Result<Value, String> {
+                self.0.create(entity_type, data)
+            }
+            fn read(&self, entity_type: &str, id: &str) -> Result<Value, String> {
+                self.0.read(entity_type, id)
+            }
+            fn find(&self, entity_type: &str, id: &str) -> Result<Option<Value>, String> {
+                self.0.find(entity_type, id)
+            }
+            fn update(&self, entity_type: &str, id: &str, data: &Value) -> Result<Value, String> {
+                self.0.update(entity_type, id, data)
+            }
+            fn delete(&self, entity_type: &str, id: &str) -> Result<(), String> {
+                self.0.delete(entity_type, id)
+            }
+            fn list(&self, entity_type: &str) -> Result<Vec<Value>, String> {
+                self.0.list(entity_type)
+            }
+            fn write_batch(&self, batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
+                let outcomes = batch
+                    .ops
+                    .iter()
+                    .map(|op| match op {
+                        RowWriteOp::Create { entity_type, data } => match self.0.create(entity_type, data) {
+                            Ok(row) => RowWriteOutcome::Created { row },
+                            Err(message) => RowWriteOutcome::Failed { message },
+                        },
+                        RowWriteOp::Update { entity_type, id, data, .. } => match self.0.update(entity_type, id, data) {
+                            Ok(row) => RowWriteOutcome::Updated { row, before: None },
+                            Err(message) => RowWriteOutcome::Failed { message },
+                        },
+                        _ => RowWriteOutcome::Failed { message: "unsupported by this test store".to_string() },
+                    })
+                    .collect();
+                Some(Ok(outcomes))
+            }
+        }
+
+        fn create_then_update_batch() -> Effect {
+            Effect::PersistBatch {
+                ops: v(json!([
+                    ["create", "Person", { "id": "b1", "email": "ONE@X.Y", "nick": "n" }],
+                    ["update", "Person", "b1", { "nick": "m" }],
+                    ["update", "Person", "b1", { "email": "Uno@X.Y" }]
+                ])),
+                emit: None,
+            }
+        }
+
+        fn over(persistence: Arc<dyn PersistenceHandler>) -> EffectExecutor {
+            let mut table = EntityAccessTable::new();
+            table.insert(
+                "Person".to_string(),
+                EntityAccessPolicies { derived_fields: vec![("emailKey".to_string(), lower_email())], ..Default::default() },
+            );
+            EffectExecutor::server().with_persistence(persistence).with_entity_policies(Arc::new(RwLock::new(table)))
+        }
+
+        #[test]
+        fn a_create_then_updates_in_one_pushed_batch_recompute_from_the_batchs_own_rows() {
+            let store = Arc::new(InMemoryPersistence::new());
+            let result = over(Arc::new(Pushing(store.clone()))).execute(&create_then_update_batch(), &BindingContext::new());
+            assert!(result.is_executed(), "{result:?}");
+            let row = stored(&store, "b1");
+            assert_eq!(row["emailKey"], json!("uno@x.y"), "the last update recomputed from the created row with the earlier patches laid over it");
+            assert_eq!(row["nick"], json!("m"));
+        }
+
+        #[test]
+        fn control_the_per_op_path_gives_the_same_rows_as_the_pushed_one() {
+            let pushed = Arc::new(InMemoryPersistence::new());
+            let per_op = Arc::new(InMemoryPersistence::new());
+            let ctx = BindingContext::new();
+            assert!(over(Arc::new(Pushing(pushed.clone()))).execute(&create_then_update_batch(), &ctx).is_executed());
+            assert!(over(per_op.clone()).execute(&create_then_update_batch(), &ctx).is_executed());
+            let (a, b) = (stored(&pushed, "b1"), stored(&per_op, "b1"));
+            assert_eq!((a["emailKey"].clone(), a["nick"].clone(), a["email"].clone()), (b["emailKey"].clone(), b["nick"].clone(), b["email"].clone()));
+        }
+
+        #[test]
+        fn a_run_of_persists_in_one_transition_recomputes_from_its_own_earlier_write() {
+            let store = Arc::new(InMemoryPersistence::new());
+            let effects = vec![
+                persist(PersistOperation::Create, "Person", None, json!({ "id": "r1", "email": "ONE@X.Y" })),
+                persist(PersistOperation::Update, "Person", Some("r1"), json!({ "email": "Two@X.Y" })),
+            ];
+            let results = over(Arc::new(Pushing(store.clone()))).execute_persist_run(&effects, &BindingContext::new());
+            assert!(results.iter().all(|r| !r.is_failed()), "{results:?}");
+            assert_eq!(stored(&store, "r1")["emailKey"], json!("two@x.y"));
+        }
+
+        #[test]
+        fn a_working_expression_beside_the_failing_one_still_writes_control() {
+            let (executor, persistence) = executor(vec![("emailKey", lower_email())], None, &[]);
+            let made = executor.execute(&persist(PersistOperation::Create, "Person", None, json!({ "id": "p1", "email": "A@B.C" })), &BindingContext::new());
+            assert!(made.is_executed() && persistence.read("Person", "p1").is_ok());
+        }
+
+        #[test]
+        fn an_index_on_a_derived_field_answers_a_covered_query_from_the_stored_values() {
+            let (executor, persistence) = executor(vec![("emailKey", lower_email())], None, &[]);
+            let ctx = BindingContext::new();
+            for (id, email) in [("p1", "A@B.C"), ("p2", "x@y.z"), ("p3", "a@B.c"), ("p4", "q@y.z")] {
+                assert!(executor.execute(&persist(PersistOperation::Create, "Person", None, json!({ "id": id, "email": email })), &ctx).is_executed());
+            }
+            let indexed = InMemoryEntityCache::new();
+            let plain = InMemoryEntityCache::new();
+            indexed.declare_indexes(
+                "Person",
+                &[orbital_core_base::schema::types::EntityIndex { fields: vec!["emailKey".to_string()], order_by: None }],
+            );
+            for id in ["p1", "p2", "p3", "p4"] {
+                let row = persistence.read("Person", id).unwrap();
+                indexed.write("Person", id, &row).unwrap();
+                plain.write("Person", id, &row).unwrap();
+            }
+            let query: RowQuery = serde_json::from_value(json!({ "filter": { "kind": "compare", "field": "emailKey", "op": "==", "value": "a@b.c" } })).unwrap();
+            let want = plain.query_page("Person", &query).unwrap_rows();
+            assert_eq!(plain.rows_visited(), 4, "an undeclared cache scans every row");
+            let got = indexed.query_page("Person", &query).unwrap_rows();
+            assert_eq!(got, want);
+            assert_eq!(want.rows.len(), 2, "the two spellings of one address share the computed key");
+            assert_eq!(indexed.rows_visited(), 2, "the index on the derived field named the two candidates");
+        }
     }
 
     mod in_memory_read_access {
