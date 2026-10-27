@@ -60,7 +60,7 @@ fn server() -> KernelBridge {
     server.seed(
         "Ticket",
         vec![row("t1", "u1"), row("t2", "u2"), row("t3", "u1")],
-    );
+    ).unwrap();
     server.set_current_user(serde_json::from_value(json!({ "id": "u1" })).unwrap());
     server
 }

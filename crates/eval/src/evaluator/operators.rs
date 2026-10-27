@@ -580,8 +580,8 @@ fn eval_checked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
     let slot = arg_types::argument_slot(expr);
     let value = eval_unchecked(expr, ctx)?;
     if let Some(index) = slot {
-        match arg_types::typed_declaration(expr)? {
-            Some(declared) => arg_types::check_declared_argument(index, &declared)?,
+        match arg_types::typed_shape(expr)? {
+            Some(declared) => arg_types::check_declared_argument(index, &declared.ty)?,
             None => arg_types::check_argument(index, &value)?,
         }
     }

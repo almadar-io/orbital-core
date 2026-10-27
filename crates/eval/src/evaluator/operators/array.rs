@@ -42,30 +42,68 @@ fn numbers_of(
         .collect())
 }
 
-/// Run a higher-order operator's callback on one element. `values` are bound to a
-/// `(fn …)`'s params in order, and `@item`/`@index` are bound for the legacy raw-body
-/// form. The one way every lambda-taking operator applies its callback (twin of
-/// almadar-evaluator's `evalWithItem`/`evalLambda`).
-pub fn apply_callback(
-    callable: &SExpression,
-    values: Vec<Value>,
-    ctx: &BindingContext,
-) -> EvalResult {
-    let values: Vec<Arc<Value>> = values.into_iter().map(Arc::new).collect();
-    let mut child = ctx.child();
-    if let Some(item) = values.first() {
-        child.set_local_shared("item", Arc::clone(item));
-    }
-    if let Some(index) = values.get(1) {
-        child.set_local_shared("index", Arc::clone(index));
-    }
-    if let Ok(Value::Lambda { params, body }) = eval_expr(callable, ctx) {
-        for (param, value) in params.iter().zip(&values) {
-            child.set_local_shared(param, Arc::clone(value));
+/// A higher-order operator's callback, read once per call and applied per element: a `(fn …)` literal binds its
+/// params and runs its body where it is written, a value that is a lambda binds its own, and any other expression is
+/// a raw body run with `@item`/`@index` bound. Reading it once spares every element a copy of the body.
+pub enum Callback<'a> {
+    Literal { params: Vec<&'a str>, body: &'a SExpression },
+    Lambda { params: Vec<String>, body: Arc<SExpression> },
+    Raw(&'a SExpression),
+}
+
+impl<'a> Callback<'a> {
+    pub fn of(callable: &'a SExpression, ctx: &BindingContext) -> Self {
+        if let SExpression::Array(items) = callable {
+            if items.len() >= 3 && items[0].as_str() == Some("fn") {
+                let params = match &items[1] {
+                    SExpression::String(name) => Some(vec![name.as_str()]),
+                    SExpression::Array(names) => Some(names.iter().filter_map(SExpression::as_str).collect()),
+                    _ => None,
+                };
+                if let Some(params) = params {
+                    return Callback::Literal { params, body: &items[2] };
+                }
+            }
         }
-        return eval_expr(&body, &child);
+        match eval_expr(callable, ctx) {
+            Ok(Value::Lambda { params, body }) => Callback::Lambda { params, body },
+            _ => Callback::Raw(callable),
+        }
     }
-    eval_expr(callable, &child)
+
+    /// Run the callback on one element. `values` are bound to the params in order, and `@item`/`@index` to the first
+    /// two (twin of almadar-evaluator's `evalWithItem`/`evalLambda`).
+    pub fn apply(&self, values: Vec<Value>, ctx: &BindingContext) -> EvalResult {
+        let values: Vec<Arc<Value>> = values.into_iter().map(Arc::new).collect();
+        let mut child = ctx.child();
+        if let Some(item) = values.first() {
+            child.set_local_shared("item", Arc::clone(item));
+        }
+        if let Some(index) = values.get(1) {
+            child.set_local_shared("index", Arc::clone(index));
+        }
+        match self {
+            Callback::Literal { params, body } => {
+                for (param, value) in params.iter().zip(&values) {
+                    child.set_local_shared(param, Arc::clone(value));
+                }
+                eval_expr(body, &child)
+            }
+            Callback::Lambda { params, body } => {
+                for (param, value) in params.iter().zip(&values) {
+                    child.set_local_shared(param, Arc::clone(value));
+                }
+                eval_expr(body, &child)
+            }
+            Callback::Raw(body) => eval_expr(body, &child),
+        }
+    }
+}
+
+/// Run a higher-order operator's callback on one element, read afresh: an operator that applies it to many elements
+/// reads it once with [`Callback::of`].
+pub fn apply_callback(callable: &SExpression, values: Vec<Value>, ctx: &BindingContext) -> EvalResult {
+    Callback::of(callable, ctx).apply(values, ctx)
 }
 
 // ============================================================================
@@ -113,8 +151,9 @@ impl Operator for CountOp {
         super::with_operand(&args[0], ctx, |val| {
             if let (Value::Array(arr), Some(predicate)) = (val, args.get(1)) {
                 let mut count = 0usize;
+                let callback = Callback::of(predicate, ctx);
                 for (i, item) in arr.iter().enumerate() {
-                    if apply_callback(predicate, vec![item.clone(), Value::Number(i as f64)], ctx)?
+                    if callback.apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
                         .is_truthy()
                     {
                         count += 1;
@@ -224,11 +263,12 @@ impl Operator for MapOp {
         // fn-form and *returned* the Lambda value, so a mapped array came back as
         // `[lambda(N params)]` — the root of every `[lambda(1 params)]` render.
         // `apply_callback` also binds `@item`/`@index`, as the TS evaluator does for a `(fn …)`.
-        if let Ok(Value::Lambda { .. }) = eval_expr(&args[1], ctx) {
+        let callback = Callback::of(&args[1], ctx);
+        if !matches!(callback, Callback::Raw(_)) {
             let results: Result<Vec<Value>, _> = array
                 .into_iter()
                 .enumerate()
-                .map(|(i, item)| apply_callback(&args[1], vec![item, Value::Number(i as f64)], ctx))
+                .map(|(i, item)| callback.apply(vec![item, Value::Number(i as f64)], ctx))
                 .collect();
             return Ok(Value::array(results?));
         }
@@ -311,9 +351,9 @@ impl Operator for FindOp {
 
         let array = require_array!(arr);
 
+        let callback = Callback::of(predicate, ctx);
         for (i, item) in array.into_iter().enumerate() {
-            if apply_callback(predicate, vec![item.clone(), Value::Number(i as f64)], ctx)?.is_truthy()
-            {
+            if callback.apply(vec![item.clone(), Value::Number(i as f64)], ctx)?.is_truthy() {
                 return Ok(item);
             }
         }
@@ -533,8 +573,9 @@ impl Operator for ArrayEveryOp {
 
         let array = require_array!(arr);
 
+        let callback = Callback::of(predicate, ctx);
         for (i, item) in array.into_iter().enumerate() {
-            if !apply_callback(predicate, vec![item, Value::Number(i as f64)], ctx)?.is_truthy() {
+            if !callback.apply(vec![item, Value::Number(i as f64)], ctx)?.is_truthy() {
                 return Ok(Value::Bool(false));
             }
         }
@@ -553,8 +594,9 @@ impl Operator for ArraySomeOp {
 
         let array = require_array!(arr);
 
+        let callback = Callback::of(predicate, ctx);
         for (i, item) in array.into_iter().enumerate() {
-            if apply_callback(predicate, vec![item, Value::Number(i as f64)], ctx)?.is_truthy() {
+            if callback.apply(vec![item, Value::Number(i as f64)], ctx)?.is_truthy() {
                 return Ok(Value::Bool(true));
             }
         }
@@ -1071,13 +1113,14 @@ impl Operator for ReduceOp {
 
         if let Ok(Value::Lambda { params, body }) = eval_expr(&args[2], ctx) {
             let mut accumulator = initial;
+            let linear = params.first().is_some_and(|acc| read_once(&body, acc));
             for item in array {
                 let mut child_ctx = ctx.child();
 
                 // Bind parameters: first param is accumulator, second is current item
                 if !params.is_empty() {
                     let acc = std::mem::replace(&mut accumulator, Value::Null);
-                    if read_once(&body, &params[0]) {
+                    if linear {
                         child_ctx.set_linear_local(&params[0], acc);
                     } else {
                         child_ctx.set_local(&params[0], acc);

@@ -485,10 +485,13 @@ impl RuntimeKernel {
             .data
             .iter()
             .flatten()
-            .find_map(|(entity_type, rows)| self.rows_misfit(entity_type, rows))
+            .find_map(|(entity_type, rows)| {
+                let keyed: Vec<std::borrow::Cow<'_, Value>> = rows.iter().map(keyed_row).collect();
+                self.rows_misfit(entity_type, keyed.iter().map(|row| row.as_ref()))
+            })
             .or_else(|| {
                 response.entity_by_trait.iter().flatten().find_map(|(trait_name, frame)| {
-                    self.rows_misfit(&trait_entity_type(trait_name), [frame])
+                    self.rows_misfit(&trait_entity_type(trait_name), [keyed_row(frame).as_ref()])
                 })
             });
         if let Some(misfit) = misfit {
@@ -831,6 +834,19 @@ impl RuntimeKernel {
         } else {
             payload.clone()
         }
+    }
+}
+
+/// A row the server sent as it is stored: the wire leaves the runtime singleton's id implicit, so an id-less row is
+/// checked with the id the fold gives it.
+fn keyed_row(row: &Value) -> std::borrow::Cow<'_, Value> {
+    match row {
+        Value::Object(fields) if !fields.contains_key("id") => {
+            let mut fields = fields.clone();
+            fields.insert("id".to_string(), Value::string(wire_row_id(row)));
+            std::borrow::Cow::Owned(Value::Object(fields))
+        }
+        _ => std::borrow::Cow::Borrowed(row),
     }
 }
 

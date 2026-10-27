@@ -63,7 +63,7 @@ impl Operator for JsonParseOp {
 
 /// The shape a `json/parse` names, with the type a run-time check reads, when the evaluator knows it: a declared shape
 /// recorded as JSON (`orb resolve` writes a program alias as its type with the types it names) or a built-in type name.
-fn run_time_shape(arg: &SExpression) -> Result<Option<(String, std::rc::Rc<DeclaredShape>)>, OrbitalError> {
+pub(super) fn run_time_shape(arg: &SExpression) -> Result<Option<(String, std::rc::Rc<DeclaredShape>)>, OrbitalError> {
     let SExpression::String(text) = arg else {
         return Ok(None);
     };

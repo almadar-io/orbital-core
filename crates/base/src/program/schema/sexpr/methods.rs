@@ -405,20 +405,32 @@ impl SExpression {
         }
     }
 
-    /// Removes every `["proven", positions, call]` mark, leaving its call: a program arriving as data is resolved
+    /// Removes every `["proven", positions, op, …args]` mark, leaving the call `[op, …args]`: a program arriving as data is resolved
     /// from its own code, never trusted for what an earlier resolve proved (G-CROSS-335).
     pub fn strip_proven(&mut self) {
         match self {
             SExpression::Array(items) => {
-                if items.len() == 3 && items[0].as_str() == Some("proven") {
-                    let mut call = std::mem::replace(&mut items[2], SExpression::Null);
-                    call.strip_proven();
-                    *self = call;
-                    return;
+                if items.len() >= 3 && items[0].as_str() == Some("proven") && matches!(items[1], SExpression::Array(_)) {
+                    items.drain(..2);
                 }
                 items.iter_mut().for_each(SExpression::strip_proven);
             }
             SExpression::Object(fields) => fields.values_mut().for_each(SExpression::strip_proven),
+            _ => {}
+        }
+    }
+
+    /// [`Self::strip_proven`] over a program held as JSON, which keeps its integers integers (an `SExpression`
+    /// number is a float).
+    pub fn strip_proven_json(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Array(items) => {
+                if items.len() >= 3 && items[0].as_str() == Some("proven") && items[1].is_array() {
+                    items.drain(..2);
+                }
+                items.iter_mut().for_each(Self::strip_proven_json);
+            }
+            serde_json::Value::Object(fields) => fields.values_mut().for_each(Self::strip_proven_json),
             _ => {}
         }
     }

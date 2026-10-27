@@ -542,7 +542,7 @@ pub(super) fn bind_bound(
         };
     }
     let mut scratch = CallBindings::new();
-    scratch.use_named_types(std::sync::Arc::clone(&bindings.named_types));
+    scratch.use_named_types(std::sync::Arc::clone(&bindings.named_types.0));
     let checked = if mode == Mode::Proof { Mode::Proof } else { Mode::Runtime };
     match bind_type(bound, actual, &mut scratch, checked) {
         Ok(()) => Ok(()),

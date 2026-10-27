@@ -895,7 +895,7 @@ impl EmbeddedKernel {
 
     /// Seed `entity_type` rows into the entity cache; each row's own `id` is honored.
     pub fn seed(&self, entity_type: &str, rows: Vec<Value>) -> Result<(), String> {
-        if let Some(misfit) = self.kernel.rows_misfit(entity_type, &rows) {
+        if let Some(misfit) = self.kernel.created_rows_misfit(entity_type, &rows) {
             return Err(format!("seed: {misfit}"));
         }
         for row in rows {

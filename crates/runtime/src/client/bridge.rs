@@ -103,19 +103,23 @@ impl ServerBridge for crate::client::http::SyncServerBridge {
     }
 }
 
-/// Seed one entity's rows into `entities` (defaulting an absent `id` to
-/// `"singleton"`, matching every INIT-time fetch/list). Shared by `KernelBridge::
-/// seed` and `client_kernel::ClientKernel::seed` so the two in-process bridges
-/// don't carry two copies of the same loop.
+/// Seed one entity's rows into `entities` once they all fit `kernel`'s declaration of the entity (EXEC-EVAL-10).
+/// Shared by `KernelBridge::seed` and `client_kernel::ClientKernel::seed` so the two in-process bridges don't carry
+/// two copies of the same loop.
 pub(crate) fn seed_into(
+    kernel: &crate::kernel::RuntimeKernel,
     entities: &crate::entity_source::InMemoryEntityCache,
     entity_type: &str,
     rows: &[Value],
-) {
+) -> Result<(), String> {
     use crate::entity_source::EntitySource;
-    for row in rows {
-        let _ = entities.create(entity_type, row);
+    if let Some(misfit) = kernel.created_rows_misfit(entity_type, rows) {
+        return Err(format!("seed: {misfit}"));
     }
+    for row in rows {
+        entities.create(entity_type, row)?;
+    }
+    Ok(())
 }
 
 /// In-process bridge: registers a schema in `crate::RuntimeKernel` and answers
@@ -199,11 +203,10 @@ impl KernelBridge {
         bare().map_err(|e| BridgeError::Server(e.to_string()))
     }
 
-    /// Seed entity rows so a subsequent INIT `fetch`/`list` on `entity_type` returns them.
-    /// Each row carries its own `id` (defaulting to `"singleton"` if absent). Call before
-    /// `init_all_traits_blocking`.
-    pub fn seed(&self, entity_type: &str, rows: Vec<Value>) {
-        seed_into(&self.entities, entity_type, &rows);
+    /// Seed entity rows so a subsequent INIT `fetch`/`list` on `entity_type` returns them; a row that contradicts
+    /// the entity's declaration refuses the seed. Call before `init_all_traits_blocking`.
+    pub fn seed(&self, entity_type: &str, rows: Vec<Value>) -> Result<(), String> {
+        seed_into(&self.kernel, &self.entities, entity_type, &rows)
     }
 
     /// Bind `@user` for every subsequent event this bridge dispatches.

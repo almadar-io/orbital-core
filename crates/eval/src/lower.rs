@@ -310,8 +310,8 @@ impl NodeLowerer {
         if op == "typed" && args.len() == 2 && !KEEP_TYPED.with(std::cell::Cell::get) {
             return self.resolve_sexpr(&args[0]);
         }
-        if op == "proven" && args.len() == 2 {
-            return self.resolve_sexpr(&args[1]);
+        if op == "proven" && args.len() >= 2 {
+            return self.resolve_owned(SExpression::Array(args[1..].to_vec()));
         }
         // Enforce canonical maxArity (canonical-operators.json). Variadic ops
         // (maxArity null) skip. Catches the silent-drop bug in binary_op /
@@ -408,7 +408,7 @@ impl NodeLowerer {
             "render-ui" => self.resolve_render_ui_effect(args),
             "notify" => self.resolve_notify_effect(args),
             "log" => self.resolve_log_effect(args),
-            "call-service" | "call_service" => self.resolve_call_service_effect(args),
+            "call-service" => self.resolve_call_service_effect(args),
             "http" => self.resolve_http_effect(args),
             "redis" => self.resolve_redis_effect(args),
             "postgres" => self.resolve_postgres_effect(args),

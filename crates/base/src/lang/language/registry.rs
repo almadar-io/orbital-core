@@ -404,6 +404,10 @@ pub struct FailableOperator {
     /// Argument positions whose value of the named type cannot make the call fail (an `instant` timestamp).
     #[serde(rename = "unlessTyped", default)]
     pub unless_typed: Vec<UnlessTyped>,
+    /// Argument positions naming a nominal type (`as`'s `CallKey`): a conversion to it is checked where the program is
+    /// validated, so the call cannot fail with a null.
+    #[serde(rename = "unlessNominal", default)]
+    pub unless_nominal: Vec<usize>,
     /// Argument positions where a value proved nonzero (a divisor), at least zero (a square root's argument) or above
     /// zero (a logarithm's) cannot make the call fail.
     #[serde(rename = "unlessNonZero", default)]

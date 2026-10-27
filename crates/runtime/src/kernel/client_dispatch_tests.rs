@@ -1360,7 +1360,7 @@ fn counted_note_schema() -> OrbitalSchema {
         "name": "App",
         "orbitals": [{
             "name": "Main",
-            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }, { "name": "count", "type": "number" }] },
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string", "required": true }, { "name": "count", "type": "number" }] },
             "traits": [{
                 "name": "Notes",
                 "linkedEntity": "Note",
@@ -1441,4 +1441,15 @@ fn a_client_ui_event_whose_payload_contradicts_its_declaration_is_refused() {
     let payload: Value = serde_json::from_value(serde_json::json!({ "n": 1 })).unwrap();
     let outcomes = kernel.dispatch("Counter", None, "SET", payload).unwrap();
     assert!(outcomes.iter().any(|(_, r)| r.new_state == "set"), "control: a fitting payload runs");
+}
+
+/// G-CROSS-335: an in-process seed is an entry too: a row that contradicts its entity refuses the seed, nothing written.
+#[test]
+fn an_in_process_seed_whose_row_contradicts_its_entity_is_refused() {
+    let bridge = crate::client::bridge::KernelBridge::new(counted_note_schema()).unwrap();
+    let rows = |v: serde_json::Value| -> Vec<Value> { serde_json::from_value(v).unwrap() };
+    let refused = bridge.seed("Note", rows(serde_json::json!([{ "id": "n-1", "count": 1 }, { "id": "n-2", "count": "2" }])));
+    assert!(refused.is_err_and(|e| e.contains("Note.count")));
+    bridge.seed("Note", rows(serde_json::json!([{ "id": "n-1", "count": 1 }]))).unwrap();
+    bridge.seed("Note", rows(serde_json::json!([{ "count": 2 }]))).unwrap();
 }

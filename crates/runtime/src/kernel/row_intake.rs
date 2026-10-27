@@ -86,6 +86,23 @@ impl RuntimeKernel {
             .find_map(|row| row_misfit_against(entity_type, &shape, row))
     }
 
+    /// [`Self::rows_misfit`] for rows a store creates: one without an `id` gets the id the store assigns, so its
+    /// absence is not a misfit.
+    pub(crate) fn created_rows_misfit(&self, entity_type: &str, rows: &[Value]) -> Option<String> {
+        let created: Vec<std::borrow::Cow<'_, Value>> = rows
+            .iter()
+            .map(|row| match row {
+                Value::Object(fields) if !fields.contains_key("id") => {
+                    let mut fields = fields.clone();
+                    fields.insert("id".to_string(), Value::string(String::new()));
+                    std::borrow::Cow::Owned(Value::Object(fields))
+                }
+                _ => std::borrow::Cow::Borrowed(row),
+            })
+            .collect();
+        self.rows_misfit(entity_type, created.iter().map(|row| row.as_ref()))
+    }
+
     /// `answer` to `request`, with a row that does not fit its entity's declaration turned into the store failure
     /// the asking effect answers.
     pub(crate) fn checked_answer(&self, request: &IoRequest, answer: IoAnswer) -> IoAnswer {

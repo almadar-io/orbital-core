@@ -29,9 +29,22 @@ impl Operator for AsOp {
                     actual: other.type_name().into(),
                 })),
             },
-            other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "as: unknown target type {other}"
-            )))),
+            other => match super::json::run_time_shape(&args[1])? {
+                // A declared shape narrows: the value when it fits, null when it does not (a failable result).
+                Some((shape, declared)) => match super::arg_types::misfit_of_shape(&value, &declared) {
+                    None => Ok(value),
+                    Some((path, actual)) => {
+                        tracing::warn!(
+                            target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
+                            "as: the value is not of the shape {shape}: at `{path}` it is {actual}"
+                        );
+                        Ok(Value::Null)
+                    }
+                },
+                None => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                    "as: unknown target type {other}"
+                )))),
+            },
         }
     }
 }
@@ -50,15 +63,14 @@ impl Operator for TypedOp {
     }
 }
 
-/// proven - `["proven", [positions], call]`: the value of `call`, whose arguments at `positions` the static checker
-/// proved and the kernel does not check again (EXEC-EVAL-1). Written by `orb resolve` (never `.lolo`); a program
-/// arriving as data has it removed before it is resolved.
+/// proven - `["proven", [positions], op, arg0, arg1, …]`: the value of the call `[op, arg0, arg1, …]`, whose arguments at
+/// `positions` the static checker proved and the kernel does not check again (EXEC-EVAL-1). Flat, so a mark adds no
+/// nesting. Written by `orb resolve` (never `.lolo`); a program arriving as data has it removed before it is resolved.
 pub struct ProvenOp;
 impl Operator for ProvenOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "proven", == 2);
         let invalid = |reason: &str| OrbitalError::Eval(EvalError::InvalidArgument(format!("proven: {reason}")));
-        let SExpression::Array(listed) = &args[0] else {
+        let Some(SExpression::Array(listed)) = args.first() else {
             return Err(invalid("the positions must be a list"));
         };
         let mut proven = 0u64;
@@ -72,15 +84,12 @@ impl Operator for ProvenOp {
                 _ => return Err(invalid("a position must be a non-negative integer")),
             }
         }
-        let call = match &args[1] {
-            SExpression::Array(call) => call,
-            _ => return Err(invalid("the second argument must be an operator call")),
+        let Some(operator) = args.get(1).and_then(SExpression::as_str).and_then(get_operator) else {
+            return Err(invalid("the second argument must name an operator"));
         };
-        let Some(operator) = call.first().and_then(SExpression::as_str).and_then(get_operator) else {
-            return Err(invalid("the second argument must be an operator call"));
-        };
+        let call = &args[2..];
         let _frame = super::arg_types::signature_for(&operator)
-            .map(|signature| super::arg_types::CallFrame::enter_proven(signature, &call[1..], proven));
-        operator.evaluate(&call[1..], ctx)
+            .map(|signature| super::arg_types::CallFrame::enter_proven(signature, call, proven));
+        operator.evaluate(call, ctx)
     }
 }

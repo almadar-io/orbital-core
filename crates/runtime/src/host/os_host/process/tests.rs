@@ -276,7 +276,7 @@ fn unknown_pids_are_closed_and_the_host_pid_is_never_killable() {
 }
 
 #[test]
-fn getenv_needs_a_grant_and_reports_null_when_unset() {
+fn getenv_needs_a_grant_and_answers_no_value_when_unset() {
     let h = OsHandles::default();
     let e = call(&OsGrants::default(), &h, OsOp::Getenv, vec![s("PATH")]).expect_err("denied");
     assert_eq!(e.kind, OsErrorKind::Denied);
@@ -287,7 +287,8 @@ fn getenv_needs_a_grant_and_reports_null_when_unset() {
     let set = call(&g, &h, OsOp::Getenv, vec![s("PATH")]).expect("get");
     assert!(matches!(field(&set, "value"), Value::String(_)));
     let unset = call(&g, &h, OsOp::Getenv, vec![s("ZZ_NEVER_SET_X")]).expect("get");
-    assert_eq!(field(&unset, "value"), Value::Null);
+    // The table declares `{ value? }`: an unset variable answers no `value` key, never a null a `string` field refuses.
+    assert!(unset.as_object().is_some_and(|o| !o.contains_key("value")), "{unset:?}");
 }
 
 #[test]

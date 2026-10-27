@@ -1094,7 +1094,7 @@ mod tests {
                 let bridge = KernelBridge::new(s.clone()).map_err(|e| format!("kernel bridge: {e}"))?;
                 let note: Value = serde_json::from_value(serde_json::json!({ "id": "n1", "title": "Note 1" }))
                     .map_err(|e| e.to_string())?;
-                bridge.seed("Note", vec![note]);
+                bridge.seed("Note", vec![note])?;
                 Ok(Arc::new(bridge) as Arc<dyn ServerBridge>)
             },
         )

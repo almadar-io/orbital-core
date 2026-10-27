@@ -454,10 +454,8 @@ fn getenv(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
         return Err(denied(op, &format!("environment {name} is not granted")));
     }
     let value = lookup_env(host, name).map_err(|e| io_error(op, &e))?;
-    Ok(object(vec![(
-        "value",
-        value.map_or(Value::Null, Value::string),
-    )]))
+    // An unset variable has no `value` key, as the operator table declares (`{ value? }`), not a null one.
+    Ok(object(value.map(|value| ("value", Value::string(value))).into_iter().collect()))
 }
 
 fn setenv(args: &[Value], host: &OsHost<'_>, set: bool) -> Result<Value, OsError> {

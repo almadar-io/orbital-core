@@ -153,6 +153,25 @@ impl fmt::Display for Mismatch {
     }
 }
 
+/// The program types a call's bindings read. A call that names none shares one empty map: binding runs once per checked
+/// argument, so an allocation per call is most of what an unchecked-looking call costs.
+#[derive(Debug, Clone)]
+struct NamedTypes(std::sync::Arc<BTreeMap<String, OirType>>);
+
+impl Default for NamedTypes {
+    fn default() -> Self {
+        static EMPTY: crate::sync::OnceLock<std::sync::Arc<BTreeMap<String, OirType>>> = crate::sync::OnceLock::new();
+        NamedTypes(std::sync::Arc::clone(EMPTY.get_or_init(Default::default)))
+    }
+}
+
+impl std::ops::Deref for NamedTypes {
+    type Target = BTreeMap<String, OirType>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// The variables a call has bound so far.
 #[derive(Debug, Default, Clone)]
 pub struct CallBindings {
@@ -179,7 +198,7 @@ pub struct CallBindings {
     strict: bool,
     index: usize,
     shape: Option<String>,
-    named_types: std::sync::Arc<BTreeMap<String, OirType>>,
+    named_types: NamedTypes,
 }
 
 impl CallBindings {
@@ -188,7 +207,7 @@ impl CallBindings {
     }
 
     pub fn use_named_types(&mut self, types: std::sync::Arc<BTreeMap<String, OirType>>) {
-        self.named_types = types;
+        self.named_types = NamedTypes(types);
     }
 
     fn agrees(&self, a: &OirType, b: &OirType) -> bool {

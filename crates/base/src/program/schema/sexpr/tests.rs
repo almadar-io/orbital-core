@@ -656,12 +656,27 @@ fn entity_reads_ignore_payload_and_config_bindings() {
 #[test]
 fn strip_proven_keeps_each_marked_call() {
     let mut marked = rewrite_input(serde_json::json!(
-        ["proven", [0], ["+", ["proven", [0, 1], ["*", 2, 3]], {"k": ["proven", [1], ["-", 4, 1]]}]]
+        ["proven", [0], "+", ["proven", [0, 1], "*", 2, 3], {"k": ["proven", [1], "-", 4, 1]}]
     ));
     marked.strip_proven();
     assert_eq!(marked, rewrite_input(serde_json::json!(["+", ["*", 2, 3], {"k": ["-", 4, 1]}])));
-    let mut plain = rewrite_input(serde_json::json!(["proven", ["+", 1, 2]]));
+    let mut plain = rewrite_input(serde_json::json!(["proven", "+", 1, 2]));
     let before = plain.clone();
     plain.strip_proven();
-    assert_eq!(plain, before, "control: a two-entry list is not a mark");
+    assert_eq!(plain, before, "control: a list with no positions list is not a mark");
+}
+
+#[test]
+fn strip_proven_json_keeps_each_marked_call_and_integers() {
+    let mut program = serde_json::json!({
+        "typeContractVersion": 1,
+        "guard": ["proven", [0], "+", ["proven", [0, 1], "*", 2, 3], 1],
+        "data": ["proven", "+", 1, 2]
+    });
+    SExpression::strip_proven_json(&mut program);
+    assert_eq!(
+        program,
+        serde_json::json!({ "typeContractVersion": 1, "guard": ["+", ["*", 2, 3], 1], "data": ["proven", "+", 1, 2] })
+    );
+    assert!(program["typeContractVersion"].is_u64(), "an integer stays an integer");
 }

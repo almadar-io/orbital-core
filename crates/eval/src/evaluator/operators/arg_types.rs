@@ -559,6 +559,9 @@ fn is_bare_variable(formal: Option<&OperatorTypeRef>) -> bool {
 
 orbital_core_base::kernel_local! {
     static DECLARED: RefCell<HashMap<String, std::rc::Rc<DeclaredShape>>> = RefCell::new(HashMap::new());
+    /// The shapes by the address of the shared text they were read from, which each entry keeps alive so the address
+    /// is never reused: a program's `typed` text is one allocation read on every call, and hashing it whole was the cost.
+    static DECLARED_AT: RefCell<HashMap<usize, (orbital_core_base::value::Shared<String>, std::rc::Rc<DeclaredShape>), std::hash::BuildHasherDefault<DiscriminantHasher>>> = RefCell::new(HashMap::default());
 }
 
 /// The declared shape a `typed` form or a `json/parse` shape records as JSON text: a bare `OirType`, or the type with
@@ -567,7 +570,12 @@ pub fn declared_shape(arg: &SExpression) -> Result<std::rc::Rc<DeclaredShape>, O
     let SExpression::String(text) = arg else {
         return Err(OrbitalError::Eval(EvalError::InvalidArgument("typed: the declared type must be JSON text".into())));
     };
+    let at = text.as_str().as_ptr() as usize;
+    if let Some(known) = DECLARED_AT.with(|d| d.borrow().get(&at).map(|(_, shape)| std::rc::Rc::clone(shape))) {
+        return Ok(known);
+    }
     if let Some(known) = DECLARED.with(|d| d.borrow().get(text.as_str()).cloned()) {
+        DECLARED_AT.with(|d| d.borrow_mut().insert(at, (text.clone(), std::rc::Rc::clone(&known))));
         return Ok(known);
     }
     let shape = DeclaredShape::read(text).map_err(|error| {
@@ -575,12 +583,23 @@ pub fn declared_shape(arg: &SExpression) -> Result<std::rc::Rc<DeclaredShape>, O
     })?;
     let shape = std::rc::Rc::new(shape);
     DECLARED.with(|d| d.borrow_mut().insert(text.clone().into_inner(), std::rc::Rc::clone(&shape)));
+    DECLARED_AT.with(|d| d.borrow_mut().insert(at, (text.clone(), std::rc::Rc::clone(&shape))));
     Ok(shape)
 }
 
 /// The type a `typed` form records: its second argument's declared type.
 pub fn declared_type(arg: &SExpression) -> Result<OirType, OrbitalError> {
     Ok(declared_shape(arg)?.ty.clone())
+}
+
+/// The declared shape of `expr` when it is a `typed` form, shared rather than copied.
+pub fn typed_shape(expr: &SExpression) -> Result<Option<std::rc::Rc<DeclaredShape>>, OrbitalError> {
+    match expr {
+        SExpression::Array(items) if items.len() == 3 && matches!(&items[0], SExpression::String(head) if head == "typed") => {
+            declared_shape(&items[2]).map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 /// The declared type of `expr` when it is a `typed` form.

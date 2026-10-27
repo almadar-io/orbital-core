@@ -1,2 +1,5 @@
 /target
 node_modules/
+
+# LLVM coverage profiles (never committed)
+*.profraw

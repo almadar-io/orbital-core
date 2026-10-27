@@ -515,6 +515,39 @@ fn json_parse_value_not_of_its_shape_takes_the_failure_path() {
     assert!(matches!(parse_as(r#"[{"id": 1, "tags": []}]"#, rows), Value::Array(ref v) if v.len() == 1));
 }
 
+/// `(as value T)` to a declared shape answers what the text round trip `(json/parse (json/stringify value) T)` answers.
+#[test]
+fn as_a_declared_shape_narrows_exactly_like_the_json_round_trip() {
+    let rows = serde_json::json!({ "kind": "array", "inner": row_shape() });
+    let cases: Vec<(&str, serde_json::Value)> = vec![
+        ("42", "number".into()),
+        (r#""abc""#, "number".into()),
+        (r#"{"id": 1, "tags": ["a"]}"#, row_shape()),
+        (r#"{"id": 1, "tags": ["a"], "note": "n"}"#, row_shape()),
+        (r#"{"tags": ["a"]}"#, row_shape()),
+        (r#"[{"id": 1, "tags": []}]"#, row_shape()),
+        (r#"{"id": 1, "tags": ["a", 2]}"#, row_shape()),
+        (r#"[{"id": 1, "tags": []}, {"id": "2", "tags": []}]"#, rows.clone()),
+        (r#"[{"id": 1, "tags": []}]"#, rows),
+        ("null", row_shape()),
+    ];
+    for (text, shape) in cases {
+        let recorded = match &shape {
+            serde_json::Value::String(name) => name.clone(),
+            declared => declared.to_string(),
+        };
+        let value = serde_json::json!(["json/parse", text, "Row"]);
+        let narrowed = eval(&serde_json::json!(["as", value, recorded]).to_string());
+        assert_eq!(narrowed, parse_as(text, shape), "{text}");
+    }
+}
+
+#[test]
+fn as_call_key_keeps_its_meaning_beside_the_narrowing() {
+    assert_eq!(eval(r#"["as", "search", "CallKey"]"#), Value::string("search"));
+    assert!(eval_err(r#"["as", "", "CallKey"]"#).contains("empty"), "a CallKey still refuses, never nulls");
+}
+
 #[test]
 fn control_json_parse_shape_without_a_run_time_declaration_is_unchanged() {
     assert_eq!(parse_as(r#""abc""#, "Row".into()), Value::string("abc"));
@@ -3115,32 +3148,32 @@ fn control_row_matches_agrees_with_compile_predicate_on_the_same_inputs() {
 #[test]
 fn a_proven_call_skips_the_check_only_where_nothing_unproven_depends_on_it() {
     assert!(eval_err(r#"["=", 1, "1"]"#).contains("ype"), "control: unmarked, the two sides disagree");
-    assert_eq!(eval(r#"["proven", [0, 1], ["=", 1, "1"]]"#), Value::Bool(true), "unchecked, `=` compares loosely");
+    assert_eq!(eval(r#"["proven", [0, 1], "=", 1, "1"]"#), Value::Bool(true), "unchecked, `=` compares loosely");
     assert!(
-        eval_err(r#"["proven", [0], ["=", 1, "1"]]"#).contains("ype"),
+        eval_err(r#"["proven", [0], "=", 1, "1"]"#).contains("ype"),
         "position 0 binds the T that unproven position 1 is checked against"
     );
-    assert_eq!(eval(r#"["not", ["proven", [0, 1], ["=", 1, "1"]]]"#), Value::Bool(false));
-    assert!(eval_err(r#"["not", ["proven", [0], ["+", 1, 2]]]"#).contains("ype"), "the outer position is not proven");
+    assert_eq!(eval(r#"["not", ["proven", [0, 1], "=", 1, "1"]]"#), Value::Bool(false));
+    assert!(eval_err(r#"["not", ["proven", [0], "+", 1, 2]]"#).contains("ype"), "the outer position is not proven");
 }
 
 #[test]
 fn a_malformed_proven_mark_is_refused() {
     for expr in [
-        r#"["proven", 0, ["=", 1, 1]]"#,
-        r#"["proven", [-1], ["=", 1, 1]]"#,
-        r#"["proven", [0.5], ["=", 1, 1]]"#,
-        r#"["proven", [0], 5]"#,
-        r#"["proven", [0], ["no-such-operator", 1]]"#,
+        r#"["proven", 0, "=", 1, 1]"#,
+        r#"["proven", [-1], "=", 1, 1]"#,
+        r#"["proven", [0.5], "=", 1, 1]"#,
+        r#"["proven", [0], 5, 1]"#,
+        r#"["proven", [0], "no-such-operator", 1]"#,
     ] {
         assert!(eval_err(expr).contains("proven"), "{expr}");
     }
-    assert_eq!(eval(r#"["proven", [], ["=", 1, 1]]"#), Value::Bool(true), "control: no position proven");
+    assert_eq!(eval(r#"["proven", [], "=", 1, 1]"#), Value::Bool(true), "control: no position proven");
 }
 
 #[test]
 fn lowering_reads_through_a_proven_mark() {
-    let marked: SExpression = serde_json::from_str(r#"["proven", [0, 1], ["+", "@entity.n", 1]]"#).unwrap();
+    let marked: SExpression = serde_json::from_str(r#"["proven", [0, 1], "+", "@entity.n", 1]"#).unwrap();
     let call: SExpression = serde_json::from_str(r#"["+", "@entity.n", 1]"#).unwrap();
     assert_eq!(crate::lower::lower_sexpr(&marked).unwrap(), crate::lower::lower_sexpr(&call).unwrap());
 }

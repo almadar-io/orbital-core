@@ -133,8 +133,8 @@ impl ClientKernel {
         self.embedded.resolve_rows(reference)
     }
 
-    pub fn seed(&self, entity_type: &str, rows: Vec<Value>) {
-        seed_into(self.embedded.entities().as_ref(), entity_type, &rows);
+    pub fn seed(&self, entity_type: &str, rows: Vec<Value>) -> Result<(), String> {
+        seed_into(self.embedded.kernel(), self.embedded.entities().as_ref(), entity_type, &rows)
     }
 
     /// Bind `@user` for every subsequent dispatch.

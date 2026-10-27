@@ -702,7 +702,7 @@ pub fn failure_payload(operator: &str, variant: CallVariant, keyed: bool) -> Pro
         {
             ProducedPayload::Shape(if keyed { KEYED_SUBSTRATE_FAILURE_SHAPE } else { SUBSTRATE_FAILURE_SHAPE })
         }
-        "call-service" | "call_service" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
+        "call-service" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
         _ => ProducedPayload::Opaque,
     }
 }
