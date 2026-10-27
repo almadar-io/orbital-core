@@ -82,7 +82,7 @@ impl RuntimeKernel {
         let Some(children) = self.capture_children.read().get(trait_name).cloned() else {
             return Vec::new();
         };
-        let Some(def) = self.trait_definitions.read().get(trait_name).cloned() else {
+        let Some(def) = self.registry.trait_definitions.read().get(trait_name).cloned() else {
             return Vec::new();
         };
         let authored: Vec<&SExpression> =
@@ -160,10 +160,10 @@ impl RuntimeKernel {
 
     /// The `@config` root a listener's guard reads: the listening trait's own resolved config defaults.
     pub(super) fn listener_config(&self, trait_name: &str) -> Value {
-        let defs = self.trait_definitions.read();
+        let defs = self.registry.trait_definitions.read();
         match defs.get(trait_name) {
             Some(def) => {
-                bind_user_forwards(config_defaults_value(def, &defs), &self.current_user.read())
+                bind_user_forwards(config_defaults_value(def, &defs), &self.sessions.current_user.read())
             }
             None => Value::Null,
         }
@@ -171,7 +171,7 @@ impl RuntimeKernel {
 
     /// Whether `trait_name` has an arm for `event` from `state`.
     pub(super) fn trait_handles(&self, trait_name: &str, state: &str, event: &str) -> bool {
-        self.trait_definitions
+        self.registry.trait_definitions
             .read()
             .get(trait_name)
             .is_some_and(|d| {
@@ -248,7 +248,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         whole_frames: bool,
     ) {
-        let defs = self.trait_definitions.read();
+        let defs = self.registry.trait_definitions.read();
         let mut rows = response.entity_by_trait.take().unwrap_or_default();
         let bound_to = |key: &str| -> Vec<String> {
             match key.strip_prefix("$shared::") {
@@ -347,7 +347,7 @@ impl RuntimeKernel {
             }
         }
         let mut out = HashSet::new();
-        for def in self.trait_definitions.read().values() {
+        for def in self.registry.trait_definitions.read().values() {
             let transitions = def.state_machine.transitions.iter().flat_map(|t| t.effects.iter().flatten());
             let ticks = def.ticks.iter().flatten().flat_map(|t| t.effects.iter());
             for effect in transitions.chain(ticks) {
@@ -379,7 +379,7 @@ impl RuntimeKernel {
             source.orbital_id = identity.orbital_id;
             source.trait_id = identity.trait_id;
             source.event_id = self
-                .trait_definitions
+                .registry.trait_definitions
                 .read()
                 .get(&trait_name)
                 .and_then(|def| def.emits.as_ref())
@@ -391,12 +391,12 @@ impl RuntimeKernel {
     /// The envelope this trait stamps on its emits: `{ orbital, trait }` plus the ids the schema carries.
     pub(super) fn emit_source(&self, trait_name: &str) -> BusEventSource {
         let mut source = BusEventSource::from_trait(trait_name);
-        let homes = self.trait_homes.read();
+        let homes = self.registry.trait_homes.read();
         let Some((schema, index)) = homes.get(trait_name) else {
             return source;
         };
         if let Some(orbital) = self
-            .schemas
+            .registry.schemas
             .read()
             .get(schema)
             .and_then(|s| s.orbitals.get(*index))
@@ -423,7 +423,7 @@ impl RuntimeKernel {
             return listeners;
         }
         let client_only: HashSet<String> = {
-            let defs = self.trait_definitions.read();
+            let defs = self.registry.trait_definitions.read();
             listeners
                 .iter()
                 .filter(|l| defs.get(&l.trait_name).is_some_and(|d| self.dispatch_mode_of(d) == DispatchMode::HybridClientOnly))

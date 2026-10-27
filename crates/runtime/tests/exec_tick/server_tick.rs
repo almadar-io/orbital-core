@@ -286,9 +286,8 @@ mod unfired_step_render {
 
     fn painted(response: &EventResponse) -> Vec<String> {
         response
-            .client_effects
-            .iter()
-            .flatten()
+            .client_effects()
+            .into_iter()
             .map(|effect| {
                 serde_json::to_value(effect).unwrap()[2]["content"]
                     .as_str()

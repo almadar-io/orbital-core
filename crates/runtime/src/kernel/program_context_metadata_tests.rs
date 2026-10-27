@@ -25,16 +25,16 @@ fn program_context_and_its_session_fork_exclude_app_credential_catalog_and_schem
     let credentials = child.program_credentials().unwrap();
     assert_eq!(credentials.len(), 1);
     assert_eq!(credentials[0].env_var, "Control_CREDENTIAL");
-    assert!(!child.schemas.read().contains_key("App"));
-    assert!(child.managed_credentials.read().is_empty());
-    assert!(child.entity_policies.read().contains_key("App"));
+    assert!(!child.registry.schemas.read().contains_key("App"));
+    assert!(child.grants.managed_credentials.read().is_empty());
+    assert!(child.registry.entity_policies.read().contains_key("App"));
     let fork = child
         .fork_session(source(), KernelConfig::default())
         .unwrap();
     let credentials = fork.program_credentials().unwrap();
     assert_eq!(credentials.len(), 1);
     assert_eq!(credentials[0].env_var, "Control_CREDENTIAL");
-    assert!(fork.entity_policies.read().contains_key("App"));
-    assert!(!fork.schemas.read().contains_key("App"));
+    assert!(fork.registry.entity_policies.read().contains_key("App"));
+    assert!(!fork.registry.schemas.read().contains_key("App"));
     assert_eq!(parent.program_credentials().unwrap().len(), 2);
 }

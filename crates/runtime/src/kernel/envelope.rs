@@ -297,7 +297,7 @@ impl RuntimeKernel {
     }
 
     fn orbital_traits(&self, orbital: &str) -> Option<Vec<String>> {
-        self.schemas.read().values().find_map(|schema| {
+        self.registry.schemas.read().values().find_map(|schema| {
             schema.orbitals.iter().find(|o| o.name == orbital).map(|o| {
                 o.traits
                     .iter()

@@ -74,12 +74,12 @@ fn create_from_source_opens_listening_modal() {
     // The merged response carries the modal's render-ui.
     let resp = EventResponse::from_process_results(&outcomes, "Catalog", "CREATE");
     assert!(
-        resp.client_effects.iter().flatten().any(|e| matches!(
+        resp.client_effects().into_iter().any(|e| matches!(
             e,
             ClientEffect::RenderUi { slot, .. } if slot == "modal"
         )),
         "merged response must contain a render-ui into the modal slot, got {:?}",
-        resp.client_effects
+        resp.client_effects()
     );
 }
 
@@ -162,7 +162,7 @@ fn peer_init_emits_main_render_ui_for_trait_content() {
     let resp = EventResponse::from_process_results(&outcomes, "Peer", "INIT");
 
     assert!(
-        resp.client_effects.iter().flatten().any(|e| matches!(
+        resp.client_effects().into_iter().any(|e| matches!(
             e,
             ClientEffect::RenderUi { slot, config: Some(content), .. }
                 if slot == "main"
@@ -170,7 +170,7 @@ fn peer_init_emits_main_render_ui_for_trait_content() {
                     == Some("button")
         )),
         "peer INIT must emit its `main` render-ui (indexed under trait_content[Peer]), got {:?}",
-        resp.client_effects
+        resp.client_effects()
     );
 }
 

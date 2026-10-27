@@ -388,6 +388,43 @@ impl Effect {
         }
     }
 
+    /// The key this call is filed under (`key:`), when it names one as text; a `cancel-call`'s key names another call.
+    pub fn call_key(&self) -> Option<&str> {
+        match self {
+            Effect::CallService { key, .. }
+            | Effect::Http { key, .. }
+            | Effect::Redis { key, .. }
+            | Effect::Postgres { key, .. }
+            | Effect::RandomBytes { key, .. }
+            | Effect::Os { key, .. }
+            | Effect::OAuthAuthorize { key, .. }
+            | Effect::BrowserPageFacts { key, .. }
+            | Effect::BrowserBeacon { key, .. }
+            | Effect::BrowserPrompt { key, .. }
+            | Effect::BrowserEmbed { key, .. }
+            | Effect::BrowserTab { key, .. }
+            | Effect::Custom { key, .. } => key.as_ref().and_then(Value::as_str),
+            Effect::Persist { .. }
+            | Effect::PersistBatch { .. }
+            | Effect::CredentialStatus { .. }
+            | Effect::CredentialForget { .. }
+            | Effect::CredentialAdmin { .. }
+            | Effect::AccessCheck { .. }
+            | Effect::OAuthConnectionStatus { .. }
+            | Effect::OAuthConnectionForget { .. }
+            | Effect::Fetch { .. }
+            | Effect::Emit { .. }
+            | Effect::Set { .. }
+            | Effect::CancelCall { .. }
+            | Effect::RenderUi { .. }
+            | Effect::Navigate { .. }
+            | Effect::NavigateBack
+            | Effect::Spawn { .. }
+            | Effect::Despawn { .. }
+            | Effect::Log { .. } => None,
+        }
+    }
+
     /// What an `http` effect reaches, `"<METHOD> <origin><path>"`: the one spelling every verifier and host reads.
     pub fn http_target(&self) -> Option<String> {
         match self {

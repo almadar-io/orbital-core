@@ -96,9 +96,8 @@ fn list(k: &RuntimeKernel) -> EventResponse {
 }
 
 fn painted(r: &EventResponse) -> Json {
-    r.client_effects
-        .iter()
-        .flatten()
+    r.client_effects()
+        .into_iter()
         .find_map(|e| match e {
             ClientEffect::RenderUi { .. } => e.render_ui_value(),
             _ => None,
@@ -141,7 +140,7 @@ fn a_deliver_ids_fetch_by_id_or_with_include_fails_instead_of_widening() {
         let out = k.dispatch("Tickets", None, "LIST", Value::Null).unwrap();
         let r = EventResponse::from_process_results(&out, "Tickets", "LIST");
         assert!(r.data_refs.is_none(), "{extra}");
-        assert!(r.client_effects.is_none(), "{extra}: the failure event is not LISTED");
+        assert!(r.client_effects().is_empty(), "{extra}: the failure event is not LISTED");
     }
 }
 

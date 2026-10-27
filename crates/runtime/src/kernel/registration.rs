@@ -59,7 +59,7 @@ impl RuntimeKernel {
     pub(super) fn program_credentials(
         &self,
     ) -> Result<Vec<orbital_core_base::secrets::ProgramCredential>, String> {
-        let schemas = self.schemas.read();
+        let schemas = self.registry.schemas.read();
         let mut names: Vec<&String> = schemas.keys().collect();
         names.sort();
         let mut found: Vec<orbital_core_base::secrets::ProgramCredential> = Vec::new();
@@ -78,7 +78,7 @@ impl RuntimeKernel {
                 .into_iter()
                 .for_each(&mut add);
         }
-        self.managed_credentials
+        self.grants.managed_credentials
             .read()
             .iter()
             .cloned()
@@ -89,7 +89,7 @@ impl RuntimeKernel {
     /// Name the program whose credentials this kernel's credential effects manage beside its own (an integrations
     /// console serving the app a host shows): its declared credentials join the catalog, replacing the last one named.
     pub fn set_managed_program(&self, program: &serde_json::Value) {
-        *self.managed_credentials.write() =
+        *self.grants.managed_credentials.write() =
             orbital_core_base::secrets::program_credentials(program);
     }
 
@@ -104,30 +104,30 @@ impl RuntimeKernel {
 
     /// The `egress` origins every registered program declares, unioned: what a host's transport may reach.
     pub fn egress(&self) -> Vec<String> {
-        self.egress.read().clone()
+        self.grants.egress.read().clone()
     }
 
     /// The `os/` grants every registered program declares, unioned: what a host builds its `OsHost` from.
     pub fn os_grants(&self) -> OsGrants {
-        self.os_grants.read().clone()
+        self.grants.os_grants.read().clone()
     }
 
     /// Register a schema with the kernel.
     pub fn register_schema(&self, mut schema: OrbitalSchema) -> Result<(), KernelError> {
         schema.bind_unlinked_traits_to_host_entity();
         if let Some(declared) = &schema.egress {
-            let mut egress = self.egress.write();
+            let mut egress = self.grants.egress.write();
             for origin in declared {
                 if !egress.contains(origin) {
                     egress.push(origin.clone());
                 }
             }
         }
-        self.os_grants.write().union(&schema.program_os_grants());
+        self.grants.os_grants.write().union(&schema.program_os_grants());
         self.register_placement(&schema);
         let schema_name = schema.name.clone();
         info!(schema = %schema_name, "Registering schema");
-        self.theme_presets
+        self.presentation.theme_presets
             .write()
             .merge(ThemePresets::from_definitions(
                 schema.theme_definitions.iter().flatten(),
@@ -176,7 +176,7 @@ impl RuntimeKernel {
         // clobbers an earlier one's policies for an entity it doesn't itself
         // redeclare).
         {
-            let mut table = self.entity_policies.write();
+            let mut table = self.registry.entity_policies.write();
 
             for orbital in &schema.orbitals {
                 for entity_ref in std::iter::once(&orbital.entity)
@@ -223,7 +223,7 @@ impl RuntimeKernel {
         // `entity_definitions` stay two independent leaf locks, not a new
         // nested pair to add to the documented order.
         {
-            let mut defs = self.entity_definitions.write();
+            let mut defs = self.registry.entity_definitions.write();
             for orbital in &schema.orbitals {
                 for entity_ref in std::iter::once(&orbital.entity)
                     .chain(orbital.auxiliary_entities.iter().flatten())
@@ -235,8 +235,8 @@ impl RuntimeKernel {
             }
         }
         {
-            let defs = self.entity_definitions.read();
-            let mut defaults = self.entity_defaults.write();
+            let defs = self.registry.entity_definitions.read();
+            let mut defaults = self.registry.entity_defaults.write();
             for orbital in &schema.orbitals {
                 for entity_ref in std::iter::once(&orbital.entity)
                     .chain(orbital.auxiliary_entities.iter().flatten())
@@ -271,7 +271,7 @@ impl RuntimeKernel {
         self.bind_program_rows(&schema);
 
         {
-            let mut schemas = self.schemas.write();
+            let mut schemas = self.registry.schemas.write();
             schemas.insert(schema_name.clone(), Arc::new(schema.clone()));
             let mut homes = HashMap::new();
             for (name, schema) in schemas.iter() {
@@ -285,17 +285,17 @@ impl RuntimeKernel {
                     }
                 }
             }
-            *self.trait_homes.write() = homes;
+            *self.registry.trait_homes.write() = homes;
         }
         {
-            let mut nav = self.nav_pages.write();
+            let mut nav = self.presentation.nav_pages.write();
             *nav = merge_nav_items(&nav, app_nav_items(&schema));
         }
 
         // Additive rebuild over the FULL accumulated trait set, not just this
         // schema's — an embed spanning two registrations must still resolve
         // (mirrors the entity-policy table's additive re-run above).
-        *self.embed_index.write() = EmbedIndex::build(&self.trait_definitions.read());
+        *self.registry.embed_index.write() = EmbedIndex::build(&self.registry.trait_definitions.read());
 
         info!(schema = %schema_name, "Schema registered successfully");
         Ok(())
@@ -428,9 +428,9 @@ impl RuntimeKernel {
         config: KernelConfig,
         schema: OrbitalSchema,
     ) -> Result<Self, KernelError> {
-        let existing = self.schemas.read().clone();
-        let definitions = self.entity_definitions.read().clone();
-        let traits = self.trait_definitions.read();
+        let existing = self.registry.schemas.read().clone();
+        let definitions = self.registry.entity_definitions.read().clone();
+        let traits = self.registry.trait_definitions.read();
         let collision = |kind: &str, name: &str| {
             KernelError::Internal(format!("program context {kind} collision: `{name}`"))
         };
@@ -469,9 +469,9 @@ impl RuntimeKernel {
         }
         drop(traits);
         let child = Self::new(config.environment, entity_source, config);
-        *child.entity_policies.write() = self.entity_policies.read().clone();
-        *child.entity_definitions.write() = definitions;
-        *child.entity_defaults.write() = self.entity_defaults.read().clone();
+        *child.registry.entity_policies.write() = self.registry.entity_policies.read().clone();
+        *child.registry.entity_definitions.write() = definitions;
+        *child.registry.entity_defaults.write() = self.registry.entity_defaults.read().clone();
         child.set_current_user(self.get_current_user());
         child.register_schema(schema)?;
         Ok(child)
@@ -495,31 +495,31 @@ impl RuntimeKernel {
                 .load(std::sync::atomic::Ordering::SeqCst),
             std::sync::atomic::Ordering::SeqCst,
         );
-        *fork.schemas.write() = self.schemas.read().clone();
-        *fork.trait_homes.write() = self.trait_homes.read().clone();
-        *fork.trait_definitions.write() = self.trait_definitions.read().clone();
-        *fork.entity_policies.write() = self.entity_policies.read().clone();
-        *fork.embed_index.write() = self.embed_index.read().clone();
-        *fork.entity_definitions.write() = self.entity_definitions.read().clone();
-        *fork.entity_defaults.write() = self.entity_defaults.read().clone();
-        *fork.egress.write() = self.egress.read().clone();
-        *fork.os_grants.write() = self.os_grants.read().clone();
-        *fork.theme_presets.write() = self.theme_presets.read().clone();
-        *fork.nav_pages.write() = self.nav_pages.read().clone();
+        *fork.registry.schemas.write() = self.registry.schemas.read().clone();
+        *fork.registry.trait_homes.write() = self.registry.trait_homes.read().clone();
+        *fork.registry.trait_definitions.write() = self.registry.trait_definitions.read().clone();
+        *fork.registry.entity_policies.write() = self.registry.entity_policies.read().clone();
+        *fork.registry.embed_index.write() = self.registry.embed_index.read().clone();
+        *fork.registry.entity_definitions.write() = self.registry.entity_definitions.read().clone();
+        *fork.registry.entity_defaults.write() = self.registry.entity_defaults.read().clone();
+        *fork.grants.egress.write() = self.grants.egress.read().clone();
+        *fork.grants.os_grants.write() = self.grants.os_grants.read().clone();
+        *fork.presentation.theme_presets.write() = self.presentation.theme_presets.read().clone();
+        *fork.presentation.nav_pages.write() = self.presentation.nav_pages.read().clone();
         *fork.capture_children.write() = self.capture_children.read().clone();
         *fork.i18n.write() = self.i18n.read().clone();
-        *fork.managed_credentials.write() = self.managed_credentials.read().clone();
-        *fork.current_user.write() = self.current_user.read().clone();
+        *fork.grants.managed_credentials.write() = self.grants.managed_credentials.read().clone();
+        *fork.sessions.current_user.write() = self.sessions.current_user.read().clone();
         fork.deliveries
             .write()
             .copy_placement(&self.deliveries.read());
-        let schemas = self.schemas.read();
+        let schemas = self.registry.schemas.read();
         let mut names: Vec<&String> = schemas.keys().collect();
         names.sort();
         let mut seen = std::collections::HashSet::new();
         for orbital in names.iter().flat_map(|name| schemas[*name].orbitals.iter()) {
             for trait_name in orbital.traits.iter().filter_map(|t| t.trait_name()) {
-                let Some(def) = self.trait_definitions.read().get(trait_name).cloned() else {
+                let Some(def) = self.registry.trait_definitions.read().get(trait_name).cloned() else {
                     continue;
                 };
                 if !seen.insert(trait_name.to_string()) {
@@ -531,9 +531,9 @@ impl RuntimeKernel {
                 fork.register_trait_listeners(&def, &orbital.name)?;
             }
         }
-        let homes = self.trait_homes.read();
+        let homes = self.registry.trait_homes.read();
         let mut rest: Vec<(String, Arc<TraitDefinition>)> = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .iter()
             .filter(|(name, _)| !seen.contains(name.as_str()))
@@ -562,7 +562,7 @@ impl RuntimeKernel {
         debug!(trait_name = %trait_name, "Registering trait");
 
         self.state_manager.write().register_trait(trait_def.clone());
-        self.trait_definitions
+        self.registry.trait_definitions
             .write()
             .insert(trait_name.clone(), Arc::new(trait_def.clone()));
 

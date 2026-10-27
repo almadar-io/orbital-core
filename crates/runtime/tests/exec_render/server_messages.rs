@@ -91,7 +91,7 @@ fn init(server: &EmbeddedServer, locale: Option<&str>) -> Result<EventResponse, 
 }
 
 fn rendered(response: &EventResponse) -> String {
-    serde_json::to_string(&response.client_effects.as_ref().unwrap()[0]).unwrap()
+    serde_json::to_string(&response.client_effects()[0]).unwrap()
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn edge_a_locale_the_program_does_not_declare_is_refused() {
 // A message the viewer's catalog lacks answers null (`i18n/t` is a failable operator, owner ruling 2026-10-25), never a key
 // painted as text (G-ORBITAL-CORE-033): the slot paints null where the message would be, and the step does not fail.
 fn painted_children(response: &EventResponse) -> Vec<serde_json::Value> {
-    let effect = serde_json::to_value(&response.client_effects.as_ref().unwrap()[0]).unwrap();
+    let effect = serde_json::to_value(&response.client_effects()[0]).unwrap();
     effect[2]["children"].as_array().unwrap().clone()
 }
 
@@ -145,7 +145,7 @@ fn client_init(kernel: &orbital_core_runtime::embed::EmbeddedKernel) -> EventRes
 fn the_client_role_paints_the_catalogs_its_host_installs() {
     let kernel = orbital_core_runtime::embed::EmbeddedKernel::new(schema(), "c1").unwrap();
     kernel.set_messages(vec!["ar".into()], catalogs());
-    let page = serde_json::to_string(&client_init(&kernel).client_effects).unwrap();
+    let page = serde_json::to_string(&client_init(&kernel).client_effects()).unwrap();
     assert!(page.contains("مرحبا"), "{page}");
     assert!(page.contains("\"content\":\"ar\""), "{page}");
 }

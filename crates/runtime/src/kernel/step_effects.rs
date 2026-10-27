@@ -287,424 +287,305 @@ impl RuntimeKernel {
     ) {
         let mirrored = entity_data.apply(ctx);
         let ctx: &BindingContext = &mirrored;
-        if let Some(effect) = orbital_core_base::effect_types::parse_effect(effect_expr) {
-            match &effect {
-                Effect::Set { path, value } => {
-                    let evaluated_value = if value.as_array().is_some()
-                        || value.as_object().is_some()
-                    {
-                        let sexpr = value_to_sexpr(value);
-                        match evaluator.evaluate(&sexpr, ctx) {
-                            Ok(v) => v,
-                            Err(err) => {
-                                // A value that fails to evaluate is a failed effect, never stored raw.
-                                tracing::error!(path = %path, error = %err, "kernel: set value failed to evaluate");
-                                effect_results
-                                    .push(EffectResult::failed(effect.clone(), &err.to_string()));
-                                return;
-                            }
-                        }
-                    } else if let Some(s) = value.as_str() {
-                        if BindingContext::binding_token_end(s, 0) == Some(s.len()) {
-                            // A whole-string binding that resolves to nothing reads as null, as every
-                            // other read of it does; its text is never stored.
-                            ctx.resolve_binding(s).unwrap_or(Value::Null)
-                        } else if s.starts_with('@') {
-                            ctx.resolve_value(value).into_owned()
-                        } else {
-                            value.clone()
-                        }
-                    } else {
-                        value.clone()
-                    };
-
-                    let field_name = path.strip_prefix("@entity.").unwrap_or(path);
-                    drop(mirrored);
-                    entity_data.insert(field_name.to_string(), evaluated_value.clone());
-
-                    effect_results.push(EffectResult::executed(Effect::Set {
-                        path: path.clone(),
-                        value: evaluated_value,
-                    }));
-                }
-                Effect::Fetch {
-                    emit: Some(fetch_emit),
-                    ..
-                } if !fetch_emit.is_empty() => {
-                    let result = self
-                        .effect_executor
-                        .execute(&effect, ctx)
-                        .with_declared_routes(fetch_emit);
-                    let completion = fetch_completion_emit(fetch_emit, &result);
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::Persist {
-                    emit: Some(persist_emit),
-                    ..
-                } if !persist_emit.is_empty() => {
-                    let result = self
-                        .effect_executor
-                        .execute(&effect, ctx)
-                        .with_declared_routes(persist_emit);
-                    let completion = persist_completion_emit(persist_emit, &effect, &result, ctx);
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::PersistBatch {
-                    emit: Some(batch_emit),
-                    ..
-                } if !batch_emit.is_empty() => {
-                    let result = self
-                        .effect_executor
-                        .execute(&effect, ctx)
-                        .with_declared_routes(batch_emit);
-                    let completion = persist_completion_emit(batch_emit, &effect, &result, ctx);
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::CallService { emit, .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    let key = match &resolved {
-                        Effect::CallService { key, .. } => {
-                            key.as_ref().and_then(Value::as_str).map(str::to_string)
-                        }
-                        _ => None,
-                    };
-                    let reused = key.as_deref().is_some_and(|k| {
-                        effect_results.iter().any(|r| {
-                            matches!(&r.effect, Effect::CallService { key: Some(prev), .. } if prev.as_str() == Some(k))
-                        })
-                    });
-                    let (mut result, verdict) = if reused {
-                        let message = format!(
-                            "call-service key '{}' is already used by another call in this step",
-                            key.as_deref().unwrap_or_default()
-                        );
-                        (EffectResult::failed(resolved.clone(), &message), None)
-                    } else {
-                        self.io.set_call_site(self.call_site_of(emit.as_ref()));
-                        let result = self.effect_executor.execute(&resolved, ctx);
-                        let verdict = self.io.take_call_verdict();
-                        self.io.set_call_site(None);
-                        (result, verdict)
-                    };
-                    if verdict == Some(CallVerdict::Cancelled) {
-                        result = EffectResult::executed(resolved);
-                    } else if let Effect::CallService { emit: routes, .. } = &mut result.effect {
-                        routes.clone_from(emit);
-                    }
-                    let completion = emit.as_ref().and_then(|e| {
-                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
-                    });
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::Http { emit, .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    let key = match &resolved {
-                        Effect::Http { key, .. } => {
-                            key.as_ref().and_then(Value::as_str).map(str::to_string)
-                        }
-                        _ => None,
-                    };
-                    let (result, verdict) = if self.effect_executor.environment().is_client() {
-                        (self.effect_executor.execute(&resolved, ctx), None)
-                    } else {
-                        self.io.set_call_site(self.call_site_of(emit.as_ref()));
-                        let principal =
-                            ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
-                        let mut result = self.run_http(&resolved, principal.as_deref(), ctx.now);
-                        let verdict = self.io.take_call_verdict();
-                        self.io.set_call_site(None);
-                        if matches!(
-                            verdict,
-                            Some(CallVerdict::Cancelled | CallVerdict::Deferred)
-                        ) {
-                            result = EffectResult::executed(resolved);
-                        }
-                        (result, verdict)
-                    };
-                    let completion = emit.as_ref().and_then(|e| {
-                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
-                    });
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::Redis { emit, .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    let key = match &resolved {
-                        Effect::Redis { key, .. } => {
-                            key.as_ref().and_then(Value::as_str).map(str::to_string)
-                        }
-                        _ => None,
-                    };
-                    let result = if self.effect_executor.environment().is_client() {
-                        self.effect_executor.execute(&resolved, ctx)
-                    } else {
-                        self.io.set_call_site(self.call_site_of(emit.as_ref()));
-                        let principal =
-                            ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
-                        let result = self.run_redis(&resolved, principal.as_deref());
-                        self.io.set_call_site(None);
-                        result
-                    };
-                    let completion = emit
-                        .as_ref()
-                        .and_then(|e| keyed_call_completion_emit(e, &result, None, key.as_deref()));
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::Postgres { emit, .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    let key = match &resolved {
-                        Effect::Postgres { key, .. } => {
-                            key.as_ref().and_then(Value::as_str).map(str::to_string)
-                        }
-                        _ => None,
-                    };
-                    let result = if self.effect_executor.environment().is_client() {
-                        self.effect_executor.execute(&resolved, ctx)
-                    } else {
-                        self.io.set_call_site(self.call_site_of(emit.as_ref()));
-                        let principal =
-                            ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
-                        let result = self.run_postgres(&resolved, principal.as_deref());
-                        self.io.set_call_site(None);
-                        result
-                    };
-                    let completion = emit
-                        .as_ref()
-                        .and_then(|e| keyed_call_completion_emit(e, &result, None, key.as_deref()));
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::Os { emit, .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    let key = match &resolved {
-                        Effect::Os { key, .. } => {
-                            key.as_ref().and_then(Value::as_str).map(str::to_string)
-                        }
-                        _ => None,
-                    };
-                    let (result, verdict) = if self.effect_executor.environment().is_client() {
-                        (self.effect_executor.execute(&resolved, ctx), None)
-                    } else {
-                        self.io.set_call_site(self.call_site_of(emit.as_ref()));
-                        let mut result = self.run_os(&resolved);
-                        let verdict = self.io.take_call_verdict();
-                        self.io.set_call_site(None);
-                        if verdict == Some(CallVerdict::Cancelled) {
-                            result = EffectResult::executed(resolved);
-                        }
-                        (result, verdict)
-                    };
-                    let completion = emit.as_ref().and_then(|e| {
-                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
-                    });
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::BrowserBeacon { emit, .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    let key = match &resolved {
-                        Effect::BrowserBeacon { key, .. } => {
-                            key.as_ref().and_then(Value::as_str).map(str::to_string)
-                        }
-                        _ => None,
-                    };
-                    self.io.set_call_site(self.call_site_of(emit.as_ref()));
-                    let mut result = self.run_beacon(&resolved);
-                    let verdict = self.io.take_call_verdict();
-                    self.io.set_call_site(None);
-                    if verdict == Some(CallVerdict::Cancelled) {
-                        result = EffectResult::executed(resolved);
-                    }
-                    let completion = emit.as_ref().and_then(|e| {
-                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
-                    });
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::BrowserPrompt { emit, .. } | Effect::BrowserEmbed { emit, .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    let key = match &resolved {
-                        Effect::BrowserPrompt { key, .. } | Effect::BrowserEmbed { key, .. } => {
-                            key.as_ref().and_then(Value::as_str).map(str::to_string)
-                        }
-                        _ => None,
-                    };
-                    let mut result = self.run_on_device_model(&resolved, key.as_deref());
-                    let verdict = self.io.take_call_verdict();
-                    if verdict == Some(CallVerdict::Cancelled) {
-                        result = EffectResult::executed(resolved);
-                    }
-                    let completion = emit.as_ref().and_then(|e| {
-                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
-                    });
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::BrowserTab { emit, .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    let key = match &resolved {
-                        Effect::BrowserTab { key, .. } => {
-                            key.as_ref().and_then(Value::as_str).map(str::to_string)
-                        }
-                        _ => None,
-                    };
-                    let mut result = self.run_browser_tab(&resolved);
-                    let verdict = self.io.take_call_verdict();
-                    if verdict == Some(CallVerdict::Cancelled) {
-                        result = EffectResult::executed(resolved);
-                    }
-                    let completion = emit.as_ref().and_then(|e| {
-                        keyed_call_completion_emit(e, &result, verdict, key.as_deref())
-                    });
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::AccessCheck { emit, .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    let result = if self.effect_executor.environment().is_client() {
-                        self.effect_executor.execute(&resolved, ctx)
-                    } else {
-                        self.run_access_check(&resolved)
-                    };
-                    let completion = emit
-                        .as_ref()
-                        .and_then(|e| keyed_call_completion_emit(e, &result, None, None));
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::BrowserPageFacts { emit, .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    let result = self.run_page_facts(&resolved);
-                    let completion = emit
-                        .as_ref()
-                        .and_then(|e| keyed_call_completion_emit(e, &result, None, None));
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::Custom { name, emit, .. }
-                    if orbital_core_base::agent_ports::is_agent_port_operator(name) =>
-                {
-                    let key = match &effect {
-                        Effect::Custom { key: Some(key), .. } => ctx
-                            .resolve_value_checked(key)
-                            .ok()
-                            .and_then(|k| k.as_str().map(str::to_string)),
-                        _ => None,
-                    };
-                    self.io
-                        .set_substrate_call(self.call_site_of(emit.as_ref()), key.clone());
-                    let mut result = if self.effect_executor.environment().is_client() {
-                        self.effect_executor.execute(&effect, ctx)
-                    } else {
-                        self.run_agent_port(&effect, ctx)
-                    };
-                    let verdict = self.io.take_call_verdict();
-                    self.io.set_call_site(None);
-                    if let Effect::Custom { emit: routes, .. } = &mut result.effect {
-                        routes.clone_from(emit);
-                    }
-                    let completion = emit
-                        .as_ref()
-                        .filter(|_| verdict != Some(CallVerdict::Deferred))
-                        .and_then(|e| {
-                            agent_ports::agent_port_completion_emit(e, &result, key.as_deref())
-                        });
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::Custom {
-                    emit: Some(op_emit),
-                    ..
-                } if !op_emit.is_empty() || op_emit.on_message.is_some() => {
-                    let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results)
-                    else {
-                        return;
-                    };
-                    let key = custom_key(&resolved);
-                    self.io
-                        .set_substrate_call(self.call_site_of(Some(op_emit)), key.clone());
-                    let mut result = self.effect_executor.execute(&resolved, ctx);
-                    let verdict = self.io.take_call_verdict();
-                    self.io.set_call_site(None);
-                    if let Effect::Custom { emit: routes, .. } = &mut result.effect {
-                        *routes = Some(op_emit.clone());
-                    }
-                    let completion = (verdict != Some(CallVerdict::Deferred))
-                        .then(|| substrate_completion_emit(op_emit, &result, key.as_deref()))
-                        .flatten();
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::Custom { .. } => {
-                    let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results)
-                    else {
-                        return;
-                    };
+        let Some(effect) = orbital_core_base::effect_types::parse_effect(effect_expr) else {
+            return;
+        };
+        let principal = || ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
+        match &effect {
+            Effect::Set { path, value } => {
+                let Some(evaluated_value) =
+                    set_value(&effect, path, value, ctx, evaluator, effect_results)
+                else {
+                    return;
+                };
+                let field_name = path.strip_prefix("@entity.").unwrap_or(path);
+                drop(mirrored);
+                entity_data.insert(field_name.to_string(), evaluated_value.clone());
+                effect_results.push(EffectResult::executed(Effect::Set {
+                    path: path.clone(),
+                    value: evaluated_value,
+                }));
+            }
+            Effect::Fetch {
+                emit: Some(routes), ..
+            } if !routes.is_empty() => {
+                let result = self
+                    .effect_executor
+                    .execute(&effect, ctx)
+                    .with_declared_routes(routes);
+                let completion = fetch_completion_emit(routes, &result);
+                push_with_completion(effect_results, result, completion);
+            }
+            Effect::Persist {
+                emit: Some(routes), ..
+            }
+            | Effect::PersistBatch {
+                emit: Some(routes), ..
+            } if !routes.is_empty() => {
+                let result = self
+                    .effect_executor
+                    .execute(&effect, ctx)
+                    .with_declared_routes(routes);
+                let completion = persist_completion_emit(routes, &effect, &result, ctx);
+                push_with_completion(effect_results, result, completion);
+            }
+            Effect::CallService { emit, .. } => {
+                self.exec_call_service(&effect, emit, ctx, effect_results)
+            }
+            Effect::Http { emit, .. } => self.exec_call(
+                &effect,
+                emit.as_ref(),
+                ctx,
+                effect_results,
+                CallShape::HTTP,
+                |e, _| self.run_http(e, principal().as_deref(), ctx.now),
+            ),
+            Effect::Redis { emit, .. } => self.exec_call(
+                &effect,
+                emit.as_ref(),
+                ctx,
+                effect_results,
+                CallShape::DATABASE,
+                |e, _| self.run_redis(e, principal().as_deref()),
+            ),
+            Effect::Postgres { emit, .. } => self.exec_call(
+                &effect,
+                emit.as_ref(),
+                ctx,
+                effect_results,
+                CallShape::DATABASE,
+                |e, _| self.run_postgres(e, principal().as_deref()),
+            ),
+            Effect::Os { emit, .. } => self.exec_call(
+                &effect,
+                emit.as_ref(),
+                ctx,
+                effect_results,
+                CallShape::OS,
+                |e, _| self.run_os(e),
+            ),
+            Effect::BrowserBeacon { emit, .. } => self.exec_call(
+                &effect,
+                emit.as_ref(),
+                ctx,
+                effect_results,
+                CallShape::BEACON,
+                |e, _| self.run_beacon(e),
+            ),
+            Effect::BrowserPrompt { emit, .. } | Effect::BrowserEmbed { emit, .. } => self
+                .exec_call(
+                    &effect,
+                    emit.as_ref(),
+                    ctx,
+                    effect_results,
+                    CallShape::BROWSER,
+                    |e, key| self.run_on_device_model(e, key),
+                ),
+            Effect::BrowserTab { emit, .. } => self.exec_call(
+                &effect,
+                emit.as_ref(),
+                ctx,
+                effect_results,
+                CallShape::BROWSER,
+                |e, _| self.run_browser_tab(e),
+            ),
+            Effect::AccessCheck { emit, .. } => self.exec_call(
+                &effect,
+                emit.as_ref(),
+                ctx,
+                effect_results,
+                CallShape::HOST,
+                |e, _| self.run_access_check(e),
+            ),
+            Effect::BrowserPageFacts { emit, .. } => self.exec_call(
+                &effect,
+                emit.as_ref(),
+                ctx,
+                effect_results,
+                CallShape::PAGE_FACTS,
+                |e, _| self.run_page_facts(e),
+            ),
+            Effect::Custom { name, emit, .. }
+                if orbital_core_base::agent_ports::is_agent_port_operator(name) =>
+            {
+                self.exec_agent_port(&effect, emit, ctx, effect_results)
+            }
+            Effect::Custom {
+                emit: Some(op_emit),
+                ..
+            } if !op_emit.is_empty() || op_emit.on_message.is_some() => {
+                self.exec_substrate_op(&effect, op_emit, ctx, effect_results)
+            }
+            Effect::Custom { .. } => {
+                let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results) else {
+                    return;
+                };
+                effect_results.push(self.effect_executor.execute(&resolved, ctx));
+            }
+            Effect::RandomBytes { emit, .. }
+            | Effect::CredentialStatus { emit, .. }
+            | Effect::CredentialForget { emit, .. }
+            | Effect::CredentialAdmin { emit, .. }
+            | Effect::OAuthAuthorize { emit, .. }
+            | Effect::OAuthConnectionStatus { emit, .. }
+            | Effect::OAuthConnectionForget { emit, .. } => self.exec_call(
+                &effect,
+                emit.as_ref(),
+                ctx,
+                effect_results,
+                CallShape::HOST,
+                |e, _| self.run_host_effect(e, ctx),
+            ),
+            // An emit resolves now, against this leaf's scope (`let` locals, earlier sets), as JS does at emit time.
+            Effect::CancelCall { .. } | Effect::Emit { .. } => {
+                if let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) {
                     effect_results.push(self.effect_executor.execute(&resolved, ctx));
-                }
-                Effect::CancelCall { .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    effect_results.push(self.effect_executor.execute(&resolved, ctx));
-                }
-                Effect::RandomBytes { emit, .. }
-                | Effect::CredentialStatus { emit, .. }
-                | Effect::CredentialForget { emit, .. }
-                | Effect::CredentialAdmin { emit, .. }
-                | Effect::OAuthAuthorize { emit, .. }
-                | Effect::OAuthConnectionStatus { emit, .. }
-                | Effect::OAuthConnectionForget { emit, .. } => {
-                    let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) else {
-                        return;
-                    };
-                    let result = if self.effect_executor.environment().is_client() {
-                        self.effect_executor.execute(&resolved, ctx)
-                    } else {
-                        self.run_host_effect(&resolved, ctx)
-                    };
-                    let completion = emit
-                        .as_ref()
-                        .and_then(|e| keyed_call_completion_emit(e, &result, None, None));
-                    effect_results.push(result);
-                    effect_results.extend(completion.map(EffectResult::as_completion));
-                }
-                Effect::Emit { .. } => {
-                    // Resolve now, against this leaf's scope (`let` locals, earlier sets), as JS does at emit time.
-                    if let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) {
-                        effect_results.push(self.effect_executor.execute(&resolved, ctx));
-                    }
-                }
-                _ => {
-                    effect_results.push(self.effect_executor.execute(&effect, ctx));
                 }
             }
+            _ => effect_results.push(self.effect_executor.execute(&effect, ctx)),
         }
+    }
+
+    /// A call-shaped effect: resolve it, run it (in place on the client role when its shape says so), settle its
+    /// verdict, then deliver its completion.
+    fn exec_call(
+        &self,
+        effect: &Effect,
+        emit: Option<&FetchEmit>,
+        ctx: &BindingContext,
+        effect_results: &mut Vec<EffectResult>,
+        shape: CallShape,
+        run: impl FnOnce(&Effect, Option<&str>) -> EffectResult,
+    ) {
+        let Some(resolved) = resolved_or_failed(effect, ctx, effect_results) else {
+            return;
+        };
+        let key = resolved.call_key().map(str::to_string);
+        let (mut result, verdict) =
+            if shape.client_executes && self.effect_executor.environment().is_client() {
+                (self.effect_executor.execute(&resolved, ctx), None)
+            } else {
+                if shape.at_call_site {
+                    self.io.set_call_site(self.call_site_of(emit));
+                }
+                let result = run(&resolved, key.as_deref());
+                let verdict = shape.settles.and_then(|_| self.io.take_call_verdict());
+                if shape.at_call_site {
+                    self.io.set_call_site(None);
+                }
+                (result, verdict)
+            };
+        if verdict.is_some_and(|v| shape.settles.is_some_and(|settles| settles.contains(&v))) {
+            result = EffectResult::executed(resolved);
+        }
+        let echoed = if shape.echoes_key {
+            key.as_deref()
+        } else {
+            None
+        };
+        let completion = emit.and_then(|e| keyed_call_completion_emit(e, &result, verdict, echoed));
+        push_with_completion(effect_results, result, completion);
+    }
+
+    /// `call-service`: a key already used in this step fails the call; otherwise it runs at its call site.
+    fn exec_call_service(
+        &self,
+        effect: &Effect,
+        emit: &Option<FetchEmit>,
+        ctx: &BindingContext,
+        effect_results: &mut Vec<EffectResult>,
+    ) {
+        let Some(resolved) = resolved_or_failed(effect, ctx, effect_results) else {
+            return;
+        };
+        let key = resolved.call_key().map(str::to_string);
+        let reused = key.as_deref().is_some_and(|k| {
+            effect_results.iter().any(|r| {
+                matches!(&r.effect, Effect::CallService { key: Some(prev), .. } if prev.as_str() == Some(k))
+            })
+        });
+        let (mut result, verdict) = if reused {
+            let message = format!(
+                "call-service key '{}' is already used by another call in this step",
+                key.as_deref().unwrap_or_default()
+            );
+            (EffectResult::failed(resolved.clone(), &message), None)
+        } else {
+            self.io.set_call_site(self.call_site_of(emit.as_ref()));
+            let result = self.effect_executor.execute(&resolved, ctx);
+            let verdict = self.io.take_call_verdict();
+            self.io.set_call_site(None);
+            (result, verdict)
+        };
+        if verdict == Some(CallVerdict::Cancelled) {
+            result = EffectResult::executed(resolved);
+        } else if let Effect::CallService { emit: routes, .. } = &mut result.effect {
+            routes.clone_from(emit);
+        }
+        let completion = emit
+            .as_ref()
+            .and_then(|e| keyed_call_completion_emit(e, &result, verdict, key.as_deref()));
+        push_with_completion(effect_results, result, completion);
+    }
+
+    /// An agent-port operator: a substrate call keyed by its evaluated key; a deferred call completes later.
+    fn exec_agent_port(
+        &self,
+        effect: &Effect,
+        emit: &Option<FetchEmit>,
+        ctx: &BindingContext,
+        effect_results: &mut Vec<EffectResult>,
+    ) {
+        let key = match effect {
+            Effect::Custom { key: Some(key), .. } => ctx
+                .resolve_value_checked(key)
+                .ok()
+                .and_then(|k| k.as_str().map(str::to_string)),
+            _ => None,
+        };
+        self.io
+            .set_substrate_call(self.call_site_of(emit.as_ref()), key.clone());
+        let mut result = if self.effect_executor.environment().is_client() {
+            self.effect_executor.execute(effect, ctx)
+        } else {
+            self.run_agent_port(effect, ctx)
+        };
+        let verdict = self.io.take_call_verdict();
+        self.io.set_call_site(None);
+        if let Effect::Custom { emit: routes, .. } = &mut result.effect {
+            routes.clone_from(emit);
+        }
+        let completion = emit
+            .as_ref()
+            .filter(|_| verdict != Some(CallVerdict::Deferred))
+            .and_then(|e| agent_ports::agent_port_completion_emit(e, &result, key.as_deref()));
+        push_with_completion(effect_results, result, completion);
+    }
+
+    /// A routed substrate operator (`emit:` or `onMessage`): a substrate call; a deferred call completes later.
+    fn exec_substrate_op(
+        &self,
+        effect: &Effect,
+        op_emit: &FetchEmit,
+        ctx: &BindingContext,
+        effect_results: &mut Vec<EffectResult>,
+    ) {
+        let Some(resolved) = resolved_custom_or_failed(effect, ctx, effect_results) else {
+            return;
+        };
+        let key = custom_key(&resolved);
+        self.io
+            .set_substrate_call(self.call_site_of(Some(op_emit)), key.clone());
+        let mut result = self.effect_executor.execute(&resolved, ctx);
+        let verdict = self.io.take_call_verdict();
+        self.io.set_call_site(None);
+        if let Effect::Custom { emit: routes, .. } = &mut result.effect {
+            *routes = Some(op_emit.clone());
+        }
+        let completion = (verdict != Some(CallVerdict::Deferred))
+            .then(|| substrate_completion_emit(op_emit, &result, key.as_deref()))
+            .flatten();
+        push_with_completion(effect_results, result, completion);
     }
 
     /// Give each form/detail/column-bearing node of a server-role `render-ui` the options of its relation
@@ -714,12 +595,12 @@ impl RuntimeKernel {
             return;
         }
         let linked = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(trait_name)
             .and_then(|def| def.linked_entity.clone())
             .unwrap_or_else(|| trait_name.to_string());
-        let defs = self.entity_definitions.read();
+        let defs = self.registry.entity_definitions.read();
         for result in results {
             if let Effect::RenderUi { content, .. } = &mut result.effect {
                 super::relations::inject_relation_options(
@@ -734,8 +615,9 @@ impl RuntimeKernel {
 
     /// The call site of a `call-service` made by the step in flight.
     pub(super) fn call_site_of(&self, emit: Option<&FetchEmit>) -> Option<CallSite> {
-        let (trait_name, follow_on) = self.step_site.read().clone()?;
+        let (trait_name, follow_on) = self.step.step_site.read().clone()?;
         let entity_id = self
+            .step
             .step_frame
             .read()
             .clone()
@@ -762,4 +644,103 @@ impl RuntimeKernel {
     pub(super) fn prob_entropy(&self) -> EntropySource {
         self.prob_entropy.clone()
     }
+}
+
+/// How a call-shaped effect runs around its runner.
+#[derive(Clone, Copy)]
+struct CallShape {
+    /// The client role executes the effect in place instead of running it.
+    client_executes: bool,
+    /// The call records its call site while it runs.
+    at_call_site: bool,
+    /// When set, the call's verdict is read, and these verdicts leave the effect executed with no answer.
+    settles: Option<&'static [CallVerdict]>,
+    /// The completion echoes the call's key.
+    echoes_key: bool,
+}
+
+impl CallShape {
+    const HTTP: CallShape = CallShape {
+        client_executes: true,
+        at_call_site: true,
+        settles: Some(&[CallVerdict::Cancelled, CallVerdict::Deferred]),
+        echoes_key: true,
+    };
+    const DATABASE: CallShape = CallShape {
+        client_executes: true,
+        at_call_site: true,
+        settles: None,
+        echoes_key: true,
+    };
+    const OS: CallShape = CallShape {
+        client_executes: true,
+        at_call_site: true,
+        settles: Some(&[CallVerdict::Cancelled]),
+        echoes_key: true,
+    };
+    const BEACON: CallShape = CallShape {
+        client_executes: false,
+        at_call_site: true,
+        settles: Some(&[CallVerdict::Cancelled]),
+        echoes_key: true,
+    };
+    const BROWSER: CallShape = CallShape {
+        client_executes: false,
+        at_call_site: false,
+        settles: Some(&[CallVerdict::Cancelled]),
+        echoes_key: true,
+    };
+    const HOST: CallShape = CallShape {
+        client_executes: true,
+        at_call_site: false,
+        settles: None,
+        echoes_key: false,
+    };
+    const PAGE_FACTS: CallShape = CallShape {
+        client_executes: false,
+        at_call_site: false,
+        settles: None,
+        echoes_key: false,
+    };
+}
+
+/// The value a `set` stores: a list or map literal is evaluated, a whole binding resolves (to null when it resolves to
+/// nothing; its text is never stored), and a value that fails to evaluate fails the effect.
+fn set_value(
+    effect: &Effect,
+    path: &str,
+    value: &Value,
+    ctx: &BindingContext,
+    evaluator: &Evaluator,
+    effect_results: &mut Vec<EffectResult>,
+) -> Option<Value> {
+    if value.as_array().is_some() || value.as_object().is_some() {
+        match evaluator.evaluate(&value_to_sexpr(value), ctx) {
+            Ok(v) => Some(v),
+            Err(err) => {
+                tracing::error!(path = %path, error = %err, "kernel: set value failed to evaluate");
+                effect_results.push(EffectResult::failed(effect.clone(), &err.to_string()));
+                None
+            }
+        }
+    } else if let Some(s) = value.as_str() {
+        if BindingContext::binding_token_end(s, 0) == Some(s.len()) {
+            Some(ctx.resolve_binding(s).unwrap_or(Value::Null))
+        } else if s.starts_with('@') {
+            Some(ctx.resolve_value(value).into_owned())
+        } else {
+            Some(value.clone())
+        }
+    } else {
+        Some(value.clone())
+    }
+}
+
+fn push_with_completion(
+    effect_results: &mut Vec<EffectResult>,
+    result: EffectResult,
+    completion: Option<EffectResult>,
+) {
+    effect_results.push(result);
+    effect_results.extend(completion.map(EffectResult::as_completion));
 }

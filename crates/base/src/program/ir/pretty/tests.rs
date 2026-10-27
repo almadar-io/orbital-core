@@ -59,3 +59,25 @@ fn test_pretty_print_expr() {
     assert!(output.contains("=="));
     assert!(output.contains("\"active\""));
 }
+
+#[test]
+fn a_list_and_a_call_separate_their_items_with_a_comma() {
+    let list = OirExpr::array(vec![
+        OirExpr::number(1.0),
+        OirExpr::string("a"),
+        OirExpr::Null,
+    ]);
+    assert_eq!(pretty_print_expr(&list), "[1, \"a\", null]");
+    assert_eq!(
+        pretty_print_expr(&OirExpr::call(
+            "f",
+            vec![OirExpr::number(1.0), OirExpr::number(2.0)]
+        )),
+        "f(1, 2)"
+    );
+    assert_eq!(
+        pretty_print_expr(&OirExpr::array(vec![])),
+        "[]",
+        "control: an empty list has no separator"
+    );
+}

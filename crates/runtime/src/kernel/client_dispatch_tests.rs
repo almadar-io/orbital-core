@@ -403,8 +403,7 @@ fn render_ui_runs_locally_in_client_env() {
         .unwrap();
     let response = EventResponse::from_process_results(&outcomes, "RenderTrait", "SHOW");
     let effects = response
-        .client_effects
-        .expect("render-ui must surface as a client effect");
+        .client_effects();
     let render = effects
         .iter()
         .find(|e| matches!(e, ClientEffect::RenderUi { .. }))
@@ -465,8 +464,7 @@ fn current_theme_binding_resolves_in_render_ui() {
         .unwrap();
     let response = EventResponse::from_process_results(&outcomes, "ThemeTrait", "SHOW");
     let effects = response
-        .client_effects
-        .expect("render-ui must surface as a client effect");
+        .client_effects();
     let render = effects
         .iter()
         .find(|e| matches!(e, ClientEffect::RenderUi { .. }))
@@ -529,7 +527,7 @@ fn rendered_items(schema: OrbitalSchema) -> Option<Value> {
         .dispatch("Layout", None, "INIT", Value::Null)
         .unwrap();
     let response = EventResponse::from_process_results(&outcomes, "Layout", "INIT");
-    response.client_effects?.iter().find_map(|e| match e {
+    response.client_effects().into_iter().find_map(|e| match e {
         ClientEffect::RenderUi { config, .. } => config
             .as_ref()
             .and_then(Value::as_object)
@@ -592,9 +590,8 @@ fn a_second_registered_program_adds_its_entries_after_the_first_and_skips_a_list
         .unwrap();
     let response = EventResponse::from_process_results(&outcomes, "Layout", "INIT");
     let hrefs: Vec<String> = response
-        .client_effects
-        .unwrap()
-        .iter()
+        .client_effects()
+        .into_iter()
         .find_map(|e| match e {
             ClientEffect::RenderUi { config, .. } => config
                 .as_ref()
@@ -707,7 +704,7 @@ fn rendered_config(kernel: &RuntimeKernel) -> Value {
         .dispatch("HomePage", None, "SHOW", Value::Null)
         .unwrap();
     let response = EventResponse::from_process_results(&outcomes, "HomePage", "SHOW");
-    let effects = response.client_effects.expect("render-ui effect");
+    let effects = response.client_effects();
     let Some(ClientEffect::RenderUi { config, .. }) = effects
         .iter()
         .find(|e| matches!(e, ClientEffect::RenderUi { .. }))
@@ -1145,9 +1142,7 @@ fn the_emitter_is_not_re_seeded_by_its_own_tick_emit() {
     );
     assert!(
         response
-            .client_effects
-            .as_ref()
-            .is_none_or(|e| e.is_empty()),
+            .client_effects().is_empty(),
         "no repaint of the emitter's last render"
     );
 }
@@ -1164,11 +1159,7 @@ fn control_dispatching_the_emitted_event_as_a_seed_does_reseed_the_emitter() {
         "the old re-entry path reports the spurious guardFailed"
     );
     assert!(
-        seeded
-            .response
-            .client_effects
-            .as_ref()
-            .is_some_and(|e| !e.is_empty()),
+        !seeded.response.client_effects().is_empty(),
         "and repaints the emitter"
     );
 }

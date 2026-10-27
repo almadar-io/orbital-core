@@ -27,7 +27,7 @@ fn kernel() -> EmbeddedKernel {
 
 fn props(k: &EmbeddedKernel) -> serde_json::Value {
     let wire = k.dispatch("Header", None, "INIT", Value::Null).unwrap();
-    let effects = serde_json::to_value(wire.response.client_effects).unwrap();
+    let effects = serde_json::to_value(wire.response.client_effects()).unwrap();
     effects[0][2].clone()
 }
 

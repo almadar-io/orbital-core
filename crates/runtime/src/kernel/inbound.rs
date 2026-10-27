@@ -21,7 +21,7 @@ const INBOUND_OPEN_CHECK: std::time::Duration = std::time::Duration::from_millis
 impl RuntimeKernel {
     /// The handler a registered program declares for `name`, or the answer for a hook it does not serve.
     pub fn inbound_route(&self, name: &str) -> Result<InboundRoute, InboundAnswer> {
-        self.schemas
+        self.registry.schemas
             .read()
             .values()
             .find_map(|schema| find_inbound(schema, name).ok())
@@ -95,7 +95,7 @@ impl RuntimeKernel {
         trait_name: Option<&str>,
         event: &str,
     ) -> Option<String> {
-        self.schemas.read().values().find_map(|schema| {
+        self.registry.schemas.read().values().find_map(|schema| {
             orbital_core_base::inbound::inbound_only_trait(schema, orbital, trait_name, event)
         })
     }

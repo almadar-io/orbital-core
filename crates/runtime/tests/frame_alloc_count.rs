@@ -154,3 +154,48 @@ fn profile_loop() {
         now += 16;
     }
 }
+
+/// Frame-delta sizing: writes two consecutive steady-state frames of 100 ticking traits as JSON to `FRAME_DUMP_DIR`.
+/// `FRAME_DUMP_DIR=<dir> cargo test -p orbital-core-runtime --test frame_alloc_count -- --ignored frame_wire_dump`.
+#[test]
+#[ignore]
+fn frame_wire_dump() {
+    let dir = std::path::PathBuf::from(std::env::var("FRAME_DUMP_DIR").expect("FRAME_DUMP_DIR names the output folder"));
+    let k = kernel(100);
+    for i in 0..100 {
+        k.dispatch(&format!("FrameTicker{i}"), None, "INIT", orbital_core_base::value::Value::Null).unwrap();
+    }
+    let step = 1000.0 / 60.0;
+    let mut now = 0.0f64;
+    for n in 0..7 {
+        let f = k.frame(now as u64).unwrap().expect("frame fires");
+        if n >= 5 {
+            std::fs::write(dir.join(format!("frame-{n}.json")), serde_json::to_string(&f).unwrap()).unwrap();
+        }
+        now += step;
+    }
+}
+
+// 34698: a steady frame carries every fired trait's state, both render lists and every `set` result (P-015 measures it).
+const PINNED_WIRE_100: usize = 34698;
+
+/// The bytes a steady frame of 100 ticking traits puts on the wire, which only ever go down.
+#[test]
+fn frame_wire_bytes_are_pinned() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let k = kernel(100);
+    for i in 0..100 {
+        k.dispatch(&format!("FrameTicker{i}"), None, "INIT", orbital_core_base::value::Value::Null).unwrap();
+    }
+    let step = 1000.0 / 60.0;
+    let mut now = 0.0f64;
+    for _ in 0..5 {
+        k.frame(now as u64).unwrap().expect("frame fires");
+        now += step;
+    }
+    let f = k.frame(now as u64).unwrap().expect("frame fires");
+    assert_eq!(f.fired.len(), 100);
+    let bytes = serde_json::to_string(&f).unwrap().len();
+    println!("FRAME_WIRE_100 bytes={bytes}");
+    assert!(bytes <= PINNED_WIRE_100, "100-trait frame wire rose: {bytes} > {PINNED_WIRE_100}");
+}

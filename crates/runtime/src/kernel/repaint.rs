@@ -68,12 +68,12 @@ impl RuntimeKernel {
         let stale = self.renders.write().stale(
             |trait_name| {
                 let entity_type = self
-                    .trait_definitions
+                    .registry.trait_definitions
                     .read()
                     .get(trait_name)
                     .and_then(|d| d.linked_entity.clone())
                     .unwrap_or_else(|| trait_name.to_string());
-                self.entity_definitions
+                self.registry.entity_definitions
                     .read()
                     .get(&entity_type)
                     .is_none_or(|d| d.shared || d.is_client_resident())

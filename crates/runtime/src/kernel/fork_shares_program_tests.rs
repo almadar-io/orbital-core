@@ -40,7 +40,7 @@ fn fork_of(kernel: &RuntimeKernel) -> RuntimeKernel {
 fn a_fork_shares_the_registered_program() {
     let template = kernel_with_program();
     let fork = fork_of(&template);
-    let (ours, theirs) = (template.schemas.read(), fork.schemas.read());
+    let (ours, theirs) = (template.registry.schemas.read(), fork.registry.schemas.read());
     assert!(
         Arc::ptr_eq(&ours["Notes"], &theirs["Notes"]),
         "the fork must share the program, not copy it"
@@ -51,7 +51,7 @@ fn a_fork_shares_the_registered_program() {
 fn a_fork_shares_the_registered_trait_definitions() {
     let template = kernel_with_program();
     let fork = fork_of(&template);
-    let ours = template.trait_definitions.read()["NoteView"].clone();
+    let ours = template.registry.trait_definitions.read()["NoteView"].clone();
     let theirs = fork
         .state_manager
         .read()
@@ -67,9 +67,9 @@ fn a_fork_shares_the_registered_trait_definitions() {
 fn control_a_program_registered_on_a_fork_stays_on_that_fork() {
     let template = kernel_with_program();
     let fork = fork_of(&template);
-    let mut other = (*fork.schemas.read()["Notes"]).clone();
+    let mut other = (*fork.registry.schemas.read()["Notes"]).clone();
     other.name = "Other".to_string();
     fork.register_schema(other).expect("registers on the fork");
-    assert!(fork.schemas.read().contains_key("Other"));
-    assert!(!template.schemas.read().contains_key("Other"));
+    assert!(fork.registry.schemas.read().contains_key("Other"));
+    assert!(!template.registry.schemas.read().contains_key("Other"));
 }

@@ -992,3 +992,39 @@ fn a_reduce_that_appends_to_its_accumulator_allocates_linearly() {
     println!("REDUCE_APPEND_BYTES 256={small} 512={large}");
     assert!(large * 10 < small * 30, "doubling the list must not quadruple the bytes: {small} -> {large}");
 }
+
+/// Live bytes one dispatch of `trait.event` leaves behind, averaged over `runs` after a warm-up.
+fn retained_per_dispatch(k: &RuntimeKernel, trait_name: &str, event: &str, runs: usize) -> f64 {
+    let dispatch = || k.dispatch(trait_name, None, event, serde_json::from_value(json!({ "id": "c-1" })).unwrap()).unwrap();
+    for _ in 0..50 {
+        dispatch();
+    }
+    let before = LIVE.load(Ordering::SeqCst);
+    for _ in 0..runs {
+        dispatch();
+    }
+    (LIVE.load(Ordering::SeqCst) - before) as f64 / runs as f64
+}
+
+/// A long run keeps only what it persists: each audited `SAVE` stores one `AuditEntry` row, and the response, trace
+/// and visit records of the dispatch are released.
+#[test]
+fn a_dispatch_retains_only_the_rows_it_persists() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fixture: serde_json::Value = serde_json::from_str(include_str!("fixtures/parity/audit-provenance.json")).unwrap();
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let k = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::clone(&cache) as Arc<dyn EntitySource>, Default::default());
+    k.register_schema(serde_json::from_value(fixture["schema"].clone()).unwrap()).unwrap();
+    let init = retained_per_dispatch(&k, "ContactForm", "INIT", 500);
+    let rows_before = cache.list("AuditEntry").unwrap().len();
+    let save = retained_per_dispatch(&k, "ContactForm", "SAVE", 500);
+    let rows = cache.list("AuditEntry").unwrap();
+    assert_eq!(rows.len() - rows_before, 550, "each SAVE persists one audit row");
+    let before = BYTES.load(Ordering::SeqCst);
+    let copy = deep_copy(&rows[rows.len() - 1]);
+    let row_bytes = (BYTES.load(Ordering::SeqCst) - before) as f64;
+    drop(copy);
+    println!("RETAINED_PER_DISPATCH init={init:.0} save={save:.0} row={row_bytes:.0}");
+    assert!(init < 64.0, "control: a dispatch that persists nothing retains {init:.0} bytes");
+    assert!(save < row_bytes * 1.5 + 256.0, "a SAVE retains {save:.0} bytes for a {row_bytes:.0}-byte row");
+}

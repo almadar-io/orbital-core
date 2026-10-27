@@ -3,6 +3,16 @@
 use super::*;
 
 impl PrettyPrinter {
+    /// `exprs` separated by `, `.
+    pub(super) fn write_exprs(&mut self, exprs: &[OirExpr]) {
+        for (i, expr) in exprs.iter().enumerate() {
+            if i > 0 {
+                self.write(", ");
+            }
+            self.write_expr(expr);
+        }
+    }
+
     pub(super) fn write_expr(&mut self, expr: &OirExpr) {
         match expr {
             OirExpr::Null => self.write("null"),
@@ -11,12 +21,7 @@ impl PrettyPrinter {
             OirExpr::String { value } => self.write(&format!("\"{}\"", value)),
             OirExpr::Array { items } => {
                 self.write("[");
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.write_expr(item);
-                }
+                self.write_exprs(items);
                 self.write("]");
             }
             OirExpr::Object { fields } => {
@@ -58,12 +63,7 @@ impl PrettyPrinter {
             }
             OirExpr::Call { function, args } => {
                 self.write(&format!("{}(", function));
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.write_expr(arg);
-                }
+                self.write_exprs(args);
                 self.write(")");
             }
             OirExpr::Lambda { params, body } => {

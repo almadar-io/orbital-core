@@ -57,13 +57,12 @@ fn response_of(paints: &[(String, Effect)]) -> EventResponse {
             .get_or_insert_with(Vec::new)
             .push(ClientEffectByTrait {
                 trait_name: t.clone(),
-                effect: ce.clone(),
+                effect: ce,
                 event: None,
                 from_state: None,
                 callsite_payload: None,
                 repaint: None,
             });
-        r.client_effects.get_or_insert_with(Vec::new).push(ce);
     }
     r
 }
@@ -88,7 +87,7 @@ fn drop_renders_of_removes_only_the_named_trait_slot_from_both_lists() {
         .map(|e| e.trait_name.clone())
         .collect();
     assert_eq!(kept, vec!["Hud", "Other"]);
-    assert_eq!(r.client_effects.as_ref().unwrap().len(), 2);
+    assert_eq!(r.client_effects().len(), 2);
 }
 
 #[test]
@@ -381,7 +380,7 @@ fn client_effects_from_render_ui_and_emit_split_correctly() {
     let outcomes = vec![("NotePersistor".to_string(), result)];
     let resp = EventResponse::from_process_results(&outcomes, "NotePersistor", "CREATE_DRAFT");
 
-    let effects = resp.client_effects.expect("client effects");
+    let effects = resp.client_effects();
     assert_eq!(effects.len(), 1);
     assert!(matches!(effects[0], ClientEffect::RenderUi { .. }));
 

@@ -5,7 +5,7 @@ use super::*;
 impl RuntimeKernel {
     /// List all registered orbitals across all schemas.
     pub fn list_orbitals(&self) -> Vec<OrbitalInfo> {
-        let schemas = self.schemas.read();
+        let schemas = self.registry.schemas.read();
         let mut orbitals = Vec::new();
 
         for schema in schemas.values() {
@@ -29,7 +29,7 @@ impl RuntimeKernel {
 
     /// Get detailed information for a single orbital.
     pub fn get_orbital(&self, orbital_name: &str) -> Option<OrbitalDetail> {
-        let schemas = self.schemas.read();
+        let schemas = self.registry.schemas.read();
 
         for schema in schemas.values() {
             for orbital in &schema.orbitals {
@@ -66,7 +66,7 @@ impl RuntimeKernel {
 
     /// Declared external inputs across every registered schema.
     pub fn external_inputs(&self) -> Vec<orbital_core_base::external_inputs::ExternalInput> {
-        self.schemas
+        self.registry.schemas
             .read()
             .values()
             .flat_map(|schema| orbital_core_base::external_inputs::external_inputs_of(schema))
@@ -75,7 +75,7 @@ impl RuntimeKernel {
 
     /// Every trait a route page places, whatever it handles.
     pub(super) fn route_page_traits(&self) -> HashSet<String> {
-        let schemas = self.schemas.read();
+        let schemas = self.registry.schemas.read();
         schemas
             .values()
             .flat_map(|schema| schema.orbitals.iter())
@@ -85,7 +85,7 @@ impl RuntimeKernel {
     }
 
     pub(super) fn mounts_of(&self, keep: impl Fn(&orbital_core_base::schema::types::PageDefinition) -> bool) -> Vec<crate::effects::response::MountSeed> {
-        let schemas = self.schemas.read();
+        let schemas = self.registry.schemas.read();
         let mut names: Vec<&String> = schemas.keys().collect();
         names.sort();
         let mut out: Vec<crate::effects::response::MountSeed> = Vec::new();
@@ -110,7 +110,7 @@ impl RuntimeKernel {
     /// initial state when it has none yet; `None` when it handles none, so it is not seeded.
     pub(super) fn lifecycle_event_of(&self, trait_name: &str) -> Option<crate::effects::response::LifecycleEvent> {
         use crate::effects::response::LifecycleEvent;
-        let def = self.trait_definitions.read().get(trait_name).cloned()?;
+        let def = self.registry.trait_definitions.read().get(trait_name).cloned()?;
         let state = self
             .get_state(trait_name, None)
             .map(|s| s.current_state)
@@ -143,7 +143,7 @@ impl RuntimeKernel {
 
     /// The entity a registered trait is bound to.
     pub fn linked_entity_of(&self, trait_name: &str) -> Option<String> {
-        self.trait_definitions
+        self.registry.trait_definitions
             .read()
             .get(trait_name)
             .and_then(|d| d.linked_entity.clone())
@@ -156,18 +156,18 @@ impl RuntimeKernel {
 
     /// The dispatch mode of the registered trait `trait_name`; `None` when no such trait is registered.
     pub fn trait_dispatch_mode(&self, trait_name: &str) -> Option<DispatchMode> {
-        let def = self.trait_definitions.read().get(trait_name).cloned()?;
+        let def = self.registry.trait_definitions.read().get(trait_name).cloned()?;
         Some(self.dispatch_mode_of(&def))
     }
 
     /// The config a registered trait's steps bind as `@config` (declared defaults, call-site values, `@user`
     /// forwards bound to the current viewer); `None` when no such trait is registered.
     pub fn trait_config(&self, trait_name: &str) -> Option<Value> {
-        let defs = self.trait_definitions.read();
+        let defs = self.registry.trait_definitions.read();
         let def = defs.get(trait_name)?.clone();
         Some(bind_user_forwards(
             config_defaults_value(&def, &defs),
-            &self.current_user.read(),
+            &self.sessions.current_user.read(),
         ))
     }
 }

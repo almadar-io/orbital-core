@@ -106,22 +106,12 @@ impl PrettyPrinter {
                 effects,
             } => {
                 self.write(&format!("watch(\"{}\", [", entity_type));
-                for (i, eff) in effects.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.write_expr(eff);
-                }
+                self.write_exprs(effects);
                 self.write("])");
             }
             OirEffect::Atomic { effects } => {
                 self.write("atomic([");
-                for (i, eff) in effects.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.write_expr(eff);
-                }
+                self.write_exprs(effects);
                 self.write("])");
             }
             OirEffect::Navigate { path, .. } => {
@@ -208,12 +198,7 @@ impl PrettyPrinter {
             OirEffect::Os { op, args, .. } => {
                 self.write(op.name());
                 self.write("(");
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.write_expr(arg);
-                }
+                self.write_exprs(args);
                 self.write(")");
             }
             OirEffect::RandomBytes { bytes: expr, .. } => {

@@ -252,7 +252,7 @@ fn open() -> Json {
         ..Default::default()
     };
     let response = drive(&server, "TaskOrbital", request, &staff());
-    serde_json::to_value(response.client_effects.unwrap()[0].clone()).unwrap()
+    serde_json::to_value(response.client_effects()[0].clone()).unwrap()
 }
 
 #[test]

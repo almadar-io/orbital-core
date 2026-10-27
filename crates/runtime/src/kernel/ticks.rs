@@ -9,7 +9,7 @@ impl RuntimeKernel {
         trait_name: &str,
         tick_name: &str,
     ) -> Option<orbital_core_base::schema::types::TickDefinition> {
-        self.trait_definitions
+        self.registry.trait_definitions
             .read()
             .get(trait_name)?
             .ticks
@@ -61,7 +61,7 @@ impl RuntimeKernel {
         let stamp = self.begin_dispatch();
 
         let trait_def = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(trait_name)
             .cloned()
@@ -126,17 +126,17 @@ impl RuntimeKernel {
         let ctx = BindingContextBuilder::new()
             .payload(tick_payload)
             .state(Value::string(current_state.clone()))
-            .user(self.current_user.read().clone())
+            .user(self.sessions.current_user.read().clone())
             .now(stamp.now)
             .current_theme(Value::String(
                 (self.resolve_current_theme_for_trait(trait_name).key).into(),
             ))
-            .pages(self.nav_pages.read().clone());
+            .pages(self.presentation.nav_pages.read().clone());
         let mut ctx = self.with_viewer_i18n(ctx).build();
         ctx.set_prob_entropy(self.prob_entropy());
         ctx.set_config(bind_user_forwards(
-            config_defaults_value(&trait_def, &self.trait_definitions.read()),
-            &self.current_user.read(),
+            config_defaults_value(&trait_def, &self.registry.trait_definitions.read()),
+            &self.sessions.current_user.read(),
         ));
 
         let entity_type = trait_def.linked_entity.as_deref().unwrap_or(trait_name);
@@ -180,10 +180,10 @@ impl RuntimeKernel {
             }
         }
 
-        *self.step_site.write() = Some((trait_name.to_string(), false));
+        *self.step.step_site.write() = Some((trait_name.to_string(), false));
         let (effect_results, captured_entity_data) =
             self.execute_effects_with_entity(&tick.effects, &ctx);
-        *self.step_site.write() = None;
+        *self.step.step_site.write() = None;
 
         // Effective entity = base entity with the tick's `set` fields merged in.
         // Persist the MERGED entity (read-modify-write), not the partial — same
@@ -280,7 +280,7 @@ impl RuntimeKernel {
         let lane = self.lane.enter(None)?;
         let eid = entity_id.unwrap_or(RUNTIME_SINGLETON).to_string();
         let trait_def = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(trait_name)
             .cloned()
@@ -298,7 +298,7 @@ impl RuntimeKernel {
             (Vec::new(), Vec::new())
         } else {
             let residence = orbital_core_base::runs_on::Residence::of_entities(
-                self.entity_definitions.read().values(),
+                self.registry.entity_definitions.read().values(),
             );
             tick_own
                 .into_iter()

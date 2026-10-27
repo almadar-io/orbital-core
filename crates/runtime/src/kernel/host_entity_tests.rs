@@ -51,7 +51,7 @@ fn an_undeclared_trait_on_a_runtime_orbital_awaits_the_server() {
 #[test]
 fn a_client_trait_on_a_persisted_orbital_is_client_only() {
     let kernel = kernel_with("persistent", None);
-    let mut def = orbital_core_base::schema::TraitDefinition::clone(&kernel.trait_definitions.read()["Pure"]);
+    let mut def = orbital_core_base::schema::TraitDefinition::clone(&kernel.registry.trait_definitions.read()["Pure"]);
     def.dispatch = Some(orbital_core_base::schema::types::DispatchMode::Client);
     assert_eq!(kernel.dispatch_mode_of(&def), DispatchMode::HybridClientOnly);
 }

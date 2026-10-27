@@ -318,7 +318,7 @@ impl ServerBridge for KernelBridge {
             traits_fired = outcomes.len(),
             success = response.success,
             data_types = ?response.data.as_ref().map(|d| d.keys().collect::<Vec<_>>()).unwrap_or_default(),
-            client_effects = response.client_effects.as_ref().map_or(0, |e| e.len()),
+            client_effects = response.client_effects_by_trait.as_ref().map_or(0, |e| e.len()),
             "bridge:event",
         );
         Ok(response)

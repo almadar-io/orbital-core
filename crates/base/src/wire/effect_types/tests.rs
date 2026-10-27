@@ -997,3 +997,11 @@ fn test_parse_fetch_with_include() {
         _ => panic!("Expected Fetch effect"),
     }
 }
+
+#[test]
+fn a_keyed_call_files_under_its_key_and_a_cancel_names_another_call() {
+    let effect = |src: &str| parse_effect(&serde_json::from_str::<SExpression>(src).unwrap()).unwrap();
+    assert_eq!(effect(r#"["call-service", "svc", "work", {}, {"key": "job", "emit": {"success": "OK"}}]"#).call_key(), Some("job"));
+    assert_eq!(effect(r#"["call-service", "svc", "work", {}, {"emit": {"success": "OK"}}]"#).call_key(), None, "control: no key");
+    assert_eq!(effect(r#"["cancel-call", "job"]"#).call_key(), None, "a cancel's key is the call it cancels");
+}

@@ -6,7 +6,7 @@ impl RuntimeKernel {
     /// The key of the frame `trait_name` reads: its own name, or the shared entity's group key.
     pub fn trait_frame_key(&self, trait_name: &str) -> String {
         let entity_type = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(trait_name)
             .and_then(|d| d.linked_entity.clone())
@@ -17,12 +17,12 @@ impl RuntimeKernel {
     /// Whether `trait_name` reads its entity's one `[shared]` frame.
     pub fn reads_shared_frame(&self, trait_name: &str) -> bool {
         let entity_type = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(trait_name)
             .and_then(|d| d.linked_entity.clone())
             .unwrap_or_else(|| trait_name.to_string());
-        self.entity_definitions
+        self.registry.entity_definitions
             .read()
             .get(&entity_type)
             .is_some_and(|d| d.shared)
@@ -31,7 +31,7 @@ impl RuntimeKernel {
     /// `(frame key, entity id)` of `trait_name`'s frame (Runtime Spec Clause 2.3).
     pub(super) fn frame_slot(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> (String, String) {
         let shared = self
-            .entity_definitions
+            .registry.entity_definitions
             .read()
             .get(entity_type)
             .is_some_and(|d| d.shared);
@@ -79,7 +79,7 @@ impl RuntimeKernel {
         entity_id: &str,
     ) -> SharedEntity {
         let defaults = self
-            .entity_defaults
+            .registry.entity_defaults
             .read()
             .get(entity_type)
             .cloned()
@@ -104,7 +104,7 @@ impl RuntimeKernel {
     /// The trait's `@entity` as the step about to run reads it, as the kernel holds it.
     pub(super) fn step_frame(&self, trait_name: &str, entity_id: &str) -> SharedEntity {
         let entity_type = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(trait_name)
             .and_then(|d| d.linked_entity.clone())
@@ -154,7 +154,7 @@ impl RuntimeKernel {
             .map(|s| s.current_state.clone())
             .unwrap_or_default();
         let entity_type = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(trait_name)
             .and_then(|d| d.linked_entity.clone())
@@ -200,7 +200,7 @@ impl RuntimeKernel {
             }
         }
         let entity_type = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(trait_name)
             .and_then(|d| d.linked_entity.clone())
@@ -222,7 +222,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
     ) -> BTreeMap<String, (String, DispatchMode)> {
         let defs: Vec<Arc<TraitDefinition>> =
-            self.trait_definitions.read().values().cloned().collect();
+            self.registry.trait_definitions.read().values().cloned().collect();
         defs.iter()
             .map(|def| {
                 let state = self.current_state_name(&def.name, entity_id);
@@ -254,7 +254,7 @@ impl RuntimeKernel {
         if let Some(state) = self.state_manager.read().get_state(trait_name, state_key.as_deref()) {
             return state.current_state.clone();
         }
-        self.trait_definitions
+        self.registry.trait_definitions
             .read()
             .get(trait_name)
             .and_then(|d| {
@@ -266,7 +266,7 @@ impl RuntimeKernel {
 
     /// Get the initial state for a trait.
     pub fn get_initial_state(&self, trait_name: &str) -> Option<String> {
-        let schemas = self.schemas.read();
+        let schemas = self.registry.schemas.read();
 
         for schema in schemas.values() {
             for orbital in &schema.orbitals {

@@ -69,18 +69,6 @@ fn a_cascaded_listeners_render_carries_its_own_triggered_event() {
 }
 
 #[test]
-fn the_effect_itself_is_unchanged_and_stays_one_to_one_with_the_flat_list() {
-    let r = response("SAVE");
-    let by_trait: Vec<_> = r
-        .client_effects_by_trait
-        .iter()
-        .flatten()
-        .map(|e| e.effect.clone())
-        .collect();
-    assert_eq!(Some(by_trait), r.client_effects);
-}
-
-#[test]
 fn a_blocked_event_renders_untagged() {
     let r = response("NO_SUCH_EVENT");
     assert!(

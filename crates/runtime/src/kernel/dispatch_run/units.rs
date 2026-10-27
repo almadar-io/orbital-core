@@ -49,7 +49,7 @@ impl RuntimeKernel {
 
     /// The dispatch's one `now`: the outer stamp when one is held, else the clock.
     pub(super) fn hold_stamp(&self, now: f64) -> DispatchStamp {
-        let mut slot = self.dispatch_now.write();
+        let mut slot = self.step.dispatch_now.write();
         match *slot {
             Some(held) => DispatchStamp {
                 slot: None,
@@ -58,7 +58,7 @@ impl RuntimeKernel {
             None => {
                 *slot = Some(now);
                 DispatchStamp {
-                    slot: Some(Arc::clone(&self.dispatch_now)),
+                    slot: Some(Arc::clone(&self.step.dispatch_now)),
                     now,
                 }
             }
@@ -68,21 +68,21 @@ impl RuntimeKernel {
     /// The run's viewer as the kernel's `@user` for one unit.
     pub(super) fn hold_user(&self, user: Option<&Value>) -> Option<UserHold> {
         let user = user?;
-        let previous = std::mem::replace(&mut *self.current_user.write(), user.clone());
+        let previous = std::mem::replace(&mut *self.sessions.current_user.write(), user.clone());
         Some(UserHold {
-            slot: Arc::clone(&self.current_user),
+            slot: Arc::clone(&self.sessions.current_user),
             previous,
         })
     }
 
     /// The run's viewer locale, held for one unit unless the caller already holds one.
     pub(super) fn hold_locale(&self, locale: Option<&str>) -> Option<LocaleGuard> {
-        let mut slot = self.dispatch_locale.write();
+        let mut slot = self.step.dispatch_locale.write();
         match (locale, slot.is_none()) {
             (Some(locale), true) => {
                 *slot = Some(locale.to_string());
                 Some(LocaleGuard {
-                    slot: Arc::clone(&self.dispatch_locale),
+                    slot: Arc::clone(&self.step.dispatch_locale),
                 })
             }
             _ => None,
@@ -95,13 +95,13 @@ impl RuntimeKernel {
             return Ok(());
         };
         let entity_type = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(&front.trait_name)
             .and_then(|def| def.linked_entity.clone())
             .unwrap_or_else(|| front.trait_name.clone());
         let singleton_entity = self
-            .entity_definitions
+            .registry.entity_definitions
             .read()
             .get(&entity_type)
             .is_some_and(|def| {
@@ -155,7 +155,7 @@ impl RuntimeKernel {
     }
 
     pub(super) fn begin_seed(&self, plan: SeedPlan) -> SeedRun {
-        let now = self.dispatch_now.read().unwrap_or_else(|| self.clock_now());
+        let now = self.step.dispatch_now.read().unwrap_or_else(|| self.clock_now());
         let SeedPlan {
             trait_name,
             entity_id,
@@ -191,7 +191,7 @@ impl RuntimeKernel {
         let mut seed_scopes = vec![trait_name.clone()];
         if tick.is_none() {
             seed_scopes.extend(
-                self.embed_index
+                self.registry.embed_index
                     .read()
                     .ancestors(&trait_name)
                     .iter()
@@ -401,7 +401,7 @@ impl RuntimeKernel {
         } else {
             job.composed_with.clone()
         };
-        let def = self.trait_definitions.read().get(&child).cloned();
+        let def = self.registry.trait_definitions.read().get(&child).cloned();
         let lifecycle = def.as_ref().and_then(|def| {
             crate::callsite_capture::repaint_lifecycle_event(
                 def,

@@ -357,8 +357,6 @@ pub struct EventResponse {
     #[cfg_attr(test, ts(type = "{ [key in string]: EntityRow }"))]
     pub entity_by_trait: Option<ValueMap>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_effects: Option<Vec<ClientEffect>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_effects_by_trait: Option<Vec<ClientEffectByTrait>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect_results: Option<Vec<ServerEffectResult>>,
@@ -647,6 +645,11 @@ impl EventResponse {
         )
     }
 
+    /// The client effects in paint order, without their attribution: a view of `client_effects_by_trait`.
+    pub fn client_effects(&self) -> Vec<&ClientEffect> {
+        self.client_effects_by_trait.iter().flatten().map(|e| &e.effect).collect()
+    }
+
     /// Append the renders of traits repainted for an entity change
     /// ([`crate::runtime::Rerender`]), after everything the dispatch itself rendered.
     pub fn fold_rerenders(&mut self, rerenders: &[crate::kernel::Rerender]) {
@@ -655,33 +658,28 @@ impl EventResponse {
                 let Some(client_effect) = ClientEffect::from_effect(effect) else {
                     continue;
                 };
+                let repaint = match &client_effect {
+                    ClientEffect::RenderUi { slot, .. } if rerender.rows_changed.contains(slot) => {
+                        Some(RepaintReason::RowsChanged)
+                    }
+                    _ => None,
+                };
                 self.client_effects_by_trait
                     .get_or_insert_with(Vec::new)
                     .push(ClientEffectByTrait {
                         trait_name: rerender.trait_name.clone(),
-                        effect: client_effect.clone(),
+                        effect: client_effect,
                         event: None,
                         from_state: None,
                         callsite_payload: None,
-                        repaint: match &client_effect {
-                            ClientEffect::RenderUi { slot, .. }
-                                if rerender.rows_changed.contains(slot) =>
-                            {
-                                Some(RepaintReason::RowsChanged)
-                            }
-                            _ => None,
-                        },
+                        repaint,
                     });
-                self.client_effects
-                    .get_or_insert_with(Vec::new)
-                    .push(client_effect);
             }
         }
     }
 
     /// Drop the `render-ui` effects that paint a `(trait, slot)` in `superseded`: a newer paint
-    /// of that slot reaches the host through another response. `client_effects` and
-    /// `client_effects_by_trait` are built in lockstep, so the two lists drop the same entries.
+    /// of that slot reaches the host through another response.
     pub fn drop_renders_of(&mut self, superseded: &std::collections::HashSet<(String, String)>) {
         let Some(by_trait) = self.client_effects_by_trait.as_mut() else {
             return;
@@ -697,14 +695,6 @@ impl EventResponse {
             .collect();
         let mut keep = dropped.iter().map(|d| !d);
         by_trait.retain(|_| keep.next().unwrap_or(true));
-        if let Some(effects) = self
-            .client_effects
-            .as_mut()
-            .filter(|e| e.len() == dropped.len())
-        {
-            let mut keep = dropped.iter().map(|d| !d);
-            effects.retain(|_| keep.next().unwrap_or(true));
-        }
     }
 
     /// Merge a cascade of `(trait, ProcessEventResult)` outcomes (from
@@ -760,7 +750,6 @@ impl EventResponse {
         let mut data: HashMap<String, Vec<Value>> = HashMap::new();
         let mut data_refs: HashMap<String, orbital_core_base::row_set::RowSetRef> = HashMap::new();
         let mut entity_by_trait: ValueMap = ValueMap::default();
-        let mut client_effects: Vec<ClientEffect> = Vec::new();
         let mut client_effects_by_trait: Vec<ClientEffectByTrait> = Vec::new();
         let mut effect_results: Vec<ServerEffectResult> = Vec::new();
         let mut emitted_events: Vec<EmittedEvent> = Vec::new();
@@ -827,13 +816,12 @@ impl EventResponse {
                 if let Some(ce) = ClientEffect::from_effect(&er.effect) {
                     client_effects_by_trait.push(ClientEffectByTrait {
                         trait_name: trait_name.to_string(),
-                        effect: ce.clone(),
+                        effect: ce,
                         event: result.event.clone(),
                         from_state: result.event.as_ref().map(|_| result.previous_state.clone()),
                         callsite_payload: result.callsite_payload.clone(),
                         repaint: None,
                     });
-                    client_effects.push(ce);
                     continue;
                 }
                 if let Effect::Emit { event, payload } = &er.effect {
@@ -898,11 +886,6 @@ impl EventResponse {
             None
         } else {
             Some(entity_by_trait)
-        };
-        merged.client_effects = if client_effects.is_empty() {
-            None
-        } else {
-            Some(client_effects)
         };
         merged.client_effects_by_trait = if client_effects_by_trait.is_empty() {
             None

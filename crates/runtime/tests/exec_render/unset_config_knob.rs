@@ -47,9 +47,8 @@ fn painted_slots(config: Json, slot: &str) -> Vec<String> {
         slot,
         json!({ "type": "typography", "content": "x" }),
     )
-    .client_effects
-    .iter()
-    .flatten()
+    .client_effects()
+    .into_iter()
     .filter_map(|e| match e {
         ClientEffect::RenderUi { slot, .. } => Some(slot.clone()),
         _ => None,
@@ -59,9 +58,8 @@ fn painted_slots(config: Json, slot: &str) -> Vec<String> {
 
 fn rendered(config: Json, props: Json) -> Json {
     let pattern = response(config, "main", props)
-        .client_effects
-        .iter()
-        .flatten()
+        .client_effects()
+        .into_iter()
         .find_map(|e| match e {
             ClientEffect::RenderUi { config, .. } => config.clone(),
             _ => None,

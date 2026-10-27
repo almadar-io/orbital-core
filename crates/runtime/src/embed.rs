@@ -133,6 +133,8 @@ pub struct EmbeddedKernel {
     /// The mounted traits whose ticks run; `None` until a host declares a mount (the whole schema).
     mounted: Mutex<Option<BTreeSet<String>>>,
     observer: Option<Arc<dyn EmbedObserver>>,
+    /// A frame carries its ticks' `effectResults` only for a host that asked ([`Self::set_frame_effect_results`]).
+    frame_effect_results: std::sync::atomic::AtomicBool,
 }
 
 /// Parse the host's light/dark toggle.
@@ -176,6 +178,7 @@ impl EmbeddedKernel {
             ticks: Mutex::new(ticks),
             mounted: Mutex::new(None),
             observer: None,
+            frame_effect_results: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -761,6 +764,13 @@ impl EmbeddedKernel {
         }
         let mut response = EventResponse::from_process_results(&outcomes, "", "");
         response.fold_rerenders(&rerenders);
+        // A frame names only the traits a tick moved; the host holds every other state (P-015).
+        response
+            .states
+            .retain(|name, _| outcomes.iter().any(|(t, r)| t == name && r.previous_state != r.new_state));
+        if !self.frame_effect_results.load(std::sync::atomic::Ordering::Relaxed) {
+            response.effect_results = None;
+        }
         Ok(Some(FrameWire {
             fired,
             response,
@@ -865,6 +875,11 @@ impl EmbeddedKernel {
     /// verifier judging `@ensures` ([`RuntimeKernel::set_record_entity_after`], EXEC-STEP-10).
     pub fn set_record_entity_after(&self, record: bool) {
         self.kernel.set_record_entity_after(record);
+    }
+
+    /// Carry each tick's `effectResults` on the frame response, for a host that verifies them (P-015).
+    pub fn set_frame_effect_results(&self, carry: bool) {
+        self.frame_effect_results.store(carry, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// A row-set reference resolved against this client's rows for its current user: the one kernel resolver

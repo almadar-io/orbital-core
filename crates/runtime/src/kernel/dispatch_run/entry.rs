@@ -305,7 +305,7 @@ impl RuntimeKernel {
         tick_name: &str,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         let lane = self.lane.enter(None)?;
-        let defs = self.trait_definitions.read();
+        let defs = self.registry.trait_definitions.read();
         let declared = defs.get(trait_name).ok_or_else(|| {
             DispatchError::Kernel(KernelError::TraitNotFound(trait_name.to_string()))
         })?;
@@ -385,7 +385,7 @@ impl RuntimeKernel {
         let mut first = true;
         let mut plans = Vec::new();
         for seed in seeds {
-            if !self.trait_definitions.read().contains_key(&seed.r#trait) {
+            if !self.registry.trait_definitions.read().contains_key(&seed.r#trait) {
                 continue;
             }
             // Only the first seed carries the client's mount, synced against all seeds.
@@ -431,7 +431,7 @@ impl RuntimeKernel {
             plans: plans.into(),
             seed: None,
             outcomes: Vec::new(),
-            locale: self.dispatch_locale.read().clone(),
+            locale: self.step.dispatch_locale.read().clone(),
             user: self.thread_viewer(),
             origin: self.next_dispatch_origin(),
             provisional: None,
@@ -446,7 +446,7 @@ impl RuntimeKernel {
         if !(observer.enabled)() {
             return;
         }
-        let defs = self.trait_definitions.read();
+        let defs = self.registry.trait_definitions.read();
         let outcomes = run
             .outcomes
             .iter()

@@ -232,8 +232,8 @@ impl RuntimeKernel {
             })?,
         };
         let candidates: Vec<String> = {
-            let schemas = self.schemas.read();
-            self.trait_homes
+            let schemas = self.registry.schemas.read();
+            self.registry.trait_homes
                 .read()
                 .iter()
                 .filter(|(_, (schema, at))| {

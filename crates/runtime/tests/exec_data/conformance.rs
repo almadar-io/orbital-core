@@ -45,3 +45,63 @@ fn exec_data_1_a_seeder_stamps_absent_or_blank_timestamps_and_keeps_authored_one
     assert_eq!(rows[1].get_path("createdAt"), Some(&Value::from("2020-01-01T00:00:00Z")), "an authored value is kept");
     assert_eq!(rows[1].get_path("updatedAt"), Some(&Value::from(now)), "blank is the seeding instant");
 }
+
+fn carried_kernel(shared: bool) -> orbital_core_runtime::kernel::RuntimeKernel {
+    use orbital_core_runtime::entity_source::EntitySource;
+    let cache = std::sync::Arc::new(orbital_core_runtime::entity_source::InMemoryEntityCache::new());
+    let row = |v: serde_json::Value| -> Value { serde_json::from_value(v).unwrap() };
+    cache.write("Note", "a", &row(json!({ "id": "a", "fromA": "A-field" }))).unwrap();
+    cache.write("Note", "b", &row(json!({ "id": "b", "fromB": "B-field" }))).unwrap();
+    TestKernel::server().source(cache).build(json!({
+        "name": "Notes",
+        "orbitals": [{
+            "name": "NotesOrbital",
+            "entity": { "name": "Note", "persistence": "persistent", "shared": shared,
+                "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" },
+                    { "name": "fromA", "type": "string" }, { "name": "fromB", "type": "string" },
+                    { "name": "seenA", "type": "string" }, { "name": "seenB", "type": "string" }] },
+            "traits": [{ "name": "Reader", "linkedEntity": "Note",
+                "stateMachine": { "states": [{ "name": "on", "isInitial": true }],
+                    "transitions": [{ "from": "on", "to": "on", "event": "READ", "effects": [
+                        ["set", "@entity.seenA", "@entity.fromA"],
+                        ["set", "@entity.seenB", "@entity.fromB"]] }] } }]
+        }]
+    }))
+}
+
+fn read_with_carried(kernel: &orbital_core_runtime::kernel::RuntimeKernel, carried: serde_json::Value) -> (Option<String>, Option<String>) {
+    let mut by_trait = orbital_core_base::value::ValueMap::default();
+    by_trait.insert("Reader".to_string(), serde_json::from_value(carried).unwrap());
+    kernel.seed_leg(&[], Some(&by_trait), Some("a"));
+    let outcomes = kernel.dispatch("Reader", Some("a"), "READ", Value::Null).unwrap();
+    assert!(outcomes.iter().any(|(t, r)| t == "Reader" && r.executed), "the read ran");
+    let frame = kernel.snapshot_trait("Reader", Some("a")).entity;
+    let seen = |field: &str| frame.get_path(field).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+    (seen("seenA"), seen("seenB"))
+}
+
+/// EXEC-DATA-3: a carried row naming an `id` is that row, not the row at the dispatch's address.
+#[test]
+fn exec_data_3_a_carried_row_with_an_id_is_addressed_by_that_id() {
+    let kernel = carried_kernel(false);
+    let (seen_a, seen_b) = read_with_carried(&kernel, json!({ "id": "b", "title": "client" }));
+    assert_eq!(seen_b.as_deref(), Some("B-field"), "id-carrying row: the stored row of its own id is read");
+    assert_eq!(seen_a, None, "id-carrying row: the row at the dispatch address is not read");
+
+    let control = carried_kernel(false);
+    let (seen_a, seen_b) = read_with_carried(&control, json!({ "title": "client" }));
+    assert_eq!(seen_a.as_deref(), Some("A-field"), "control, no id: the row at the dispatch address is read");
+    assert_eq!(seen_b, None, "control, no id: another row is not read");
+}
+
+/// EXEC-DATA-3: an id-carrying row of a persisted shared entity is not folded; a non-shared one is.
+#[test]
+fn exec_data_3_an_id_carrying_row_of_a_persisted_shared_entity_is_not_folded() {
+    let shared = carried_kernel(true);
+    let (_, seen_b) = read_with_carried(&shared, json!({ "id": "b", "fromB": "client-B" }));
+    assert_ne!(seen_b.as_deref(), Some("client-B"), "shared: the carried copy is not folded");
+
+    let control = carried_kernel(false);
+    let (_, seen_b) = read_with_carried(&control, json!({ "id": "b", "fromB": "client-B" }));
+    assert_eq!(seen_b.as_deref(), Some("client-B"), "control, not shared: the carried copy folds");
+}

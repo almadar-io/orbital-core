@@ -52,7 +52,7 @@ impl RuntimeKernel {
         if !matches!(row, Value::Object(_)) {
             return fail("row must be an object".to_string());
         }
-        let Some(policies) = self.entity_policies.read().get(entity).cloned() else {
+        let Some(policies) = self.registry.entity_policies.read().get(entity).cloned() else {
             return fail(format!("`{entity}` is not an entity of this program"));
         };
         let mut viewer_ctx = BindingContext::new();
@@ -295,7 +295,7 @@ impl RuntimeKernel {
                 )
             }
         };
-        let egress = self.egress.read().clone();
+        let egress = self.grants.egress.read().clone();
         let (mut driver, step) = HttpCallDriver::start_as(
             spec,
             egress,
@@ -345,7 +345,7 @@ impl RuntimeKernel {
             Ok(spec) => spec,
             Err(refusal) => return http_failure(effect, redis::refusal_payload(&refusal, &key)),
         };
-        let egress = self.egress.read().clone();
+        let egress = self.grants.egress.read().clone();
         let (mut driver, step) = RedisDriver::start(spec, egress, key.clone());
         match drive(
             &self.io,
@@ -405,7 +405,7 @@ impl RuntimeKernel {
                 return http_failure(effect, crate::redis::refusal_payload(&refusal, &key))
             }
         };
-        let egress = self.egress.read().clone();
+        let egress = self.grants.egress.read().clone();
         let (mut driver, step) = PostgresDriver::start(spec, egress, key.clone());
         match drive(
             &self.io,
@@ -523,7 +523,7 @@ impl RuntimeKernel {
                 )
             }
         };
-        let egress = self.egress.read().clone();
+        let egress = self.grants.egress.read().clone();
         let (mut driver, step) = HttpCallDriver::start(spec, egress, key.clone());
         match drive(
             &self.io,

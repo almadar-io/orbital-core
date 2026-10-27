@@ -65,7 +65,7 @@ impl RuntimeKernel {
         );
 
         let trait_def = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(trait_name)
             .cloned()
@@ -89,17 +89,17 @@ impl RuntimeKernel {
         let ctx = BindingContextBuilder::new()
             .payload(effective_payload.clone())
             .state(Value::string(current_state.current_state.clone()))
-            .user(self.current_user.read().clone())
+            .user(self.sessions.current_user.read().clone())
             .now(stamp.now)
             .current_theme(Value::String(
                 (self.resolve_current_theme_for_trait(trait_name).key).into(),
             ))
-            .pages(self.nav_pages.read().clone());
+            .pages(self.presentation.nav_pages.read().clone());
         let mut ctx = self.with_viewer_i18n(ctx).build();
         ctx.set_prob_entropy(self.prob_entropy());
         ctx.set_config(bind_user_forwards(
-            config_defaults_value(&trait_def, &self.trait_definitions.read()),
-            &self.current_user.read(),
+            config_defaults_value(&trait_def, &self.registry.trait_definitions.read()),
+            &self.sessions.current_user.read(),
         ));
         if let Some(view) = view {
             view.apply(&mut ctx);
@@ -156,8 +156,8 @@ impl RuntimeKernel {
             ctx.set_state(Value::string(new_state.clone()));
             ctx.from_state = Some(current_state.current_state.clone());
             ctx.to_state = Some(new_state.clone());
-            *self.step_site.write() = Some((trait_name.to_string(), follow_on));
-            *self.step_frame.write() = Some(entity_id.to_string());
+            *self.step.step_site.write() = Some((trait_name.to_string(), follow_on));
+            *self.step.step_frame.write() = Some(entity_id.to_string());
             let (effect_results, captured_entity_data, effect_runs, failure) =
                 match self.server_leg_collector() {
                     Some(collector) => collector.attribute(trait_name, || {
@@ -165,8 +165,8 @@ impl RuntimeKernel {
                     }),
                     None => self.execute_effects_traced(result.effects(), &ctx),
                 };
-            *self.step_site.write() = None;
-            *self.step_frame.write() = None;
+            *self.step.step_site.write() = None;
+            *self.step.step_frame.write() = None;
 
             // Effective entity = read entity with Set-effect fields merged in. Persist
             // the MERGED entity (read-modify-write), never the partial
@@ -362,7 +362,7 @@ impl RuntimeKernel {
         let mut failures = Vec::new();
         use orbital_core_base::ir::types::{declared_alias_shape, field_shape, OirField, OirType};
         let entity_types: std::collections::BTreeMap<String, OirType> = self
-            .entity_definitions
+            .registry.entity_definitions
             .read()
             .iter()
             .map(|(name, entity)| {
@@ -385,7 +385,7 @@ impl RuntimeKernel {
                 )
             })
             .collect();
-        let definitions = self.trait_definitions.read();
+        let definitions = self.registry.trait_definitions.read();
         for (trait_name, event) in targets {
             let declared = definitions
                 .get(trait_name)
@@ -394,8 +394,8 @@ impl RuntimeKernel {
                 .and_then(|declared| declared.payload_schema.as_deref());
             if let Some(schema) = declared {
                 let mut named = entity_types.clone();
-                let homes = self.trait_homes.read();
-                let schemas = self.schemas.read();
+                let homes = self.registry.trait_homes.read();
+                let schemas = self.registry.schemas.read();
                 let mut version = None;
                 if let Some((program, index)) = homes
                     .get(trait_name)
@@ -455,7 +455,7 @@ impl RuntimeKernel {
         trait_name: &str,
         event: &str,
     ) -> Option<Vec<orbital_core_base::schema::types::PayloadField>> {
-        self.trait_definitions
+        self.registry.trait_definitions
             .read()
             .get(trait_name)?
             .state_machine

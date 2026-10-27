@@ -177,9 +177,31 @@ fn digest_str(h: &mut Xxh3, s: &str) {
     h.update(s.as_bytes());
 }
 
+/// A number by its canonical value (an integral float within the safe range is that integer), hashed from its bits.
 fn digest_number(h: &mut Xxh3, n: &Number) {
-    h.update(b"#");
-    digest_str(h, &canonical_number(n).to_string());
+    match (n.as_i64(), n.as_u64(), n.as_f64()) {
+        (Some(i), _, _) if !n.is_f64() => digest_integer(h, i),
+        (_, Some(u), _) if !n.is_f64() => {
+            h.update(b"#u");
+            h.update(&u.to_le_bytes());
+        }
+        (_, _, Some(f)) => digest_float(h, f),
+        _ => h.update(b"n"),
+    }
+}
+
+fn digest_integer(h: &mut Xxh3, i: i64) {
+    h.update(b"#i");
+    h.update(&i.to_le_bytes());
+}
+
+fn digest_float(h: &mut Xxh3, f: f64) {
+    if f.fract() == 0.0 && f.abs() <= MAX_SAFE_INTEGER {
+        digest_integer(h, f as i64);
+    } else {
+        h.update(b"#f");
+        h.update(&f.to_bits().to_le_bytes());
+    }
 }
 
 fn digest_value(h: &mut Xxh3, value: &EvalValue) {
@@ -189,10 +211,8 @@ fn digest_value(h: &mut Xxh3, value: &EvalValue) {
         }
         EvalValue::Null => h.update(b"n"),
         EvalValue::Bool(b) => h.update(if *b { b"t" } else { b"f" }),
-        EvalValue::Number(n) => match Number::from_f64(*n) {
-            Some(n) => digest_number(h, &n),
-            None => h.update(b"n"),
-        },
+        EvalValue::Number(n) if n.is_finite() => digest_float(h, *n),
+        EvalValue::Number(_) => h.update(b"n"),
         EvalValue::String(s) => {
             h.update(b"s");
             digest_str(h, s);
@@ -519,5 +539,21 @@ mod tests {
         assert_eq!(Arc::strong_count(&large), 2, "the digest cache holds the one value it digested, no copy per step");
         assert!(visits.contains("T", "E", "s", &EValue::Null, &fields(&step(1))));
         assert!(!visits.contains("T", "E", "s", &EValue::Null, &frame(&EValue::Null)), "control: no fields is another frame");
+    }
+
+    #[test]
+    fn a_number_is_one_payload_whatever_its_spelling_and_another_number_is_not() {
+        let num = |n: f64| EValue::Number(n);
+        let mut visits = DispatchVisits::default();
+        assert!(visits.insert("T", "E", "s", &num(1.0), &frame(&EValue::Null)));
+        assert!(visits.contains("T", "E", "s", &ev(json!(1)), &frame(&EValue::Null)), "1 and 1.0 are one payload");
+        assert!(!visits.contains("T", "E", "s", &num(2.0), &frame(&EValue::Null)), "control: 2 is another payload");
+        assert!(!visits.contains("T", "E", "s", &num(1.5), &frame(&EValue::Null)), "control: 1.5 is another payload");
+        assert!(!visits.contains("T", "E", "s", &EValue::string("1"), &frame(&EValue::Null)), "control: the text 1 is not the number");
+        assert!(visits.insert("T", "E", "s", &num(0.1 + 0.2), &frame(&EValue::Null)));
+        assert!(!visits.contains("T", "E", "s", &num(0.3), &frame(&EValue::Null)), "edge: distinct floats stay distinct");
+        assert!(visits.insert("T", "E", "s", &num(9_007_199_254_740_993.0), &frame(&EValue::Null)));
+        assert!(visits.insert("T", "E", "s", &num(-0.0), &frame(&EValue::Null)));
+        assert!(visits.contains("T", "E", "s", &num(0.0), &frame(&EValue::Null)), "edge: -0 and 0 are one payload");
     }
 }

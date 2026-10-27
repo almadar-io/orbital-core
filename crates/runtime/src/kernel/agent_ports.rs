@@ -70,7 +70,7 @@ impl RuntimeKernel {
     /// The persisted entities of every registered program, once, in schema order.
     pub fn readable_entities(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        for schema in self.schemas.read().values() {
+        for schema in self.registry.schemas.read().values() {
             for name in readable_entities_of(schema) {
                 if !out.contains(&name) {
                     out.push(name);
@@ -82,7 +82,7 @@ impl RuntimeKernel {
 
     /// The orbital and trait whose step is running: the position a relative address resolves from.
     pub(super) fn caller_position(&self) -> (Option<String>, String) {
-        let (caller_trait, _) = self.step_site.read().clone().unwrap_or_default();
+        let (caller_trait, _) = self.step.step_site.read().clone().unwrap_or_default();
         let caller_orbital = self.emit_source(&caller_trait).orbital;
         (caller_orbital, caller_trait)
     }
@@ -234,7 +234,7 @@ impl RuntimeKernel {
     fn running_program(&self) -> Result<Value, String> {
         let (caller_orbital, _) = self.caller_position();
         let orbital = caller_orbital.ok_or("program/self: no orbital is running")?;
-        let schemas = self.schemas.read();
+        let schemas = self.registry.schemas.read();
         let schema = schemas
             .values()
             .find(|schema| schema.orbitals.iter().any(|o| o.name == orbital))

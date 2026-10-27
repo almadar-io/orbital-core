@@ -391,7 +391,7 @@ impl ClientCore {
                 target: "almadar::client",
                 event = %event,
                 success = response.success,
-                client_effects = response.client_effects.as_ref().map_or(0, |e| e.len()),
+                client_effects = response.client_effects_by_trait.as_ref().map_or(0, |e| e.len()),
                 "drive_blocking: response"
             );
             self.process_response(event, trait_name.map(|s| s.to_string()), response);
@@ -789,22 +789,13 @@ impl ClientCore {
             self.entities.insert(entity_type.clone(), entities.clone());
         }
 
-        // The trait that produced each client effect — `clientEffectsByTrait` is the ONE
-        // spelling of source attribution (§156: no more `content.sourceTrait` stamping).
-        // Falls back to the request's trait when the response carries no by-trait array
-        // (an old/offline bridge, or a response with no client effects at all).
-        let paired: Vec<(String, ClientEffect)> = match &response.client_effects_by_trait {
-            Some(by_trait) => by_trait
-                .iter()
-                .map(|e| (e.trait_name.clone(), e.effect.clone()))
-                .collect(),
-            None => response
-                .client_effects
-                .iter()
-                .flatten()
-                .map(|e| (effective_trait.clone(), e.clone()))
-                .collect(),
-        };
+        // The trait that produced each client effect: `clientEffectsByTrait` is the one spelling of source attribution.
+        let paired: Vec<(String, ClientEffect)> = response
+            .client_effects_by_trait
+            .iter()
+            .flatten()
+            .map(|e| (e.trait_name.clone(), e.effect.clone()))
+            .collect();
 
         // Every trait writes its own slots; an embedded trait never writes `main` (its host
         // splices it in via `@trait.X`).

@@ -133,6 +133,21 @@ struct RepaintJob {
     visited: Arc<orbital_core_base::sync::Mutex<HashSet<String>>>,
 }
 
+/// Who a dispatch runs as and in which session: the program viewer, each request thread's viewer and session, and
+/// the sessions that have ended.
+struct Sessions {
+    current_user: Arc<RwLock<Value>>,
+    /// The viewer a request's thread dispatches as (set by [`ViewerGuard`]); a dispatch captures it when it starts, so
+    /// requests served at the same time keep their own `@user`.
+    viewer_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<Value>>>>,
+    /// The session a request's thread dispatches in (set by [`SessionGuard`]): a frame belongs to the session whose
+    /// dispatch made it (EXEC-DIST-9). A thread with none is in the program session.
+    session_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
+    scratch_sessions: std::sync::atomic::AtomicU64,
+    /// Sessions whose states and frames were freed (EXEC-DIST-9); a request but a mount to one is refused. Never pruned.
+    ended_sessions: Arc<RwLock<HashSet<String>>>,
+}
+
 /// A trait never receives a routed event before its own lifecycle event
 /// (INIT/LOAD/$MOUNT) has run on the current mount: a delivery reaching a
 /// mounted-but-not-yet-initialized trait is held and re-enqueued right after
@@ -240,48 +255,57 @@ fn listen_guard_passes(
     matches!(Evaluator::new().evaluate_guard(guard, &ctx), Ok(true))
 }
 
-/// Shared runtime kernel.
-///
-/// Owns schema registration, trait resolution, event processing, effect execution,
-/// and listener wiring. `orbital-client` and `orbital-server` wrap this kernel and
-/// inject environment-specific entity sources and handlers.
-pub struct RuntimeKernel {
-    config: KernelConfig,
-    state_manager: Arc<RwLock<StateMachineManager>>,
-    effect_executor: Arc<EffectExecutor>,
-    event_bus: SharedEventBus,
-    listener_manager: ListenerManager,
+/// What the in-flight dispatch and its running step hold: the one `now` stamp, the viewer locale, and the
+/// trait, follow-on flag and frame its call sites are stamped with.
+struct StepScope {
+    /// The in-flight dispatch's one `now` stamp; set by the outermost entry, reused by nested steps.
+    dispatch_now: Arc<RwLock<Option<f64>>>,
+    /// The in-flight dispatch's viewer locale (`EventRequest.locale`), held by a [`LocaleGuard`].
+    dispatch_locale: Arc<RwLock<Option<String>>>,
+    /// The trait whose effects are running and whether its step is a follow-on of the dispatch:
+    /// what a `call-service` is stamped with.
+    step_site: Arc<RwLock<Option<(String, bool)>>>,
+    /// The frame the step in `step_site` runs on, for the call sites it creates.
+    step_frame: Arc<RwLock<Option<String>>>,
+}
+
+/// What the registered programs present with: their theme presets, the viewer's light/dark mode, and the root nav
+/// entries `@pages` resolves to.
+struct Presentation {
+    /// The theme presets the registered programs carry (`themeDefinitions`,
+    /// written by `orb` when it compiles a program) — the kernel has no
+    /// filesystem access at runtime. Additive across registrations.
+    theme_presets: Arc<RwLock<ThemePresets>>,
+    /// The kernel's tracked light/dark toggle, independent of what a
+    /// declared theme's key suffix says — `@currentTheme` resolution honors
+    /// this over the declared suffix when EXPLICITLY set via
+    /// `set_theme_mode`. `None` (never set) lets `resolve_theme` fall back
+    /// to the declared theme key's own suffix instead of silently forcing
+    /// Light (§157/C7 `theme-declaration`: a `-dark` key must not be
+    /// overridden by an ambient default no one asked for).
+    theme_mode: Arc<RwLock<Option<ThemeMode>>>,
+    /// `@pages`: the app's root nav entries over every registered program; the empty list while none
+    /// declares a labeled root page (LOLO "Nav entries").
+    nav_pages: Arc<RwLock<Value>>,
+}
+
+/// The registered programs as the kernel looks them up: each program's schema, where each trait lives and its
+/// definition, and each entity's definition, defaults, access policies and embedded rows.
+struct Registry {
     /// Shared with every fork (EXEC-DIST-5): a registration replaces the entry, never mutates it.
     schemas: Arc<RwLock<HashMap<String, Arc<OrbitalSchema>>>>,
     /// Trait name to the schema and orbital index that declare it, rebuilt on every registration.
     trait_homes: Arc<RwLock<HashMap<String, (String, usize)>>>,
     trait_definitions: Arc<RwLock<HashMap<String, Arc<TraitDefinition>>>>,
-    dispatch_observer: RwLock<Option<Arc<crate::dispatch_trace::DispatchObserver>>>,
-    entity_source: Arc<dyn EntitySource>,
-    /// The door every read, write, service call and substrate operator goes through; `entity_source` is it.
-    io: Arc<IoPort>,
-    current_user: Arc<RwLock<Value>>,
-    /// The viewer a request's thread dispatches as (set by [`ViewerGuard`]); a dispatch captures it when it starts, so
-    /// requests served at the same time keep their own `@user`.
-    viewer_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<Value>>>>,
-    /// The session a request's thread dispatches in (set by [`SessionGuard`]): a frame belongs to the session whose
-    /// dispatch made it (EXEC-DIST-9). A thread with none is in the program session.
-    session_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
-    scratch_sessions: std::sync::atomic::AtomicU64,
-    /// Sessions whose states and frames were freed (EXEC-DIST-9); a request but a mount to one is refused. Never pruned.
-    ended_sessions: Arc<RwLock<HashSet<String>>>,
-    /// The host runs an emit's listeners whenever it marks the emit `dispatched`, so a fold runs only the client-only ones.
-    host_fans_out: std::sync::atomic::AtomicBool,
-    /// Record each step's `@entity` after its effects ([`DeliveryEntry::entity_after`]); off unless a verifier asks.
-    record_entity_after: std::sync::atomic::AtomicBool,
-    /// The in-flight dispatch's one `now` stamp; set by the outermost entry, reused by nested steps.
-    dispatch_now: Arc<RwLock<Option<f64>>>,
-    /// The program's declared locales (the first is the default) and merged message catalogs.
-    i18n: Arc<RwLock<KernelI18n>>,
-    /// The in-flight dispatch's viewer locale (`EventRequest.locale`), held by a [`LocaleGuard`].
-    dispatch_locale: Arc<RwLock<Option<String>>>,
-    /// The credentials of the program a host names this kernel the console of ([`Self::set_managed_program`]).
-    managed_credentials: Arc<RwLock<Vec<orbital_core_base::secrets::ProgramCredential>>>,
+    /// Every registered inline `EntityDefinition`, keyed by entity name —
+    /// populated additively alongside `entity_policies` in `register_schema`
+    /// (same loop, same inline-only/additive-across-registrations contract).
+    /// Policy and residence readers resolve a trait's linked entity here;
+    /// `DispatchMode` never does (it is the trait's declared `dispatch`).
+    entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
+    /// Each entity type's declared field defaults as one object (`Null` when none), built when the
+    /// schema registers; `read_trait_entity` layers a row and a frame over it.
+    entity_defaults: Arc<RwLock<HashMap<String, SharedEntity>>>,
     /// Schema-derived `@read`/`@create`/`@update`/`@delete` directives, keyed
     /// by entity name — populated at `register_schema`, shared with the
     /// `EffectExecutor` (write side) and `EntitySourceHandler` (read side) so
@@ -293,26 +317,47 @@ pub struct RuntimeKernel {
     /// the rest of the kernel's schema-derived tables. `dispatch` reads it to
     /// bubble a seed event up an embedded trait's host chain.
     embed_index: Arc<RwLock<EmbedIndex>>,
-    /// Every registered inline `EntityDefinition`, keyed by entity name —
-    /// populated additively alongside `entity_policies` in `register_schema`
-    /// (same loop, same inline-only/additive-across-registrations contract).
-    /// Policy and residence readers resolve a trait's linked entity here;
-    /// `DispatchMode` never does (it is the trait's declared `dispatch`).
-    entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
-    /// Each entity type's declared field defaults as one object (`Null` when none), built when the
-    /// schema registers; `read_trait_entity` layers a row and a frame over it.
-    entity_defaults: Arc<RwLock<HashMap<String, SharedEntity>>>,
+}
+
+/// What the program may reach outside the kernel: its egress origins, its os grants, and the credentials of
+/// the program a host names this kernel the console of.
+struct Grants {
     /// The `egress` origins the registered programs declare: the only hosts the `http` effect may reach.
     egress: Arc<RwLock<Vec<String>>>,
     /// The `os/` grants the registered programs declare, unioned.
     os_grants: Arc<RwLock<OsGrants>>,
+    /// The credentials of the program a host names this kernel the console of ([`Self::set_managed_program`]).
+    managed_credentials: Arc<RwLock<Vec<orbital_core_base::secrets::ProgramCredential>>>,
+}
+
+/// Shared runtime kernel.
+///
+/// Owns schema registration, trait resolution, event processing, effect execution,
+/// and listener wiring. `orbital-client` and `orbital-server` wrap this kernel and
+/// inject environment-specific entity sources and handlers.
+pub struct RuntimeKernel {
+    grants: Grants,
+    registry: Registry,
+    presentation: Presentation,
+    step: StepScope,
+    config: KernelConfig,
+    state_manager: Arc<RwLock<StateMachineManager>>,
+    effect_executor: Arc<EffectExecutor>,
+    event_bus: SharedEventBus,
+    listener_manager: ListenerManager,
+    dispatch_observer: RwLock<Option<Arc<crate::dispatch_trace::DispatchObserver>>>,
+    entity_source: Arc<dyn EntitySource>,
+    /// The door every read, write, service call and substrate operator goes through; `entity_source` is it.
+    io: Arc<IoPort>,
+    sessions: Sessions,
+    /// The host runs an emit's listeners whenever it marks the emit `dispatched`, so a fold runs only the client-only ones.
+    host_fans_out: std::sync::atomic::AtomicBool,
+    /// Record each step's `@entity` after its effects ([`DeliveryEntry::entity_after`]); off unless a verifier asks.
+    record_entity_after: std::sync::atomic::AtomicBool,
+    /// The program's declared locales (the first is the default) and merged message catalogs.
+    i18n: Arc<RwLock<KernelI18n>>,
     /// The program's placement, the envelope ids accepted per sender and the dispatch origin in flight (EXEC-QUEUE-9).
     deliveries: Arc<RwLock<envelope::Deliveries>>,
-    /// The trait whose effects are running and whether its step is a follow-on of the dispatch:
-    /// what a `call-service` is stamped with.
-    step_site: Arc<RwLock<Option<(String, bool)>>>,
-    /// The frame the step in `step_site` runs on, for the call sites it creates.
-    step_frame: Arc<RwLock<Option<String>>>,
     /// Referrer trait -> the embedded children to re-render under its payload (`callsite_capture`).
     capture_children: Arc<RwLock<HashMap<String, Vec<String>>>>,
     /// Trait -> the payload its composer last composed it with: what its own `@callsitePayload` reads.
@@ -330,21 +375,6 @@ pub struct RuntimeKernel {
     /// Frame slot -> the id of the row a carried row named: that trait reads that row under its frame,
     /// not the dispatch's address (G-CROSS-256).
     carried_rows: Arc<RwLock<HashMap<(String, String), String>>>,
-    /// The theme presets the registered programs carry (`themeDefinitions`,
-    /// written by `orb` when it compiles a program) — the kernel has no
-    /// filesystem access at runtime. Additive across registrations.
-    theme_presets: Arc<RwLock<ThemePresets>>,
-    /// The kernel's tracked light/dark toggle, independent of what a
-    /// declared theme's key suffix says — `@currentTheme` resolution honors
-    /// this over the declared suffix when EXPLICITLY set via
-    /// `set_theme_mode`. `None` (never set) lets `resolve_theme` fall back
-    /// to the declared theme key's own suffix instead of silently forcing
-    /// Light (§157/C7 `theme-declaration`: a `-dark` key must not be
-    /// overridden by an ambient default no one asked for).
-    theme_mode: Arc<RwLock<Option<ThemeMode>>>,
-    /// `@pages`: the app's root nav entries over every registered program; the empty list while none
-    /// declares a labeled root page (LOLO "Nav entries").
-    nav_pages: Arc<RwLock<Value>>,
     /// The current mount's lifecycle (see [`MountLifecycle`]).
     mount: Arc<RwLock<MountLifecycle>>,
     /// Each mounted trait's last `render-ui`, kept to repaint it when the entity it reads changes.
@@ -367,9 +397,9 @@ impl std::fmt::Debug for RuntimeKernel {
             .field("effect_executor", &self.effect_executor)
             .field("event_bus", &self.event_bus)
             .field("listener_manager", &self.listener_manager)
-            .field("schemas", &self.schemas)
-            .field("trait_definitions", &self.trait_definitions)
-            .field("current_user", &self.current_user)
+            .field("schemas", &self.registry.schemas)
+            .field("trait_definitions", &self.registry.trait_definitions)
+            .field("current_user", &self.sessions.current_user)
             .field("host_fans_out", &self.host_fans_out)
             .finish()
     }
@@ -579,45 +609,55 @@ impl RuntimeKernel {
             effect_executor,
             event_bus,
             listener_manager,
-            schemas: Arc::new(RwLock::new(HashMap::new())),
-            trait_homes: Arc::new(RwLock::new(HashMap::new())),
-            trait_definitions: Arc::new(RwLock::new(HashMap::new())),
+            registry: Registry {
+                schemas: Arc::new(RwLock::new(HashMap::new())),
+                trait_homes: Arc::new(RwLock::new(HashMap::new())),
+                trait_definitions: Arc::new(RwLock::new(HashMap::new())),
+                entity_definitions,
+                entity_defaults: Arc::new(RwLock::new(HashMap::new())),
+                entity_policies,
+                embed_index: Arc::new(RwLock::new(EmbedIndex::default())),
+            },
             dispatch_observer: RwLock::new(None),
             entity_source,
             io,
             rows: entity_handler,
             prob_entropy,
-            current_user: Arc::new(RwLock::new(current_user)),
-            viewer_by_thread: Arc::default(),
-            session_by_thread: Arc::default(),
-            scratch_sessions: std::sync::atomic::AtomicU64::new(0),
-            ended_sessions: Arc::default(),
+            sessions: Sessions {
+                current_user: Arc::new(RwLock::new(current_user)),
+                viewer_by_thread: Arc::default(),
+                session_by_thread: Arc::default(),
+                scratch_sessions: std::sync::atomic::AtomicU64::new(0),
+                ended_sessions: Arc::default(),
+            },
             lane: Arc::default(),
             keyed_parks: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
             record_entity_after: std::sync::atomic::AtomicBool::new(false),
-            dispatch_now: Arc::new(RwLock::new(None)),
             i18n: Arc::new(RwLock::new(KernelI18n::default())),
-            dispatch_locale: Arc::new(RwLock::new(None)),
-            managed_credentials: Arc::new(RwLock::new(Vec::new())),
-            entity_policies,
-            embed_index: Arc::new(RwLock::new(EmbedIndex::default())),
-            entity_definitions,
-            entity_defaults: Arc::new(RwLock::new(HashMap::new())),
-            egress: Arc::new(RwLock::new(Vec::new())),
-            os_grants: Arc::new(RwLock::new(OsGrants::default())),
+            step: StepScope {
+                dispatch_now: Arc::new(RwLock::new(None)),
+                dispatch_locale: Arc::new(RwLock::new(None)),
+                step_site: Arc::new(RwLock::new(None)),
+                step_frame: Arc::new(RwLock::new(None)),
+            },
+            grants: Grants {
+                egress: Arc::new(RwLock::new(Vec::new())),
+                os_grants: Arc::new(RwLock::new(OsGrants::default())),
+                managed_credentials: Arc::new(RwLock::new(Vec::new())),
+            },
             deliveries: Arc::default(),
-            step_site: Arc::new(RwLock::new(None)),
-            step_frame: Arc::new(RwLock::new(None)),
             capture_children: Arc::new(RwLock::new(HashMap::new())),
             composed_callsite: Arc::new(RwLock::new(ValueMap::default())),
             frames: Arc::new(RwLock::new(HashMap::new())),
             carried_rows: Arc::new(RwLock::new(HashMap::new())),
             suspended_commit: Arc::new(RwLock::new(None)),
             store_seeds: Arc::new(orbital_core_base::sync::Mutex::new(std::collections::VecDeque::new())),
-            theme_presets: Arc::new(RwLock::new(ThemePresets::new())),
-            theme_mode: Arc::new(RwLock::new(None)),
-            nav_pages: Arc::new(RwLock::new(Value::array(Vec::new()))),
+            presentation: Presentation {
+                theme_presets: Arc::new(RwLock::new(ThemePresets::new())),
+                theme_mode: Arc::new(RwLock::new(None)),
+                nav_pages: Arc::new(RwLock::new(Value::array(Vec::new()))),
+            },
             mount: Arc::new(RwLock::new(MountLifecycle::default())),
             renders: Arc::new(RwLock::new(RenderStore::default())),
         }
@@ -671,7 +711,7 @@ impl RuntimeKernel {
     pub fn stats(&self) -> RuntimeStats {
         let manager_stats = self.state_manager.read().stats();
         RuntimeStats {
-            registered_schemas: self.schemas.read().len(),
+            registered_schemas: self.registry.schemas.read().len(),
             registered_traits: manager_stats.registered_traits,
             active_instances: manager_stats.active_instances,
             cached_entities: self.entity_source.count(),

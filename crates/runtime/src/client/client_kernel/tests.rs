@@ -378,7 +378,7 @@ fn begin_paints_locally_and_posts_nothing_until_settle() {
         delta.states.is_empty(),
         "control: settle adds only what the server answered"
     );
-    assert!(delta.client_effects.as_ref().is_none_or(Vec::is_empty));
+    assert!(delta.client_effects().is_empty());
 }
 
 fn settled_effect_results(

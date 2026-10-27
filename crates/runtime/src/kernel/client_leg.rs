@@ -37,7 +37,7 @@ impl RuntimeKernel {
         let eid = entity_id.unwrap_or(RUNTIME_SINGLETON).to_string();
 
         let trait_def = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(trait_name)
             .cloned()
@@ -302,7 +302,7 @@ impl RuntimeKernel {
     /// `_awaitingInit` a leg carries: a client-only trait's INIT never posts, so the host would hold its
     /// deliveries forever (twin of `withMountedSet`, `almadar-runtime/src/evaluation/client-role.ts`).
     pub fn awaiting_init_value(&self) -> Value {
-        let defs = self.trait_definitions.read();
+        let defs = self.registry.trait_definitions.read();
         let mut names: Vec<String> = self
             .mount
             .read()
@@ -332,7 +332,7 @@ impl RuntimeKernel {
         let _lane = self.lane.enter(None)?;
         let _ = self.drain_server_leg_collector();
         let residence = orbital_core_base::runs_on::Residence::of_entities(
-            self.entity_definitions.read().values(),
+            self.registry.entity_definitions.read().values(),
         );
         let delegates = |result: &ProcessEventResult| {
             result.executed
@@ -392,7 +392,7 @@ impl RuntimeKernel {
     /// Whether every effect is a data effect on a browser-stored entity (the host's store holds the data).
     /// Where a leg carrying `effects` runs, and whether it mixes browser-stored rows with server work (refused).
     pub(super) fn leg_residence(&self, effects: &[Effect]) -> (LegResidence, bool) {
-        let residence = orbital_core_base::runs_on::Residence::of_entities(self.entity_definitions.read().values());
+        let residence = orbital_core_base::runs_on::Residence::of_entities(self.registry.entity_definitions.read().values());
         let browser_rows = effects
             .iter()
             .any(|e| matches!(e, Effect::Persist { .. } | Effect::Fetch { .. }) && browser_data_effect(e, &residence));
@@ -403,7 +403,7 @@ impl RuntimeKernel {
 
     pub(super) fn all_browser_data(&self, effects: &[Effect]) -> bool {
         let residence = orbital_core_base::runs_on::Residence::of_entities(
-            self.entity_definitions.read().values(),
+            self.registry.entity_definitions.read().values(),
         );
         effects.iter().all(|e| browser_data_effect(e, &residence))
     }
@@ -411,7 +411,7 @@ impl RuntimeKernel {
     /// Each non-local trait a dispatch's local run executed, by its first firing (the web
     /// client kernel's `awaitingEntries`).
     pub(super) fn awaiting_of(&self, outcomes: &[(String, ProcessEventResult)]) -> Vec<AwaitingTrait> {
-        let defs = self.trait_definitions.read();
+        let defs = self.registry.trait_definitions.read();
         let mut out: Vec<AwaitingTrait> = Vec::new();
         for (name, result) in outcomes {
             let Some(event) = result.event.as_ref().filter(|_| result.executed) else {
@@ -525,7 +525,7 @@ impl RuntimeKernel {
 
         let client_only: HashSet<String> = {
             let defs: Vec<Arc<TraitDefinition>> =
-                self.trait_definitions.read().values().cloned().collect();
+                self.registry.trait_definitions.read().values().cloned().collect();
             defs.iter()
                 .filter(|d| self.dispatch_mode_of(d) == DispatchMode::HybridClientOnly)
                 .map(|d| d.name.clone())
@@ -534,7 +534,7 @@ impl RuntimeKernel {
 
         let mut trait_entity_ids: HashMap<String, String> = HashMap::new();
         if let Some(entity_by_trait) = &response.entity_by_trait {
-            let trait_defs = self.trait_definitions.read();
+            let trait_defs = self.registry.trait_definitions.read();
             for (trait_name, entity_val) in entity_by_trait {
                 if client_only.contains(trait_name) {
                     continue;
@@ -667,7 +667,7 @@ impl RuntimeKernel {
     ) {
         let eid = entity_id.unwrap_or(RUNTIME_SINGLETON);
         for carried in traits {
-            if !self.trait_definitions.read().contains_key(&carried.r#trait) {
+            if !self.registry.trait_definitions.read().contains_key(&carried.r#trait) {
                 continue;
             }
             let mut state_manager = self.state_manager.write();
@@ -682,7 +682,7 @@ impl RuntimeKernel {
             }
         }
         for (trait_name, row) in entity_by_trait.into_iter().flatten() {
-            let entity_type = match self.trait_definitions.read().get(trait_name) {
+            let entity_type = match self.registry.trait_definitions.read().get(trait_name) {
                 Some(def) => def
                     .linked_entity
                     .clone()
@@ -700,7 +700,7 @@ impl RuntimeKernel {
             // A persisted `[shared]` entity's frame is its one working instance: a detail row's id never addresses it.
             // A `[runtime]` row has no store behind it, so the client's copy is the row and always folds.
             let persisted_shared = self
-                .entity_definitions
+                .registry.entity_definitions
                 .read()
                 .get(&entity_type)
                 .is_some_and(|d| d.shared && d.persistence != Some(Persistence::Runtime));
@@ -782,7 +782,7 @@ impl RuntimeKernel {
         let Some(emitter) = source.r#trait.as_deref() else {
             return Some(true);
         };
-        let defs = self.trait_definitions.read();
+        let defs = self.registry.trait_definitions.read();
         let client_run = |name: &str| {
             defs.get(name)
                 .is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited)
@@ -810,7 +810,7 @@ impl RuntimeKernel {
     /// trait runs on the client, `Null` (no payload) when it runs on the server.
     pub fn browser_completion_payload(&self, trait_name: &str, payload: &Value) -> Value {
         let server_run = self
-            .trait_definitions
+            .registry.trait_definitions
             .read()
             .get(trait_name)
             .is_some_and(|d| self.dispatch_mode_of(d) == DispatchMode::PersistedAwaited);
