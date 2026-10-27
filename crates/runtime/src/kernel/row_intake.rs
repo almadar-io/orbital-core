@@ -1,5 +1,5 @@
 //! A row from outside the kernel is checked once, where it arrives, against its entity's declared fields (G-CROSS-335):
-//! from then on its values are trusted, as a `proven` argument read from it is.
+//! from then on its values are trusted.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 

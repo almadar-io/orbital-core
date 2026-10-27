@@ -249,7 +249,7 @@ fn listen_guard_passes(
         .payload(source_payload.clone())
         .state(Value::string(from.to_string()))
         .build();
-    ctx.from_state = Some(from.to_string());
+    ctx.from_state = Some(std::sync::Arc::from(from));
     ctx.set_config(config);
     view.apply(&mut ctx);
     matches!(Evaluator::new().evaluate_guard(guard, &ctx), Ok(true))
@@ -352,6 +352,8 @@ pub struct RuntimeKernel {
     /// The door every read, write, service call and substrate operator goes through; `entity_source` is it.
     io: Arc<IoPort>,
     sessions: Sessions,
+    /// Each client session's live streams and running requests, and what freeing one drops (EXEC-DIST-9).
+    session_lives: Arc<session_life::SessionLives>,
     /// The host runs an emit's listeners whenever it marks the emit `dispatched`, so a fold runs only the client-only ones.
     host_fans_out: std::sync::atomic::AtomicBool,
     /// Record each step's `@entity` after its effects ([`DeliveryEntry::entity_after`]); off unless a verifier asks.
@@ -605,6 +607,15 @@ impl RuntimeKernel {
             }
         };
 
+        let frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>> = Arc::new(RwLock::new(HashMap::new()));
+        let carried_rows: Arc<RwLock<HashMap<(String, String), String>>> = Arc::new(RwLock::new(HashMap::new()));
+        let ended_sessions: Arc<RwLock<HashSet<String>>> = Arc::default();
+        let session_lives = Arc::new(session_life::SessionLives::new(
+            Arc::clone(&frames),
+            Arc::clone(&carried_rows),
+            Arc::clone(&state_manager),
+            Arc::clone(&ended_sessions),
+        ));
         Self {
             config,
             state_manager,
@@ -631,8 +642,9 @@ impl RuntimeKernel {
                 viewer_by_thread: Arc::default(),
                 session_by_thread: Arc::default(),
                 scratch_sessions: std::sync::atomic::AtomicU64::new(0),
-                ended_sessions: Arc::default(),
+                ended_sessions,
             },
+            session_lives,
             lane: Arc::default(),
             keyed_parks: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
@@ -652,8 +664,8 @@ impl RuntimeKernel {
             deliveries: Arc::default(),
             capture_children: Arc::new(RwLock::new(HashMap::new())),
             composed_callsite: Arc::new(RwLock::new(ValueMap::default())),
-            frames: Arc::new(RwLock::new(HashMap::new())),
-            carried_rows: Arc::new(RwLock::new(HashMap::new())),
+            frames,
+            carried_rows,
             suspended_commit: Arc::new(RwLock::new(None)),
             store_seeds: Arc::new(orbital_core_base::sync::Mutex::new(std::collections::VecDeque::new())),
             presentation: Presentation {
@@ -960,6 +972,8 @@ mod host_effects;
 mod oauth_effects;
 mod repaint;
 mod viewer_scope;
+mod session_life;
+pub use session_life::{RequestSession, SessionActive, SessionEnded, SessionPending, SessionStream};
 mod program_queries;
 mod dispatch_scope;
 mod values;

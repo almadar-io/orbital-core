@@ -122,3 +122,101 @@ fn exec_conc_5_control_a_dispatch_on_a_fork_leaves_the_parent_session_alone() {
     assert_eq!(fork.snapshot_trait("T", None).state, "busy", "control: the fork's own dispatch moved it");
     assert_ne!(parent.snapshot_trait("T", None).state, "busy", "the parent shares no mutable state with the fork");
 }
+
+fn lane_schema() -> orbital_core_base::schema::types::OrbitalSchema {
+    serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Asker", "linkedEntity": "Job",
+                  "stateMachine": {
+                      "states": [{ "name": "idle", "isInitial": true }, { "name": "asked" }],
+                      "transitions": [{ "from": "idle", "to": "asked", "event": "ASK", "effects": [["call-service", "svc", "work", {}]] }]
+                  } },
+                { "name": "Counter", "linkedEntity": "Job",
+                  "stateMachine": {
+                      "states": [{ "name": "zero", "isInitial": true }, { "name": "one" }, { "name": "two" }],
+                      "transitions": [
+                          { "from": "zero", "to": "one", "event": "TOUCH" },
+                          { "from": "one", "to": "two", "event": "TOUCH" }
+                      ]
+                  } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn targeted(event: &str, target: &str) -> orbital_core_runtime::effects::response::EventRequest {
+    orbital_core_runtime::effects::response::EventRequest {
+        event: event.to_string(),
+        target_trait: Some(target.to_string()),
+        ..Default::default()
+    }
+}
+
+fn answered(requests: Vec<orbital_core_runtime::resumable::PendingRequest>) -> Vec<orbital_core_runtime::resumable::IoReply> {
+    use orbital_core_runtime::resumable::{IoAnswer, IoReply};
+    requests
+        .into_iter()
+        .map(|pending| IoReply {
+            id: pending.id,
+            answer: IoAnswer::Service(Ok(serde_json::from_value(serde_json::json!({ "ok": true })).unwrap())),
+        })
+        .collect()
+}
+
+#[test]
+fn exec_conc_2_the_kernel_queues_a_request_behind_a_dispatch_parked_on_an_unkeyed_ask() {
+    use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
+    let server = EmbeddedServer::new(lane_schema()).unwrap();
+    let ServerProgress::Await { flight, requests } = server.start("Main", targeted("ASK", "Asker")).unwrap() else {
+        panic!("the unkeyed call parks its dispatch");
+    };
+    assert!(server.holds_lane(flight), "an unkeyed ask keeps the lane");
+    let ServerProgress::Queued { ticket: first } = server.start("Main", targeted("TOUCH", "Counter")).unwrap() else {
+        panic!("a request arriving while the lane is held waits");
+    };
+    let ServerProgress::Queued { ticket: second } = server.start("Main", targeted("TOUCH", "Counter")).unwrap() else {
+        panic!("a second request queues behind the first");
+    };
+    assert!(server.next().is_none(), "nothing starts while the parked dispatch holds the lane");
+    assert_eq!(server.get_state("Counter", None), "zero", "a queued request has not run");
+    let ServerProgress::Done(_) = server.resume(flight, answered(requests)).unwrap() else {
+        panic!("the answered dispatch commits");
+    };
+    let (ticket, started) = server.next().expect("the lane is free, so the oldest queued request starts");
+    assert_eq!(ticket, first);
+    assert!(matches!(started, Ok(ServerProgress::Done(_))));
+    assert_eq!(server.get_state("Counter", None), "one");
+    let (ticket, _) = server.next().expect("then the next one, in arrival order");
+    assert_eq!(ticket, second);
+    assert_eq!(server.get_state("Counter", None), "two");
+    assert!(server.next().is_none(), "the queue is empty");
+}
+
+#[test]
+fn exec_conc_2_control_a_request_with_the_lane_free_starts_at_once() {
+    use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
+    let server = EmbeddedServer::new(lane_schema()).unwrap();
+    assert!(matches!(server.start("Main", targeted("TOUCH", "Counter")).unwrap(), ServerProgress::Done(_)));
+    assert!(server.next().is_none());
+}
+
+#[test]
+fn exec_conc_2_control_an_abandoned_dispatch_frees_the_lane_for_the_queue() {
+    use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
+    let server = EmbeddedServer::new(lane_schema()).unwrap();
+    let ServerProgress::Await { flight, .. } = server.start("Main", targeted("ASK", "Asker")).unwrap() else {
+        panic!("the unkeyed call parks its dispatch");
+    };
+    let ServerProgress::Queued { ticket } = server.start("Main", targeted("TOUCH", "Counter")).unwrap() else {
+        panic!("queued behind the parked dispatch");
+    };
+    assert!(server.abandon(flight));
+    assert!(!server.holds_lane(flight));
+    let (started, _) = server.next().expect("the abandoned dispatch released the lane");
+    assert_eq!(started, ticket);
+}

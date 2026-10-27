@@ -41,7 +41,7 @@ pub struct ValueWalk<'r> {
 /// The ordered initializer/body slots evaluated by the canonical `let` form.
 #[derive(Debug)]
 pub struct SequentialBindings<'a> {
-    pub bindings: Vec<(&'a str, &'a SExpression)>,
+    pub bindings: Vec<(&'a crate::value::Shared<String>, &'a SExpression)>,
     pub body: &'a SExpression,
 }
 
@@ -54,7 +54,10 @@ impl<'a> SequentialBindings<'a> {
                 .iter()
                 .filter_map(|binding| {
                     let pair = binding.as_array()?;
-                    Some((pair.first()?.as_str()?, pair.get(1)?))
+                    match (pair.first()?, pair.get(1)?) {
+                        (SExpression::String(name), initializer) => Some((name, initializer)),
+                        _ => None,
+                    }
                 })
                 .collect(),
             body,

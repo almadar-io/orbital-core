@@ -34,7 +34,7 @@ impl Operator for AsOp {
                 Some((shape, declared)) => match super::arg_types::misfit_of_shape(&value, &declared) {
                     None => Ok(value),
                     Some((path, actual)) => {
-                        tracing::warn!(
+                        tracing::debug!(
                             target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
                             "as: the value is not of the shape {shape}: at `{path}` it is {actual}"
                         );
@@ -63,33 +63,3 @@ impl Operator for TypedOp {
     }
 }
 
-/// proven - `["proven", [positions], op, arg0, arg1, …]`: the value of the call `[op, arg0, arg1, …]`, whose arguments at
-/// `positions` the static checker proved and the kernel does not check again (EXEC-EVAL-1). Flat, so a mark adds no
-/// nesting. Written by `orb resolve` (never `.lolo`); a program arriving as data has it removed before it is resolved.
-pub struct ProvenOp;
-impl Operator for ProvenOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        let invalid = |reason: &str| OrbitalError::Eval(EvalError::InvalidArgument(format!("proven: {reason}")));
-        let Some(SExpression::Array(listed)) = args.first() else {
-            return Err(invalid("the positions must be a list"));
-        };
-        let mut proven = 0u64;
-        for position in crate::lower::strip_literal_list_marker(listed) {
-            match position {
-                SExpression::Number(n) if *n >= 0.0 && n.fract() == 0.0 => {
-                    if *n < 64.0 {
-                        proven |= 1 << (*n as u32);
-                    }
-                }
-                _ => return Err(invalid("a position must be a non-negative integer")),
-            }
-        }
-        let Some(operator) = args.get(1).and_then(SExpression::as_str).and_then(get_operator) else {
-            return Err(invalid("the second argument must name an operator"));
-        };
-        let call = &args[2..];
-        let _frame = super::arg_types::signature_for(&operator)
-            .map(|signature| super::arg_types::CallFrame::enter_proven(signature, call, proven));
-        operator.evaluate(call, ctx)
-    }
-}

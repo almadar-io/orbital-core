@@ -154,8 +154,8 @@ impl RuntimeKernel {
                 .clone()
                 .unwrap_or(current_state.current_state.clone());
             ctx.set_state(Value::string(new_state.clone()));
-            ctx.from_state = Some(current_state.current_state.clone());
-            ctx.to_state = Some(new_state.clone());
+            ctx.from_state = Some(std::sync::Arc::from(current_state.current_state.as_str()));
+            ctx.to_state = Some(std::sync::Arc::from(new_state.as_str()));
             *self.step.step_site.write() = Some((trait_name.to_string(), follow_on));
             *self.step.step_frame.write() = Some(entity_id.to_string());
             let (effect_results, captured_entity_data, effect_runs, failure) =

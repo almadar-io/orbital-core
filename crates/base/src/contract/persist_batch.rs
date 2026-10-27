@@ -51,11 +51,11 @@ pub fn is_op_tuple(expr: &SExpression) -> bool {
         .is_some_and(|h| BATCH_ACTIONS.contains(&h))
 }
 
-/// The lambda body of `["fn", <params>, <body>]` / `["lambda", …]`.
+/// The lambda body of `["fn", <params>, <body>]`.
 pub fn lambda_body(expr: &SExpression) -> Option<&SExpression> {
     let items = as_items(expr)?;
     match items.first()?.as_str()? {
-        "fn" | "lambda" if items.len() >= 3 => items.last(),
+        "fn" if items.len() >= 3 => items.last(),
         _ => None,
     }
 }

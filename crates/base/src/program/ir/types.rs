@@ -8,6 +8,7 @@ use crate::schema::types::{FieldDefinition, FieldType, ServiceRef, ThemeDefiniti
 use crate::str_utils::to_snake_case;
 use crate::collections::IndexMap;
 use serde::{Deserialize, Serialize};
+use crate::value::Shared;
 use std::collections::HashMap;
 
 /// Config field type declaration, preserving enum `values` alongside the
@@ -304,7 +305,7 @@ mod transition;
 mod page;
 mod value;
 pub use entity::{OirCardinality, OirConstraint, OirEntity, OirField, OirPersistence, OirRelation};
-pub use oir_type::OirType;
+pub use oir_type::{no_fields, OirType};
 pub use page::{
     OirEntityBinding, OirNavigation, OirPage, OirPattern, OirSection, OirSectionEvent,
     OirTraitBinding, OirViewType,

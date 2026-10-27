@@ -1,0 +1,5 @@
+# Known core test failures recorded 2026-10-27 (P-017 step 0): G-CROSS-329, G-ORBITAL-CORE-058, G-ORBITAL-CORE-064. Delete a line when its test passes.
+crates/base/Cargo.toml:unittests#i18n::orb_keys_test::notation_keys_are_absent_from_en_orb
+crates/runtime/Cargo.toml:tests/host_effects.rs#os_twin::os_twin_fixture_replay
+crates/runtime/Cargo.toml:tests/host_effects.rs#os_twin::os_twin_fixture_replay_through_the_native_host
+crates/runtime/Cargo.toml:tests/public_layout_contract.rs#public_layouts_do_not_grow_past_their_measured_native_size

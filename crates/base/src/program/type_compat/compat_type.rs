@@ -141,10 +141,10 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         // A tagged union of struct variants (`type Pick = A | B` in a payload):
         // an object-family declaration — the variants themselves are checked
         // by the variant-aware validators.
-        "union" => CompatType::Ty(OirType::Union { variants: vec![] }),
+        "union" => CompatType::Ty(OirType::Union { variants: crate::ir::types::no_fields() }),
         // A schemaless object — an empty Struct is its nearest `OirType` shape;
         // the family arm makes every cross-variant object pairing erase.
-        "object" => CompatType::Ty(OirType::Struct { fields: vec![], additional: None }),
+        "object" => CompatType::Ty(OirType::Struct { fields: crate::ir::types::no_fields(), additional: None }),
         "array" => CompatType::Ty(OirType::Array {
             inner: Box::new(OirType::Json),
         }),
@@ -177,7 +177,7 @@ pub fn parse_compat_type(s: &str) -> CompatType {
                 },
                 declared => match parse_compat_type(declared) {
                     CompatType::Ty(ty) => ty,
-                    CompatType::Named(_) => OirType::Struct { fields: Vec::new(), additional: None },
+                    CompatType::Named(_) => OirType::Struct { fields: crate::ir::types::no_fields(), additional: None },
                     CompatType::MapTag => OirType::map(OirType::String, OirType::Json),
                     _ => OirType::Json,
                 },

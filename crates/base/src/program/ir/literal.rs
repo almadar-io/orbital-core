@@ -368,7 +368,7 @@ mod tests {
         fields.insert("a".to_string(), OirValue::Number(1.0));
         let value = OirValue::Object(fields);
         for ty in [
-            OirType::Struct { fields: vec![], additional: None },
+            OirType::Struct { fields: crate::ir::types::no_fields(), additional: None },
             OirType::map(OirType::String, OirType::Number),
             OirType::Json,
             OirType::Node,

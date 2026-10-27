@@ -56,16 +56,16 @@ fn eval_with_ctx(json: &str, ctx: &BindingContext) -> Value {
 
 #[test]
 fn random_int_with_max_below_min_answers_null_not_a_panic() {
-    for call in [r#"["randomInt", 5, 1]"#, r#"["math/randomInt", 1, 0]"#, r#"["randomInt", 3, null]"#] {
+    for call in [r#"["math/randomInt", 5, 1]"#, r#"["math/randomInt", 1, 0]"#, r#"["math/randomInt", 3, null]"#] {
         assert_eq!(eval(call), Value::Null, "{call}");
     }
 }
 
 #[test]
 fn random_int_control_an_equal_or_wider_range_draws_inside_it() {
-    assert_eq!(eval(r#"["randomInt", 3, 3]"#), Value::Number(3.0));
+    assert_eq!(eval(r#"["math/randomInt", 3, 3]"#), Value::Number(3.0));
     for _ in 0..20 {
-        let Value::Number(n) = eval(r#"["randomInt", -2, 2]"#) else { panic!("not a number") };
+        let Value::Number(n) = eval(r#"["math/randomInt", -2, 2]"#) else { panic!("not a number") };
         assert!((-2.0..=2.0).contains(&n) && n.fract() == 0.0, "{n}");
     }
 }
@@ -281,32 +281,32 @@ fn test_if() {
 
 #[test]
 fn test_count() {
-    assert_eq!(eval(r#"["count", [1, 2, 3]]"#), Value::Number(3.0));
+    assert_eq!(eval(r#"["array/count", [1, 2, 3]]"#), Value::Number(3.0));
     assert_eq!(
-        eval_err(r#"["count", "hello"]"#),
+        eval_err(r#"["array/count", "hello"]"#),
         "Evaluation error: Type mismatch: expected array, got string"
     );
 }
 
 #[test]
 fn test_first_last() {
-    assert_eq!(eval(r#"["first", [1, 2, 3]]"#), Value::Number(1.0));
-    assert_eq!(eval(r#"["last", [1, 2, 3]]"#), Value::Number(3.0));
-    assert_eq!(eval(r#"["first", []]"#), Value::Null);
+    assert_eq!(eval(r#"["array/first", [1, 2, 3]]"#), Value::Number(1.0));
+    assert_eq!(eval(r#"["array/last", [1, 2, 3]]"#), Value::Number(3.0));
+    assert_eq!(eval(r#"["array/first", []]"#), Value::Null);
 }
 
 #[test]
 fn test_nth() {
-    assert_eq!(eval(r#"["nth", [10, 20, 30], 1]"#), Value::Number(20.0));
-    assert_eq!(eval(r#"["nth", [10, 20, 30], 5]"#), Value::Null);
+    assert_eq!(eval(r#"["array/nth", [10, 20, 30], 1]"#), Value::Number(20.0));
+    assert_eq!(eval(r#"["array/nth", [10, 20, 30], 5]"#), Value::Null);
 }
 
 #[test]
 fn test_includes() {
-    assert_eq!(eval(r#"["includes", [1, 2, 3], 2]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["includes", [1, 2, 3], 5]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["array/includes", [1, 2, 3], 2]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["array/includes", [1, 2, 3], 5]"#), Value::Bool(false));
     assert_eq!(
-        eval_err(r#"["includes", "hello", "ell"]"#),
+        eval_err(r#"["array/includes", "hello", "ell"]"#),
         "Evaluation error: Type mismatch: expected array, got string"
     );
 }
@@ -361,11 +361,11 @@ fn concat_conformance_bare_concat_errors() {
 #[test]
 fn test_upper_lower() {
     assert_eq!(
-        eval(r#"["upper", "hello"]"#),
+        eval(r#"["str/upper", "hello"]"#),
         Value::string("HELLO")
     );
     assert_eq!(
-        eval(r#"["lower", "HELLO"]"#),
+        eval(r#"["str/lower", "HELLO"]"#),
         Value::string("hello")
     );
 }
@@ -761,7 +761,7 @@ fn json_stringify_round_trip() {
 #[test]
 fn test_trim() {
     assert_eq!(
-        eval(r#"["trim", "  hello  "]"#),
+        eval(r#"["str/trim", "  hello  "]"#),
         Value::string("hello")
     );
 }
@@ -769,7 +769,7 @@ fn test_trim() {
 #[test]
 fn test_split_join() {
     assert_eq!(
-        eval(r#"["split", "a,b,c", ","]"#),
+        eval(r#"["str/split", "a,b,c", ","]"#),
         Value::array(vec![
             Value::String(("a".to_string()).into()),
             Value::String(("b".to_string()).into()),
@@ -777,7 +777,7 @@ fn test_split_join() {
         ])
     );
     assert_eq!(
-        eval(r#"["join", ["a", "b", "c"], "-"]"#),
+        eval(r#"["str/join", ["a", "b", "c"], "-"]"#),
         Value::string("a-b-c")
     );
 }
@@ -788,29 +788,29 @@ fn test_split_join() {
 
 #[test]
 fn test_min_max() {
-    assert_eq!(eval(r#"["min", 5, 3, 8, 1]"#), Value::Number(1.0));
-    assert_eq!(eval(r#"["max", 5, 3, 8, 1]"#), Value::Number(8.0));
+    assert_eq!(eval(r#"["math/min", 5, 3, 8, 1]"#), Value::Number(1.0));
+    assert_eq!(eval(r#"["math/max", 5, 3, 8, 1]"#), Value::Number(8.0));
 }
 
 #[test]
 fn test_clamp() {
-    assert_eq!(eval(r#"["clamp", 5, 0, 10]"#), Value::Number(5.0));
-    assert_eq!(eval(r#"["clamp", -5, 0, 10]"#), Value::Number(0.0));
-    assert_eq!(eval(r#"["clamp", 15, 0, 10]"#), Value::Number(10.0));
+    assert_eq!(eval(r#"["math/clamp", 5, 0, 10]"#), Value::Number(5.0));
+    assert_eq!(eval(r#"["math/clamp", -5, 0, 10]"#), Value::Number(0.0));
+    assert_eq!(eval(r#"["math/clamp", 15, 0, 10]"#), Value::Number(10.0));
 }
 
 #[test]
 fn test_abs() {
-    assert_eq!(eval(r#"["abs", -5]"#), Value::Number(5.0));
-    assert_eq!(eval(r#"["abs", 5]"#), Value::Number(5.0));
+    assert_eq!(eval(r#"["math/abs", -5]"#), Value::Number(5.0));
+    assert_eq!(eval(r#"["math/abs", 5]"#), Value::Number(5.0));
 }
 
 #[test]
 fn test_floor_ceil_round() {
-    assert_eq!(eval(r#"["floor", 3.7]"#), Value::Number(3.0));
-    assert_eq!(eval(r#"["ceil", 3.2]"#), Value::Number(4.0));
-    assert_eq!(eval(r#"["round", 3.5]"#), Value::Number(4.0));
-    assert_eq!(eval(r#"["round", 3.4]"#), Value::Number(3.0));
+    assert_eq!(eval(r#"["math/floor", 3.7]"#), Value::Number(3.0));
+    assert_eq!(eval(r#"["math/ceil", 3.2]"#), Value::Number(4.0));
+    assert_eq!(eval(r#"["math/round", 3.5]"#), Value::Number(4.0));
+    assert_eq!(eval(r#"["math/round", 3.4]"#), Value::Number(3.0));
 }
 
 #[test]
@@ -950,7 +950,7 @@ fn test_connection_slots_guard() {
 
 #[test]
 fn test_dunbar_number_guard() {
-    // Guard: ["<", ["count", "Connection", ["and", ...]], 150]
+    // Guard: ["<", ["array/count", "Connection", ["and", ...]], 150]
     // This tests the count operator with entity store
 
     let connections: Vec<Value> = (0..50)
@@ -977,12 +977,12 @@ fn test_dunbar_number_guard() {
         .build();
 
     // Count accepted connections for current user
-    let count_expr = r#"["count", "Connection", ["and", ["=", "@entity.requesterId", "@user.id"], ["=", "@entity.status", "accepted"]]]"#;
+    let count_expr = r#"["array/count", "Connection", ["and", ["=", "@entity.requesterId", "@user.id"], ["=", "@entity.status", "accepted"]]]"#;
     let count = eval_with_ctx(count_expr, &ctx);
     assert_eq!(count, Value::Number(30.0));
 
     // Full Dunbar guard: < 150 connections
-    let guard = r#"["<", ["count", "Connection", ["and", ["=", "@entity.requesterId", "@user.id"], ["=", "@entity.status", "accepted"]]], 150]"#;
+    let guard = r#"["<", ["array/count", "Connection", ["and", ["=", "@entity.requesterId", "@user.id"], ["=", "@entity.status", "accepted"]]], 150]"#;
     assert_eq!(eval_with_ctx(guard, &ctx), Value::Bool(true));
 }
 
@@ -1057,7 +1057,7 @@ fn test_lambda_multi_param() {
 fn test_reduce_sum() {
     // Sum array using reduce
     let result =
-        eval(r#"["reduce", [1, 2, 3, 4, 5], 0, ["fn", ["acc", "x"], ["+", "@acc", "@x"]]]"#);
+        eval(r#"["array/reduce", [1, 2, 3, 4, 5], 0, ["fn", ["acc", "x"], ["+", "@acc", "@x"]]]"#);
     assert_eq!(result, Value::Number(15.0));
 }
 
@@ -1065,7 +1065,7 @@ fn test_reduce_sum() {
 fn test_reduce_product() {
     // Product using reduce
     let result =
-        eval(r#"["reduce", [1, 2, 3, 4], 1, ["fn", ["acc", "x"], ["*", "@acc", "@x"]]]"#);
+        eval(r#"["array/reduce", [1, 2, 3, 4], 1, ["fn", ["acc", "x"], ["*", "@acc", "@x"]]]"#);
     assert_eq!(result, Value::Number(24.0));
 }
 
@@ -1073,7 +1073,7 @@ fn test_reduce_product() {
 fn test_reduce_concat_strings() {
     // Concatenate strings
     let result = eval(
-        r#"["reduce", ["a", "b", "c"], "", ["fn", ["acc", "x"], ["str/concat", "@acc", "@x"]]]"#,
+        r#"["array/reduce", ["a", "b", "c"], "", ["fn", ["acc", "x"], ["str/concat", "@acc", "@x"]]]"#,
     );
     assert_eq!(result, Value::string("abc"));
 }
@@ -1081,14 +1081,14 @@ fn test_reduce_concat_strings() {
 #[test]
 fn test_reduce_empty_array() {
     // Reduce on empty array returns initial value
-    let result = eval(r#"["reduce", [], 42, ["fn", ["acc", "x"], ["+", "@acc", "@x"]]]"#);
+    let result = eval(r#"["array/reduce", [], 42, ["fn", ["acc", "x"], ["+", "@acc", "@x"]]]"#);
     assert_eq!(result, Value::Number(42.0));
 }
 
 #[test]
 fn test_reduce_legacy_raw_body() {
     // Legacy raw-body reducer: `@acc`/`@item` bound per element, JS-path parity
-    let result = eval(r#"["reduce", [1, 2, 3, 4, 5], 0, ["+", "@acc", "@item"]]"#);
+    let result = eval(r#"["array/reduce", [1, 2, 3, 4, 5], 0, ["+", "@acc", "@item"]]"#);
     assert_eq!(result, Value::Number(15.0));
 }
 
@@ -1165,8 +1165,8 @@ fn test_time_now() {
 }
 
 #[test]
-fn test_time_now_alias() {
-    let result = eval(r#"["now"]"#);
+fn test_time_now_is_after_2020() {
+    let result = eval(r#"["time/now"]"#);
     if let Value::Number(ts) = result {
         assert!(ts > 1577836800000.0);
     } else {
@@ -1181,7 +1181,7 @@ fn test_time_now_alias() {
 #[test]
 fn test_array_slice() {
     assert_eq!(
-        eval(r#"["slice", [1, 2, 3, 4, 5], 1, 4]"#),
+        eval(r#"["array/slice", [1, 2, 3, 4, 5], 1, 4]"#),
         Value::array(vec![
             Value::Number(2.0),
             Value::Number(3.0),
@@ -1189,7 +1189,7 @@ fn test_array_slice() {
         ])
     );
     assert_eq!(
-        eval(r#"["slice", [1, 2, 3, 4, 5], 2]"#),
+        eval(r#"["array/slice", [1, 2, 3, 4, 5], 2]"#),
         Value::array(vec![
             Value::Number(3.0),
             Value::Number(4.0),
@@ -1198,7 +1198,7 @@ fn test_array_slice() {
     );
     // Negative indices
     assert_eq!(
-        eval(r#"["slice", [1, 2, 3, 4, 5], -2]"#),
+        eval(r#"["array/slice", [1, 2, 3, 4, 5], -2]"#),
         Value::array(vec![Value::Number(4.0), Value::Number(5.0)])
     );
 }
@@ -1219,7 +1219,7 @@ fn test_array_concat() {
 #[test]
 fn test_array_append() {
     assert_eq!(
-        eval(r#"["append", [1, 2], 3]"#),
+        eval(r#"["array/append", [1, 2], 3]"#),
         Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
@@ -1231,7 +1231,7 @@ fn test_array_append() {
 #[test]
 fn test_array_sort() {
     assert_eq!(
-        eval(r#"["sort", [3, 1, 4, 1, 5, 9, 2, 6]]"#),
+        eval(r#"["array/sort", [3, 1, 4, 1, 5, 9, 2, 6]]"#),
         Value::array(vec![
             Value::Number(1.0),
             Value::Number(1.0),
@@ -1248,7 +1248,7 @@ fn test_array_sort() {
 #[test]
 fn test_array_unique() {
     assert_eq!(
-        eval(r#"["unique", [1, 2, 2, 3, 3, 3, 4]]"#),
+        eval(r#"["array/unique", [1, 2, 2, 3, 3, 3, 4]]"#),
         Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
@@ -1260,9 +1260,9 @@ fn test_array_unique() {
 
 #[test]
 fn test_array_index_of() {
-    assert_eq!(eval(r#"["indexOf", [10, 20, 30], 20]"#), Value::Number(1.0));
+    assert_eq!(eval(r#"["array/indexOf", [10, 20, 30], 20]"#), Value::Number(1.0));
     assert_eq!(
-        eval(r#"["indexOf", [10, 20, 30], 99]"#),
+        eval(r#"["array/indexOf", [10, 20, 30], 99]"#),
         Value::Number(-1.0)
     );
 }
@@ -1270,11 +1270,11 @@ fn test_array_index_of() {
 #[test]
 fn test_array_every() {
     assert_eq!(
-        eval(r#"["every", [2, 4, 6, 8], [">", "@item", 0]]"#),
+        eval(r#"["array/every", [2, 4, 6, 8], [">", "@item", 0]]"#),
         Value::Bool(true)
     );
     assert_eq!(
-        eval(r#"["every", [2, 4, 6, -1], [">", "@item", 0]]"#),
+        eval(r#"["array/every", [2, 4, 6, -1], [">", "@item", 0]]"#),
         Value::Bool(false)
     );
 }
@@ -1282,19 +1282,19 @@ fn test_array_every() {
 #[test]
 fn test_array_some() {
     assert_eq!(
-        eval(r#"["some", [1, 2, 3, 4], [">", "@item", 3]]"#),
+        eval(r#"["array/some", [1, 2, 3, 4], [">", "@item", 3]]"#),
         Value::Bool(true)
     );
     assert_eq!(
-        eval(r#"["some", [1, 2, 3], [">", "@item", 10]]"#),
+        eval(r#"["array/some", [1, 2, 3], [">", "@item", 10]]"#),
         Value::Bool(false)
     );
 }
 
 #[test]
 fn test_array_sum() {
-    assert_eq!(eval(r#"["sum", [1, 2, 3, 4, 5]]"#), Value::Number(15.0));
-    assert_eq!(eval(r#"["sum", []]"#), Value::Number(0.0));
+    assert_eq!(eval(r#"["array/sum", [1, 2, 3, 4, 5]]"#), Value::Number(15.0));
+    assert_eq!(eval(r#"["array/sum", []]"#), Value::Number(0.0));
 }
 
 /// Twin of `@almadar/evaluator`'s std/array.ts cosine/nearest semantics —
@@ -1381,11 +1381,11 @@ fn test_str_includes() {
 #[test]
 fn test_str_starts_with() {
     assert_eq!(
-        eval(r#"["startsWith", "hello world", "hello"]"#),
+        eval(r#"["str/startsWith", "hello world", "hello"]"#),
         Value::Bool(true)
     );
     assert_eq!(
-        eval(r#"["startsWith", "hello world", "world"]"#),
+        eval(r#"["str/startsWith", "hello world", "world"]"#),
         Value::Bool(false)
     );
 }
@@ -1393,11 +1393,11 @@ fn test_str_starts_with() {
 #[test]
 fn test_str_ends_with() {
     assert_eq!(
-        eval(r#"["endsWith", "hello world", "world"]"#),
+        eval(r#"["str/endsWith", "hello world", "world"]"#),
         Value::Bool(true)
     );
     assert_eq!(
-        eval(r#"["endsWith", "hello world", "hello"]"#),
+        eval(r#"["str/endsWith", "hello world", "hello"]"#),
         Value::Bool(false)
     );
 }
@@ -1405,7 +1405,7 @@ fn test_str_ends_with() {
 #[test]
 fn test_str_replace() {
     assert_eq!(
-        eval(r#"["replace", "hello world world", "world", "universe"]"#),
+        eval(r#"["str/replace", "hello world world", "world", "universe"]"#),
         Value::string("hello universe world")
     );
 }
@@ -1413,7 +1413,7 @@ fn test_str_replace() {
 #[test]
 fn test_str_replace_all() {
     assert_eq!(
-        eval(r#"["replaceAll", "hello world world", "world", "universe"]"#),
+        eval(r#"["str/replaceAll", "hello world world", "world", "universe"]"#),
         Value::string("hello universe universe")
     );
 }
@@ -1422,21 +1422,9 @@ fn test_str_replace_all() {
 fn test_str_template() {
     assert_eq!(
         eval(
-            r#"["template", "Hello {{name}}, you are {{age}} years old", {"name": "John", "age": 30}]"#
+            r#"["str/template", "Hello {{name}}, you are {{age}} years old", {"name": "John", "age": 30}]"#
         ),
         Value::string("Hello John, you are 30 years old")
-    );
-}
-
-#[test]
-fn test_str_index_of() {
-    assert_eq!(
-        eval(r#"["str/indexOf", "hello world", "world"]"#),
-        Value::Number(6.0)
-    );
-    assert_eq!(
-        eval(r#"["str/indexOf", "hello world", "xyz"]"#),
-        Value::Number(-1.0)
     );
 }
 
@@ -1467,16 +1455,16 @@ fn test_object_set() {
 
 #[test]
 fn test_object_has() {
-    assert_eq!(eval(r#"["has", {"a": 1, "b": 2}, "a"]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["object/has", {"a": 1, "b": 2}, "a"]"#), Value::Bool(true));
     assert_eq!(
-        eval(r#"["has", {"a": 1, "b": 2}, "c"]"#),
+        eval(r#"["object/has", {"a": 1, "b": 2}, "c"]"#),
         Value::Bool(false)
     );
 }
 
 #[test]
 fn test_object_merge() {
-    let result = eval(r#"["merge", {"a": 1}, {"b": 2}, {"c": 3}]"#);
+    let result = eval(r#"["object/merge", {"a": 1}, {"b": 2}, {"c": 3}]"#);
     if let Value::Object(obj) = result {
         assert_eq!(obj.len(), 3);
         assert_eq!(obj.get("a"), Some(&Value::Number(1.0)));
@@ -1493,16 +1481,16 @@ fn test_object_merge() {
 
 #[test]
 fn test_math_pow() {
-    assert_eq!(eval(r#"["pow", 2, 3]"#), Value::Number(8.0));
-    assert_eq!(eval(r#"["pow", 10, 2]"#), Value::Number(100.0));
-    assert_eq!(eval(r#"["pow", 4, 0.5]"#), Value::Number(2.0));
+    assert_eq!(eval(r#"["math/pow", 2, 3]"#), Value::Number(8.0));
+    assert_eq!(eval(r#"["math/pow", 10, 2]"#), Value::Number(100.0));
+    assert_eq!(eval(r#"["math/pow", 4, 0.5]"#), Value::Number(2.0));
 }
 
 #[test]
 fn test_math_sqrt() {
-    assert_eq!(eval(r#"["sqrt", 16]"#), Value::Number(4.0));
+    assert_eq!(eval(r#"["math/sqrt", 16]"#), Value::Number(4.0));
     assert_eq!(
-        eval(r#"["sqrt", 2]"#),
+        eval(r#"["math/sqrt", 2]"#),
         Value::Number(std::f64::consts::SQRT_2)
     );
 }
@@ -1513,7 +1501,7 @@ fn test_math_sqrt() {
 
 #[test]
 fn test_time_today() {
-    let result = eval(r#"["today"]"#);
+    let result = eval(r#"["time/today"]"#);
     if let Value::Number(ts) = result {
         // Should be at midnight (divisible by 86400000)
         assert_eq!(ts % (24.0 * 60.0 * 60.0 * 1000.0), 0.0);
@@ -1550,14 +1538,14 @@ fn test_time_diff() {
 
 #[test]
 fn test_time_is_before() {
-    assert_eq!(eval(r#"["isBefore", 1000, 2000]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["isBefore", 2000, 1000]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["time/isBefore", 1000, 2000]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["time/isBefore", 2000, 1000]"#), Value::Bool(false));
 }
 
 #[test]
 fn test_time_is_after() {
-    assert_eq!(eval(r#"["isAfter", 2000, 1000]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["isAfter", 1000, 2000]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["time/isAfter", 2000, 1000]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["time/isAfter", 1000, 2000]"#), Value::Bool(false));
 }
 
 #[test]
@@ -1601,10 +1589,10 @@ fn test_time_format_two_arg_token_form() {
 
 #[test]
 fn test_validate_required() {
-    assert_eq!(eval(r#"["required", "hello"]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["required", ""]"#), Value::Bool(false));
-    assert_eq!(eval(r#"["required", null]"#), Value::Bool(false));
-    assert_eq!(eval(r#"["required", 0]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["validate/required", "hello"]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["validate/required", ""]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["validate/required", null]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["validate/required", 0]"#), Value::Bool(true));
 }
 
 #[test]
@@ -1672,23 +1660,23 @@ fn test_validate_url() {
 
 #[test]
 fn test_validate_min_length() {
-    assert_eq!(eval(r#"["minLength", "hello", 3]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["minLength", "hi", 3]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["validate/minLength", "hello", 3]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["validate/minLength", "hi", 3]"#), Value::Bool(false));
 }
 
 #[test]
 fn test_validate_max_length() {
-    assert_eq!(eval(r#"["maxLength", "hello", 10]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["validate/maxLength", "hello", 10]"#), Value::Bool(true));
     assert_eq!(
-        eval(r#"["maxLength", "hello world", 5]"#),
+        eval(r#"["validate/maxLength", "hello world", 5]"#),
         Value::Bool(false)
     );
 }
 
 #[test]
 fn test_validate_pattern() {
-    assert_eq!(eval(r#"["pattern", "hello123", "123"]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["pattern", "hello", "xyz"]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["validate/pattern", "hello123", "123"]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["validate/pattern", "hello", "xyz"]"#), Value::Bool(false));
 }
 
 // =========================================================================
@@ -1698,7 +1686,7 @@ fn test_validate_pattern() {
 #[test]
 fn test_array_prepend() {
     assert_eq!(
-        eval(r#"["prepend", [2, 3], 1]"#),
+        eval(r#"["array/prepend", [2, 3], 1]"#),
         Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
@@ -1714,7 +1702,7 @@ fn test_array_prepend() {
 #[test]
 fn test_array_insert() {
     assert_eq!(
-        eval(r#"["insert", [1, 3], 1, 2]"#),
+        eval(r#"["array/insert", [1, 3], 1, 2]"#),
         Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
@@ -1734,7 +1722,7 @@ fn test_array_insert() {
 #[test]
 fn test_array_remove() {
     assert_eq!(
-        eval(r#"["remove", [1, 2, 3], 1]"#),
+        eval(r#"["array/remove", [1, 2, 3], 1]"#),
         Value::array(vec![Value::Number(1.0), Value::Number(3.0)])
     );
     assert_eq!(
@@ -1749,7 +1737,7 @@ fn test_array_remove() {
 #[test]
 fn test_array_reverse() {
     assert_eq!(
-        eval(r#"["reverse", [1, 2, 3]]"#),
+        eval(r#"["array/reverse", [1, 2, 3]]"#),
         Value::array(vec![
             Value::Number(3.0),
             Value::Number(2.0),
@@ -1770,7 +1758,7 @@ fn test_array_reverse() {
 fn test_array_flatten() {
     // One-level flatten
     assert_eq!(
-        eval(r#"["flatten", [[1, 2], [3, 4]]]"#),
+        eval(r#"["array/flatten", [[1, 2], [3, 4]]]"#),
         Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
@@ -1782,7 +1770,7 @@ fn test_array_flatten() {
 
 #[test]
 fn test_array_zip() {
-    let result = eval(r#"["zip", [1, 2], ["a", "b"]]"#);
+    let result = eval(r#"["array/zip", [1, 2], ["a", "b"]]"#);
     if let Value::Array(arr) = result {
         assert_eq!(arr.len(), 2);
         if let Value::Array(ref first) = arr[0] {
@@ -1795,20 +1783,20 @@ fn test_array_zip() {
 #[test]
 fn test_array_find_index() {
     assert_eq!(
-        eval(r#"["findIndex", [1, 2, 3, 4], ["fn", ["x"], [">", "@x", 2]]]"#),
+        eval(r#"["array/findIndex", [1, 2, 3, 4], ["fn", ["x"], [">", "@x", 2]]]"#),
         Value::Number(2.0)
     );
     assert_eq!(
-        eval(r#"["findIndex", [1, 2], ["fn", ["x"], [">", "@x", 10]]]"#),
+        eval(r#"["array/findIndex", [1, 2], ["fn", ["x"], [">", "@x", 10]]]"#),
         Value::Number(-1.0)
     );
 }
 
 #[test]
 fn test_array_avg() {
-    assert_eq!(eval(r#"["avg", [2, 4, 6]]"#), Value::Number(4.0));
+    assert_eq!(eval(r#"["array/avg", [2, 4, 6]]"#), Value::Number(4.0));
     assert_eq!(
-        eval(r#"["average", [10, 20, 30, 40]]"#),
+        eval(r#"["array/avg", [10, 20, 30, 40]]"#),
         Value::Number(25.0)
     );
 }
@@ -1816,7 +1804,7 @@ fn test_array_avg() {
 #[test]
 fn test_array_group_by() {
     let result = eval(
-        r#"["groupBy", [{"type": "a", "v": 1}, {"type": "b", "v": 2}, {"type": "a", "v": 3}], ["fn", ["x"], ["object/get", "@x", "type"]]]"#,
+        r#"["array/groupBy", [{"type": "a", "v": 1}, {"type": "b", "v": 2}, {"type": "a", "v": 3}], ["fn", ["x"], ["object/get", "@x", "type"]]]"#,
     );
     if let Value::Object(obj) = result {
         assert!(obj.contains_key("a"));
@@ -1830,7 +1818,7 @@ fn test_array_group_by() {
 #[test]
 fn test_array_take() {
     assert_eq!(
-        eval(r#"["take", [1, 2, 3, 4, 5], 3]"#),
+        eval(r#"["array/take", [1, 2, 3, 4, 5], 3]"#),
         Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
@@ -1846,7 +1834,7 @@ fn test_array_take() {
 #[test]
 fn test_array_drop() {
     assert_eq!(
-        eval(r#"["drop", [1, 2, 3, 4, 5], 2]"#),
+        eval(r#"["array/drop", [1, 2, 3, 4, 5], 2]"#),
         Value::array(vec![
             Value::Number(3.0),
             Value::Number(4.0),
@@ -1859,7 +1847,7 @@ fn test_array_drop() {
 #[test]
 fn test_array_range() {
     assert_eq!(
-        eval(r#"["range", 1, 5]"#),
+        eval(r#"["array/range", 1, 5]"#),
         Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
@@ -1868,7 +1856,7 @@ fn test_array_range() {
         ])
     );
     assert_eq!(
-        eval(r#"["range", 0, 3]"#),
+        eval(r#"["array/range", 0, 3]"#),
         Value::array(vec![
             Value::Number(0.0),
             Value::Number(1.0),
@@ -1896,7 +1884,7 @@ fn test_str_slice() {
 #[test]
 fn test_str_pad_start() {
     assert_eq!(
-        eval(r#"["padStart", "5", 3, "0"]"#),
+        eval(r#"["str/padStart", "5", 3, "0"]"#),
         Value::string("005")
     );
     assert_eq!(
@@ -1908,7 +1896,7 @@ fn test_str_pad_start() {
 #[test]
 fn test_str_pad_end() {
     assert_eq!(
-        eval(r#"["padEnd", "5", 3, "0"]"#),
+        eval(r#"["str/padEnd", "5", 3, "0"]"#),
         Value::string("500")
     );
     assert_eq!(
@@ -1920,7 +1908,7 @@ fn test_str_pad_end() {
 #[test]
 fn test_str_capitalize() {
     assert_eq!(
-        eval(r#"["capitalize", "hello"]"#),
+        eval(r#"["str/capitalize", "hello"]"#),
         Value::string("Hello")
     );
     assert_eq!(
@@ -1932,7 +1920,7 @@ fn test_str_capitalize() {
 #[test]
 fn test_str_truncate() {
     assert_eq!(
-        eval(r#"["truncate", "hello world", 5]"#),
+        eval(r#"["str/truncate", "hello world", 5]"#),
         Value::string("hello...")
     );
     assert_eq!(
@@ -1947,7 +1935,7 @@ fn test_str_truncate() {
 
 #[test]
 fn test_object_from_entries() {
-    let result = eval(r#"["fromEntries", [["a", 1], ["b", 2]]]"#);
+    let result = eval(r#"["object/fromEntries", [["a", 1], ["b", 2]]]"#);
     if let Value::Object(obj) = result {
         assert_eq!(obj.get("a"), Some(&Value::Number(1.0)));
         assert_eq!(obj.get("b"), Some(&Value::Number(2.0)));
@@ -1956,7 +1944,7 @@ fn test_object_from_entries() {
 
 #[test]
 fn test_object_deep_merge() {
-    let result = eval(r#"["deepMerge", {"a": {"x": 1}}, {"a": {"y": 2}, "b": 3}]"#);
+    let result = eval(r#"["object/deepMerge", {"a": {"x": 1}}, {"a": {"y": 2}, "b": 3}]"#);
     if let Value::Object(obj) = result {
         if let Some(Value::Object(a)) = obj.get("a") {
             assert_eq!(a.get("x"), Some(&Value::Number(1.0)));
@@ -1968,7 +1956,7 @@ fn test_object_deep_merge() {
 
 #[test]
 fn test_object_pick() {
-    let result = eval(r#"["pick", {"a": 1, "b": 2, "c": 3}, ["a", "c"]]"#);
+    let result = eval(r#"["object/pick", {"a": 1, "b": 2, "c": 3}, ["a", "c"]]"#);
     if let Value::Object(obj) = result {
         assert_eq!(obj.len(), 2);
         assert_eq!(obj.get("a"), Some(&Value::Number(1.0)));
@@ -1979,7 +1967,7 @@ fn test_object_pick() {
 
 #[test]
 fn test_object_omit() {
-    let result = eval(r#"["omit", {"a": 1, "b": 2, "c": 3}, ["b"]]"#);
+    let result = eval(r#"["object/omit", {"a": 1, "b": 2, "c": 3}, ["b"]]"#);
     if let Value::Object(obj) = result {
         assert_eq!(obj.len(), 2);
         assert_eq!(obj.get("a"), Some(&Value::Number(1.0)));
@@ -1990,7 +1978,7 @@ fn test_object_omit() {
 
 #[test]
 fn test_object_map_values() {
-    let result = eval(r#"["mapValues", {"a": 1, "b": 2}, ["fn", ["v"], ["*", "@v", 2]]]"#);
+    let result = eval(r#"["object/mapValues", {"a": 1, "b": 2}, ["fn", ["v"], ["*", "@v", 2]]]"#);
     if let Value::Object(obj) = result {
         assert_eq!(obj.get("a"), Some(&Value::Number(2.0)));
         assert_eq!(obj.get("b"), Some(&Value::Number(4.0)));
@@ -2015,14 +2003,14 @@ fn test_object_filter() {
 
 #[test]
 fn test_math_sign() {
-    assert_eq!(eval(r#"["sign", 5]"#), Value::Number(1.0));
+    assert_eq!(eval(r#"["math/sign", 5]"#), Value::Number(1.0));
     assert_eq!(eval(r#"["math/sign", -3]"#), Value::Number(-1.0));
-    assert_eq!(eval(r#"["sign", 0]"#), Value::Number(0.0));
+    assert_eq!(eval(r#"["math/sign", 0]"#), Value::Number(0.0));
 }
 
 #[test]
 fn test_math_lerp() {
-    assert_eq!(eval(r#"["lerp", 0, 10, 0.5]"#), Value::Number(5.0));
+    assert_eq!(eval(r#"["math/lerp", 0, 10, 0.5]"#), Value::Number(5.0));
     assert_eq!(eval(r#"["math/lerp", 0, 100, 0.25]"#), Value::Number(25.0));
 }
 
@@ -2135,7 +2123,7 @@ fn test_validate_uuid() {
         eval(r#"["validate/uuid", "550e8400-e29b-41d4-a716-446655440000"]"#),
         Value::Bool(true)
     );
-    assert_eq!(eval(r#"["uuid", "not-a-uuid"]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["validate/uuid", "not-a-uuid"]"#), Value::Bool(false));
 }
 
 #[test]
@@ -2177,14 +2165,14 @@ fn test_validate_range() {
 #[test]
 fn test_validate_one_of() {
     assert_eq!(
-        eval(r#"["oneOf", "a", ["a", "b", "c"]]"#),
+        eval(r#"["validate/oneOf", "a", ["a", "b", "c"]]"#),
         Value::Bool(true)
     );
     assert_eq!(
         eval(r#"["validate/oneOf", "d", ["a", "b", "c"]]"#),
         Value::Bool(false)
     );
-    assert_eq!(eval(r#"["oneOf", 2, [1, 2, 3]]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["validate/oneOf", 2, [1, 2, 3]]"#), Value::Bool(true));
 }
 
 #[test]
@@ -2204,7 +2192,7 @@ fn test_validate_equals() {
 #[test]
 fn test_array_shuffle() {
     // Shuffle returns an array of the same length
-    let result = eval(r#"["shuffle", [1, 2, 3, 4, 5]]"#);
+    let result = eval(r#"["array/shuffle", [1, 2, 3, 4, 5]]"#);
     if let Value::Array(arr) = result {
         assert_eq!(arr.len(), 5);
     }
@@ -2214,7 +2202,7 @@ fn test_array_shuffle() {
 fn test_array_reject() {
     // Reject keeps elements that DON'T match the predicate
     assert_eq!(
-        eval(r#"["reject", [1, 2, 3, 4, 5], ["fn", ["x"], [">", "@x", 3]]]"#),
+        eval(r#"["array/reject", [1, 2, 3, 4, 5], ["fn", ["x"], [">", "@x", 3]]]"#),
         Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
@@ -2225,7 +2213,7 @@ fn test_array_reject() {
 
 #[test]
 fn test_array_partition() {
-    let result = eval(r#"["partition", [1, 2, 3, 4, 5], ["fn", ["x"], [">", "@x", 3]]]"#);
+    let result = eval(r#"["array/partition", [1, 2, 3, 4, 5], ["fn", ["x"], [">", "@x", 3]]]"#);
     if let Value::Array(arr) = result {
         assert_eq!(arr.len(), 2);
         // First array: matches (> 3)
@@ -2242,7 +2230,7 @@ fn test_array_partition() {
 #[test]
 fn test_array_take_last() {
     assert_eq!(
-        eval(r#"["takeLast", [1, 2, 3, 4, 5], 2]"#),
+        eval(r#"["array/takeLast", [1, 2, 3, 4, 5], 2]"#),
         Value::array(vec![Value::Number(4.0), Value::Number(5.0)])
     );
     assert_eq!(
@@ -2254,7 +2242,7 @@ fn test_array_take_last() {
 #[test]
 fn test_array_drop_last() {
     assert_eq!(
-        eval(r#"["dropLast", [1, 2, 3, 4, 5], 2]"#),
+        eval(r#"["array/dropLast", [1, 2, 3, 4, 5], 2]"#),
         Value::array(vec![
             Value::Number(1.0),
             Value::Number(2.0),
@@ -2267,18 +2255,6 @@ fn test_array_drop_last() {
     );
 }
 
-#[test]
-fn test_array_repeat() {
-    assert_eq!(
-        eval(r#"["array/repeat", "x", 3]"#),
-        Value::array(vec![
-            Value::String(("x".to_string()).into()),
-            Value::String(("x".to_string()).into()),
-            Value::String(("x".to_string()).into())
-        ])
-    );
-}
-
 // =========================================================================
 // Phase 4.2: String Extras
 // =========================================================================
@@ -2286,7 +2262,7 @@ fn test_array_repeat() {
 #[test]
 fn test_str_trim_start() {
     assert_eq!(
-        eval(r#"["trimStart", "  hello  "]"#),
+        eval(r#"["str/trimStart", "  hello  "]"#),
         Value::string("hello  ")
     );
 }
@@ -2294,7 +2270,7 @@ fn test_str_trim_start() {
 #[test]
 fn test_str_trim_end() {
     assert_eq!(
-        eval(r#"["trimEnd", "  hello  "]"#),
+        eval(r#"["str/trimEnd", "  hello  "]"#),
         Value::string("  hello")
     );
 }
@@ -2318,7 +2294,7 @@ fn test_str_reverse() {
 #[test]
 fn test_str_title_case() {
     assert_eq!(
-        eval(r#"["titleCase", "hello world"]"#),
+        eval(r#"["str/titleCase", "hello world"]"#),
         Value::string("Hello World")
     );
 }
@@ -2326,7 +2302,7 @@ fn test_str_title_case() {
 #[test]
 fn test_str_camel_case() {
     assert_eq!(
-        eval(r#"["camelCase", "hello-world"]"#),
+        eval(r#"["str/camelCase", "hello-world"]"#),
         Value::string("helloWorld")
     );
     assert_eq!(
@@ -2338,7 +2314,7 @@ fn test_str_camel_case() {
 #[test]
 fn test_str_kebab_case() {
     assert_eq!(
-        eval(r#"["kebabCase", "helloWorld"]"#),
+        eval(r#"["str/kebabCase", "helloWorld"]"#),
         Value::string("hello-world")
     );
     assert_eq!(
@@ -2350,7 +2326,7 @@ fn test_str_kebab_case() {
 #[test]
 fn test_str_snake_case() {
     assert_eq!(
-        eval(r#"["snakeCase", "helloWorld"]"#),
+        eval(r#"["str/snakeCase", "helloWorld"]"#),
         Value::string("hello_world")
     );
     assert_eq!(
@@ -2382,7 +2358,7 @@ fn test_str_default() {
 #[test]
 fn test_object_map_keys() {
     let result = eval(
-        r#"["mapKeys", {"a": 1, "b": 2}, ["fn", ["k"], ["str/concat", "prefix_", "@k"]]]"#,
+        r#"["object/mapKeys", {"a": 1, "b": 2}, ["fn", ["k"], ["str/concat", "prefix_", "@k"]]]"#,
     );
     if let Value::Object(obj) = result {
         assert!(obj.contains_key("prefix_a"));
@@ -2413,7 +2389,7 @@ fn test_object_clone() {
 
 #[test]
 fn test_object_deep_clone() {
-    let result = eval(r#"["deepClone", {"a": {"nested": 1}}]"#);
+    let result = eval(r#"["object/deepClone", {"a": {"nested": 1}}]"#);
     if let Value::Object(obj) = result {
         if let Some(Value::Object(nested)) = obj.get("a") {
             assert_eq!(nested.get("nested"), Some(&Value::Number(1.0)));
@@ -2435,7 +2411,7 @@ fn test_math_random() {
 
 #[test]
 fn test_math_random_int() {
-    let result = eval(r#"["randomInt", 1, 10]"#);
+    let result = eval(r#"["math/randomInt", 1, 10]"#);
     if let Value::Number(n) = result {
         assert!((1.0..=10.0).contains(&n));
     }
@@ -2475,7 +2451,7 @@ fn test_time_duration() {
     );
     // 90061 seconds = 1d 1h 1m 1s
     assert_eq!(
-        eval(r#"["duration", 90061000]"#),
+        eval(r#"["time/duration", 90061000]"#),
         Value::string("1d 1h 1m 1s")
     );
 }
@@ -2490,8 +2466,8 @@ fn test_validate_phone() {
         eval(r#"["validate/phone", "+1 (555) 123-4567"]"#),
         Value::Bool(true)
     );
-    assert_eq!(eval(r#"["phone", "1234567"]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["phone", "123"]"#), Value::Bool(false)); // Too short
+    assert_eq!(eval(r#"["validate/phone", "1234567"]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["validate/phone", "123"]"#), Value::Bool(false)); // Too short
 }
 
 #[test]
@@ -2503,7 +2479,7 @@ fn test_validate_credit_card() {
     );
     // Invalid (fails Luhn)
     assert_eq!(
-        eval(r#"["creditCard", "1234567890123456"]"#),
+        eval(r#"["validate/creditCard", "1234567890123456"]"#),
         Value::Bool(false)
     );
 }
@@ -2511,7 +2487,7 @@ fn test_validate_credit_card() {
 #[test]
 fn test_validate_none_of() {
     assert_eq!(
-        eval(r#"["noneOf", "d", ["a", "b", "c"]]"#),
+        eval(r#"["validate/noneOf", "d", ["a", "b", "c"]]"#),
         Value::Bool(true)
     );
     assert_eq!(
@@ -2524,7 +2500,7 @@ fn test_validate_none_of() {
 fn test_validate_check() {
     let Value::Object(passed) = eval(r#"["validate/check", {"n": 10}, {"n": [["number"]]}]"#) else { panic!("not an object") };
     assert_eq!(passed["valid"], Value::Bool(true));
-    let Value::Object(failed) = eval(r#"["check", {"n": "x"}, {"n": [["number"]]}]"#) else { panic!("not an object") };
+    let Value::Object(failed) = eval(r#"["validate/check", {"n": "x"}, {"n": [["number"]]}]"#) else { panic!("not an object") };
     assert_eq!(failed["valid"], Value::Bool(false));
     assert!(eval_err(r#"["validate/check", 10, ["fn", ["x"], [">", "@x", 5]]]"#).contains("rules by field"));
 }
@@ -2688,13 +2664,9 @@ fn the_callback_index_is_the_parameter_the_evaluator_binds_as_index() {
     use super::operators::{callback_index_position, raw_callback_params};
     for op in [
         "array/map",
-        "map",
         "array/filter",
-        "filter",
         "array/count",
-        "count",
         "array/find",
-        "find",
         "array/every",
         "array/some",
     ] {
@@ -2720,21 +2692,15 @@ fn the_callback_index_is_the_parameter_the_evaluator_binds_as_index() {
 }
 
 #[test]
-fn raw_callback_params_follow_operator_aliases() {
-    use super::operators::raw_callback_params;
-    assert_eq!(raw_callback_params("map"), raw_callback_params("array/map"));
-    assert_eq!(
-        raw_callback_params("filter"),
-        raw_callback_params("array/filter")
-    );
-    assert_eq!(
-        raw_callback_params("fold"),
-        raw_callback_params("array/reduce")
-    );
-    assert_eq!(
-        raw_callback_params("count"),
-        raw_callback_params("array/count")
-    );
+fn raw_callback_params_are_absent_for_retired_operator_aliases() {
+    use super::operators::{get_operator, raw_callback_params};
+    for alias in ["map", "filter", "fold", "count", "reduce", "find"] {
+        assert!(get_operator(alias).is_none(), "{alias} is not an operator");
+        assert_eq!(raw_callback_params(alias), None, "{alias}");
+    }
+    for canonical in ["array/map", "array/filter", "array/reduce", "array/count", "array/find"] {
+        assert!(raw_callback_params(canonical).is_some(), "control: {canonical}");
+    }
 }
 
 #[test]
@@ -3143,37 +3109,37 @@ fn control_row_matches_agrees_with_compile_predicate_on_the_same_inputs() {
     }
 }
 
-/// G-CROSS-335: the arguments a `proven` mark lists are not checked again; a proven position that shares a type
-/// variable with an unproven one still is, and the call's value is checked where it is itself an argument.
+
+
 #[test]
-fn a_proven_call_skips_the_check_only_where_nothing_unproven_depends_on_it() {
-    assert!(eval_err(r#"["=", 1, "1"]"#).contains("ype"), "control: unmarked, the two sides disagree");
-    assert_eq!(eval(r#"["proven", [0, 1], "=", 1, "1"]"#), Value::Bool(true), "unchecked, `=` compares loosely");
-    assert!(
-        eval_err(r#"["proven", [0], "=", 1, "1"]"#).contains("ype"),
-        "position 0 binds the T that unproven position 1 is checked against"
-    );
-    assert_eq!(eval(r#"["not", ["proven", [0, 1], "=", 1, "1"]]"#), Value::Bool(false));
-    assert!(eval_err(r#"["not", ["proven", [0], "+", 1, 2]]"#).contains("ype"), "the outer position is not proven");
+fn tree_index_groups_every_listed_call_by_head_with_its_path() {
+    let got = eval(r#"["tree/index", ["quote", "[[\"emit\",\"A\"],[\"if\",true,[\"emit\",\"B\",[\"persist\",\"create\",\"T\",{}]]],{\"k\":[\"emit\",\"C\"]}]"], ["list", "emit", "persist", "fetch"]]"#);
+    let want: Value = serde_json::from_value(serde_json::json!({
+        "emit": [
+            { "path": "[0]", "node": ["emit", "A"] },
+            { "path": "[1][2]", "node": ["emit", "B", ["persist", "create", "T", {}]] },
+            { "path": "[2].k", "node": ["emit", "C"] }
+        ],
+        "persist": [{ "path": "[1][2][2]", "node": ["persist", "create", "T", {}] }],
+        "fetch": []
+    }))
+    .unwrap();
+    assert_eq!(got, want);
 }
 
 #[test]
-fn a_malformed_proven_mark_is_refused() {
-    for expr in [
-        r#"["proven", 0, "=", 1, 1]"#,
-        r#"["proven", [-1], "=", 1, 1]"#,
-        r#"["proven", [0.5], "=", 1, 1]"#,
-        r#"["proven", [0], 5, 1]"#,
-        r#"["proven", [0], "no-such-operator", 1]"#,
-    ] {
-        assert!(eval_err(expr).contains("proven"), "{expr}");
+fn tree_index_control_an_unlisted_head_and_no_heads_find_nothing() {
+    let got = eval(r#"["tree/index", ["quote", "[[\"emit\",\"A\"]]"], ["list", "persist"]]"#);
+    assert_eq!(got, serde_json::from_value::<Value>(serde_json::json!({ "persist": [] })).unwrap());
+    let none = eval(r#"["tree/index", ["quote", "[[\"emit\",\"A\"]]"], ["list"]]"#);
+    assert_eq!(none, serde_json::from_value::<Value>(serde_json::json!({})).unwrap());
+}
+
+#[test]
+fn tree_index_refuses_heads_that_are_not_a_list_of_strings() {
+    for expr in [r#"["tree/index", ["list"], "emit"]"#, r#"["tree/index", ["list"], ["list", 1]]"#] {
+        let err = eval_err(expr);
+        assert!(err.contains("heads") || err.contains("ype"), "{expr}: {err}");
     }
-    assert_eq!(eval(r#"["proven", [], "=", 1, 1]"#), Value::Bool(true), "control: no position proven");
-}
-
-#[test]
-fn lowering_reads_through_a_proven_mark() {
-    let marked: SExpression = serde_json::from_str(r#"["proven", [0, 1], "+", "@entity.n", 1]"#).unwrap();
-    let call: SExpression = serde_json::from_str(r#"["+", "@entity.n", 1]"#).unwrap();
-    assert_eq!(crate::lower::lower_sexpr(&marked).unwrap(), crate::lower::lower_sexpr(&call).unwrap());
+    assert_eq!(eval(r#"["tree/index", ["list"], ["list", "emit"]]"#), serde_json::from_value::<Value>(serde_json::json!({ "emit": [] })).unwrap(), "control: a list of strings");
 }

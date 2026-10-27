@@ -17,7 +17,7 @@ use std::prelude::v1::*;
 
 use orbital_core_base::error::{EvalError, OrbitalError};
 use orbital_core_base::shared_entity::SharedEntity;
-use orbital_core_base::value::Value;
+use orbital_core_base::value::{Shared, Value};
 use orbital_core_base::value::ValueMap;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -146,8 +146,8 @@ pub struct BindingContext {
     /// (`Value::Null` until composed).
     pub callsite_payload: Arc<Value>,
     /// `@fromState` / `@toState`: the transition's ends.
-    pub from_state: Option<String>,
-    pub to_state: Option<String>,
+    pub from_state: Option<Arc<str>>,
+    pub to_state: Option<Arc<str>>,
     /// Local bindings (`let`, callback params, `@item`/`@index`): a chain of shared frames, so a child scope
     /// pushes one frame instead of copying every enclosing binding.
     locals: Arc<LocalFrame>,
@@ -177,10 +177,52 @@ pub(crate) struct LinearLocal {
     slot: std::sync::Mutex<Option<Value>>,
 }
 
+/// A local's name: written in the language (`let`, `fn` params, std names like `item`), so held without copying.
+#[derive(Debug, Clone)]
+pub enum LocalName {
+    Fixed(&'static str),
+    Shared(Shared<String>),
+    Owned(String),
+}
+
+impl LocalName {
+    pub fn as_str(&self) -> &str {
+        match self {
+            LocalName::Fixed(name) => name,
+            LocalName::Shared(name) => name.as_str(),
+            LocalName::Owned(name) => name,
+        }
+    }
+}
+
+impl From<Shared<String>> for LocalName {
+    fn from(name: Shared<String>) -> Self {
+        LocalName::Shared(name)
+    }
+}
+
+impl From<&str> for LocalName {
+    fn from(name: &str) -> Self {
+        LocalName::Owned(name.to_owned())
+    }
+}
+
+impl From<&Shared<String>> for LocalName {
+    fn from(name: &Shared<String>) -> Self {
+        LocalName::Shared(name.clone())
+    }
+}
+
+impl From<&String> for LocalName {
+    fn from(name: &String) -> Self {
+        LocalName::from(name.as_str())
+    }
+}
+
 /// One scope's local bindings over its parent's. `None` marks a binding removed in this scope.
 #[derive(Debug, Clone, Default)]
 struct LocalFrame {
-    vars: Vec<(String, Option<Arc<Value>>)>,
+    vars: Vec<(LocalName, Option<Arc<Value>>)>,
     parent: Option<Arc<LocalFrame>>,
 }
 
@@ -188,17 +230,17 @@ impl LocalFrame {
     fn get(&self, name: &str) -> Option<&Value> {
         let mut frame = self;
         loop {
-            if let Some((_, value)) = frame.vars.iter().find(|(key, _)| key == name) {
+            if let Some((_, value)) = frame.vars.iter().find(|(key, _)| key.as_str() == name) {
                 return value.as_deref();
             }
             frame = frame.parent.as_deref()?;
         }
     }
 
-    fn put(&mut self, name: &str, value: Option<Arc<Value>>) {
-        match self.vars.iter_mut().find(|(key, _)| key == name) {
+    fn put(&mut self, name: LocalName, value: Option<Arc<Value>>) {
+        match self.vars.iter_mut().find(|(key, _)| key.as_str() == name.as_str()) {
             Some(slot) => slot.1 = value,
-            None => self.vars.push((name.to_string(), value)),
+            None => self.vars.push((name, value)),
         }
     }
 }
@@ -329,14 +371,14 @@ impl BindingContext {
     }
 
     /// Set a local binding
-    pub fn set_local(&mut self, name: &str, value: Value) -> &mut Self {
-        self.own_frame().put(name, Some(Arc::new(value)));
+    pub fn set_local(&mut self, name: impl Into<LocalName>, value: Value) -> &mut Self {
+        self.own_frame().put(name.into(), Some(Arc::new(value)));
         self
     }
 
     /// Bind a local to a value another binding already holds, without copying it.
-    pub fn set_local_shared(&mut self, name: &str, value: Arc<Value>) -> &mut Self {
-        self.own_frame().put(name, Some(value));
+    pub fn set_local_shared(&mut self, name: impl Into<LocalName>, value: Arc<Value>) -> &mut Self {
+        self.own_frame().put(name.into(), Some(value));
         self
     }
 
@@ -344,7 +386,7 @@ impl BindingContext {
     pub fn remove_local(&mut self, name: &str) -> Option<Value> {
         let removed = self.locals.get(name).cloned();
         if removed.is_some() {
-            self.own_frame().put(name, None);
+            self.own_frame().put(name.into(), None);
         }
         removed
     }
@@ -423,15 +465,15 @@ impl BindingContext {
     /// Create a child context with a specific item bound (for map/filter)
     pub fn with_item(&self, item: Value) -> Self {
         let mut child = self.child();
-        child.set_local("item", item);
+        child.set_local(crate::evaluator::LocalName::Fixed("item"), item);
         child
     }
 
     /// Create a child context with index and item bound (for map with index)
     pub fn with_item_and_index(&self, item: Value, index: usize) -> Self {
         let mut child = self.child();
-        child.set_local("item", item);
-        child.set_local("index", Value::Number(index as f64));
+        child.set_local(crate::evaluator::LocalName::Fixed("item"), item);
+        child.set_local(crate::evaluator::LocalName::Fixed("index"), Value::Number(index as f64));
         child
     }
 }

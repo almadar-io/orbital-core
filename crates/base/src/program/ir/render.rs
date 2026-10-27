@@ -882,7 +882,7 @@ mod tests {
                     merged_from: None,
                 },
                 OirField::new("count", OirType::Integer),
-            ],
+            ].into(),
         };
         assert_eq!(tag(&ty), "struct<kind:string<x|y>,count:integer>");
     }
@@ -890,13 +890,13 @@ mod tests {
     #[test]
     fn open_struct_callbacks_retain_additional_type_and_recursive_classification() {
         let open = OirType::Struct {
-            fields: vec![OirField::new("id", OirType::String)],
+            fields: vec![OirField::new("id", OirType::String)].into(),
             additional: Some(Box::new(OirType::array(OirType::String))),
         };
         assert_eq!(tag(&open), "struct<id:string,*:array<string>>");
-        let lossy = OirType::Struct { fields: vec![], additional: Some(Box::new(OirType::array(OirType::Json))) };
+        let lossy = OirType::Struct { fields: crate::ir::types::no_fields(), additional: Some(Box::new(OirType::array(OirType::Json))) };
         assert_eq!(classify_type(&TagRenderer, &lossy, None), TypeMappingClass::Lossy);
-        let closed = OirType::Struct { fields: vec![], additional: None };
+        let closed = OirType::Struct { fields: crate::ir::types::no_fields(), additional: None };
         assert_eq!(tag(&closed), "struct<>");
         assert_eq!(classify_type(&TagRenderer, &closed, None), TypeMappingClass::Faithful);
     }

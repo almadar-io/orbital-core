@@ -67,7 +67,7 @@ fn build_signatures() -> SignatureTable {
         };
         if matches!(
             kind,
-            OperatorKind::BehaviorCompositionStubOp(_) | OperatorKind::AgentStubOp(_) | OperatorKind::TypedOp | OperatorKind::ProvenOp
+            OperatorKind::BehaviorCompositionStubOp(_) | OperatorKind::TypedOp
         ) {
             continue;
         }
@@ -114,7 +114,7 @@ fn scalar_known(value: &Value) -> Option<Known> {
         Value::Number(_) => Some(Known::Type(OirType::Number)),
         Value::String(_) => Some(Known::Type(OirType::String)),
         Value::Bool(_) => Some(Known::Type(OirType::Boolean)),
-        Value::Object(_) => Some(Known::Type(OirType::Struct { fields: Vec::new(), additional: None })),
+        Value::Object(_) => Some(Known::Type(OirType::Struct { fields: orbital_core_base::ir::types::no_fields(), additional: None })),
     }
 }
 
@@ -407,12 +407,27 @@ struct Frame {
     end: usize,
     signature: Signature<'static>,
     bindings: CallBindings,
-    /// The positions whose argument is not checked: proven by the static checker (`proven`).
-    skip: u64,
+}
+
+/// The calls being evaluated, innermost last. A returned call's slot stays allocated, so the next call reuses its
+/// bindings' storage instead of building and dropping them.
+struct Frames {
+    live: usize,
+    slots: Vec<Frame>,
+}
+
+impl Frames {
+    fn top(&self) -> Option<&Frame> {
+        self.live.checked_sub(1).map(|at| &self.slots[at])
+    }
+
+    fn top_mut(&mut self) -> Option<&mut Frame> {
+        self.live.checked_sub(1).map(|at| &mut self.slots[at])
+    }
 }
 
 orbital_core_base::kernel_local! {
-    static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
+    static FRAMES: RefCell<Frames> = const { RefCell::new(Frames { live: 0, slots: Vec::new() }) };
 }
 
 /// Marks `args` as the argument slice of the operator call being evaluated until dropped.
@@ -420,28 +435,23 @@ pub struct CallFrame;
 
 impl CallFrame {
     pub fn enter(signature: Signature<'static>, args: &[SExpression]) -> Self {
-        Self::enter_skipping(signature, args, 0)
+        Self::enter_frame(signature, args)
     }
 
-    /// [`CallFrame::enter`] for a call whose arguments at the positions in `proven` (bit `i` for position `i`) the
-    /// static checker proved. A proven position is still checked while it shares a type variable with an unproven
-    /// one, whose binding it constrains.
-    pub fn enter_proven(signature: Signature<'static>, args: &[SExpression], proven: u64) -> Self {
-        let skip = trusted_positions(&signature, args.len(), proven);
-        Self::enter_skipping(signature, args, skip)
-    }
-
-    fn enter_skipping(signature: Signature<'static>, args: &[SExpression], skip: u64) -> Self {
+    fn enter_frame(signature: Signature<'static>, args: &[SExpression]) -> Self {
         let start = args.as_ptr() as usize;
         let end = start + std::mem::size_of_val(args);
         FRAMES.with(|f| {
-            f.borrow_mut().push(Frame {
-                start,
-                end,
-                signature,
-                bindings: CallBindings::new(),
-                skip,
-            })
+            let mut frames = f.borrow_mut();
+            let at = frames.live;
+            if let Some(slot) = frames.slots.get_mut(at) {
+                slot.start = start;
+                slot.end = end;
+                slot.signature = signature;
+            } else {
+                frames.slots.push(Frame { start, end, signature, bindings: CallBindings::new() });
+            }
+            frames.live = at + 1;
         });
         CallFrame
     }
@@ -450,7 +460,10 @@ impl CallFrame {
 impl Drop for CallFrame {
     fn drop(&mut self) {
         FRAMES.with(|f| {
-            f.borrow_mut().pop();
+            let mut frames = f.borrow_mut();
+            frames.live -= 1;
+            let at = frames.live;
+            frames.slots[at].bindings.clear();
         });
     }
 }
@@ -460,90 +473,14 @@ impl Drop for CallFrame {
 pub fn argument_slot(expr: &SExpression) -> Option<usize> {
     FRAMES.with(|f| {
         let frames = f.borrow();
-        let top = frames.last()?;
+        let top = frames.top()?;
         let at = expr as *const SExpression as usize;
         if at < top.start || at >= top.end {
             return None;
         }
         let index = (at - top.start) / std::mem::size_of::<SExpression>();
-        (index >= 64 || top.skip & (1 << index) == 0).then_some(index)
+        Some(index)
     })
-}
-
-fn is_proven(proven: u64, index: usize) -> bool {
-    index < 64 && proven & (1 << index) != 0
-}
-
-/// The proven positions of a call of `argc` arguments that share no type variable with an unproven position.
-fn trusted_positions(signature: &Signature<'static>, argc: usize, proven: u64) -> u64 {
-    let mut skip = 0;
-    for index in (0..argc.min(64)).filter(|&index| is_proven(proven, index)) {
-        let mut names = Vec::new();
-        if let Some(formal) = signature.formal(index) {
-            variables_of(formal, &mut names);
-        }
-        let constrained = (0..argc).any(|other| {
-            !is_proven(proven, other)
-                && signature
-                    .formal(other)
-                    .is_some_and(|formal| names.iter().any(|name| names_variable(formal, name)))
-        });
-        if !constrained {
-            skip |= 1 << index;
-        }
-    }
-    skip
-}
-
-/// The type variables `ty` names, as [`names_variable`] reads them.
-fn variables_of<'a>(ty: &'a OperatorTypeRef, out: &mut Vec<&'a str>) {
-    let OperatorTypeRef::Tagged(kind) = ty else {
-        return;
-    };
-    match kind {
-        OperatorTypeRefKind::Var { name, bound, .. } => {
-            out.push(name);
-            if let Some(bound) = bound.as_deref() {
-                variables_of(bound, out);
-            }
-        }
-        OperatorTypeRefKind::Union { of } => of.iter().for_each(|member| variables_of(member, out)),
-        OperatorTypeRefKind::Array { of } => variables_of(of, out),
-        OperatorTypeRefKind::Tuple { items } => items.iter().for_each(|item| variables_of(item, out)),
-        OperatorTypeRefKind::Map { key, value } => {
-            variables_of(key, out);
-            variables_of(value, out);
-        }
-        OperatorTypeRefKind::Object { fields, .. } => fields.values().for_each(|field| variables_of(field, out)),
-        OperatorTypeRefKind::Binding { shape } => {
-            if let Some(shape) = shape.as_deref() {
-                variables_of(shape, out);
-            }
-        }
-        OperatorTypeRefKind::Sexpr { of } => {
-            if let Some(of) = of.as_deref() {
-                variables_of(of, out);
-            }
-        }
-        OperatorTypeRefKind::Fn { params, returns } => {
-            params.iter().for_each(|param| variables_of(param, out));
-            variables_of(returns, out);
-        }
-        OperatorTypeRefKind::PickOf { of }
-        | OperatorTypeRefKind::OmitOf { of }
-        | OperatorTypeRefKind::MergeOf { of }
-        | OperatorTypeRefKind::ChildrenOf { of, .. } => out.push(of),
-        OperatorTypeRefKind::KeyOf { .. }
-        | OperatorTypeRefKind::FieldOf { .. }
-        | OperatorTypeRefKind::Literal { .. }
-        | OperatorTypeRefKind::Entity { .. }
-        | OperatorTypeRefKind::EntityRef
-        | OperatorTypeRefKind::EventKey { .. }
-        | OperatorTypeRefKind::UiSlot
-        | OperatorTypeRefKind::PatternType
-        | OperatorTypeRefKind::Record
-        | OperatorTypeRefKind::Shape => {}
-    }
 }
 
 /// Whether `formal` is a bare type variable, or an unevaluated expression whose value is one.
@@ -790,7 +727,7 @@ pub fn value_of_shape(value: &Value, declared: &DeclaredShape) -> Result<(), Orb
 pub fn check_declared_argument(index: usize, declared: &OirType) -> Result<(), OrbitalError> {
     FRAMES.with(|f| {
         let mut frames = f.borrow_mut();
-        let Some(top) = frames.last_mut() else {
+        let Some(top) = frames.top_mut() else {
             return Ok(());
         };
         let signature = top.signature;
@@ -896,7 +833,7 @@ pub fn check_argument(index: usize, value: &Value) -> Result<(), OrbitalError> {
     }
     FRAMES.with(|f| {
         let mut frames = f.borrow_mut();
-        let Some(top) = frames.last_mut() else {
+        let Some(top) = frames.top_mut() else {
             return Ok(());
         };
         let signature = top.signature;

@@ -53,8 +53,6 @@ macro_rules! operator_kind {
             $( $variant, )+
             /// Compile-time composition placeholder; carries the operator name.
             BehaviorCompositionStubOp(&'static str),
-            /// Agent-runtime operator placeholder; carries the operator name.
-            AgentStubOp(&'static str),
         }
 
         impl OperatorKind {
@@ -70,7 +68,6 @@ macro_rules! operator_kind {
                     OperatorKind::BehaviorCompositionStubOp(name) => {
                         BehaviorCompositionStubOp(name).evaluate(args, ctx)
                     }
-                    OperatorKind::AgentStubOp(name) => AgentStubOp(name).evaluate(args, ctx),
                 }
             }
         }
@@ -102,7 +99,6 @@ operator_kind! {
     ArrayRangeOp => ArrayRangeOp,
     ArrayRejectOp => ArrayRejectOp,
     ArrayRemoveOp => ArrayRemoveOp,
-    ArrayRepeatOp => ArrayRepeatOp,
     ArrayReverseOp => ArrayReverseOp,
     ArrayShuffleOp => ArrayShuffleOp,
     ArraySliceOp => ArraySliceOp,
@@ -119,7 +115,6 @@ operator_kind! {
     CountOp => CountOp,
     DivOp => DivOp,
     DoOp => DoOp,
-    EmptyOp => EmptyOp,
     EqOp => EqOp,
     FilterOp => FilterOp,
     FindOp => FindOp,
@@ -147,11 +142,11 @@ operator_kind! {
     JoinOp => JoinOp,
     AsOp => AsOp,
     TypedOp => TypedOp,
-    ProvenOp => ProvenOp,
     JsonParseOp => JsonParseOp,
     JsonStringifyOp => JsonStringifyOp,
     JsonValidOp => JsonValidOp,
     JsonNodesOp => JsonNodesOp,
+    TreeIndexOp => TreeIndexOp,
     CsvParseOp => CsvParseOp,
     XmlParseOp => XmlParseOp,
     XmlValidOp => XmlValidOp,
@@ -226,7 +221,6 @@ operator_kind! {
     StrDefaultOp => StrDefaultOp,
     StrEndsWithOp => StrEndsWithOp,
     StrIncludesOp => StrIncludesOp,
-    StrIndexOfOp => StrIndexOfOp,
     StrKebabCaseOp => StrKebabCaseOp,
     StrLenOp => StrLenOp,
     StrPadEndOp => StrPadEndOp,
@@ -282,7 +276,6 @@ operator_kind! {
     StrTrimStartOp => StrTrimStartOp,
     StrTruncateOp => StrTruncateOp,
     SubOp => SubOp,
-    SubstringOp => SubstringOp,
     TimeAddOp => TimeAddOp,
     TimeDayOp => TimeDayOp,
     TimeDiffOp => TimeDiffOp,

@@ -112,8 +112,7 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
 /// Keep in sync with `parse_effect`'s explicit arms above and with
 /// `resolve_sexpr_call`'s substrate routing in orbital-compiler.
 pub fn is_known_effect_name(op: &str) -> bool {
-    if op.starts_with("agent/")
-        || op.starts_with("os/")
+    if op.starts_with("os/")
         || OsOp::from_name(op).is_some()
         || op.starts_with("browser/")
         || op.starts_with("llm/")

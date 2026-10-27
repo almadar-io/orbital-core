@@ -17,7 +17,7 @@ mod composition;
 use time::*;
 use composition::*;
 pub use composition::{
-    AgentStubOp, BehaviorCompositionStubOp, FormatCreditCardOp, TimeEndOfOp, TimeRelativeOp,
+    BehaviorCompositionStubOp, FormatCreditCardOp, TimeEndOfOp, TimeRelativeOp,
     TimeStartOfOp,
 };
 pub use formatting::{FormatOrdinalOp, FormatPluralOp};

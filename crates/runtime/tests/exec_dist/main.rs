@@ -21,4 +21,5 @@ mod server_leg_retarget;
 mod server_leg_seed;
 mod server_payload_validation;
 mod server_persist_success_mark;
+mod server_sessions;
 mod server_transitions;

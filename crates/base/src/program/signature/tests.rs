@@ -398,7 +398,7 @@ fn a_map_whose_values_differ_in_type_is_a_record() {
         Mode::Runtime,
     )
     .unwrap();
-    assert_eq!(sig.result(&b), Some(OirType::Struct { fields: Vec::new(), additional: None }));
+    assert_eq!(sig.result(&b), Some(OirType::Struct { fields: Default::default(), additional: None }));
 }
 
 #[test]
@@ -455,7 +455,7 @@ fn a_list_literal_of_unlike_tuples_is_a_list_of_one_element_type() {
 fn lists_of_unlike_width_tuples_bound_in_turn_are_one_list_type() {
     let flatten = op(json!([p("arr", list(list(var("T"))))]), list(var("T")), Some(1));
     let update = OirType::Tuple {
-        items: vec![OirType::String, OirType::String, OirType::String, OirType::Struct { fields: Vec::new(), additional: None }],
+        items: vec![OirType::String, OirType::String, OirType::String, OirType::Struct { fields: Default::default(), additional: None }],
     };
     let delete = OirType::Tuple {
         items: vec![OirType::String, OirType::String, OirType::String],
@@ -477,7 +477,7 @@ fn lists_of_unlike_width_tuples_bound_in_turn_are_one_list_type() {
         items: vec![OirType::String, OirType::String, absent_slot()],
     };
     let update = OirType::Tuple {
-        items: vec![OirType::String, OirType::String, OirType::String, OirType::Struct { fields: Vec::new(), additional: None }],
+        items: vec![OirType::String, OirType::String, OirType::String, OirType::Struct { fields: Default::default(), additional: None }],
     };
     let mut b = CallBindings::new();
     sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(rekey)))), Mode::Runtime).unwrap();
@@ -679,7 +679,7 @@ fn record_bounds_require_every_declared_union_member_to_be_a_record() {
         variants: vec![
             OirField::new("record", shape.clone()),
             OirField::new("other", other),
-        ],
+        ].into(),
     };
     assert!(call(
         &operator,
@@ -889,7 +889,7 @@ fn children_reference_identity_requires_a_declared_alias() {
     let mut bindings = CallBindings::new();
     assert_eq!(
         children_of(&node, "Tree", &OirType::String, &bindings),
-        Some(OirType::Struct { fields: Vec::new(), additional: None })
+        Some(OirType::Struct { fields: Default::default(), additional: None })
     );
     let required = struct_of(&[(
         "kids",
@@ -980,7 +980,7 @@ fn children_reference_identity_requires_a_declared_alias() {
     ])));
     assert_eq!(
         children_of(&node, "Alias", &OirType::String, &bindings),
-        Some(OirType::Struct { fields: Vec::new(), additional: None })
+        Some(OirType::Struct { fields: Default::default(), additional: None })
     );
 }
 
@@ -1057,7 +1057,7 @@ fn a_fold_over_a_tagged_union_types_the_children_of_every_variant() {
                 "Not",
                 struct_of(&[("kind", OirType::String), ("of", own())]),
             ),
-        ],
+        ].into(),
     };
     let last = std::cell::RefCell::new(None);
     let step = |params: &[Option<OirType>]| {
@@ -1069,7 +1069,7 @@ fn a_fold_over_a_tagged_union_types_the_children_of_every_variant() {
         variants: vec![
             OirField::new("All", struct_of(&[("of", s_arr(OirType::String))])),
             OirField::new("Not", struct_of(&[("of", OirType::String)])),
-        ],
+        ].into(),
     };
     assert_eq!(last.borrow().clone(), Some(expected));
 }
@@ -1079,7 +1079,7 @@ fn pred_children() -> OirType {
         variants: vec![
             OirField::new("All", struct_of(&[("of", s_arr(OirType::String))])),
             OirField::new("Not", struct_of(&[("of", OirType::String)])),
-        ],
+        ].into(),
     }
 }
 
@@ -1098,7 +1098,7 @@ fn control_a_union_member_read_whose_variants_agree_is_one_type() {
         variants: vec![
             OirField::new("A", struct_of(&[("of", s_arr(OirType::String))])),
             OirField::new("B", struct_of(&[("of", s_arr(OirType::String))])),
-        ],
+        ].into(),
     };
     let Path::Found(found) = walk_path(&alike, "of") else {
         panic!("agreeing variants read as one type")
@@ -1279,7 +1279,7 @@ fn a_tagged_union_member_read_is_the_field_its_variants_declare() {
                 "text",
                 &[("type", OirType::String), ("content", OirType::String)],
             ),
-        ],
+        ].into(),
     };
     assert_eq!(
         type_at_path(&union, &["type".to_string()]),
@@ -1637,22 +1637,22 @@ fn at_run_time_a_key_is_not_checked_but_the_record_is() {
 #[test]
 fn additional_records_transforms_preserve_the_same_value_slot() {
     let prior = OirType::Struct {
-        fields: vec![],
+        fields: Default::default(),
         additional: Some(Box::new(OirType::Tuple { items: vec![] })),
     };
     let actual = OirType::Struct {
-        fields: vec![],
+        fields: Default::default(),
         additional: Some(Box::new(OirType::array(OirType::Number))),
     };
     assert_eq!(fill_empty_list_slots(&prior, &actual), Some(actual));
     let node = OirType::Struct {
-        fields: vec![],
+        fields: Default::default(),
         additional: Some(Box::new(OirType::TypeRef { name: "Node".into() })),
     };
     assert_eq!(
         children_of(&node, "Node", &OirType::String, &CallBindings::new()),
         Some(OirType::Struct {
-            fields: vec![],
+            fields: Default::default(),
             additional: Some(Box::new(OirType::String)),
         })
     );
@@ -1663,7 +1663,7 @@ fn additional_records_paths_and_pick_omit_keep_presence_distinct() {
     let optional = optional_fields(&[("maybe", OirType::String)]);
     assert_eq!(type_at_path(&optional, &["maybe".into()]), Some(OirType::optional(OirType::String)));
     let row = OirType::Struct {
-        fields: vec![OirField::new("fixed", OirType::String)],
+        fields: vec![OirField::new("fixed", OirType::String)].into(),
         additional: Some(Box::new(OirType::Number)),
     };
     assert_eq!(type_at_path(&row, &["extra".into()]), Some(OirType::optional(OirType::Number)));
@@ -1677,15 +1677,15 @@ fn additional_records_paths_and_pick_omit_keep_presence_distinct() {
     let mut extra = OirField::new("extra", OirType::Number);
     extra.required = false;
     assert_eq!(call(&operator("pickOf"), &[ty(row.clone()), keys("extra")], Mode::Static),
-        Ok(Some(OirType::Struct { fields: vec![extra], additional: None })));
+        Ok(Some(OirType::Struct { fields: vec![extra].into(), additional: None })));
     assert_eq!(call(&operator("omitOf"), &[ty(row), keys("fixed")], Mode::Static),
-        Ok(Some(OirType::Struct { fields: vec![], additional: Some(Box::new(OirType::Number)) })));
+        Ok(Some(OirType::Struct { fields: Default::default(), additional: Some(Box::new(OirType::Number)) })));
 }
 
 #[test]
 fn additional_records_branch_join_covers_both_extra_value_types() {
     let branch = |additional| OirType::Struct {
-        fields: vec![OirField::new("fixed", OirType::String)],
+        fields: vec![OirField::new("fixed", OirType::String)].into(),
         additional: Some(Box::new(additional)),
     };
     let joined = unify_structs(&[branch(OirType::Number), branch(OirType::Boolean)]).unwrap();
@@ -1700,10 +1700,10 @@ fn additional_records_branch_join_covers_both_extra_value_types() {
 fn additional_records_merge_retains_typed_extras_and_right_known_fields() {
     let merge = op(json!([p("...objs", json!({ "kind": "var", "name": "R", "bound": { "kind": "record" }, "each": true }))]),
         json!({ "kind": "mergeOf", "of": "R" }), None);
-    let left = OirType::Struct { fields: vec![OirField::new("left", OirType::Number)], additional: Some(Box::new(OirType::Number)) };
-    let right = OirType::Struct { fields: vec![OirField::new("right", OirType::String)], additional: Some(Box::new(OirType::Number)) };
+    let left = OirType::Struct { fields: vec![OirField::new("left", OirType::Number)].into(), additional: Some(Box::new(OirType::Number)) };
+    let right = OirType::Struct { fields: vec![OirField::new("right", OirType::String)].into(), additional: Some(Box::new(OirType::Number)) };
     assert_eq!(call(&merge, &[ty(left), ty(right)], Mode::Static), Ok(Some(OirType::Struct {
-        fields: vec![OirField::new("left", OirType::Number), OirField::new("right", OirType::String)],
+        fields: vec![OirField::new("left", OirType::Number), OirField::new("right", OirType::String)].into(),
         additional: Some(Box::new(OirType::Number)),
     })));
 }
@@ -1725,7 +1725,7 @@ fn additional_records_unknown_branch_does_not_claim_a_missing_named_field() {
         var("T"), Some(3));
     choose.return_semantics = Some("branch-union".into());
     let typed = OirType::Struct {
-        fields: vec![OirField::new("amount", OirType::Number)],
+        fields: vec![OirField::new("amount", OirType::Number)].into(),
         additional: Some(Box::new(OirType::Number)),
     };
     for operands in [[typed.clone(), struct_of(&[])], [struct_of(&[]), typed.clone()]] {
@@ -1752,7 +1752,7 @@ fn additional_records_unknown_merge_cannot_overwrite_known_members_unnoticed() {
     let merge = op(json!([p("...objs", json!({ "kind": "var", "name": "R", "bound": { "kind": "record" }, "each": true }))]),
         json!({ "kind": "mergeOf", "of": "R" }), None);
     let typed = OirType::Struct {
-        fields: vec![OirField::new("amount", OirType::Number)],
+        fields: vec![OirField::new("amount", OirType::Number)].into(),
         additional: Some(Box::new(OirType::Number)),
     };
     assert_eq!(call(&merge, &[ty(typed.clone()), ty(struct_of(&[]))], Mode::Static), Ok(None));
@@ -1763,10 +1763,10 @@ fn additional_records_unknown_merge_cannot_overwrite_known_members_unnoticed() {
         Ok(Some(struct_of(&[("amount", OirType::Number)]))));
     let ordinary = struct_of(&[("amount", OirType::Number)]);
     assert_eq!(call(&merge, &[ty(ordinary.clone()), ty(struct_of(&[]))], Mode::Static), Ok(Some(ordinary)));
-    let left = OirType::Struct { fields: vec![], additional: Some(Box::new(OirType::Number)) };
+    let left = OirType::Struct { fields: Default::default(), additional: Some(Box::new(OirType::Number)) };
     let mut amount = OirField::new("amount", OirType::String);
     amount.required = false;
-    let right = OirType::Struct { fields: vec![amount], additional: Some(Box::new(OirType::Number)) };
+    let right = OirType::Struct { fields: vec![amount].into(), additional: Some(Box::new(OirType::Number)) };
     let merged = call(&merge, &[ty(left), ty(right)], Mode::Static).unwrap().unwrap();
     let OirType::Struct { fields, additional: Some(_), .. } = merged else { panic!("typed merge retained") };
     assert!(!fields[0].required);
@@ -2114,7 +2114,7 @@ fn a_union_argument_binds_when_every_variant_fits_a_union_parameter() {
         variants: vec![
             OirField::new("string", OirType::String),
             OirField::new("config", config),
-        ],
+        ].into(),
     };
     assert!(call(&spawn, &[ty(string_or_config)], Mode::Static).is_ok());
 }
@@ -2130,7 +2130,7 @@ fn control_a_union_argument_with_a_variant_no_member_fits_is_refused() {
         variants: vec![
             OirField::new("string", OirType::String),
             OirField::new("boolean", OirType::Boolean),
-        ],
+        ].into(),
     };
     assert!(call(&show, &[ty(string_or_boolean)], Mode::Static).is_err());
 }

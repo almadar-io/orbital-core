@@ -16,8 +16,11 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
+
+mod small;
+use small::{SmallMap, SmallSet};
 
 use crate::ir::types::{OirField, OirType};
 use crate::language::registry::{
@@ -175,25 +178,25 @@ impl std::ops::Deref for NamedTypes {
 /// The variables a call has bound so far.
 #[derive(Debug, Default, Clone)]
 pub struct CallBindings {
-    vars: BTreeMap<String, Vec<OirType>>,
-    keys: BTreeMap<String, Vec<String>>,
+    vars: SmallMap<Vec<OirType>>,
+    keys: SmallMap<Vec<String>>,
     /// The key arguments that name no field of the record their variable is bound to: the argument position and
     /// the path. Reading such a field is an error only when the call supplies no default (see [`Signature::finish`]).
-    absent: BTreeMap<String, (usize, String)>,
+    absent: SmallMap<(usize, String)>,
     /// The type of the default supplied for a `field-of` parameter whose field the record does not declare.
-    defaults: BTreeMap<String, OirType>,
+    defaults: SmallMap<OirType>,
     /// The `field-of` variables the call supplies a never-null default for: a read through a record that may be
     /// missing is answered by it.
-    defaulted: BTreeSet<String>,
+    defaulted: SmallSet,
     /// The variables the null value was passed to: they may hold null.
-    nullable: BTreeSet<String>,
+    nullable: SmallSet,
     /// The variables whose latest binding is an effect (it produces no value).
-    voided: BTreeSet<String>,
+    voided: SmallSet,
     /// The variables holding only the empty list so far: a list with no element, whose type some sibling binding
     /// or the slot it fills must supply.
-    empty_lists: BTreeSet<String>,
+    empty_lists: SmallSet,
     /// The element variables of an empty list handed to a list position: nothing in the call has typed them yet.
-    empty_elements: BTreeSet<String>,
+    empty_elements: SmallSet,
     /// Whether the call is checked over expression types (an empty list nothing types is then an error).
     strict: bool,
     index: usize,
@@ -204,6 +207,23 @@ pub struct CallBindings {
 impl CallBindings {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Empties the bindings for the next call, keeping their storage.
+    pub fn clear(&mut self) {
+        self.vars.clear();
+        self.keys.clear();
+        self.absent.clear();
+        self.defaults.clear();
+        self.defaulted.clear();
+        self.nullable.clear();
+        self.voided.clear();
+        self.empty_lists.clear();
+        self.empty_elements.clear();
+        self.strict = false;
+        self.index = 0;
+        self.shape = None;
+        self.named_types = NamedTypes::default();
     }
 
     pub fn use_named_types(&mut self, types: std::sync::Arc<BTreeMap<String, OirType>>) {

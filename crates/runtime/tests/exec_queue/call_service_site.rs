@@ -98,6 +98,7 @@ fn run_in(
                     .collect();
                 progress = server.resume(flight, replies).unwrap();
             }
+            ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
 }
@@ -297,6 +298,7 @@ fn asked_args(args: Json) -> Json {
             other => panic!("expected a call, got {other:?}"),
         },
         ServerProgress::Done(response) => panic!("the call was never asked: {response:?}"),
+        ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
     }
 }
 
@@ -365,6 +367,7 @@ fn settle_other_asks(server: &EmbeddedServer, mut progress: ServerProgress) -> E
                     .collect();
                 progress = server.resume(flight, replies).unwrap();
             }
+            ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
 }
@@ -375,6 +378,7 @@ fn awaiting_call(
     match progress {
         ServerProgress::Await { flight, requests } => (flight, requests),
         ServerProgress::Done(response) => panic!("the call never suspended: {response:?}"),
+        ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
     }
 }
 
@@ -479,49 +483,35 @@ fn answer_calls(requests: Vec<orbital_core_runtime::resumable::PendingRequest>) 
 
 #[test]
 fn control_an_unkeyed_parked_ask_keeps_the_lane_until_its_dispatch_commits() {
-    use std::sync::{mpsc, Arc};
-    use std::time::Duration;
     within("unkeyed lane control", || {
-        let server = Arc::new(EmbeddedServer::new(lane_schema()).unwrap());
+        let server = EmbeddedServer::new(lane_schema()).unwrap();
         let (flight, requests) = awaiting_call(server.start("Main", request("SLOW", "Slow")).unwrap());
-        let (tx, rx) = mpsc::channel();
-        let other = std::thread::spawn({
-            let server = server.clone();
-            move || {
-                let progress = server.start("Main", judge("CALL")).unwrap();
-                tx.send(()).unwrap();
-                awaiting_call(progress)
-            }
-        });
-        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "a dispatch entered while an unkeyed ask held the lane");
+        let ServerProgress::Queued { ticket } = server.start("Main", judge("CALL")).unwrap() else {
+            panic!("a dispatch entered while an unkeyed ask held the lane");
+        };
+        assert!(server.next().is_none(), "nothing starts while the unkeyed ask holds the lane");
         let done = server.resume(flight, answer_calls(requests)).unwrap();
         assert!(matches!(done, ServerProgress::Done(_)));
-        rx.recv_timeout(Duration::from_secs(5)).expect("the lane was freed when the dispatch committed");
-        other.join().unwrap();
+        let (started, progress) = server.next().expect("the lane was freed when the dispatch committed");
+        assert_eq!(started, ticket);
+        awaiting_call(progress.unwrap());
     });
 }
 
 #[test]
 fn a_keyed_calls_answer_waits_its_turn_behind_a_dispatch_that_holds_the_lane() {
-    use std::sync::{mpsc, Arc};
-    use std::time::Duration;
     within("keyed answer behind the lane holder", || {
-        let server = Arc::new(EmbeddedServer::new(lane_schema()).unwrap());
+        let server = EmbeddedServer::new(lane_schema()).unwrap();
         let (keyed_flight, keyed_requests) = awaiting_call(server.start("Main", judge("CALL")).unwrap());
         let (slow_flight, slow_requests) = awaiting_call(server.start("Main", request("SLOW", "Slow")).unwrap());
-        let (tx, rx) = mpsc::channel();
-        let answered = std::thread::spawn({
-            let server = server.clone();
-            move || {
-                let progress = server.resume(keyed_flight, answer_calls(keyed_requests)).unwrap();
-                tx.send(()).unwrap();
-                progress
-            }
-        });
-        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "the keyed answer ran while an unkeyed ask held the lane");
+        let ServerProgress::Queued { ticket } = server.resume(keyed_flight, answer_calls(keyed_requests)).unwrap() else {
+            panic!("the keyed answer ran while an unkeyed ask held the lane");
+        };
+        assert_eq!(server.get_state("Judge", None), "busy", "the queued answer has not run");
         assert!(matches!(server.resume(slow_flight, answer_calls(slow_requests)).unwrap(), ServerProgress::Done(_)));
-        rx.recv_timeout(Duration::from_secs(5)).expect("the keyed answer ran once the lane was free");
-        assert!(matches!(answered.join().unwrap(), ServerProgress::Done(_)));
+        let (resumed, progress) = server.next().expect("the keyed answer runs once the lane is free");
+        assert_eq!(resumed, ticket);
+        assert!(matches!(progress.unwrap(), ServerProgress::Done(_)));
         assert_eq!(server.get_state("Judge", None), "idle");
     });
 }

@@ -86,6 +86,7 @@ fn drive(server: &EmbeddedServer, request: EventRequest) -> (EventResponse, Vec<
                     .collect();
                 progress = server.resume(flight, replies).unwrap();
             }
+            ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
 }
@@ -259,6 +260,7 @@ fn drive_rows(server: &EmbeddedServer, orbital: &str, request: EventRequest) -> 
                     .collect();
                 progress = server.resume(flight, replies).unwrap();
             }
+            ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
 }

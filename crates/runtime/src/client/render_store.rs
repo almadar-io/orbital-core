@@ -241,7 +241,7 @@ pub(crate) fn resolve_deferred(
                 _ => None,
             });
             match operator {
-                Some("fn" | "lambda") => flushed.resolve_value(source).into_owned(),
+                Some("fn") => flushed.resolve_value(source).into_owned(),
                 Some(op) if get_operator(op).is_some() => {
                     let ctx = if is_marker(source) { live } else { flushed };
                     ctx.resolve_value(source).into_owned()

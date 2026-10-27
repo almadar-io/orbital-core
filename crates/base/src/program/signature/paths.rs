@@ -79,7 +79,7 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, resolve: &dyn Fn(&str) -> O
                             distinct.push(OirField::new((*name).to_string(), (*ty).clone()));
                         }
                     }
-                    OirType::Union { variants: distinct }
+                    OirType::Union { variants: distinct.into() }
                 };
                 current = if declared.len() == variants.len() {
                     joined
@@ -204,13 +204,13 @@ pub(super) fn children_of(
                         ..v.clone()
                     })
                 })
-                .collect::<Option<Vec<_>>>()?,
+                .collect::<Option<Vec<_>>>()?.into(),
         }),
         OirType::Array { inner } if is_shape(inner) => Some(OirType::array(result.clone())),
         OirType::Map { key, value } if is_shape(value) => {
             Some(OirType::map((**key).clone(), result.clone()))
         }
-        _ => Some(OirType::Struct { fields: Vec::new(), additional: None }),
+        _ => Some(OirType::Struct { fields: crate::ir::types::no_fields(), additional: None }),
     }
 }
 
@@ -240,6 +240,6 @@ pub fn project_children_type(
     match kept.as_slice() {
         [] => None,
         [only] => Some(only.field_type.clone()),
-        _ => Some(OirType::Union { variants: kept }),
+        _ => Some(OirType::Union { variants: kept.into() }),
     }
 }

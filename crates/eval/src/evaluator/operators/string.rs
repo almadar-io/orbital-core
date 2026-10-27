@@ -89,27 +89,6 @@ impl Operator for TrimOp {
     }
 }
 
-pub struct SubstringOp;
-impl Operator for SubstringOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "substring", >= 2);
-        let s = eval_expr(&args[0], ctx)?.to_text();
-        let start = require_number!(eval_expr(&args[1], ctx)?) as usize;
-
-        let end = if args.len() > 2 {
-            require_number!(eval_expr(&args[2], ctx)?) as usize
-        } else {
-            s.len()
-        };
-
-        let chars: Vec<char> = s.chars().collect();
-        let start = start.min(chars.len());
-        let end = end.min(chars.len()).max(start);
-
-        Ok(Value::String(chars[start..end].iter().collect()))
-    }
-}
-
 pub struct SplitOp;
 impl Operator for SplitOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -267,25 +246,6 @@ impl Operator for StrTemplateOp {
         }
 
         Ok(Value::string(result))
-    }
-}
-
-/// str/indexOf - Find substring index
-pub struct StrIndexOfOp;
-impl Operator for StrIndexOfOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "str/indexOf", >= 2);
-        let haystack = eval_expr(&args[0], ctx)?.to_text();
-        let needle = eval_expr(&args[1], ctx)?.to_text();
-
-        match haystack.find(&needle) {
-            Some(pos) => {
-                // Convert byte index to char index
-                let char_pos = haystack[..pos].chars().count();
-                Ok(Value::Number(char_pos as f64))
-            }
-            None => Ok(Value::Number(-1.0)),
-        }
     }
 }
 

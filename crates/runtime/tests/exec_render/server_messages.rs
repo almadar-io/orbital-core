@@ -86,6 +86,7 @@ fn init(server: &EmbeddedServer, locale: Option<&str>) -> Result<EventResponse, 
                     .collect();
                 progress = server.resume(flight, replies)?;
             }
+            ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
 }

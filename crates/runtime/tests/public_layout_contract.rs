@@ -409,6 +409,7 @@ fn server_progress_matches_exhaustively_and_keeps_its_wire_bytes() {
                 assert_eq!(*flight, 7);
                 assert!(requests.is_empty());
             }
+            ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
     assert_eq!(
@@ -440,6 +441,7 @@ fn server_progress_matches_exhaustively_and_keeps_its_wire_bytes() {
                 assert_eq!(*flight, 1);
                 assert!(requests.is_empty());
             }
+            ServerProgressWire::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
 }
@@ -467,6 +469,7 @@ fn a_real_server_flight_reports_the_same_status_tags_on_the_wire() {
                 assert!(tags.len() < 8, "the flight does not settle");
                 progress = server.resume(flight, replies(&store, &requests)).unwrap();
             }
+            ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
     assert_eq!(tags.first().map(String::as_str), Some("await"));

@@ -59,9 +59,9 @@ pub(super) fn field_shape_inner(field: &FieldDefinition) -> OirType {
                     })
                     .collect();
                 fields.sort_by(|a, b| a.name.cmp(&b.name));
-                OirType::Struct { fields, additional: field.additional_properties.as_deref().map(field_shape).map(Box::new) }
+                OirType::Struct { fields: fields.into(), additional: field.additional_properties.as_deref().map(field_shape).map(Box::new) }
             }
-            (None, _) if field.additional_properties.is_some() => OirType::Struct { fields: Vec::new(), additional: field.additional_properties.as_deref().map(field_shape).map(Box::new) },
+            (None, _) if field.additional_properties.is_some() => OirType::Struct { fields: crate::ir::types::no_fields(), additional: field.additional_properties.as_deref().map(field_shape).map(Box::new) },
             (None, Some(items)) => OirType::map(OirType::String, field_shape(items)),
             (None, None) => OirType::Json,
         },
@@ -95,7 +95,7 @@ pub(super) fn field_shape_inner(field: &FieldDefinition) -> OirType {
                     .map(|(name, def)| OirField::new(name.clone(), field_shape(def)))
                     .collect();
                 variants.sort_by(|a, b| a.name.cmp(&b.name));
-                OirType::Union { variants }
+                OirType::Union { variants: variants.into() }
             }
             (None, _) => OirType::Json,
         },
@@ -117,7 +117,7 @@ pub fn record_shape(record: Option<&str>, properties: Option<&HashMap<String, Fi
             })
             .collect();
         fields.sort_by(|a, b| a.name.cmp(&b.name));
-        return OirType::Struct { fields, additional: None };
+        return OirType::Struct { fields: fields.into(), additional: None };
     }
     match record {
         Some(text) => match text.strip_prefix('$') {
@@ -175,7 +175,7 @@ pub fn payload_type_shape(field_type: &str) -> OirType {
         // In a payload position a relation travels as the related row's id and an enum as its literal value.
         "relation" | "enum" => return OirType::String,
         "array" | "list" => return OirType::array(OirType::Json),
-        "object" => return OirType::Struct { fields: Vec::new(), additional: None },
+        "object" => return OirType::Struct { fields: crate::ir::types::no_fields(), additional: None },
         "json" | "tensor" => return OirType::Json,
         "SExpr" => return OirType::SExpr,
         "node" => return OirType::Node,
@@ -188,7 +188,7 @@ pub fn payload_type_shape(field_type: &str) -> OirType {
     }
     // `@entity(<knob>)`: a row of the entity a knob names, and nothing names it here: an empty record.
     if trimmed.starts_with("@entity(") && trimmed.ends_with(')') {
-        return OirType::Struct { fields: Vec::new(), additional: None };
+        return OirType::Struct { fields: crate::ir::types::no_fields(), additional: None };
     }
     if let Some(name) = trimmed.strip_prefix('$').filter(|n| !n.is_empty()) {
         return OirType::Var { name: name.to_string() };
@@ -260,7 +260,7 @@ pub(super) fn payload_field_shape_inner(
         return OirType::map(OirType::String, payload_field_shape_with_entity(item, is_entity));
     }
     if field.field_type == "object" && field.properties.as_ref().is_none_or(Vec::is_empty) && field.additional_properties.is_some() {
-        return OirType::Struct { fields: Vec::new(), additional: field.additional_properties.as_deref().map(|field| payload_field_shape_with_entity(field, is_entity)).map(Box::new) };
+        return OirType::Struct { fields: crate::ir::types::no_fields(), additional: field.additional_properties.as_deref().map(|field| payload_field_shape_with_entity(field, is_entity)).map(Box::new) };
     }
     let list = field.field_type.trim_start().starts_with('[');
     match &field.properties {
@@ -285,9 +285,9 @@ pub(super) fn payload_field_shape_inner(
                 })
                 .collect();
             if field.field_type == "union" {
-                return OirType::Union { variants: fields };
+                return OirType::Union { variants: fields.into() };
             }
-            let record = OirType::Struct { fields, additional: field.additional_properties.as_deref().map(|field| payload_field_shape_with_entity(field, is_entity)).map(Box::new) };
+            let record = OirType::Struct { fields: fields.into(), additional: field.additional_properties.as_deref().map(|field| payload_field_shape_with_entity(field, is_entity)).map(Box::new) };
             if list {
                 OirType::array(record)
             } else {

@@ -64,6 +64,7 @@ fn send(target: Option<&str>, payload: Json) -> EventResponse {
                     .collect();
                 progress = server.resume(flight, replies).unwrap();
             }
+            ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
 }

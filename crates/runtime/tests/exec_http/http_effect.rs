@@ -112,6 +112,7 @@ fn run(
                     .collect();
                 progress = server.resume(flight, replies).unwrap();
             }
+            ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
 }
@@ -860,6 +861,7 @@ mod browser_effects {
                         .collect();
                     progress = server.resume(flight, replies).unwrap();
                 }
+                ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
             }
         }
     }
@@ -1303,6 +1305,7 @@ mod tab_effects {
                         .collect();
                     progress = server.resume(flight, replies).unwrap();
                 }
+                ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
             }
         }
     }

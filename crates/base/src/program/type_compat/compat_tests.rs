@@ -440,7 +440,7 @@ fn a_primitive_union_takes_its_member_kinds_and_nothing_else() {
         variants: vec![
             crate::ir::types::OirField::new("string".to_string(), String),
             crate::ir::types::OirField::new("number".to_string(), Number),
-        ],
+        ].into(),
     };
     assert_eq!(
         sub(&String, &union),
@@ -459,8 +459,8 @@ fn a_primitive_union_takes_its_member_kinds_and_nothing_else() {
     let tagged = Union {
         variants: vec![crate::ir::types::OirField::new(
             "a".to_string(),
-            Struct { fields: vec![], additional: None },
-        )],
+            Struct { fields: Default::default(), additional: None },
+        )].into(),
     };
     assert_eq!(sub(&String, &tagged), None);
 }
@@ -468,7 +468,7 @@ fn a_primitive_union_takes_its_member_kinds_and_nothing_else() {
 #[test]
 fn sub_object_json_family_mutually_compatible() {
     use super::sub;
-    let row = Struct { fields: vec![], additional: None };
+    let row = Struct { fields: Default::default(), additional: None };
     let bag = Map {
         key: Box::new(String),
         value: Box::new(Json),
@@ -519,7 +519,7 @@ fn an_atom_and_a_list_of_program_data_are_an_sexpr() {
         "the empty list"
     );
     assert!(
-        sub(&Struct { fields: vec![], additional: None }, &SExpr).is_some(),
+        sub(&Struct { fields: Default::default(), additional: None }, &SExpr).is_some(),
         "an options object"
     );
     assert!(sub(
@@ -581,7 +581,7 @@ fn sub_reference_row_or_id() {
     let article = Reference {
         entity: "Article".into(),
     };
-    let row = Struct { fields: vec![], additional: None };
+    let row = Struct { fields: Default::default(), additional: None };
     assert_eq!(sub(&row, &article), Some(C::Row { from_id: false }));
     assert_eq!(sub(&String, &article), Some(C::Row { from_id: true }));
     assert_eq!(
@@ -613,7 +613,7 @@ fn sub_row_is_object_family() {
     let revision_ref = Reference {
         entity: "Revision".into(),
     };
-    let object = Struct { fields: vec![], additional: None };
+    let object = Struct { fields: Default::default(), additional: None };
     // A row takes an object-family value and erases into shapeless destinations.
     assert_eq!(
         sub(&object, &row),
@@ -659,7 +659,7 @@ fn sub_node_renders_any_scalar() {
         Some(C::Widen(WidenKind::ScalarToNode))
     );
     assert_eq!(sub(&Money, &Node), Some(C::Widen(WidenKind::ScalarToNode)));
-    let row = Struct { fields: vec![], additional: None };
+    let row = Struct { fields: Default::default(), additional: None };
     assert_eq!(sub(&row, &Node), Some(C::Erase { from: row }));
     let arr = Array {
         inner: Box::new(String),

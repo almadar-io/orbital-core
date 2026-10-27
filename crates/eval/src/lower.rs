@@ -73,7 +73,7 @@ fn lower_raw_callback(op: &str, args: &[SExpression], resolved: &mut [OirExpr]) 
         return;
     };
     let is_lambda_form = matches!(raw, SExpression::Array(form)
-        if matches!(form.first(), Some(SExpression::String(head)) if head == "fn" || head == "lambda"));
+        if matches!(form.first(), Some(SExpression::String(head)) if head == "fn"));
     let binds_element = body
         .collect_bindings()
         .iter()
@@ -310,15 +310,10 @@ impl NodeLowerer {
         if op == "typed" && args.len() == 2 && !KEEP_TYPED.with(std::cell::Cell::get) {
             return self.resolve_sexpr(&args[0]);
         }
-        if op == "proven" && args.len() >= 2 {
-            return self.resolve_owned(SExpression::Array(args[1..].to_vec()));
-        }
         // Enforce canonical maxArity (canonical-operators.json). Variadic ops
         // (maxArity null) skip. Catches the silent-drop bug in binary_op /
         // unary_op, which keep only the first 1–2 args and discard the rest
-        // (C-EMIT-MAX-ARITY-SILENT-DROP). Aliases absent from the canonical
-        // registry (`add`, `&&`, …) return None here and are still covered by
-        // the per-arm binary/unary minimum checks below.
+        // (C-EMIT-MAX-ARITY-SILENT-DROP).
         if let Some(meta) = orbital_core_base::language::registry::get_operator(op) {
             // Effect operators are async EFFECTS — like fetch/persist
             // (EFFECT_OPERATORS) they carry a trailing `{ emit }` envelope
@@ -343,10 +338,10 @@ impl NodeLowerer {
 
         match op {
             // Comparison operators
-            "=" | "==" | "eq" => self.binary_op(args, OirExpr::eq),
+            "=" | "==" => self.binary_op(args, OirExpr::eq),
             "!=" | "ne" => self.binary_op(args, OirExpr::ne),
-            "<" | "lt" => self.binary_op(args, OirExpr::lt),
-            ">" | "gt" => self.binary_op(args, OirExpr::gt),
+            "<" => self.binary_op(args, OirExpr::lt),
+            ">" => self.binary_op(args, OirExpr::gt),
             "<=" | "le" => self.binary_op(args, |l, r| OirExpr::BinaryOp {
                 op: OirBinaryOp::Le,
                 left: Box::new(l),
@@ -359,24 +354,24 @@ impl NodeLowerer {
             }),
 
             // Logical operators
-            "and" | "&&" => self.variadic_binary_op(args, OirExpr::and),
-            "or" | "||" => self.variadic_binary_op(args, OirExpr::or),
-            "not" | "!" => self.unary_op(args, OirExpr::not),
+            "and" => self.variadic_binary_op(args, OirExpr::and),
+            "or" => self.variadic_binary_op(args, OirExpr::or),
+            "not" => self.unary_op(args, OirExpr::not),
 
             // Arithmetic operators
-            "+" | "add" => self.variadic_binary_op(args, OirExpr::add),
-            "-" | "sub" => self.binary_op(args, OirExpr::sub),
-            "*" | "mul" => self.variadic_binary_op(args, |l, r| OirExpr::BinaryOp {
+            "+" => self.variadic_binary_op(args, OirExpr::add),
+            "-" => self.binary_op(args, OirExpr::sub),
+            "*" => self.variadic_binary_op(args, |l, r| OirExpr::BinaryOp {
                 op: OirBinaryOp::Mul,
                 left: Box::new(l),
                 right: Box::new(r),
             }),
-            "/" | "div" => self.binary_op(args, |l, r| OirExpr::BinaryOp {
+            "/" => self.binary_op(args, |l, r| OirExpr::BinaryOp {
                 op: OirBinaryOp::Div,
                 left: Box::new(l),
                 right: Box::new(r),
             }),
-            "%" | "mod" => self.binary_op(args, |l, r| OirExpr::BinaryOp {
+            "%" => self.binary_op(args, |l, r| OirExpr::BinaryOp {
                 op: OirBinaryOp::Mod,
                 left: Box::new(l),
                 right: Box::new(r),
@@ -667,24 +662,7 @@ impl NodeLowerer {
                 self.resolve_os_effect(op_name, args)
             }
 
-            // Agent operators — lowered as Custom effects so backend can codegen TypeScript
-            op_name if op_name.starts_with("agent/") => {
-                let resolved_args: Vec<OirExpr> = args
-                    .iter()
-                    .map(|a| self.resolve_sexpr(a))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let mut args_map = orbital_core_base::ir::expr::OirFields::default();
-                for (i, arg) in resolved_args.into_iter().enumerate() {
-                    args_map.insert(format!("arg{}", i), arg);
-                }
-                Ok(OirExpr::effect(OirEffect::Custom {
-                    name: op_name.to_string(),
-                    args: args_map,
-                    emit: None,
-                }))
-            }
-
-            // Substrate operators — same pattern as agent/*: lowered as
+            // Substrate operators: lowered as
             // Custom effects so the codegen backend can emit TypeScript
             // service-accessor calls. Without this routing, these would
             // fall through to `OirExpr::Call` and produce invalid TS
@@ -739,7 +717,7 @@ impl NodeLowerer {
                 Ok(OirExpr::call("let", resolved))
             }
 
-            "fn" | "lambda" => {
+            "fn" => {
                 if args.len() < 2 {
                     return Err(LowerError::InvalidSExpr(format!(
                         "{op} lambda requires parameters and a body"

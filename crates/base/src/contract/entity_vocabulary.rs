@@ -13,7 +13,7 @@ pub const USER_SIGIL: &str = "@user.";
 /// this constant rather than declaring its own) and the orbital-import
 /// role-literal rewrite (`inline/rewrite.rs::rewrite_role_literals`, which
 /// must stay shape-identical to `check_comparison`).
-pub const EQUALITY_OPS: &[&str] = &["=", "==", "!=", "!==", "eq", "neq"];
+pub const EQUALITY_OPS: &[&str] = &["=", "==", "!="];
 
 /// The declared vocabulary for an identity field, following `items` for the
 /// array form. `roles : ["a" | "b"]` keeps the union on the ELEMENT, so a

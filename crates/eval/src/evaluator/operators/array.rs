@@ -4,7 +4,7 @@ use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
-use orbital_core_base::value::ValueMap;
+use orbital_core_base::value::{Shared, ValueMap};
 use std::sync::Arc;
 
 /// The numbers `array/max` / `array/min` fold: each element (or its `args[1]` field)
@@ -46,7 +46,7 @@ fn numbers_of(
 /// params and runs its body where it is written, a value that is a lambda binds its own, and any other expression is
 /// a raw body run with `@item`/`@index` bound. Reading it once spares every element a copy of the body.
 pub enum Callback<'a> {
-    Literal { params: Vec<&'a str>, body: &'a SExpression },
+    Literal { params: Vec<&'a Shared<String>>, body: &'a SExpression },
     Lambda { params: Vec<String>, body: Arc<SExpression> },
     Raw(&'a SExpression),
 }
@@ -56,8 +56,16 @@ impl<'a> Callback<'a> {
         if let SExpression::Array(items) = callable {
             if items.len() >= 3 && items[0].as_str() == Some("fn") {
                 let params = match &items[1] {
-                    SExpression::String(name) => Some(vec![name.as_str()]),
-                    SExpression::Array(names) => Some(names.iter().filter_map(SExpression::as_str).collect()),
+                    SExpression::String(name) => Some(vec![name]),
+                    SExpression::Array(names) => Some(
+                        names
+                            .iter()
+                            .filter_map(|name| match name {
+                                SExpression::String(name) => Some(name),
+                                _ => None,
+                            })
+                            .collect(),
+                    ),
                     _ => None,
                 };
                 if let Some(params) = params {
@@ -77,15 +85,15 @@ impl<'a> Callback<'a> {
         let values: Vec<Arc<Value>> = values.into_iter().map(Arc::new).collect();
         let mut child = ctx.child();
         if let Some(item) = values.first() {
-            child.set_local_shared("item", Arc::clone(item));
+            child.set_local_shared(crate::evaluator::LocalName::Fixed("item"), Arc::clone(item));
         }
         if let Some(index) = values.get(1) {
-            child.set_local_shared("index", Arc::clone(index));
+            child.set_local_shared(crate::evaluator::LocalName::Fixed("index"), Arc::clone(index));
         }
         match self {
             Callback::Literal { params, body } => {
                 for (param, value) in params.iter().zip(&values) {
-                    child.set_local_shared(param, Arc::clone(value));
+                    child.set_local_shared(crate::evaluator::LocalName::Shared((*param).clone()), Arc::clone(value));
                 }
                 eval_expr(body, &child)
             }
@@ -304,8 +312,8 @@ impl Operator for FilterOp {
                 .enumerate()
                 .filter_map(|(i, item)| {
                     let mut child_ctx = ctx.child();
-                    child_ctx.set_local("item", item.clone());
-                    child_ctx.set_local("index", Value::Number(i as f64));
+                    child_ctx.set_local(crate::evaluator::LocalName::Fixed("item"), item.clone());
+                    child_ctx.set_local(crate::evaluator::LocalName::Fixed("index"), Value::Number(i as f64));
                     if !params.is_empty() {
                         child_ctx.set_local(&params[0], item.clone());
                     }
@@ -329,7 +337,7 @@ impl Operator for FilterOp {
             .enumerate()
             .filter_map(|(i, item)| {
                 let mut child_ctx = ctx.with_item(item.clone());
-                child_ctx.set_local("index", Value::Number(i as f64));
+                child_ctx.set_local(crate::evaluator::LocalName::Fixed("index"), Value::Number(i as f64));
                 match eval_expr(predicate, &child_ctx) {
                     Ok(v) if v.is_truthy() => Some(Ok(item)),
                     Ok(_) => None,
@@ -1054,19 +1062,6 @@ impl Operator for ArrayDropLastOp {
     }
 }
 
-/// array/repeat - Repeat value n times
-pub struct ArrayRepeatOp;
-impl Operator for ArrayRepeatOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "repeat", >= 2);
-        let value = eval_expr(&args[0], ctx)?;
-        let n = require_number!(eval_expr(&args[1], ctx)?) as usize;
-
-        let result: Vec<Value> = std::iter::repeat_n(value, n).collect();
-        Ok(Value::array(result))
-    }
-}
-
 // ============================================================================
 // Reduce Operator (Phase 1)
 // ============================================================================
@@ -1089,7 +1084,7 @@ fn read_once(body: &SExpression, name: &str) -> bool {
                 !(in_lambda && found > 0)
             }
             SExpression::Array(items) => {
-                let lambda = matches!(items.first(), Some(SExpression::String(head)) if head == "fn" || head == "lambda");
+                let lambda = matches!(items.first(), Some(SExpression::String(head)) if head == "fn");
                 items.iter().all(|item| walk(item, name, in_lambda || lambda, reads))
             }
             SExpression::Object(fields) => fields.values().all(|value| walk(value, name, in_lambda, reads)),
@@ -1147,9 +1142,9 @@ impl Operator for ReduceOp {
             if linear {
                 child_ctx.set_linear_local("acc", acc);
             } else {
-                child_ctx.set_local("acc", acc);
+                child_ctx.set_local(crate::evaluator::LocalName::Fixed("acc"), acc);
             }
-            child_ctx.set_local("item", item);
+            child_ctx.set_local(crate::evaluator::LocalName::Fixed("item"), item);
             accumulator = eval_expr(reducer, &child_ctx)?;
         }
 
@@ -1184,23 +1179,6 @@ impl Operator for ArrayMinOp {
             .into_iter()
             .reduce(f64::min)
             .map_or(Value::Null, Value::Number))
-    }
-}
-
-/// empty - Check if collection is empty
-pub struct EmptyOp;
-impl Operator for EmptyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "empty", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        let is_empty = match &val {
-            Value::Array(a) => a.is_empty(),
-            Value::String(s) => s.is_empty(),
-            Value::Object(o) => o.is_empty(),
-            Value::Null => true,
-            _ => false,
-        };
-        Ok(Value::Bool(is_empty))
     }
 }
 

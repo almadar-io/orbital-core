@@ -49,8 +49,7 @@ impl RuntimeKernel {
     /// Free `session`'s trait states and frames and mark it ended (EXEC-DIST-9): a request but a mount to it is refused
     /// until a mount revives it.
     pub fn free_session(&self, session: &str) {
-        drop_session_instances(&self.frames, &self.carried_rows, &self.state_manager, session);
-        self.sessions.ended_sessions.write().insert(session.to_string());
+        self.session_lives.free(session);
     }
 
     /// Whether `session` was freed and not revived since.

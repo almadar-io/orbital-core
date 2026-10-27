@@ -3,3 +3,5 @@ node_modules/
 
 # LLVM coverage profiles (never committed)
 *.profraw
+
+scripts/gates/.observed/

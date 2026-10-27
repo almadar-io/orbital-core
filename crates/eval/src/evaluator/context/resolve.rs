@@ -53,10 +53,10 @@ impl BindingContext {
                 ))
             }
             "fromState" if rest.is_none() => {
-                return Some(self.from_state.clone().map_or(Value::Null, Value::string))
+                return Some(self.from_state.as_deref().map_or(Value::Null, |state| Value::string(state.to_owned())))
             }
             "toState" if rest.is_none() => {
-                return Some(self.to_state.clone().map_or(Value::Null, Value::string))
+                return Some(self.to_state.as_deref().map_or(Value::Null, |state| Value::string(state.to_owned())))
             }
             // Check locals, then the scope's read-once local
             _ => match self.locals.get(root) {
@@ -394,7 +394,7 @@ impl BindingContext {
                 // spellings from evaluation so the body passes through unevaluated (still
                 // walked recursively below for its own `@`-token substitutions).
                 if let Some(Value::String(op)) = arr.first() {
-                    if op == "fn" || op == "lambda" {
+                    if op == "fn" {
                         // Render-time lambda: stays raw for the renderer to beta-reduce
                         // per row. Only `@config.*` leaves resolve here, the same
                         // asymmetry the JS side documents (`resolveConfigLeavesInLambdaBody`,

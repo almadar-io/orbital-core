@@ -76,6 +76,7 @@ fn run_on(
                     .collect();
                 progress = server.resume(flight, replies).unwrap();
             }
+            ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
 }
@@ -616,6 +617,7 @@ mod credential_admin_effects {
                         .collect();
                     progress = server.resume(flight, replies).unwrap();
                 }
+                ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
             }
         };
         let listed = payload_of(&response, "OK");
@@ -697,6 +699,7 @@ mod credential_admin_effects {
                             .collect();
                         progress = server.resume(flight, replies).unwrap();
                     }
+                    ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
                 }
             };
             (response, seen)
@@ -1157,6 +1160,7 @@ mod oauth {
                             .collect();
                         progress = server.resume(flight, replies).unwrap();
                     }
+                    ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
                 }
             }
         }

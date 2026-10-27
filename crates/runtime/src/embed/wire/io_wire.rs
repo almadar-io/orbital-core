@@ -477,6 +477,24 @@ pub enum ServerProgressWire {
         flight: u64,
         requests: Vec<PendingRequestWire>,
     },
+    Queued {
+        ticket: u64,
+    },
+}
+
+/// A queued request the kernel started once the lane freed, under the ticket `start` answered with.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum NextWire {
+    Started {
+        ticket: u64,
+        progress: ServerProgressWire,
+    },
+    Failed {
+        ticket: u64,
+        error: String,
+    },
 }
 
 /// Where a row-set resolve through a host-answered store stands: the resolved page, or `requests` to answer

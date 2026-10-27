@@ -279,8 +279,8 @@ pub(super) fn compare_leaf_of(
 
 pub(super) fn compare_op_of(head: &str) -> Option<RowCompareOp> {
     match head {
-        "=" | "==" | "eq" => Some(RowCompareOp::Eq),
-        "!=" | "!==" | "neq" => Some(RowCompareOp::Ne),
+        "=" | "==" => Some(RowCompareOp::Eq),
+        "!=" => Some(RowCompareOp::Ne),
         "<" => Some(RowCompareOp::Lt),
         "<=" => Some(RowCompareOp::Le),
         ">" => Some(RowCompareOp::Gt),

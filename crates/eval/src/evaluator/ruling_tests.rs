@@ -30,7 +30,6 @@ fn num(n: f64) -> Value {
 fn a_call_with_more_arguments_than_declared_is_an_arity_error() {
     for call in [
         r#"["%", 7, 3, 1]"#,
-        r#"["mod", 7, 3, 1]"#,
         r#"["math/mod", 7, 3, 1]"#,
         r#"["/", 8, 2, 2]"#,
         r#"["math/map", 5, 0, 10, 0, 100, 1]"#,

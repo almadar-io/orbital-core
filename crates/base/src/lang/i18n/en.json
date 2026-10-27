@@ -177,7 +177,6 @@
     "if": "if",
     "let": "let",
     "fn": "fn",
-    "lambda": "lambda",
     "quote": "quote",
     "quasiquote": "quasiquote",
     "unquote": "unquote",

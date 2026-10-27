@@ -124,12 +124,12 @@ impl StateMachineCore {
 
         // Build context with payload
         let mut eval_ctx = self.build_context(ctx, payload);
-        eval_ctx.from_state = Some(current_state.to_string());
+        eval_ctx.from_state = Some(std::sync::Arc::from(current_state));
 
         // First arm whose guard passes (or that has none) fires; every guard tried is recorded.
         let mut guards: Vec<ArmGuard> = Vec::new();
         for (arm, (index, transition)) in matching_transitions.iter().enumerate() {
-            eval_ctx.to_state = Some(transition.to.clone());
+            eval_ctx.to_state = Some(std::sync::Arc::from(transition.to.as_str()));
             let Some(guard) = &transition.guard else {
                 let mut result = TransitionResult::success(
                     current_state,

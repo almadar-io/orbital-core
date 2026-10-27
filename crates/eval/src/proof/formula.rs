@@ -284,21 +284,21 @@ impl<'a> Translator<'a> {
                         }
                         _ => Some(self.opaque(expr)),
                     },
-                    "and" | "&&" => {
+                    "and" => {
                         let parts = args
                             .iter()
                             .map(|a| self.truthy(a))
                             .collect::<Option<Vec<_>>>()?;
                         Some(Formula::and(parts))
                     }
-                    "or" | "||" => {
+                    "or" => {
                         let parts = args
                             .iter()
                             .map(|a| self.truthy(a))
                             .collect::<Option<Vec<_>>>()?;
                         Some(Formula::or(parts))
                     }
-                    "not" | "!" => match args.first() {
+                    "not" => match args.first() {
                         Some(a) => self.truthy(a)?.negate(),
                         None => Some(self.opaque(expr)),
                     },
@@ -318,7 +318,7 @@ impl<'a> Translator<'a> {
                         Some(body) => self.truthy(&body),
                         None => Some(self.opaque(expr)),
                     },
-                    "=" | "==" | "!=" | "<>" | "<" | "<=" | ">" | ">="
+                    "=" | "==" | "!=" | "<" | "<=" | ">" | ">="
                         if args.len() >= 2
                             && (self.split_first_if(&args[0]).is_some()
                                 || self.split_first_if(&args[1]).is_some()) =>
@@ -345,7 +345,7 @@ impl<'a> Translator<'a> {
                             Formula::and(vec![cond.negate()?, no]),
                         ]))
                     }
-                    "=" | "==" | "!=" | "<>" if args.len() >= 2 => {
+                    "=" | "==" | "!=" if args.len() >= 2 => {
                         let eq = self.equal(&args[0], &args[1], expr)?;
                         if op == "=" || op == "==" {
                             Some(eq)
@@ -378,7 +378,7 @@ impl<'a> Translator<'a> {
             return None;
         };
         match op.as_str() {
-            "or" | "||" if args.len() == 2 => {
+            "or" if args.len() == 2 => {
                 Some((args[0].clone(), args[0].clone(), args[1].clone()))
             }
             "+" | "-" | "*" | "/" => {
@@ -394,7 +394,7 @@ impl<'a> Translator<'a> {
                 }
                 None
             }
-            "math/abs" | "abs" if args.len() == 1 => {
+            "math/abs" if args.len() == 1 => {
                 let surely = !matches!(args[0], SExpression::Null)
                     && self.num_term(&args[0]).is_some_and(|t| {
                         t.bare
@@ -416,7 +416,7 @@ impl<'a> Translator<'a> {
                 ]);
                 Some((cond, args[0].clone(), negated))
             }
-            "math/max" | "max" | "math/min" | "min" if args.len() == 2 => {
+            "math/max" | "math/min" if args.len() == 2 => {
                 let numeric = |a: &SExpression| {
                     !matches!(a, SExpression::Null)
                         && self.num_term(a).is_some_and(|t| {
@@ -473,7 +473,7 @@ impl<'a> Translator<'a> {
                     }
                     return None;
                 }
-                if matches!(op.as_str(), "time/now" | "now")
+                if matches!(op.as_str(), "time/now")
                     && args.is_empty()
                     && self.info("@now").is_some()
                 {
@@ -667,7 +667,7 @@ fn as_if(expr: &SExpression) -> Option<(SExpression, SExpression, SExpression)> 
 /// nested binder reuses one of the names (substitution would capture it).
 pub fn substitute_let(args: &[SExpression]) -> Option<SExpression> {
     let scope = SequentialBindings::from_args(args)?;
-    let names: BTreeSet<&str> = scope.bindings.iter().map(|(n, _)| *n).collect();
+    let names: BTreeSet<&str> = scope.bindings.iter().map(|(n, _)| n.as_str()).collect();
     if args.iter().any(|a| rebinds(a, &names)) {
         return None;
     }

@@ -5,14 +5,14 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use super::wire::{CallSiteWire, Settled, IoReplyWire, PendingRequestWire, ResolveProgressWire, ServerProgressWire};
+use super::wire::{CallSiteWire, Settled, IoReplyWire, NextWire, PendingRequestWire, ResolveProgressWire, ServerProgressWire};
 use crate::effects::response::{RunTick, TraitFrom, TransitionHop};
 use crate::effects::executor::{ServiceHandler, SubstrateHandler};
 use crate::resumable::{completion_event, CallSite, DispatchContinuation, DispatchError, DispatchOutcomes, HostAnswered, IoReply, PendingRequest, Progress, ResolveContinuation, ResolveProgress};
 use crate::row_query::RowPage;
 use orbital_core_base::row_set::RowSetRef;
 use crate::config::KernelConfig;
-use crate::kernel::{KernelError, RuntimeKernel};
+use crate::kernel::{KernelError, RequestSession, RuntimeKernel, SessionActive, SessionStream};
 use crate::entity_source::EntitySource;
 use crate::effects::response::{EventRequest, EventResponse};
 use orbital_core_base::schema::types::OrbitalSchema;
@@ -21,7 +21,7 @@ use orbital_core_base::os::{OsError, OsOp};
 #[cfg(feature = "std")]
 use orbital_core_base::os_grants::{resolve_anchored_args, EnvSnapshot, FsMode, OsAnchors};
 use orbital_core_base::os_grants::{OsGrants, OsRequirement};
-use orbital_core_base::value::Value;
+use orbital_core_base::value::{Value, ValueMap};
 use orbital_core_base::sync::Mutex;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -35,6 +35,11 @@ pub enum ServerProgress {
         flight: u64,
         requests: Vec<PendingRequest>,
     },
+    /// A dispatch holds the lane, so the kernel queued the request in arrival order (EXEC-CONC-2); [`EmbeddedServer::next`]
+    /// starts it, under this ticket, once the lane frees.
+    Queued {
+        ticket: u64,
+    },
 }
 
 impl From<&ServerProgress> for ServerProgressWire {
@@ -47,6 +52,7 @@ impl From<&ServerProgress> for ServerProgressWire {
                 flight: *flight,
                 requests: requests.iter().map(PendingRequestWire::from).collect(),
             },
+            ServerProgress::Queued { ticket } => ServerProgressWire::Queued { ticket: *ticket },
         }
     }
 }
@@ -86,17 +92,36 @@ struct Seed {
     entity_id: Option<String>,
     /// A `request.mount` dispatch: its rows are whole and seed the viewer's frames (EXEC-DIST-7).
     mount: bool,
+    /// The rows a reviving mount carried, echoed as the client sent them (EXEC-DIST-9).
+    carried_rows: Option<ValueMap>,
 }
 
 struct Flight {
     continuation: DispatchContinuation,
     seed: Seed,
     user: Value,
+    /// The client session the dispatch runs in, held active until it ends (EXEC-DIST-9).
+    session: Option<SessionActive>,
     /// Set for an untargeted request: the traits it was delivered to and the held state of the orbital's.
     discovery: Option<Discovery>,
 }
 
 type Discovery = (Vec<String>, HashMap<String, String>);
+
+/// A request's session as admitted when it arrived: the client's hold, and whether the request revived it.
+type Admitted = (Option<SessionActive>, bool);
+
+/// Work that arrived while a dispatch held the lane, waiting its turn: a new request, or the answers of a dispatch
+/// parked without the lane (a keyed ask), whose resumption enters the lane like any other dispatch.
+enum Waiting {
+    Start { orbital: String, request: Box<EventRequest>, admitted: Admitted },
+    Resume { flight: u64, replies: Vec<IoReply> },
+}
+
+struct Queued {
+    ticket: u64,
+    work: Waiting,
+}
 
 /// A server-role kernel and the dispatches it has in flight.
 pub struct EmbeddedServer {
@@ -106,6 +131,10 @@ pub struct EmbeddedServer {
     /// The traits some client has mounted: a tick that is not `[background]` fires only for these.
     tick_mount: Mutex<BTreeSet<String>>,
     flights: Mutex<HashMap<u64, Flight>>,
+    /// The live streams the host reported open, by the id it closes them with: while one is open its session lives.
+    streams: Mutex<HashMap<u64, SessionStream>>,
+    /// The requests waiting for the lane, in arrival order: the kernel, not the host, decides what runs next.
+    queued: Mutex<std::collections::VecDeque<Queued>>,
     /// Row-set resolves waiting on the host; they share `next_flight`'s ids with the dispatches.
     resolves: Mutex<HashMap<u64, ResolveContinuation>>,
     next_flight: Mutex<u64>,
@@ -174,6 +203,8 @@ impl EmbeddedServer {
             default_user: Mutex::new(default_user),
             tick_mount: Mutex::new(BTreeSet::new()),
             flights: Mutex::new(HashMap::new()),
+            streams: Mutex::new(HashMap::new()),
+            queued: Mutex::new(std::collections::VecDeque::new()),
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
@@ -193,6 +224,8 @@ impl EmbeddedServer {
             default_user: Mutex::new(self.default_user.lock().clone()),
             tick_mount: Mutex::new(self.tick_mount.lock().clone()),
             flights: Mutex::new(HashMap::new()),
+            streams: Mutex::new(HashMap::new()),
+            queued: Mutex::new(std::collections::VecDeque::new()),
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
@@ -231,6 +264,8 @@ impl EmbeddedServer {
             default_user: Mutex::new(self.default_user.lock().clone()),
             tick_mount: Mutex::new(BTreeSet::new()),
             flights: Mutex::new(HashMap::new()),
+            streams: Mutex::new(HashMap::new()),
+            queued: Mutex::new(std::collections::VecDeque::new()),
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
@@ -343,6 +378,7 @@ impl EmbeddedServer {
 
     /// Forget a dispatch the host gave up on.
     pub fn abandon(&self, flight: u64) -> bool {
+        self.queued.lock().retain(|queued| !matches!(queued.work, Waiting::Resume { flight: waiting, .. } if waiting == flight));
         self.flights.lock().remove(&flight).is_some() || self.resolves.lock().remove(&flight).is_some()
     }
 
@@ -407,12 +443,7 @@ impl EmbeddedServer {
                 continuation,
                 requests,
             } => {
-                let flight = {
-                    let mut next = self.next_flight.lock();
-                    let id = *next;
-                    *next += 1;
-                    id
-                };
+                let flight = self.next_id();
                 self.resolves.lock().insert(flight, continuation);
                 ServerResolve::Await { flight, requests }
             }
@@ -422,11 +453,85 @@ impl EmbeddedServer {
     /// Start `request` against `orbital`. A delegated leg (`traits` / `entityByTrait`) first seeds the client's
     /// states and rows. A mount batch seeds each lifecycle event; otherwise the target is `targetTrait`, else
     /// every declared trait of `traits`, else every trait of the orbital whose held state handles the event.
+    ///
+    /// While a parked dispatch holds the lane, or earlier requests still wait for it, the request is queued behind
+    /// them and answered `Queued`; the host starts nothing itself (EXEC-CONC-2).
     pub fn start(&self, orbital: &str, request: EventRequest) -> Result<ServerProgress, String> {
+        let admitted = self.admit(&request)?;
+        let mut queued = self.queued.lock();
+        if self.lane_held() || !queued.is_empty() {
+            let ticket = self.next_id();
+            queued.push_back(Queued { ticket, work: Waiting::Start { orbital: orbital.to_string(), request: Box::new(request), admitted } });
+            return Ok(ServerProgress::Queued { ticket });
+        }
+        drop(queued);
+        self.start_now(orbital, request, admitted)
+    }
+
+    /// Admit `request` into its session as it arrives (EXEC-DIST-9), so a request waiting for the lane holds it.
+    fn admit(&self, request: &EventRequest) -> Result<Admitted, String> {
+        let mounting = request.mount.as_ref().is_some_and(|seeds| !seeds.is_empty());
+        match self
+            .kernel
+            .admit_request(request.client_id.as_deref(), mounting, false)
+            .map_err(|ended| format!("SESSION_ENDED: {ended}"))?
+        {
+            RequestSession::Client { active, revived } => Ok((Some(active), revived)),
+            RequestSession::Program | RequestSession::Scratch(_) => Ok((None, false)),
+        }
+    }
+
+    /// The oldest queued request, started now that no dispatch holds the lane, with the ticket it was queued under;
+    /// `None` while the lane is held or nothing waits. The host calls it after each dispatch ends until it is `None`.
+    pub fn next(&self) -> Option<(u64, Result<ServerProgress, String>)> {
+        if self.lane_held() {
+            return None;
+        }
+        let Queued { ticket, work } = self.queued.lock().pop_front()?;
+        Some((ticket, match work {
+            Waiting::Start { orbital, request, admitted } => self.start_now(&orbital, *request, admitted),
+            Waiting::Resume { flight, replies } => self.resume_now(flight, replies),
+        }))
+    }
+
+    /// A live stream of `client`'s session opened (EXEC-DIST-9): the session is not freed while one is open. Answers the
+    /// id the host closes it with.
+    pub fn open_session_stream(&self, client: &str) -> u64 {
+        let id = self.next_id();
+        self.streams.lock().insert(id, self.kernel.open_session_stream(client));
+        id
+    }
+
+    /// The stream `id` dropped; once a session's streams have all dropped and it is quiet, the kernel frees it.
+    pub fn close_session_stream(&self, id: u64) -> bool {
+        let stream = self.streams.lock().remove(&id);
+        stream.is_some()
+    }
+
+    /// Whether `flight` is a dispatch parked holding the lane: a dispatch started on its behalf would wait on itself,
+    /// so the host refuses it (EXEC-CONC-0).
+    pub fn holds_lane(&self, flight: u64) -> bool {
+        self.flights.lock().get(&flight).is_some_and(|f| f.continuation.turn().is_some())
+    }
+
+    fn lane_held(&self) -> bool {
+        self.flights.lock().values().any(|f| f.continuation.turn().is_some())
+    }
+
+    fn next_id(&self) -> u64 {
+        let mut next = self.next_flight.lock();
+        let id = *next;
+        *next += 1;
+        id
+    }
+
+    fn start_now(&self, orbital: &str, request: EventRequest, (session, revived): Admitted) -> Result<ServerProgress, String> {
+        self.dispatch_stream.lock().clear();
         let traits = self
             .orbital_traits
             .get(orbital)
             .ok_or_else(|| format!("Orbital not found: {orbital}"))?;
+        let _in_session = session.as_ref().map(|active| self.kernel.enter_session(active.session()));
         let user = request
             .user
             .clone()
@@ -458,7 +563,7 @@ impl EmbeddedServer {
             );
         }
         if let Some(run) = request.run_tick.as_ref() {
-            return self.start_tick(run, entity_id, &request.event, user);
+            return self.start_tick(run, entity_id, &request.event, user, session);
         }
         if let Some(seeds) = request.mount.as_ref().filter(|seeds| !seeds.is_empty()) {
             let first = &seeds[0];
@@ -471,22 +576,41 @@ impl EmbeddedServer {
             if let Some(rejected) = self.payload_rejection(&targets, &payload) {
                 return Ok(ServerProgress::Done(rejected));
             }
-            let progress = self
-                .kernel
-                .start_dispatch_mount(seeds, entity_id, payload)
-                .map_err(dispatch_error)?;
+            let carried = if revived {
+                RuntimeKernel::carried_traits(request.traits.as_deref(), request.entity_by_trait.as_ref())
+            } else {
+                Default::default()
+            };
+            let carried_rows = revived.then(|| {
+                request
+                    .entity_by_trait
+                    .iter()
+                    .flatten()
+                    .filter(|(name, _)| seeds.iter().any(|seed| &seed.r#trait == *name))
+                    .map(|(name, row)| (name.clone(), row.clone()))
+                    .collect::<ValueMap>()
+            });
+            let unseeded: Vec<_> = seeds.iter().filter(|seed| !carried.contains(&seed.r#trait)).cloned().collect();
+            let progress = if unseeded.is_empty() {
+                Progress::Done(Vec::new())
+            } else {
+                self.kernel
+                    .start_dispatch_mount(&unseeded, entity_id, payload)
+                    .map_err(dispatch_error)?
+            };
             let seed = Seed {
                 trait_name: seed_trait,
                 event: seed_event,
                 tick: false,
                 entity_id: entity_id.map(str::to_string),
                 mount: true,
+                carried_rows,
             };
-            return self.settle(progress, seed, user, None);
+            return self.settle(progress, seed, user, None, session);
         }
         if request.target_trait.is_none() {
             if let Some(declared) = request.traits.as_ref() {
-                return self.start_declared(declared, entity_id, &request, payload, user);
+                return self.start_declared(declared, entity_id, &request, payload, user, session);
             }
             let handlers = self
                 .kernel
@@ -525,8 +649,9 @@ impl EmbeddedServer {
                 tick: false,
                 entity_id: entity_id.map(str::to_string),
                 mount: false,
+                carried_rows: None,
             };
-            return self.settle(progress, seed, user, Some((handlers, held)));
+            return self.settle(progress, seed, user, Some((handlers, held)), session);
         }
         let seed_trait = request
             .target_trait
@@ -553,8 +678,9 @@ impl EmbeddedServer {
             tick: false,
             entity_id: entity_id.map(str::to_string),
             mount: false,
+            carried_rows: None,
         };
-        self.settle(progress, seed, user, None)
+        self.settle(progress, seed, user, None, session)
     }
 
     /// The payload check at the API boundary: `Some(error response)` when any of `targets` (trait, the
@@ -578,6 +704,7 @@ impl EmbeddedServer {
         request: &EventRequest,
         payload: Value,
         user: Value,
+        session: Option<SessionActive>,
     ) -> Result<ServerProgress, String> {
         let names: Vec<String> = declared.iter().map(|t| t.r#trait.clone()).collect();
         let Some(first) = names.first().cloned() else {
@@ -612,8 +739,9 @@ impl EmbeddedServer {
             tick: false,
             entity_id: entity_id.map(str::to_string),
             mount: false,
+            carried_rows: None,
         };
-        self.settle(progress, seed, user, None)
+        self.settle(progress, seed, user, None, session)
     }
 
     fn start_tick(
@@ -622,6 +750,7 @@ impl EmbeddedServer {
         entity_id: Option<&str>,
         event: &str,
         user: Value,
+        session: Option<SessionActive>,
     ) -> Result<ServerProgress, String> {
         let background = match self.kernel.tick_of(&run.trait_name, &run.tick) {
             Some(tick) => tick.background,
@@ -647,17 +776,36 @@ impl EmbeddedServer {
             tick: true,
             entity_id: entity_id.map(str::to_string),
             mount: false,
+            carried_rows: None,
         };
-        self.settle(progress, seed, user, None)
+        self.settle(progress, seed, user, None, session)
     }
 
     /// Go on with `flight`, given an answer to each request it is waiting on. A refused set of
     /// answers ends the dispatch: the host asked for something it cannot supply.
+    ///
+    /// A dispatch parked without the lane resumes only in its turn: while another holds the lane, or earlier work
+    /// waits, its answers are queued and the kernel resumes it from [`Self::next`] (EXEC-CONC-1).
     pub fn resume(&self, flight: u64, replies: Vec<IoReply>) -> Result<ServerProgress, String> {
+        let mut queued = self.queued.lock();
+        if !self.holds_lane(flight) && (self.lane_held() || !queued.is_empty()) {
+            if !self.flights.lock().contains_key(&flight) {
+                return Err(format!("no dispatch is waiting as flight {flight}"));
+            }
+            let ticket = self.next_id();
+            queued.push_back(Queued { ticket, work: Waiting::Resume { flight, replies } });
+            return Ok(ServerProgress::Queued { ticket });
+        }
+        drop(queued);
+        self.resume_now(flight, replies)
+    }
+
+    fn resume_now(&self, flight: u64, replies: Vec<IoReply>) -> Result<ServerProgress, String> {
         let Flight {
             continuation,
             seed,
             user,
+            session,
             discovery,
         } = self
             .flights
@@ -665,11 +813,12 @@ impl EmbeddedServer {
             .remove(&flight)
             .ok_or_else(|| format!("no dispatch is waiting as flight {flight}"))?;
         self.kernel.set_current_user(user.clone());
+        let _in_session = session.as_ref().map(|active| self.kernel.enter_session(active.session()));
         let progress = self
             .kernel
             .resume(continuation, replies)
             .map_err(dispatch_error)?;
-        self.settle(progress, seed, user, discovery)
+        self.settle(progress, seed, user, discovery, session)
     }
 
     /// [`Self::resume`] with the wire's answers.
@@ -739,14 +888,26 @@ impl EmbeddedServer {
     pub fn start_json(&self, orbital: &str, request_json: &str) -> Result<String, String> {
         let request: EventRequest =
             serde_json::from_str(request_json).map_err(|e| format!("parse request_json: {e}"))?;
-        self.dispatch_stream.lock().clear();
         let progress = self.start(orbital, request)?;
-        if let ServerProgress::Done(response) = &progress {
+        serde_json::to_string(&self.started_wire(&progress)).map_err(|e| format!("serialize: {e}"))
+    }
+
+    /// [`Self::next`] over JSON: `null` while nothing can start, else a `NextWire` naming the ticket.
+    pub fn next_json(&self) -> Result<String, String> {
+        let next = self.next().map(|(ticket, started)| match started {
+            Ok(progress) => NextWire::Started { ticket, progress: self.started_wire(&progress) },
+            Err(error) => NextWire::Failed { ticket, error },
+        });
+        serde_json::to_string(&next).map_err(|e| format!("serialize: {e}"))
+    }
+
+    /// The wire form of a dispatch that just started; one that finished at once leaves its stream complete.
+    fn started_wire(&self, progress: &ServerProgress) -> ServerProgressWire {
+        if let ServerProgress::Done(response) = progress {
             let mut items = self.dispatch_stream.lock();
             if items.is_empty() { items.push(crate::effects::live_push::StreamItem::complete(response.clone())); }
         }
-        serde_json::to_string(&ServerProgressWire::from(&progress))
-            .map_err(|e| format!("serialize: {e}"))
+        ServerProgressWire::from(progress)
     }
 
     /// [`Self::resume`] over JSON: the answers (`IoReplyWire[]`) in, a `ServerProgressWire` out.
@@ -783,6 +944,7 @@ impl EmbeddedServer {
         seed: Seed,
         user: Value,
         discovery: Option<Discovery>,
+        session: Option<SessionActive>,
     ) -> Result<ServerProgress, String> {
         match progress {
             Progress::Done(outcomes) => {
@@ -809,6 +971,9 @@ impl EmbeddedServer {
                 self.kernel.stamp_emitted_sources(&mut response);
                 self.kernel
                     .echo_frames(&mut response, &outcomes, seed.entity_id.as_deref(), seed.mount);
+                if let Some(rows) = seed.carried_rows {
+                    response.entity_by_trait.get_or_insert_with(Default::default).extend(rows);
+                }
                 self.echo_held_states(&mut response, &seed.trait_name, seed.entity_id.as_deref());
                 *self.dispatch_stream.lock() = crate::effects::live_push::StreamItem::of_outcomes(&outcomes, &response);
                 Ok(ServerProgress::Done(response))
@@ -817,18 +982,14 @@ impl EmbeddedServer {
                 continuation,
                 requests,
             } => {
-                let flight = {
-                    let mut next = self.next_flight.lock();
-                    let id = *next;
-                    *next += 1;
-                    id
-                };
+                let flight = self.next_id();
                 self.flights.lock().insert(
                     flight,
                     Flight {
                         continuation,
                         seed,
                         user,
+                        session,
                         discovery,
                     },
                 );

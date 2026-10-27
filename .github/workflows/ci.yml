@@ -22,5 +22,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.93.0
 
-      - name: Test
-        run: cargo test
+      - name: Install orb
+        run: npm install --no-save --no-package-lock @almadar/orb@^18
+
+      - name: T4 gate (every crate's tests, ratcheted against scripts/gates/known-failures)
+        run: ORB="npx orb" bash scripts/gates/t4.sh

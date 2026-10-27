@@ -73,8 +73,8 @@ fn type_var_substitution_visits_nested_types_once_and_preserves_metadata() {
     field.description = Some("keep".into());
     let mut shape = OirType::Tuple { items: vec![
         OirType::map(var("t"), OirType::array(var("t"))),
-        OirType::Struct { fields: vec![field.clone()], additional: None },
-        OirType::Union { variants: vec![OirField::new("case", var("t"))] },
+        OirType::Struct { fields: vec![field.clone()].into(), additional: None },
+        OirType::Union { variants: vec![OirField::new("case", var("t"))].into() },
         OirType::TypeRef { name: "t".into() },
         OirType::reference("t"),
         var("unbound"),
@@ -88,8 +88,8 @@ fn type_var_substitution_visits_nested_types_once_and_preserves_metadata() {
     assert_eq!(items[0], OirType::map(var("next"), OirType::array(var("next"))));
     let OirType::Struct { fields, .. } = &items[1] else { panic!("record preserved") };
     field.field_type = OirType::optional(var("next"));
-    assert_eq!(fields, &[field]);
-    assert_eq!(items[2], OirType::Union { variants: vec![OirField::new("case", var("next"))] });
+    assert_eq!(&fields[..], &[field]);
+    assert_eq!(items[2], OirType::Union { variants: vec![OirField::new("case", var("next"))].into() });
     assert_eq!(items[3], OirType::TypeRef { name: "t".into() });
     assert_eq!(items[4], OirType::reference("t"));
     assert_eq!(items[5], var("unbound"));
@@ -176,10 +176,10 @@ fn explicit_nullable_and_additional_values_survive_schema_and_shape_readers() {
     assert_eq!(payload_wire["additionalProperties"]["nullable"], true);
     let payload_shape = serde_json::to_value(payload_field_shape(&payload)).unwrap();
     assert_eq!(payload_shape["additional"]["kind"], "optional");
-    let catchall = OirType::Struct { fields: Vec::new(), additional: Some(Box::new(OirType::TypeRef { name: "Cell".into() })) };
+    let catchall = OirType::Struct { fields: Default::default(), additional: Some(Box::new(OirType::TypeRef { name: "Cell".into() })) };
     let closed = DeclaredShape::with_resolver(None, catchall, |name| (name == "Cell").then_some(OirType::String));
     assert_eq!(closed.named.get("Cell"), Some(&OirType::String));
-    let mut variable = OirType::Struct { fields: Vec::new(), additional: Some(Box::new(OirType::Var { name: "cell".into() })) };
+    let mut variable = OirType::Struct { fields: Default::default(), additional: Some(Box::new(OirType::Var { name: "cell".into() })) };
     assert!(variable.substitute_type_vars(&std::collections::BTreeMap::from([("cell".into(), OirType::String)])));
     assert_eq!(serde_json::to_value(variable).unwrap()["additional"]["kind"], "string");
 }
@@ -401,7 +401,7 @@ fn a_field_knob_shapes_as_a_field_ref_of_its_value_type() {
 fn a_bare_payload_object_has_a_record_shape_while_json_stays_unconstrained() {
     let object: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({"name": "data", "type": "object"})).unwrap();
     let json: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({"name": "data", "type": "json"})).unwrap();
-    assert_eq!(payload_field_shape(&object), OirType::Struct { fields: Vec::new(), additional: None });
+    assert_eq!(payload_field_shape(&object), OirType::Struct { fields: Default::default(), additional: None });
     assert_eq!(payload_field_shape(&json), OirType::Json);
 }
 
@@ -426,7 +426,7 @@ fn field_shape_retains_closed_string_and_enum_values_through_nullable_containers
         let mut record = bare_field(FieldType::Object);
         record.properties = Some(std::collections::HashMap::new());
         record.additional_properties = Some(Box::new(field));
-        assert_eq!(field_shape(&record), OirType::Struct { fields: Vec::new(), additional: Some(Box::new(nullable)) });
+        assert_eq!(field_shape(&record), OirType::Struct { fields: Default::default(), additional: Some(Box::new(nullable)) });
     }
     assert_eq!(field_shape(&bare_field(FieldType::String)), OirType::String);
     assert_eq!(field_shape(&bare_field(FieldType::Enum)), OirType::enum_type("Enum"));

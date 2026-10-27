@@ -39,7 +39,7 @@ mod ruling_tests;
 pub use crate::evaluator::operators::arg_types::{actual_of, operator_signature};
 pub use crate::evaluator::operators::system::{TimeUnit, TIME_UNIT_VOCABULARY};
 pub use crate::evaluator::operators::xml::bake_list_shapes;
-pub use context::{BindingContext, BindingContextBuilder};
+pub use context::{BindingContext, BindingContextBuilder, LocalName};
 pub use operators::{
     callback_index_position, eval_expr, get_operator, raw_callback_params, EvalResult, Operator,
 };

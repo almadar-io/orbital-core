@@ -63,10 +63,10 @@ fn an_unknown_namespaced_head_is_refused_by_the_kernel_not_read_as_data() {
 }
 
 #[test]
-fn substring_with_its_start_past_its_end_answers_empty_text_instead_of_panicking() {
+fn a_slice_with_its_start_past_its_end_answers_empty_text_instead_of_panicking() {
     let ctx = BindingContextBuilder::new().build();
-    let backwards: SExpression = serde_json::from_value(json!(["substring", "abcdef", 4, 2])).unwrap();
+    let backwards: SExpression = serde_json::from_value(json!(["str/slice", "abcdef", 4, 2])).unwrap();
     assert_eq!(Evaluator::new().evaluate(&backwards, &ctx).unwrap(), Value::string(String::new()));
-    let forwards: SExpression = serde_json::from_value(json!(["substring", "abcdef", 1, 3])).unwrap();
+    let forwards: SExpression = serde_json::from_value(json!(["str/slice", "abcdef", 1, 3])).unwrap();
     assert_eq!(Evaluator::new().evaluate(&forwards, &ctx).unwrap(), Value::string("bc"), "control: an ordered range");
 }

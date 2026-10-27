@@ -252,7 +252,7 @@ pub(super) fn bind_type(
                     } else {
                         b.empty_lists.remove(name);
                     }
-                    b.vars.entry(name.clone()).or_default().push(ty.clone());
+                    b.vars.entry_or_default(name).push(ty.clone());
                     b.voided.remove(name);
                     return Ok(());
                 }
@@ -631,10 +631,7 @@ pub(super) fn bind_key(
                     .insert(record_var.to_string(), (b.index, path.clone()));
             }
         }
-        b.keys
-            .entry(record_var.to_string())
-            .or_default()
-            .push(path.clone());
+        b.keys.entry_or_default(record_var).push(path.clone());
     }
     let _ = formal;
     Ok(())

@@ -7,7 +7,7 @@ fn a_member_left_optional_either_way_is_the_same_member() {
             let mut x = OirField::new("x", OirType::Number);
             x.required = true;
             x
-        }],
+        }].into(),
     };
     let plain = {
         let mut id = OirField::new("id", OirType::String);
@@ -101,8 +101,8 @@ fn literal_union_codec_preserves_every_authored_string_member() {
 
 #[test]
 fn typed_additional_values_do_not_prove_an_opaque_empty_record() {
-    let unknown = crate::ir::types::OirType::Struct { fields: Vec::new(), additional: None };
-    let target = crate::ir::types::OirType::Struct { fields: Vec::new(), additional: Some(Box::new(crate::ir::types::OirType::Number)) };
+    let unknown = crate::ir::types::OirType::Struct { fields: Default::default(), additional: None };
+    let target = crate::ir::types::OirType::Struct { fields: Default::default(), additional: Some(Box::new(crate::ir::types::OirType::Number)) };
     assert!(super::checked_sub_with_named(&unknown, &target, &|_| None).is_none());
     assert!(super::checked_sub_with_named(&target, &target, &|_| None).is_some());
     assert!(super::checked_sub_with_named(&unknown, &unknown, &|_| None).is_some());
@@ -155,7 +155,7 @@ fn a_list_of_an_alias_satisfies_the_same_list_spelled_through_its_expansion() {
     use crate::ir::OirField;
     let member = OirType::Struct {
         additional: None,
-        fields: vec![OirField::new("content", OirType::String)],
+        fields: vec![OirField::new("content", OirType::String)].into(),
     };
     let resolve = |name: &str| (name == "M").then(|| member.clone());
     let by_name = OirType::array(OirType::TypeRef { name: "M".into() });
@@ -165,7 +165,7 @@ fn a_list_of_an_alias_satisfies_the_same_list_spelled_through_its_expansion() {
     assert!(super::oir_type_satisfies_with_named(&by_name, &by_name, &resolve));
     let other = OirType::array(OirType::Struct {
         additional: None,
-        fields: vec![OirField::new("content", OirType::Number)],
+        fields: vec![OirField::new("content", OirType::Number)].into(),
     });
     assert!(!super::oir_type_satisfies_with_named(&by_name, &other, &resolve));
     assert!(!super::oir_type_satisfies_with_named(&other, &by_name, &resolve));
@@ -181,7 +181,7 @@ fn checked_assignment_requires_known_identity_preserving_evidence() {
         value: Box::new(OirType::Number),
     };
     for (source, target) in [
-        (OirType::Struct { fields: Vec::new(), additional: None }, map.clone()),
+        (OirType::Struct { fields: Default::default(), additional: None }, map.clone()),
         (
             OirType::array(OirType::Json),
             OirType::array(OirType::Number),
@@ -203,7 +203,7 @@ fn checked_assignment_requires_known_identity_preserving_evidence() {
     }
     let record = OirType::Struct {
         additional: None,
-        fields: vec![OirField::new("n", OirType::Number)],
+        fields: vec![OirField::new("n", OirType::Number)].into(),
     };
     assert!(check(&record, &map).is_some());
     assert!(check(&OirType::Integer, &OirType::Number).is_some());
@@ -256,7 +256,7 @@ fn named_relation_resolves_recursive_lists_maps_and_known_record_fields() {
         (
             "Cell",
             OirType::Struct {
-                fields: vec![crate::ir::types::OirField::new("kind", OirType::String), next],
+                fields: vec![crate::ir::types::OirField::new("kind", OirType::String), next].into(),
                 additional: None,
             },
         ),
@@ -571,7 +571,7 @@ fn structural_unknown_nullable_and_recursive_shapes_remain_compatible() {
         fields: vec![
             crate::ir::types::OirField::new("kind", OirType::String),
             optional_field,
-        ],
+        ].into(),
     };
     assert!(super::assignable(&string_record, &optional_record));
     assert!(!super::assignable(
@@ -623,7 +623,7 @@ fn a_type_variable_is_opaque() {
     for concrete in [
         OirType::String,
         OirType::Number,
-        OirType::Struct { fields: vec![], additional: None },
+        OirType::Struct { fields: Default::default(), additional: None },
         OirType::Node,
     ] {
         assert!(

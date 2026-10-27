@@ -29,7 +29,7 @@ fn sequential_binding_view_preserves_order_duplicates_and_arbitrary_string_names
         "@x"
     ]));
     let view = SequentialBindings::from_args(&arguments).unwrap();
-    let names: Vec<&str> = view.bindings.iter().map(|(name, _)| *name).collect();
+    let names: Vec<&str> = view.bindings.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(names, ["x", "x", "", "base64/encode", "اسم", "a.b", "@name"]);
     let pairs = arguments[0].as_array().unwrap();
     for (index, (_, value)) in view.bindings.iter().enumerate() {
@@ -77,7 +77,7 @@ fn sequential_bindings_wrapper_recognizes_only_the_canonical_let_form() {
         "let", [["x", 1]], null, ["base64/decode", "!"]
     ])).unwrap();
     let view = expression.sequential_bindings().unwrap();
-    assert_eq!(view.bindings, [("x", &SExpression::Number(1.0))]);
+    assert_eq!(view.bindings.iter().map(|(name, value)| (name.as_str(), *value)).collect::<Vec<_>>(), [("x", &SExpression::Number(1.0))]);
     assert_eq!(view.body, &SExpression::Null);
 }
 

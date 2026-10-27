@@ -51,7 +51,7 @@ impl Operator for JsonParseOp {
         match super::arg_types::misfit_of_shape(&parsed, &declared) {
             None => Ok(parsed),
             Some((path, actual)) => {
-                tracing::warn!(
+                tracing::debug!(
                     target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
                     "json/parse: the value is not of the shape {shape}: at `{path}` it is {actual}"
                 );
@@ -121,6 +121,54 @@ impl Operator for JsonNodesOp {
             nodes.push(value);
         }
         Ok(Value::array(nodes))
+    }
+}
+
+/// `(tree/index value heads)`: every call form in `value` whose head is listed in `heads`, grouped by head in `heads`
+/// order, each with its path from `value`; one pre-order walk that continues inside a hit.
+pub struct TreeIndexOp;
+impl Operator for TreeIndexOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "tree/index", == 2);
+        let value = eval_expr(&args[0], ctx)?;
+        let invalid = || OrbitalError::Eval(EvalError::InvalidArgument("tree/index: heads must be a list of strings".to_string()));
+        let Value::Array(listed) = eval_expr(&args[1], ctx)? else {
+            return Err(invalid());
+        };
+        let mut found: Vec<(String, Vec<Value>)> = Vec::with_capacity(listed.len());
+        for head in listed.iter() {
+            let Value::String(head) = head else {
+                return Err(invalid());
+            };
+            if !found.iter().any(|(listed, _)| listed == head.as_str()) {
+                found.push((head.to_string(), Vec::new()));
+            }
+        }
+        let mut stack = vec![(value, String::new())];
+        while let Some((node, path)) = stack.pop() {
+            match &node {
+                Value::Array(items) => {
+                    if let Some(Value::String(head)) = items.first() {
+                        if let Some((_, list)) = found.iter_mut().find(|(listed, _)| listed == head.as_str()) {
+                            let mut hit = ValueMap::new();
+                            hit.insert("path".to_string(), Value::string(path.clone()));
+                            hit.insert("node".to_string(), node.clone());
+                            list.push(Value::object(hit));
+                        }
+                    }
+                    for (i, item) in items.iter().enumerate().rev() {
+                        stack.push((item.clone(), format!("{path}[{i}]")));
+                    }
+                }
+                Value::Object(map) => {
+                    for (key, item) in map.iter().rev() {
+                        stack.push((item.clone(), format!("{path}.{key}")));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(Value::object(found.into_iter().map(|(head, list)| (head, Value::array(list))).collect::<ValueMap>()))
     }
 }
 

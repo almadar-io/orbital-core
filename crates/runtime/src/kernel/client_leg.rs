@@ -673,6 +673,17 @@ impl RuntimeKernel {
 
     /// Seed a delegated server leg with the client's circuit state: each carried trait is held at its
     /// `from` state, and each carried row is folded into its trait's frame (`@entity`), so the leg replays
+    /// The traits a mount reviving an ended session carries its own copy of (EXEC-DIST-9): their states and rows come from
+    /// the client, so their lifecycle event does not run.
+    pub fn carried_traits(traits: Option<&[TraitFrom]>, entity_by_trait: Option<&ValueMap>) -> HashSet<String> {
+        traits
+            .into_iter()
+            .flatten()
+            .map(|t| t.r#trait.clone())
+            .chain(entity_by_trait.into_iter().flat_map(|rows| rows.keys().cloned()))
+            .collect()
+    }
+
     /// from where the client was. JS twin: `evaluateOrbitalEvent`'s `manager.seedState` + frame fold.
     pub fn seed_leg(
         &self,

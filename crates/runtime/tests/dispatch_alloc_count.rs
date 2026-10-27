@@ -348,7 +348,9 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
 // 174041: G-ORBITAL-CORE-049, 2026-10-25; +1 the seed's shared payload `Arc`, which spares every step a deep copy.
 // 11189: copy-on-write `Value` and `SExpression` strings, lists and maps (P-014, 2026-10-26).
 // 11192: +3, the list answer's rows are checked against `Item` once, its shape built and cached once (G-CROSS-335, 2026-10-27).
-const PINNED_REPLAY: usize = 11192;
+// 11194: +2, a built record type holds its field list in one shared `Arc`, so every later copy of it is a reference bump
+// (P-017 K1, 2026-10-27; std-kflow validate 291 -> 230 s).
+const PINNED_REPLAY: usize = 11194;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)
@@ -1028,4 +1030,53 @@ fn a_dispatch_retains_only_the_rows_it_persists() {
     println!("RETAINED_PER_DISPATCH init={init:.0} save={save:.0} row={row_bytes:.0}");
     assert!(init < 64.0, "control: a dispatch that persists nothing retains {init:.0} bytes");
     assert!(save < row_bytes * 1.5 + 256.0, "a SAVE retains {save:.0} bytes for a {row_bytes:.0}-byte row");
+}
+
+fn session_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Draft", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "body", "type": "string" }] },
+            "traits": [{ "name": "Editor", "linkedEntity": "Draft",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "SET", "effects": [["set", "@entity.body", "@payload.body"]] }] } }]
+        }]
+    }))
+    .unwrap()
+}
+
+// What one ended session keeps (P-017 K4): its `SESSION_ENDED` tombstone only; its states and frames are freed.
+const PINNED_RETAINED_PER_SESSION: isize = 64; // 57 measured 2026-10-27
+
+#[test]
+fn an_ended_session_retains_only_its_tombstone() {
+    use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let server = EmbeddedServer::new(session_schema()).unwrap();
+    let body = "x".repeat(1024);
+    let cycle = |i: usize| {
+        let client = format!("tab-{i:05}");
+        let stream = server.open_session_stream(&client);
+        let request = orbital_core_runtime::effects::response::EventRequest {
+            event: "SET".to_string(),
+            target_trait: Some("Editor".to_string()),
+            client_id: Some(client),
+            payload: Some(serde_json::from_value(json!({ "body": body })).unwrap()),
+            ..Default::default()
+        };
+        assert!(matches!(server.start("Main", request).unwrap(), ServerProgress::Done(_)));
+        server.close_session_stream(stream);
+    };
+    for i in 0..50 {
+        cycle(i);
+    }
+    let before = LIVE.load(Ordering::SeqCst);
+    for i in 50..550 {
+        cycle(i);
+    }
+    let per_session = (LIVE.load(Ordering::SeqCst) - before) / 500;
+    println!("RETAINED_PER_SESSION {per_session}");
+    assert!(server.kernel().frame_sessions().is_empty(), "every ended session's frames were freed");
+    assert!(per_session <= PINNED_RETAINED_PER_SESSION, "an ended session retains {per_session} bytes");
 }

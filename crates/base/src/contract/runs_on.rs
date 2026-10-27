@@ -454,7 +454,7 @@ pub fn sexpr_runs_server_effect(
                 };
                 return bound_live || arr[2..].iter().any(recur);
             }
-            if matches!(head, Some("fn") | Some("lambda")) && arr.len() >= 3 {
+            if matches!(head, Some("fn")) && arr.len() >= 3 {
                 return arr[2..].iter().any(recur);
             }
             matches!(head, Some(op) if effect_site(op, &arr[1..], residence) == RunsOn::Server)

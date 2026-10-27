@@ -283,7 +283,7 @@ pub use http::{HttpBody, HttpFailureWire, HttpRequestWire, HttpResponseWire};
 pub use io_wire::{
     BeaconOutcomeWire, IoAnswerWire, IoReplyWire, IoRequestWire, ModelFailureKindWire,
     ModelFailureWire, PageFactFieldWire, PageFactsWire, PendingRequestWire, ResolveProgressWire,
-    ServerProgressWire, StreamFramingWire,
+    NextWire, ServerProgressWire, StreamFramingWire,
 };
 
 #[cfg(test)]

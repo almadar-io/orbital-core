@@ -57,7 +57,7 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                             .first()
                             .is_some_and(|first| !all.iter().all(|t| b.agrees(first, t)))
                         {
-                            return Some(OirType::Struct { fields: Vec::new(), additional: None });
+                            return Some(OirType::Struct { fields: crate::ir::types::no_fields(), additional: None });
                         }
                     }
                 }
@@ -79,7 +79,7 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                     }
                     out.push(field);
                 }
-                Some(OirType::Struct { fields: out, additional: None })
+                Some(OirType::Struct { fields: out.into(), additional: None })
             }
             K::Var { name, .. } => {
                 if b.voided.contains(name) {
@@ -170,7 +170,7 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 }
                 Some(OirType::Struct {
                     additional: if pick { None } else { additional.clone() },
-                    fields: projected,
+                    fields: projected.into(),
                 })
             }
             K::MergeOf { of } => {
@@ -280,7 +280,7 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 } else {
                     None
                 };
-                Some(OirType::Struct { fields: merged, additional })
+                Some(OirType::Struct { fields: merged.into(), additional })
             }
             K::Shape => b
                 .shape

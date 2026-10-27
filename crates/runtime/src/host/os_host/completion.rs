@@ -339,6 +339,24 @@ pub type CompletionAnswerer = dyn Fn(&IoRequest) -> IoAnswer + Send + Sync;
 pub type CompletionDone =
     dyn Fn(&CallSite, &str, &Value, Option<&str>, Result<DispatchOutcomes, DispatchError>) + Send + Sync;
 
+/// A native host's work in flight per session: a keyed completion or stream of its own still live (EXEC-DIST-9).
+pub struct OsSessionPending {
+    completions: Arc<Completions>,
+    sink: Arc<KernelCompletionSink>,
+}
+
+impl OsSessionPending {
+    pub fn new(completions: Arc<Completions>, sink: Arc<KernelCompletionSink>) -> Self {
+        Self { completions, sink }
+    }
+}
+
+impl crate::kernel::SessionPending for OsSessionPending {
+    fn pending(&self, session: &str) -> bool {
+        self.sink.session_pending(session, &self.completions.live_keys())
+    }
+}
+
 /// Dispatches a completion into a kernel as the event of the call's route: `emit.success` with the result
 /// merged with `key`, `emit.failure` with `{ error, kind, key }`. A call that declared no route for the
 /// outcome dispatches nothing. A completion can end before the dispatch that started the call has committed, so

@@ -11,7 +11,7 @@
 use std::prelude::v1::*;
 
 use super::{
-    AppliedWire, DispatchWire, FrameWire, IoReplyWire, MountWire, ResolveProgressWire, ServerProgressWire,
+    AppliedWire, DispatchWire, FrameWire, IoReplyWire, MountWire, NextWire, ResolveProgressWire, ServerProgressWire,
     SnapshotWire,
 };
 use crate::effects::response::{EventRequest, EventResponse};
@@ -107,6 +107,7 @@ fn kernel_wire_ts() -> String {
     collect.visit::<FrameWire>();
     collect.visit::<SnapshotWire>();
     collect.visit::<ServerProgressWire>();
+    collect.visit::<NextWire>();
     collect.visit::<ResolveProgressWire>();
     collect.visit::<IoReplyWire>();
     collect.visit::<EventRequest>();

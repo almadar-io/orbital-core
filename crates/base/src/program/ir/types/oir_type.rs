@@ -92,7 +92,7 @@ pub enum OirType {
     /// so codegen can emit a strict TypeScript type instead of widening
     /// to `Record<string, FieldValue | undefined>`.
     Struct {
-        fields: Vec<OirField>,
+        fields: Shared<Vec<OirField>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         additional: Option<Box<OirType>>,
     },
@@ -102,7 +102,7 @@ pub enum OirType {
     /// whose shape is a by-name recursive back-reference resolves to
     /// `OirType::TypeRef` rather than expanding forever.
     Union {
-        variants: Vec<OirField>,
+        variants: Shared<Vec<OirField>>,
     },
     /// `@trait.X` reference type. Allowed only on trait config fields. The
     /// codegen + runtime substitute string values matching `@trait.<Name>`
@@ -136,6 +136,12 @@ pub enum OirType {
     Var {
         name: String,
     },
+}
+
+/// The empty field list every fieldless record and empty union shares: building one allocates nothing.
+pub fn no_fields() -> Shared<Vec<OirField>> {
+    static EMPTY: crate::sync::OnceLock<Shared<Vec<OirField>>> = crate::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default).clone()
 }
 
 impl OirType {

@@ -134,7 +134,7 @@ pub(super) fn record_of<'a>(ty: &'a OirType, bindings: &CallBindings) -> Option<
         {
             crate::type_compat::sub_with_named(
                 ty,
-                &OirType::Struct { fields: Vec::new(), additional: None },
+                &OirType::Struct { fields: crate::ir::types::no_fields(), additional: None },
                 &|name| bindings.named_types.get(name).cloned(),
             )
             .map(|_| Record::Opaque)

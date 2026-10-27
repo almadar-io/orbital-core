@@ -189,14 +189,3 @@ impl Operator for FormatCreditCardOp {
     }
 }
 
-/// Stub for the `agent/*` operators — they require the agent runtime, which is
-/// not hosted in orbital-core. Keeps name parity with the canonical registry.
-pub struct AgentStubOp(pub &'static str);
-impl Operator for AgentStubOp {
-    fn evaluate(&self, _args: &[SExpression], _ctx: &BindingContext) -> EvalResult {
-        Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "operator '{}' requires the agent runtime",
-            self.0
-        ))))
-    }
-}

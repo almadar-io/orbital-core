@@ -31,8 +31,8 @@ pub fn const_truth(guard: &SExpression) -> Option<bool> {
                 _ => None,
             };
             match op.as_str() {
-                "=" | "==" | "eq" => literal_pair(false),
-                "!=" | "ne" | "not-eq" | "neq" => literal_pair(true),
+                "=" | "==" => literal_pair(false),
+                "!=" => literal_pair(true),
                 "not" => args.first().and_then(const_truth).map(|v| !v),
                 "or" => {
                     let subs: Vec<Option<bool>> = args.iter().map(const_truth).collect();

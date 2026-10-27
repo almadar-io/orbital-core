@@ -347,5 +347,5 @@ pub(super) fn unify_structs(all: &[OirType]) -> Option<OirType> {
     } else {
         None
     };
-    Some(OirType::Struct { fields: merged, additional })
+    Some(OirType::Struct { fields: merged.into(), additional })
 }
