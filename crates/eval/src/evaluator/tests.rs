@@ -3128,6 +3128,16 @@ fn tree_index_groups_every_listed_call_by_head_with_its_path() {
 }
 
 #[test]
+fn tree_index_spells_a_root_key_without_a_leading_dot() {
+    let got = eval(r#"["tree/index", ["quote", "{\"orbitals\":[{\"effects\":[[\"emit\",\"A\"]]}]}"], ["list", "emit"]]"#);
+    let want: Value = serde_json::from_value(serde_json::json!({
+        "emit": [{ "path": "orbitals[0].effects[0]", "node": ["emit", "A"] }]
+    }))
+    .unwrap();
+    assert_eq!(got, want);
+}
+
+#[test]
 fn tree_index_control_an_unlisted_head_and_no_heads_find_nothing() {
     let got = eval(r#"["tree/index", ["quote", "[[\"emit\",\"A\"]]"], ["list", "persist"]]"#);
     assert_eq!(got, serde_json::from_value::<Value>(serde_json::json!({ "persist": [] })).unwrap());

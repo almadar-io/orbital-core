@@ -162,7 +162,8 @@ impl Operator for TreeIndexOp {
                 }
                 Value::Object(map) => {
                     for (key, item) in map.iter().rev() {
-                        stack.push((item.clone(), format!("{path}.{key}")));
+                        let at = if path.is_empty() { key.to_string() } else { format!("{path}.{key}") };
+                        stack.push((item.clone(), at));
                     }
                 }
                 _ => {}
