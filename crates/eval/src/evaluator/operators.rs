@@ -163,6 +163,7 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         // Explicit cast
         "as" => K::AsOp,
         "typed" => K::TypedOp,
+        "proven" => K::ProvenOp,
 
         // JSON
         "json/parse" => K::JsonParseOp,

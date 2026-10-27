@@ -55,7 +55,7 @@ pub(super) fn type_mismatch(formal: &OperatorTypeRef, actual: &Actual<'_>) -> Mi
 pub(super) fn type_label(ty: &OirType, mode: Mode) -> String {
     match mode {
         Mode::Runtime => oir_type_kind(ty),
-        Mode::Static => describe_type(ty),
+        Mode::Static | Mode::Proof => describe_type(ty),
     }
 }
 

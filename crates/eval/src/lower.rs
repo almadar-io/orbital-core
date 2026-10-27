@@ -310,6 +310,9 @@ impl NodeLowerer {
         if op == "typed" && args.len() == 2 && !KEEP_TYPED.with(std::cell::Cell::get) {
             return self.resolve_sexpr(&args[0]);
         }
+        if op == "proven" && args.len() == 2 {
+            return self.resolve_sexpr(&args[1]);
+        }
         // Enforce canonical maxArity (canonical-operators.json). Variadic ops
         // (maxArity null) skip. Catches the silent-drop bug in binary_op /
         // unary_op, which keep only the first 1–2 args and discard the rest

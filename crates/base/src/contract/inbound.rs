@@ -126,15 +126,31 @@ pub fn cascade_capped(cap: usize, trait_name: &str, event: &str) -> InboundAnswe
 /// The answer for a delivery whose handler never emitted its answer event and has no open call left that could bring
 /// one: a waiting host would otherwise park forever, so the stall is the answer, naming the handler's trait and event.
 pub fn inbound_unanswered(trait_name: &str, event: &str) -> InboundAnswer {
+    inbound_unanswered_after(trait_name, event, &[])
+}
+
+/// [`inbound_unanswered`] naming the deferred dispatches that failed while the delivery waited: a refused payload
+/// deep in the handler's work is the likely reason it never answered.
+pub fn inbound_unanswered_after(trait_name: &str, event: &str, failures: &[String]) -> InboundAnswer {
+    let mut error = format!(
+        "inbound-unanswered: {trait_name} handled {event}, but it never emitted its answer event and no open call is left that could bring one"
+    );
+    for failure in failures {
+        error.push_str("; a deferred dispatch failed meanwhile: ");
+        error.push_str(failure);
+    }
+    let mut body = serde_json::json!({
+        "error": error,
+        "code": "inbound-unanswered",
+        "trait": trait_name,
+        "event": event,
+    });
+    if !failures.is_empty() {
+        body["failures"] = serde_json::json!(failures);
+    }
     InboundAnswer {
         status: 500,
-        body: serde_json::json!({
-            "error": format!("inbound-unanswered: {trait_name} handled {event}, but it never emitted its answer event and no open call is left that could bring one"),
-            "code": "inbound-unanswered",
-            "trait": trait_name,
-            "event": event,
-        })
-        .to_string(),
+        body: body.to_string(),
         stderr: None,
         headers: None,
     }

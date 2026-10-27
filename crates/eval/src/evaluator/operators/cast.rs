@@ -49,3 +49,38 @@ impl Operator for TypedOp {
         Ok(value)
     }
 }
+
+/// proven - `["proven", [positions], call]`: the value of `call`, whose arguments at `positions` the static checker
+/// proved and the kernel does not check again (EXEC-EVAL-1). Written by `orb resolve` (never `.lolo`); a program
+/// arriving as data has it removed before it is resolved.
+pub struct ProvenOp;
+impl Operator for ProvenOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "proven", == 2);
+        let invalid = |reason: &str| OrbitalError::Eval(EvalError::InvalidArgument(format!("proven: {reason}")));
+        let SExpression::Array(listed) = &args[0] else {
+            return Err(invalid("the positions must be a list"));
+        };
+        let mut proven = 0u64;
+        for position in crate::lower::strip_literal_list_marker(listed) {
+            match position {
+                SExpression::Number(n) if *n >= 0.0 && n.fract() == 0.0 => {
+                    if *n < 64.0 {
+                        proven |= 1 << (*n as u32);
+                    }
+                }
+                _ => return Err(invalid("a position must be a non-negative integer")),
+            }
+        }
+        let call = match &args[1] {
+            SExpression::Array(call) => call,
+            _ => return Err(invalid("the second argument must be an operator call")),
+        };
+        let Some(operator) = call.first().and_then(SExpression::as_str).and_then(get_operator) else {
+            return Err(invalid("the second argument must be an operator call"));
+        };
+        let _frame = super::arg_types::signature_for(&operator)
+            .map(|signature| super::arg_types::CallFrame::enter_proven(signature, &call[1..], proven));
+        operator.evaluate(&call[1..], ctx)
+    }
+}

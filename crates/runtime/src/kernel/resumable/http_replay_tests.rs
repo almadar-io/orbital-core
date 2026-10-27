@@ -719,9 +719,9 @@ fn replies_in_any_order_become_the_same_exchanges_in_issue_order() {
         id: RequestId::from_raw(i),
         answer: IoAnswer::Service(Ok(Value::Number(i as f64))),
     };
-    let in_order = accept_replies(&pending, vec![reply(0), reply(1), reply(2)]).unwrap();
+    let in_order = accept_replies(&pending, vec![reply(0), reply(1), reply(2)], &|_, answer| answer).unwrap();
     for order in [[2, 1, 0], [1, 2, 0], [0, 2, 1], [2, 0, 1], [1, 0, 2]] {
-        let got = accept_replies(&pending, order.iter().map(|i| reply(*i)).collect()).unwrap();
+        let got = accept_replies(&pending, order.iter().map(|i| reply(*i)).collect(), &|_, answer| answer).unwrap();
         assert_eq!(got.len(), in_order.len());
         for (g, e) in got.iter().zip(&in_order) {
             assert!(g.request == e.request && g.answer == e.answer);
@@ -744,15 +744,15 @@ fn replies_that_do_not_fit_the_pending_requests_are_refused_by_kind() {
         answer: IoAnswer::Service(Ok(Value::Null)),
     };
     assert!(
-        matches!(accept_replies(&pending, vec![reply(1)]), Err(ResumeError::Unanswered(id)) if id.raw() == 0)
+        matches!(accept_replies(&pending, vec![reply(1)], &|_, answer| answer), Err(ResumeError::Unanswered(id)) if id.raw() == 0)
     );
     assert!(
-        matches!(accept_replies(&pending, vec![reply(0), reply(1), reply(7)]), Err(ResumeError::Unknown(id)) if id.raw() == 7)
+        matches!(accept_replies(&pending, vec![reply(0), reply(1), reply(7)], &|_, answer| answer), Err(ResumeError::Unknown(id)) if id.raw() == 7)
     );
     assert!(
-        matches!(accept_replies(&pending, vec![reply(0), reply(0), reply(1)]), Err(ResumeError::Duplicate(id)) if id.raw() == 0)
+        matches!(accept_replies(&pending, vec![reply(0), reply(0), reply(1)], &|_, answer| answer), Err(ResumeError::Duplicate(id)) if id.raw() == 0)
     );
-    assert!(accept_replies(&pending, vec![reply(1), reply(0)]).is_ok());
+    assert!(accept_replies(&pending, vec![reply(1), reply(0)], &|_, answer| answer).is_ok());
 }
 
 #[test]
@@ -761,6 +761,7 @@ fn a_keyed_os_or_http_ask_may_be_left_pending_and_an_unkeyed_one_may_not() {
         accept_replies(
             &[PendingRequest { id: RequestId::from_raw(0), request }],
             vec![IoReply { id: RequestId::from_raw(0), answer: IoAnswer::ServiceDeferred }],
+            &|_, answer| answer,
         )
     };
     let os = |key: Option<&str>| IoRequest::Os {

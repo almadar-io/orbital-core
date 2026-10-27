@@ -2,6 +2,7 @@
 
 mod collection_policy_inheritance;
 mod pushdown_compile_cases;
+mod row_intake;
 mod row_query_pushdown;
 mod row_rekey;
 mod server_resolve_rows;

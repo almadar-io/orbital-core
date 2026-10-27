@@ -109,8 +109,9 @@ fn measure(ticking: usize, frames: u64) -> (usize, f64) {
 
 // Back to the pin: a ticking dispatch clones the kernel's one `prob/*` seed source (G-ORBITAL-CORE-029, 2026-10-18).
 // 16468 / 164105: copy-on-write `Value` and `SExpression` strings, lists and maps (P-014, 2026-10-26).
-const PINNED_100: usize = 16468;
-const PINNED_1000: usize = 164105;
+// 16362 / 163096: a frame builds one render list (P-015 T2, 2026-10-27).
+const PINNED_100: usize = 16362;
+const PINNED_1000: usize = 163096;
 
 #[test]
 fn frame_allocation_count_is_pinned() {
@@ -177,7 +178,8 @@ fn frame_wire_dump() {
 }
 
 // 34698: a steady frame carries every fired trait's state, both render lists and every `set` result (P-015 measures it).
-const PINNED_WIRE_100: usize = 34698;
+// 18973: one render list, only the states a tick moved, `effectResults` only for a subscribed host (P-015 T2, 2026-10-27).
+const PINNED_WIRE_100: usize = 18973;
 
 /// The bytes a steady frame of 100 ticking traits puts on the wire, which only ever go down.
 #[test]

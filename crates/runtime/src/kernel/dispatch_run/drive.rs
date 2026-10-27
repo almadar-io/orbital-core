@@ -318,8 +318,10 @@ impl RuntimeKernel {
             });
         let failed = |message: String| Self::store_failed(ask, message);
         match reply {
-            Some((event, payload)) => answer_for(&ask.request, event, payload)
-                .unwrap_or_else(|e| failed(format!("store driver {}: {e}", ask.driver))),
+            Some((event, payload)) => match answer_for(&ask.request, event, payload) {
+                Ok(answer) => self.checked_answer(&ask.request, answer),
+                Err(e) => failed(format!("store driver {}: {e}", ask.driver)),
+            },
             None => failed(format!(
                 "store driver {} sent no reply for ask {}",
                 ask.driver, ask.key

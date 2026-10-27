@@ -295,6 +295,7 @@ pub(super) fn drive_with(
 pub(crate) fn accept_replies(
     pending: &[PendingRequest],
     replies: Vec<IoReply>,
+    check: &dyn Fn(&IoRequest, IoAnswer) -> IoAnswer,
 ) -> Result<Vec<Exchange>, ResumeError> {
     let mut answers: Vec<Option<IoAnswer>> = vec![None; pending.len()];
     for reply in replies {
@@ -307,7 +308,7 @@ pub(crate) fn accept_replies(
         if !reply.answer.answers(&pending[at].request) {
             return Err(ResumeError::WrongKind(reply.id));
         }
-        answers[at] = Some(reply.answer);
+        answers[at] = Some(check(&pending[at].request, reply.answer));
     }
     pending
         .iter()

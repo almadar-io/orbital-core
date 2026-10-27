@@ -6,7 +6,7 @@ use std::prelude::v1::*;
 
 use super::*;
 use crate::resumable::{
-    accept_into, accept_replies, number_requests, DispatchError, Exchange, IoReply, Progress,
+    accept_into, accept_replies, number_requests, DispatchError, Exchange, IoAnswer, IoReply, IoRequest, Progress,
     ResolveContinuation, ResolveProgress, StoreLeg,
 };
 
@@ -35,11 +35,12 @@ impl RuntimeKernel {
         mut continuation: ResolveContinuation,
         replies: Vec<IoReply>,
     ) -> Result<ResolveProgress, DispatchError> {
+        let check = |request: &IoRequest, answer: IoAnswer| self.checked_answer(request, answer);
         match continuation.store.as_mut() {
-            Some(leg) => accept_into(&mut leg.driver, replies)?,
+            Some(leg) => accept_into(&mut leg.driver, replies, &check)?,
             None => continuation
                 .journal
-                .extend(accept_replies(&continuation.pending, replies)?),
+                .extend(accept_replies(&continuation.pending, replies, &check)?),
         }
         continuation.pending.clear();
         self.drive_resolve(continuation)

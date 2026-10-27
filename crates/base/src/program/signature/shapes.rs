@@ -6,7 +6,11 @@ pub(super) fn agrees(a: &OirType, b: &OirType) -> bool {
     sub(a, b).is_some() || sub(b, a).is_some()
 }
 
-pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings) -> bool {
+pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings, mode: Mode) -> bool {
+    if mode == Mode::Proof {
+        return crate::type_compat::sub_with_named(actual, expected, &|name| bindings.named_types.get(name).cloned())
+            .is_some();
+    }
     // A date is a string or a number at rest, depending on the host; a static date passes either.
     let date_at_rest = matches!(unwrap_optional(actual), OirType::Date | OirType::DateTime)
         && matches!(expected, OirType::Number | OirType::String);

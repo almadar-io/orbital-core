@@ -20,13 +20,28 @@ pub(super) fn bind_type(
     if matches!(known, Known::Void) {
         return bind_void(formal, actual, b);
     }
+    if let (Mode::Proof, Known::Type(ty)) = (mode, known) {
+        if is_uninformative(ty) {
+            return Err(undetermined(why_uninformative(ty)));
+        }
+        if let OirType::Union { variants } = unwrap_optional(ty) {
+            if !variants.is_empty() {
+                let mut trial = b.clone();
+                for variant in variants {
+                    bind_type(formal, &element(&variant.field_type), &mut trial, mode)?;
+                }
+                *b = trial;
+                return Ok(());
+            }
+        }
+    }
     match formal {
         OperatorTypeRef::Primitive(name) => {
             let Some(expected) = checkable(name) else {
                 return Ok(());
             };
             match known {
-                Known::Type(ty) if fits(ty, &expected, b) => Ok(()),
+                Known::Type(ty) if fits(ty, &expected, b, mode) => Ok(()),
                 _ => Err(type_mismatch(formal, actual)),
             }
         }
@@ -213,7 +228,7 @@ pub(super) fn bind_type(
             }
             K::Var { name, bound, each } => {
                 if let Some(bound) = bound {
-                    bind_bound(bound, known, formal, actual, b)?;
+                    bind_bound(bound, known, formal, actual, b, mode)?;
                 }
                 let empty_list = OirType::Tuple { items: Vec::new() };
                 let ty = match known {
@@ -319,7 +334,7 @@ pub(super) fn bind_type(
                 if let (Some(declared), Known::Type(ty)) = (resolve(formal, b), known) {
                     if !is_uninformative(ty)
                         && !is_uninformative(&declared)
-                        && !fits(ty, &declared, b)
+                        && !fits(ty, &declared, b, mode)
                     {
                         return Err(Mismatch::Type {
                             expected: type_label(&declared, mode),
@@ -344,7 +359,7 @@ pub(super) fn bind_type(
                         actual: kind_of(&actual.known),
                     }),
                 },
-                (None, Mode::Static) => Err(Mismatch::Type {
+                (None, Mode::Static | Mode::Proof) => Err(Mismatch::Type {
                     expected: "a type name".to_string(),
                     actual: kind_of(&actual.known),
                 }),
@@ -366,7 +381,7 @@ pub(super) fn bind_unknown(
     };
     // At run time a value always has a kind (null is absent and passes); only a static argument can have no type.
     let valueless = actual.lambda.is_none() && actual.text.is_none() && actual.texts.is_none();
-    if mode == Mode::Static && valueless && binds_variable(formal) {
+    if mode != Mode::Runtime && valueless && binds_variable(formal) {
         return Err(undetermined(NO_TYPE));
     }
     match kind {
@@ -514,6 +529,7 @@ pub(super) fn bind_bound(
     formal: &OperatorTypeRef,
     actual: &Actual<'_>,
     bindings: &CallBindings,
+    mode: Mode,
 ) -> Result<(), Mismatch> {
     if let OperatorTypeRef::Tagged(OperatorTypeRefKind::Record) = bound {
         return if is_record(known, bindings) {
@@ -527,10 +543,11 @@ pub(super) fn bind_bound(
     }
     let mut scratch = CallBindings::new();
     scratch.use_named_types(std::sync::Arc::clone(&bindings.named_types));
-    match bind_type(bound, actual, &mut scratch, Mode::Runtime) {
+    let checked = if mode == Mode::Proof { Mode::Proof } else { Mode::Runtime };
+    match bind_type(bound, actual, &mut scratch, checked) {
         Ok(()) => Ok(()),
         // A bound is a constraint on the kind: the elements of a list that fits it are the variable's own business.
-        Err(Mismatch::Undetermined { .. }) => Ok(()),
+        Err(Mismatch::Undetermined { .. }) if mode != Mode::Proof => Ok(()),
         Err(Mismatch::Type { actual, .. }) => Err(Mismatch::Type {
             expected: expected_name(bound),
             actual,
@@ -607,7 +624,7 @@ pub(super) fn bind_key(
         });
     }
     for path in paths {
-        if mode == Mode::Static {
+        if mode != Mode::Runtime {
             let walked = walk_path_in(&record, path, &|name| b.named_types.get(name).cloned());
             if let Path::Missing = walked {
                 b.absent

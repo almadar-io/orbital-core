@@ -306,6 +306,9 @@ impl RuntimeKernel {
                     Err(Fault::Kernel(KernelError::TraitNotFound(_))) => None,
                     Err(fault) => return Err(fault),
                 };
+                if let Some(refusal) = self.emit_rejection(scope, result.as_ref()) {
+                    return Err(Fault::Kernel(KernelError::PayloadInvalid(refusal)));
+                }
                 visited.record(visit);
                 if result.is_some() {
                     fanned.extend(self.mount.write().release_after(scope, event_name));
@@ -572,6 +575,9 @@ impl RuntimeKernel {
             }
             Err(fault) => return Err(fault),
         };
+        if let Some(refusal) = self.emit_rejection(&item.trait_name, result.as_ref()) {
+            return Err(Fault::Kernel(KernelError::PayloadInvalid(refusal)));
+        }
         cascade.steps += 1;
         if let Some(v) = visit {
             visited.record(v);

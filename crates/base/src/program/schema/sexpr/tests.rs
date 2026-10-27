@@ -652,3 +652,16 @@ fn entity_reads_count_render_bindings_by_their_root_field() {
 fn entity_reads_ignore_payload_and_config_bindings() {
     assert!(reads(serde_json::json!(["if", "@config.on", "@payload.x", "?y"])).is_empty());
 }
+
+#[test]
+fn strip_proven_keeps_each_marked_call() {
+    let mut marked = rewrite_input(serde_json::json!(
+        ["proven", [0], ["+", ["proven", [0, 1], ["*", 2, 3]], {"k": ["proven", [1], ["-", 4, 1]]}]]
+    ));
+    marked.strip_proven();
+    assert_eq!(marked, rewrite_input(serde_json::json!(["+", ["*", 2, 3], {"k": ["-", 4, 1]}])));
+    let mut plain = rewrite_input(serde_json::json!(["proven", ["+", 1, 2]]));
+    let before = plain.clone();
+    plain.strip_proven();
+    assert_eq!(plain, before, "control: a two-entry list is not a mark");
+}

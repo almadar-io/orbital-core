@@ -49,14 +49,14 @@ pub fn validate_event_payload_with_types(
     schema: &[PayloadField],
     named: &BTreeMap<String, OirType>,
 ) -> Vec<PayloadFailure> {
-    validate_event_payload_with_context(event, payload, schema, named, None)
+    validate_event_payload_with_context(event, payload, schema, &|name| named.get(name).cloned(), None)
 }
 
 pub(crate) fn validate_event_payload_with_context(
     event: &str,
     payload: &Value,
     schema: &[PayloadField],
-    named: &BTreeMap<String, OirType>,
+    resolve: &dyn Fn(&str) -> Option<OirType>,
     version: Option<u32>,
 ) -> Vec<PayloadFailure> {
     let mut failures = Vec::new();
@@ -83,9 +83,7 @@ pub(crate) fn validate_event_payload_with_context(
             }
             Some(value) => {
                 let mut declared =
-                    DeclaredShape::with_resolver(None, payload_field_shape(field), |name| {
-                        named.get(name).cloned()
-                    });
+                    DeclaredShape::with_resolver(None, payload_field_shape(field), resolve);
                 declared.version = version;
                 if let Some((path, actual)) = misfit_of_shape(value, &declared) {
                     let mut failure = fail(if actual == "absent" {

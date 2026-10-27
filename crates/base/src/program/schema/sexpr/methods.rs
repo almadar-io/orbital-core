@@ -405,6 +405,24 @@ impl SExpression {
         }
     }
 
+    /// Removes every `["proven", positions, call]` mark, leaving its call: a program arriving as data is resolved
+    /// from its own code, never trusted for what an earlier resolve proved (G-CROSS-335).
+    pub fn strip_proven(&mut self) {
+        match self {
+            SExpression::Array(items) => {
+                if items.len() == 3 && items[0].as_str() == Some("proven") {
+                    let mut call = std::mem::replace(&mut items[2], SExpression::Null);
+                    call.strip_proven();
+                    *self = call;
+                    return;
+                }
+                items.iter_mut().for_each(SExpression::strip_proven);
+            }
+            SExpression::Object(fields) => fields.values_mut().for_each(SExpression::strip_proven),
+            _ => {}
+        }
+    }
+
     /// Get the operator if this is a function call
     pub fn operator(&self) -> Option<&str> {
         match self {

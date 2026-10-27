@@ -12,7 +12,7 @@ use orbital_core_base::inbound::{
     unknown_hook, InboundAnswer, InboundRoute,
 };
 #[cfg(feature = "std")]
-use orbital_core_base::inbound::inbound_unanswered;
+use orbital_core_base::inbound::inbound_unanswered_after;
 
 /// How long [`RuntimeKernel::await_inbound_answer`] waits for a late answer between checks that a call is still open.
 #[cfg(feature = "std")]
@@ -152,6 +152,7 @@ impl RuntimeKernel {
         outcomes: &DispatchOutcomes,
         late: &std::sync::mpsc::Receiver<InboundAnswer>,
         open_calls: impl Fn() -> bool,
+        failures: &dyn Fn() -> Vec<String>,
         timeout: Option<std::time::Duration>,
     ) -> InboundAnswer {
         use std::sync::mpsc::RecvTimeoutError;
@@ -160,7 +161,7 @@ impl RuntimeKernel {
             if !open_calls() {
                 return late
                     .try_recv()
-                    .unwrap_or_else(|_| inbound_unanswered(&route.trait_name, &route.event));
+                    .unwrap_or_else(|_| inbound_unanswered_after(&route.trait_name, &route.event, &failures()));
             }
             let wait = match deadline {
                 Some(deadline) => {
@@ -469,7 +470,7 @@ mod tests {
     fn a_delivery_with_no_open_call_left_answers_unanswered_naming_the_handler() {
         let (route, outcomes) = unanswered_delivery();
         let (_sender, late) = std::sync::mpsc::channel();
-        let answer = RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, None);
+        let answer = RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, &Vec::new, None);
         assert_eq!(answer.status, 500, "{}", answer.body);
         let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
         assert_eq!(
@@ -483,12 +484,26 @@ mod tests {
     }
 
     #[test]
+    fn an_unanswered_delivery_names_the_deferred_dispatches_that_failed_while_it_waited() {
+        let (route, outcomes) = unanswered_delivery();
+        let (_sender, late) = std::sync::mpsc::channel();
+        let failed = || vec!["Input LINT_FILE: Payload validation failed for event 'LINT_INPUT': program (wrong-type)".to_string()];
+        let answer = RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, &failed, None);
+        let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+        assert_eq!(body["code"].as_str(), Some("inbound-unanswered"));
+        assert!(body["error"].as_str().is_some_and(|e| e.contains("LINT_INPUT")), "{body}");
+        assert_eq!(body["failures"].as_array().map(Vec::len), Some(1));
+        let quiet = RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, &Vec::new, None);
+        assert!(!quiet.body.contains("failures"), "control: no failure, no failures field");
+    }
+
+    #[test]
     fn control_a_late_answer_sent_as_the_last_call_closed_is_still_the_answer() {
         let (route, outcomes) = unanswered_delivery();
         let (sender, late) = std::sync::mpsc::channel();
         sender.send(late_answer()).unwrap();
         assert_eq!(
-            RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, None),
+            RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, &Vec::new, None),
             late_answer()
         );
     }
@@ -509,6 +524,7 @@ mod tests {
             &outcomes,
             &late,
             || open.load(std::sync::atomic::Ordering::SeqCst),
+            &Vec::new,
             Some(std::time::Duration::from_secs(10)),
         );
         completion.join().unwrap();
@@ -524,6 +540,7 @@ mod tests {
             &outcomes,
             &late,
             || true,
+            &Vec::new,
             Some(INBOUND_OPEN_CHECK * 2),
         );
         assert_eq!(

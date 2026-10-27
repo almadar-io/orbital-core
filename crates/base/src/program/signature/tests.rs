@@ -3023,3 +3023,47 @@ mod field_projection_contract {
         }
     }
 }
+
+fn union_of(types: &[OirType]) -> OirType {
+    OirType::Union {
+        variants: types
+            .iter()
+            .enumerate()
+            .map(|(i, ty)| crate::ir::types::OirField::new(format!("v{i}"), ty.clone()))
+            .collect(),
+    }
+}
+
+/// G-CROSS-335: `Mode::Proof` binds only an argument every value of whose type fits; `Mode::Static` stays lenient.
+#[test]
+fn a_proof_binds_only_what_every_value_of_the_argument_type_fits() {
+    let upper = op(json!([p("s", json!("string"))]), json!("string"), Some(1));
+    let sig = Signature::of(&upper);
+    let bind = |ty: OirType, mode: Mode| sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode);
+    let string_or_number = union_of(&[OirType::String, OirType::Number]);
+    assert!(bind(string_or_number, Mode::Proof).is_err());
+    assert!(bind(OirType::Date, Mode::Static).is_ok(), "control: a date passes a string position at rest");
+    assert!(bind(OirType::Date, Mode::Proof).is_err());
+    assert!(matches!(bind(OirType::Json, Mode::Proof), Err(Mismatch::Undetermined { .. })));
+    assert!(bind(OirType::String, Mode::Proof).is_ok());
+    assert!(bind(OirType::Optional { inner: Box::new(OirType::String) }, Mode::Proof).is_ok(), "an absent value passes");
+    assert!(bind(union_of(&[OirType::String, OirType::String]), Mode::Proof).is_ok(), "every variant fits");
+}
+
+#[test]
+fn a_proof_checks_each_list_element_variant_and_a_bounded_variable() {
+    let first = op(json!([p("xs", list(json!("string")))]), json!("string"), Some(1));
+    let sig = Signature::of(&first);
+    let bind = |ty: OirType, mode: Mode| sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode);
+    assert!(bind(s_arr(union_of(&[OirType::String, OirType::Number])), Mode::Proof).is_err());
+    assert!(bind(s_arr(OirType::String), Mode::Proof).is_ok());
+    let bounded = op(
+        json!([p("x", json!({ "kind": "var", "name": "T", "bound": "number" }))]),
+        json!({ "kind": "var", "name": "T" }),
+        Some(1),
+    );
+    let sig = Signature::of(&bounded);
+    let bind = |ty: OirType, mode: Mode| sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode);
+    assert!(bind(union_of(&[OirType::Number, OirType::String]), Mode::Proof).is_err());
+    assert!(bind(OirType::Number, Mode::Proof).is_ok());
+}

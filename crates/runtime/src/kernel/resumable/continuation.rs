@@ -106,11 +106,15 @@ pub(crate) struct StoreLeg {
 }
 
 /// Accept `replies` into `c`, or into the driver dispatch it is parked on.
-pub(crate) fn accept_into(c: &mut DispatchContinuation, replies: Vec<IoReply>) -> Result<(), ResumeError> {
+pub(crate) fn accept_into(
+    c: &mut DispatchContinuation,
+    replies: Vec<IoReply>,
+    check: &dyn Fn(&IoRequest, IoAnswer) -> IoAnswer,
+) -> Result<(), ResumeError> {
     if let Some(leg) = c.store.as_mut() {
-        accept_into(&mut leg.driver, replies)?;
+        accept_into(&mut leg.driver, replies, check)?;
     } else {
-        let answered = accept_replies(&c.pending, replies)?;
+        let answered = accept_replies(&c.pending, replies, check)?;
         c.journal.extend(answered);
     }
     c.pending.clear();

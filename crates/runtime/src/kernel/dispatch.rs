@@ -360,89 +360,79 @@ impl RuntimeKernel {
         payload: &Value,
     ) -> Option<String> {
         let mut failures = Vec::new();
-        use orbital_core_base::ir::types::{declared_alias_shape, field_shape, OirField, OirType};
-        let entity_types: std::collections::BTreeMap<String, OirType> = self
-            .registry.entity_definitions
-            .read()
-            .iter()
-            .map(|(name, entity)| {
-                let fields = entity
-                    .fields
-                    .iter()
-                    .filter_map(|field| {
-                        let name = field.name.as_ref()?;
-                        let mut declared = OirField::new(name.clone(), field_shape(field));
-                        declared.required = field.required.unwrap_or(false);
-                        Some(declared)
-                    })
-                    .collect();
-                (
-                    name.clone(),
-                    OirType::Struct {
-                        fields,
-                        additional: None,
-                    },
-                )
-            })
-            .collect();
         let definitions = self.registry.trait_definitions.read();
         for (trait_name, event) in targets {
-            let declared = definitions
+            let Some(schema) = definitions
                 .get(trait_name)
                 .and_then(|definition| definition.state_machine.events.as_ref())
                 .and_then(|events| events.iter().find(|declared| declared.key == event))
-                .and_then(|declared| declared.payload_schema.as_deref());
-            if let Some(schema) = declared {
-                let mut named = entity_types.clone();
-                let homes = self.registry.trait_homes.read();
-                let schemas = self.registry.schemas.read();
-                let mut version = None;
-                if let Some((program, index)) = homes
-                    .get(trait_name)
-                    .and_then(|(name, index)| schemas.get(name).map(|program| (program, *index)))
-                {
-                    version = program.type_contract_version;
-                    if let Some(aliases) = program.types.as_ref() {
-                        named.extend(
-                            aliases.iter().map(|(name, members)| {
-                                (name.clone(), declared_alias_shape(members))
-                            }),
-                        );
-                    }
-                    if let Some(aliases) = program
-                        .orbitals
-                        .get(index)
-                        .and_then(|orbital| orbital.types.as_ref())
-                    {
-                        named.extend(
-                            aliases.iter().map(|(name, members)| {
-                                (name.clone(), declared_alias_shape(members))
-                            }),
-                        );
-                    }
-                }
-                failures.extend(
-                    crate::payload_validation::validate_event_payload_with_context(
-                        event, payload, schema, &named, version,
-                    ),
-                );
-            }
+                .and_then(|declared| declared.payload_schema.as_deref())
+            else {
+                continue;
+            };
+            failures.extend(self.payload_failures(trait_name, event, schema, payload));
         }
         drop(definitions);
         (!failures.is_empty())
             .then(|| crate::payload_validation::format_payload_failures(&failures))
     }
 
-    /// The API-boundary check of an external event: a server kernel refuses a payload that does not satisfy its
-    /// declared event before any transition runs. A client kernel's events come from its own UI and are not checked.
+    /// The refusal text when an emit `result` made contradicts the emitting trait's declaration of that emit: each emit
+    /// is checked once, where it is emitted, against its emitter's type; a listener's declared payload is a view it
+    /// reads through (EXEC-EVAL-10).
+    pub(crate) fn emit_rejection(&self, trait_name: &str, result: Option<&ProcessEventResult>) -> Option<String> {
+        let result = result?;
+        let definition = self.registry.trait_definitions.read().get(trait_name).cloned()?;
+        let declared = definition.emits.as_deref()?;
+        result.effect_results.iter().find_map(|er| {
+            let Effect::Emit { event, payload } = &er.effect else {
+                return None;
+            };
+            let schema = declared.iter().find(|emit| &emit.event == event)?.payload_schema.as_deref()?;
+            let failures = self.payload_failures(trait_name, event, schema, payload);
+            (!failures.is_empty()).then(|| {
+                format!("{trait_name} emitted {}", crate::payload_validation::format_payload_failures(&failures))
+            })
+        })
+    }
+
+    /// The fields of `payload` that break `schema`, `trait_name`'s declaration of `event`, read with the types of
+    /// the trait's program: an orbital's own type shadows the program's, which shadows an entity of the same name.
+    fn payload_failures(
+        &self,
+        trait_name: &str,
+        event: &str,
+        schema: &[orbital_core_base::schema::types::PayloadField],
+        payload: &Value,
+    ) -> Vec<crate::payload_validation::PayloadFailure> {
+        use orbital_core_base::ir::types::declared_alias_shape;
+        let entities = self.registry.entity_definitions.read();
+        let homes = self.registry.trait_homes.read();
+        let schemas = self.registry.schemas.read();
+        let home = homes.get(trait_name).and_then(|(name, index)| schemas.get(name).map(|program| (program, *index)));
+        let version = home.and_then(|(program, _)| program.type_contract_version);
+        let resolve = |name: &str| {
+            home.and_then(|(program, index)| {
+                program
+                    .orbitals
+                    .get(index)
+                    .and_then(|orbital| orbital.types.as_ref())
+                    .and_then(|aliases| aliases.get(name))
+                    .or_else(|| program.types.as_ref().and_then(|aliases| aliases.get(name)))
+                    .map(|members| declared_alias_shape(members))
+            })
+            .or_else(|| entities.get(name).map(super::row_intake::entity_struct))
+        };
+        crate::payload_validation::validate_event_payload_with_context(event, payload, schema, &resolve, version)
+    }
+
+    /// The entry check of an external event, a client's UI event included: a payload that does not satisfy its
+    /// declared event is refused before any transition runs (G-CROSS-335).
     pub(crate) fn require_payload<'a>(
         &self,
         targets: impl IntoIterator<Item = (&'a str, &'a str)>,
         payload: &Value,
     ) -> Result<(), KernelError> {
-        if self.effect_executor.environment().is_client() {
-            return Ok(());
-        }
         match self.payload_rejection(targets, payload) {
             Some(message) => Err(KernelError::PayloadInvalid(message)),
             None => Ok(()),

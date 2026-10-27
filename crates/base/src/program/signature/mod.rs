@@ -95,6 +95,10 @@ pub enum Mode {
     Static,
     /// Over the types of evaluated values, which carry no field information: `key-of` is not checked.
     Runtime,
+    /// [`Mode::Static`] as a proof that every value of the argument's type fits (`proven`, G-CROSS-335): it fits
+    /// only by subtyping, a union fits only when each of its variants does, and an argument of no informative type
+    /// (`json`, `sexpr`) or one bound only loosely (a date at a string position) is undetermined.
+    Proof,
 }
 
 /// A call whose argument contradicts its signature.

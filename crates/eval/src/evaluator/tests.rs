@@ -3109,3 +3109,38 @@ fn control_row_matches_agrees_with_compile_predicate_on_the_same_inputs() {
         assert_eq!(row_matches(&pred, &row), Value::Bool(compiled.matches(&json_value(row.clone()))), "{row}");
     }
 }
+
+/// G-CROSS-335: the arguments a `proven` mark lists are not checked again; a proven position that shares a type
+/// variable with an unproven one still is, and the call's value is checked where it is itself an argument.
+#[test]
+fn a_proven_call_skips_the_check_only_where_nothing_unproven_depends_on_it() {
+    assert!(eval_err(r#"["=", 1, "1"]"#).contains("ype"), "control: unmarked, the two sides disagree");
+    assert_eq!(eval(r#"["proven", [0, 1], ["=", 1, "1"]]"#), Value::Bool(true), "unchecked, `=` compares loosely");
+    assert!(
+        eval_err(r#"["proven", [0], ["=", 1, "1"]]"#).contains("ype"),
+        "position 0 binds the T that unproven position 1 is checked against"
+    );
+    assert_eq!(eval(r#"["not", ["proven", [0, 1], ["=", 1, "1"]]]"#), Value::Bool(false));
+    assert!(eval_err(r#"["not", ["proven", [0], ["+", 1, 2]]]"#).contains("ype"), "the outer position is not proven");
+}
+
+#[test]
+fn a_malformed_proven_mark_is_refused() {
+    for expr in [
+        r#"["proven", 0, ["=", 1, 1]]"#,
+        r#"["proven", [-1], ["=", 1, 1]]"#,
+        r#"["proven", [0.5], ["=", 1, 1]]"#,
+        r#"["proven", [0], 5]"#,
+        r#"["proven", [0], ["no-such-operator", 1]]"#,
+    ] {
+        assert!(eval_err(expr).contains("proven"), "{expr}");
+    }
+    assert_eq!(eval(r#"["proven", [], ["=", 1, 1]]"#), Value::Bool(true), "control: no position proven");
+}
+
+#[test]
+fn lowering_reads_through_a_proven_mark() {
+    let marked: SExpression = serde_json::from_str(r#"["proven", [0, 1], ["+", "@entity.n", 1]]"#).unwrap();
+    let call: SExpression = serde_json::from_str(r#"["+", "@entity.n", 1]"#).unwrap();
+    assert_eq!(crate::lower::lower_sexpr(&marked).unwrap(), crate::lower::lower_sexpr(&call).unwrap());
+}

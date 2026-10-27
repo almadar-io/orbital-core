@@ -49,6 +49,8 @@ pub enum DeliverRefusalKind {
     UnknownInstance,
     Denied,
     Down,
+    /// The payload contradicts the receiving event's declaration (G-CROSS-335).
+    PayloadInvalid,
 }
 
 impl DeliverRefusalKind {
@@ -60,6 +62,7 @@ impl DeliverRefusalKind {
             Self::UnknownInstance => "unknown-instance",
             Self::Denied => "denied",
             Self::Down => "down",
+            Self::PayloadInvalid => "payload-invalid",
         }
     }
 }

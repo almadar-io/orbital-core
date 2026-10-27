@@ -347,7 +347,8 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
 // clones the kernel's one `prob/*` seed source (G-ORBITAL-CORE-029), 2026-10-18.
 // 174041: G-ORBITAL-CORE-049, 2026-10-25; +1 the seed's shared payload `Arc`, which spares every step a deep copy.
 // 11189: copy-on-write `Value` and `SExpression` strings, lists and maps (P-014, 2026-10-26).
-const PINNED_REPLAY: usize = 11189;
+// 11192: +3, the list answer's rows are checked against `Item` once, its shape built and cached once (G-CROSS-335, 2026-10-27).
+const PINNED_REPLAY: usize = 11192;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)

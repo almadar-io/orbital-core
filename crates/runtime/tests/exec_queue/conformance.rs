@@ -260,7 +260,7 @@ fn exec_queue_11_a_parked_step_holds_its_entered_state_and_a_state_moved_meanwhi
 
 /// EXEC-EVENT-PAYLOAD-1: a server kernel refuses an external event whose payload breaks the declared event before any transition.
 #[test]
-fn exec_event_payload_1_a_server_kernel_refuses_a_payload_that_breaks_the_declared_event() {
+fn exec_event_payload_1_a_kernel_refuses_a_payload_that_breaks_the_declared_event() {
     use orbital_core_runtime::kernel::KernelError;
     let program = json!({
         "name": "Chat",
@@ -294,5 +294,6 @@ fn exec_event_payload_1_a_server_kernel_refuses_a_payload_that_breaks_the_declar
     assert!(server.get_state("Composer", None).is_none_or(|s| s.current_state == "idle"), "no transition ran for a refused payload");
     assert!(send(&server, json!({ "value": "hi", "particles": [{ "id": "p" }] })).is_ok(), "control: a conforming payload dispatches");
     let client = TestKernel::client().build(program);
-    assert!(send(&client, json!({})).is_ok(), "control: a client kernel's events are not checked");
+    assert!(refused(&send(&client, json!({})), "value (missing, expected string)"), "a client kernel's UI event is an entry too (G-CROSS-335)");
+    assert!(send(&client, json!({ "value": "hi" })).is_ok(), "control: a conforming client event dispatches");
 }

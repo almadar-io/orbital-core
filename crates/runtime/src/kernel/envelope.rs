@@ -334,6 +334,12 @@ impl RuntimeKernel {
             Some(_) => return Err(refuse(DeliverRefusalKind::UnknownInstance)),
             None => self.discover_handlers(&traits, None, &envelope.event),
         };
+        if let Some(refusal) =
+            self.payload_rejection(targets.iter().map(|t| (t.as_str(), envelope.event.as_str())), &envelope.payload)
+        {
+            tracing::warn!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, id = %envelope.id, %refusal, "envelope:payload-invalid");
+            return Err(refuse(DeliverRefusalKind::PayloadInvalid));
+        }
         let first = self
             .deliveries
             .write()

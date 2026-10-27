@@ -1354,3 +1354,91 @@ fn client_env_leg_carries_the_row_the_event_was_dispatched_against() {
         .expect("seed row carried");
     assert_eq!(row.get_path("content").and_then(Value::as_str), Some("hi"));
 }
+
+fn counted_note_schema() -> OrbitalSchema {
+    serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }, { "name": "count", "type": "number" }] },
+            "traits": [{
+                "name": "Notes",
+                "linkedEntity": "Note",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] }
+            }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn rows_response(rows: serde_json::Value) -> EventResponse {
+    let rows: Vec<Value> = serde_json::from_value(rows).unwrap();
+    EventResponse { success: true, data: Some(HashMap::from([("Note".to_string(), rows)])), ..Default::default() }
+}
+
+/// G-CROSS-335: a server row is checked where the client folds it in; one that contradicts its entity refuses the
+/// response before any row is written.
+#[test]
+fn a_server_row_that_contradicts_its_entity_refuses_the_whole_fold() {
+    let (kernel, _) = client_kernel_with(counted_note_schema());
+    let refused = kernel.apply_server_response(
+        &rows_response(serde_json::json!([{ "id": "n-1", "count": 1 }, { "id": "n-2", "count": "2" }])),
+        &HashSet::new(),
+    );
+    assert!(refused.is_err_and(|e| e.to_string().contains("Note.count")));
+    assert!(kernel.entity_source().read("Note", "n-1").is_err(), "nothing was written");
+}
+
+#[test]
+fn a_mistyped_trait_frame_refuses_the_fold() {
+    let (kernel, _) = client_kernel_with(counted_note_schema());
+    let mut entity_by_trait = ValueMap::default();
+    entity_by_trait.insert("Notes".to_string(), serde_json::from_value(serde_json::json!({ "count": [] })).unwrap());
+    let response = EventResponse { success: true, entity_by_trait: Some(entity_by_trait), ..Default::default() };
+    assert!(kernel.apply_server_response(&response, &HashSet::new()).is_err());
+}
+
+#[test]
+fn control_fitting_server_rows_fold_and_an_idless_row_is_the_runtime_singleton() {
+    let (kernel, _) = client_kernel_with(counted_note_schema());
+    kernel
+        .apply_server_response(
+            &rows_response(serde_json::json!([{ "id": "n-1", "count": 1 }, { "count": 2 }])),
+            &HashSet::new(),
+        )
+        .unwrap();
+    assert!(kernel.entity_source().read("Note", "n-1").is_ok());
+    assert!(kernel.entity_source().read("Note", RUNTIME_SINGLETON).is_ok());
+    assert!(kernel.entity_source().read("Note", "singleton").is_err(), "the literal is the wire's spelling only");
+}
+
+fn declared_count_schema() -> OrbitalSchema {
+    serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Counter",
+                "linkedEntity": "Note",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "set" }],
+                    "events": [{ "key": "SET", "name": "Set", "payloadSchema": [{ "name": "n", "type": "number" }] }],
+                    "transitions": [{ "from": "idle", "to": "set", "event": "SET" }]
+                }
+            }]
+        }]
+    }))
+    .unwrap()
+}
+
+/// G-CROSS-335: a client kernel's UI event is an entry: its payload is checked against the declared event.
+#[test]
+fn a_client_ui_event_whose_payload_contradicts_its_declaration_is_refused() {
+    let (kernel, _) = client_kernel_with(declared_count_schema());
+    let payload: Value = serde_json::from_value(serde_json::json!({ "n": "one" })).unwrap();
+    assert!(kernel.dispatch("Counter", None, "SET", payload).is_err());
+    let payload: Value = serde_json::from_value(serde_json::json!({ "n": 1 })).unwrap();
+    let outcomes = kernel.dispatch("Counter", None, "SET", payload).unwrap();
+    assert!(outcomes.iter().any(|(_, r)| r.new_state == "set"), "control: a fitting payload runs");
+}

@@ -7,6 +7,7 @@ mod conformance;
 mod call_service_site;
 mod cascade_visit_key;
 mod cross_trait_dispatch;
+mod delivery_payload;
 mod dispatch_roots;
 mod emit_marked_dispatched;
 mod listen_source_identity;

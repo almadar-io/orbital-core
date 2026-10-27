@@ -202,7 +202,7 @@ impl RuntimeKernel {
             Some(hold) => hold.resume(),
             None => self.lane.enter(None)?,
         };
-        accept_into(&mut continuation, replies)?;
+        accept_into(&mut continuation, replies, &|request, answer| self.checked_answer(request, answer))?;
         self.drive_entry(lane, continuation)
     }
 

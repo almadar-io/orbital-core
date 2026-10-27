@@ -288,6 +288,9 @@ impl EmbeddedServer {
     /// Put `rows` into the kernel's own store for `entity_type`, each under its `id`: how a host or a test
     /// gives a `[runtime]` entity rows, which are never a host ask.
     pub fn seed_rows(&self, entity_type: &str, rows: &[Value]) -> Result<(), String> {
+        if let Some(misfit) = self.kernel.rows_misfit(entity_type, rows) {
+            return Err(format!("seed_rows: {misfit}"));
+        }
         for row in rows {
             let id = row
                 .get_path("id")

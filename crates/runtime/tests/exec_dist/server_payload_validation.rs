@@ -164,7 +164,7 @@ mod kernel_dispatch {
     }
 
     #[test]
-    fn control_a_present_field_an_optional_one_and_a_client_kernel_dispatch_as_before() {
+    fn control_a_present_field_and_an_optional_one_dispatch_on_both_kernels() {
         let server = kernel(RuntimeEnvironment::Server);
         assert!(server
             .dispatch(
@@ -179,8 +179,12 @@ mod kernel_dispatch {
             .is_ok());
         let client = kernel(RuntimeEnvironment::Client);
         assert!(client
-            .dispatch("InlineRender", None, "SEND", payload(json!({})))
+            .dispatch("InlineRender", None, "SEND", payload(json!({ "value": "hi" })))
             .is_ok());
+        assert!(
+            client.dispatch("InlineRender", None, "SEND", payload(json!({}))).is_err(),
+            "a client kernel refuses a missing required field too (G-CROSS-335)"
+        );
     }
 }
 

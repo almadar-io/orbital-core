@@ -317,6 +317,8 @@ struct Registry {
     /// the rest of the kernel's schema-derived tables. `dispatch` reads it to
     /// bubble a seed event up an embedded trait's host chain.
     embed_index: Arc<RwLock<EmbedIndex>>,
+    /// Each entity's declared row shape, built on its first row check and dropped on every registration.
+    row_shapes: RwLock<HashMap<String, Option<Arc<orbital_core_base::ir::types::DeclaredShape>>>>,
 }
 
 /// What the program may reach outside the kernel: its egress origins, its os grants, and the credentials of
@@ -617,6 +619,7 @@ impl RuntimeKernel {
                 entity_defaults: Arc::new(RwLock::new(HashMap::new())),
                 entity_policies,
                 embed_index: Arc::new(RwLock::new(EmbedIndex::default())),
+                row_shapes: RwLock::new(HashMap::new()),
             },
             dispatch_observer: RwLock::new(None),
             entity_source,
@@ -963,6 +966,7 @@ mod values;
 mod config_forward;
 mod effect_bindings;
 mod completion;
+mod row_intake;
 use source_handler::*;
 use dispatch_scope::*;
 use values::*;

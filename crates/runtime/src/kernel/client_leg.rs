@@ -473,15 +473,32 @@ impl RuntimeKernel {
         response: &EventResponse,
         already_delivered: &HashSet<(String, String)>,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let trait_entity_type = |trait_name: &String| {
+            self.registry
+                .trait_definitions
+                .read()
+                .get(trait_name)
+                .and_then(|d| d.linked_entity.clone())
+                .unwrap_or_else(|| trait_name.clone())
+        };
+        let misfit = response
+            .data
+            .iter()
+            .flatten()
+            .find_map(|(entity_type, rows)| self.rows_misfit(entity_type, rows))
+            .or_else(|| {
+                response.entity_by_trait.iter().flatten().find_map(|(trait_name, frame)| {
+                    self.rows_misfit(&trait_entity_type(trait_name), [frame])
+                })
+            });
+        if let Some(misfit) = misfit {
+            return Err(KernelError::Internal(format!("server response refused: {misfit}")));
+        }
         if let Some(data) = &response.data {
             for (entity_type, rows) in data {
                 for row in rows {
-                    let id = row
-                        .as_object()
-                        .and_then(|o| o.get("id"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("singleton");
-                    let _ = self.entity_source.write(entity_type, id, row);
+                    let id = wire_row_id(row);
+                    self.entity_source.write(entity_type, &id, row).map_err(KernelError::Internal)?;
                 }
                 self.rows.note_write(entity_type);
             }
@@ -543,12 +560,7 @@ impl RuntimeKernel {
                     .get(trait_name)
                     .and_then(|d| d.linked_entity.clone())
                     .unwrap_or_else(|| trait_name.clone());
-                let id = entity_val
-                    .as_object()
-                    .and_then(|o| o.get("id"))
-                    .and_then(Value::as_str)
-                    .map(|id| if id == "singleton" { RUNTIME_SINGLETON.to_string() } else { id.to_string() })
-                    .unwrap_or_else(|| RUNTIME_SINGLETON.to_string());
+                let id = wire_row_id(entity_val);
                 self.write_trait_frame(
                     trait_name,
                     &entity_type,
@@ -819,5 +831,13 @@ impl RuntimeKernel {
         } else {
             payload.clone()
         }
+    }
+}
+
+/// The kernel id of a row the server sent: the wire spells the runtime singleton `singleton`, and a row with no id is it.
+fn wire_row_id(row: &Value) -> String {
+    match row.as_object().and_then(|o| o.get("id")).and_then(Value::as_str) {
+        Some("singleton") | None => RUNTIME_SINGLETON.to_string(),
+        Some(id) => id.to_string(),
     }
 }

@@ -67,7 +67,7 @@ fn build_signatures() -> SignatureTable {
         };
         if matches!(
             kind,
-            OperatorKind::BehaviorCompositionStubOp(_) | OperatorKind::AgentStubOp(_) | OperatorKind::TypedOp
+            OperatorKind::BehaviorCompositionStubOp(_) | OperatorKind::AgentStubOp(_) | OperatorKind::TypedOp | OperatorKind::ProvenOp
         ) {
             continue;
         }
@@ -407,6 +407,8 @@ struct Frame {
     end: usize,
     signature: Signature<'static>,
     bindings: CallBindings,
+    /// The positions whose argument is not checked: proven by the static checker (`proven`).
+    skip: u64,
 }
 
 orbital_core_base::kernel_local! {
@@ -418,6 +420,18 @@ pub struct CallFrame;
 
 impl CallFrame {
     pub fn enter(signature: Signature<'static>, args: &[SExpression]) -> Self {
+        Self::enter_skipping(signature, args, 0)
+    }
+
+    /// [`CallFrame::enter`] for a call whose arguments at the positions in `proven` (bit `i` for position `i`) the
+    /// static checker proved. A proven position is still checked while it shares a type variable with an unproven
+    /// one, whose binding it constrains.
+    pub fn enter_proven(signature: Signature<'static>, args: &[SExpression], proven: u64) -> Self {
+        let skip = trusted_positions(&signature, args.len(), proven);
+        Self::enter_skipping(signature, args, skip)
+    }
+
+    fn enter_skipping(signature: Signature<'static>, args: &[SExpression], skip: u64) -> Self {
         let start = args.as_ptr() as usize;
         let end = start + std::mem::size_of_val(args);
         FRAMES.with(|f| {
@@ -426,6 +440,7 @@ impl CallFrame {
                 end,
                 signature,
                 bindings: CallBindings::new(),
+                skip,
             })
         });
         CallFrame
@@ -447,9 +462,88 @@ pub fn argument_slot(expr: &SExpression) -> Option<usize> {
         let frames = f.borrow();
         let top = frames.last()?;
         let at = expr as *const SExpression as usize;
-        (at >= top.start && at < top.end)
-            .then(|| (at - top.start) / std::mem::size_of::<SExpression>())
+        if at < top.start || at >= top.end {
+            return None;
+        }
+        let index = (at - top.start) / std::mem::size_of::<SExpression>();
+        (index >= 64 || top.skip & (1 << index) == 0).then_some(index)
     })
+}
+
+fn is_proven(proven: u64, index: usize) -> bool {
+    index < 64 && proven & (1 << index) != 0
+}
+
+/// The proven positions of a call of `argc` arguments that share no type variable with an unproven position.
+fn trusted_positions(signature: &Signature<'static>, argc: usize, proven: u64) -> u64 {
+    let mut skip = 0;
+    for index in (0..argc.min(64)).filter(|&index| is_proven(proven, index)) {
+        let mut names = Vec::new();
+        if let Some(formal) = signature.formal(index) {
+            variables_of(formal, &mut names);
+        }
+        let constrained = (0..argc).any(|other| {
+            !is_proven(proven, other)
+                && signature
+                    .formal(other)
+                    .is_some_and(|formal| names.iter().any(|name| names_variable(formal, name)))
+        });
+        if !constrained {
+            skip |= 1 << index;
+        }
+    }
+    skip
+}
+
+/// The type variables `ty` names, as [`names_variable`] reads them.
+fn variables_of<'a>(ty: &'a OperatorTypeRef, out: &mut Vec<&'a str>) {
+    let OperatorTypeRef::Tagged(kind) = ty else {
+        return;
+    };
+    match kind {
+        OperatorTypeRefKind::Var { name, bound, .. } => {
+            out.push(name);
+            if let Some(bound) = bound.as_deref() {
+                variables_of(bound, out);
+            }
+        }
+        OperatorTypeRefKind::Union { of } => of.iter().for_each(|member| variables_of(member, out)),
+        OperatorTypeRefKind::Array { of } => variables_of(of, out),
+        OperatorTypeRefKind::Tuple { items } => items.iter().for_each(|item| variables_of(item, out)),
+        OperatorTypeRefKind::Map { key, value } => {
+            variables_of(key, out);
+            variables_of(value, out);
+        }
+        OperatorTypeRefKind::Object { fields, .. } => fields.values().for_each(|field| variables_of(field, out)),
+        OperatorTypeRefKind::Binding { shape } => {
+            if let Some(shape) = shape.as_deref() {
+                variables_of(shape, out);
+            }
+        }
+        OperatorTypeRefKind::Sexpr { of } => {
+            if let Some(of) = of.as_deref() {
+                variables_of(of, out);
+            }
+        }
+        OperatorTypeRefKind::Fn { params, returns } => {
+            params.iter().for_each(|param| variables_of(param, out));
+            variables_of(returns, out);
+        }
+        OperatorTypeRefKind::PickOf { of }
+        | OperatorTypeRefKind::OmitOf { of }
+        | OperatorTypeRefKind::MergeOf { of }
+        | OperatorTypeRefKind::ChildrenOf { of, .. } => out.push(of),
+        OperatorTypeRefKind::KeyOf { .. }
+        | OperatorTypeRefKind::FieldOf { .. }
+        | OperatorTypeRefKind::Literal { .. }
+        | OperatorTypeRefKind::Entity { .. }
+        | OperatorTypeRefKind::EntityRef
+        | OperatorTypeRefKind::EventKey { .. }
+        | OperatorTypeRefKind::UiSlot
+        | OperatorTypeRefKind::PatternType
+        | OperatorTypeRefKind::Record
+        | OperatorTypeRefKind::Shape => {}
+    }
 }
 
 /// Whether `formal` is a bare type variable, or an unevaluated expression whose value is one.
@@ -530,19 +624,19 @@ pub fn declared_text(ty: &OirType) -> String {
 /// The type a by-name reference resolves to: a `TypeRef` or `Reference` whose name the recorded shape's `named` table
 /// defines is that definition, through a chain of aliases; `None` when `ty` names no defined type (or a cycle of bare
 /// aliases).
-fn declared_alias(ty: &OirType, named: &BTreeMap<String, OirType>) -> Option<OirType> {
-    let mut seen: Vec<String> = Vec::new();
-    let mut resolved: Option<OirType> = None;
+fn declared_alias<'a>(ty: &'a OirType, named: &'a BTreeMap<String, OirType>) -> Option<&'a OirType> {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut resolved: Option<&'a OirType> = None;
     loop {
-        let name = match resolved.as_ref().unwrap_or(ty) {
-            OirType::TypeRef { name } | OirType::Reference { entity: name } => name.clone(),
+        let name = match resolved.unwrap_or(ty) {
+            OirType::TypeRef { name } | OirType::Reference { entity: name } => name.as_str(),
             _ => return resolved,
         };
         if seen.contains(&name) {
             return None;
         }
-        match named.get(&name) {
-            Some(next) => resolved = Some(next.clone()),
+        match named.get(name) {
+            Some(next) => resolved = Some(next),
             None => return resolved,
         }
         seen.push(name);
@@ -556,16 +650,21 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>, 
     if value.is_null() && (!strict || matches!(ty, OirType::Optional { .. })) {
         return None;
     }
+    // A reference is the related row's id, or the row itself, which is checked as one.
+    if let (OirType::Reference { .. }, Value::String(_)) = (ty, value) {
+        return None;
+    }
     if let Some(declared) = declared_alias(ty, named) {
-        return first_misfit(value, &declared, named, strict);
+        return first_misfit(value, declared, named, strict);
     }
     let misfit = || Some((String::new(), value.type_name()));
     if strict && value.is_null() && !matches!(ty, OirType::Union { .. }) {
         return misfit();
     }
-    let at = |prefix: String| move |(path, actual): (String, &'static str)| (format!("{prefix}{path}"), actual);
+    // The path is written only for a misfit: a value that fits allocates nothing.
+    let at = |prefix: std::fmt::Arguments<'_>, (path, actual): (String, &'static str)| (format!("{prefix}{path}"), actual);
     let items = |items: &[Value], inner: &OirType| {
-        items.iter().enumerate().find_map(|(i, item)| first_misfit(item, inner, named, strict).map(at(format!("[{i}]"))))
+        items.iter().enumerate().find_map(|(i, item)| first_misfit(item, inner, named, strict).map(|misfit| at(format_args!("[{i}]"), misfit)))
     };
     match ty {
         OirType::SExpr | OirType::Json | OirType::Node | OirType::Trait | OirType::Orbital | OirType::Behavior => None,
@@ -588,22 +687,22 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>, 
                 .iter()
                 .zip(slots)
                 .enumerate()
-                .find_map(|(i, (item, slot))| first_misfit(item, slot, named, strict).map(at(format!("[{i}]")))),
+                .find_map(|(i, (item, slot))| first_misfit(item, slot, named, strict).map(|misfit| at(format_args!("[{i}]"), misfit))),
             _ => misfit(),
         },
         OirType::Map { value: inner, .. } => match value {
             Value::Object(map) => {
-                map.iter().find_map(|(k, item)| first_misfit(item, inner, named, strict).map(at(format!(".{k}"))))
+                map.iter().find_map(|(k, item)| first_misfit(item, inner, named, strict).map(|misfit| at(format_args!(".{k}"), misfit)))
             }
             _ => misfit(),
         },
         OirType::Struct { fields, additional } => match value {
             Value::Object(map) => fields.iter().find_map(|field| match map.get(&field.name) {
                 None => field.required.then(|| (format!(".{}", field.name), "absent")),
-                Some(item) => first_misfit(item, &field.field_type, named, strict).map(at(format!(".{}", field.name))),
+                Some(item) => first_misfit(item, &field.field_type, named, strict).map(|misfit| at(format_args!(".{}", field.name), misfit)),
             }).or_else(|| additional.as_deref().and_then(|additional| {
                 map.iter().filter(|(key, _)| !fields.iter().any(|field| field.name.as_str() == key.as_str()))
-                    .find_map(|(key, item)| first_misfit(item, additional, named, strict).map(at(format!(".{key}"))))
+                    .find_map(|(key, item)| first_misfit(item, additional, named, strict).map(|misfit| at(format_args!(".{key}"), misfit)))
             })),
             _ => misfit(),
         },
