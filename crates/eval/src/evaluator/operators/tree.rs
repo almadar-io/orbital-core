@@ -291,7 +291,9 @@ impl Fold<'_> {
                 let mut out = ValueMap::default();
                 for (key, slot) in slots {
                     let result = match slot {
-                        Slot::Field => results.next().unwrap_or(Value::Null),
+                        Slot::Field => results
+                            .next()
+                            .ok_or_else(|| bad("a field child has no folded result"))?,
                         Slot::List(n) => Value::Array(results.by_ref().take(n).collect()),
                         Slot::Map(keys) => {
                             Value::Object(keys.into_iter().zip(results.by_ref()).collect())
@@ -365,9 +367,9 @@ impl Operator for TreeFoldOp {
         Fold {
             shape,
             root: def.name.as_deref().unwrap_or(shape),
-            def: &*def,
+            def: &def,
             params: &params,
-            body: &*body,
+            body: &body,
             ctx,
         }
         .run(&value)

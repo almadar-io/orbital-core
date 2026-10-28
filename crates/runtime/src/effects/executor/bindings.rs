@@ -106,21 +106,46 @@ impl EffectExecutor {
         Ok(Some(Box::new(RowNearest { field: field.into_inner(), vector, k })))
     }
 
-    /// A fetch `limit`/`offset`, evaluated at execution; only a positive number applies (as `effect-stage.ts`).
+    /// A fetch `offset`, evaluated at execution: a whole number from 0 (0 skips nothing); any other kind is a type
+    /// mismatch and a negative or fractional number is invalid.
     pub(super) fn resolve_page_option(
         &self,
         value: Option<&Value>,
         ctx: &BindingContext,
     ) -> Result<Option<usize>, String> {
+        Ok(self.page_number(value, ctx, "offset")?.filter(|n| *n > 0))
+    }
+
+    /// A fetch `limit`, evaluated at execution: a whole number of at least 1; any other kind is a type mismatch and
+    /// zero, a negative or a fractional number is invalid.
+    pub(super) fn resolve_limit(
+        &self,
+        value: Option<&Value>,
+        ctx: &BindingContext,
+    ) -> Result<Option<usize>, String> {
+        match self.page_number(value, ctx, "limit")? {
+            Some(0) => Err("fetch limit 0 is invalid: a limit is a whole number of at least 1".to_string()),
+            limit => Ok(limit),
+        }
+    }
+
+    fn page_number(
+        &self,
+        value: Option<&Value>,
+        ctx: &BindingContext,
+        what: &str,
+    ) -> Result<Option<usize>, String> {
         let Some(value) = value else { return Ok(None) };
         let sexpr: SExpression = value.clone().into();
-        match Evaluator::new()
+        let n = Evaluator::new()
             .evaluate(&sexpr, ctx)
             .map_err(|e| e.to_string())?
-        {
-            Value::Number(n) if n > 0.0 => Ok(Some(n as usize)),
-            _ => Ok(None),
+            .number()
+            .map_err(|e| e.to_string())?;
+        if n < 0.0 || n.fract() != 0.0 || n > u32::MAX as f64 {
+            return Err(format!("fetch {what} {n} is invalid: a whole number from 0 is required"));
         }
+        Ok(Some(n as usize))
     }
 
     /// A fetch's `orderBy` (`"field"` or `"field:asc|desc"`, an expression) as a [`RowOrder`].

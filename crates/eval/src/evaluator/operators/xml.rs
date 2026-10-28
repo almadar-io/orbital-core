@@ -21,7 +21,7 @@
 //! The five predefined entities, character references and CDATA read as text; the declaration, comments,
 //! processing instructions and a doctype are ignored. Malformed XML (no root, a second root, text outside the
 //! root, mismatched or unclosed tags, an unknown entity, a duplicate attribute, an invalid name) answers `null`
-//! from `xml/parse`. An absent (`null`) input is `null`.
+//! from `xml/parse`. A non-string input (null included) is a type mismatch.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -385,20 +385,13 @@ impl Operator for XmlParseOp {
             Some(expr) => list_paths_of(eval_expr(expr, ctx)?)?,
             None => Vec::new(),
         };
-        match eval_expr(&args[0], ctx)? {
-            Value::Null => Ok(Value::Null),
-            Value::String(text) => {
-                let Ok(mut value) = parse_xml(&text) else {
-                    return Ok(Value::Null);
-                };
-                apply_list_paths(&mut value, &paths);
-                Ok(value)
-            }
-            other => Err(bad(format!(
-                "expected a string argument, got {}",
-                other.type_name()
-            ))),
-        }
+        super::json::shape_operand(&args[1])?;
+        let input = eval_expr(&args[0], ctx)?;
+        let Ok(mut value) = parse_xml(input.text()?) else {
+            return Ok(Value::Null);
+        };
+        apply_list_paths(&mut value, &paths);
+        Ok(value)
     }
 }
 
@@ -577,5 +570,23 @@ mod tests {
     #[test]
     fn a_name_check_accepts_prefixes_dashes_and_digits_after_the_start() {
         assert!(is_name("primary_category") && is_name("a-b.c9") && !is_name("9a") && !is_name(""));
+    }
+
+    #[test]
+    fn a_null_input_or_shape_is_a_type_mismatch_and_text_parses() {
+        let run = |form: serde_json::Value| {
+            let expr: SExpression = serde_json::from_value(form).unwrap();
+            eval_expr(&expr, &BindingContext::default())
+        };
+        assert!(run(serde_json::json!(["xml/parse", null, "Shape"])).is_err());
+        assert!(run(serde_json::json!(["xml/parse", "<a>x</a>", null])).is_err());
+        assert_eq!(
+            run(serde_json::json!(["xml/parse", "<a>x</a>", "Shape"])).unwrap(),
+            Value::string("x")
+        );
+        assert_eq!(
+            run(serde_json::json!(["xml/parse", "<a>", "Shape"])).unwrap(),
+            Value::Null
+        );
     }
 }

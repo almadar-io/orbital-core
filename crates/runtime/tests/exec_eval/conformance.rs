@@ -31,6 +31,30 @@ fn is_type_mismatch(result: &Result<Value, String>) -> bool {
     result.as_ref().is_err_and(|e| e.contains("Type mismatch"))
 }
 
+/// EXEC-EVAL-1: the operand count is checked against the declared arity; a missing or extra operand is an error.
+#[test]
+fn exec_eval_1_an_operand_count_outside_the_declared_arity_is_an_error() {
+    let arity = |r: &Result<Value, String>| r.as_ref().is_err_and(|e| e.contains("Arity mismatch"));
+    assert!(arity(&eval(json!(["-", 10, 3, 2]))), "an extra operand is refused, never ignored");
+    assert!(arity(&eval(json!(["if", true, "a"]))), "a missing operand is refused");
+    assert_eq!(eval(json!(["-", 10, 3])), Ok(Value::Number(7.0)), "control: the declared count");
+    assert_eq!(eval(json!(["-", 5])), Ok(Value::Number(-5.0)), "control: an omitted optional operand");
+}
+
+/// EXEC-EVAL-1: an operator that reads an argument of the wrong kind raises a type mismatch naming both kinds; the
+/// kernel runs no separate per-call check of an argument against the declared signature.
+#[test]
+fn exec_eval_1_an_operator_reading_a_wrong_kind_argument_raises_a_type_mismatch() {
+    let mismatch = |expected: &str, actual: &str| Err(format!("Evaluation error: Type mismatch: expected {expected}, got {actual}"));
+    assert_eq!(eval(json!(["str/upper", 5])), mismatch("string", "number"));
+    assert_eq!(eval(json!(["math/abs", "5"])), mismatch("number", "string"));
+    assert_eq!(eval(json!(["<", true, 5])), mismatch("number", "boolean"), "ordering across kinds is an error");
+    assert_eq!(eval(json!(["array/flatten", [[1], 5]])), mismatch("array", "number"), "an element the operator reads as a list");
+    assert_eq!(eval(json!(["str/upper", "a"])), Ok(Value::from("A")), "control: the kind the operator reads");
+    assert_eq!(eval(json!(["math/abs", -5])), Ok(Value::Number(5.0)), "control: the kind the operator reads");
+    assert_eq!(eval(json!(["=", 1, "1"])), Ok(Value::Bool(false)), "control: no operator reads a kind here, so nothing is refused (structural equality)");
+}
+
 /// EXEC-EVAL-1a: `and` stops at the first false operand; an operand after the stop is never evaluated.
 #[test]
 fn exec_eval_1a_and_stops_at_the_first_falsy_operand_and_never_checks_the_rest() {
@@ -62,7 +86,8 @@ fn exec_eval_2_a_null_argument_is_a_type_error_unless_the_type_admits_null() {
 #[test]
 fn exec_eval_3a_sort_orders_by_key_and_direction() {
     assert_eq!(eval(json!(["array/sort", [3, 1, 2]])), Ok(value(json!([1, 2, 3]))), "dir defaults to asc");
-    assert_eq!(eval(json!(["array/sort", [1, 3, 2], null, "bogus"])), Ok(value(json!([3, 2, 1]))), "any dir other than asc is descending");
+    assert!(eval(json!(["array/sort", [1, 3, 2], null, "bogus"])).is_err(), "a dir other than asc or desc is an error");
+    assert_eq!(eval(json!(["array/sort", [1, 3, 2], null, "desc"])), Ok(value(json!([3, 2, 1]))), "control: desc is descending");
     assert_eq!(eval(json!(["array/sort", [1, 3, 2], null, "asc"])), Ok(value(json!([1, 2, 3]))), "control: asc is ascending");
     assert_eq!(eval(json!(["array/sort", [{ "k": 2 }, {}, { "k": 1 }], "k"])), Ok(value(json!([{}, { "k": 1 }, { "k": 2 }]))), "a missing field is null, ordered first");
     assert_eq!(eval(json!(["array/sort", [{ "k": 2 }, { "k": 1 }], ""])), Ok(value(json!([{ "k": 2 }, { "k": 1 }]))), "an empty key sorts the elements, and objects are equal");
@@ -147,11 +172,12 @@ fn exec_eval_8_a_failing_call_in_an_effect_argument_fails_the_effect_and_the_raw
     assert_eq!(control.snapshot_trait("Maker", None).entity.get_path("list"), Some(&value(json!(["a", "b"]))), "control: the call's result lands");
 }
 
-/// EXEC-LANG-2: the run-time argument check binds a type variable per call, so `array/append : [T], T`
-/// accepts a string element in one call and a number in the next.
+/// EXEC-LANG-2: a type variable is bound by the validator, not per call at run time, so `array/append : [T], T`
+/// runs on whatever the validated program hands it.
 #[test]
-fn exec_lang_2_a_type_variable_is_bound_per_call() {
+fn exec_lang_2_a_type_variable_is_bound_by_the_validator_and_the_kernel_runs_no_per_call_binding() {
     assert_eq!(eval(json!(["array/append", [1, 2], 3])), Ok(value(json!([1, 2, 3]))), "T = number");
-    assert_eq!(eval(json!(["array/append", ["a"], "b"])), Ok(value(json!(["a", "b"]))), "the next call binds T = string afresh");
-    assert!(is_type_mismatch(&eval(json!(["array/append", [1, 2], "x"]))), "control: within one call T is bound and must agree");
+    assert_eq!(eval(json!(["array/append", ["a"], "b"])), Ok(value(json!(["a", "b"]))), "T = string in the next call");
+    assert_eq!(eval(json!(["array/append", [1, 2], "x"])), Ok(value(json!([1, 2, "x"]))), "the kernel does not re-check agreement: the validator refuses this pair statically");
+    assert!(is_type_mismatch(&eval(json!(["array/append", 5, 1]))), "control: an operator still refuses a non-list where it reads one");
 }

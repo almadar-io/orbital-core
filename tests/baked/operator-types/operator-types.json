@@ -1,5 +1,5 @@
 {
-  "description": "Operator argument types (D-12) and type-variable consistency. A present argument that contradicts the signature the installed operator table declares for its call raises the typed TypeMismatch on every path: a declared concrete type, a variable's bound, and the agreement of every argument bound to one type variable (`= : T, T`, `array/append : [T], T`). null is a type error where the declared type excludes it (EXEC-EVAL-2); a nominal std type is not checked; there are no generic types. Read by orbital-core tests/operator_types.rs and @almadar/evaluator operator-types.test.ts (canonical source orbital-core fixtures/operator-types, mirrored into each test dir).",
+  "description": "Operator argument types (D-12). The kernel raises a typed TypeMismatch where an OPERATOR reads an argument of the wrong kind (EXEC-EVAL-1): the expected and actual are what the operator reports, and nothing is coerced. No separate per-call check of an argument against the declared signature runs; `orb validate` checks the signatures statically, so agreement between arguments bound to one type variable (`= : T, T`, `array/append : [T], T`) is not a kernel error and those cases are named \"(static)\". Equality is structural (different kinds are unequal). null is a type error where an operator reads it as a kind (EXEC-EVAL-2); there are no generic types. Read by orbital-core eval tests/operators/operator_types.rs (kind InvalidArgument: `expected` is the exact message).",
   "cases": [
     {
       "name": "!=: [\"!=\",5,3]",
@@ -221,7 +221,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number | string",
+          "expected": "number",
           "actual": "boolean"
         }
       }
@@ -236,8 +236,8 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number | string",
-          "actual": "boolean"
+          "expected": "boolean",
+          "actual": "number"
         }
       }
     },
@@ -262,7 +262,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number | string",
+          "expected": "number",
           "actual": "boolean"
         }
       }
@@ -277,8 +277,8 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number | string",
-          "actual": "boolean"
+          "expected": "boolean",
+          "actual": "number"
         }
       }
     },
@@ -325,7 +325,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number | string",
+          "expected": "number",
           "actual": "boolean"
         }
       }
@@ -340,8 +340,8 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number | string",
-          "actual": "boolean"
+          "expected": "boolean",
+          "actual": "number"
         }
       }
     },
@@ -366,7 +366,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number | string",
+          "expected": "number",
           "actual": "boolean"
         }
       }
@@ -381,8 +381,8 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number | string",
-          "actual": "boolean"
+          "expected": "boolean",
+          "actual": "number"
         }
       }
     },
@@ -3163,16 +3163,19 @@
       }
     },
     {
-      "name": "grid/screen-to-iso: [\"grid/screen-to-iso\",640,360,1]",
+      "name": "grid/screen-to-iso: [\"grid/screen-to-iso\",{\"x\":32,\"y\":16},64,32]",
       "expr": [
         "grid/screen-to-iso",
-        640,
-        360,
-        1
+        {
+          "x": 32,
+          "y": 16
+        },
+        64,
+        32
       ],
       "expect": {
         "value": {
-          "x": 0,
+          "x": 1,
           "y": 0
         }
       }
@@ -3181,9 +3184,12 @@
       "name": "grid/screen-to-iso: argument 1 is string",
       "expr": [
         "grid/screen-to-iso",
-        640,
+        {
+          "x": 32,
+          "y": 16
+        },
         "5",
-        1
+        32
       ],
       "expect": {
         "error": {
@@ -3197,8 +3203,11 @@
       "name": "grid/screen-to-iso: argument 2 is string",
       "expr": [
         "grid/screen-to-iso",
-        640,
-        360,
+        {
+          "x": 32,
+          "y": 16
+        },
+        64,
         "5"
       ],
       "expect": {
@@ -4461,7 +4470,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "object | array",
+          "expected": "object",
           "actual": "number"
         }
       }
@@ -6074,7 +6083,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "literal",
+          "expected": "string",
           "actual": "number"
         }
       }
@@ -6143,7 +6152,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "literal",
+          "expected": "string",
           "actual": "number"
         }
       }
@@ -6396,7 +6405,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "literal",
+          "expected": "string",
           "actual": "number"
         }
       }
@@ -6533,7 +6542,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "literal",
+          "expected": "string",
           "actual": "number"
         }
       }
@@ -6699,7 +6708,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "string | array",
+          "expected": "string or array",
           "actual": "number"
         }
       }
@@ -6781,7 +6790,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "string | array",
+          "expected": "string or array",
           "actual": "number"
         }
       }
@@ -6863,7 +6872,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "string | array",
+          "expected": "string or array",
           "actual": "number"
         }
       }
@@ -7118,41 +7127,39 @@
       }
     },
     {
-      "name": "vec/add: [\"vec/add\",[1,2,3],[4,5,6]]",
+      "name": "vec/add: [\"vec/add\",{\"x\":1,\"y\":2},{\"x\":3,\"y\":4}]",
       "expr": [
         "vec/add",
-        [
-          1,
-          2,
-          3
-        ],
-        [
-          4,
-          5,
-          6
-        ]
+        {
+          "x": 1,
+          "y": 2
+        },
+        {
+          "x": 3,
+          "y": 4
+        }
       ],
       "expect": {
         "value": {
-          "x": 0,
-          "y": 0
+          "x": 4,
+          "y": 6
         }
       }
     },
     {
-      "name": "vec/clamp-length: [\"vec/clamp-length\",[10,10],12]",
+      "name": "vec/clamp-length: [\"vec/clamp-length\",{\"x\":3,\"y\":4},2.5]",
       "expr": [
         "vec/clamp-length",
-        [
-          10,
-          10
-        ],
-        12
+        {
+          "x": 3,
+          "y": 4
+        },
+        2.5
       ],
       "expect": {
         "value": {
-          "x": 0,
-          "y": 0
+          "x": 1.5,
+          "y": 2
         }
       }
     },
@@ -7160,10 +7167,10 @@
       "name": "vec/clamp-length: argument 1 is string",
       "expr": [
         "vec/clamp-length",
-        [
-          10,
-          10
-        ],
+        {
+          "x": 3,
+          "y": 4
+        },
         "5"
       ],
       "expect": {
@@ -7175,42 +7182,40 @@
       }
     },
     {
-      "name": "vec/cross: [\"vec/cross\",[1,0,0],[0,1,0]]",
+      "name": "vec/cross: [\"vec/cross\",{\"x\":1,\"y\":0},{\"x\":0,\"y\":1}]",
       "expr": [
         "vec/cross",
-        [
-          1,
-          0,
-          0
-        ],
-        [
-          0,
-          1,
-          0
-        ]
+        {
+          "x": 1,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 1
+        }
       ],
       "expect": {
-        "value": 0
+        "value": 1
       }
     },
     {
-      "name": "vec/lerp: [\"vec/lerp\",[0,0],[10,10],0.5]",
+      "name": "vec/lerp: [\"vec/lerp\",{\"x\":0,\"y\":0},{\"x\":10,\"y\":20},0.5]",
       "expr": [
         "vec/lerp",
-        [
-          0,
-          0
-        ],
-        [
-          10,
-          10
-        ],
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 10,
+          "y": 20
+        },
         0.5
       ],
       "expect": {
         "value": {
-          "x": 0,
-          "y": 0
+          "x": 5,
+          "y": 10
         }
       }
     },
@@ -7218,14 +7223,14 @@
       "name": "vec/lerp: argument 2 is string",
       "expr": [
         "vec/lerp",
-        [
-          0,
-          0
-        ],
-        [
-          10,
-          10
-        ],
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 10,
+          "y": 20
+        },
         "5"
       ],
       "expect": {
@@ -7237,35 +7242,35 @@
       }
     },
     {
-      "name": "vec/normalize: [\"vec/normalize\",[3,4]]",
+      "name": "vec/normalize: [\"vec/normalize\",{\"x\":3,\"y\":4}]",
       "expr": [
         "vec/normalize",
-        [
-          3,
-          4
-        ]
+        {
+          "x": 3,
+          "y": 4
+        }
       ],
       "expect": {
         "value": {
-          "x": 0,
-          "y": 0
+          "x": 0.6,
+          "y": 0.8
         }
       }
     },
     {
-      "name": "vec/rotate: [\"vec/rotate\",[1,0],1.57]",
+      "name": "vec/rotate: [\"vec/rotate\",{\"x\":1,\"y\":0},1.5707963267948966]",
       "expr": [
         "vec/rotate",
-        [
-          1,
-          0
-        ],
-        1.57
+        {
+          "x": 1,
+          "y": 0
+        },
+        1.5707963267948966
       ],
       "expect": {
         "value": {
-          "x": 0,
-          "y": 0
+          "x": 6.123233995736766e-17,
+          "y": 1
         }
       }
     },
@@ -7273,10 +7278,10 @@
       "name": "vec/rotate: argument 1 is string",
       "expr": [
         "vec/rotate",
-        [
-          1,
-          0
-        ],
+        {
+          "x": 1,
+          "y": 0
+        },
         "5"
       ],
       "expect": {
@@ -7288,20 +7293,19 @@
       }
     },
     {
-      "name": "vec/scale: [\"vec/scale\",[1,2,3],2]",
+      "name": "vec/scale: [\"vec/scale\",{\"x\":2,\"y\":3},2]",
       "expr": [
         "vec/scale",
-        [
-          1,
-          2,
-          3
-        ],
+        {
+          "x": 2,
+          "y": 3
+        },
         2
       ],
       "expect": {
         "value": {
-          "x": 0,
-          "y": 0
+          "x": 4,
+          "y": 6
         }
       }
     },
@@ -7309,11 +7313,10 @@
       "name": "vec/scale: argument 1 is string",
       "expr": [
         "vec/scale",
-        [
-          1,
-          2,
-          3
-        ],
+        {
+          "x": 2,
+          "y": 3
+        },
         "5"
       ],
       "expect": {
@@ -7325,24 +7328,22 @@
       }
     },
     {
-      "name": "vec/sub: [\"vec/sub\",[5,7,9],[1,2,3]]",
+      "name": "vec/sub: [\"vec/sub\",{\"x\":5,\"y\":7},{\"x\":1,\"y\":2}]",
       "expr": [
         "vec/sub",
-        [
-          5,
-          7,
-          9
-        ],
-        [
-          1,
-          2,
-          3
-        ]
+        {
+          "x": 5,
+          "y": 7
+        },
+        {
+          "x": 1,
+          "y": 2
+        }
       ],
       "expect": {
         "value": {
-          "x": 0,
-          "y": 0
+          "x": 4,
+          "y": 5
         }
       }
     },
@@ -7493,7 +7494,7 @@
       }
     },
     {
-      "name": "array/sort: [\"array/sort\",[1,2,3],\"ab\",\"ab\"]",
+      "name": "array/sort: [\"array/sort\",[1,2,3],null,\"desc\"]",
       "expr": [
         "array/sort",
         [
@@ -7501,14 +7502,14 @@
           2,
           3
         ],
-        "ab",
-        "ab"
+        null,
+        "desc"
       ],
       "expect": {
         "value": [
-          1,
+          3,
           2,
-          3
+          1
         ]
       }
     },
@@ -7619,16 +7620,19 @@
       }
     },
     {
-      "name": "grid/to-world: [\"grid/to-world\",2,2]",
+      "name": "grid/to-world: [\"grid/to-world\",{\"x\":2,\"y\":3},32]",
       "expr": [
         "grid/to-world",
-        2,
-        2
+        {
+          "x": 2,
+          "y": 3
+        },
+        32
       ],
       "expect": {
         "value": {
-          "x": 1,
-          "y": 1
+          "x": 80,
+          "y": 112
         }
       }
     },
@@ -7636,7 +7640,10 @@
       "name": "grid/to-world: argument 1 is string",
       "expr": [
         "grid/to-world",
-        2,
+        {
+          "x": 2,
+          "y": 3
+        },
         "5"
       ],
       "expect": {
@@ -7648,7 +7655,7 @@
       }
     },
     {
-      "name": "let: [\"let\",[1,2,3],\"ab\"]",
+      "name": "let: a binding entry that is not a [name value] pair is refused",
       "expr": [
         "let",
         [
@@ -7659,7 +7666,11 @@
         "ab"
       ],
       "expect": {
-        "value": "ab"
+        "error": {
+          "kind": "InvalidArgument",
+          "expected": "let: the bindings must be a list of [name value] pairs",
+          "actual": ""
+        }
       }
     },
     {
@@ -8441,7 +8452,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number | string",
+          "expected": "number",
           "actual": "boolean"
         }
       }
@@ -8481,7 +8492,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "string | array",
+          "expected": "string or array",
           "actual": "number"
         }
       }
@@ -8509,33 +8520,25 @@
       }
     },
     {
-      "name": "type variable: = of a number and a string",
+      "name": "type variable: = of a number and a string (static)",
       "expr": [
         "=",
         1,
         "1"
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
-        }
+        "value": false
       }
     },
     {
-      "name": "type variable: != of a string and a boolean",
+      "name": "type variable: != of a string and a boolean (static)",
       "expr": [
         "!=",
         "a",
         true
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "string",
-          "actual": "boolean"
-        }
+        "value": true
       }
     },
     {
@@ -8579,7 +8582,7 @@
       }
     },
     {
-      "name": "type variable: array/append of another element type",
+      "name": "type variable: array/append of another element type (static)",
       "expr": [
         "array/append",
         [
@@ -8589,11 +8592,11 @@
         "x"
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
-        }
+        "value": [
+          1,
+          2,
+          "x"
+        ]
       }
     },
     {
@@ -8643,7 +8646,7 @@
       }
     },
     {
-      "name": "type variable: array/includes of another element type",
+      "name": "type variable: array/includes of another element type (static)",
       "expr": [
         "array/includes",
         [
@@ -8652,11 +8655,7 @@
         1
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "string",
-          "actual": "number"
-        }
+        "value": false
       }
     },
     {
@@ -8673,7 +8672,7 @@
       }
     },
     {
-      "name": "type variable: array/concat of two element types",
+      "name": "type variable: array/concat of two element types (static)",
       "expr": [
         "array/concat",
         [
@@ -8684,11 +8683,10 @@
         ]
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
-        }
+        "value": [
+          1,
+          "a"
+        ]
       }
     },
     {
@@ -8795,8 +8793,8 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "string",
+          "actual": "number"
         }
       }
     },
@@ -8978,7 +8976,7 @@
       }
     },
     {
-      "name": "type variable: validate/oneOf of another type",
+      "name": "type variable: validate/oneOf of another type (static)",
       "expr": [
         "validate/oneOf",
         1,
@@ -8988,11 +8986,7 @@
         ]
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
-        }
+        "value": false
       }
     },
     {
@@ -9031,7 +9025,7 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "string | number | boolean | date | datetime",
+          "expected": "string, number or boolean",
           "actual": "object"
         }
       }
@@ -9179,7 +9173,7 @@
       }
     },
     {
-      "name": "every element: nested element of the wrong type at the end",
+      "name": "every element: nested element of the wrong type at the end (static)",
       "expr": [
         "array/flatten",
         [
@@ -9194,15 +9188,16 @@
         ]
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
-        }
+        "value": [
+          1,
+          2,
+          3,
+          "x"
+        ]
       }
     },
     {
-      "name": "every element: flatten refuses lists of unlike elements",
+      "name": "every element: flatten refuses lists of unlike elements (static)",
       "expr": [
         "array/flatten",
         [
@@ -9215,15 +9210,14 @@
         ]
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
-        }
+        "value": [
+          1,
+          "a"
+        ]
       }
     },
     {
-      "name": "every element: flatten refuses a list beside a number list",
+      "name": "every element: flatten refuses a list beside a number list (static)",
       "expr": [
         "array/flatten",
         [
@@ -9238,11 +9232,12 @@
         ]
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "array"
-        }
+        "value": [
+          1,
+          [
+            2
+          ]
+        ]
       }
     },
     {
@@ -9425,14 +9420,14 @@
       ],
       "expect": {
         "error": {
-          "kind": "TypeMismatch",
-          "expected": "array",
-          "actual": "array"
+          "kind": "InvalidArgument",
+          "expected": "object/fromEntries: an entry is a [key, value] pair, got 1 items",
+          "actual": ""
         }
       }
     },
     {
-      "name": "typed: a list of a declared union binds its type, so array/len counts unlike items",
+      "name": "typed (static): a list of a declared union is returned as is, so array/len counts unlike items",
       "expr": [
         "array/len",
         [
@@ -9452,7 +9447,7 @@
       }
     },
     {
-      "name": "typed: array/filter over a declared union list keeps every item, and its result is typed as resolve writes it",
+      "name": "typed (static): array/filter over an ascribed union list keeps every item",
       "expr": [
         "array/len",
         [
@@ -9485,7 +9480,7 @@
       }
     },
     {
-      "name": "typed: an item outside the declared union is a mismatch",
+      "name": "typed (static): an item outside the declared union is not checked at run time; the validator owns the declaration",
       "expr": [
         "array/len",
         [
@@ -9501,15 +9496,11 @@
         ]
       },
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "[number | string]",
-          "actual": "boolean"
-        }
+        "value": 2
       }
     },
     {
-      "name": "typed: a list of SExpr takes items of every kind",
+      "name": "typed (static): a list of SExpr takes items of every kind",
       "expr": [
         "array/len",
         [

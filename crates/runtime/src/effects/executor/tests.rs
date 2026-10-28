@@ -1582,13 +1582,27 @@ mod fetch_option_evaluation {
     }
 
     #[test]
-    fn non_positive_or_non_numeric_limit_means_no_limit() {
-        for limit in [json!(0), json!(-1), json!("abc"), json!("@payload.missing")] {
-            assert_eq!(
-                count(&run(json!({ "limit": limit }), json!({}), json!({}))),
-                5
-            );
+    fn a_limit_or_offset_that_is_not_a_whole_number_fails_the_fetch() {
+        for limit in [json!(-1), json!(1.5), json!("abc"), json!("@payload.missing")] {
+            let r = run(json!({ "limit": limit }), json!({}), json!({}));
+            assert!(!r.is_executed(), "limit {limit} must fail the fetch");
         }
+        for offset in [json!(-1), json!(1.5), json!("abc")] {
+            let r = run(json!({ "offset": offset }), json!({}), json!({}));
+            assert!(!r.is_executed(), "offset {offset} must fail the fetch");
+        }
+    }
+
+    #[test]
+    fn a_limit_is_at_least_one_and_an_offset_may_be_zero() {
+        let executor = EffectExecutor::server();
+        let ctx = BindingContext::new();
+        assert!(executor.resolve_limit(Some(&v(json!(0))), &ctx).is_err());
+        assert_eq!(executor.resolve_limit(Some(&v(json!(3))), &ctx), Ok(Some(3)));
+        assert_eq!(executor.resolve_limit(None, &ctx), Ok(None));
+        assert_eq!(executor.resolve_page_option(Some(&v(json!(0))), &ctx), Ok(None));
+        assert_eq!(executor.resolve_page_option(Some(&v(json!(2))), &ctx), Ok(Some(2)));
+        assert_eq!(count(&run(json!({ "offset": 0 }), json!({}), json!({}))), 5);
     }
 
     fn ids(result: &EffectResult) -> Vec<String> {

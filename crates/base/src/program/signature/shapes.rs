@@ -7,9 +7,12 @@ pub(super) fn agrees(a: &OirType, b: &OirType) -> bool {
 }
 
 pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings, mode: Mode) -> bool {
-    if mode == Mode::Proof {
-        return crate::type_compat::sub_with_named(actual, expected, &|name| bindings.named_types.get(name).cloned())
-            .is_some();
+    // A strict call refuses an optional value where a present one is declared.
+    if mode == Mode::Proof
+        && matches!(actual, OirType::Optional { .. })
+        && !matches!(expected, OirType::Optional { .. })
+    {
+        return false;
     }
     // A date is a string or a number at rest, depending on the host; a static date passes either.
     let date_at_rest = matches!(unwrap_optional(actual), OirType::Date | OirType::DateTime)
@@ -26,7 +29,7 @@ pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings
     ) && matches!(expected, OirType::String);
     date_at_rest
         || text_at_rest
-        || is_uninformative(actual)
+        || (mode != Mode::Proof && is_uninformative(actual))
         || crate::type_compat::sub_with_named(actual, expected, &|name| {
             bindings.named_types.get(name).cloned()
         })
@@ -38,6 +41,33 @@ pub(super) fn is_record(known: &Known, bindings: &CallBindings) -> bool {
     match known {
         Known::Type(ty) => record_of(ty, bindings).is_some() || is_uninformative(ty),
         Known::EmptyList | Known::Absent | Known::Void => false,
+    }
+}
+
+/// Whether a value of no known type cannot be handed to `formal`: it declares a type the value must be shown to have.
+pub(super) fn demands_type(formal: &OperatorTypeRef) -> bool {
+    use crate::language::registry::OperatorTypeRefKind as K;
+    match formal {
+        OperatorTypeRef::Primitive(name) => {
+            checkable(name).is_some()
+                || matches!(name.as_str(), "bytes" | "vector" | "cell" | "rect" | "circle" | "point" | "segment")
+        }
+        OperatorTypeRef::Tagged(kind) => match kind {
+            K::Array { .. }
+            | K::Tuple { .. }
+            | K::Map { .. }
+            | K::Object { .. }
+            | K::Record
+            | K::Var { .. }
+            | K::Literal { .. }
+            | K::Entity { .. }
+            | K::EntityRef
+            | K::FieldOf { .. } => true,
+            K::Union { of } => of.iter().all(demands_type),
+            K::Binding { shape } => shape.as_deref().is_some_and(demands_type),
+            K::Sexpr { of } => of.as_deref().is_some_and(demands_type),
+            _ => false,
+        },
     }
 }
 
@@ -151,7 +181,7 @@ pub(super) fn fill_empty_list_slots(prior: &OirType, actual: &OirType) -> Option
             }
             if let (Some(prior), Some(next)) = (&mut additional, next_additional) {
                 if let Some(filled) = fill_empty_list_slots(prior, next) {
-                    *prior = Box::new(filled);
+                    **prior = filled;
                     changed = true;
                 }
             }

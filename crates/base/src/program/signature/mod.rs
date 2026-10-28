@@ -10,9 +10,10 @@
 //!
 //! What is checked is decided by the signature alone: a declared concrete type, the agreement of every
 //! argument bound to one variable, a variable's bound, and — statically — that a `key-of R` argument names a
-//! field of the record `R` is bound to. An argument handed to a type variable whose type is not known — an unresolved expression, an expression value, json — is
-//! an error ([`Mismatch::Undetermined`]): a variable never stands for an unknown. A static argument at a concrete
-//! position binds nothing and is not checked.
+//! field of the record `R` is bound to. A static check ([`Mode::Proof`]) is total: an argument whose type is not
+//! known or is loose — an unresolved expression, an expression value, json, a loose union — is an error
+//! ([`Mismatch::Undetermined`]) at every position that declares a type, and `(as x T)` narrows it; an optional value
+//! or the null literal is refused where the declared type excludes null.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -94,13 +95,15 @@ impl<'a> Actual<'a> {
 /// How strictly a call is checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Over the types of expressions: a `key-of` argument must name a field of the record it is bound to.
+    /// The lenient reading over expression types: a `key-of` argument must name a field of the record it is bound
+    /// to, and an argument of no informative type passes a concrete position. The compiler no longer uses it.
     Static,
     /// Over the types of evaluated values, which carry no field information: `key-of` is not checked.
     Runtime,
-    /// [`Mode::Static`] as a proof that every value of the argument's type fits (`proven`, G-CROSS-335): it fits
-    /// only by subtyping, a union fits only when each of its variants does, and an argument of no informative type
-    /// (`json`, `sexpr`) or one bound only loosely (a date at a string position) is undetermined.
+    /// The strict static check, and a proof (`proven`, G-CROSS-335) that every value of the argument's type fits: it
+    /// fits only by subtyping (a date or semantic string still passes a string position at rest), a union fits a
+    /// position that binds no variable only when each of its variants does, and an argument of no informative type
+    /// (`json`, `sexpr`, a value of unknown type) is undetermined at every position that declares a type.
     Proof,
 }
 
@@ -265,6 +268,8 @@ pub struct FieldProjection {
 #[derive(Clone, Copy)]
 pub struct Signature<'a> {
     params: &'a [EmbeddedOperatorParam],
+    required: usize,
+    most: Option<usize>,
     unbounded: bool,
     checks: bool,
     returns: &'a OperatorTypeRef,
@@ -275,6 +280,8 @@ impl<'a> Signature<'a> {
     pub fn of(op: &'a EmbeddedOperator) -> Self {
         Self {
             params: &op.params,
+            required: op.min_arity as usize,
+            most: op.max_arity.map(|m| m as usize),
             unbounded: op.max_arity.is_none(),
             checks: op.params.iter().any(|p| checks(&p.ty)),
             returns: &op.return_type,
@@ -282,9 +289,21 @@ impl<'a> Signature<'a> {
         }
     }
 
-    /// Whether the operand at `index` raises in the kernel when it is null: its declared type excludes null.
+    /// Whether the operand at `index` raises in the kernel when it is null: its declared type excludes null, unless it
+    /// is an optional operand written before a later declared one (null then holds its place: `(array/sort xs null "desc")`).
     pub fn rejects_null(&self, index: usize) -> bool {
-        self.formal(index).is_some_and(|ty| !ty.admits_null())
+        let placeholder = index >= self.required
+            && index + 1 < self.params.len()
+            && !self.params[index].name.starts_with("...");
+        !placeholder && self.formal(index).is_some_and(|ty| !ty.admits_null())
+    }
+
+    /// The declared arity a call of `count` arguments breaks: the bound it falls outside of, or `None` when it fits.
+    pub fn arity_breach(&self, count: usize) -> Option<usize> {
+        if count < self.required {
+            return Some(self.required);
+        }
+        self.most.filter(|most| count > *most)
     }
 
     /// The declared type of the argument at `index`: its own parameter, or the rest parameter past the last.
@@ -485,7 +504,7 @@ impl<'a> Signature<'a> {
         names.sort();
         let mut scratch = bindings.clone();
         scratch.index = index;
-        scratch.strict = mode == Mode::Static;
+        scratch.strict = mode != Mode::Runtime;
         for name in &names {
             let Some((_, actual)) = fields.iter().find(|(given, _)| given == *name) else {
                 if optional.contains(name) {

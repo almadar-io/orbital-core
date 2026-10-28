@@ -212,11 +212,9 @@ impl Operator for BehaviorRefOp {
             }));
         }
         let spec = super::eval_expr(&args[0], ctx)?;
-        let Value::String(spec) = spec else {
-            return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "a behavior specifier string".to_string(),
-                actual: format!("{spec:?}"),
-            }));
+        let spec = match spec {
+            Value::String(spec) => spec,
+            other => return Err(other.kind_error("string").into()),
         };
         orbital_core_base::schema::behavior_value::behavior_ref(&spec).ok_or_else(|| {
             OrbitalError::Eval(EvalError::TypeMismatch {

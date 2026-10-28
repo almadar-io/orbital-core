@@ -78,25 +78,18 @@ fn holds(c: Rat, rel: Rel) -> bool {
     }
 }
 
-/// Axioms tying each variable to its declaration: a nullable number reads as 0 when null (`to_number`), and a
-/// variable that cannot be null is not.
+/// Axioms tying each variable to its declaration: a variable that cannot be null is not. A nullable number gets none:
+/// every atom that reads one already requires it present, since arithmetic and ordering raise on null.
 fn axioms(f: &Formula, vars: &Vars) -> Formula {
     let mut used = BTreeSet::new();
     formula_vars(f, &mut used);
     let mut parts = Vec::new();
     for v in used {
-        match vars.get(&v) {
-            Some(VarInfo {
-                nullable: false, ..
-            }) => parts.push(Formula::Lit(Atom::Null(v.clone()), false)),
-            Some(VarInfo {
-                sort: Sort::Num,
-                nullable: true,
-            }) => parts.push(Formula::or(vec![
-                Formula::Lit(Atom::Null(v.clone()), false),
-                Formula::atom(Atom::Lin(Lin::var(&v), Rel::Eq)),
-            ])),
-            _ => {}
+        if let Some(VarInfo {
+            nullable: false, ..
+        }) = vars.get(&v)
+        {
+            parts.push(Formula::Lit(Atom::Null(v.clone()), false));
         }
     }
     Formula::and(parts)
@@ -115,27 +108,9 @@ pub fn decide(f: &Formula, vars: &Vars) -> Outcome {
     );
     match (found, unknown) {
         (Some(mut model), _) => {
-            // Any extension of a satisfying branch satisfies the formula: a variable the branch left free takes a
-            // typed, present value, so the evaluator replays what the declarations allow.
             let mut used = BTreeSet::new();
             formula_vars(&whole, &mut used);
-            for v in used {
-                if model.values.contains_key(&v) {
-                    continue;
-                }
-                let value = match vars.get(&v).map(|i| &i.sort) {
-                    Some(Sort::Num) => ModelValue::Num(Rat::ZERO),
-                    Some(Sort::Str(domain)) => ModelValue::Str(
-                        domain
-                            .as_ref()
-                            .and_then(|d| d.first().cloned())
-                            .unwrap_or_else(|| "s".to_string()),
-                    ),
-                    Some(Sort::Bool) => ModelValue::Bool(false),
-                    None => continue,
-                };
-                model.values.insert(v, value);
-            }
+            fill_free(&mut model, used, vars);
             Outcome::Sat(model)
         }
         (None, Some(reason)) => Outcome::Unknown(reason),
@@ -143,6 +118,29 @@ pub fn decide(f: &Formula, vars: &Vars) -> Outcome {
             Outcome::Unknown(format!("more than {MAX_BRANCHES} case splits"))
         }
         (None, None) => Outcome::Unsat,
+    }
+}
+
+/// Any extension of a satisfying branch satisfies the formula: a variable the branch left free takes a typed, present
+/// value, so the evaluator replays what the declarations allow. A variable whose terms cancelled out of every atom
+/// (`x + 1 = x`) is still read by the expressions, so callers name those too.
+pub fn fill_free(model: &mut Model, names: impl IntoIterator<Item = String>, vars: &Vars) {
+    for v in names {
+        if model.values.contains_key(&v) {
+            continue;
+        }
+        let value = match vars.get(&v).map(|i| &i.sort) {
+            Some(Sort::Num) => ModelValue::Num(Rat::ZERO),
+            Some(Sort::Str(domain)) => ModelValue::Str(
+                domain
+                    .as_ref()
+                    .and_then(|d| d.first().cloned())
+                    .unwrap_or_else(|| "s".to_string()),
+            ),
+            Some(Sort::Bool) => ModelValue::Bool(false),
+            None => continue,
+        };
+        model.values.insert(v, value);
     }
 }
 
@@ -622,8 +620,8 @@ mod tests {
     fn valid(assume: &str, goal: &str, v: &Vars) -> Outcome {
         let mut t = Translator::new(v);
         let a = t.truthy(&parse(assume)).unwrap();
-        let g = t.truthy(&parse(goal)).unwrap();
-        decide(&Formula::and(vec![a, g.negate().unwrap()]), v)
+        let g = t.falsy(&parse(goal)).unwrap();
+        decide(&Formula::and(vec![a, g]), v)
     }
 
     fn num(names: &[&str]) -> Vars {
@@ -771,20 +769,49 @@ mod tests {
     }
 
     #[test]
-    fn null_follows_loose_eq_and_numeric_coercion() {
+    fn null_is_equal_only_to_null_and_raises_in_arithmetic_and_ordering() {
         let v = vars(&[("@x", Sort::Num, true)]);
-        // A null number orders as 0 but equals only null.
+        // An ordering over a null number raises: it neither holds nor fails, so a null `x` proves it vacuously.
         assert_eq!(
             valid(r#"["=", "@x", null]"#, r#"[">=", "@x", 0]"#, &v),
+            Outcome::Unsat
+        );
+        assert_eq!(
+            sat(r#"["and", ["=", "@x", null], [">=", "@x", 0]]"#, &v),
             Outcome::Unsat
         );
         assert_eq!(
             sat(r#"["and", ["=", "@x", null], ["=", "@x", 0]]"#, &v),
             Outcome::Unsat
         );
+        // Control: where `x` is present the same ordering is decided by its value.
+        let Outcome::Sat(m) = valid(r#"["!=", "@x", null]"#, r#"[">=", "@x", 0]"#, &v) else {
+            panic!()
+        };
+        let ModelValue::Num(x) = m.values["@x"] else {
+            panic!("a counterexample to an ordering holds a present value")
+        };
+        assert!(x < Rat::int(0));
         assert!(matches!(
             sat(
                 r#"["and", ["<", "@x", 1], [">", "@x", -1], ["!=", "@x", 0]]"#,
+                &v
+            ),
+            Outcome::Sat(_)
+        ));
+        // Arithmetic raises on a null operand, an equality over it too, while a bare null still equals only null.
+        assert_eq!(
+            valid(
+                r#"["=", "@x", null]"#,
+                r#"["=", ["+", "@x", 1], ["+", "@x", 1]]"#,
+                &v
+            ),
+            Outcome::Unsat
+        );
+        assert!(matches!(
+            valid(
+                r#"["!=", "@x", null]"#,
+                r#"["=", ["+", "@x", 1], ["+", "@x", 2]]"#,
                 &v
             ),
             Outcome::Sat(_)
@@ -802,7 +829,50 @@ mod tests {
     }
 
     #[test]
-    fn booleans_and_truthiness() {
+    fn a_variable_cancelled_out_of_every_atom_still_gets_a_present_value() {
+        let v = vars(&[("@x", Sort::Num, true), ("@y", Sort::Num, false)]);
+        let Outcome::Sat(mut m) = valid(
+            "true",
+            r#"["=", ["+", ["+", "@x", "@y"], 1], ["+", "@x", "@y"]]"#,
+            &v,
+        ) else {
+            panic!()
+        };
+        fill_free(&mut m, ["@x".to_string(), "@y".to_string()], &v);
+        assert!(matches!(m.values["@x"], ModelValue::Num(_)));
+        assert!(matches!(m.values["@y"], ModelValue::Num(_)));
+        // Control: a name already decided keeps its value.
+        m.values.insert("@y".into(), ModelValue::Num(Rat::int(5)));
+        fill_free(&mut m, ["@y".to_string()], &v);
+        assert_eq!(m.values["@y"], ModelValue::Num(Rat::int(5)));
+    }
+
+    #[test]
+    fn default_is_the_coalesce_and_or_is_a_boolean_connective() {
+        let v = vars(&[("@x", Sort::Num, true)]);
+        assert_eq!(
+            valid(
+                r#"[">=", "@x", 0]"#,
+                r#"[">=", ["default", "@x", 7], 0]"#,
+                &v
+            ),
+            Outcome::Unsat
+        );
+        // Control: the fallback is only taken when `x` is null, so a negative fallback breaks the goal.
+        let Outcome::Sat(m) = valid(
+            r#"["=", "@x", null]"#,
+            r#"[">=", ["default", "@x", -7], 0]"#,
+            &v,
+        ) else {
+            panic!()
+        };
+        assert_eq!(m.values["@x"], ModelValue::Null);
+        // `or` takes booleans: a number operand raises, so it neither holds nor fails.
+        assert_eq!(sat(r#"["or", "@x", true]"#, &v), Outcome::Unsat);
+    }
+
+    #[test]
+    fn conditions_are_booleans() {
         let v = vars(&[
             ("@f", Sort::Bool, true),
             ("@n", Sort::Num, false),
@@ -819,6 +889,14 @@ mod tests {
             Outcome::Unsat
         );
         assert!(matches!(sat(r#"["not", "@f"]"#, &v), Outcome::Sat(_)));
+        // A number or string is not a condition: it raises, as does `not` of it.
+        assert_eq!(sat(r#""@n""#, &v), Outcome::Unsat);
+        assert_eq!(sat(r#"["not", "@s"]"#, &v), Outcome::Unsat);
+        // A null boolean raises too, so neither the variable nor its negation holds there.
+        assert_eq!(
+            sat(r#"["and", ["=", "@f", null], ["not", "@f"]]"#, &v),
+            Outcome::Unsat
+        );
     }
 
     #[test]

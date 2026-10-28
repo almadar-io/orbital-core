@@ -35,8 +35,9 @@ fn numbers_of(args: &[SExpression], ctx: &BindingContext) -> Result<Vec<f64>, Or
 }
 
 /// A higher-order operator's callback, read once per call and applied per element: a `(fn …)` literal binds its
-/// params and runs its body where it is written, a value that is a lambda binds its own, and any other expression is
-/// a raw body run with `@item`/`@index` bound. Reading it once spares every element a copy of the body.
+/// params and runs its body where it is written, and a value that is a lambda binds its own; any other value is a
+/// type mismatch (the table declares the parameter as a function). Reading it once spares every element a copy of
+/// the body.
 pub enum Callback<'a> {
     Literal {
         params: Vec<&'a Shared<String>>,
@@ -46,37 +47,34 @@ pub enum Callback<'a> {
         params: Vec<String>,
         body: Arc<SExpression>,
     },
-    Raw(&'a SExpression),
 }
 
 impl<'a> Callback<'a> {
-    pub fn of(callable: &'a SExpression, ctx: &BindingContext) -> Self {
+    pub fn of(callable: &'a SExpression, ctx: &BindingContext) -> Result<Self, OrbitalError> {
         if let SExpression::Array(items) = callable {
             if items.len() >= 3 && items[0].as_str() == Some("fn") {
                 let params = match &items[1] {
                     SExpression::String(name) => Some(vec![name]),
-                    SExpression::Array(names) => Some(
-                        names
-                            .iter()
-                            .filter_map(|name| match name {
-                                SExpression::String(name) => Some(name),
-                                _ => None,
-                            })
-                            .collect(),
-                    ),
+                    SExpression::Array(names) => names
+                        .iter()
+                        .map(|name| match name {
+                            SExpression::String(name) => Some(name),
+                            _ => None,
+                        })
+                        .collect::<Option<Vec<_>>>(),
                     _ => None,
                 };
                 if let Some(params) = params {
-                    return Callback::Literal {
+                    return Ok(Callback::Literal {
                         params,
                         body: &items[2],
-                    };
+                    });
                 }
             }
         }
-        match eval_expr(callable, ctx) {
-            Ok(Value::Lambda { params, body }) => Callback::Lambda { params, body },
-            _ => Callback::Raw(callable),
+        match eval_expr(callable, ctx)? {
+            Value::Lambda { params, body } => Ok(Callback::Lambda { params, body }),
+            other => Err(other.kind_error("function").into()),
         }
     }
 
@@ -110,7 +108,6 @@ impl<'a> Callback<'a> {
                 }
                 eval_expr(body, &child)
             }
-            Callback::Raw(body) => eval_expr(body, &child),
         }
     }
 }
@@ -122,7 +119,24 @@ pub fn apply_callback(
     values: Vec<Value>,
     ctx: &BindingContext,
 ) -> EvalResult {
-    Callback::of(callable, ctx).apply(values, ctx)
+    Callback::of(callable, ctx)?.apply(values, ctx)
+}
+
+/// A count or index operand: a whole number from 0 up, else `InvalidArgument` naming the operator.
+pub(super) fn whole_count(
+    value: &Value,
+    operator: &str,
+    what: &str,
+) -> Result<usize, OrbitalError> {
+    let n = value.number()?;
+    if n < 0.0 || n.fract() != 0.0 || n > u32::MAX as f64 {
+        return Err(EvalError::InvalidArgument(format!(
+            "{operator}: {what} {n} is not a whole number from 0 to {}",
+            u32::MAX
+        ))
+        .into());
+    }
+    Ok(n as usize)
 }
 
 // ============================================================================
@@ -166,25 +180,21 @@ impl Operator for CountOp {
 
         // Regular array count, with an optional predicate
         super::with_operand(&args[0], ctx, |val| {
-            if let (Value::Array(arr), Some(predicate)) = (val, args.get(1)) {
-                let mut count = 0usize;
-                let callback = Callback::of(predicate, ctx);
-                for (i, item) in arr.iter().enumerate() {
-                    if callback
-                        .apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
-                        .boolean()?
-                    {
-                        count += 1;
-                    }
+            let arr = val.as_array().ok_or_else(|| val.kind_error("array"))?;
+            let Some(predicate) = args.get(1) else {
+                return Ok(Value::Number(arr.len() as f64));
+            };
+            let mut count = 0usize;
+            let callback = Callback::of(predicate, ctx)?;
+            for (i, item) in arr.iter().enumerate() {
+                if callback
+                    .apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
+                    .boolean()?
+                {
+                    count += 1;
                 }
-                return Ok(Value::Number(count as f64));
             }
-            Ok(match val {
-                Value::Array(arr) => Value::Number(arr.len() as f64),
-                Value::String(s) => Value::Number(s.len() as f64),
-                Value::Object(obj) => Value::Number(obj.len() as f64),
-                _ => Value::Number(0.0),
-            })
+            Ok(Value::Number(count as f64))
         })
     }
 }
@@ -240,14 +250,8 @@ impl Operator for NthOp {
                     actual: arr.type_name().to_string(),
                 }));
             };
-            let position = idx.number()?;
-            if position < 0.0 || position.fract() != 0.0 {
-                return Err(EvalError::InvalidArgument(format!(
-                    "nth: index {position} is not a non-negative integer"
-                ))
-                .into());
-            }
-            Ok(array.get(position as usize).cloned().unwrap_or(Value::Null))
+            let position = whole_count(&idx, "nth", "index")?;
+            Ok(array.get(position).cloned().unwrap_or(Value::Null))
         })
     }
 }
@@ -258,16 +262,8 @@ impl Operator for IncludesOp {
         require_arity!(args, "includes", >= 2);
         super::with_operand(&args[0], ctx, |arr| {
             let item = eval_expr(&args[1], ctx)?;
-            match arr {
-                Value::Array(a) => Ok(Value::Bool(a.iter().try_fold(false, |found, v| {
-                    Ok::<_, EvalError>(found || *v == item)
-                })?)),
-                Value::String(s) => Ok(Value::Bool(s.contains(item.text()?))),
-                _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "array or string".to_string(),
-                    actual: arr.type_name().to_string(),
-                })),
-            }
+            let items = arr.as_array().ok_or_else(|| arr.kind_error("array"))?;
+            Ok(Value::Bool(items.contains(&item)))
         })
     }
 }
@@ -279,33 +275,12 @@ impl Operator for MapOp {
         let arr = eval_expr(&args[0], ctx)?;
         let array = require_array!(arr);
 
-        // Canonical contract: `(map arr (fn (item [index]) body))` — eval the fn-form
-        // to a `Value::Lambda`, then APPLY it per element (bind params, eval body),
-        // mirroring `ReduceOp`/`ArrayFindIndexOp`. The previous code `eval_expr`'d the
-        // fn-form and *returned* the Lambda value, so a mapped array came back as
-        // `[lambda(N params)]` — the root of every `[lambda(1 params)]` render.
-        // `apply_callback` also binds `@item`/`@index`, as the TS evaluator does for a `(fn …)`.
-        let callback = Callback::of(&args[1], ctx);
-        if !matches!(callback, Callback::Raw(_)) {
-            let results: Result<Vec<Value>, _> = array
-                .into_iter()
-                .enumerate()
-                .map(|(i, item)| callback.apply(vec![item, Value::Number(i as f64)], ctx))
-                .collect();
-            return Ok(Value::array(results?));
-        }
-
-        // Legacy: a raw body expression evaluated with `@item`/`@index` bound.
-        let mapper = &args[1];
+        let callback = Callback::of(&args[1], ctx)?;
         let results: Result<Vec<Value>, _> = array
             .into_iter()
             .enumerate()
-            .map(|(i, item)| {
-                let child_ctx = ctx.with_item_and_index(item, i);
-                eval_expr(mapper, &child_ctx)
-            })
+            .map(|(i, item)| callback.apply(vec![item, Value::Number(i as f64)], ctx))
             .collect();
-
         Ok(Value::array(results?))
     }
 }
@@ -317,62 +292,17 @@ impl Operator for FilterOp {
         let arr = eval_expr(&args[0], ctx)?;
         let array = require_array!(arr);
 
-        // Same lambda-application fix as `map`: eval the predicate fn-form to a
-        // `Value::Lambda` and apply it per element. Without this the predicate eval'd
-        // to a truthy closure and `filter` silently kept every element.
-        if let Ok(Value::Lambda { params, body }) = eval_expr(&args[1], ctx) {
-            let results: Result<Vec<Value>, _> = array
-                .into_iter()
-                .enumerate()
-                .filter_map(|(i, item)| {
-                    let mut child_ctx = ctx.child();
-                    child_ctx.set_local(crate::evaluator::LocalName::Fixed("item"), item.clone());
-                    child_ctx.set_local(
-                        crate::evaluator::LocalName::Fixed("index"),
-                        Value::Number(i as f64),
-                    );
-                    if !params.is_empty() {
-                        child_ctx.set_local(&params[0], item.clone());
-                    }
-                    if params.len() > 1 {
-                        child_ctx.set_local(&params[1], Value::Number(i as f64));
-                    }
-                    match eval_expr(&body, &child_ctx) {
-                        Ok(v) => match v.boolean() {
-                            Ok(true) => Some(Ok(item)),
-                            Ok(false) => None,
-                            Err(e) => Some(Err(OrbitalError::Eval(e))),
-                        },
-                        Err(e) => Some(Err(e)),
-                    }
-                })
-                .collect();
-            return Ok(Value::array(results?));
+        let callback = Callback::of(&args[1], ctx)?;
+        let mut kept = Vec::new();
+        for (i, item) in array.into_iter().enumerate() {
+            if callback
+                .apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
+                .boolean()?
+            {
+                kept.push(item);
+            }
         }
-
-        // Legacy: raw body predicate evaluated with `@item` bound.
-        let predicate = &args[1];
-        let results: Result<Vec<Value>, _> = array
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, item)| {
-                let mut child_ctx = ctx.with_item(item.clone());
-                child_ctx.set_local(
-                    crate::evaluator::LocalName::Fixed("index"),
-                    Value::Number(i as f64),
-                );
-                match eval_expr(predicate, &child_ctx) {
-                    Ok(v) => match v.boolean() {
-                        Ok(true) => Some(Ok(item)),
-                        Ok(false) => None,
-                        Err(e) => Some(Err(OrbitalError::Eval(e))),
-                    },
-                    Err(e) => Some(Err(e)),
-                }
-            })
-            .collect();
-
-        Ok(Value::array(results?))
+        Ok(Value::array(kept))
     }
 }
 
@@ -385,7 +315,7 @@ impl Operator for FindOp {
 
         let array = require_array!(arr);
 
-        let callback = Callback::of(predicate, ctx);
+        let callback = Callback::of(predicate, ctx)?;
         for (i, item) in array.into_iter().enumerate() {
             if callback
                 .apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
@@ -410,27 +340,14 @@ impl Operator for ArraySliceOp {
         // ["slice", arr, start, end?]
         require_arity!(args, "slice", >= 2);
         let arr = eval_expr(&args[0], ctx)?;
-        let start = require_number!(eval_expr(&args[1], ctx)?);
+        let start = eval_expr(&args[1], ctx)?;
 
         let array = require_array!(arr);
 
-        let len = array.len() as i64;
-        // Handle negative indices
-        let start_idx = if start < 0.0 {
-            ((len + start as i64).max(0)) as usize
-        } else {
-            (start as usize).min(array.len())
-        };
-
-        let end_idx = if args.len() > 2 {
-            let end = require_number!(eval_expr(&args[2], ctx)?);
-            if end < 0.0 {
-                ((len + end as i64).max(0)) as usize
-            } else {
-                (end as usize).min(array.len())
-            }
-        } else {
-            array.len()
+        let start_idx = whole_count(&start, "slice", "start")?.min(array.len());
+        let end_idx = match args.get(2) {
+            Some(end) => whole_count(&eval_expr(end, ctx)?, "slice", "end")?.min(array.len()),
+            None => array.len(),
         };
 
         if start_idx >= end_idx {
@@ -448,10 +365,7 @@ impl Operator for ArrayConcatOp {
         let mut result = Vec::new();
         for arg in args {
             let val = eval_expr(arg, ctx)?;
-            match val {
-                Value::Array(arr) => result.extend(arr),
-                _ => result.push(val),
-            }
+            result.extend(require_array!(val));
         }
         Ok(Value::array(result))
     }
@@ -505,7 +419,7 @@ fn sort_order(a: &Value, b: &Value) -> std::cmp::Ordering {
 }
 
 /// array/sort `(arr, key?, dir?)` - sorted copy; `key` orders objects by that field (null or empty = the
-/// elements themselves), `dir` is "asc" (default) or anything else for descending. Stable. Twin of
+/// elements themselves), `dir` is "asc" (default) or "desc". Stable. Twin of
 /// almadar-evaluator `evalArraySort`.
 pub struct ArraySortOp;
 impl Operator for ArraySortOp {
@@ -519,17 +433,24 @@ impl Operator for ArraySortOp {
                 Value::Null => None,
                 Value::String(s) if s.is_empty() => None,
                 Value::String(s) => Some(s),
-                _ => {
-                    return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                        expected: "string".to_string(),
-                        actual: "sort key".to_string(),
-                    }))
-                }
+                other => return Err(other.kind_error("string").into()),
             },
             None => None,
         };
         let ascending = match args.get(2) {
-            Some(d) => eval_expr(d, ctx)?.as_str() == Some("asc"),
+            Some(d) => {
+                let dir = eval_expr(d, ctx)?;
+                match dir.text()? {
+                    "asc" => true,
+                    "desc" => false,
+                    other => {
+                        return Err(EvalError::InvalidArgument(format!(
+                            "sort: direction \"{other}\" is neither \"asc\" nor \"desc\""
+                        ))
+                        .into())
+                    }
+                }
+            }
             None => true,
         };
 
@@ -543,6 +464,22 @@ impl Operator for ArraySortOp {
                 None => v.clone(),
             }
         };
+        let mut anchor: Option<Value> = None;
+        for item in &array {
+            let sort_key = field(item);
+            if sort_key.is_null() {
+                continue;
+            }
+            match &anchor {
+                None => anchor = Some(sort_key),
+                Some(first)
+                    if std::mem::discriminant(first) != std::mem::discriminant(&sort_key) =>
+                {
+                    return Err(sort_key.kind_error(first.type_name()).into());
+                }
+                Some(_) => {}
+            }
+        }
         array.sort_by(|a, b| {
             let ord = sort_order(&field(a), &field(b));
             if ascending {
@@ -616,7 +553,7 @@ impl Operator for ArrayEveryOp {
 
         let array = require_array!(arr);
 
-        let callback = Callback::of(predicate, ctx);
+        let callback = Callback::of(predicate, ctx)?;
         for (i, item) in array.into_iter().enumerate() {
             if !callback
                 .apply(vec![item, Value::Number(i as f64)], ctx)?
@@ -640,7 +577,7 @@ impl Operator for ArraySomeOp {
 
         let array = require_array!(arr);
 
-        let callback = Callback::of(predicate, ctx);
+        let callback = Callback::of(predicate, ctx)?;
         for (i, item) in array.into_iter().enumerate() {
             if callback
                 .apply(vec![item, Value::Number(i as f64)], ctx)?
@@ -690,13 +627,19 @@ impl Operator for ArrayInsertOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "insert", >= 3);
         let arr = eval_expr(&args[0], ctx)?;
-        let idx = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let idx = whole_count(&eval_expr(&args[1], ctx)?, "insert", "index")?;
         let item = eval_expr(&args[2], ctx)?;
 
         let mut array = require_array!(arr);
 
-        let insert_idx = idx.min(array.len());
-        array.insert(insert_idx, item);
+        if idx > array.len() {
+            return Err(EvalError::InvalidArgument(format!(
+                "insert: index {idx} is past the end of a {}-item array",
+                array.len()
+            ))
+            .into());
+        }
+        array.insert(idx, item);
         Ok(Value::Array(array))
     }
 }
@@ -707,13 +650,18 @@ impl Operator for ArrayRemoveOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "remove", >= 2);
         let arr = eval_expr(&args[0], ctx)?;
-        let idx = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let idx = whole_count(&eval_expr(&args[1], ctx)?, "remove", "index")?;
 
         let mut array = require_array!(arr);
 
-        if idx < array.len() {
-            array.remove(idx);
+        if idx >= array.len() {
+            return Err(EvalError::InvalidArgument(format!(
+                "remove: index {idx} is outside a {}-item array",
+                array.len()
+            ))
+            .into());
         }
+        array.remove(idx);
         Ok(Value::Array(array))
     }
 }
@@ -745,7 +693,7 @@ impl Operator for ArrayFlattenOp {
         for item in array {
             match item {
                 Value::Array(inner) => result.extend(inner),
-                other => result.push(other),
+                other => return Err(other.kind_error("array").into()),
             }
         }
         Ok(Value::array(result))
@@ -853,12 +801,12 @@ impl Operator for ArrayGroupByOp {
         // `String(item[key] ?? 'undefined')`.
         if let Value::String(field) = &key_fn {
             for item in array {
-                let key = match &item {
-                    Value::Object(row) => match row.get(field.as_str()) {
+                let key = match item.as_object() {
+                    Some(row) => match row.get(field.as_str()) {
                         Some(Value::Null) | None => "undefined".to_string(),
                         Some(v) => v.to_string_value(),
                     },
-                    _ => "undefined".to_string(),
+                    None => return Err(item.kind_error("object").into()),
                 };
                 groups.entry(key).or_default().push(item);
             }
@@ -881,7 +829,7 @@ impl Operator for ArrayGroupByOp {
             if params.len() > 1 {
                 child_ctx.set_local(&params[1], Value::Number(i as f64));
             }
-            let key = eval_expr(&body, &child_ctx)?.to_string_value();
+            let key = eval_expr(&body, &child_ctx)?.text()?.to_string();
             groups.entry(key).or_default().push(item);
         }
 
@@ -900,7 +848,7 @@ impl Operator for ArrayTakeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "take", >= 2);
         let arr = eval_expr(&args[0], ctx)?;
-        let n = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let n = whole_count(&eval_expr(&args[1], ctx)?, "take", "count")?;
 
         let array = require_array!(arr);
 
@@ -915,7 +863,7 @@ impl Operator for ArrayDropOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "drop", >= 2);
         let arr = eval_expr(&args[0], ctx)?;
-        let n = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let n = whole_count(&eval_expr(&args[1], ctx)?, "drop", "count")?;
 
         let array = require_array!(arr);
 
@@ -930,26 +878,28 @@ impl Operator for ArrayRangeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "range", 1);
 
-        let start = require_number!(eval_expr(&args[0], ctx)?);
-
-        let end = if args.len() > 1 {
-            require_number!(eval_expr(&args[1], ctx)?)
-        } else {
-            // If only one arg, range from 0 to that number
-            let end = start;
-            return Ok(Value::Array(
-                (0..end as i64).map(|i| Value::Number(i as f64)).collect(),
-            ));
+        let first = require_number!(eval_expr(&args[0], ctx)?);
+        let end = match args.get(1) {
+            Some(end) => match eval_expr(end, ctx)? {
+                Value::Null => None,
+                end => Some(end.number()?),
+            },
+            None => None,
+        };
+        let step = match args.get(2) {
+            Some(step) => require_number!(eval_expr(step, ctx)?),
+            None => 1.0,
+        };
+        let (start, end) = match end {
+            Some(end) => (first, end),
+            None => (0.0, first),
         };
 
-        let step = if args.len() > 2 {
-            require_number!(eval_expr(&args[2], ctx)?)
-        } else {
-            1.0
-        };
-
-        if step == 0.0 {
-            return Ok(Value::array(vec![]));
+        if step == 0.0 || !step.is_finite() {
+            return Err(EvalError::InvalidArgument(format!(
+                "range: step {step} must be a non-zero finite number"
+            ))
+            .into());
         }
 
         let mut result = Vec::new();
@@ -1075,7 +1025,7 @@ impl Operator for ArrayTakeLastOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "takeLast", >= 2);
         let arr = eval_expr(&args[0], ctx)?;
-        let n = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let n = whole_count(&eval_expr(&args[1], ctx)?, "takeLast", "count")?;
 
         let array = require_array!(arr);
 
@@ -1092,7 +1042,7 @@ impl Operator for ArrayDropLastOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "dropLast", >= 2);
         let arr = eval_expr(&args[0], ctx)?;
-        let n = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let n = whole_count(&eval_expr(&args[1], ctx)?, "dropLast", "count")?;
 
         let array = require_array!(arr);
 
@@ -1155,46 +1105,26 @@ impl Operator for ReduceOp {
 
         let array = require_array!(arr);
 
-        if let Ok(Value::Lambda { params, body }) = eval_expr(&args[2], ctx) {
-            let mut accumulator = initial;
-            let linear = params.first().is_some_and(|acc| read_once(&body, acc));
-            for item in array {
-                let mut child_ctx = ctx.child();
-
-                // Bind parameters: first param is accumulator, second is current item
-                if !params.is_empty() {
-                    let acc = std::mem::replace(&mut accumulator, Value::Null);
-                    if linear {
-                        child_ctx.set_linear_local(&params[0], acc);
-                    } else {
-                        child_ctx.set_local(&params[0], acc);
-                    }
-                }
-                if params.len() >= 2 {
-                    child_ctx.set_local(&params[1], item);
-                }
-
-                accumulator = eval_expr(&body, &child_ctx)?;
-            }
-
-            return Ok(accumulator);
-        }
-
-        // Legacy: a raw body expression evaluated with `@acc`/`@item` bound,
-        // mirroring MapOp's raw-body branch and the JS evaluator's fallback.
-        let reducer = &args[2];
-        let linear = read_once(reducer, "acc");
+        let (params, body) = require_lambda!(eval_expr(&args[2], ctx)?);
         let mut accumulator = initial;
+        let linear = params.first().is_some_and(|acc| read_once(&body, acc));
         for item in array {
             let mut child_ctx = ctx.child();
-            let acc = std::mem::replace(&mut accumulator, Value::Null);
-            if linear {
-                child_ctx.set_linear_local("acc", acc);
-            } else {
-                child_ctx.set_local(crate::evaluator::LocalName::Fixed("acc"), acc);
+
+            // Bind parameters: first param is accumulator, second is current item
+            if !params.is_empty() {
+                let acc = std::mem::replace(&mut accumulator, Value::Null);
+                if linear {
+                    child_ctx.set_linear_local(&params[0], acc);
+                } else {
+                    child_ctx.set_local(&params[0], acc);
+                }
             }
-            child_ctx.set_local(crate::evaluator::LocalName::Fixed("item"), item);
-            accumulator = eval_expr(reducer, &child_ctx)?;
+            if params.len() >= 2 {
+                child_ctx.set_local(&params[1], item);
+            }
+
+            accumulator = eval_expr(&body, &child_ctx)?;
         }
 
         Ok(accumulator)
@@ -1238,15 +1168,7 @@ impl Operator for ArrayRemoveItemOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/removeItem", >= 2);
         let item = eval_expr(&args[1], ctx)?;
-        let mut array = match eval_expr(&args[0], ctx)? {
-            Value::Array(a) => a,
-            other => {
-                return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "array".to_string(),
-                    actual: format!("{:?}", other),
-                }))
-            }
-        };
+        let mut array = require_array!(eval_expr(&args[0], ctx)?);
         let mut found = None;
         for (pos, v) in array.iter().enumerate() {
             if *v == item {
@@ -1426,9 +1348,10 @@ mod sort_tests {
     }
 
     #[test]
-    fn sort_unknown_direction_is_descending() {
+    fn sort_refuses_an_unknown_direction() {
+        assert!(sort(json!(["array/sort", [1, 3, 2], null, "bogus"])).is_err());
         assert_eq!(
-            sort(json!(["array/sort", [1, 3, 2], null, "bogus"])).unwrap(),
+            sort(json!(["array/sort", [1, 3, 2], null, "desc"])).unwrap(),
             json!([3.0, 2.0, 1.0])
         );
     }
@@ -1521,12 +1444,35 @@ mod strict_tests {
     }
 
     #[test]
-    fn includes_is_kind_strict() {
+    fn includes_reads_a_list_only_and_flatten_reads_lists_only() {
+        assert_eq!(
+            run(json!(["array/includes", ["ell"], "ell"])).unwrap(),
+            json!(true)
+        );
+        assert!(run(json!(["array/includes", "hello", "ell"]))
+            .unwrap_err()
+            .contains("expected array, got string"));
+        assert_eq!(
+            run(json!(["array/flatten", [[1], [2, 3]]])).unwrap(),
+            json!([1.0, 2.0, 3.0])
+        );
+        assert!(run(json!(["array/flatten", [[1], 2]]))
+            .unwrap_err()
+            .contains("expected array, got number"));
+    }
+
+    #[test]
+    fn includes_compares_structurally() {
         assert_eq!(
             run(json!(["array/includes", [1, 2], 2])).unwrap(),
             json!(true)
         );
-        assert!(run(json!(["array/includes", [1, 2], "2"])).is_err());
+        assert_eq!(
+            run(json!(["array/includes", [1, 2], "2"])).unwrap(),
+            json!(false),
+            "a value of another kind is unequal, never an error"
+        );
+        assert!(run(json!(["array/includes", "12", 2])).is_err(), "control: the list must be a list");
     }
 
     #[test]
@@ -1534,5 +1480,113 @@ mod strict_tests {
         assert_eq!(run(json!(["array/nth", [5, 6], 1])).unwrap(), json!(6.0));
         assert!(run(json!(["array/nth", [5, 6], "1"])).is_err());
         assert!(run(json!(["array/nth", [5, 6], -1])).is_err());
+    }
+
+    #[test]
+    fn concat_takes_arrays_only() {
+        assert_eq!(
+            run(json!(["array/concat", [1], [2, 3]])).unwrap(),
+            json!([1.0, 2.0, 3.0])
+        );
+        assert!(run(json!(["array/concat", [1], null])).is_err());
+        assert!(run(json!(["array/concat", [1], 2])).is_err());
+    }
+
+    #[test]
+    fn count_takes_an_array_with_an_optional_predicate() {
+        assert_eq!(run(json!(["array/count", [1, 2, 3]])).unwrap(), json!(3.0));
+        assert_eq!(
+            run(json!([
+                "array/count",
+                [1, 2, 3],
+                ["fn", "x", [">", "@x", 1]]
+            ]))
+            .unwrap(),
+            json!(2.0)
+        );
+        assert!(run(json!(["array/count", null])).is_err());
+        assert!(run(json!(["array/count", "abc"])).is_err());
+    }
+
+    #[test]
+    fn a_callback_must_be_a_function() {
+        let double = json!(["fn", "x", ["*", "@x", 2]]);
+        assert_eq!(
+            run(json!(["array/map", [1, 2], double])).unwrap(),
+            json!([2.0, 4.0])
+        );
+        assert!(run(json!(["array/map", [1, 2], null])).is_err());
+        assert!(run(json!(["array/map", [1, 2], ["*", "@item", 2]])).is_err());
+        assert!(run(json!(["array/filter", [1, 2], true])).is_err());
+        assert!(run(json!(["array/reduce", [1, 2], 0, ["+", "@acc", "@item"]])).is_err());
+        assert_eq!(
+            run(json!([
+                "array/reduce",
+                [1, 2],
+                0,
+                ["fn", ["a", "x"], ["+", "@a", "@x"]]
+            ]))
+            .unwrap(),
+            json!(3.0)
+        );
+    }
+
+    #[test]
+    fn counts_and_indexes_are_whole_numbers_in_range() {
+        assert_eq!(
+            run(json!(["array/take", [1, 2, 3], 2])).unwrap(),
+            json!([1.0, 2.0])
+        );
+        assert!(run(json!(["array/take", [1, 2, 3], -1])).is_err());
+        assert!(run(json!(["array/drop", [1, 2, 3], 1.5])).is_err());
+        assert!(run(json!(["array/takeLast", [1, 2, 3], -2])).is_err());
+        assert!(run(json!(["array/dropLast", [1, 2, 3], 0.5])).is_err());
+        assert_eq!(
+            run(json!(["array/slice", [1, 2, 3], 1, 2])).unwrap(),
+            json!([2.0])
+        );
+        assert!(run(json!(["array/slice", [1, 2, 3], -1])).is_err());
+        assert!(run(json!(["array/slice", [1, 2, 3], 0, 1.5])).is_err());
+        assert_eq!(
+            run(json!(["array/insert", [1, 3], 1, 2])).unwrap(),
+            json!([1.0, 2.0, 3.0])
+        );
+        assert!(run(json!(["array/insert", [1, 3], 3, 2])).is_err());
+        assert_eq!(
+            run(json!(["array/remove", [1, 2], 0])).unwrap(),
+            json!([2.0])
+        );
+        assert!(run(json!(["array/remove", [1, 2], 2])).is_err());
+    }
+
+    #[test]
+    fn range_treats_a_null_end_as_omitted_and_refuses_a_zero_step() {
+        assert_eq!(
+            run(json!(["array/range", 0, 5, 2])).unwrap(),
+            json!([0.0, 2.0, 4.0])
+        );
+        assert_eq!(
+            run(json!(["array/range", 5, null, 2])).unwrap(),
+            json!([0.0, 2.0, 4.0])
+        );
+        assert_eq!(
+            run(json!(["array/range", 3])).unwrap(),
+            json!([0.0, 1.0, 2.0])
+        );
+        assert!(run(json!(["array/range", 0, 5, 0])).is_err());
+        assert!(run(json!(["array/range", 0, "5"])).is_err());
+    }
+
+    #[test]
+    fn group_by_demands_object_items_and_a_text_key() {
+        assert!(run(json!(["array/groupBy", [{"k": "a"}], "k"])).is_ok());
+        assert!(run(json!(["array/groupBy", [1, 2], "k"])).is_err());
+        assert!(run(json!(["array/groupBy", [1, 2], ["fn", "x", "@x"]])).is_err());
+        assert!(run(json!([
+            "array/groupBy",
+            [1, 2],
+            ["fn", "x", ["str/concat", "k", "@x"]]
+        ]))
+        .is_ok());
     }
 }

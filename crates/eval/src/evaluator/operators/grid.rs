@@ -6,7 +6,7 @@
 use std::prelude::v1::*;
 
 use super::macros::*;
-use super::vector::{eval_obj, make_vec, vget};
+use super::vector::{eval_fields, make_vec, whole, POINT};
 use super::*;
 
 fn cell(x: f64, y: f64) -> Value {
@@ -16,41 +16,39 @@ fn cell(x: f64, y: f64) -> Value {
 pub struct GridToWorldOp;
 impl Operator for GridToWorldOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "grid/to-world", >= 2);
-        let c = eval_obj(&args[0], ctx)?;
+        const OP: &str = "grid/to-world";
+        require_arity!(args, OP, >= 2);
+        let [c_x, c_y] = eval_fields(OP, "cell", &args[0], ctx, POINT)?;
         let size = require_number!(eval_expr(&args[1], ctx)?);
-        Ok(make_vec(
-            (vget(&c, "x") + 0.5) * size,
-            (vget(&c, "y") + 0.5) * size,
-            0.0,
-            false,
-        ))
+        Ok(make_vec((c_x + 0.5) * size, (c_y + 0.5) * size, 0.0, false))
     }
 }
 
 pub struct GridFromWorldOp;
 impl Operator for GridFromWorldOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "grid/from-world", >= 2);
-        let p = eval_obj(&args[0], ctx)?;
+        const OP: &str = "grid/from-world";
+        require_arity!(args, OP, >= 2);
+        let [p_x, p_y] = eval_fields(OP, "point", &args[0], ctx, POINT)?;
         let size = require_number!(eval_expr(&args[1], ctx)?);
-        Ok(cell(
-            (vget(&p, "x") / size).floor(),
-            (vget(&p, "y") / size).floor(),
-        ))
+        if size == 0.0 {
+            return Err(EvalError::InvalidArgument(format!("{OP}: cellSize must not be 0")).into());
+        }
+        Ok(cell((p_x / size).floor(), (p_y / size).floor()))
     }
 }
 
 pub struct GridIsoToScreenOp;
 impl Operator for GridIsoToScreenOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "grid/iso-to-screen", >= 3);
-        let c = eval_obj(&args[0], ctx)?;
+        const OP: &str = "grid/iso-to-screen";
+        require_arity!(args, OP, >= 3);
+        let [c_x, c_y] = eval_fields(OP, "cell", &args[0], ctx, POINT)?;
         let tile_w = require_number!(eval_expr(&args[1], ctx)?);
         let tile_h = require_number!(eval_expr(&args[2], ctx)?);
         Ok(make_vec(
-            (vget(&c, "x") - vget(&c, "y")) * tile_w / 2.0,
-            (vget(&c, "x") + vget(&c, "y")) * tile_h / 2.0,
+            (c_x - c_y) * tile_w / 2.0,
+            (c_x + c_y) * tile_h / 2.0,
             0.0,
             false,
         ))
@@ -60,14 +58,18 @@ impl Operator for GridIsoToScreenOp {
 pub struct GridScreenToIsoOp;
 impl Operator for GridScreenToIsoOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "grid/screen-to-iso", >= 3);
-        let p = eval_obj(&args[0], ctx)?;
+        const OP: &str = "grid/screen-to-iso";
+        require_arity!(args, OP, >= 3);
+        let [px, py] = eval_fields(OP, "point", &args[0], ctx, POINT)?;
         let tile_w = require_number!(eval_expr(&args[1], ctx)?);
         let tile_h = require_number!(eval_expr(&args[2], ctx)?);
         let hw = tile_w / 2.0;
         let hh = tile_h / 2.0;
-        let px = vget(&p, "x");
-        let py = vget(&p, "y");
+        if hw == 0.0 || hh == 0.0 {
+            return Err(
+                EvalError::InvalidArgument(format!("{OP}: tileW and tileH must not be 0")).into(),
+            );
+        }
         Ok(make_vec(
             (px / hw + py / hh) / 2.0,
             (py / hh - px / hw) / 2.0,
@@ -80,11 +82,12 @@ impl Operator for GridScreenToIsoOp {
 pub struct GridDistanceOp;
 impl Operator for GridDistanceOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "grid/distance", >= 2);
-        let a = eval_obj(&args[0], ctx)?;
-        let b = eval_obj(&args[1], ctx)?;
-        let dx = (vget(&a, "x") - vget(&b, "x")).abs();
-        let dy = (vget(&a, "y") - vget(&b, "y")).abs();
+        const OP: &str = "grid/distance";
+        require_arity!(args, OP, >= 2);
+        let [a_x, a_y] = eval_fields(OP, "a", &args[0], ctx, POINT)?;
+        let [b_x, b_y] = eval_fields(OP, "b", &args[1], ctx, POINT)?;
+        let dx = (a_x - b_x).abs();
+        let dy = (a_y - b_y).abs();
         Ok(Value::Number(dx.max(dy)))
     }
 }
@@ -92,11 +95,12 @@ impl Operator for GridDistanceOp {
 pub struct GridManhattanDistanceOp;
 impl Operator for GridManhattanDistanceOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "grid/manhattan-distance", >= 2);
-        let a = eval_obj(&args[0], ctx)?;
-        let b = eval_obj(&args[1], ctx)?;
-        let dx = (vget(&a, "x") - vget(&b, "x")).abs();
-        let dy = (vget(&a, "y") - vget(&b, "y")).abs();
+        const OP: &str = "grid/manhattan-distance";
+        require_arity!(args, OP, >= 2);
+        let [a_x, a_y] = eval_fields(OP, "a", &args[0], ctx, POINT)?;
+        let [b_x, b_y] = eval_fields(OP, "b", &args[1], ctx, POINT)?;
+        let dx = (a_x - b_x).abs();
+        let dy = (a_y - b_y).abs();
         Ok(Value::Number(dx + dy))
     }
 }
@@ -104,10 +108,9 @@ impl Operator for GridManhattanDistanceOp {
 pub struct GridNeighborsOp;
 impl Operator for GridNeighborsOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "grid/neighbors", 1);
-        let c = eval_obj(&args[0], ctx)?;
-        let cx = vget(&c, "x");
-        let cy = vget(&c, "y");
+        const OP: &str = "grid/neighbors";
+        require_arity!(args, OP, 1);
+        let [cx, cy] = eval_fields(OP, "cell", &args[0], ctx, POINT)?;
         let diagonal = match args.get(1) {
             Some(a) => eval_expr(a, ctx)?.boolean()?,
             None => false,
@@ -133,11 +136,10 @@ impl Operator for GridNeighborsOp {
 pub struct GridCellsInRadiusOp;
 impl Operator for GridCellsInRadiusOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "grid/cells-in-radius", >= 2);
-        let c = eval_obj(&args[0], ctx)?;
+        const OP: &str = "grid/cells-in-radius";
+        require_arity!(args, OP, >= 2);
+        let [cx, cy] = eval_fields(OP, "cell", &args[0], ctx, POINT)?;
         let r = require_number!(eval_expr(&args[1], ctx)?);
-        let cx = vget(&c, "x");
-        let cy = vget(&c, "y");
         let rf = r.floor();
         let ri = rf as i64;
         let r2 = r * r;
@@ -162,13 +164,14 @@ impl Operator for GridCellsInRadiusOp {
 pub struct GridLineOp;
 impl Operator for GridLineOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "grid/line", >= 2);
-        let a = eval_obj(&args[0], ctx)?;
-        let b = eval_obj(&args[1], ctx)?;
-        let mut x0 = vget(&a, "x") as i64;
-        let mut y0 = vget(&a, "y") as i64;
-        let x1 = vget(&b, "x") as i64;
-        let y1 = vget(&b, "y") as i64;
+        const OP: &str = "grid/line";
+        require_arity!(args, OP, >= 2);
+        let [a_x, a_y] = eval_fields(OP, "a", &args[0], ctx, POINT)?;
+        let [b_x, b_y] = eval_fields(OP, "b", &args[1], ctx, POINT)?;
+        let mut x0 = whole(OP, "cell a.x", a_x)?;
+        let mut y0 = whole(OP, "cell a.y", a_y)?;
+        let x1 = whole(OP, "cell b.x", b_x)?;
+        let y1 = whole(OP, "cell b.y", b_y)?;
         let dx = (x1 - x0).abs();
         let dy = -(y1 - y0).abs();
         let sx = if x0 < x1 { 1 } else { -1 };
@@ -197,12 +200,39 @@ impl Operator for GridLineOp {
 pub struct GridInBoundsOp;
 impl Operator for GridInBoundsOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "grid/in-bounds", >= 3);
-        let c = eval_obj(&args[0], ctx)?;
+        const OP: &str = "grid/in-bounds";
+        require_arity!(args, OP, >= 3);
+        let [x, y] = eval_fields(OP, "cell", &args[0], ctx, POINT)?;
         let w = require_number!(eval_expr(&args[1], ctx)?);
         let h = require_number!(eval_expr(&args[2], ctx)?);
-        let x = vget(&c, "x");
-        let y = vget(&c, "y");
         Ok(Value::Bool(x >= 0.0 && x < w && y >= 0.0 && y < h))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval(form: &str) -> EvalResult {
+        let expr: SExpression = serde_json::from_str(form).expect("s-expression");
+        eval_expr(&expr, &BindingContext::default())
+    }
+
+    fn error_text(form: &str) -> String {
+        format!("{:?}", eval(form).expect_err("expected a typed error"))
+    }
+
+    #[test]
+    fn cells_read_strictly_and_sizes_are_nonzero() {
+        assert_eq!(
+            eval(r#"["grid/from-world", {"x":80,"y":112}, 32]"#).unwrap(),
+            cell(2.0, 3.0)
+        );
+        assert!(error_text(r#"["grid/from-world", {"x":80,"y":112}, 0]"#).contains("cellSize"));
+        assert!(error_text(r#"["grid/screen-to-iso", {"x":1,"y":1}, 0, 32]"#).contains("tileW"));
+        assert!(error_text(r#"["grid/distance", null, {"x":0,"y":0}]"#).contains("argument `a`"));
+        assert!(error_text(r#"["grid/neighbors", {"x":0}]"#).contains("missing field `y`"));
+        assert!(error_text(r#"["grid/neighbors", {"x":0,"y":0}, null]"#).contains("boolean"));
+        assert!(error_text(r#"["grid/line", {"x":0.5,"y":0}, {"x":2,"y":2}]"#).contains("whole"));
     }
 }

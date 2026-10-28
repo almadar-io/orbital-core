@@ -523,26 +523,14 @@ impl PageFactField {
     }
 }
 
-/// The operator-table categories that declare the substrate families (`std-llm`, `std-memory`, `std-trace`,
-/// `std-session`, `std-workspace`). A substrate operator is a `Custom` effect (e.g. `llm/embed`, `memory/store`)
-/// routed to the substrate service instead of being compiled as a plain call — see `OirEffect::Custom` and
-/// C-EMIT-SUBSTRATE-OPS-MARKER.
-const SUBSTRATE_CATEGORIES: &[&str] = &[
-    "std-llm",
-    "std-memory",
-    "std-trace",
-    "std-session",
-    "std-workspace",
-];
-
-/// Whether `name` is a substrate operator: one the installed operator table declares in a substrate category, or
-/// routes to the program host (`host: "program"`). The canonical predicate — shells and the compiler must call this
-/// rather than re-deriving the set.
+/// Whether `name` is a substrate operator: one the installed operator table routes to the substrate
+/// (`host: "substrate"`: llm, memory, trace, session, workspace) or to the program host (`host: "program"`). Such an
+/// operator is a `Custom` effect (e.g. `llm/embed`, `memory/store`) routed to its service instead of being compiled
+/// as a plain call — see `OirEffect::Custom` and C-EMIT-SUBSTRATE-OPS-MARKER. The canonical predicate — shells and
+/// the compiler must call this rather than re-deriving the set.
 pub fn is_substrate_operator(name: &str) -> bool {
-    crate::language::registry::try_get_operator(name).is_some_and(|operator| {
-        operator.host.as_deref() == Some("program")
-            || SUBSTRATE_CATEGORIES.contains(&operator.category.as_str())
-    })
+    crate::language::registry::try_get_operator(name)
+        .is_some_and(|operator| matches!(operator.host.as_deref(), Some("program" | "substrate")))
 }
 
 impl OirEffect {

@@ -17,10 +17,7 @@ fn decode_value(value: Value, op: &str) -> Result<Vec<u8>, OrbitalError> {
         Value::String(s) => {
             codec::base64_decode(&s).map_err(|e| invalid(op, format!("base64 ({e})")))
         }
-        other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "{op}: expected a bytes argument, got {}",
-            other.type_name()
-        )))),
+        other => Err(other.kind_error("string").into()),
     }
 }
 
@@ -32,23 +29,23 @@ fn bytes_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Vec<u8
 fn bytes_arg_or_none(
     arg: &SExpression,
     ctx: &BindingContext,
-    op: &str,
 ) -> Result<Option<Vec<u8>>, OrbitalError> {
     match eval_expr(arg, ctx)? {
         Value::String(s) => Ok(codec::base64_decode(&s).ok()),
-        other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "{op}: expected a bytes argument, got {}",
-            other.type_name()
-        )))),
+        other => Err(other.kind_error("string").into()),
     }
 }
 
-fn index(len: usize, at: f64) -> usize {
-    if at < 0.0 {
+/// A byte position clamped into `0..=len`; a negative one counts from the end (the table declares both).
+fn index(op: &str, len: usize, at: f64) -> Result<usize, OrbitalError> {
+    if !at.is_finite() || at.fract() != 0.0 {
+        return Err(invalid(op, format!("index {at}: expected a whole number")));
+    }
+    Ok(if at < 0.0 {
         (len as i64 + at as i64).max(0) as usize
     } else {
         (at as usize).min(len)
-    }
+    })
 }
 
 /// bytes/from-string - UTF-8 bytes of the text
@@ -58,10 +55,7 @@ impl Operator for BytesFromStringOp {
         require_arity!(args, "bytes/from-string", == 1);
         match eval_expr(&args[0], ctx)? {
             Value::String(s) => Ok(Value::string(codec::base64_encode(s.as_bytes()))),
-            other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "bytes/from-string: expected a string argument, got {}",
-                other.type_name()
-            )))),
+            other => Err(other.kind_error("string").into()),
         }
     }
 }
@@ -71,7 +65,7 @@ pub struct BytesToStringOp;
 impl Operator for BytesToStringOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/to-string", == 1);
-        let Some(data) = bytes_arg_or_none(&args[0], ctx, "bytes/to-string")? else {
+        let Some(data) = bytes_arg_or_none(&args[0], ctx)? else {
             return Ok(Value::Null);
         };
         Ok(String::from_utf8(data).map_or(Value::Null, Value::string))
@@ -84,7 +78,7 @@ impl Operator for BytesFromBase64Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/from-base64", == 1);
         Ok(
-            bytes_arg_or_none(&args[0], ctx, "bytes/from-base64")?.map_or(Value::Null, |data| {
+            bytes_arg_or_none(&args[0], ctx)?.map_or(Value::Null, |data| {
                 Value::string(codec::base64_encode(&data))
             }),
         )
@@ -125,11 +119,11 @@ impl Operator for BytesSliceOp {
         }
         let data = bytes_arg(&args[0], ctx, "bytes/slice")?;
         let start = require_number!(eval_expr(&args[1], ctx)?);
-        let from = index(data.len(), start);
+        let from = index("bytes/slice", data.len(), start)?;
         let to = if args.len() == 3 {
             match eval_expr(&args[2], ctx)? {
                 Value::Null => data.len(),
-                other => index(data.len(), require_number!(other)),
+                other => index("bytes/slice", data.len(), require_number!(other))?,
             }
         } else {
             data.len()
@@ -166,62 +160,34 @@ impl Operator for BytesEqualsOp {
     }
 }
 
-/// A whole-number argument; a number that is not whole is `None`, a non-number is an `invalid` error naming what it is for.
-fn whole(
-    arg: &SExpression,
-    ctx: &BindingContext,
-    op: &str,
-    what: &str,
-) -> Result<Option<i64>, OrbitalError> {
+/// A whole-number argument; a number that is not whole is `None`, a non-number is a type mismatch.
+fn whole(arg: &SExpression, ctx: &BindingContext) -> Result<Option<i64>, OrbitalError> {
     match eval_expr(arg, ctx)? {
         Value::Number(n) if n.is_finite() && n.fract() == 0.0 && n.abs() <= MAX_SAFE => {
             Ok(Some(n as i64))
         }
         Value::Number(_) => Ok(None),
-        other => Err(invalid(
-            op,
-            format!(
-                "{what} {}: expected a whole number",
-                other.to_string_value()
-            ),
-        )),
+        other => Err(other.kind_error("number").into()),
     }
 }
 
 /// The largest integer a number holds exactly, 2^53 - 1.
 const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
 
-fn width_arg(
-    arg: &SExpression,
-    ctx: &BindingContext,
-    op: &str,
-) -> Result<Option<usize>, OrbitalError> {
+fn width_arg(arg: &SExpression, ctx: &BindingContext) -> Result<Option<usize>, OrbitalError> {
     match eval_expr(arg, ctx)? {
         Value::Number(n) if n == 1.0 || n == 2.0 || n == 4.0 || n == 8.0 => Ok(Some(n as usize)),
         Value::Number(_) => Ok(None),
-        other => Err(invalid(
-            op,
-            format!("width {}: expected 1, 2, 4 or 8", other.to_string_value()),
-        )),
+        other => Err(other.kind_error("number").into()),
     }
 }
 
-fn big_endian_arg(
-    arg: &SExpression,
-    ctx: &BindingContext,
-    op: &str,
-) -> Result<Option<bool>, OrbitalError> {
+fn big_endian_arg(arg: &SExpression, ctx: &BindingContext) -> Result<Option<bool>, OrbitalError> {
     match eval_expr(arg, ctx)? {
         Value::String(s) if s == "be" => Ok(Some(true)),
         Value::String(s) if s == "le" => Ok(Some(false)),
         Value::String(_) => Ok(None),
-        other => Err(invalid(
-            op,
-            format!(
-                "endian {}: expected \"be\" or \"le\"",
-                other.to_string_value()
-            ),
-        )),
+        other => Err(other.kind_error("string").into()),
     }
 }
 
@@ -242,7 +208,7 @@ impl Operator for BytesIndexOfOp {
         let from = if args.len() == 3 {
             match eval_expr(&args[2], ctx)? {
                 Value::Null => 0,
-                other => index(data.len(), require_number!(other)),
+                other => index("bytes/index-of", data.len(), require_number!(other))?,
             }
         } else {
             0
@@ -264,7 +230,7 @@ impl Operator for BytesAtOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/at", == 2);
         let data = bytes_arg(&args[0], ctx, "bytes/at")?;
-        let Some(at) = whole(&args[1], ctx, "bytes/at", "index")? else {
+        let Some(at) = whole(&args[1], ctx)? else {
             return Ok(Value::Null);
         };
         Ok(usize::try_from(at)
@@ -283,9 +249,9 @@ impl Operator for BytesReadUintOp {
         require_arity!(args, OP, == 4);
         let data = bytes_arg(&args[0], ctx, OP)?;
         let (Some(offset), Some(width), Some(big)) = (
-            whole(&args[1], ctx, OP, "offset")?,
-            width_arg(&args[2], ctx, OP)?,
-            big_endian_arg(&args[3], ctx, OP)?,
+            whole(&args[1], ctx)?,
+            width_arg(&args[2], ctx)?,
+            big_endian_arg(&args[3], ctx)?,
         ) else {
             return Ok(Value::Null);
         };
@@ -315,9 +281,9 @@ impl Operator for BytesWriteUintOp {
         const OP: &str = "bytes/write-uint";
         require_arity!(args, OP, == 3);
         let (Some(value), Some(width), Some(big)) = (
-            whole(&args[0], ctx, OP, "value")?,
-            width_arg(&args[1], ctx, OP)?,
-            big_endian_arg(&args[2], ctx, OP)?,
+            whole(&args[0], ctx)?,
+            width_arg(&args[1], ctx)?,
+            big_endian_arg(&args[2], ctx)?,
         ) else {
             return Ok(Value::Null);
         };
@@ -347,6 +313,13 @@ mod tests {
         match eval(form) {
             Ok(Value::String(s)) => s.into_inner(),
             other => panic!("expected a string, got {other:?}"),
+        }
+    }
+
+    fn fails_kind(form: serde_json::Value) {
+        match eval(form) {
+            Err(e) => assert!(e.to_string().contains("Type mismatch"), "{e}"),
+            Ok(v) => panic!("expected an error, got {v:?}"),
         }
     }
 
@@ -641,7 +614,8 @@ mod tests {
             eval(serde_json::json!(["bytes/at", data, 1.5])).unwrap(),
             Value::Null
         );
-        fails_invalid(serde_json::json!(["bytes/at", data, null]));
+        fails_kind(serde_json::json!(["bytes/at", data, null]));
+        fails_kind(serde_json::json!(["bytes/at", data, "0"]));
         fails_invalid(serde_json::json!(["bytes/at", "%%", 0]));
     }
 
@@ -703,7 +677,9 @@ mod tests {
             eval(serde_json::json!(["bytes/read-uint", too_wide, 0, 8, "be"])).unwrap(),
             Value::Null
         );
-        fails_invalid(serde_json::json!(["bytes/read-uint", data, null, 1, "be"]));
+        fails_kind(serde_json::json!(["bytes/read-uint", data, null, 1, "be"]));
+        fails_kind(serde_json::json!(["bytes/read-uint", data, 0, 1, 5]));
+        fails_invalid(serde_json::json!(["bytes/slice", "aGk=", 0.5, 1]));
     }
 
     #[test]
@@ -761,6 +737,7 @@ mod tests {
         ]));
         null(serde_json::json!(["bytes/write-uint", 1, 3, "be"]));
         null(serde_json::json!(["bytes/write-uint", 1, 2, "big"]));
-        fails_invalid(serde_json::json!(["bytes/write-uint", null, 2, "be"]));
+        fails_kind(serde_json::json!(["bytes/write-uint", null, 2, "be"]));
+        fails_kind(serde_json::json!(["bytes/write-uint", 1, "2", "be"]));
     }
 }

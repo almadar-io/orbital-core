@@ -5,40 +5,22 @@ use std::prelude::v1::*;
 use super::macros::*;
 use super::*;
 
-fn invalid(op: &str, detail: impl std::fmt::Display) -> OrbitalError {
-    OrbitalError::Eval(EvalError::InvalidArgument(format!(
-        "{op}: invalid {detail}"
-    )))
-}
-
-fn bounded(
-    arg: &SExpression,
-    ctx: &BindingContext,
-    op: &str,
-    what: &str,
-    max: f64,
-) -> Result<Option<u32>, OrbitalError> {
+fn bounded(arg: &SExpression, ctx: &BindingContext, max: f64) -> Result<Option<u32>, OrbitalError> {
     match eval_expr(arg, ctx)? {
         Value::Number(n) if n.is_finite() && n.fract() == 0.0 && (0.0..=max).contains(&n) => {
             Ok(Some(n as u32))
         }
         Value::Number(_) => Ok(None),
-        other => Err(invalid(
-            op,
-            format!(
-                "{what} {}: expected a whole number 0..{max}",
-                other.to_string_value()
-            ),
-        )),
+        other => Err(other.kind_error("number").into()),
     }
 }
 
-fn word(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Option<u32>, OrbitalError> {
-    bounded(arg, ctx, op, "operand", u32::MAX as f64)
+fn word(arg: &SExpression, ctx: &BindingContext) -> Result<Option<u32>, OrbitalError> {
+    bounded(arg, ctx, u32::MAX as f64)
 }
 
-fn count(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Option<u32>, OrbitalError> {
-    bounded(arg, ctx, op, "count", 31.0)
+fn count(arg: &SExpression, ctx: &BindingContext) -> Result<Option<u32>, OrbitalError> {
+    bounded(arg, ctx, 31.0)
 }
 
 fn fold(
@@ -50,7 +32,7 @@ fn fold(
     require_arity!(args, op, >= 2);
     let mut words = Vec::with_capacity(args.len());
     for arg in args {
-        words.push(word(arg, ctx, op)?);
+        words.push(word(arg, ctx)?);
     }
     let Some(mut acc) = words[0] else {
         return Ok(Value::Null);
@@ -71,7 +53,7 @@ fn shift(
     f: fn(u32, u32) -> u32,
 ) -> EvalResult {
     require_arity!(args, op, == 2);
-    let (Some(a), Some(n)) = (word(&args[0], ctx, op)?, count(&args[1], ctx, op)?) else {
+    let (Some(a), Some(n)) = (word(&args[0], ctx)?, count(&args[1], ctx)?) else {
         return Ok(Value::Null);
     };
     Ok(Value::Number(f(a, n) as f64))
@@ -106,7 +88,7 @@ pub struct BitNotOp;
 impl Operator for BitNotOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bit/not", == 1);
-        Ok(match word(&args[0], ctx, "bit/not")? {
+        Ok(match word(&args[0], ctx)? {
             Some(a) => Value::Number(!a as f64),
             None => Value::Null,
         })
@@ -246,7 +228,7 @@ mod tests {
         let cases: &[(&str, &str)] = &[
             (
                 r#"["bit/not", null]"#,
-                "bit/not: invalid operand null: expected a whole number 0..4294967295",
+                "Type mismatch: expected number, got null",
             ),
             (
                 r#"["bit/xor", "1", 0]"#,

@@ -694,7 +694,7 @@
     "args": [
       null
     ],
-    "expect": false,
-    "source": "null is false"
+    "error": true,
+    "source": "null input is a type error"
   }
 ]

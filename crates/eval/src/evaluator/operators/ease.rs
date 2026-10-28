@@ -68,7 +68,7 @@ impl Operator for EaseApplyOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ease/apply", >= 2);
         let curve = eval_expr(&args[0], ctx)?;
-        let curve = curve.as_str().unwrap_or("linear");
+        let curve = curve.text()?;
         let t = require_number!(eval_expr(&args[1], ctx)?).clamp(0.0, 1.0);
         Ok(Value::Number(ease_curve(curve, t)))
     }
@@ -86,5 +86,33 @@ impl Operator for EaseSmoothstepOp {
         }
         let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
         Ok(Value::Number(t * t * (3.0 - 2.0 * t)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval(form: &str) -> EvalResult {
+        let expr: SExpression = serde_json::from_str(form).expect("s-expression");
+        eval_expr(&expr, &BindingContext::default())
+    }
+
+    fn error_text(form: &str) -> String {
+        format!("{:?}", eval(form).expect_err("expected a typed error"))
+    }
+
+    #[test]
+    fn curve_must_be_text() {
+        assert_eq!(
+            eval(r#"["ease/apply", "in-quad", 0.5]"#).unwrap(),
+            Value::Number(0.25)
+        );
+        assert_eq!(
+            eval(r#"["ease/apply", "unknown", 0.5]"#).unwrap(),
+            Value::Number(0.5)
+        );
+        assert!(error_text(r#"["ease/apply", null, 0.5]"#).contains("string"));
+        assert!(error_text(r#"["ease/apply", 3, 0.5]"#).contains("string"));
     }
 }

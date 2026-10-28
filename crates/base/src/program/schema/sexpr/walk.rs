@@ -52,14 +52,11 @@ impl<'a> SequentialBindings<'a> {
         Some(Self {
             bindings: bindings
                 .iter()
-                .filter_map(|binding| {
-                    let pair = binding.as_array()?;
-                    match (pair.first()?, pair.get(1)?) {
-                        (SExpression::String(name), initializer) => Some((name, initializer)),
-                        _ => None,
-                    }
+                .map(|binding| match binding.as_array()?.as_slice() {
+                    [SExpression::String(name), initializer] => Some((name, initializer)),
+                    _ => None,
                 })
-                .collect(),
+                .collect::<Option<_>>()?,
             body,
         })
     }

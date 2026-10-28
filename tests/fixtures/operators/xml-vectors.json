@@ -233,8 +233,8 @@
       null,
       "Row"
     ],
-    "expect": null,
-    "source": "absent input is null"
+    "error": true,
+    "source": "null input is a type error"
   },
   {
     "op": "xml/parse",

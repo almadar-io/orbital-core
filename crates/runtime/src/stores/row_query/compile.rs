@@ -451,7 +451,8 @@ pub fn compile_predicate(
 }
 
 /// A fetch `filter` in the object form `{ field: value, ... }` as the equality conjunction it means,
-/// `(and (= row.field value) ...)`; `{}` is the empty conjunction, `true`. Any other form is returned as is.
+/// `(and (= row.field value) ...)` (one field is its equality alone: `and` takes two or more); `{}` is the empty
+/// conjunction, `true`. Any other form is returned as is.
 pub fn lower_object_filter(filter: &Value) -> std::borrow::Cow<'_, Value> {
     use std::borrow::Cow;
     let Value::Object(map) = filter else {
@@ -471,6 +472,9 @@ pub fn lower_object_filter(filter: &Value) -> std::borrow::Cow<'_, Value> {
             ].into()),
             value.clone(),
         ]));
+    }
+    if conjunction.len() == 2 {
+        return Cow::Owned(conjunction.pop().expect("one equality"));
     }
     Cow::Owned(Value::array(conjunction))
 }

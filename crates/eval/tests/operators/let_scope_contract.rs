@@ -39,10 +39,12 @@ fn sequential_binding_view_preserves_order_duplicates_and_arbitrary_string_names
 }
 
 #[test]
-fn sequential_binding_view_omits_malformed_entries_and_extra_slots() {
+fn sequential_binding_view_refuses_a_malformed_entry() {
     let arguments = ignored_slots();
+    assert!(SequentialBindings::from_args(&arguments).is_none(), "an entry that is not [name value] makes the bindings malformed");
+    let arguments = args(json!([[["kept", 1]], "@kept"]));
     let view = SequentialBindings::from_args(&arguments).unwrap();
-    assert_eq!(view.bindings.len(), 1);
+    assert_eq!(view.bindings.len(), 1, "control: well-formed pairs");
     assert_eq!(view.bindings[0].0, "kept");
     assert_eq!(view.bindings[0].1, &SExpression::Number(1.0));
     assert_eq!(view.body, &SExpression::string("@kept"));
@@ -98,9 +100,19 @@ fn real_let_initializers_see_earlier_values_and_shadow_after_evaluation() {
 }
 
 #[test]
-fn real_let_does_not_evaluate_malformed_entries_or_extra_slots() {
+fn real_let_refuses_an_extra_slot_and_malformed_entries() {
     let ctx = BindingContextBuilder::new().build();
-    assert_eq!(evaluate(ignored_slots(), &ctx).unwrap(), Value::Number(1.0));
+    assert!(matches!(
+        evaluate(ignored_slots(), &ctx),
+        Err(OrbitalError::Eval(EvalError::ArityMismatch { ref operator, actual: 3, .. })) if operator == "let"
+    ));
+    let mut no_extra = ignored_slots();
+    no_extra.pop();
+    assert!(
+        matches!(evaluate(no_extra, &ctx), Err(OrbitalError::Eval(EvalError::InvalidArgument(_)))),
+        "malformed entries make the bindings malformed, never skipped"
+    );
+    assert_eq!(evaluate(args(json!([[["kept", 1]], "@kept"])), &ctx).unwrap(), Value::Number(1.0), "control");
     assert_eq!(ctx.resolve_binding("@kept"), None);
 }
 
@@ -136,9 +148,8 @@ fn real_let_retains_null_body_and_arity_before_bindings_shape_errors() {
         }
     }
     match evaluate(args(json!([7, null])), &ctx) {
-        Err(OrbitalError::Eval(EvalError::TypeMismatch { expected, actual })) => {
-            assert_eq!(expected, "array of bindings");
-            assert_eq!(actual, "non-array");
+        Err(OrbitalError::Eval(EvalError::InvalidArgument(message))) => {
+            assert!(message.contains("[name value] pairs"), "{message}");
         }
         other => panic!("expected bindings-shape error, got {other:?}"),
     }

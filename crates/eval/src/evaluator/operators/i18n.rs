@@ -10,16 +10,18 @@ pub struct I18nTOp;
 impl Operator for I18nTOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "i18n/t", >= 1);
-        let key = eval_expr(&args[0], ctx)?.to_string_value();
+        let key = eval_expr(&args[0], ctx)?.text()?.to_string();
         let Some(message) = ctx.message(&key) else {
             return Ok(Value::Null);
         };
         let mut out = message.to_string();
         if let Some(params) = args.get(1) {
-            if let Value::Object(map) = eval_expr(params, ctx)? {
-                for (name, value) in &map {
-                    out = out.replace(&format!("{{{{{name}}}}}"), &value.to_string_value());
-                }
+            let params = eval_expr(params, ctx)?;
+            let map = params
+                .as_object()
+                .ok_or_else(|| params.kind_error("object"))?;
+            for (name, value) in map {
+                out = out.replace(&format!("{{{{{name}}}}}"), &value.to_string_value());
             }
         }
         Ok(Value::string(out))
@@ -88,5 +90,15 @@ mod tests {
         let c = ctx("sl", &[]);
         let v = eval_expr(&call(serde_json::json!("@locale")), &c).unwrap();
         assert_eq!(v, Value::string("sl"));
+    }
+
+    #[test]
+    fn a_non_string_key_or_non_object_params_are_type_mismatches() {
+        let c = ctx("en", &[("k", "{{n}} items")]);
+        assert!(eval_expr(&call(serde_json::json!(["i18n/t", null])), &c).is_err());
+        assert!(eval_expr(&call(serde_json::json!(["i18n/t", "k", null])), &c).is_err());
+        assert!(eval_expr(&call(serde_json::json!(["i18n/t", "k", [1]])), &c).is_err());
+        let v = eval_expr(&call(serde_json::json!(["i18n/t", "k", { "n": 2 }])), &c).unwrap();
+        assert_eq!(v, Value::string("2 items"));
     }
 }

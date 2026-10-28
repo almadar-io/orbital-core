@@ -7,6 +7,7 @@
 use std::prelude::v1::*;
 
 use super::macros::*;
+use super::vector::{read_fields, whole, POINT};
 use super::*;
 use orbital_core_base::value::ValueMap;
 use std::collections::HashSet;
@@ -24,28 +25,42 @@ fn cell_value(c: Cell) -> Value {
     Value::object(m)
 }
 
-fn read_cell(v: &Value) -> Cell {
-    match v.as_object() {
-        Some(o) => Cell {
-            x: o.get("x").and_then(|n| n.as_number()).unwrap_or(0.0) as i64,
-            y: o.get("y").and_then(|n| n.as_number()).unwrap_or(0.0) as i64,
-        },
-        None => Cell { x: 0, y: 0 },
-    }
+fn read_cell(op: &str, param: &str, v: &Value) -> Result<Cell, EvalError> {
+    let [x, y] = read_fields(op, param, v, POINT)?;
+    Ok(Cell {
+        x: whole(op, &format!("{param}.x"), x)?,
+        y: whole(op, &format!("{param}.y"), y)?,
+    })
+}
+
+fn eval_cell(
+    op: &str,
+    param: &str,
+    arg: &SExpression,
+    ctx: &BindingContext,
+) -> Result<Cell, OrbitalError> {
+    Ok(read_cell(op, param, &eval_expr(arg, ctx)?)?)
+}
+
+fn eval_extent(
+    op: &str,
+    param: &str,
+    arg: &SExpression,
+    ctx: &BindingContext,
+) -> Result<i64, OrbitalError> {
+    Ok(whole(op, param, eval_expr(arg, ctx)?.number()?)?)
 }
 
 fn key(c: Cell) -> String {
     format!("{},{}", c.x, c.y)
 }
 
-fn read_blocked(v: &Value) -> HashSet<String> {
-    let mut set = HashSet::new();
-    if let Some(arr) = v.as_array() {
-        for item in arr {
-            set.insert(key(read_cell(item)));
-        }
-    }
-    set
+fn read_blocked(op: &str, v: &Value) -> Result<HashSet<String>, EvalError> {
+    let items = v.as_array().ok_or_else(|| v.kind_error("array"))?;
+    items
+        .iter()
+        .map(|item| read_cell(op, "blocked", item).map(key))
+        .collect()
 }
 
 fn neighbor_offsets(diagonal: bool) -> Vec<(i64, i64)> {
@@ -58,7 +73,7 @@ fn neighbor_offsets(diagonal: bool) -> Vec<(i64, i64)> {
 
 fn arg_bool(args: &[SExpression], i: usize, ctx: &BindingContext) -> Result<bool, OrbitalError> {
     match args.get(i) {
-        Some(a) => Ok(eval_expr(a, ctx)?.as_bool().unwrap_or(false)),
+        Some(a) => Ok(eval_expr(a, ctx)?.boolean()?),
         None => Ok(false),
     }
 }
@@ -66,12 +81,13 @@ fn arg_bool(args: &[SExpression], i: usize, ctx: &BindingContext) -> Result<bool
 pub struct PathAstarOp;
 impl Operator for PathAstarOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "path/astar", >= 5);
-        let start = read_cell(&eval_expr(&args[0], ctx)?);
-        let goal = read_cell(&eval_expr(&args[1], ctx)?);
-        let blocked = read_blocked(&eval_expr(&args[2], ctx)?);
-        let w = require_number!(eval_expr(&args[3], ctx)?) as i64;
-        let h = require_number!(eval_expr(&args[4], ctx)?) as i64;
+        const OP: &str = "path/astar";
+        require_arity!(args, OP, >= 5);
+        let start = eval_cell(OP, "start", &args[0], ctx)?;
+        let goal = eval_cell(OP, "goal", &args[1], ctx)?;
+        let blocked = read_blocked(OP, &eval_expr(&args[2], ctx)?)?;
+        let w = eval_extent(OP, "w", &args[3], ctx)?;
+        let h = eval_extent(OP, "h", &args[4], ctx)?;
         let diagonal = arg_bool(args, 5, ctx)?;
         let offs = neighbor_offsets(diagonal);
 
@@ -178,12 +194,13 @@ impl Operator for PathAstarOp {
 pub struct PathReachableOp;
 impl Operator for PathReachableOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "path/reachable", >= 4);
-        let start = read_cell(&eval_expr(&args[0], ctx)?);
-        let steps = require_number!(eval_expr(&args[1], ctx)?) as i64;
-        let blocked = read_blocked(&eval_expr(&args[2], ctx)?);
-        let w = require_number!(eval_expr(&args[3], ctx)?) as i64;
-        let h = require_number!(eval_expr(&args[4], ctx)?) as i64;
+        const OP: &str = "path/reachable";
+        require_arity!(args, OP, >= 5);
+        let start = eval_cell(OP, "start", &args[0], ctx)?;
+        let steps = eval_extent(OP, "steps", &args[1], ctx)?;
+        let blocked = read_blocked(OP, &eval_expr(&args[2], ctx)?)?;
+        let w = eval_extent(OP, "w", &args[3], ctx)?;
+        let h = eval_extent(OP, "h", &args[4], ctx)?;
         let diagonal = arg_bool(args, 5, ctx)?;
         let offs = neighbor_offsets(diagonal);
 
@@ -222,5 +239,53 @@ impl Operator for PathReachableOp {
         // Sort row-major: y asc, then x asc.
         result.sort_by(|a, b| a.y.cmp(&b.y).then(a.x.cmp(&b.x)));
         Ok(Value::Array(result.into_iter().map(cell_value).collect()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval(form: &str) -> EvalResult {
+        let expr: SExpression = serde_json::from_str(form).expect("s-expression");
+        eval_expr(&expr, &BindingContext::default())
+    }
+
+    fn error_text(form: &str) -> String {
+        format!("{:?}", eval(form).expect_err("expected a typed error"))
+    }
+
+    #[test]
+    fn declared_arity_and_strict_cells() {
+        let open = eval(r#"["path/reachable", {"x":1,"y":1}, 1, [], 3, 3, false]"#).unwrap();
+        assert_eq!(open.as_array().unwrap().len(), 5);
+        assert_eq!(
+            eval(r#"["path/astar", {"x":0,"y":0}, {"x":2,"y":0}, [], 3, 1]"#)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert!(matches!(
+            eval(r#"["path/reachable", {"x":1,"y":1}, 1, [], 3]"#),
+            Err(OrbitalError::Eval(EvalError::ArityMismatch { .. }))
+        ));
+        assert!(
+            error_text(r#"["path/astar", null, {"x":2,"y":0}, [], 3, 1]"#)
+                .contains("argument `start`")
+        );
+        assert!(
+            error_text(r#"["path/astar", {"x":0,"y":0}, {"x":2,"y":0}, null, 3, 1]"#)
+                .contains("array")
+        );
+        assert!(
+            error_text(r#"["path/astar", {"x":0,"y":0}, {"x":2,"y":0}, [{"x":1}], 3, 1]"#)
+                .contains("missing field")
+        );
+        assert!(
+            error_text(r#"["path/reachable", {"x":1,"y":1}, 1, [], 3, 3, null]"#)
+                .contains("boolean")
+        );
     }
 }

@@ -50,7 +50,7 @@ impl EffectExecutor {
             let resolved = self.resolve_fetch_id(id, ctx).and_then(|id| {
                 Ok((
                     id,
-                    self.resolve_page_option(limit, ctx)?,
+                    self.resolve_limit(limit, ctx)?,
                     self.resolve_page_option(offset, ctx)?,
                 ))
             });

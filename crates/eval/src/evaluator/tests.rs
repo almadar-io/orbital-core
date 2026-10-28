@@ -80,8 +80,8 @@ fn random_int_control_an_equal_or_wider_range_draws_inside_it() {
 #[test]
 fn test_add() {
     assert_eq!(eval(r#"["+", 1, 2, 3]"#), Value::Number(6.0));
-    assert_eq!(eval(r#"["+", 10]"#), Value::Number(10.0));
-    assert_eq!(eval(r#"["+"]"#), Value::Number(0.0));
+    assert!(eval_err(r#"["+", 10]"#).contains("Arity mismatch"), "one operand is below the declared arity");
+    assert!(eval_err(r#"["+"]"#).contains("Arity mismatch"));
 }
 
 // ========================================================================
@@ -121,14 +121,14 @@ fn data_array_contract_nested_calls_still_evaluate() {
 #[test]
 fn test_subtract() {
     assert_eq!(eval(r#"["-", 10, 3]"#), Value::Number(7.0));
-    assert_eq!(eval(r#"["-", 10, 3, 2]"#), Value::Number(5.0));
+    assert!(eval_err(r#"["-", 10, 3, 2]"#).contains("Arity mismatch"), "`-` takes one or two operands");
     assert_eq!(eval(r#"["-", 5]"#), Value::Number(-5.0)); // Unary negation
 }
 
 #[test]
 fn test_multiply() {
     assert_eq!(eval(r#"["*", 2, 3, 4]"#), Value::Number(24.0));
-    assert_eq!(eval(r#"["*"]"#), Value::Number(1.0));
+    assert!(eval_err(r#"["*"]"#).contains("Arity mismatch"));
 }
 
 #[test]
@@ -150,12 +150,9 @@ fn test_equality() {
     assert_eq!(eval(r#"["=", 5, 5]"#), Value::Bool(true));
     assert_eq!(eval(r#"["=", 5, 6]"#), Value::Bool(false));
     assert_eq!(eval(r#"["=", "hello", "hello"]"#), Value::Bool(true));
-    // Both operands share one type: no loose equality across kinds.
-    let err = eval_err(r#"["=", 1, "1"]"#);
-    assert_eq!(
-        err,
-        "Evaluation error: Type mismatch: expected number, got string"
-    );
+    // Equality is structural: different kinds are unequal, never coerced and never an error (the validator refuses the pair statically).
+    assert_eq!(eval(r#"["=", 1, "1"]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["!=", 1, "1"]"#), Value::Bool(true));
     assert_eq!(eval(r#"["=", 1, null]"#), Value::Bool(false));
 }
 
@@ -235,14 +232,14 @@ fn test_and() {
     assert_eq!(eval(r#"["and", true, true]"#), Value::Bool(true));
     assert_eq!(eval(r#"["and", true, false]"#), Value::Bool(false));
     assert_eq!(eval(r#"["and", true, true, true]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["and"]"#), Value::Bool(true)); // Empty and is true
+    assert!(eval_err(r#"["and"]"#).contains("Arity mismatch"), "and takes at least two operands");
 }
 
 #[test]
 fn test_or() {
     assert_eq!(eval(r#"["or", false, true]"#), Value::Bool(true));
     assert_eq!(eval(r#"["or", false, false]"#), Value::Bool(false));
-    assert_eq!(eval(r#"["or"]"#), Value::Bool(false)); // Empty or is false
+    assert!(eval_err(r#"["or"]"#).contains("Arity mismatch"), "or takes at least two operands");
 }
 
 // Twin of almadar-evaluator/__tests__/lisp-audit-parity.test.ts (R-OR-AND-RETURN-BOOLEAN).
@@ -288,7 +285,7 @@ fn test_not() {
 fn test_if() {
     assert_eq!(eval(r#"["if", true, "yes", "no"]"#), Value::string("yes"));
     assert_eq!(eval(r#"["if", false, "yes", "no"]"#), Value::string("no"));
-    assert_eq!(eval(r#"["if", false, "yes"]"#), Value::Null); // No else
+    assert!(eval_err(r#"["if", false, "yes"]"#).contains("Arity mismatch"), "if declares an else; `when` is the one-branch form");
 }
 
 // ========================================================================
@@ -530,10 +527,15 @@ fn json_parse_object_array_scalar_nested() {
 }
 
 #[test]
-fn json_parse_invalid_text_or_absent_input_is_null_a_non_string_is_a_type_error() {
+fn json_parse_invalid_text_is_null_a_non_string_input_null_included_is_a_type_error() {
     assert_eq!(eval(r#"["json/parse", "{not json", "Row"]"#), Value::Null);
     assert_eq!(eval(r#"["json/parse", "", "Row"]"#), Value::Null);
-    assert_eq!(eval(r#"["json/parse", null, "Row"]"#), Value::Null);
+    assert_eq!(
+        eval_err(r#"["json/parse", null, "Row"]"#),
+        "Evaluation error: Type mismatch: expected string, got null"
+    );
+    assert!(eval_err(r#"["json/parse", "{}", null]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["as", 1, ["list"]]"#).contains("expected a type name (string literal)"));
     assert_eq!(
         eval_err(r#"["json/parse", 42, "Row"]"#),
         "Evaluation error: Type mismatch: expected string, got number"
@@ -790,8 +792,9 @@ fn control_json_parse_undeclared_alias_name_stays_unchecked() {
     assert_eq!(parse_in_program(r#""abc""#, "Other"), Value::string("abc"));
 }
 
-// G-ORB-452: each element of a list declared `[OrbValue]` matches the recursive union on its own.
-fn map_len_of_orb_values(items: serde_json::Value) -> Result<Value, String> {
+// `typed` is a static ascription (G-CROSS-335): the kernel returns the value and checks nothing against the declared
+// `[OrbValue]`, so the validator is the only place a misfit is found.
+fn map_len_of_ascribed_list(items: serde_json::Value) -> Result<Value, String> {
     let aliases = serde_json::from_value(serde_json::json!({
         "OrbValue": [{ "name": "", "type": "union", "properties": [
             { "name": "string", "type": "string" },
@@ -829,7 +832,7 @@ fn map_len_of_orb_values(items: serde_json::Value) -> Result<Value, String> {
 }
 
 #[test]
-fn union_list_mixed_elements_each_match_a_member() {
+fn ascribed_union_list_mixed_elements_pass_through() {
     for items in [
         serde_json::json!(["a", {"k": 1}]),
         serde_json::json!([{"k": 1}, "a"]),
@@ -838,7 +841,7 @@ fn union_list_mixed_elements_each_match_a_member() {
         serde_json::json!([1, "a"]),
     ] {
         assert_eq!(
-            map_len_of_orb_values(items.clone()),
+            map_len_of_ascribed_list(items.clone()),
             Ok(Value::Number(2.0)),
             "{items}"
         );
@@ -846,14 +849,14 @@ fn union_list_mixed_elements_each_match_a_member() {
 }
 
 #[test]
-fn control_union_list_homogeneous_elements_match() {
+fn control_ascribed_union_list_homogeneous_elements_pass_through() {
     for items in [
         serde_json::json!(["a", "b"]),
         serde_json::json!([{"k": 1}, {"k": 2}]),
         serde_json::json!([[1], [2, [3]]]),
     ] {
         assert_eq!(
-            map_len_of_orb_values(items.clone()),
+            map_len_of_ascribed_list(items.clone()),
             Ok(Value::Number(2.0)),
             "{items}"
         );
@@ -861,15 +864,16 @@ fn control_union_list_homogeneous_elements_match() {
 }
 
 #[test]
-fn edge_union_list_refuses_a_value_outside_the_union() {
+fn edge_ascription_does_not_check_the_value_against_the_declared_union() {
     assert!(
-        map_len_of_orb_values(serde_json::json!("abc")).is_err(),
-        "not a list"
+        map_len_of_ascribed_list(serde_json::json!("abc")).is_err(),
+        "control: array/map still refuses a string by its own signature"
     );
-    assert!(map_len_of_orb_values(
-        serde_json::json!([{"k": {"deep": [true, "x", {"no": null}]}}, 1])
-    )
-    .is_ok());
+    assert_eq!(
+        map_len_of_ascribed_list(serde_json::json!([true, null, 1])),
+        Ok(Value::Number(3.0)),
+        "booleans and null are outside the declared union and are not checked"
+    );
 }
 
 #[test]
@@ -1249,8 +1253,13 @@ fn test_reduce_empty_array() {
 
 #[test]
 fn test_reduce_legacy_raw_body() {
-    // Legacy raw-body reducer: `@acc`/`@item` bound per element, JS-path parity
-    let result = eval(r#"["array/reduce", [1, 2, 3, 4, 5], 0, ["+", "@acc", "@item"]]"#);
+    // The raw-body reducer is retired: the callback must be a function.
+    assert!(
+        eval_err(r#"["array/reduce", [1, 2, 3, 4, 5], 0, ["+", "@acc", "@item"]]"#)
+            .contains("Type mismatch")
+    );
+    assert!(eval_err(r#"["array/reduce", [1, 2], 0, 5]"#).contains("expected function"));
+    let result = eval(r#"["array/reduce", [1, 2, 3, 4, 5], 0, ["fn", ["acc", "x"], ["+", "@acc", "@x"]]]"#);
     assert_eq!(result, Value::Number(15.0));
 }
 
@@ -1306,8 +1315,12 @@ fn test_object_get_missing() {
 
 #[test]
 fn test_object_keys_null() {
-    let result = eval(r#"["object/keys", null]"#);
-    assert_eq!(result, Value::array(vec![]));
+    assert!(eval_err(r#"["object/keys", null]"#).contains("expected object, got null"));
+    assert_eq!(
+        eval(r#"["object/keys", {}]"#),
+        Value::array(vec![]),
+        "control: an empty object has no keys"
+    );
 }
 
 // ========================================================================
@@ -1358,11 +1371,8 @@ fn test_array_slice() {
             Value::Number(5.0)
         ])
     );
-    // Negative indices
-    assert_eq!(
-        eval(r#"["array/slice", [1, 2, 3, 4, 5], -2]"#),
-        Value::array(vec![Value::Number(4.0), Value::Number(5.0)])
-    );
+    // The table declares no from-the-end indices: a negative one is invalid.
+    assert!(eval_err(r#"["array/slice", [1, 2, 3, 4, 5], -2]"#).contains("Invalid argument"));
 }
 
 #[test]
@@ -1435,25 +1445,27 @@ fn test_array_index_of() {
 #[test]
 fn test_array_every() {
     assert_eq!(
-        eval(r#"["array/every", [2, 4, 6, 8], [">", "@item", 0]]"#),
+        eval(r#"["array/every", [2, 4, 6, 8], ["fn", "x", [">", "@x", 0]]]"#),
         Value::Bool(true)
     );
     assert_eq!(
-        eval(r#"["array/every", [2, 4, 6, -1], [">", "@item", 0]]"#),
+        eval(r#"["array/every", [2, 4, 6, -1], ["fn", "x", [">", "@x", 0]]]"#),
         Value::Bool(false)
     );
+    assert!(eval_err(r#"["array/every", [2, 4], true]"#).contains("expected function"));
 }
 
 #[test]
 fn test_array_some() {
     assert_eq!(
-        eval(r#"["array/some", [1, 2, 3, 4], [">", "@item", 3]]"#),
+        eval(r#"["array/some", [1, 2, 3, 4], ["fn", "x", [">", "@x", 3]]]"#),
         Value::Bool(true)
     );
     assert_eq!(
-        eval(r#"["array/some", [1, 2, 3], [">", "@item", 10]]"#),
+        eval(r#"["array/some", [1, 2, 3], ["fn", "x", [">", "@x", 10]]]"#),
         Value::Bool(false)
     );
+    assert!(eval_err(r#"["array/some", [1, 2], 1]"#).contains("expected function"));
 }
 
 #[test]
@@ -1725,7 +1737,8 @@ fn test_time_is_after() {
 #[test]
 fn test_time_format() {
     // Format Unix epoch (0)
-    let result = eval(r#"["time/format", 0]"#);
+    assert!(eval_err(r#"["time/format", 0]"#).contains("Arity mismatch"), "the format is required");
+    let result = eval(r#"["time/format", 0, "YYYY-MM-DD"]"#);
     if let Value::String(s) = result {
         assert!(s.starts_with("1970-01-01"));
     } else {
@@ -1866,6 +1879,45 @@ fn test_validate_pattern() {
         eval(r#"["validate/pattern", "hello", "xyz"]"#),
         Value::Bool(false)
     );
+}
+
+#[test]
+fn validate_checkers_raise_on_a_wrong_kind_while_the_type_predicates_stay_total() {
+    assert!(eval_err(r#"["validate/pattern", null, "a"]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["validate/pattern", "a", 1]"#).contains("Type mismatch"));
+    assert_eq!(eval(r#"["validate/pattern", "a", "a"]"#), Value::Bool(true));
+    assert!(eval_err(r#"["validate/check", 5, {"a": [["required"]]}]"#).contains("expected object"));
+    assert!(eval_err(r#"["validate/check", {"a": 1}, {"a": [["minLength", 2]]}]"#).contains("Type mismatch"));
+    let failed = eval(r#"["validate/check", {}, {"age": [["required"], ["min", 18]]}]"#);
+    assert_eq!(failed, eval(r#"{"valid": false, "errors": ["age: required validation failed"]}"#));
+    assert_eq!(
+        eval(r#"["validate/check", {"age": null}, {"age": [["min", 18]]}]"#),
+        eval(r#"{"valid": true, "errors": []}"#)
+    );
+    assert!(eval_err(r#"["validate/check", {"age": "x"}, {"age": [["min", 18]]}]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["validate/check", {"a": "xy"}, {"a": [["minLength", "2"]]}]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["validate/check", {"a": "xy"}, null]"#).contains("rules by field"));
+    assert_eq!(
+        eval(r#"["validate/check", {"a": "xy"}, {"a": [["minLength", 2], ["string"]]}]"#),
+        eval(r#"{"valid": true, "errors": []}"#)
+    );
+    assert_eq!(eval(r#"["validate/string", null]"#), Value::Bool(false));
+}
+
+#[test]
+fn format_and_time_text_operands_are_strings_only() {
+    assert!(eval_err(r#"["format/currency", 1, null]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["format/list", null]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["format/phone", null]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["format/phone", "5551234567", 1]"#).contains("Type mismatch"));
+    assert_eq!(eval(r#"["format/list", ["a", "b"]]"#), Value::string("a and b"));
+    assert_eq!(eval(r#"["format/phone", "5551234567"]"#), Value::string("(555) 123-4567"));
+    assert!(eval_err(r#"["time/valid", null]"#).contains("Type mismatch"));
+    assert_eq!(eval(r#"["time/valid", "2024-01-18"]"#), Value::Bool(true));
+    assert!(eval_err(r#"["time/format", 0, null]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["time/add", 0, 1, 5]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["time/add", 0, 1.5, "month"]"#).contains("whole amount"));
+    assert_eq!(eval(r#"["time/add", 0, 1.5, "second"]"#), Value::Number(1500.0));
 }
 
 // =========================================================================
@@ -2675,7 +2727,7 @@ fn test_validate_check() {
     };
     assert_eq!(failed["valid"], Value::Bool(false));
     assert!(
-        eval_err(r#"["validate/check", 10, ["fn", ["x"], [">", "@x", 5]]]"#)
+        eval_err(r#"["validate/check", {}, ["fn", ["x"], [">", "@x", 5]]]"#)
             .contains("rules by field")
     );
 }
@@ -2703,15 +2755,13 @@ fn map_fn_lambda_also_binds_index_like_the_ts_evaluator() {
         rows[1].as_object().and_then(|o| o.get("position")),
         Some(&Value::Number(1.0))
     );
-    // Controls: a named index param and the raw-body form still bind as before.
+    // Control: a named index param binds it too; the raw-body form is retired.
     assert_eq!(
         eval(r#"["array/map", [10, 20], ["fn", ["m", "i"], ["+", "@m", "@i"]]]"#),
         nums(&[10.0, 21.0])
     );
-    assert_eq!(
-        eval(r#"["array/map", [10, 20], ["+", "@item", "@index"]]"#),
-        nums(&[10.0, 21.0])
-    );
+    assert!(eval_err(r#"["array/map", [10, 20], ["+", "@item", "@index"]]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["array/map", [10, 20], 3]"#).contains("expected function"));
 }
 
 #[test]
@@ -2740,9 +2790,14 @@ fn group_by_a_field_name_like_the_ts_evaluator() {
 
 #[test]
 fn control_group_by_a_key_function_still_works() {
-    let out = eval(r#"["array/groupBy", [1, 2, 3, 4], ["fn", "n", ["%", "@n", 2]]]"#);
+    let out = eval(r#"["array/groupBy", [1, 2, 3, 4], ["fn", "n", ["if", ["=", ["%", "@n", 2], 0], "even", "odd"]]]"#);
     let groups = out.as_object().expect("object");
     assert_eq!(groups.len(), 2);
+    assert!(
+        eval_err(r#"["array/groupBy", [1, 2, 3, 4], ["fn", "n", ["%", "@n", 2]]]"#)
+            .contains("expected string, got number"),
+        "a key function returns text"
+    );
 }
 
 #[test]
@@ -2753,7 +2808,7 @@ fn raw_callback_params_match_what_the_evaluator_binds() {
         Some(&["item", "index"][..])
     );
     assert_eq!(
-        eval(r#"["array/map", [10, 20], ["+", "@item", "@index"]]"#),
+        eval(r#"["array/map", [10, 20], ["fn", ["x", "i"], ["+", "@x", "@i"]]]"#),
         nums(&[10.0, 21.0])
     );
 
@@ -2762,15 +2817,13 @@ fn raw_callback_params_match_what_the_evaluator_binds() {
         Some(&["item", "index"][..])
     );
     assert_eq!(
-        eval(r#"["array/filter", [1, 2, 3], [">", "@item", 1]]"#),
+        eval(r#"["array/filter", [1, 2, 3], ["fn", "x", [">", "@x", 1]]]"#),
         nums(&[2.0, 3.0])
     );
+    assert!(eval_err(r#"["array/filter", [1, 2, 3], [">", "@item", 1]]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["array/filter", [1, 2, 3], true]"#).contains("expected function"));
     // The index is bound whether the predicate is a raw body or a `(fn …)` that names only the element, as
     // the JS evaluator's `evalWithItem` always does.
-    assert_eq!(
-        eval(r#"["array/filter", [10, 20, 30], ["<", "@index", 2]]"#),
-        nums(&[10.0, 20.0])
-    );
     assert_eq!(
         eval(r#"["array/filter", [10, 20, 30], ["fn", "b", ["<", "@index", 2]]]"#),
         nums(&[10.0, 20.0])
@@ -2786,29 +2839,29 @@ fn raw_callback_params_match_what_the_evaluator_binds() {
         Some(&["acc", "item"][..])
     );
     assert_eq!(
-        eval(r#"["array/reduce", [1, 2, 3], 10, ["+", "@acc", "@item"]]"#),
+        eval(r#"["array/reduce", [1, 2, 3], 10, ["fn", ["a", "x"], ["+", "@a", "@x"]]]"#),
         Value::Number(16.0)
     );
 
     for (op, expr, expected) in [
         (
             "array/count",
-            r#"["array/count", [5, 6, 7], [">", "@index", 0]]"#,
+            r#"["array/count", [5, 6, 7], ["fn", ["x", "i"], [">", "@i", 0]]]"#,
             Value::Number(2.0),
         ),
         (
             "array/find",
-            r#"["array/find", [5, 6, 7], ["==", "@index", 1]]"#,
+            r#"["array/find", [5, 6, 7], ["fn", ["x", "i"], ["==", "@i", 1]]]"#,
             Value::Number(6.0),
         ),
         (
             "array/every",
-            r#"["array/every", [5, 6], [">", "@item", "@index"]]"#,
+            r#"["array/every", [5, 6], ["fn", ["x", "i"], [">", "@x", "@i"]]]"#,
             Value::Bool(true),
         ),
         (
             "array/some",
-            r#"["array/some", [5, 6], ["==", "@index", 1]]"#,
+            r#"["array/some", [5, 6], ["fn", ["x", "i"], ["==", "@i", 1]]]"#,
             Value::Bool(true),
         ),
     ] {
@@ -2826,7 +2879,7 @@ fn raw_callback_params_match_what_the_evaluator_binds() {
         Some(&["item", "index"][..])
     );
     let Value::Object(kept) = eval(
-        r#"["object/filter", {"a": 1, "b": 2}, ["and", ["==", "@item", "b"], ["==", "@index", 2]]]"#,
+        r#"["object/filter", {"a": 1, "b": 2}, ["fn", ["k", "v"], ["and", ["==", "@k", "b"], ["==", "@v", 2]]]]"#,
     ) else {
         panic!("object/filter must return an object");
     };
@@ -2984,7 +3037,7 @@ fn str_collate_orders_by_the_root_collation() {
         Value::Number(-1.0),
         "lower case first at the third level"
     );
-    assert_eq!(eval(r#"["str/collate", null, "a"]"#), Value::Null);
+    assert!(eval_err(r#"["str/collate", null, "a"]"#).contains("Type mismatch"));
     let mistyped = eval_err(r#"["str/collate", 1, "a"]"#);
     assert!(
         mistyped.contains("string") && mistyped.contains("number"),
@@ -3006,7 +3059,7 @@ fn str_collate_key_sorts_by_collation() {
         ["Banana", "Zed", "apple", "\u{e9}crou"],
         "control: sorting by the name itself is code-point order"
     );
-    assert_eq!(eval(r#"["str/collate-key", null]"#), Value::Null);
+    assert!(eval_err(r#"["str/collate-key", null]"#).contains("Type mismatch"));
     assert_eq!(
         eval(r#"["str/collate-key", "a"]"#),
         eval(r#"["str/collate-key", "a"]"#),
@@ -3475,10 +3528,13 @@ fn row_matches_decides_a_typed_predicate() {
         .build();
     let expr: SExpression =
         serde_json::from_str(r#"["row/matches", "@payload.pred", "@payload.row"]"#).unwrap();
-    assert_eq!(
-        Evaluator::new().evaluate(&expr, &ctx).unwrap(),
-        Value::Null,
-        "not a RowPredicate: a missing result"
+    assert!(
+        Evaluator::new()
+            .evaluate(&expr, &ctx)
+            .unwrap_err()
+            .to_string()
+            .contains("not a RowPredicate"),
+        "a value that is not a RowPredicate is an error"
     );
 }
 

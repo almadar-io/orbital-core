@@ -17,6 +17,35 @@ fn program_host_effects_are_substrate_operators_through_the_installed_table() {
 }
 
 #[test]
+fn a_substrate_operator_is_exactly_one_the_table_hosts_on_the_substrate_or_the_program() {
+    use crate::language::registry::operators;
+    let mut checked_substrate = 0;
+    for (name, operator) in operators() {
+        let hosted = matches!(operator.host.as_deref(), Some("program" | "substrate"));
+        assert_eq!(is_substrate_operator(name), hosted, "{name}");
+        checked_substrate += usize::from(operator.host.as_deref() == Some("substrate"));
+    }
+    assert!(
+        checked_substrate > 0,
+        "the table hosts operators on the substrate"
+    );
+    for name in [
+        "llm/generate",
+        "memory/store",
+        "trace/log",
+        "session/read-spec",
+        "workspace/read-orbital",
+    ] {
+        let host = crate::language::registry::get_operator(name).and_then(|o| o.host.as_deref());
+        assert_eq!(host, Some("substrate"), "{name}");
+        assert!(is_substrate_operator(name), "{name}");
+    }
+    for name in ["os/read-file", "kv/get", "persist", "str/concat", "no/such"] {
+        assert!(!is_substrate_operator(name), "control: {name}");
+    }
+}
+
+#[test]
 fn test_effect_kind() {
     assert_eq!(OirEffect::emit("test").kind(), "emit");
     assert_eq!(OirEffect::fetch("Task").kind(), "fetch");

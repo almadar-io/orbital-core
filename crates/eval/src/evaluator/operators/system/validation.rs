@@ -171,18 +171,16 @@ impl Operator for ValidateMaxLengthOp {
 }
 
 /// validate/pattern - Match a regex pattern of the shared dialect (see `translate_shared_regex`).
-/// A non-string value, or an invalid or unsupported pattern, is false.
+/// An invalid or unsupported pattern is false; a non-string value or pattern is a type mismatch.
 pub struct ValidatePatternOp;
 impl Operator for ValidatePatternOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/pattern", >= 2);
         let val = eval_expr(&args[0], ctx)?;
         let pattern = eval_expr(&args[1], ctx)?;
-        let (Value::String(val), Value::String(pattern)) = (val, pattern) else {
-            return Ok(Value::Bool(false));
-        };
+        let (val, pattern) = (val.text()?, pattern.text()?);
         Ok(Value::Bool(
-            super::string::compile_shared_regex(&pattern).is_some_and(|re| re.is_match(&val)),
+            super::string::compile_shared_regex(pattern).is_some_and(|re| re.is_match(val)),
         ))
     }
 }
@@ -456,7 +454,6 @@ pub(super) fn rules_by_field(
                 other => Err(mismatch(other.type_name())),
             })
             .collect(),
-        Value::Null => Ok(Vec::new()),
         other => Err(mismatch(other.type_name())),
     }
 }
@@ -473,15 +470,22 @@ pub(super) fn rule_holds(
     value: &Value,
     args: &[Value],
 ) -> Result<Option<bool>, OrbitalError> {
-    let number = |at: usize| match args.get(at) {
-        Some(Value::Number(n)) => Some(*n),
-        _ => None,
+    let arg = |at: usize| {
+        args.get(at).ok_or_else(|| {
+            OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                "validate/check: the rule `{name}` is missing its argument {}",
+                at + 1
+            )))
+        })
     };
-    let length = || match value {
-        Value::String(text) => Some(text.chars().count() as f64),
-        Value::Array(items) => Some(items.len() as f64),
-        _ => None,
-    };
+    let number = |at: usize| -> Result<f64, OrbitalError> { Ok(arg(at)?.number()?) };
+    let value_rule = matches!(
+        name,
+        "email" | "minLength" | "maxLength" | "min" | "max" | "range" | "pattern" | "oneOf"
+    );
+    if value_rule && matches!(value, Value::Null) {
+        return Ok(Some(true));
+    }
     let holds = match name {
         "required" => {
             !matches!(value, Value::Null)
@@ -490,55 +494,47 @@ pub(super) fn rule_holds(
         "string" => matches!(value, Value::String(_)),
         "number" => matches!(value, Value::Number(n) if !n.is_nan()),
         "boolean" => matches!(value, Value::Bool(_)),
-        "email" => match value {
-            Value::String(text) => matches_semantic_pattern("validate/email", text)?,
-            _ => false,
-        },
-        "minLength" => length().zip(number(0)).is_some_and(|(len, min)| len >= min),
-        "maxLength" => length().zip(number(0)).is_some_and(|(len, max)| len <= max),
-        "min" => matches!(value, Value::Number(n) if number(0).is_some_and(|min| *n >= min)),
-        "max" => matches!(value, Value::Number(n) if number(0).is_some_and(|max| *n <= max)),
+        "email" => matches_semantic_pattern("validate/email", value.text()?)?,
+        "minLength" => length_of(value)? as f64 >= number(0)?,
+        "maxLength" => length_of(value)? as f64 <= number(0)?,
+        "min" => value.number()? >= number(0)?,
+        "max" => value.number()? <= number(0)?,
         "range" => {
-            matches!(value, Value::Number(n) if number(0).zip(number(1)).is_some_and(|(lo, hi)| *n >= lo && *n <= hi))
+            let n = value.number()?;
+            n >= number(0)? && n <= number(1)?
         }
-        "pattern" => match (value, args.first()) {
-            (Value::String(text), Some(Value::String(pattern))) => {
-                super::string::compile_shared_regex(pattern).is_some_and(|re| re.is_match(text))
-            }
-            _ => false,
-        },
-        "oneOf" => match args.first() {
-            Some(Value::Array(options)) => {
-                let mut found = false;
-                for opt in options.iter() {
-                    if opt == value {
-                        found = true;
-                        break;
-                    }
-                }
-                found
-            }
-            _ => false,
-        },
+        "pattern" => {
+            let text = value.text()?;
+            super::string::compile_shared_regex(arg(0)?.text()?).is_some_and(|re| re.is_match(text))
+        }
+        "oneOf" => {
+            let options = arg(0)?;
+            options
+                .as_array()
+                .ok_or_else(|| options.kind_error("array"))?
+                .iter()
+                .any(|opt| opt == value)
+        }
         _ => return Ok(None),
     };
     Ok(Some(holds))
 }
 
 /// validate/check - run rules by field over a value: `{ valid, errors }`, one `field: rule validation failed`
-/// per broken rule, in rule order; a rule the operator does not know is skipped.
+/// per broken rule, in rule order; a rule the operator does not know is skipped. A value that is not an object, or a rule
+/// applied to a present value or argument of the wrong kind, is a type mismatch; an absent or null field skips the
+/// value rules (`required` owns presence).
 pub struct ValidateCheckOp;
 impl Operator for ValidateCheckOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/check", >= 2);
         let value = eval_expr(&args[0], ctx)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| value.kind_error("object"))?;
         let mut errors = Vec::new();
         for (field, rules) in rules_by_field(&args[1], ctx)? {
-            let field_value = value
-                .as_object()
-                .and_then(|object| object.get(&field))
-                .cloned()
-                .unwrap_or(Value::Null);
+            let field_value = object.get(&field).cloned().unwrap_or(Value::Null);
             for (name, rule_args) in rules {
                 if rule_holds(&name, &field_value, &rule_args)? == Some(false) {
                     errors.push(Value::string(format!("{field}: {name} validation failed")));

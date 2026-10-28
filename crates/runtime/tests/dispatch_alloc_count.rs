@@ -972,12 +972,12 @@ fn a_fan_out_does_not_copy_the_payload_once_per_listener() {
     assert!(many < 2.0, "45 listeners hold {many:.2} payload copies at peak (was 3.8 per listener before sharing)");
 }
 
-/// Bytes allocated evaluating `(array/reduce (array/range 0 n) [] (array/append @acc @item))`.
+/// Bytes allocated evaluating `(array/reduce (array/range 0 n) [] (fn (acc item) (array/append @acc @item)))`.
 fn reduce_append_bytes(n: usize) -> usize {
     use orbital_core_base::schema::sexpr::SExpression;
     use orbital_core_eval::evaluator::context::BindingContextBuilder;
     let expr: SExpression = serde_json::from_value(json!(
-        ["array/reduce", ["array/range", 0, n], [], ["array/append", "@acc", "@item"]]
+        ["array/reduce", ["array/range", 0, n], [], ["fn", ["acc", "item"], ["array/append", "@acc", "@item"]]]
     ))
     .unwrap();
     let ctx = BindingContextBuilder::new().build();

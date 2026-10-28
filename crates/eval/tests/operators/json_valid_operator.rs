@@ -82,7 +82,6 @@ fn legacy_json_parse_controls_remain_unchanged() {
         (json!("null"), json!(null)),
         (json!(""), json!(null)),
         (json!("undefined"), json!(null)),
-        (json!(null), json!(null)),
     ] {
         let parse: SExpression =
             serde_json::from_value(json!(["json/parse", input, "Row"])).unwrap();
@@ -90,6 +89,9 @@ fn legacy_json_parse_controls_remain_unchanged() {
         let expected: Value = serde_json::from_value(expected).unwrap();
         assert_eq!(actual, expected, "input: {input}");
     }
+    let null_input: SExpression =
+        serde_json::from_value(json!(["json/parse", null, "Row"])).unwrap();
+    assert!(Evaluator::new().evaluate(&null_input, &ctx).is_err());
 }
 
 fn nodes_of(value: serde_json::Value) -> Result<Value, String> {

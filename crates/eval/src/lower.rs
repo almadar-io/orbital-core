@@ -29,7 +29,7 @@ orbital_core_base::kernel_local! {
 }
 
 /// [`lower_sexpr`] keeping each `typed` form as a call, for the compiler pass that records declared argument types
-/// (`orbital-compiler` `typed_args`). Every other lowering reads `["typed", value, type]` as its value.
+/// (the checker reads a local annotation or knob type from it). Every other lowering reads `["typed", value, type]` as its value.
 pub fn lower_sexpr_keeping_typed(sexpr: &SExpression) -> Result<OirExpr, LowerError> {
     KEEP_TYPED.with(|keep| keep.set(true));
     let lowered = ExprLowerer.resolve_sexpr(sexpr);

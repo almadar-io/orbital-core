@@ -4,8 +4,8 @@
 //! per data row, keyed by the header row. RFC 4180 quoting (`""` escapes a
 //! quote; a quoted field may hold commas and line breaks); records end in CRLF,
 //! LF or CR; a blank line is skipped, a short row's missing cells are `""`, a
-//! long row's extra cells are dropped, a leading BOM is ignored. Empty text,
-//! header-only text and non-string input → `[]`, never an error. The
+//! long row's extra cells are dropped, a leading BOM is ignored. Empty text and
+//! header-only text → `[]`; non-string input is a type mismatch. The
 //! `@almadar/evaluator` twin is `std/csv.ts`; both read `operator-types.json`.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
@@ -84,10 +84,8 @@ pub struct CsvParseOp;
 impl Operator for CsvParseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "csv/parse", 1);
-        let Value::String(text) = eval_expr(&args[0], ctx)? else {
-            return Ok(Value::array(Vec::new()));
-        };
-        Ok(Value::array(parse_csv(&text)))
+        let input = eval_expr(&args[0], ctx)?;
+        Ok(Value::array(parse_csv(input.text()?)))
     }
 }
 
@@ -180,5 +178,23 @@ mod tests {
     #[test]
     fn bom_is_ignored() {
         assert_eq!(rows("\u{feff}a\n1"), vec![pairs(&[("a", "1")])]);
+    }
+
+    #[test]
+    fn non_string_input_is_a_type_mismatch_and_text_parses() {
+        let run = |input: serde_json::Value| {
+            let expr: SExpression =
+                serde_json::from_value(serde_json::json!(["csv/parse", input])).unwrap();
+            eval_expr(&expr, &BindingContext::default())
+        };
+        assert!(run(serde_json::Value::Null).is_err());
+        assert!(run(serde_json::json!(5)).is_err());
+        assert_eq!(
+            run(serde_json::json!("a\n1"))
+                .unwrap()
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
     }
 }

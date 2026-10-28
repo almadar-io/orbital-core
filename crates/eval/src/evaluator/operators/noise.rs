@@ -67,10 +67,14 @@ fn perlin(x: f64, y: f64, seed: f64) -> f64 {
     lerp(x1, x2, v)
 }
 
-fn arg_number(args: &[SExpression], i: usize, ctx: &BindingContext, default: f64) -> EvalResult2 {
+fn arg_number(args: &[SExpression], i: usize, ctx: &BindingContext) -> EvalResult2 {
+    Ok(eval_expr(&args[i], ctx)?.number()?)
+}
+
+fn seed_arg(args: &[SExpression], i: usize, ctx: &BindingContext) -> EvalResult2 {
     match args.get(i) {
-        Some(a) => Ok(eval_expr(a, ctx)?.as_number().unwrap_or(default)),
-        None => Ok(default),
+        Some(_) => arg_number(args, i, ctx),
+        None => Ok(0.0),
     }
 }
 
@@ -79,10 +83,10 @@ type EvalResult2 = Result<f64, OrbitalError>;
 pub struct NoisePerlinOp;
 impl Operator for NoisePerlinOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "noise/perlin", 1);
-        let x = arg_number(args, 0, ctx, 0.0)?;
-        let y = arg_number(args, 1, ctx, 0.0)?;
-        let seed = arg_number(args, 2, ctx, 0.0)?;
+        require_arity!(args, "noise/perlin", >= 2);
+        let x = arg_number(args, 0, ctx)?;
+        let y = arg_number(args, 1, ctx)?;
+        let seed = seed_arg(args, 2, ctx)?;
         Ok(Value::Number(perlin(x, y, seed)))
     }
 }
@@ -91,9 +95,9 @@ pub struct NoiseSimplexOp;
 impl Operator for NoiseSimplexOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "noise/simplex", >= 2);
-        let x = arg_number(args, 0, ctx, 0.0)?;
-        let y = arg_number(args, 1, ctx, 0.0)?;
-        let seed = arg_number(args, 2, ctx, 0.0)?;
+        let x = arg_number(args, 0, ctx)?;
+        let y = arg_number(args, 1, ctx)?;
+        let seed = seed_arg(args, 2, ctx)?;
         let v = (perlin(x, y, seed)
             + perlin(x * 2.0 + 5.2, y * 2.0 + 1.3, seed) * 0.5
             + perlin(x * 4.0 + 9.1, y * 4.0 + 7.7, seed) * 0.25)
@@ -106,10 +110,10 @@ pub struct NoiseFbmOp;
 impl Operator for NoiseFbmOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "noise/fbm", >= 3);
-        let x = arg_number(args, 0, ctx, 0.0)?;
-        let y = arg_number(args, 1, ctx, 0.0)?;
-        let octaves_raw = arg_number(args, 2, ctx, 1.0)?;
-        let seed = arg_number(args, 3, ctx, 0.0)?;
+        let x = arg_number(args, 0, ctx)?;
+        let y = arg_number(args, 1, ctx)?;
+        let octaves_raw = arg_number(args, 2, ctx)?;
+        let seed = seed_arg(args, 3, ctx)?;
         let octaves = (octaves_raw.floor() as i64).clamp(1, 8);
         let mut total = 0.0;
         let mut freq = 1.0;
@@ -122,5 +126,39 @@ impl Operator for NoiseFbmOp {
             amp *= 0.5;
         }
         Ok(Value::Number(total / max))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval(form: &str) -> EvalResult {
+        let expr: SExpression = serde_json::from_str(form).expect("s-expression");
+        eval_expr(&expr, &BindingContext::default())
+    }
+
+    fn error_text(form: &str) -> String {
+        format!("{:?}", eval(form).expect_err("expected a typed error"))
+    }
+
+    #[test]
+    fn declared_arity_and_strict_numbers() {
+        let v = eval(r#"["noise/perlin", 1.5, 2.5]"#)
+            .unwrap()
+            .number()
+            .unwrap();
+        assert_eq!(
+            Value::Number(v),
+            eval(r#"["noise/perlin", 1.5, 2.5, 0]"#).unwrap()
+        );
+        assert!(matches!(
+            eval(r#"["noise/perlin", 1.5]"#),
+            Err(OrbitalError::Eval(EvalError::ArityMismatch { .. }))
+        ));
+        assert!(eval(r#"["noise/fbm", 1.5, 2.5, 4]"#).is_ok());
+        assert!(error_text(r#"["noise/perlin", null, 2.5]"#).contains("number"));
+        assert!(error_text(r#"["noise/simplex", 1, 2, null]"#).contains("number"));
+        assert!(error_text(r#"["noise/fbm", 1, 2, null]"#).contains("number"));
     }
 }

@@ -1,6 +1,6 @@
 //! Replay a solver model through the real evaluator: a counterexample is reported only when every assumption
-//! evaluates truthy and the goal falsy on it, so a disagreement between the decision procedure and the evaluator can
-//! never surface as a violation.
+//! evaluates to true and the goal to false on it (a raise confirms nothing), so a disagreement between the decision
+//! procedure and the evaluator can never surface as a violation.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -92,7 +92,7 @@ fn reads_unresolved(e: &SExpression) -> bool {
     }
 }
 
-/// Whether the model makes every assumption truthy and the goal falsy in the evaluator. A value the prover could not
+/// Whether the model makes every assumption evaluate to true and the goal to false in the evaluator. A value the prover could not
 /// model is never confirmed, whatever the evaluator makes of its placeholder.
 pub fn confirms(model: &Model, assumptions: &[SExpression], goal: &SExpression) -> bool {
     if reads_unresolved(goal) || assumptions.iter().any(reads_unresolved) {

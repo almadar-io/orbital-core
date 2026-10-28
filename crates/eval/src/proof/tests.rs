@@ -336,7 +336,7 @@ fn an_array_length_is_a_non_negative_number() {
     );
     assert_eq!(
         only(&program(
-            create(json!(["or", ["array/len", "@payload.rows"], 0])),
+            create(json!(["default", ["array/len", "@payload.rows"], 0])),
             J::Null,
             inv.clone()
         )),
@@ -854,7 +854,7 @@ fn every_proved_implication_holds_in_the_evaluator() {
         ),
         (
             json!([">=", "@entity.a", 0]),
-            json!([">=", ["or", "@entity.a", 7], 0]),
+            json!([">=", ["default", "@entity.a", 7], 0]),
         ),
         (
             json!(true),
@@ -932,7 +932,7 @@ fn every_proved_implication_holds_in_the_evaluator() {
         let mut t = Translator::new(&vars);
         let f = Formula::and(vec![
             t.truthy(&assume).unwrap(),
-            t.truthy(&goal).unwrap().negate().unwrap(),
+            t.falsy(&goal).unwrap(),
         ]);
         assert_eq!(
             decide(&f, &vars),
@@ -1027,6 +1027,41 @@ fn an_off_by_one_write_breaks_the_ensures_with_a_confirmed_counterexample() {
         only(&program(t, J::Null, J::Null)),
         Verdict::Violated { .. }
     ));
+}
+
+#[test]
+fn a_nullable_ensures_is_proved_by_a_presence_guard_and_refuted_only_by_present_values() {
+    let ensures = json!([[">=", "@entity.paid", 0]]);
+    let keep = json!([["set", "@entity.status", "paid"]]);
+    let guarded = pay(
+        keep.clone(),
+        ensures.clone(),
+        Some(json!([">=", "@entity.paid", 0])),
+    );
+    assert_eq!(
+        only(&program(json!([guarded]), J::Null, J::Null)),
+        Verdict::Proved
+    );
+    let bare = json!([pay(keep.clone(), ensures.clone(), None)]);
+    let Verdict::Violated { counterexample } = only(&program(bare, J::Null, J::Null)) else {
+        panic!("without the guard a negative paid breaks the ensures")
+    };
+    let paids: Vec<&J> = counterexample
+        .as_object()
+        .unwrap()
+        .values()
+        .filter_map(|root| root.get("paid"))
+        .collect();
+    assert!(
+        !paids.is_empty() && paids.iter().all(|p| p.as_f64().is_some_and(|n| n < 0.0)),
+        "a null paid raises instead of violating: {counterexample}"
+    );
+    let null_only = pay(keep, ensures, Some(json!(["=", "@entity.paid", null])));
+    assert_eq!(
+        only(&program(json!([null_only]), J::Null, J::Null)),
+        Verdict::Proved,
+        "an ordering over a null raises: the ensures never evaluates to false"
+    );
 }
 
 #[test]

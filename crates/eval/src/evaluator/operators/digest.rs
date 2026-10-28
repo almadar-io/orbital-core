@@ -28,14 +28,8 @@ fn digest_or_null(bytes: &[u8], encoding: &str) -> EvalResult {
     Ok(encode_digest(bytes, encoding).map_or(Value::Null, Value::string))
 }
 
-fn string_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<String, OrbitalError> {
-    match eval_expr(arg, ctx)? {
-        Value::String(s) => Ok(s.into_inner()),
-        other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "{op}: expected a string argument, got {}",
-            other.type_name()
-        )))),
-    }
+fn string_arg(arg: &SExpression, ctx: &BindingContext) -> Result<String, OrbitalError> {
+    Ok(eval_expr(arg, ctx)?.text().map(str::to_string)?)
 }
 
 /// str/encode-uri-component
@@ -43,43 +37,28 @@ pub struct StrEncodeUriComponentOp;
 impl Operator for StrEncodeUriComponentOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/encode-uri-component", == 1);
-        let s = string_arg(&args[0], ctx, "str/encode-uri-component")?;
+        let s = string_arg(&args[0], ctx)?;
         Ok(Value::string(codec::encode_uri_component(&s)))
     }
 }
 
-/// str/decode-uri-component - JS decodeURIComponent; null yields null, malformed input answers null
+/// str/decode-uri-component - JS decodeURIComponent; malformed input answers null, a non-string input (null included) is a type mismatch
 pub struct StrDecodeUriComponentOp;
 impl Operator for StrDecodeUriComponentOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/decode-uri-component", == 1);
-        let s = match eval_expr(&args[0], ctx)? {
-            Value::Null => return Ok(Value::Null),
-            Value::String(s) => s,
-            other => {
-                return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                    "str/decode-uri-component: expected a string argument, got {}",
-                    other.type_name()
-                ))))
-            }
-        };
+        let s = string_arg(&args[0], ctx)?;
         Ok(codec::decode_uri_component(&s).map_or(Value::Null, Value::string))
     }
 }
 
-/// str/uri-component-valid - true iff str/decode-uri-component would succeed; null is false
+/// str/uri-component-valid - true iff str/decode-uri-component would succeed; a non-string input is a type mismatch
 pub struct StrUriComponentValidOp;
 impl Operator for StrUriComponentValidOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/uri-component-valid", == 1);
-        match eval_expr(&args[0], ctx)? {
-            Value::Null => Ok(Value::Bool(false)),
-            Value::String(s) => Ok(Value::Bool(codec::decode_uri_component(&s).is_ok())),
-            other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "str/uri-component-valid: expected a string argument, got {}",
-                other.type_name()
-            )))),
-        }
+        let s = string_arg(&args[0], ctx)?;
+        Ok(Value::Bool(codec::decode_uri_component(&s).is_ok()))
     }
 }
 
@@ -88,7 +67,7 @@ pub struct Base64EncodeOp;
 impl Operator for Base64EncodeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "base64/encode", == 1);
-        let s = string_arg(&args[0], ctx, "base64/encode")?;
+        let s = string_arg(&args[0], ctx)?;
         Ok(Value::string(codec::base64_encode(s.as_bytes())))
     }
 }
@@ -104,24 +83,18 @@ pub struct Base64DecodeOp;
 impl Operator for Base64DecodeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "base64/decode", == 1);
-        let s = string_arg(&args[0], ctx, "base64/decode")?;
+        let s = string_arg(&args[0], ctx)?;
         Ok(decode_base64_text(&s).map_or(Value::Null, Value::string))
     }
 }
 
-/// base64/valid - true iff base64/decode would succeed; null is false
+/// base64/valid - true iff base64/decode would succeed; a non-string input is a type mismatch
 pub struct Base64ValidOp;
 impl Operator for Base64ValidOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "base64/valid", == 1);
-        match eval_expr(&args[0], ctx)? {
-            Value::Null => Ok(Value::Bool(false)),
-            Value::String(s) => Ok(Value::Bool(decode_base64_text(&s).is_ok())),
-            other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "base64/valid: expected a string argument, got {}",
-                other.type_name()
-            )))),
-        }
+        let s = string_arg(&args[0], ctx)?;
+        Ok(Value::Bool(decode_base64_text(&s).is_ok()))
     }
 }
 
@@ -139,10 +112,10 @@ impl Operator for HashSha256Op {
                 actual: args.len(),
             }));
         }
-        let s = string_arg(&args[0], ctx, OP)?;
-        let encoding = string_arg(&args[1], ctx, OP)?;
+        let s = string_arg(&args[0], ctx)?;
+        let encoding = string_arg(&args[1], ctx)?;
         let input = match args.get(2) {
-            Some(arg) => string_arg(arg, ctx, OP)?,
+            Some(arg) => string_arg(arg, ctx)?,
             None => "text".to_string(),
         };
         let data = match input.as_str() {
@@ -162,9 +135,9 @@ pub struct HashMd5Op;
 impl Operator for HashMd5Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "hash/md5", == 2);
-        let s = string_arg(&args[0], ctx, "hash/md5")?;
+        let s = string_arg(&args[0], ctx)?;
         let bytes = codec::base64_decode(&s);
-        let encoding = string_arg(&args[1], ctx, "hash/md5")?;
+        let encoding = string_arg(&args[1], ctx)?;
         match bytes {
             Ok(bytes) => digest_or_null(&codec::md5(&bytes), &encoding),
             Err(_) => Ok(Value::Null),
@@ -180,8 +153,8 @@ pub struct HashScryptOp;
 impl Operator for HashScryptOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "hash/scrypt", == 2);
-        let s = string_arg(&args[0], ctx, "hash/scrypt")?;
-        let credential = string_arg(&args[1], ctx, "hash/scrypt")?;
+        let s = string_arg(&args[0], ctx)?;
+        let credential = string_arg(&args[1], ctx)?;
         let Some(salt) = ctx.secret(&credential).and_then(codec::hex_decode) else {
             return Ok(Value::Null);
         };
@@ -198,24 +171,14 @@ impl Operator for HashPbkdf2Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "hash/pbkdf2";
         require_arity!(args, OP, == 4);
-        let password = bytes_in(&args[0], ctx, OP)?;
-        let salt = bytes_in(&args[1], ctx, OP)?;
-        let count = |arg: &SExpression, what: &str| -> Result<Option<u32>, OrbitalError> {
-            match eval_expr(arg, ctx)? {
-                Value::Number(n)
-                    if n.fract() == 0.0 && (1.0..=f64::from(u32::MAX)).contains(&n) =>
-                {
-                    Ok(Some(n as u32))
-                }
-                Value::Number(_) => Ok(None),
-                other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                    "{OP}: {what} {}: expected a whole number from 1",
-                    other.to_string_value()
-                )))),
-            }
+        let password = bytes_in(&args[0], ctx)?;
+        let salt = bytes_in(&args[1], ctx)?;
+        let count = |arg: &SExpression| -> Result<Option<u32>, OrbitalError> {
+            let n = eval_expr(arg, ctx)?.number().map_err(OrbitalError::Eval)?;
+            Ok((n.fract() == 0.0 && (1.0..=f64::from(u32::MAX)).contains(&n)).then_some(n as u32))
         };
-        let iterations = count(&args[2], "iterations")?;
-        let length = count(&args[3], "length")?;
+        let iterations = count(&args[2])?;
+        let length = count(&args[3])?;
         let (Some(password), Some(salt), Some(iterations), Some(length)) =
             (password, salt, iterations, length)
         else {
@@ -226,12 +189,8 @@ impl Operator for HashPbkdf2Op {
     }
 }
 
-fn bytes_in(
-    arg: &SExpression,
-    ctx: &BindingContext,
-    op: &str,
-) -> Result<Option<Vec<u8>>, OrbitalError> {
-    let s = string_arg(arg, ctx, op)?;
+fn bytes_in(arg: &SExpression, ctx: &BindingContext) -> Result<Option<Vec<u8>>, OrbitalError> {
+    let s = string_arg(arg, ctx)?;
     Ok(codec::base64_decode(&s).ok())
 }
 
@@ -247,9 +206,7 @@ fn codec_options(
         None => Value::Object(Default::default()),
     };
     let Value::Object(fields) = &value else {
-        return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "{op}: options must be an object"
-        ))));
+        return Err(OrbitalError::Eval(value.kind_error("object")));
     };
     for (key, value) in fields {
         if key == "result" && !matches!(value, Value::Bool(_)) {
@@ -270,20 +227,12 @@ fn codec_setting(
     default: u32,
     max: u32,
     min: u32,
-    op: &str,
 ) -> Result<Option<u32>, OrbitalError> {
     let Some(value) = options.as_object().and_then(|fields| fields.get(key)) else {
         return Ok(Some(default));
     };
-    match value {
-        Value::Number(n) if n.fract() == 0.0 && *n >= f64::from(min) && *n <= f64::from(max) => {
-            Ok(Some(*n as u32))
-        }
-        Value::Number(_) => Ok(None),
-        _ => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "{op}: {key} must be a whole number from {min} to {max}"
-        )))),
-    }
+    let n = value.number().map_err(OrbitalError::Eval)?;
+    Ok((n.fract() == 0.0 && n >= f64::from(min) && n <= f64::from(max)).then_some(n as u32))
 }
 
 fn codec_answer(
@@ -330,7 +279,7 @@ fn compress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult 
     if args.len() > 2 {
         require_arity!(args, op, == 2);
     }
-    let data = bytes_in(&args[0], ctx, op)?;
+    let data = bytes_in(&args[0], ctx)?;
     let gzip = op == "gzip/compress";
     let options = codec_options(
         args,
@@ -347,14 +296,14 @@ fn compress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult 
         return Ok(Value::Null);
     };
     let packed = if gzip {
-        let Some(level) = codec_setting(&options, "level", 6, 9, 0, op)? else {
+        let Some(level) = codec_setting(&options, "level", 6, 9, 0)? else {
             return Ok(Value::Null);
         };
         codec::gzip_compress_level(&data, level)
     } else {
         let (Some(quality), Some(window)) = (
-            codec_setting(&options, "quality", 11, 11, 0, op)?,
-            codec_setting(&options, "window", 22, 24, 10, op)?,
+            codec_setting(&options, "quality", 11, 11, 0)?,
+            codec_setting(&options, "window", 22, 24, 10)?,
         ) else {
             return Ok(Value::Null);
         };
@@ -377,19 +326,11 @@ fn decompress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResul
     if args.len() > 3 {
         require_arity!(args, op, == 3);
     }
-    let data = bytes_in(&args[0], ctx, op)?;
-    let max = match eval_expr(&args[1], ctx)? {
-        Value::Number(n) if n.fract() == 0.0 && n >= 0.0 && n <= u32::MAX as f64 => {
-            Some(n as usize)
-        }
-        Value::Number(_) => None,
-        other => {
-            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "{op}: maxBytes {}: expected a whole number from 0",
-                other.to_string_value()
-            ))))
-        }
-    };
+    let data = bytes_in(&args[0], ctx)?;
+    let n = eval_expr(&args[1], ctx)?
+        .number()
+        .map_err(OrbitalError::Eval)?;
+    let max = (n.fract() == 0.0 && n >= 0.0 && n <= u32::MAX as f64).then_some(n as usize);
     let options = codec_options(args, 2, ctx, op, &["result"])?;
     let (Some(data), Some(max), Some(options)) = (data, max, options) else {
         return Ok(Value::Null);
@@ -467,9 +408,9 @@ pub struct HmacSha256Op;
 impl Operator for HmacSha256Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "hmac/sha256", == 3);
-        let key = string_arg(&args[0], ctx, "hmac/sha256")?;
-        let message = string_arg(&args[1], ctx, "hmac/sha256")?;
-        let encoding = string_arg(&args[2], ctx, "hmac/sha256")?;
+        let key = string_arg(&args[0], ctx)?;
+        let message = string_arg(&args[1], ctx)?;
+        let encoding = string_arg(&args[2], ctx)?;
         digest_text(
             &codec::hmac_sha256(key.as_bytes(), message.as_bytes()),
             &encoding,
@@ -559,7 +500,7 @@ mod tests {
             serde_json::json!(["hash/sha256", 42, "hex", "bytes"]),
         ] {
             let err = eval(form).expect_err("refused");
-            assert!(err.to_string().contains("hash/sha256"), "{err}");
+            assert!(err.to_string().contains("expected string, got number"), "{err}");
         }
         for form in [
             serde_json::json!(["hash/sha256", "abc", "hex", "utf16"]),
@@ -771,6 +712,22 @@ mod tests {
         assert_eq!(
             eval(serde_json::json!(["hash/pbkdf2", "%%", salt, 1, 32])).unwrap(),
             Value::Null
+        );
+    }
+
+    #[test]
+    fn a_null_text_operand_is_a_type_mismatch_and_a_text_one_is_answered() {
+        for op in [
+            "str/decode-uri-component",
+            "str/uri-component-valid",
+            "base64/valid",
+        ] {
+            assert!(eval(serde_json::json!([op, null])).is_err(), "{op}");
+            assert!(eval(serde_json::json!([op, "abc"])).is_ok(), "{op}");
+        }
+        assert_eq!(
+            eval(serde_json::json!(["str/uri-component-valid", "%E0%A4%A"])).unwrap(),
+            Value::Bool(false)
         );
     }
 }

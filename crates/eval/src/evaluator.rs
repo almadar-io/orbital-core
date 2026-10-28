@@ -36,7 +36,7 @@ pub mod trace;
 #[cfg(test)]
 mod ruling_tests;
 
-pub use crate::evaluator::operators::arg_types::{actual_of, operator_signature};
+pub use crate::evaluator::operators::arg_types::operator_signature;
 pub use crate::evaluator::operators::system::{TimeUnit, TIME_UNIT_VOCABULARY};
 pub use crate::evaluator::operators::xml::bake_list_shapes;
 pub use context::{BindingContext, BindingContextBuilder, LocalName};

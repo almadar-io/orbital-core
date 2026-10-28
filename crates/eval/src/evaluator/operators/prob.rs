@@ -104,15 +104,30 @@ prob_op!(ProbBetaOp, "prob/beta", 2, |args, ctx| {
 prob_op!(ProbCategoricalOp, "prob/categorical", 2, |args, ctx| {
     let items = require_array!(eval_expr(&args[0], ctx)?);
     let weights = numbers(eval_expr(&args[1], ctx)?)?;
+    if items.len() != weights.len() {
+        return Err(EvalError::InvalidArgument(format!(
+            "prob/categorical: {} items but {} weights",
+            items.len(),
+            weights.len()
+        ))
+        .into());
+    }
     let total: f64 = weights.iter().sum();
+    if items.is_empty() || weights.iter().any(|w| *w < 0.0 || w.is_nan()) || total <= 0.0 {
+        return Err(EvalError::InvalidArgument(
+            "prob/categorical: needs at least one item and non-negative weights with a positive sum"
+                .to_string(),
+        )
+        .into());
+    }
     let mut r = ctx.prob_next()? * total;
-    for (i, item) in items.iter().enumerate() {
-        r -= weights.get(i).copied().unwrap_or(f64::NAN);
+    for (item, weight) in items.iter().zip(&weights) {
+        r -= weight;
         if r <= 0.0 {
             return Ok(item.clone());
         }
     }
-    Ok(items.last().cloned().unwrap_or(Value::Null))
+    Ok(items[items.len() - 1].clone())
 });
 
 prob_op!(ProbPoissonOp, "prob/poisson", 1, |args, ctx| {
@@ -137,12 +152,10 @@ prob_op!(ProbConditionOp, "prob/condition", 1, |args, ctx| {
 });
 
 prob_op!(ProbSampleOp, "prob/sample", 2, |args, ctx| {
-    let n = number(&args[0], ctx)?;
-    let mut out = Vec::new();
-    let mut i = 0.0;
-    while i < n {
+    let n = super::array::whole_count(&eval_expr(&args[0], ctx)?, "prob/sample", "n")?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
         out.push(eval_expr(&args[1], ctx)?);
-        i += 1.0;
     }
     Ok(Value::array(out))
 });
@@ -209,12 +222,10 @@ fn rejection_samples(
     args: &[SExpression],
     ctx: &BindingContext,
 ) -> Result<(Vec<Value>, f64), OrbitalError> {
-    let n = number(&args[3], ctx)?;
+    let n = super::array::whole_count(&eval_expr(&args[3], ctx)?, "prob/posterior", "n")?;
     let outer = ctx.prob().take_rejected();
     let mut accepted = Vec::new();
-    let mut i = 0.0;
-    while i < n {
-        i += 1.0;
+    for _ in 0..n {
         let mut sample = ctx.child();
         sample.set_entity(match ctx.entity.as_value() {
             Value::Object(map) => Value::Object(map.clone()),
@@ -231,7 +242,7 @@ fn rejection_samples(
         accepted.push(eval_expr(&args[2], &sample)?);
     }
     ctx.prob().restore_rejected(outer);
-    Ok((accepted, n))
+    Ok((accepted, n as f64))
 }
 
 prob_op!(ProbPosteriorOp, "prob/posterior", 4, |args, ctx| {
@@ -242,13 +253,15 @@ prob_op!(ProbInferOp, "prob/infer", 4, |args, ctx| {
     let (accepted, n) = rejection_samples(args, ctx)?;
     let samples = numbers(Value::array(accepted))?;
     let count = samples.len() as f64;
-    let (mean, variance, rate) = if samples.is_empty() {
-        (0.0, 0.0, 0.0)
-    } else {
-        let mean = samples.iter().sum::<f64>() / count;
-        let variance = samples.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count;
-        (mean, variance, count / n)
-    };
+    if samples.is_empty() {
+        return Err(EvalError::InvalidArgument(
+            "prob/infer: no sample was accepted, so there is no mean or variance".to_string(),
+        )
+        .into());
+    }
+    let mean = samples.iter().sum::<f64>() / count;
+    let variance = samples.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count;
+    let rate = count / n;
     let mut out = ValueMap::default();
     out.insert("mean".to_string(), Value::Number(mean));
     out.insert("variance".to_string(), Value::Number(variance));
@@ -260,8 +273,13 @@ prob_op!(ProbInferOp, "prob/infer", 4, |args, ctx| {
     Ok(Value::object(out))
 });
 
-fn mean_of(samples: &[f64]) -> f64 {
-    samples.iter().sum::<f64>() / samples.len() as f64
+fn mean_of(operator: &str, samples: &[f64]) -> Result<f64, OrbitalError> {
+    if samples.is_empty() {
+        return Err(
+            EvalError::InvalidArgument(format!("{operator}: needs at least one sample")).into(),
+        );
+    }
+    Ok(samples.iter().sum::<f64>() / samples.len() as f64)
 }
 
 prob_op!(
@@ -270,20 +288,13 @@ prob_op!(
     1,
     |args, ctx| {
         let samples = numbers(eval_expr(&args[0], ctx)?)?;
-        Ok(Value::Number(if samples.is_empty() {
-            0.0
-        } else {
-            mean_of(&samples)
-        }))
+        Ok(Value::Number(mean_of("prob/expected-value", &samples)?))
     }
 );
 
 prob_op!(ProbVarianceOp, "prob/variance", 1, |args, ctx| {
     let samples = numbers(eval_expr(&args[0], ctx)?)?;
-    if samples.is_empty() {
-        return Ok(Value::Number(0.0));
-    }
-    let mean = mean_of(&samples);
+    let mean = mean_of("prob/variance", &samples)?;
     Ok(Value::Number(
         samples.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / samples.len() as f64,
     ))
@@ -340,7 +351,7 @@ prob_op!(ProbPercentileOp, "prob/percentile", 2, |args, ctx| {
         return Ok(Value::Null);
     }
     if samples.is_empty() {
-        return Ok(Value::Number(0.0));
+        return Ok(Value::Null);
     }
     let samples = sorted(samples);
     let idx = (p / 100.0) * (samples.len() - 1) as f64;
@@ -365,7 +376,7 @@ prob_op!(
             return Ok(Value::Null);
         }
         if samples.is_empty() {
-            return Ok(Value::array(vec![Value::Number(0.0), Value::Number(0.0)]));
+            return Ok(Value::Null);
         }
         let samples = sorted(samples);
         let last = (samples.len() - 1) as f64;
@@ -518,5 +529,52 @@ mod tests {
     fn control_a_non_prob_call_is_untouched_by_the_prob_scope() {
         let got = run(&serde_json::json!(["+", 1, 2]), &None).unwrap();
         assert!(same(&got, &serde_json::json!(3)));
+    }
+
+    #[test]
+    fn empty_statistics_and_mismatched_weights_are_refused() {
+        let ok = |e: serde_json::Value| run(&e, &None).unwrap();
+        let err = |e: serde_json::Value| run(&e, &None).is_err();
+        assert!(same(
+            &ok(serde_json::json!(["prob/expected-value", [1, 3]])),
+            &serde_json::json!(2)
+        ));
+        assert!(same(
+            &ok(serde_json::json!(["prob/variance", [1, 3]])),
+            &serde_json::json!(1)
+        ));
+        assert!(err(serde_json::json!(["prob/expected-value", []])));
+        assert!(err(serde_json::json!(["prob/variance", []])));
+        assert!(ok(serde_json::json!(["prob/percentile", [], 50])).is_null());
+        assert!(ok(serde_json::json!(["prob/credible-interval", [], 0.05])).is_null());
+        let seeded = |items: serde_json::Value, weights: serde_json::Value| {
+            serde_json::json!(["do", ["prob/seed", 1], ["prob/categorical", items, weights]])
+        };
+        assert!(!err(seeded(
+            serde_json::json!(["a", "b"]),
+            serde_json::json!([1, 2])
+        )));
+        assert!(err(seeded(
+            serde_json::json!(["a", "b"]),
+            serde_json::json!([1])
+        )));
+        assert!(err(seeded(
+            serde_json::json!(["a", "b"]),
+            serde_json::json!([0, 0])
+        )));
+        assert!(err(seeded(
+            serde_json::json!(["a", "b"]),
+            serde_json::json!([-1, 2])
+        )));
+        assert!(err(serde_json::json!([
+            "do",
+            ["prob/seed", 1],
+            ["prob/sample", -3, ["prob/flip", 0.5]]
+        ])));
+        assert!(!err(serde_json::json!([
+            "do",
+            ["prob/seed", 1],
+            ["prob/sample", 0, ["prob/flip", 0.5]]
+        ])));
     }
 }

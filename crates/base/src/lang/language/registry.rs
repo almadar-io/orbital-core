@@ -45,7 +45,8 @@ pub enum OperatorTypeRef {
 
 impl OperatorTypeRef {
     /// Whether null is a value of this type: a null literal or `null`, a union with such a member, an unevaluated
-    /// expression whose value may be null, or a type variable whose bound admits null (an unbounded one does).
+    /// expression whose value may be null, a type variable whose bound admits null (an unbounded one does), or a
+    /// record's field (the field may be optional).
     pub fn admits_null(&self) -> bool {
         match self {
             OperatorTypeRef::Primitive(name) => matches!(name.as_str(), "null" | "sexpr"),
@@ -54,6 +55,7 @@ impl OperatorTypeRef {
                 OperatorTypeRefKind::Union { of } => of.iter().any(OperatorTypeRef::admits_null),
                 OperatorTypeRefKind::Var { bound, .. } => bound.as_ref().is_none_or(|b| b.admits_null()),
                 OperatorTypeRefKind::Sexpr { of } => of.as_ref().is_none_or(|t| t.admits_null()),
+                OperatorTypeRefKind::FieldOf { .. } => true,
                 _ => false,
             },
         }

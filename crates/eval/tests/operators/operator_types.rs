@@ -1,10 +1,14 @@
-// D-12: a present argument that contradicts the type the operator table declares for its position raises the
-// typed `TypeMismatch`. One fixture, read by this suite and by `@almadar/evaluator` `operator-types.test.ts`
-// (canonical source orbital-core `tests/baked/operator-types`, mirrored into `tests/baked/`).
+// D-12 / EXEC-EVAL-1: an operator that reads an argument of the wrong kind raises the typed `TypeMismatch` it reports;
+// the kernel runs no separate per-call signature check. The fixture is canonical in orbital-core `tests/baked/operator-types`.
 
-use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_base::error::{EvalError, OrbitalError}, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde::Deserialize;
 use std::path::PathBuf;
+use {
+    orbital_core_base::error::{EvalError, OrbitalError},
+    orbital_core_base::value::Value,
+    orbital_core_eval::evaluator::context::BindingContextBuilder,
+    orbital_core_eval::evaluator::Evaluator,
+};
 
 #[derive(Deserialize)]
 struct Mismatch {
@@ -105,6 +109,16 @@ fn every_shared_case_agrees() {
                     ));
                 }
             }
+            (Expect::Error(m), Err(OrbitalError::Eval(EvalError::InvalidArgument(message))))
+                if m.kind == "InvalidArgument" =>
+            {
+                if message != m.expected {
+                    failures.push(format!(
+                        "{}: want InvalidArgument({}), got InvalidArgument({message})",
+                        case.name, m.expected
+                    ));
+                }
+            }
             (Expect::Error(m), Err(e)) => failures.push(format!(
                 "{}: want TypeMismatch({}), got {e}",
                 case.name, m.expected
@@ -146,16 +160,35 @@ fn on_mixed_map(expr: serde_json::Value) -> Result<serde_json::Value, OrbitalErr
 #[test]
 fn a_list_of_unlike_entry_tuples_is_a_list_for_structural_array_operators() {
     let entries = serde_json::json!(["object/entries", "@entity"]);
-    assert_eq!(on_mixed_map(serde_json::json!(["array/count", entries])).unwrap(), serde_json::json!(3.0));
-    assert_eq!(on_mixed_map(serde_json::json!(["array/nth", entries, 1])).unwrap(), serde_json::json!(["b", "x"]));
     assert_eq!(
-        on_mixed_map(serde_json::json!(["array/count", ["array/concat", entries, entries]])).unwrap(),
+        on_mixed_map(serde_json::json!(["array/count", entries])).unwrap(),
+        serde_json::json!(3.0)
+    );
+    assert_eq!(
+        on_mixed_map(serde_json::json!(["array/nth", entries, 1])).unwrap(),
+        serde_json::json!(["b", "x"])
+    );
+    assert_eq!(
+        on_mixed_map(serde_json::json!([
+            "array/count",
+            ["array/concat", entries, entries]
+        ]))
+        .unwrap(),
         serde_json::json!(6.0)
     );
 }
 
 #[test]
 fn control_a_list_of_unlike_scalars_is_still_refused_by_an_ordering_operator() {
-    let mixed = on_mixed_map(serde_json::json!(["array/max", ["array/nth", ["object/entries", "@entity"], 0]]));
-    assert!(matches!(mixed, Err(OrbitalError::Eval(EvalError::TypeMismatch { .. }))), "{mixed:?}");
+    let mixed = on_mixed_map(serde_json::json!([
+        "array/max",
+        ["array/nth", ["object/entries", "@entity"], 0]
+    ]));
+    assert!(
+        matches!(
+            mixed,
+            Err(OrbitalError::Eval(EvalError::TypeMismatch { .. }))
+        ),
+        "{mixed:?}"
+    );
 }

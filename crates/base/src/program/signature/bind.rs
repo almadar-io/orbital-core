@@ -20,15 +20,20 @@ pub(super) fn bind_type(
     if matches!(known, Known::Void) {
         return bind_void(formal, actual, b);
     }
+    // A union fits a position that binds no variable only when each of its variants does; it is a loose value there,
+    // and `(as x T)` narrows it.
     if let (Mode::Proof, Known::Type(ty)) = (mode, known) {
-        if is_uninformative(ty) {
-            return Err(undetermined(why_uninformative(ty)));
-        }
         if let OirType::Union { variants } = unwrap_optional(ty) {
-            if !variants.is_empty() {
+            if !variants.is_empty() && !binds_variable(formal) {
                 let mut trial = b.clone();
                 for variant in variants {
-                    bind_type(formal, &element(&variant.field_type), &mut trial, mode)?;
+                    bind_type(formal, &element(&variant.field_type), &mut trial, mode).map_err(|found| match found {
+                        Mismatch::Type { expected, actual } => undetermined(&format!(
+                            "it is a union ({}) and its `{actual}` variant does not fit {expected}",
+                            describe_type(ty)
+                        )),
+                        other => other,
+                    })?;
                 }
                 *b = trial;
                 return Ok(());
@@ -38,15 +43,27 @@ pub(super) fn bind_type(
     match formal {
         OperatorTypeRef::Primitive(name) => {
             let Some(expected) = checkable(name) else {
-                return Ok(());
+                return if mode == Mode::Proof {
+                    bind_nominal(name, formal, known, actual, b)
+                } else {
+                    Ok(())
+                };
             };
             match known {
+                Known::Type(ty) if mode == Mode::Proof && is_uninformative(ty) => Err(loose(ty, formal)),
                 Known::Type(ty) if fits(ty, &expected, b, mode) => Ok(()),
                 _ => Err(type_mismatch(formal, actual)),
             }
         }
         OperatorTypeRef::Tagged(kind) => match kind {
             K::Union { of } => {
+                // A formal that admits null takes an optional value as the value it holds, or null.
+                if let (Mode::Proof, Known::Type(OirType::Optional { inner })) = (mode, known) {
+                    if formal.admits_null() {
+                        let unwrapped = Actual { known: Some(Known::Type((**inner).clone())), text: actual.text.clone(), texts: actual.texts.clone(), lambda: None };
+                        return bind_type(formal, &unwrapped, b, mode);
+                    }
+                }
                 if let Known::Type(OirType::Union { variants }) = known {
                     if !variants.is_empty() {
                         let mut trial = b.clone();
@@ -77,6 +94,7 @@ pub(super) fn bind_type(
             }
             K::Literal { value } => match (value, known) {
                 (serde_json::Value::Null, _) => Err(type_mismatch(formal, actual)),
+                (_, Known::Type(ty)) if mode == Mode::Proof && is_uninformative(ty) => Err(loose(ty, formal)),
                 // A literal string fits only itself; a string whose text is not known here could be it.
                 (serde_json::Value::String(want), Known::Type(ty))
                     if matches!(unwrap_optional(ty), OirType::String) =>
@@ -212,6 +230,7 @@ pub(super) fn bind_type(
                         Ok(())
                     }
                     Some(_) => Ok(()),
+                    None if is_uninformative(ty) && mode == Mode::Proof => Err(loose(ty, formal)),
                     None if is_uninformative(ty) => Ok(()),
                     None => Err(type_mismatch(formal, actual)),
                 },
@@ -220,6 +239,11 @@ pub(super) fn bind_type(
                 }
             },
             K::Record => {
+                if let (Mode::Proof, Known::Type(ty)) = (mode, known) {
+                    if is_uninformative(ty) {
+                        return Err(loose(ty, formal));
+                    }
+                }
                 if is_record(known, b) {
                     Ok(())
                 } else {
@@ -298,6 +322,18 @@ pub(super) fn bind_type(
                     }
                 }
             }
+            K::Entity { .. } | K::EntityRef if mode == Mode::Proof => match known {
+                Known::Type(ty) if is_uninformative(ty) => Err(loose(ty, formal)),
+                Known::Type(ty) => {
+                    if fits(ty, &OirType::String, b, mode) || record_of(ty, b).is_some() {
+                        Ok(())
+                    } else {
+                        Err(type_mismatch(formal, actual))
+                    }
+                }
+                Known::EmptyList => Err(type_mismatch(formal, actual)),
+                Known::Absent | Known::Void => Ok(()),
+            },
             K::Fn { .. }
             | K::Entity { .. }
             | K::EntityRef
@@ -332,6 +368,9 @@ pub(super) fn bind_type(
                     return Ok(());
                 }
                 if let (Some(declared), Known::Type(ty)) = (resolve(formal, b), known) {
+                    if mode == Mode::Proof && is_uninformative(ty) && !is_uninformative(&declared) {
+                        return Err(loose(ty, formal));
+                    }
                     if !is_uninformative(ty)
                         && !is_uninformative(&declared)
                         && !fits(ty, &declared, b, mode)
@@ -376,11 +415,14 @@ pub(super) fn bind_unknown(
     mode: Mode,
 ) -> Result<(), Mismatch> {
     use crate::language::registry::OperatorTypeRefKind as K;
+    // At run time a value always has a kind (null is absent and passes); only a static argument can have no type.
+    let valueless = actual.lambda.is_none() && actual.text.is_none() && actual.texts.is_none();
+    if mode == Mode::Proof && valueless && demands_type(formal) {
+        return Err(undetermined(NO_TYPE));
+    }
     let OperatorTypeRef::Tagged(kind) = formal else {
         return Ok(());
     };
-    // At run time a value always has a kind (null is absent and passes); only a static argument can have no type.
-    let valueless = actual.lambda.is_none() && actual.text.is_none() && actual.texts.is_none();
     if mode != Mode::Runtime && valueless && binds_variable(formal) {
         return Err(undetermined(NO_TYPE));
     }
@@ -450,6 +492,35 @@ pub(super) fn bind_unknown(
             Ok(())
         }
         _ => Ok(()),
+    }
+}
+
+/// A nominal std type a strict call checks (`bytes`, the vector, cell and geometry structs); any other name is open.
+pub(super) fn bind_nominal(
+    name: &str,
+    formal: &OperatorTypeRef,
+    known: &Known,
+    actual: &Actual<'_>,
+    b: &CallBindings,
+) -> Result<(), Mismatch> {
+    if !matches!(name, "bytes" | "vector" | "cell" | "rect" | "circle" | "point" | "segment") {
+        return Ok(());
+    }
+    let Known::Type(ty) = known else {
+        return Err(type_mismatch(formal, actual));
+    };
+    if is_uninformative(ty) {
+        return Err(loose(ty, formal));
+    }
+    let fits_name = if name == "bytes" {
+        fits(ty, &OirType::Bytes, b, Mode::Proof)
+    } else {
+        record_of(ty, b).is_some()
+    };
+    if fits_name {
+        Ok(())
+    } else {
+        Err(type_mismatch(formal, actual))
     }
 }
 
@@ -532,6 +603,11 @@ pub(super) fn bind_bound(
     mode: Mode,
 ) -> Result<(), Mismatch> {
     if let OperatorTypeRef::Tagged(OperatorTypeRefKind::Record) = bound {
+        if let (Mode::Proof, Known::Type(ty)) = (mode, known) {
+            if is_uninformative(ty) {
+                return Err(loose(ty, bound));
+            }
+        }
         return if is_record(known, bindings) {
             Ok(())
         } else {
@@ -599,7 +675,12 @@ pub(super) fn bind_key(
             unwrap_optional(ty),
             OirType::String | OirType::Enum { .. } | OirType::FieldRef { .. }
         );
-        if known_text && !is_uninformative(ty) && paths.is_empty() {
+        // A number is an index, valid exactly when the value it indexes is a list.
+        let index_into_list = matches!(unwrap_optional(ty), OirType::Number | OirType::Integer)
+            && b.last(record_var).is_some_and(|record| {
+                matches!(unwrap_optional(record), OirType::Array { .. } | OirType::Tuple { .. })
+            });
+        if known_text && !index_into_list && !is_uninformative(ty) && paths.is_empty() {
             return Err(Mismatch::Type {
                 expected: "string".to_string(),
                 actual: oir_type_kind(ty),

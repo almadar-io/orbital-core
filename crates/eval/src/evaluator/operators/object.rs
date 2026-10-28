@@ -46,11 +46,7 @@ impl Operator for ObjectEntriesOp {
                     .collect();
                 Ok(Value::array(entries))
             }
-            Value::Null => Ok(Value::array(vec![])),
-            _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "object".to_string(),
-                actual: obj.type_name().to_string(),
-            })),
+            _ => Err(obj.kind_error("object").into()),
         }
     }
 }
@@ -75,13 +71,7 @@ impl Operator for ObjectSetOp {
 
         let mut result = match obj {
             Value::Object(o) => Value::Object(o),
-            Value::Null => Value::object(ValueMap::default()),
-            _ => {
-                return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "object".to_string(),
-                    actual: obj.type_name().to_string(),
-                }))
-            }
+            _ => return Err(obj.kind_error("object").into()),
         };
 
         if !result.set_path(&path, value) {
@@ -102,11 +92,7 @@ impl Operator for ObjectHasOp {
             let path = eval_expr(&args[1], ctx)?.text()?.to_string();
             match obj {
                 Value::Object(_) => Ok(Value::Bool(obj.get_path(&path).is_some())),
-                Value::Null => Ok(Value::Bool(false)),
-                _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "object".to_string(),
-                    actual: obj.type_name().to_string(),
-                })),
+                _ => Err(obj.kind_error("object").into()),
             }
         })
     }
@@ -128,13 +114,7 @@ impl Operator for ObjectMergeOp {
                         result.insert(k, v);
                     }
                 }
-                Value::Null => {} // Skip nulls
-                _ => {
-                    return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                        expected: "object".to_string(),
-                        actual: val.type_name().to_string(),
-                    }))
-                }
+                _ => return Err(val.kind_error("object").into()),
             }
         }
 
@@ -168,16 +148,19 @@ impl Operator for ObjectFromEntriesOp {
 
         let mut result = ValueMap::default();
         for entry in array {
-            if let Value::Array(pair) = entry {
-                if pair.len() >= 2 {
-                    let key = pair[0].text()?.to_string();
-                    if super::util::is_refused_key(&key) {
-                        return Ok(Value::Null);
-                    }
-                    let value = pair[1].clone();
-                    result.insert(key, value);
-                }
+            let pair = entry.as_array().ok_or_else(|| entry.kind_error("array"))?;
+            let [key, value] = pair.as_slice() else {
+                return Err(EvalError::InvalidArgument(format!(
+                    "object/fromEntries: an entry is a [key, value] pair, got {} items",
+                    pair.len()
+                ))
+                .into());
+            };
+            let key = key.text()?.to_string();
+            if super::util::is_refused_key(&key) {
+                return Ok(Value::Null);
             }
+            result.insert(key, value.clone());
         }
 
         Ok(Value::object(result))
@@ -225,13 +208,7 @@ impl Operator for ObjectDeepMergeOp {
                     Some(merged) => result = merged,
                     None => refused = true,
                 },
-                Value::Null => {} // Skip nulls
-                _ => {
-                    return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                        expected: "object".to_string(),
-                        actual: val.type_name().to_string(),
-                    }))
-                }
+                _ => return Err(val.kind_error("object").into()),
             }
         }
 
@@ -384,7 +361,7 @@ impl Operator for ObjectFilterOp {
         };
 
         let mut result = ValueMap::default();
-        let callback = super::array::Callback::of(&args[1], ctx);
+        let callback = super::array::Callback::of(&args[1], ctx)?;
         for (key, value) in source {
             let should_include =
                 callback.apply(vec![Value::string(key.clone()), value.clone()], ctx)?;
@@ -451,6 +428,11 @@ impl Operator for ObjectEqualsOp {
         require_arity!(args, "object/equals", >= 2);
         let obj1 = eval_expr(&args[0], ctx)?;
         let obj2 = eval_expr(&args[1], ctx)?;
+        for obj in [&obj1, &obj2] {
+            if obj.as_object().is_none() {
+                return Err(obj.kind_error("object").into());
+            }
+        }
 
         Ok(Value::Bool(deep_equals(&obj1, &obj2)))
     }
@@ -464,11 +446,8 @@ impl Operator for ObjectCloneOp {
         let obj = eval_expr(&args[0], ctx)?;
 
         match obj {
-            Value::Object(o) => Ok(Value::Object(o.clone())),
-            _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "object".to_string(),
-                actual: obj.type_name().to_string(),
-            })),
+            Value::Object(o) => Ok(Value::Object(o)),
+            _ => Err(obj.kind_error("object").into()),
         }
     }
 }
@@ -479,6 +458,9 @@ impl Operator for ObjectDeepCloneOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "object/deepClone", 1);
         let val = eval_expr(&args[0], ctx)?;
+        if val.as_object().is_none() {
+            return Err(val.kind_error("object").into());
+        }
 
         fn deep_clone(v: &Value) -> Value {
             match v {
@@ -516,11 +498,7 @@ impl Operator for ObjectKeysOp {
                 let keys: Vec<Value> = map.keys().map(|k| Value::string(k.clone())).collect();
                 Ok(Value::array(keys))
             }
-            Value::Null => Ok(Value::array(vec![])),
-            _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "object".to_string(),
-                actual: obj.type_name().to_string(),
-            })),
+            _ => Err(obj.kind_error("object").into()),
         }
     }
 }
@@ -536,11 +514,7 @@ impl Operator for ObjectValuesOp {
                 let values: Vec<Value> = map.into_inner().into_values().collect();
                 Ok(Value::array(values))
             }
-            Value::Null => Ok(Value::array(vec![])),
-            _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "object".to_string(),
-                actual: obj.type_name().to_string(),
-            })),
+            _ => Err(obj.kind_error("object").into()),
         }
     }
 }
@@ -552,7 +526,16 @@ impl Operator for ObjectGetOp {
         require_arity!(args, "object/get", >= 2);
 
         let found = super::with_operand(&args[0], ctx, |obj| {
-            let path = eval_expr(&args[1], ctx)?.to_string_value();
+            if !matches!(obj, Value::Object(_) | Value::Array(_)) {
+                return Err(obj.kind_error("object").into());
+            }
+            let key = eval_expr(&args[1], ctx)?;
+            let path = match (&key, obj) {
+                (Value::Number(_), Value::Array(_)) => {
+                    super::array::whole_count(&key, "object/get", "index")?.to_string()
+                }
+                _ => key.text()?.to_string(),
+            };
             Ok(obj.get_path(&path).cloned())
         })?;
 
@@ -563,5 +546,97 @@ impl Operator for ObjectGetOp {
                 None => Ok(Value::Null),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod strict_tests {
+    use serde_json::json;
+    use {crate::evaluator::context::BindingContextBuilder, crate::evaluator::Evaluator};
+
+    fn run(args: serde_json::Value) -> Result<serde_json::Value, String> {
+        let ctx = BindingContextBuilder::new().build();
+        let sexpr = serde_json::from_value(args).unwrap();
+        Evaluator::new()
+            .evaluate(&sexpr, &ctx)
+            .map(|v| serde_json::to_value(v).unwrap())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_null_object_is_refused_not_read_as_empty() {
+        assert_eq!(run(json!(["object/keys", {"a": 1}])).unwrap(), json!(["a"]));
+        assert_eq!(
+            run(json!(["object/values", {"a": 1}])).unwrap(),
+            json!([1.0])
+        );
+        assert_eq!(
+            run(json!(["object/entries", {"a": 1}])).unwrap(),
+            json!([["a", 1.0]])
+        );
+        assert_eq!(
+            run(json!(["object/has", {"a": 1}, "a"])).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            run(json!(["object/set", {"a": 1}, "b", 2])).unwrap(),
+            json!({"a": 1.0, "b": 2.0})
+        );
+        for op in [
+            "object/keys",
+            "object/values",
+            "object/entries",
+            "object/deepClone",
+        ] {
+            assert!(run(json!([op, null])).is_err(), "{op}");
+        }
+        assert!(run(json!(["object/has", null, "a"])).is_err());
+        assert!(run(json!(["object/set", null, "b", 2])).is_err());
+        assert!(run(json!(["object/get", null, "a"])).is_err());
+    }
+
+    #[test]
+    fn merge_and_equals_take_objects_only() {
+        assert_eq!(
+            run(json!(["object/merge", {"a": 1}, {"b": 2}])).unwrap(),
+            json!({"a": 1.0, "b": 2.0})
+        );
+        assert_eq!(
+            run(json!(["object/deepMerge", {"a": {"x": 1}}, {"a": {"y": 2}}])).unwrap(),
+            json!({"a": {"x": 1.0, "y": 2.0}})
+        );
+        assert_eq!(
+            run(json!(["object/equals", {"a": 1}, {"a": 1}])).unwrap(),
+            json!(true)
+        );
+        assert!(run(json!(["object/merge", {"a": 1}, null])).is_err());
+        assert!(run(json!(["object/deepMerge", null, {"a": 1}])).is_err());
+        assert!(run(json!(["object/equals", {"a": 1}, null])).is_err());
+        assert!(run(json!(["object/equals", 1, 1])).is_err());
+    }
+
+    #[test]
+    fn get_takes_a_number_path_only_on_an_array() {
+        assert_eq!(
+            run(json!(["object/get", [10, 20], "1"])).unwrap(),
+            json!(20.0)
+        );
+        assert_eq!(
+            run(json!(["object/get", {"a": [10, 20]}, "a.1"])).unwrap(),
+            json!(20.0)
+        );
+        assert!(run(json!(["object/get", {"1": "x"}, 1])).is_err());
+        assert!(run(json!(["object/get", [10, 20], -1])).is_err());
+        assert!(run(json!(["object/get", [10, 20], 0.5])).is_err());
+    }
+
+    #[test]
+    fn from_entries_demands_pairs() {
+        assert_eq!(
+            run(json!(["object/fromEntries", [["a", 1]]])).unwrap(),
+            json!({"a": 1.0})
+        );
+        assert!(run(json!(["object/fromEntries", [["a"]]])).is_err());
+        assert!(run(json!(["object/fromEntries", ["a"]])).is_err());
     }
 }

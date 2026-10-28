@@ -107,7 +107,7 @@ impl Decimal {
     fn fraction(&self, min: usize, max: usize) -> String {
         let mut out: Vec<u8> = Vec::new();
         if self.point < 0 {
-            out.extend(std::iter::repeat(0).take((-self.point) as usize));
+            out.extend(std::iter::repeat_n(0, (-self.point) as usize));
         }
         let from = self.point.max(0) as usize;
         out.extend(self.digits.iter().skip(from));
@@ -386,9 +386,9 @@ impl Operator for FormatCurrencyOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/currency", >= 2);
         let n = number_arg(&args[0], ctx)?;
-        let code = eval_expr(&args[1], ctx)?.to_string_value();
+        let code = eval_expr(&args[1], ctx)?.text()?.to_string();
         let locale = match args.get(2) {
-            Some(expr) => eval_expr(expr, ctx)?.to_string_value(),
+            Some(expr) => eval_expr(expr, ctx)?.text()?.to_string(),
             None => "en-US".to_string(),
         };
         if !matches!(locale.as_str(), "en" | "en-US") {
@@ -486,14 +486,15 @@ impl Operator for FormatListOp {
         require_arity!(args, "format/list", 1);
         let value = eval_expr(&args[0], ctx)?;
         let style = match args.get(1) {
-            Some(expr) => eval_expr(expr, ctx)?.to_string_value(),
+            Some(expr) => eval_expr(expr, ctx)?.text()?.to_string(),
             None => "and".to_string(),
         };
-        let items: Vec<String> = match value {
-            Value::Array(items) => items.iter().map(Value::to_string_value).collect(),
-            Value::Null => Vec::new(),
-            other => return Ok(Value::string(other.to_string_value())),
-        };
+        let items: Vec<String> = value
+            .as_array()
+            .ok_or_else(|| value.kind_error("array"))?
+            .iter()
+            .map(|item| super::string::joinable_text(item).map_err(OrbitalError::Eval))
+            .collect::<Result<_, _>>()?;
         Ok(Value::string(match items.len() {
             0 => String::new(),
             1 => items[0].to_string(),
@@ -512,9 +513,9 @@ pub struct FormatPhoneOp;
 impl Operator for FormatPhoneOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/phone", 1);
-        let text = eval_expr(&args[0], ctx)?.to_string_value();
+        let text = eval_expr(&args[0], ctx)?.text()?.to_string();
         let format = match args.get(1) {
-            Some(expr) => eval_expr(expr, ctx)?.to_string_value(),
+            Some(expr) => eval_expr(expr, ctx)?.text()?.to_string(),
             None => "US".to_string(),
         };
         let digits: String = text.chars().filter(char::is_ascii_digit).collect();

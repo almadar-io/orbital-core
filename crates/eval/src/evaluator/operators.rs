@@ -29,7 +29,7 @@ pub trait Operator {
 pub mod arg_types;
 pub mod kind;
 pub mod macros;
-pub use arg_types::{actual_of, operator_signature};
+pub use arg_types::operator_signature;
 pub use kind::{OperatorKind, TypePredicate};
 pub mod anim;
 pub mod array;
@@ -549,25 +549,13 @@ operator_dispatch! {
 
 }
 
-/// Core expression evaluator - used by operators. An operator's argument is checked against the type the
-/// operator table declares for its position (`arg_types`).
+/// Core expression evaluator - used by operators. The kernel trusts validated types: an operator raises where it
+/// reads an argument of the wrong kind, and no per-argument signature check runs here.
 pub fn eval_expr(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
     if super::trace::is_active() {
-        return super::trace::step(expr, ctx, eval_checked);
+        return super::trace::step(expr, ctx, eval_node);
     }
-    eval_checked(expr, ctx)
-}
-
-fn eval_checked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
-    let slot = arg_types::argument_slot(expr);
-    let value = eval_unchecked(expr, ctx)?;
-    if let Some(index) = slot {
-        match arg_types::typed_shape(expr)? {
-            Some(declared) => arg_types::check_declared_argument(index, &declared.ty)?,
-            None => arg_types::check_argument(index, &value)?,
-        }
-    }
-    Ok(value)
+    eval_node(expr, ctx)
 }
 
 /// `f` over an operand's value: a plain binding (`@entity.x`, a `let` name) is read where it is bound, so a reader
@@ -583,9 +571,6 @@ pub(crate) fn with_operand<R>(
             .strip_prefix('@')
             .and_then(|path| ctx.resolve_borrowed(path))
         {
-            if let Some(index) = arg_types::argument_slot(expr) {
-                arg_types::check_argument(index, value)?;
-            }
             return f(value);
         }
     }
@@ -593,7 +578,7 @@ pub(crate) fn with_operand<R>(
     f(&value)
 }
 
-fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
+fn eval_node(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
     match expr {
         // Primitives
         SExpression::Null => Ok(Value::Null),
@@ -644,8 +629,9 @@ fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
                     .into());
                 }
                 if let Some(operator) = get_operator(op) {
-                    let _frame = arg_types::checked_frame_for(&operator)
-                        .map(|(signature, skip)| arg_types::CallFrame::enter_skipping(signature, skip, &arr[1..]));
+                    if let Some(expected) = arg_types::declared_signature(&operator).and_then(|signature| signature.arity_breach(arr.len() - 1)) {
+                        return Err(EvalError::ArityMismatch { operator: op.clone().into_inner(), expected, actual: arr.len() - 1 }.into());
+                    }
                     return operator.evaluate(&arr[1..], ctx).inspect_err(|error| {
                         tracing::debug!(target: orbital_core_base::logging::ns::EVAL_RAISE, operator = %op, %error, call = %serde_json::to_string(expr).unwrap_or_default(), "operator raised");
                     });

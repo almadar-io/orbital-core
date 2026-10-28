@@ -555,8 +555,11 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // 496: a `RowQuery` carries its `nearest` selection (EXEC-FETCH-2) behind a box, 8 bytes; inline it was 56 (544).
     assert_eq!(size_of::<ResolveProgress>(), 416, "ResolveProgress");
     // 568: plus the entity's `@invariant` propositions (`Option<Vec<SExpression>>`, 24 bytes, G-ORB-384).
-    // 592: plus the entity's `store` driver binding (`Option<String>`, 24 bytes, EXEC-STORE-4).
-    assert_eq!(size_of::<EntityRef>(), 592, "EntityRef");
+    // 592: plus the entity's `store` driver binding (`Option<String>`, 24 bytes, EXEC-STORE-4). 768: `SExpression` is
+    // 72 bytes because its object variant holds an `IndexMap` inline (entries 24 + index table 32 + hasher 16); every
+    // policy/invariant expression here pays it. Recorded in P-017 K1 (box the object variant).
+    assert_eq!(size_of::<EntityRef>(), 768, "EntityRef");
     assert_eq!(size_of::<SidecarError>(), 144, "SidecarError");
-    assert_eq!(size_of::<LanguageData>(), 216, "LanguageData");
+    // 240: plus the installed protocol definitions (`protocols: String`, 24 bytes, P-010 37b0ccc).
+    assert_eq!(size_of::<LanguageData>(), 240, "LanguageData");
 }

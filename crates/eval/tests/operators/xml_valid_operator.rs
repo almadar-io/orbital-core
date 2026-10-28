@@ -58,13 +58,15 @@ fn legacy_xml_parse_preserves_empty_text_namespace_and_null_values() {
             json!("<x:r xmlns:x=\"urn:x\"><x:a>v</x:a></x:r>"),
             json!({"a": "v"}),
         ),
-        (json!(null), json!(null)),
     ] {
         let parse: SExpression =
             serde_json::from_value(json!(["xml/parse", input, "Row"])).unwrap();
         let expected: Value = serde_json::from_value(expected).unwrap();
         assert_eq!(Evaluator::new().evaluate(&parse, &ctx).unwrap(), expected);
     }
+    let null_input: SExpression =
+        serde_json::from_value(json!(["xml/parse", null, "Row"])).unwrap();
+    assert!(Evaluator::new().evaluate(&null_input, &ctx).is_err());
 }
 
 #[test]

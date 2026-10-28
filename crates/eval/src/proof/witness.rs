@@ -21,7 +21,6 @@ fn is_literal(expr: &SExpression) -> bool {
 pub fn const_truth(guard: &SExpression) -> Option<bool> {
     match guard {
         SExpression::Bool(b) => Some(*b),
-        SExpression::String(s) => (!is_binding(s)).then_some(!s.is_empty()),
         SExpression::Array(items) => {
             let (SExpression::String(op), args) = items.split_first()? else {
                 return None;
@@ -84,32 +83,25 @@ pub struct Declared {
 }
 
 impl Declared {
-    fn truthiness(&self, path: &[String], want: bool) -> serde_json::Value {
-        use serde_json::Value as J;
+    /// The value a bare `@payload.<path>` condition needs: conditions are booleans, so only a boolean field (or one the
+    /// event does not type) has a witness; a field of any other declared type raises as a condition.
+    fn condition_witness(&self, path: &[String], want: bool) -> Option<serde_json::Value> {
         let declared = match path {
             [field] => self.types.get(field),
             _ => None,
         };
-        let Some(declared) = declared else {
-            return J::Bool(want);
-        };
-        let existing = self.base.get(&path[0]);
-        match (declared.as_str(), want) {
-            ("boolean", _) => J::Bool(want),
-            ("string", true) => match existing {
-                Some(J::String(s)) if !s.is_empty() => J::String(s.clone()),
-                _ => J::String("verify".to_string()),
-            },
-            ("string", false) => J::String(String::new()),
-            ("number", true) => match existing.and_then(J::as_f64) {
-                Some(n) if n != 0.0 => number_json(n),
-                _ => J::from(1),
-            },
-            ("number", false) => J::from(0),
-            (_, true) => {
-                serde_json::json!({ "id": self.seed_id.clone().unwrap_or_else(|| "verify".to_string()) })
-            }
-            (_, false) => J::Null,
+        match declared.map(String::as_str) {
+            None | Some("boolean") => Some(serde_json::Value::Bool(want)),
+            Some(_) => None,
+        }
+    }
+
+    /// The value a required row-typed field takes: a row of its type, or null when it must be missing.
+    fn row_value(&self, want: bool) -> serde_json::Value {
+        if want {
+            serde_json::json!({ "id": self.seed_id.clone().unwrap_or_else(|| "verify".to_string()) })
+        } else {
+            serde_json::Value::Null
         }
     }
 }
@@ -123,7 +115,9 @@ pub fn solve_guard(
     match expr {
         SExpression::String(path) => match payload_path(path) {
             Some(path) => {
-                let value = declared.truthiness(&path, want);
+                let Some(value) = declared.condition_witness(&path, want) else {
+                    return false;
+                };
                 set_payload_path(payload, &path, value);
                 true
             }
@@ -283,15 +277,9 @@ fn remove_payload_path(payload: &mut serde_json::Value, path: &[String]) {
     }
 }
 
-fn sexpr_truthy(value: &SExpression) -> bool {
-    match value {
-        SExpression::Null => false,
-        SExpression::Bool(b) => *b,
-        SExpression::Number(n) => *n != 0.0,
-        SExpression::String(s) => !s.is_empty(),
-        SExpression::Array(a) => !a.is_empty(),
-        SExpression::Object(o) => !o.is_empty(),
-    }
+/// Whether a looked-up value is the boolean the condition wants; any other kind raises as a condition.
+fn sexpr_is_bool(value: &SExpression, want: bool) -> bool {
+    matches!(value, SExpression::Bool(b) if *b == want)
 }
 
 /// A key guaranteed absent from `keys`.
@@ -346,19 +334,14 @@ fn solve_membership_form(
             let Some((path, SExpression::Object(map))) = split_payload_arg(a, b) else {
                 return false;
             };
-            let keys: Vec<String> = map.keys().cloned().collect();
-            if want {
-                let Some(pass) = map
-                    .iter()
-                    .find(|(_, v)| sexpr_truthy(v))
-                    .map(|(k, _)| k.clone())
-                else {
-                    return false;
-                };
-                set(payload, &path, J::String(pass));
-            } else {
-                set(payload, &path, J::String(absent_key(&keys)));
-            }
+            let Some(key) = map
+                .iter()
+                .find(|(_, v)| sexpr_is_bool(v, want))
+                .map(|(k, _)| k.clone())
+            else {
+                return false;
+            };
+            set(payload, &path, J::String(key));
             true
         }
         ("array/includes", [a, b]) => {
@@ -428,7 +411,7 @@ fn solve_membership_form(
             let value = if scalar {
                 J::String(if want { "mock-required-value" } else { "" }.to_string())
             } else {
-                declared.truthiness(&path, want)
+                declared.row_value(want)
             };
             set(payload, &path, value);
             true
@@ -778,7 +761,9 @@ pub fn literal_json(expr: &SExpression) -> Option<serde_json::Value> {
         SExpression::Null => Some(serde_json::Value::Null),
         SExpression::Bool(b) => Some(serde_json::Value::Bool(*b)),
         SExpression::Number(n) => Some(number_json(*n)),
-        SExpression::String(s) if !s.starts_with('@') => Some(serde_json::Value::String(s.clone().into_inner())),
+        SExpression::String(s) if !s.starts_with('@') => {
+            Some(serde_json::Value::String(s.clone().into_inner()))
+        }
         _ => None,
     }
 }
@@ -1040,5 +1025,57 @@ mod tests {
             conform_payload(&expr, &json!({}), &declared(&[("row", "Contact")])),
             Some(json!({ "row": { "id": "Contact Id 1" } }))
         );
+    }
+
+    #[test]
+    fn a_bare_boolean_guard_gets_a_witness_either_way() {
+        for want in [true, false] {
+            let mut payload = json!({});
+            assert!(solve_guard(
+                &guard(json!("@payload.on")),
+                want,
+                &mut payload,
+                &declared(&[("on", "boolean")])
+            ));
+            assert_eq!(payload, json!({ "on": want }));
+        }
+    }
+
+    #[test]
+    fn control_a_bare_non_boolean_guard_has_no_witness() {
+        for ty in ["string", "number", "Contact"] {
+            for want in [true, false] {
+                let mut payload = json!({});
+                assert!(
+                    !solve_guard(
+                        &guard(json!("@payload.x")),
+                        want,
+                        &mut payload,
+                        &declared(&[("x", ty)])
+                    ),
+                    "{ty} {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_literal_string_or_number_condition_is_not_a_constant() {
+        assert_eq!(const_truth(&guard(json!("yes"))), None);
+        assert_eq!(const_truth(&guard(json!(1))), None);
+        assert_eq!(const_truth(&guard(json!(true))), Some(true));
+        assert_eq!(const_truth(&guard(json!(["not", false]))), Some(true));
+    }
+
+    #[test]
+    fn an_object_get_condition_looks_up_a_boolean_value_only() {
+        let lookup = guard(json!(["object/get", { "a": 1, "b": true, "c": false }, "@payload.k"]));
+        for (want, key) in [(true, "b"), (false, "c")] {
+            let mut payload = json!({});
+            assert!(solve_guard(&lookup, want, &mut payload, &declared(&[])));
+            assert_eq!(payload, json!({ "k": key }));
+        }
+        let numbers = guard(json!(["object/get", { "a": 1, "b": "s" }, "@payload.k"]));
+        assert!(!solve_guard(&numbers, true, &mut json!({}), &declared(&[])));
     }
 }

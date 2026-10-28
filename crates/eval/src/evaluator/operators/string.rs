@@ -22,7 +22,7 @@ impl Operator for ConcatOp {
 }
 
 /// A `string | number | boolean | date | datetime` operand rendered as text; any other kind is a type error.
-fn joinable_text(value: &Value) -> Result<String, EvalError> {
+pub(super) fn joinable_text(value: &Value) -> Result<String, EvalError> {
     match value {
         Value::String(_) | Value::Number(_) | Value::Bool(_) => Ok(value.to_string_value()),
         other => Err(other.kind_error("string, number or boolean")),
@@ -110,7 +110,7 @@ impl Operator for StrToIntOp {
             Value::String(text) => Ok(text
                 .parse::<i64>()
                 .ok()
-                .filter(|n| n.unsigned_abs() <= (1u64 << 53) - 1)
+                .filter(|n| n.unsigned_abs() < (1u64 << 53))
                 .map_or(Value::Null, |n| Value::Number(n as f64))),
             other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "string".into(),
@@ -619,32 +619,17 @@ fn root_collator() -> icu_collator::CollatorBorrowed<'static> {
     icu_collator::CollatorBorrowed::new_root(icu_collator::options::CollatorOptions::default())
 }
 
-fn collate_text(
-    arg: &SExpression,
-    ctx: &BindingContext,
-    op: &str,
-) -> Result<Option<String>, OrbitalError> {
-    match eval_expr(arg, ctx)? {
-        Value::Null => Ok(None),
-        Value::String(s) => Ok(Some(s.into_inner())),
-        other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "{op}: expected a string argument, got {}",
-            other.type_name()
-        )))),
-    }
+fn collate_text(arg: &SExpression, ctx: &BindingContext) -> Result<String, OrbitalError> {
+    Ok(eval_expr(arg, ctx)?.text().map(str::to_string)?)
 }
 
-/// str/collate - -1, 0 or 1 by the CLDR root collation (tertiary strength); null on either side is null
+/// str/collate - -1, 0 or 1 by the CLDR root collation (tertiary strength); null ; null on either side is a type mismatch
 pub struct StrCollateOp;
 impl Operator for StrCollateOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/collate", == 2);
-        let (Some(a), Some(b)) = (
-            collate_text(&args[0], ctx, "str/collate")?,
-            collate_text(&args[1], ctx, "str/collate")?,
-        ) else {
-            return Ok(Value::Null);
-        };
+        let a = collate_text(&args[0], ctx)?;
+        let b = collate_text(&args[1], ctx)?;
         Ok(Value::Number(match root_collator().compare(&a, &b) {
             std::cmp::Ordering::Less => -1.0,
             std::cmp::Ordering::Equal => 0.0,
@@ -654,14 +639,12 @@ impl Operator for StrCollateOp {
 }
 
 /// str/collate-key - a string whose code-point order is the root collation order of its argument (the collation
-/// sort key in lowercase hex), so `array/sort` by a field holding it sorts by collation; null is null
+/// sort key in lowercase hex), so `array/sort` by a field holding it sorts by collation; null is a type mismatch
 pub struct StrCollateKeyOp;
 impl Operator for StrCollateKeyOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/collate-key", == 1);
-        let Some(text) = collate_text(&args[0], ctx, "str/collate-key")? else {
-            return Ok(Value::Null);
-        };
+        let text = collate_text(&args[0], ctx)?;
         let mut key: Vec<u8> = Vec::new();
         let Ok(()) = root_collator().write_sort_key_to(&text, &mut key);
         Ok(Value::string(orbital_core_base::codec::hex(&key)))
@@ -1040,6 +1023,17 @@ mod tests {
     fn run(json: serde_json::Value) -> EvalResult {
         let expr: SExpression = serde_json::from_value(json).expect("s-expression");
         eval_expr(&expr, &BindingContext::default())
+    }
+
+    #[test]
+    fn collate_refuses_null_and_orders_strings() {
+        assert!(run(serde_json::json!(["str/collate", null, "a"])).is_err());
+        assert!(run(serde_json::json!(["str/collate", "a", null])).is_err());
+        assert!(run(serde_json::json!(["str/collate-key", null])).is_err());
+        assert_eq!(
+            run(serde_json::json!(["str/collate", "a", "b"])).unwrap(),
+            Value::Number(-1.0)
+        );
     }
 
     #[test]

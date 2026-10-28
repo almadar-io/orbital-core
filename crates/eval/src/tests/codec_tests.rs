@@ -52,7 +52,7 @@ mod tests {
         for case in cases.iter().filter(|c| c.op == "str/decode-uri-component") {
             let got = eval_decode(&case.args);
             let valid = eval_op("str/uri-component-valid", &case.args);
-            if case.args[0].is_number() {
+            if case.args[0].is_null() || case.args[0].is_number() {
                 assert!(valid.is_err(), "{}", case.source);
             } else {
                 let expected = !case.error && !case.null && !case.args[0].is_null();

@@ -155,8 +155,8 @@ fn an_invalid_base64_operand_answers_null_and_the_outer_codec_reads_it_as_a_miss
     assert_eq!(evaluate("base64/decode", &[json!("@payload.invalidBase64")], &ctx).unwrap(), Value::Null);
     assert_eq!(evaluate("base64/decode", &[json!("Zm9vYmFy")], &ctx).unwrap(), Value::String("foobar".into()));
     match evaluate("base64/encode", &[json!(["base64/decode", "@payload.invalidBase64"])], &ctx) {
-        Err(OrbitalError::Eval(EvalError::InvalidArgument(message))) => {
-            assert!(message.starts_with("base64/encode:"), "{message}");
+        Err(OrbitalError::Eval(EvalError::TypeMismatch { expected, actual })) => {
+            assert_eq!((expected.as_str(), actual.as_str()), ("string", "null"));
         }
         other => panic!("expected the null operand to be refused, got {other:?}"),
     }

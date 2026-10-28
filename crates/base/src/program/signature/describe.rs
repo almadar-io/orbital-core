@@ -115,6 +115,11 @@ pub(super) fn undetermined(reason: &str) -> Mismatch {
     }
 }
 
+/// A json or expression value at a position that declares a type: it is shown to have that type by `(as x T)`.
+pub(super) fn loose(ty: &OirType, formal: &OperatorTypeRef) -> Mismatch {
+    undetermined(&format!("{}, and `{}` is declared", why_uninformative(ty), expected_name(formal)))
+}
+
 pub(super) const NO_TYPE: &str = "its type is not determined";
 pub(super) const IS_EXPRESSION: &str = "it is an expression value, which has no type of its own";
 pub(super) const IS_JSON: &str = "it is json, which has no type";

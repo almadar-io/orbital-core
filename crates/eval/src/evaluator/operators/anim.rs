@@ -17,8 +17,17 @@ impl Operator for AnimFrameAtOp {
             Some(a) => eval_expr(a, ctx)?.boolean()?,
             None => true,
         };
-        if frame_dur == 0.0 || frame_count <= 0.0 {
-            return Ok(Value::Number(0.0));
+        if frame_dur == 0.0 {
+            return Err(EvalError::InvalidArgument(
+                "anim/frame-at: frameDur must not be 0".to_string(),
+            )
+            .into());
+        }
+        if frame_count <= 0.0 {
+            return Err(EvalError::InvalidArgument(format!(
+                "anim/frame-at: frameCount {frame_count} must be positive"
+            ))
+            .into());
         }
         let i = (elapsed / frame_dur).floor();
         let result = if looped {
@@ -43,14 +52,16 @@ impl Operator for AnimSheetRectOp {
         let cols = require_number!(eval_expr(&args[1], ctx)?);
         let frame_w = require_number!(eval_expr(&args[2], ctx)?);
         let frame_h = require_number!(eval_expr(&args[3], ctx)?);
-        let (sx, sy) = if cols == 0.0 {
-            (0.0, 0.0)
-        } else {
-            (
-                (frame_index % cols) * frame_w,
-                (frame_index / cols).floor() * frame_h,
-            )
-        };
+        if cols <= 0.0 {
+            return Err(EvalError::InvalidArgument(format!(
+                "anim/sheet-rect: cols {cols} must be positive"
+            ))
+            .into());
+        }
+        let (sx, sy) = (
+            (frame_index % cols) * frame_w,
+            (frame_index / cols).floor() * frame_h,
+        );
         let mut m = ValueMap::default();
         m.insert("sx".to_string(), Value::Number(sx));
         m.insert("sy".to_string(), Value::Number(sy));
@@ -105,5 +116,35 @@ impl Operator for AnimDirectionFromDeltaOp {
             }
         };
         Ok(Value::string(dir.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval(form: &str) -> EvalResult {
+        let expr: SExpression = serde_json::from_str(form).expect("s-expression");
+        eval_expr(&expr, &BindingContext::default())
+    }
+
+    fn error_text(form: &str) -> String {
+        format!("{:?}", eval(form).expect_err("expected a typed error"))
+    }
+
+    #[test]
+    fn zero_divisors_are_invalid_arguments() {
+        assert_eq!(
+            eval(r#"["anim/frame-at", 0.35, 0.1, 3]"#).unwrap(),
+            Value::Number(0.0)
+        );
+        assert!(error_text(r#"["anim/frame-at", 1, 0, 3]"#).contains("frameDur"));
+        assert!(error_text(r#"["anim/frame-at", 1, 0.1, 0]"#).contains("frameCount"));
+        assert!(error_text(r#"["anim/sheet-rect", 5, 0, 16, 16]"#).contains("cols"));
+        let rect = eval(r#"["anim/sheet-rect", 5, 4, 16, 16]"#).unwrap();
+        assert_eq!(
+            rect.as_object().unwrap().get("sx"),
+            Some(&Value::Number(16.0))
+        );
     }
 }

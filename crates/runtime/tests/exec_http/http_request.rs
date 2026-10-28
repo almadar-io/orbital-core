@@ -6,6 +6,10 @@ use orbital_core_runtime::http_request::*;
 use orbital_core_runtime::http_service::{HttpRequest, HttpResponse, TransportError};
 use serde_json::json;
 
+
+/// The declared shapes the paginated test bodies parse as (a `json/parse` names its type).
+const PAGE_SHAPE: &str = "{\"version\":1,\"type\":{\"kind\":\"struct\",\"fields\":[{\"name\":\"items\",\"fieldType\":{\"kind\":\"array\",\"inner\":{\"kind\":\"number\"}},\"required\":false,\"constraints\":[]},{\"name\":\"next\",\"fieldType\":{\"kind\":\"optional\",\"inner\":{\"kind\":\"string\"}},\"required\":false,\"constraints\":[]}]}}";
+const LIST_SHAPE: &str = "{\"version\":1,\"type\":{\"kind\":\"array\",\"inner\":{\"kind\":\"number\"}}}";
 fn val(j: serde_json::Value) -> Value {
     serde_json::from_value(j).unwrap()
 }
@@ -776,7 +780,7 @@ fn driver_paginates_by_cursor_and_stops_on_null() {
 }
 
 fn paginated_json(style: &str, extra: serde_json::Value, max: u32) -> HttpCallSpec {
-    let body = json!(["json/parse", "@response.body", {}]);
+    let body = json!(["json/parse", "@response.body", PAGE_SHAPE]);
     let mut p = json!({"style": style, "next": ["object/get", body.clone(), "next"], "collect": ["object/get", body, "items"], "max": max});
     p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
     spec(json!({"paginate": p}))
@@ -805,7 +809,7 @@ fn driver_non_2xx_page_stops_with_what_it_has() {
 
 #[test]
 fn driver_link_header_follows_next_on_the_same_origin_only() {
-    let s = spec(json!({"paginate": {"style": "link-header", "collect": ["json/parse", "@response.body", {}], "max": 5}}));
+    let s = spec(json!({"paginate": {"style": "link-header", "collect": ["json/parse", "@response.body", LIST_SHAPE], "max": 5}}));
     let (mut d, step) = HttpCallDriver::start(s.clone(), egress(), None);
     http_ask(step);
     let link = r#"<https://api.example.com/v1/x?page=2>; rel="next""#;
@@ -834,7 +838,7 @@ fn driver_stream_asks_http_stream_and_frames_with_the_key() {
 
 #[test]
 fn a_driver_serialized_mid_flight_resumes_with_the_same_steps() {
-    let s = spec(json!({"auth": {"scheme": "bearer", "credential": "TOKEN"}, "paginate": {"style": "cursor", "param": "after", "next": ["object/get", ["json/parse", "@response.body", {}], "next"], "collect": ["object/get", ["json/parse", "@response.body", {}], "items"], "max": 3}}));
+    let s = spec(json!({"auth": {"scheme": "bearer", "credential": "TOKEN"}, "paginate": {"style": "cursor", "param": "after", "next": ["object/get", ["json/parse", "@response.body", PAGE_SHAPE], "next"], "collect": ["object/get", ["json/parse", "@response.body", PAGE_SHAPE], "items"], "max": 3}}));
     let (mut live, step) = HttpCallDriver::start(s, egress(), Some("k".into()));
     assert_eq!(step, HttpStep::Ask(HttpAsk::Secret { name: "TOKEN".into(), scope: SecretScope::App }));
     let first = http_ask(live.resume(HttpAnswer::Secret(Ok(Some("tok".into())))));
@@ -1171,7 +1175,7 @@ fn delay_ms_is_asked_of_the_host_before_the_first_send_and_only_there() {
 
 #[test]
 fn a_delayed_page_waits_only_before_the_first_page() {
-    let request = json!({"delayMs": 40, "paginate": {"style": "cursor", "param": "after", "next": ["object/get", ["json/parse", "@response.body", {}], "next"], "collect": ["object/get", ["json/parse", "@response.body", {}], "items"], "max": 3}});
+    let request = json!({"delayMs": 40, "paginate": {"style": "cursor", "param": "after", "next": ["object/get", ["json/parse", "@response.body", PAGE_SHAPE], "next"], "collect": ["object/get", ["json/parse", "@response.body", PAGE_SHAPE], "items"], "max": 3}});
     let (mut d, step) = HttpCallDriver::start(spec(request), egress(), None);
     assert_eq!(http_ask_delay(step).1, Some(40));
     let (_, delay) = http_ask_delay(d.resume(HttpAnswer::Http(Ok(response(200, &[], "{\"items\":[1],\"next\":\"c2\"}")))));
@@ -1237,7 +1241,7 @@ fn the_delay_saturates_instead_of_overflowing() {
 
 #[test]
 fn each_page_gets_its_own_retries() {
-    let body = json!(["json/parse", "@response.body", {}]);
+    let body = json!(["json/parse", "@response.body", PAGE_SHAPE]);
     let s = retrying(json!({"paginate": {"style": "cursor", "param": "after",
         "next": ["object/get", body.clone(), "next"], "collect": ["object/get", body, "items"], "max": 5}}));
     let (mut d, _) = HttpCallDriver::start(s, egress(), None);
@@ -1379,7 +1383,7 @@ fn a_link_header_page_resolves_against_the_host_not_the_prefix() {
         HttpMethod::Get,
         "https://api.example.com/esign/v2",
         "/items",
-        &val(json!({"paginate": {"style": "link-header", "collect": ["json/parse", "@response.body", {}], "max": 5}})),
+        &val(json!({"paginate": {"style": "link-header", "collect": ["json/parse", "@response.body", LIST_SHAPE], "max": 5}})),
     )
     .unwrap();
     let (mut d, step) = HttpCallDriver::start(s, egress(), None);

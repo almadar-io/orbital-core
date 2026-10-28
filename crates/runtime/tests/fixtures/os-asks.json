@@ -88,7 +88,7 @@
     { "name": "setenv", "op": "os/setenv", "args": ["FOO", "bar"], "expect": { "ok": {} } },
     { "name": "getenv", "op": "os/getenv", "args": ["FOO"], "expect": { "ok": { "value": "bar" } } },
     { "name": "unsetenv", "op": "os/unsetenv", "args": ["FOO"], "expect": { "ok": {} } },
-    { "name": "getenv after unset", "op": "os/getenv", "args": ["FOO"], "expect": { "ok": { "value": null } } },
+    { "name": "getenv after unset", "op": "os/getenv", "args": ["FOO"], "expect": { "ok": {} } },
     { "name": "stdout without the grant", "op": "os/stdout-write", "args": ["aA=="], "expect": { "error": { "kind": "denied", "message": "os/stdout-write: stdio is not granted" } } },
 
     { "name": "connect", "op": "os/tcp-connect", "args": ["127.0.0.1", { "$var": "port" }], "bind": { "sock": "sock" }, "expect": { "ok": { "sock": { "$number": true } } } },

@@ -332,8 +332,18 @@ pub struct MathRandomIntOp;
 impl Operator for MathRandomIntOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "randomInt", >= 2);
-        let min = require_number!(eval_expr(&args[0], ctx)?) as i64;
-        let max = require_number!(eval_expr(&args[1], ctx)?) as i64;
+        let whole = |arg: &SExpression, what: &str| -> Result<i64, OrbitalError> {
+            let n = require_number!(eval_expr(arg, ctx)?);
+            if !n.is_finite() || n.fract() != 0.0 || n.abs() > 9_007_199_254_740_991.0 {
+                return Err(EvalError::InvalidArgument(format!(
+                    "randomInt: {what} {n} is not a whole number"
+                ))
+                .into());
+            }
+            Ok(n as i64)
+        };
+        let min = whole(&args[0], "min")?;
+        let max = whole(&args[1], "max")?;
 
         if max < min {
             return Ok(Value::Null);

@@ -1,9 +1,7 @@
 //! JSON operators.
 //!
 //! `(json/parse s Shape)` — pure, deterministic: string → parsed `Value`; `Shape` names the type the value has (checked by `orb validate`,
-//! and at run time against the shape `orb resolve` records or a built-in type: see `run_time_shape`). Invalid JSON, a value not of its shape or
-//! non-string input → `Value::Null` (JS `null`), never throws —
-//! guards can branch on null. No reviver, no prototype access, no side
+//! and at run time against the shape `orb resolve` records or a built-in type: see `run_time_shape`). Invalid JSON or a value not of its shape → `Value::Null`; non-string input (null included) is a type mismatch. Guards can branch on null. No reviver, no prototype access, no side
 //! effects. `(json/stringify v)` is the inverse: any `Value` → JSON string.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
@@ -39,10 +37,9 @@ impl Operator for JsonParseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "json/parse", >= 2);
         let val = eval_expr(&args[0], ctx)?;
-        let Value::String(s) = val else {
-            return Ok(Value::Null);
-        };
-        let Ok(parsed) = parse_json::<serde_json::Value>(&s).map(json_to_value) else {
+        let s = val.text()?;
+        shape_operand(&args[1])?;
+        let Ok(parsed) = parse_json::<serde_json::Value>(s).map(json_to_value) else {
             return Ok(Value::Null);
         };
         let Some((shape, declared)) = run_time_shape(&args[1])? else {
@@ -61,14 +58,25 @@ impl Operator for JsonParseOp {
     }
 }
 
+/// A shape operand is a string literal naming (or recording) a type; any other expression is a type mismatch.
+pub(super) fn shape_operand(
+    arg: &SExpression,
+) -> Result<&orbital_core_base::value::Shared<String>, OrbitalError> {
+    match arg {
+        SExpression::String(text) => Ok(text),
+        _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: "a type name (string literal)".into(),
+            actual: "a non-literal shape".into(),
+        })),
+    }
+}
+
 /// The shape a `json/parse` names, with the type a run-time check reads, when the evaluator knows it: a declared shape
 /// recorded as JSON (`orb resolve` writes a program alias as its type with the types it names) or a built-in type name.
 pub(super) fn run_time_shape(
     arg: &SExpression,
 ) -> Result<Option<(String, std::rc::Rc<DeclaredShape>)>, OrbitalError> {
-    let SExpression::String(text) = arg else {
-        return Ok(None);
-    };
+    let text = shape_operand(arg)?;
     if text.starts_with('{') {
         let declared = super::arg_types::declared_shape(arg)?;
         let shown = declared

@@ -108,14 +108,17 @@ fn validate_check_rule_arguments_are_evaluated_and_a_predicate_is_refused() {
     let bound = ok(r#"["let", [["floor", 3]], ["validate/check", {"s": "ab"}, {"s": [["minLength", "@floor"]]}]]"#);
     let Value::Object(map) = bound else { panic!("not an object") };
     assert_eq!(map["valid"], Value::Bool(false));
-    let message = err(r#"["validate/check", 5, ["fn", "v", true]]"#);
+    let message = err(r#"["validate/check", {}, ["fn", "v", true]]"#);
     assert!(message.contains("rules by field"), "{message}");
 }
 
 #[derive(Deserialize)]
 struct Vector {
     expr: serde_json::Value,
+    #[serde(default)]
     expect: serde_json::Value,
+    #[serde(default)]
+    error: bool,
     source: String,
 }
 
@@ -139,6 +142,8 @@ fn shared(raw: &str) -> Vec<String> {
     vectors
         .iter()
         .filter_map(|v| match run(&v.expr.to_string()) {
+            Ok(got) if v.error => Some(format!("{}: want an error, got {}", v.source, serde_json::to_value(got).unwrap())),
+            Err(_) if v.error => None,
             Ok(got) => {
                 let got = serde_json::to_value(got).unwrap();
                 (!same(&v.expect, &got)).then(|| format!("{}: want {}, got {got}", v.source, v.expect))

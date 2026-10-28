@@ -122,16 +122,21 @@ pub(super) fn whole_months_between(from: f64, to: f64) -> i64 {
 
 /// Shift `ts` by `amount` of `unit`. The single implementation behind both
 /// `time/add` and `time/subtract`.
-pub(super) fn shift_time(ts: f64, amount: f64, unit: TimeUnit) -> f64 {
+pub(super) fn shift_time(ts: f64, amount: f64, unit: TimeUnit) -> Result<f64, OrbitalError> {
     match unit.fixed_millis() {
-        Some(ms) => ts + amount * ms,
+        Some(ms) => Ok(ts + amount * ms),
         None => {
+            if amount.fract() != 0.0 || amount.abs() > f64::from(u32::MAX) {
+                return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                    "a calendar unit takes a whole amount, got {amount}"
+                ))));
+            }
             let months = match unit {
                 TimeUnit::Year => amount as i64 * 12,
                 TimeUnit::Quarter => amount as i64 * 3,
                 _ => amount as i64,
             };
-            add_calendar_months(ts, months)
+            Ok(add_calendar_months(ts, months))
         }
     }
 }
@@ -145,9 +150,9 @@ impl Operator for TimeAddOp {
 
         let ts = require_number!(eval_expr(&args[0], ctx)?);
         let amount = require_number!(eval_expr(&args[1], ctx)?);
-        let unit = TimeUnit::parse(&eval_expr(&args[2], ctx)?.to_string_value())?;
+        let unit = TimeUnit::parse(eval_expr(&args[2], ctx)?.text()?)?;
 
-        Ok(Value::Number(shift_time(ts, amount, unit)))
+        Ok(Value::Number(shift_time(ts, amount, unit)?))
     }
 }
 
@@ -160,9 +165,9 @@ impl Operator for TimeSubtractOp {
 
         let ts = require_number!(eval_expr(&args[0], ctx)?);
         let amount = require_number!(eval_expr(&args[1], ctx)?);
-        let unit = TimeUnit::parse(&eval_expr(&args[2], ctx)?.to_string_value())?;
+        let unit = TimeUnit::parse(eval_expr(&args[2], ctx)?.text()?)?;
 
-        Ok(Value::Number(shift_time(ts, -amount, unit)))
+        Ok(Value::Number(shift_time(ts, -amount, unit)?))
     }
 }
 
@@ -182,7 +187,7 @@ impl Operator for TimeDiffOp {
         let diff_ms = ts1 - ts2;
 
         if args.len() > 2 {
-            let unit = TimeUnit::parse(&eval_expr(&args[2], ctx)?.to_string_value())?;
+            let unit = TimeUnit::parse(eval_expr(&args[2], ctx)?.text()?)?;
             let result = match unit.fixed_millis() {
                 Some(ms) => (diff_ms / ms).trunc(),
                 None => {
@@ -318,10 +323,9 @@ impl Operator for TimeParseOp {
                 })
             }
             other => {
-                return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                    "time/parse: expected a string argument, got {}",
-                    other.type_name()
-                ))))
+                return Err(OrbitalError::Eval(
+                    other.kind_error("string, date or datetime"),
+                ))
             }
         };
         match parse_iso_instant(&date_str) {
@@ -331,19 +335,13 @@ impl Operator for TimeParseOp {
     }
 }
 
-/// time/valid - true iff time/parse would succeed; null is false
+/// time/valid - true iff time/parse would succeed on a string; a non-string input is a type mismatch
 pub struct TimeValidOp;
 impl Operator for TimeValidOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/valid", 1);
-        match eval_expr(&args[0], ctx)? {
-            Value::Null => Ok(Value::Bool(false)),
-            Value::String(s) => Ok(Value::Bool(parse_iso_instant(&s).is_some())),
-            other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "time/valid: expected a string argument, got {}",
-                other.type_name()
-            )))),
-        }
+        let input = eval_expr(&args[0], ctx)?;
+        Ok(Value::Bool(parse_iso_instant(input.text()?).is_some()))
     }
 }
 
@@ -448,8 +446,10 @@ impl Operator for TimeFormatOp {
         let ts = require_number!(eval_expr(&args[0], ctx)?);
 
         if let Some(format_expr) = args.get(1) {
-            let format = eval_expr(format_expr, ctx)?.to_string_value();
-            return Ok(format_timestamp_tokens(ts, &format).map_or(Value::Null, Value::string));
+            let format = eval_expr(format_expr, ctx)?;
+            return Ok(
+                format_timestamp_tokens(ts, format.text()?).map_or(Value::Null, Value::string)
+            );
         }
 
         // Basic formatting - convert to ISO date string
@@ -637,7 +637,7 @@ impl Operator for TimeIsSameOp {
             // Same unit-bucket, i.e. startOf(a, unit) == startOf(b, unit).
             // Defined in terms of `start_of` so week/month/year cannot drift
             // back to an exact-millisecond comparison.
-            let unit = TimeUnit::parse(&eval_expr(&args[2], ctx)?.to_string_value())?;
+            let unit = TimeUnit::parse(eval_expr(&args[2], ctx)?.text()?)?;
             Ok(Value::Bool(start_of(ts1, unit) == start_of(ts2, unit)))
         } else {
             // Exact match

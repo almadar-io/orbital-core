@@ -10,7 +10,7 @@ pub mod obligations;
 pub mod rat;
 pub mod witness;
 
-use decide::{decide, Outcome};
+use decide::{decide, fill_free, Outcome};
 use formula::{Formula, Translator};
 use obligations::{obligations, Proposition};
 use orbital_core_base::schema::types::OrbitalSchema;
@@ -107,7 +107,7 @@ fn judge(o: &obligations::Obligation) -> Verdict {
             None => return overflow(),
         }
     }
-    let Some(goal) = t.truthy(&o.goal).and_then(Formula::negate) else {
+    let Some(goal) = t.falsy(&o.goal) else {
         return overflow();
     };
     parts.push(goal);
@@ -117,7 +117,12 @@ fn judge(o: &obligations::Obligation) -> Verdict {
             reason,
             counterexample: None,
         },
-        Outcome::Sat(model) => {
+        Outcome::Sat(mut model) => {
+            let mut read = std::collections::BTreeSet::new();
+            for e in o.assumptions.iter().chain(std::iter::once(&o.goal)) {
+                formula::binding_texts(e, &mut read);
+            }
+            fill_free(&mut model, read, &vars);
             let cex = confirm::counterexample(&model);
             if !confirm::confirms(&model, &o.assumptions, &o.goal) {
                 let undecided: Vec<String> = t

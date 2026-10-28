@@ -12,11 +12,7 @@ pub struct AsOp;
 impl Operator for AsOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "as", == 2);
-        let SExpression::String(target) = &args[1] else {
-            return Err(OrbitalError::Eval(EvalError::InvalidArgument(
-                "as: the target must be a type name".into(),
-            )));
-        };
+        let target = super::json::shape_operand(&args[1])?;
         let value = eval_expr(&args[0], ctx)?;
         match target.as_str() {
             "CallKey" => match value {
@@ -51,16 +47,13 @@ impl Operator for AsOp {
     }
 }
 
-/// typed - `["typed", value, <declared type>]`: the value, checked to be of the type the program declared for it.
-/// Written by `orb resolve` (never `.lolo`) at an operator argument whose declared type is a list of a union or of
-/// `SExpr`, so the argument check binds that type instead of reading one from the items.
+/// typed - `["typed", value, <declared type>]`: a static ascription. The declared type is the validator's (a `let` local
+/// annotation, a knob's type); the kernel evaluates the value and answers it, checking nothing. A run-time shape check
+/// is written in `.lolo` as `as T` or `json/parse T`.
 pub struct TypedOp;
 impl Operator for TypedOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "typed", == 2);
-        let declared = super::arg_types::declared_shape(&args[1])?;
-        let value = eval_expr(&args[0], ctx)?;
-        super::arg_types::value_of_shape(&value, &declared)?;
-        Ok(value)
+        eval_expr(&args[0], ctx)
     }
 }

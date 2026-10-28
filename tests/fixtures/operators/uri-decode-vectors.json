@@ -124,8 +124,8 @@
   "args": [
    null
   ],
-  "expect": null,
-  "source": "null input yields null"
+  "error": true,
+  "source": "null input is a type error"
  },
  {
   "op": "str/decode-uri-component",
@@ -384,8 +384,8 @@
   "args": [
    null
   ],
-  "expect": false,
-  "source": "null is false"
+  "error": true,
+  "source": "null input is a type error"
  },
  {
   "op": "str/uri-component-valid",
