@@ -130,7 +130,7 @@ prob_op!(ProbPoissonOp, "prob/poisson", 1, |args, ctx| {
 });
 
 prob_op!(ProbConditionOp, "prob/condition", 1, |args, ctx| {
-    if !eval_expr(&args[0], ctx)?.is_truthy() {
+    if !eval_expr(&args[0], ctx)?.boolean()? {
         ctx.prob().reject();
     }
     Ok(Value::Null)
@@ -180,7 +180,7 @@ fn run_model(expr: &SExpression, ctx: &mut BindingContext) -> EvalResult {
             Ok(Value::Null)
         }
         "if" if rest.len() >= 2 => {
-            if eval_expr(&rest[0], ctx)?.is_truthy() {
+            if eval_expr(&rest[0], ctx)?.boolean()? {
                 run_model(&rest[1], ctx)
             } else if let Some(otherwise) = rest.get(2) {
                 run_model(otherwise, ctx)
@@ -189,7 +189,7 @@ fn run_model(expr: &SExpression, ctx: &mut BindingContext) -> EvalResult {
             }
         }
         "when" if !rest.is_empty() => {
-            if eval_expr(&rest[0], ctx)?.is_truthy() {
+            if eval_expr(&rest[0], ctx)?.boolean()? {
                 let mut last = Value::Null;
                 for statement in &rest[1..] {
                     last = run_model(statement, ctx)?;
@@ -225,7 +225,7 @@ fn rejection_samples(
         if ctx.prob().take_rejected() {
             continue;
         }
-        if !eval_expr(&args[1], &sample)?.is_truthy() {
+        if !eval_expr(&args[1], &sample)?.boolean()? {
             continue;
         }
         accepted.push(eval_expr(&args[2], &sample)?);

@@ -1310,7 +1310,7 @@ fn clearing_composer_schema() -> OrbitalSchema {
                           "effects": [["set", "@entity.content", "@payload.value"]] },
                         {
                             "from": "ready", "to": "ready", "event": "SEND",
-                            "guard": ["!=", ["str/default", "@entity.content", ""], ""],
+                            "guard": ["!=", ["default", "@entity.content", ""], ""],
                             "effects": [
                                 ["persist", "create", "Note", { "content": "@entity.content" }],
                                 ["set", "@entity.content", ""]

@@ -108,8 +108,7 @@ impl Evaluator {
         guard: &SExpression,
         ctx: &BindingContext,
     ) -> Result<bool, OrbitalError> {
-        let result = self.evaluate(guard, ctx)?;
-        Ok(result.is_truthy())
+        Ok(self.evaluate(guard, ctx)?.boolean()?)
     }
 
     /// Evaluate a guard expressed as lowered OIR (`OirExpr`). The single

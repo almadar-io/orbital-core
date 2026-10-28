@@ -18,7 +18,9 @@ impl Operator for PathOp {
         // Evaluate each segment and join with "."
         let segments: Result<Vec<String>, _> = args
             .iter()
-            .map(|arg| eval_expr(arg, ctx).map(|v| v.to_string_value()))
+            .map(|arg| -> Result<String, OrbitalError> {
+                Ok(eval_expr(arg, ctx)?.text()?.to_string())
+            })
             .collect();
 
         Ok(Value::string(segments?.join(".")))
@@ -61,7 +63,7 @@ impl Operator for ObjectSetOp {
         require_arity!(args, "object/set", >= 3);
 
         let obj = eval_expr(&args[0], ctx)?;
-        let path = eval_expr(&args[1], ctx)?.to_string_value();
+        let path = eval_expr(&args[1], ctx)?.text()?.to_string();
         let value = eval_expr(&args[2], ctx)?;
 
         if orbital_core_base::value::split_path(&path)
@@ -97,7 +99,7 @@ impl Operator for ObjectHasOp {
         require_arity!(args, "object/has", >= 2);
 
         super::with_operand(&args[0], ctx, |obj| {
-            let path = eval_expr(&args[1], ctx)?.to_string_value();
+            let path = eval_expr(&args[1], ctx)?.text()?.to_string();
             match obj {
                 Value::Object(_) => Ok(Value::Bool(obj.get_path(&path).is_some())),
                 Value::Null => Ok(Value::Bool(false)),
@@ -168,7 +170,7 @@ impl Operator for ObjectFromEntriesOp {
         for entry in array {
             if let Value::Array(pair) = entry {
                 if pair.len() >= 2 {
-                    let key = pair[0].to_string_value();
+                    let key = pair[0].text()?.to_string();
                     if super::util::is_refused_key(&key) {
                         return Ok(Value::Null);
                     }
@@ -260,7 +262,10 @@ impl Operator for ObjectPickOp {
         };
 
         let keys = match keys_val {
-            Value::Array(a) => a.iter().map(|v| v.to_string_value()).collect::<Vec<_>>(),
+            Value::Array(a) => a
+                .iter()
+                .map(|v| v.text().map(str::to_string))
+                .collect::<Result<Vec<_>, _>>()?,
             _ => {
                 return Err(OrbitalError::Eval(EvalError::TypeMismatch {
                     expected: "array".to_string(),
@@ -300,7 +305,10 @@ impl Operator for ObjectOmitOp {
         };
 
         let omit_keys: std::collections::HashSet<String> = match keys_val {
-            Value::Array(a) => a.iter().map(|v| v.to_string_value()).collect(),
+            Value::Array(a) => a
+                .iter()
+                .map(|v| v.text().map(str::to_string))
+                .collect::<Result<_, _>>()?,
             _ => {
                 return Err(OrbitalError::Eval(EvalError::TypeMismatch {
                     expected: "array".to_string(),
@@ -380,7 +388,7 @@ impl Operator for ObjectFilterOp {
         for (key, value) in source {
             let should_include =
                 callback.apply(vec![Value::string(key.clone()), value.clone()], ctx)?;
-            if should_include.is_truthy() {
+            if should_include.boolean()? {
                 result.insert(key, value);
             }
         }
@@ -424,7 +432,7 @@ impl Operator for ObjectMapKeysOp {
             if params.len() > 1 {
                 child_ctx.set_local(&params[1], value.clone());
             }
-            let new_key = eval_expr(&body, &child_ctx)?.to_string_value();
+            let new_key = eval_expr(&body, &child_ctx)?.text()?.to_string();
             refused |= super::util::is_refused_key(&new_key);
             result.insert(new_key, value);
         }

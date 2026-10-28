@@ -13,12 +13,10 @@ impl Operator for AnimFrameAtOp {
         let elapsed = require_number!(eval_expr(&args[0], ctx)?);
         let frame_dur = require_number!(eval_expr(&args[1], ctx)?);
         let frame_count = require_number!(eval_expr(&args[2], ctx)?);
-        let looped = args
-            .get(3)
-            .map(|a| eval_expr(a, ctx))
-            .transpose()?
-            .map(|v| v.is_truthy())
-            .unwrap_or(true);
+        let looped = match args.get(3) {
+            Some(a) => eval_expr(a, ctx)?.boolean()?,
+            None => true,
+        };
         if frame_dur == 0.0 || frame_count <= 0.0 {
             return Ok(Value::Number(0.0));
         }
@@ -68,12 +66,16 @@ impl Operator for AnimDirectionFromDeltaOp {
         require_arity!(args, "anim/direction-from-delta", >= 2);
         let dx = require_number!(eval_expr(&args[0], ctx)?);
         let dy = require_number!(eval_expr(&args[1], ctx)?);
-        let ways = args
-            .get(2)
-            .map(|a| eval_expr(a, ctx))
-            .transpose()?
-            .and_then(|v| v.to_number())
-            .unwrap_or(4.0);
+        let ways = match args.get(2) {
+            Some(a) => eval_expr(a, ctx)?.number()?,
+            None => 4.0,
+        };
+        if ways != 4.0 && ways != 8.0 {
+            return Err(EvalError::InvalidArgument(format!(
+                "anim/direction-from-delta: ways {ways}: expected 4 or 8"
+            ))
+            .into());
+        }
         // Screen coords: +y is down. atan2(dy,dx) in (-PI, PI].
         let angle = dy.atan2(dx);
         let two_pi = std::f64::consts::PI * 2.0;

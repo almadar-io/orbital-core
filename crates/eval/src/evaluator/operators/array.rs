@@ -7,39 +7,31 @@ use super::*;
 use orbital_core_base::value::{Shared, ValueMap};
 use std::sync::Arc;
 
-/// The numbers `array/max` / `array/min` fold: each element (or its `args[1]` field)
-/// read through `Value::to_number`; an element or field that yields none is skipped.
-fn numbers_of(
-    args: &[SExpression],
-    ctx: &BindingContext,
-    op: &str,
-) -> Result<Vec<f64>, OrbitalError> {
+/// The numbers `array/sum` / `max` / `min` / `avg` fold: each element (or its `args[1]` field), which must be a
+/// number; any other kind, or an object missing the field, is an error.
+fn numbers_of(args: &[SExpression], ctx: &BindingContext) -> Result<Vec<f64>, OrbitalError> {
     let arr = eval_expr(&args[0], ctx)?;
     let array = require_array!(arr);
     let key = match args.get(1) {
-        Some(k) => Some(
-            eval_expr(k, ctx)?
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    OrbitalError::Eval(EvalError::TypeMismatch {
-                        expected: "string".to_string(),
-                        actual: format!("{op} field"),
-                    })
-                })?,
-        ),
+        Some(k) => Some(eval_expr(k, ctx)?.text()?.to_string()),
         None => None,
     };
-    Ok(array
-        .iter()
-        .filter_map(|item| match &key {
-            Some(k) => item
+    let mut numbers = Vec::with_capacity(array.len());
+    for item in array.iter() {
+        let value = match &key {
+            Some(k) => match item
                 .as_object()
-                .and_then(|o| o.get(k))
-                .and_then(Value::to_number),
-            None => item.to_number(),
-        })
-        .collect())
+                .ok_or_else(|| item.kind_error("object"))?
+                .get(k)
+            {
+                None | Some(Value::Null) => continue,
+                Some(field) => field,
+            },
+            None => item,
+        };
+        numbers.push(value.number()?);
+    }
+    Ok(numbers)
 }
 
 /// A higher-order operator's callback, read once per call and applied per element: a `(fn …)` literal binds its
@@ -156,16 +148,14 @@ impl Operator for CountOp {
                     if args.len() > 1 {
                         // Apply filter
                         let filter = &args[1];
-                        let count = entities
-                            .iter()
-                            .filter(|entity| {
-                                let mut child_ctx = ctx.child();
-                                child_ctx.set_entity((*entity).clone());
-                                eval_expr(filter, &child_ctx)
-                                    .map(|v| v.is_truthy())
-                                    .unwrap_or(false)
-                            })
-                            .count();
+                        let mut count = 0usize;
+                        for entity in entities.iter() {
+                            let mut child_ctx = ctx.child();
+                            child_ctx.set_entity((*entity).clone());
+                            if eval_expr(filter, &child_ctx)?.boolean()? {
+                                count += 1;
+                            }
+                        }
                         return Ok(Value::Number(count as f64));
                     } else {
                         return Ok(Value::Number(entities.len() as f64));
@@ -182,7 +172,7 @@ impl Operator for CountOp {
                 for (i, item) in arr.iter().enumerate() {
                     if callback
                         .apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
-                        .is_truthy()
+                        .boolean()?
                     {
                         count += 1;
                     }
@@ -202,7 +192,11 @@ impl Operator for CountOp {
 pub struct ArrayLenOp;
 impl Operator for ArrayLenOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        CountOp.evaluate(args, ctx)
+        require_arity!(args, "array/len", 1);
+        super::with_operand(&args[0], ctx, |val| match val {
+            Value::Array(items) => Ok(Value::Number(items.len() as f64)),
+            other => Err(other.kind_error("array").into()),
+        })
     }
 }
 
@@ -246,13 +240,14 @@ impl Operator for NthOp {
                     actual: arr.type_name().to_string(),
                 }));
             };
-            let index = idx.to_number().ok_or_else(|| {
-                OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "number".to_string(),
-                    actual: idx.type_name().to_string(),
-                })
-            })? as usize;
-            Ok(array.get(index).cloned().unwrap_or(Value::Null))
+            let position = idx.number()?;
+            if position < 0.0 || position.fract() != 0.0 {
+                return Err(EvalError::InvalidArgument(format!(
+                    "nth: index {position} is not a non-negative integer"
+                ))
+                .into());
+            }
+            Ok(array.get(position as usize).cloned().unwrap_or(Value::Null))
         })
     }
 }
@@ -264,11 +259,10 @@ impl Operator for IncludesOp {
         super::with_operand(&args[0], ctx, |arr| {
             let item = eval_expr(&args[1], ctx)?;
             match arr {
-                Value::Array(a) => Ok(Value::Bool(a.iter().any(|v| v.loose_eq(&item)))),
-                Value::String(s) => {
-                    let needle = item.to_string_value();
-                    Ok(Value::Bool(s.contains(&needle)))
-                }
+                Value::Array(a) => Ok(Value::Bool(a.iter().try_fold(false, |found, v| {
+                    Ok::<_, EvalError>(found || *v == item)
+                })?)),
+                Value::String(s) => Ok(Value::Bool(s.contains(item.text()?))),
                 _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                     expected: "array or string".to_string(),
                     actual: arr.type_name().to_string(),
@@ -344,8 +338,11 @@ impl Operator for FilterOp {
                         child_ctx.set_local(&params[1], Value::Number(i as f64));
                     }
                     match eval_expr(&body, &child_ctx) {
-                        Ok(v) if v.is_truthy() => Some(Ok(item)),
-                        Ok(_) => None,
+                        Ok(v) => match v.boolean() {
+                            Ok(true) => Some(Ok(item)),
+                            Ok(false) => None,
+                            Err(e) => Some(Err(OrbitalError::Eval(e))),
+                        },
                         Err(e) => Some(Err(e)),
                     }
                 })
@@ -365,8 +362,11 @@ impl Operator for FilterOp {
                     Value::Number(i as f64),
                 );
                 match eval_expr(predicate, &child_ctx) {
-                    Ok(v) if v.is_truthy() => Some(Ok(item)),
-                    Ok(_) => None,
+                    Ok(v) => match v.boolean() {
+                        Ok(true) => Some(Ok(item)),
+                        Ok(false) => None,
+                        Err(e) => Some(Err(OrbitalError::Eval(e))),
+                    },
                     Err(e) => Some(Err(e)),
                 }
             })
@@ -389,7 +389,7 @@ impl Operator for FindOp {
         for (i, item) in array.into_iter().enumerate() {
             if callback
                 .apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
-                .is_truthy()
+                .boolean()?
             {
                 return Ok(item);
             }
@@ -566,10 +566,16 @@ impl Operator for ArrayUniqueOp {
         let array = require_array!(arr);
 
         // Remove duplicates while preserving order
-        let mut seen = Vec::new();
+        let mut seen: Vec<Value> = Vec::new();
         let mut result = Vec::new();
         for item in array {
-            let is_dup = seen.iter().any(|v: &Value| v.loose_eq(&item));
+            let mut is_dup = false;
+            for v in seen.iter() {
+                if *v == item {
+                    is_dup = true;
+                    break;
+                }
+            }
             if !is_dup {
                 seen.push(item.clone());
                 result.push(item);
@@ -591,7 +597,7 @@ impl Operator for ArrayIndexOfOp {
         let array = require_array!(arr);
 
         for (i, item) in array.iter().enumerate() {
-            if item.loose_eq(&needle) {
+            if *item == needle {
                 return Ok(Value::Number(i as f64));
             }
         }
@@ -614,7 +620,7 @@ impl Operator for ArrayEveryOp {
         for (i, item) in array.into_iter().enumerate() {
             if !callback
                 .apply(vec![item, Value::Number(i as f64)], ctx)?
-                .is_truthy()
+                .boolean()?
             {
                 return Ok(Value::Bool(false));
             }
@@ -638,7 +644,7 @@ impl Operator for ArraySomeOp {
         for (i, item) in array.into_iter().enumerate() {
             if callback
                 .apply(vec![item, Value::Number(i as f64)], ctx)?
-                .is_truthy()
+                .boolean()?
             {
                 return Ok(Value::Bool(true));
             }
@@ -653,7 +659,7 @@ pub struct ArraySumOp;
 impl Operator for ArraySumOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "sum", 1);
-        let sum: f64 = numbers_of(args, ctx, "array/sum")?.into_iter().sum();
+        let sum: f64 = numbers_of(args, ctx)?.into_iter().sum();
 
         Ok(Value::Number(sum))
     }
@@ -806,7 +812,7 @@ impl Operator for ArrayFindIndexOp {
                 child_ctx.set_local(&params[1], Value::Number(i as f64));
             }
             let result = eval_expr(&body, &child_ctx)?;
-            if result.is_truthy() {
+            if result.boolean()? {
                 return Ok(Value::Number(i as f64));
             }
         }
@@ -820,7 +826,7 @@ pub struct ArrayAvgOp;
 impl Operator for ArrayAvgOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "avg", 1);
-        let nums = numbers_of(args, ctx, "array/avg")?;
+        let nums = numbers_of(args, ctx)?;
         if nums.is_empty() {
             return Ok(Value::Null);
         }
@@ -1016,7 +1022,7 @@ impl Operator for ArrayRejectOp {
                 child_ctx.set_local(&params[1], Value::Number(i as f64));
             }
             let should_reject = eval_expr(&body, &child_ctx)?;
-            if !should_reject.is_truthy() {
+            if !should_reject.boolean()? {
                 result.push(item);
             }
         }
@@ -1049,7 +1055,7 @@ impl Operator for ArrayPartitionOp {
                 child_ctx.set_local(&params[1], Value::Number(i as f64));
             }
             let result = eval_expr(&body, &child_ctx)?;
-            if result.is_truthy() {
+            if result.boolean()? {
                 matches.push(item);
             } else {
                 non_matches.push(item);
@@ -1204,7 +1210,7 @@ pub struct ArrayMaxOp;
 impl Operator for ArrayMaxOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/max", 1);
-        let numbers = numbers_of(args, ctx, "array/max")?;
+        let numbers = numbers_of(args, ctx)?;
         Ok(numbers
             .into_iter()
             .reduce(f64::max)
@@ -1217,7 +1223,7 @@ pub struct ArrayMinOp;
 impl Operator for ArrayMinOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/min", 1);
-        let numbers = numbers_of(args, ctx, "array/min")?;
+        let numbers = numbers_of(args, ctx)?;
         Ok(numbers
             .into_iter()
             .reduce(f64::min)
@@ -1241,7 +1247,14 @@ impl Operator for ArrayRemoveItemOp {
                 }))
             }
         };
-        if let Some(pos) = array.iter().position(|v| v.loose_eq(&item)) {
+        let mut found = None;
+        for (pos, v) in array.iter().enumerate() {
+            if *v == item {
+                found = Some(pos);
+                break;
+            }
+        }
+        if let Some(pos) = found {
             array.remove(pos);
         }
         Ok(Value::Array(array))
@@ -1259,15 +1272,7 @@ fn cosine_similarity(a: &[Value], b: &[Value]) -> Result<Option<f64>, OrbitalErr
     let mut norm_a = 0.0;
     let mut norm_b = 0.0;
     for (av, bv) in a.iter().zip(b.iter()) {
-        let (av, bv) = match (av.to_number(), bv.to_number()) {
-            (Some(x), Some(y)) => (x, y),
-            _ => {
-                return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "number".to_string(),
-                    actual: "non-number vector element".to_string(),
-                }))
-            }
-        };
+        let (av, bv) = (av.number()?, bv.number()?);
         dot += av * bv;
         norm_a += av * av;
         norm_b += bv * bv;
@@ -1492,5 +1497,42 @@ mod sort_tests {
             json!([])
         );
         assert!(sort(json!(["array/sort", null])).is_err());
+    }
+}
+
+#[cfg(test)]
+mod strict_tests {
+    use serde_json::json;
+    use {crate::evaluator::context::BindingContextBuilder, crate::evaluator::Evaluator};
+
+    fn run(args: serde_json::Value) -> Result<serde_json::Value, String> {
+        let ctx = BindingContextBuilder::new().build();
+        let sexpr = serde_json::from_value(args).unwrap();
+        Evaluator::new()
+            .evaluate(&sexpr, &ctx)
+            .map(|v| serde_json::to_value(v).unwrap())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn max_over_numbers_and_refuses_a_text_item() {
+        assert_eq!(run(json!(["array/max", [3, 9, 2]])).unwrap(), json!(9.0));
+        assert!(run(json!(["array/max", [3, "9", 2]])).is_err());
+    }
+
+    #[test]
+    fn includes_is_kind_strict() {
+        assert_eq!(
+            run(json!(["array/includes", [1, 2], 2])).unwrap(),
+            json!(true)
+        );
+        assert!(run(json!(["array/includes", [1, 2], "2"])).is_err());
+    }
+
+    #[test]
+    fn nth_refuses_text_and_negative_indexes() {
+        assert_eq!(run(json!(["array/nth", [5, 6], 1])).unwrap(), json!(6.0));
+        assert!(run(json!(["array/nth", [5, 6], "1"])).is_err());
+        assert!(run(json!(["array/nth", [5, 6], -1])).is_err());
     }
 }

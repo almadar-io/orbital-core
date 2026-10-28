@@ -54,7 +54,7 @@ impl std::hash::Hasher for DiscriminantHasher {
 
 type SignatureTable = HashMap<
     Discriminant<OperatorKind>,
-    Signature<'static>,
+    (Signature<'static>, u64),
     std::hash::BuildHasherDefault<DiscriminantHasher>,
 >;
 
@@ -77,9 +77,38 @@ fn build_signatures() -> SignatureTable {
         ) {
             continue;
         }
-        signatures.insert(discriminant(&kind), Signature::of(meta));
+        let signature = Signature::of(meta);
+        signatures.insert(discriminant(&kind), (signature, unfailing_positions(&signature)));
     }
     signatures
+}
+
+/// The argument positions whose check cannot fail, so it is skipped: an unbounded type variable, or a list of one,
+/// that no other parameter names or reads is bound by this argument alone (a list's kinds bind nothing else); under `branch-union` the branches' bindings union and never
+/// conflict. A rest parameter is shared by every argument past it, so it never qualifies on the first rule.
+fn unfailing_positions(signature: &Signature<'static>) -> u64 {
+    let (params, rest) = signature.arity();
+    let mut mask = 0u64;
+    for index in 0..params.min(64) {
+        let Some(formal) = signature.formal(index) else { continue };
+        let formal = match formal {
+            OperatorTypeRef::Tagged(OperatorTypeRefKind::Sexpr { of: Some(of) }) => &**of,
+            other => other,
+        };
+        let formal = match formal {
+            OperatorTypeRef::Tagged(OperatorTypeRefKind::Array { of }) => &**of,
+            other => other,
+        };
+        let OperatorTypeRef::Tagged(OperatorTypeRefKind::Var { name, bound: None, each: false }) = formal else {
+            continue;
+        };
+        let alone = rest != Some(index)
+            && !(0..params).any(|other| other != index && signature.formal(other).is_some_and(|ty| mentions_variable(ty, name)));
+        if alone || signature.semantics() == Some("branch-union") {
+            mask |= 1 << index;
+        }
+    }
+    mask
 }
 
 /// The signature the installed operator table declares for `kind`, when a call to it checks anything. Without an
@@ -88,7 +117,16 @@ pub fn signature_for(kind: &OperatorKind) -> Option<Signature<'static>> {
     declared_signature(kind).filter(Signature::checks_anything)
 }
 
+/// [`signature_for`] with the positions whose check cannot fail.
+pub fn checked_frame_for(kind: &OperatorKind) -> Option<(Signature<'static>, u64)> {
+    declared_entry(kind).filter(|(signature, _)| signature.checks_anything())
+}
+
 fn declared_signature(kind: &OperatorKind) -> Option<Signature<'static>> {
+    declared_entry(kind).map(|(signature, _)| signature)
+}
+
+fn declared_entry(kind: &OperatorKind) -> Option<(Signature<'static>, u64)> {
     let signatures = match SIGNATURES.get() {
         Some(signatures) => signatures,
         None => {
@@ -458,6 +496,8 @@ struct Frame {
     end: usize,
     signature: Signature<'static>,
     bindings: CallBindings,
+    /// The positions whose check cannot fail (see `unfailing_positions`).
+    skip: u64,
 }
 
 /// The calls being evaluated, innermost last. A returned call's slot stays allocated, so the next call reuses its
@@ -486,10 +526,15 @@ pub struct CallFrame;
 
 impl CallFrame {
     pub fn enter(signature: Signature<'static>, args: &[SExpression]) -> Self {
-        Self::enter_frame(signature, args)
+        Self::enter_frame(signature, 0, args)
     }
 
-    fn enter_frame(signature: Signature<'static>, args: &[SExpression]) -> Self {
+    /// [`CallFrame::enter`] skipping the checks at `skip` (positions whose check cannot fail).
+    pub fn enter_skipping(signature: Signature<'static>, skip: u64, args: &[SExpression]) -> Self {
+        Self::enter_frame(signature, skip, args)
+    }
+
+    fn enter_frame(signature: Signature<'static>, skip: u64, args: &[SExpression]) -> Self {
         let start = args.as_ptr() as usize;
         let end = start + std::mem::size_of_val(args);
         FRAMES.with(|f| {
@@ -499,12 +544,14 @@ impl CallFrame {
                 slot.start = start;
                 slot.end = end;
                 slot.signature = signature;
+                slot.skip = skip;
             } else {
                 frames.slots.push(Frame {
                     start,
                     end,
                     signature,
                     bindings: CallBindings::new(),
+                    skip,
                 });
             }
             frames.live = at + 1;
@@ -954,6 +1001,12 @@ pub fn check_declared_argument(index: usize, declared: &OirType) -> Result<(), O
 
 /// Whether `ty` names the type variable `name` anywhere, other than as the `key-of` / `field-of` reference that reads a
 /// record's declared fields and so never binds the variable.
+/// [`names_variable`], or a `key-of`/`field-of` read of it: a parameter that reads the variable relies on its binding.
+fn mentions_variable(ty: &OperatorTypeRef, name: &str) -> bool {
+    names_variable(ty, name)
+        || matches!(ty, OperatorTypeRef::Tagged(OperatorTypeRefKind::KeyOf { of } | OperatorTypeRefKind::FieldOf { of }) if of == name)
+}
+
 fn names_variable(ty: &OperatorTypeRef, name: &str) -> bool {
     let OperatorTypeRef::Tagged(kind) = ty else {
         return false;
@@ -1075,6 +1128,9 @@ pub fn check_argument(index: usize, value: &Value) -> Result<(), OrbitalError> {
         let Some(top) = frames.top_mut() else {
             return Ok(());
         };
+        if index < 64 && top.skip & (1 << index) != 0 {
+            return Ok(());
+        }
         let signature = top.signature;
         // A primitive of the declared kind binds no variable and cannot disagree: the common call, answered without the binder.
         if let Some(OperatorTypeRef::Primitive(kind)) = signature.formal(index) {
@@ -1164,6 +1220,41 @@ mod tests {
             "params": params, "returnType": "boolean",
         }))
         .unwrap()
+    }
+
+    fn mask_of(params: serde_json::Value, max_arity: Option<u32>, semantics: Option<&str>) -> u64 {
+        let mut meta = json!({ "category": "logic", "minArity": 0, "maxArity": max_arity, "params": params, "returnType": { "kind": "var", "name": "T" } });
+        if let Some(semantics) = semantics {
+            meta["returnSemantics"] = json!(semantics);
+        }
+        let op: EmbeddedOperator = serde_json::from_value(meta).unwrap();
+        let op: &'static EmbeddedOperator = Box::leak(Box::new(op));
+        unfailing_positions(&Signature::of(op))
+    }
+
+    #[test]
+    fn a_check_that_cannot_fail_is_skipped_and_one_that_can_is_kept() {
+        let t = json!({ "kind": "var", "name": "T" });
+        let if_like = json!([{ "name": "cond", "type": "boolean" }, { "name": "then", "type": t }, { "name": "else", "type": t }]);
+        assert_eq!(mask_of(if_like.clone(), Some(3), Some("branch-union")), 0b110, "if: both branches, never the condition");
+        assert_eq!(mask_of(if_like, Some(3), None), 0, "control: without branch-union two branches share T and are kept");
+        let let_like = json!([{ "name": "bindings", "type": { "kind": "sexpr" } }, { "name": "body", "type": { "kind": "sexpr", "of": t } }]);
+        assert_eq!(mask_of(let_like, Some(2), Some("identity-of-arg<1>")), 0b10, "let: the body alone names T");
+        let and_like = json!([{ "name": "...operands", "type": t }]);
+        assert_eq!(mask_of(and_like, None, None), 0, "control: a rest parameter is shared by every operand");
+        let map_like = json!([
+            { "name": "list", "type": { "kind": "array", "of": t } },
+            { "name": "fn", "type": { "kind": "fn", "params": [t], "returns": { "kind": "var", "name": "U" } } }
+        ]);
+        assert_eq!(mask_of(map_like, Some(2), None), 0, "control: T is also named by the callback, so the list check binds it");
+        let len_like = json!([{ "name": "list", "type": { "kind": "array", "of": t } }]);
+        assert_eq!(mask_of(len_like, Some(1), None), 0b1, "len: a list of a variable no other parameter names");
+        let includes_like = json!([{ "name": "list", "type": { "kind": "array", "of": t } }, { "name": "item", "type": t }]);
+        assert_eq!(mask_of(includes_like, Some(2), None), 0, "control: the item names T too, so the list check binds it");
+        let sort_like = json!([{ "name": "list", "type": { "kind": "array", "of": t } }, { "name": "key", "type": { "kind": "keyOf", "of": "T" }, "optional": true }]);
+        assert_eq!(mask_of(sort_like, Some(2), None), 0, "control: a key-of T reads T, so the list check binds it");
+        let bounded = json!([{ "name": "x", "type": { "kind": "var", "name": "N", "bound": "number" } }]);
+        assert_eq!(mask_of(bounded, Some(1), None), 0, "control: a bounded variable is still checked against its bound");
     }
 
     #[test]

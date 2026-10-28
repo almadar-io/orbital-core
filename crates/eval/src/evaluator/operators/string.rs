@@ -15,9 +15,62 @@ impl Operator for ConcatOp {
         let mut result = String::new();
         for arg in args {
             let val = eval_expr(arg, ctx)?;
-            result.push_str(&val.to_text());
+            result.push_str(&joinable_text(&val)?);
         }
         Ok(Value::string(result))
+    }
+}
+
+/// A `string | number | boolean | date | datetime` operand rendered as text; any other kind is a type error.
+fn joinable_text(value: &Value) -> Result<String, EvalError> {
+    match value {
+        Value::String(_) | Value::Number(_) | Value::Bool(_) => Ok(value.to_string_value()),
+        other => Err(other.kind_error("string, number or boolean")),
+    }
+}
+
+fn whole_number(value: &Value) -> Result<f64, EvalError> {
+    let n = value.number()?;
+    if n.fract() == 0.0 {
+        Ok(n)
+    } else {
+        Err(EvalError::InvalidArgument(format!(
+            "expected a whole number, got {n}"
+        )))
+    }
+}
+
+/// A repeat or length count: a whole number from 0.
+fn count_arg(value: &Value) -> Result<usize, EvalError> {
+    let n = whole_number(value)?;
+    if n < 0.0 || n > u32::MAX as f64 {
+        return Err(EvalError::InvalidArgument(format!(
+            "expected a whole number from 0, got {n}"
+        )));
+    }
+    Ok(n as usize)
+}
+
+/// A slice index: a whole number, negative counting from the end.
+fn index_arg(value: &Value) -> Result<i64, EvalError> {
+    let n = whole_number(value)?;
+    if n.abs() > u32::MAX as f64 {
+        return Err(EvalError::InvalidArgument(format!(
+            "index {n} is out of range"
+        )));
+    }
+    Ok(n as i64)
+}
+
+/// A padding character: a string of exactly one character.
+fn pad_char_arg(value: &Value) -> Result<char, EvalError> {
+    let text = value.text()?;
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Ok(c),
+        _ => Err(EvalError::InvalidArgument(format!(
+            "expected a single padding character, got {text:?}"
+        ))),
     }
 }
 
@@ -71,7 +124,7 @@ impl Operator for UpperOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "upper", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::string(val.to_text().to_uppercase()))
+        Ok(Value::string(val.text()?.to_uppercase()))
     }
 }
 
@@ -80,7 +133,7 @@ impl Operator for LowerOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "lower", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::string(val.to_text().to_lowercase()))
+        Ok(Value::string(val.text()?.to_lowercase()))
     }
 }
 
@@ -89,7 +142,7 @@ impl Operator for TrimOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "trim", 1);
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::string(val.to_text().trim().to_string()))
+        Ok(Value::string(val.text()?.trim().to_string()))
     }
 }
 
@@ -97,8 +150,8 @@ pub struct SplitOp;
 impl Operator for SplitOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "split", >= 2);
-        let s = eval_expr(&args[0], ctx)?.to_text();
-        let delimiter = eval_expr(&args[1], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let delimiter = eval_expr(&args[1], ctx)?.text()?.to_string();
 
         let parts: Vec<Value> = if delimiter.is_empty() {
             s.chars().map(|c| Value::string(c.to_string())).collect()
@@ -116,11 +169,14 @@ impl Operator for JoinOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "join", >= 2);
         let arr = eval_expr(&args[0], ctx)?;
-        let delimiter = eval_expr(&args[1], ctx)?.to_text();
+        let delimiter = eval_expr(&args[1], ctx)?.text()?.to_string();
 
         let array = require_array!(arr);
 
-        let parts: Vec<String> = array.into_iter().map(|v| v.to_text()).collect();
+        let parts = array
+            .iter()
+            .map(joinable_text)
+            .collect::<Result<Vec<String>, EvalError>>()?;
         Ok(Value::string(parts.join(&delimiter)))
     }
 }
@@ -135,7 +191,7 @@ impl Operator for StrLenOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/len", 1);
         let val = eval_expr(&args[0], ctx)?;
-        let s = val.to_text();
+        let s = val.text()?;
         Ok(Value::Number(s.chars().count() as f64))
     }
 }
@@ -145,8 +201,8 @@ pub struct StrIncludesOp;
 impl Operator for StrIncludesOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/includes", >= 2);
-        let haystack = eval_expr(&args[0], ctx)?.to_text();
-        let needle = eval_expr(&args[1], ctx)?.to_text();
+        let haystack = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let needle = eval_expr(&args[1], ctx)?.text()?.to_string();
         Ok(Value::Bool(haystack.contains(&needle)))
     }
 }
@@ -156,8 +212,8 @@ pub struct StrStartsWithOp;
 impl Operator for StrStartsWithOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/startsWith", >= 2);
-        let s = eval_expr(&args[0], ctx)?.to_text();
-        let prefix = eval_expr(&args[1], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let prefix = eval_expr(&args[1], ctx)?.text()?.to_string();
         Ok(Value::Bool(s.starts_with(&prefix)))
     }
 }
@@ -167,8 +223,8 @@ pub struct StrEndsWithOp;
 impl Operator for StrEndsWithOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/endsWith", >= 2);
-        let s = eval_expr(&args[0], ctx)?.to_text();
-        let suffix = eval_expr(&args[1], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let suffix = eval_expr(&args[1], ctx)?.text()?.to_string();
         Ok(Value::Bool(s.ends_with(&suffix)))
     }
 }
@@ -178,9 +234,9 @@ pub struct StrReplaceOp;
 impl Operator for StrReplaceOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/replace", >= 3);
-        let s = eval_expr(&args[0], ctx)?.to_text();
-        let old = eval_expr(&args[1], ctx)?.to_text();
-        let new = eval_expr(&args[2], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let old = eval_expr(&args[1], ctx)?.text()?.to_string();
+        let new = eval_expr(&args[2], ctx)?.text()?.to_string();
         Ok(Value::string(s.replacen(&old, &new, 1)))
     }
 }
@@ -217,9 +273,9 @@ pub struct StrReplaceAllOp;
 impl Operator for StrReplaceAllOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/replaceAll", >= 3);
-        let s = eval_expr(&args[0], ctx)?.to_text();
-        let old = eval_expr(&args[1], ctx)?.to_text();
-        let new = eval_expr(&args[2], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let old = eval_expr(&args[1], ctx)?.text()?.to_string();
+        let new = eval_expr(&args[2], ctx)?.text()?.to_string();
         Ok(Value::string(s.replace(&old, &new)))
     }
 }
@@ -229,7 +285,7 @@ pub struct StrTemplateOp;
 impl Operator for StrTemplateOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/template", >= 2);
-        let template = eval_expr(&args[0], ctx)?.to_text();
+        let template = eval_expr(&args[0], ctx)?.text()?.to_string();
         let data = eval_expr(&args[1], ctx)?;
 
         let obj = match data {
@@ -246,7 +302,7 @@ impl Operator for StrTemplateOp {
         let mut result = template.clone();
         for (key, value) in &obj {
             let placeholder = format!("{{{{{}}}}}", key);
-            result = result.replace(&placeholder, &value.to_text());
+            result = result.replace(&placeholder, &value.to_string_value());
         }
 
         Ok(Value::string(result))
@@ -262,22 +318,22 @@ pub struct StrSliceOp;
 impl Operator for StrSliceOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/slice", >= 2);
-        let s = eval_expr(&args[0], ctx)?.to_text();
-        let start = require_number!(eval_expr(&args[1], ctx)?);
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let start = index_arg(&eval_expr(&args[1], ctx)?)?;
 
         let chars: Vec<char> = s.chars().collect();
         let len = chars.len() as i64;
 
-        let start_idx = if start < 0.0 {
-            ((len + start as i64).max(0)) as usize
+        let start_idx = if start < 0 {
+            (len + start).max(0) as usize
         } else {
             (start as usize).min(chars.len())
         };
 
         let end_idx = if args.len() > 2 {
-            let end = require_number!(eval_expr(&args[2], ctx)?);
-            if end < 0.0 {
-                ((len + end as i64).max(0)) as usize
+            let end = index_arg(&eval_expr(&args[2], ctx)?)?;
+            if end < 0 {
+                (len + end).max(0) as usize
             } else {
                 (end as usize).min(chars.len())
             }
@@ -298,12 +354,11 @@ pub struct StrPadStartOp;
 impl Operator for StrPadStartOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "padStart", >= 2);
-        let s = eval_expr(&args[0], ctx)?.to_text();
-        let target_len = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let target_len = count_arg(&eval_expr(&args[1], ctx)?)?;
 
         let pad_char = if args.len() > 2 {
-            let pad_str = eval_expr(&args[2], ctx)?.to_text();
-            pad_str.chars().next().unwrap_or(' ')
+            pad_char_arg(&eval_expr(&args[2], ctx)?)?
         } else {
             ' '
         };
@@ -323,12 +378,11 @@ pub struct StrPadEndOp;
 impl Operator for StrPadEndOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "padEnd", >= 2);
-        let s = eval_expr(&args[0], ctx)?.to_text();
-        let target_len = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let target_len = count_arg(&eval_expr(&args[1], ctx)?)?;
 
         let pad_char = if args.len() > 2 {
-            let pad_str = eval_expr(&args[2], ctx)?.to_text();
-            pad_str.chars().next().unwrap_or(' ')
+            pad_char_arg(&eval_expr(&args[2], ctx)?)?
         } else {
             ' '
         };
@@ -348,7 +402,7 @@ pub struct StrCapitalizeOp;
 impl Operator for StrCapitalizeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "capitalize", 1);
-        let s = eval_expr(&args[0], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
 
         if s.is_empty() {
             return Ok(Value::string(s));
@@ -368,11 +422,11 @@ pub struct StrTruncateOp;
 impl Operator for StrTruncateOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "truncate", >= 2);
-        let s = eval_expr(&args[0], ctx)?.to_text();
-        let max_len = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let max_len = count_arg(&eval_expr(&args[1], ctx)?)?;
 
         let suffix = if args.len() > 2 {
-            eval_expr(&args[2], ctx)?.to_text()
+            eval_expr(&args[2], ctx)?.text()?.to_string()
         } else {
             "...".to_string()
         };
@@ -397,7 +451,7 @@ pub struct StrTrimStartOp;
 impl Operator for StrTrimStartOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "trimStart", 1);
-        let s = eval_expr(&args[0], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
         Ok(Value::string(s.trim_start().to_string()))
     }
 }
@@ -407,7 +461,7 @@ pub struct StrTrimEndOp;
 impl Operator for StrTrimEndOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "trimEnd", 1);
-        let s = eval_expr(&args[0], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
         Ok(Value::string(s.trim_end().to_string()))
     }
 }
@@ -417,8 +471,8 @@ pub struct StrRepeatOp;
 impl Operator for StrRepeatOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/repeat", >= 2);
-        let s = eval_expr(&args[0], ctx)?.to_text();
-        let n = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let n = count_arg(&eval_expr(&args[1], ctx)?)?;
 
         Ok(Value::string(s.repeat(n)))
     }
@@ -429,7 +483,7 @@ pub struct StrReverseOp;
 impl Operator for StrReverseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/reverse", 1);
-        let s = eval_expr(&args[0], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
         Ok(Value::String(s.chars().rev().collect()))
     }
 }
@@ -439,7 +493,7 @@ pub struct StrTitleCaseOp;
 impl Operator for StrTitleCaseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "titleCase", 1);
-        let s = eval_expr(&args[0], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
 
         let result: String = s
             .split_whitespace()
@@ -464,7 +518,7 @@ pub struct StrCamelCaseOp;
 impl Operator for StrCamelCaseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "camelCase", 1);
-        let s = eval_expr(&args[0], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
 
         // Split on non-alphanumeric characters
         let words: Vec<&str> = s
@@ -500,7 +554,7 @@ pub struct StrKebabCaseOp;
 impl Operator for StrKebabCaseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "kebabCase", 1);
-        let s = eval_expr(&args[0], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
 
         // Split on non-alphanumeric characters or camelCase boundaries
         let mut words = Vec::new();
@@ -531,7 +585,7 @@ pub struct StrSnakeCaseOp;
 impl Operator for StrSnakeCaseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "snakeCase", 1);
-        let s = eval_expr(&args[0], ctx)?.to_text();
+        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
 
         // Split on non-alphanumeric characters or camelCase boundaries
         let mut words = Vec::new();
@@ -554,22 +608,6 @@ impl Operator for StrSnakeCaseOp {
         }
 
         Ok(Value::string(words.join("_")))
-    }
-}
-
-/// str/default - Default value if empty
-pub struct StrDefaultOp;
-impl Operator for StrDefaultOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "str/default", >= 2);
-        let val = eval_expr(&args[0], ctx)?;
-        let fallback = eval_expr(&args[1], ctx)?;
-
-        match &val {
-            Value::Null => Ok(fallback),
-            Value::String(s) if s.is_empty() => Ok(fallback),
-            _ => Ok(val),
-        }
     }
 }
 
@@ -997,5 +1035,50 @@ mod tests {
         let expr: SExpression =
             serde_json::from_value(serde_json::json!(["str/to-int", 5])).unwrap();
         assert!(eval_expr(&expr, &BindingContext::default()).is_err());
+    }
+
+    fn run(json: serde_json::Value) -> EvalResult {
+        let expr: SExpression = serde_json::from_value(json).expect("s-expression");
+        eval_expr(&expr, &BindingContext::default())
+    }
+
+    #[test]
+    fn string_operators_reject_a_non_string_operand() {
+        assert!(run(serde_json::json!(["str/upper", 5])).is_err());
+        assert!(run(serde_json::json!(["str/upper", null])).is_err());
+        assert_eq!(
+            run(serde_json::json!(["str/upper", "ab"])).unwrap(),
+            Value::string("AB".to_string())
+        );
+    }
+
+    #[test]
+    fn counts_and_pad_characters_are_whole_and_declared() {
+        assert!(run(serde_json::json!(["str/repeat", "a", -1])).is_err());
+        assert!(run(serde_json::json!(["str/repeat", "a", 1.5])).is_err());
+        assert!(run(serde_json::json!(["str/padStart", "a", 3, ""])).is_err());
+        assert!(run(serde_json::json!(["str/padStart", "a", "3"])).is_err());
+        assert_eq!(
+            run(serde_json::json!(["str/repeat", "a", 3])).unwrap(),
+            Value::string("aaa".to_string())
+        );
+        assert_eq!(
+            run(serde_json::json!(["str/padStart", "a", 3, "-"])).unwrap(),
+            Value::string("--a".to_string())
+        );
+    }
+
+    #[test]
+    fn concat_and_join_render_scalars_and_reject_the_rest() {
+        assert!(run(serde_json::json!(["str/concat", "a", null])).is_err());
+        assert!(run(serde_json::json!(["str/join", [1, null], ","])).is_err());
+        assert_eq!(
+            run(serde_json::json!(["str/concat", "a", 1, true])).unwrap(),
+            Value::string("a1true".to_string())
+        );
+        assert_eq!(
+            run(serde_json::json!(["str/join", ["a", 2], ","])).unwrap(),
+            Value::string("a,2".to_string())
+        );
     }
 }

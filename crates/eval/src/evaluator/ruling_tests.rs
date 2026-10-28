@@ -159,15 +159,20 @@ struct NullProbe {
     operator: String,
     position: usize,
     expr: serde_json::Value,
-    rejects: bool,
+}
+
+/// S3 ratchet: `operator[position]` sites whose declared type excludes null but which still accept it. Only shrinks.
+fn known_lenient() -> Vec<String> {
+    serde_json::from_str(include_str!("../../../../tests/fixtures/operators/null-lenient-known.json")).unwrap()
 }
 
 #[test]
-fn the_kernel_raises_on_a_null_operand_exactly_where_the_operator_table_flags_it() {
+fn the_kernel_raises_on_a_null_operand_exactly_where_the_declared_type_excludes_null() {
     let probes: Vec<NullProbe> =
         serde_json::from_str(include_str!("../../../../tests/fixtures/operators/null-operands.json")).unwrap();
-    assert!(probes.iter().any(|p| p.rejects) && probes.iter().any(|p| !p.rejects));
+    let lenient = known_lenient();
     let mut failures = Vec::new();
+    let mut still_lenient = Vec::new();
     for probe in &probes {
         if let Err(e) = run(&probe.expr.to_string()) {
             failures.push(format!("{}: the baseline call fails: {e}", probe.operator));
@@ -176,14 +181,22 @@ fn the_kernel_raises_on_a_null_operand_exactly_where_the_operator_table_flags_it
         let mut nulled = probe.expr.clone();
         nulled[probe.position + 1] = serde_json::Value::Null;
         let raises = run(&nulled.to_string()).is_err();
-        if raises != probe.rejects {
-            failures.push(format!("{}[{}]: fixture says rejects={}, kernel raises={raises}", probe.operator, probe.position, probe.rejects));
-        }
-        let declared = crate::evaluator::operator_signature(&probe.operator)
+        let rejects = crate::evaluator::operator_signature(&probe.operator)
             .is_some_and(|signature| signature.rejects_null(probe.position));
-        if declared != probe.rejects {
-            failures.push(format!("{}[{}]: the installed table flags rejectsNull={declared}, the fixture says {}", probe.operator, probe.position, probe.rejects));
+        let site = format!("{}[{}]", probe.operator, probe.position);
+        match (rejects, raises) {
+            (true, false) => still_lenient.push(site),
+            (false, true) => failures.push(format!("{site}: the declared type admits null, but the kernel raises")),
+            _ => {}
         }
+    }
+    let new_lenient: Vec<&String> = still_lenient.iter().filter(|s| !lenient.contains(s)).collect();
+    let fixed: Vec<&String> = lenient.iter().filter(|s| !still_lenient.contains(s)).collect();
+    for site in new_lenient {
+        failures.push(format!("{site}: the declared type excludes null, but the kernel accepts it"));
+    }
+    for site in fixed {
+        failures.push(format!("{site}: now raises; remove it from null-lenient-known.json"));
     }
     assert!(failures.is_empty(), "{} of {} probes differ:\n{}", failures.len(), probes.len(), failures.join("\n"));
 }

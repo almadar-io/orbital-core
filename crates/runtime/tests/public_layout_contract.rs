@@ -544,15 +544,16 @@ fn entity_ref_variants_are_unboxed_and_keep_their_untagged_wire_bytes() {
 #[cfg(target_pointer_width = "64")]
 #[test]
 fn public_layouts_do_not_grow_past_their_measured_native_size() {
-    assert_eq!(size_of::<ServerProgress>(), 440, "ServerProgress");
-    assert_eq!(size_of::<ServerProgressWire>(), 440, "ServerProgressWire");
+    assert_eq!(size_of::<ServerProgress>(), 416, "ServerProgress");
+    assert_eq!(size_of::<ServerProgressWire>(), 416, "ServerProgressWire");
     // 704: a dispatch continuation keeps the rows the host has answered for it (`ReadCache`, one `Arc`: a row is asked
     // once) and the viewer it was started as (one `Arc`: concurrent requests keep their own `@user`). 712: plus the
     // transition its suspended step committed (one `Box`, G-CROSS-259). 720: plus the store ask it is parked on and its
-    // driver's dispatch (one `Box`, EXEC-STORE-4).
-    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 720, "Progress");
+    // driver's dispatch (one `Box`, EXEC-STORE-4). 808: plus the kernel lane's hold, its keyed hold (one `Box`) and the
+    // queued seed asks (P-017 K3).
+    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 808, "Progress");
     // 496: a `RowQuery` carries its `nearest` selection (EXEC-FETCH-2) behind a box, 8 bytes; inline it was 56 (544).
-    assert_eq!(size_of::<ResolveProgress>(), 496, "ResolveProgress");
+    assert_eq!(size_of::<ResolveProgress>(), 416, "ResolveProgress");
     // 568: plus the entity's `@invariant` propositions (`Option<Vec<SExpression>>`, 24 bytes, G-ORB-384).
     // 592: plus the entity's `store` driver binding (`Option<String>`, 24 bytes, EXEC-STORE-4).
     assert_eq!(size_of::<EntityRef>(), 592, "EntityRef");

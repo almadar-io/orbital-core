@@ -467,7 +467,7 @@
                       "set",
                       "@entity.lastNote",
                       [
-                        "str/default",
+                        "default",
                         "@payload.note",
                         ""
                       ]
@@ -477,7 +477,7 @@
                       "ReviewRequested",
                       {
                         "itemId": [
-                          "str/default",
+                          "default",
                           "@payload.id",
                           ""
                         ],
@@ -491,7 +491,7 @@
                       "ReviewEvent",
                       {
                         "note": [
-                          "str/default",
+                          "default",
                           "@payload.note",
                           ""
                         ],
@@ -499,12 +499,12 @@
                         "toState": "@toState",
                         "fromState": "@fromState",
                         "actor": [
-                          "str/default",
+                          "default",
                           "@user.id",
                           ""
                         ],
                         "itemId": [
-                          "str/default",
+                          "default",
                           "@payload.id",
                           ""
                         ],
@@ -535,7 +535,7 @@
                       "set",
                       "@entity.lastLogId",
                       [
-                        "str/default",
+                        "default",
                         "@payload.id",
                         ""
                       ]
@@ -574,7 +574,7 @@
                       "set",
                       "@entity.lastNote",
                       [
-                        "str/default",
+                        "default",
                         "@payload.note",
                         ""
                       ]
@@ -586,7 +586,7 @@
                         "round": "@entity.round",
                         "decision": "@toState",
                         "itemId": [
-                          "str/default",
+                          "default",
                           "@payload.id",
                           ""
                         ]
@@ -599,19 +599,19 @@
                       {
                         "at": "@now",
                         "note": [
-                          "str/default",
+                          "default",
                           "@payload.note",
                           ""
                         ],
                         "toState": "@toState",
                         "actor": [
-                          "str/default",
+                          "default",
                           "@user.id",
                           ""
                         ],
                         "fromState": "@fromState",
                         "itemId": [
-                          "str/default",
+                          "default",
                           "@payload.id",
                           ""
                         ],
@@ -667,7 +667,7 @@
                       "set",
                       "@entity.lastNote",
                       [
-                        "str/default",
+                        "default",
                         "@payload.note",
                         ""
                       ]
@@ -678,7 +678,7 @@
                       {
                         "decision": "@toState",
                         "itemId": [
-                          "str/default",
+                          "default",
                           "@payload.id",
                           ""
                         ],
@@ -691,7 +691,7 @@
                       "ReviewEvent",
                       {
                         "itemId": [
-                          "str/default",
+                          "default",
                           "@payload.id",
                           ""
                         ],
@@ -699,12 +699,12 @@
                         "at": "@now",
                         "fromState": "@fromState",
                         "note": [
-                          "str/default",
+                          "default",
                           "@payload.note",
                           ""
                         ],
                         "actor": [
-                          "str/default",
+                          "default",
                           "@user.id",
                           ""
                         ],
@@ -735,7 +735,7 @@
                       "set",
                       "@entity.lastLogId",
                       [
-                        "str/default",
+                        "default",
                         "@payload.id",
                         ""
                       ]
@@ -783,7 +783,7 @@
                       "set",
                       "@entity.lastNote",
                       [
-                        "str/default",
+                        "default",
                         "@payload.note",
                         ""
                       ]
@@ -795,7 +795,7 @@
                         "resubmission": true,
                         "round": "@entity.round",
                         "itemId": [
-                          "str/default",
+                          "default",
                           "@payload.id",
                           ""
                         ]
@@ -807,19 +807,19 @@
                       "ReviewEvent",
                       {
                         "actor": [
-                          "str/default",
+                          "default",
                           "@user.id",
                           ""
                         ],
                         "at": "@now",
                         "fromState": "@fromState",
                         "itemId": [
-                          "str/default",
+                          "default",
                           "@payload.id",
                           ""
                         ],
                         "note": [
-                          "str/default",
+                          "default",
                           "@payload.note",
                           ""
                         ],
@@ -851,7 +851,7 @@
                       "set",
                       "@entity.lastLogId",
                       [
-                        "str/default",
+                        "default",
                         "@payload.id",
                         ""
                       ]

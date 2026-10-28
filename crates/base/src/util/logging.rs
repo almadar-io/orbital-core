@@ -31,6 +31,7 @@ pub mod ns {
     pub const RUNTIME_EFFECTS: &str = "almadar:runtime:effects";
     pub const RUNTIME_PERSIST: &str = "almadar:runtime:persist";
     pub const RUNTIME_SM: &str = "almadar:runtime:sm";
+    pub const EVAL_RAISE: &str = "almadar:eval:raise";
     pub const RUNTIME_OS: &str = "almadar:runtime:os";
     pub const SERVER_DATA: &str = "almadar:server:data";
     pub const BRIDGE: &str = "almadar:bridge";

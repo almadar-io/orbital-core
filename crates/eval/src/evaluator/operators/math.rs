@@ -18,12 +18,7 @@ impl Operator for AddOp {
         let mut sum = 0.0;
         for arg in args {
             let val = eval_expr(arg, ctx)?;
-            sum += val.to_number().ok_or_else(|| {
-                OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "number".to_string(),
-                    actual: val.type_name().to_string(),
-                })
-            })?;
+            sum += val.number()?;
         }
         Ok(Value::Number(sum))
     }
@@ -36,12 +31,7 @@ impl Operator for SubOp {
             return Ok(Value::Number(0.0));
         }
         let first = eval_expr(&args[0], ctx)?;
-        let mut result = first.to_number().ok_or_else(|| {
-            OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "number".to_string(),
-                actual: first.type_name().to_string(),
-            })
-        })?;
+        let mut result = first.number()?;
 
         if args.len() == 1 {
             return Ok(Value::Number(-result));
@@ -49,12 +39,7 @@ impl Operator for SubOp {
 
         for arg in &args[1..] {
             let val = eval_expr(arg, ctx)?;
-            result -= val.to_number().ok_or_else(|| {
-                OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "number".to_string(),
-                    actual: val.type_name().to_string(),
-                })
-            })?;
+            result -= val.number()?;
         }
         Ok(Value::Number(result))
     }
@@ -69,12 +54,7 @@ impl Operator for MulOp {
         let mut product = 1.0;
         for arg in args {
             let val = eval_expr(arg, ctx)?;
-            product *= val.to_number().ok_or_else(|| {
-                OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "number".to_string(),
-                    actual: val.type_name().to_string(),
-                })
-            })?;
+            product *= val.number()?;
         }
         Ok(Value::Number(product))
     }
@@ -133,10 +113,9 @@ impl Operator for MinOp {
         let mut min = f64::INFINITY;
         for arg in args {
             let val = eval_expr(arg, ctx)?;
-            if let Some(n) = val.to_number() {
-                if n < min {
-                    min = n;
-                }
+            let n = val.number()?;
+            if n < min {
+                min = n;
             }
         }
         if min.is_infinite() {
@@ -156,10 +135,9 @@ impl Operator for MaxOp {
         let mut max = f64::NEG_INFINITY;
         for arg in args {
             let val = eval_expr(arg, ctx)?;
-            if let Some(n) = val.to_number() {
-                if n > max {
-                    max = n;
-                }
+            let n = val.number()?;
+            if n > max {
+                max = n;
             }
         }
         if max.is_infinite() {
@@ -368,21 +346,6 @@ impl Operator for MathRandomIntOp {
         let result = i128::from(min) + (u128::from(rng) % range) as i128;
 
         Ok(Value::Number(result as f64))
-    }
-}
-
-/// math/default - Default value if null
-pub struct MathDefaultOp;
-impl Operator for MathDefaultOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "math/default", >= 2);
-        let val = eval_expr(&args[0], ctx)?;
-        let fallback = eval_expr(&args[1], ctx)?;
-
-        match val {
-            Value::Null => Ok(fallback),
-            _ => Ok(val),
-        }
     }
 }
 

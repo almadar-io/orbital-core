@@ -108,12 +108,10 @@ impl Operator for GridNeighborsOp {
         let c = eval_obj(&args[0], ctx)?;
         let cx = vget(&c, "x");
         let cy = vget(&c, "y");
-        let diagonal = args
-            .get(1)
-            .map(|a| eval_expr(a, ctx))
-            .transpose()?
-            .map(|v| v.is_truthy())
-            .unwrap_or(false);
+        let diagonal = match args.get(1) {
+            Some(a) => eval_expr(a, ctx)?.boolean()?,
+            None => false,
+        };
         // N, E, S, W
         let mut out = vec![
             cell(cx, cy - 1.0),

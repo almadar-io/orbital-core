@@ -608,10 +608,10 @@
                       "set",
                       "@entity.queryText",
                       [
-                        "str/default",
+                        "default",
                         "@payload.queryText",
                         [
-                          "str/default",
+                          "default",
                           "@payload.value",
                           "@payload.searchTerm"
                         ]
@@ -621,7 +621,7 @@
                       "set",
                       "@entity.typeFilter",
                       [
-                        "str/default",
+                        "default",
                         "@payload.typeFilter",
                         ""
                       ]
@@ -630,7 +630,7 @@
                       "set",
                       "@entity.scopeJson",
                       [
-                        "str/default",
+                        "default",
                         "@payload.scopeJson",
                         ""
                       ]
@@ -793,10 +793,10 @@
                       "set",
                       "@entity.queryText",
                       [
-                        "str/default",
+                        "default",
                         "@payload.queryText",
                         [
-                          "str/default",
+                          "default",
                           "@payload.value",
                           "@payload.searchTerm"
                         ]
@@ -806,7 +806,7 @@
                       "set",
                       "@entity.typeFilter",
                       [
-                        "str/default",
+                        "default",
                         "@payload.typeFilter",
                         ""
                       ]
@@ -815,7 +815,7 @@
                       "set",
                       "@entity.scopeJson",
                       [
-                        "str/default",
+                        "default",
                         "@payload.scopeJson",
                         ""
                       ]
@@ -1040,10 +1040,10 @@
                           "=",
                           "@g.moduleKey",
                           [
-                            "str/default",
+                            "default",
                             "@payload.moduleKey",
                             [
-                              "str/default",
+                              "default",
                               "@event.source.orbital",
                               ""
                             ]
@@ -1071,16 +1071,16 @@
                         {
                           "receivedAt": "@now",
                           "moduleKey": [
-                            "str/default",
+                            "default",
                             "@payload.moduleKey",
                             [
-                              "str/default",
+                              "default",
                               "@event.source.orbital",
                               ""
                             ]
                           ],
                           "answeredBy": [
-                            "str/default",
+                            "default",
                             "@event.source.trait",
                             ""
                           ],
@@ -1097,10 +1097,10 @@
                         [
                           "str/concat",
                           [
-                            "str/default",
+                            "default",
                             "@payload.moduleKey",
                             [
-                              "str/default",
+                              "default",
                               "@event.source.orbital",
                               ""
                             ]

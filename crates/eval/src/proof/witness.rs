@@ -898,13 +898,13 @@ fn solve_object_get_comparison(
     Some(true)
 }
 
-/// The payload field a comparison reads: `@payload.x`, or `(str/default @payload.x "…")` (a read with a fallback).
+/// The payload field a comparison reads: `@payload.x`, or `(default @payload.x "…")` (a read with a fallback).
 fn compared_payload_path(expr: &SExpression) -> Option<Vec<String>> {
     match expr {
         SExpression::String(p) => payload_path(p),
         SExpression::Array(items) => match &items[..] {
             [SExpression::String(op), SExpression::String(p), SExpression::String(_)]
-                if op == "str/default" =>
+                if op == "default" =>
             {
                 payload_path(p)
             }

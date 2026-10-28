@@ -1576,7 +1576,7 @@ mod fetch_option_evaluation {
 
     #[test]
     fn expression_limit_is_evaluated() {
-        let opts = json!({ "limit": ["or", "@payload.limit", 3] });
+        let opts = json!({ "limit": ["default", "@payload.limit", 3] });
         assert_eq!(count(&run(opts.clone(), json!({}), json!({}))), 3);
         assert_eq!(count(&run(opts, json!({ "limit": 1 }), json!({}))), 1);
     }

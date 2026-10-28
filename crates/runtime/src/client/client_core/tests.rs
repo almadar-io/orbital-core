@@ -345,7 +345,7 @@ fn emit_listener_schema() -> OrbitalSchema {
                         "transitions": [
                             { "from": "idle", "to": "idle", "event": "INIT" },
                             { "from": "idle", "to": "idle", "event": "HEARD",
-                              "effects": [["set", "@entity.count", ["+", ["or", "@entity.count", 0], 1]]] }
+                              "effects": [["set", "@entity.count", ["+", ["default", "@entity.count", 0], 1]]] }
                         ]
                     }
                 }
@@ -410,7 +410,7 @@ fn an_emitter_handling_its_own_emit_runs_it_once() {
         .unwrap()
         .push(
             serde_json::json!({ "from": "idle", "to": "idle", "event": "X",
-            "effects": [["set", "@entity.count", ["+", ["or", "@entity.count", 0], 100]]] }),
+            "effects": [["set", "@entity.count", ["+", ["default", "@entity.count", 0], 100]]] }),
         );
     let schema: OrbitalSchema = serde_json::from_value(schema).unwrap();
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());

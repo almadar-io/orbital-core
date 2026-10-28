@@ -136,6 +136,7 @@ operator_dispatch! {
         // Logic
         "and" => K::AndOp,
         "or" => K::OrOp,
+        "default" => K::DefaultOp,
         "not" => K::NotOp,
         "if" => K::IfOp,
 
@@ -381,7 +382,6 @@ operator_dispatch! {
         "str/camelCase" => K::StrCamelCaseOp,
         "str/kebabCase" => K::StrKebabCaseOp,
         "str/snakeCase" => K::StrSnakeCaseOp,
-        "str/default" => K::StrDefaultOp,
 
         // Phase 4.3: Object Extras
         "object/mapKeys" => K::ObjectMapKeysOp,
@@ -392,7 +392,6 @@ operator_dispatch! {
         // Phase 4.4: Math Extras
         "math/random" => K::MathRandomOp,
         "math/randomInt" => K::MathRandomIntOp,
-        "math/default" => K::MathDefaultOp,
 
         // Phase 4.5: Time Extras
         "time/isPast" => K::TimeIsPastOp,
@@ -645,9 +644,11 @@ fn eval_unchecked(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
                     .into());
                 }
                 if let Some(operator) = get_operator(op) {
-                    let _frame = arg_types::signature_for(&operator)
-                        .map(|signature| arg_types::CallFrame::enter(signature, &arr[1..]));
-                    return operator.evaluate(&arr[1..], ctx);
+                    let _frame = arg_types::checked_frame_for(&operator)
+                        .map(|(signature, skip)| arg_types::CallFrame::enter_skipping(signature, skip, &arr[1..]));
+                    return operator.evaluate(&arr[1..], ctx).inspect_err(|error| {
+                        tracing::debug!(target: orbital_core_base::logging::ns::EVAL_RAISE, operator = %op, %error, call = %serde_json::to_string(expr).unwrap_or_default(), "operator raised");
+                    });
                 }
                 // A namespaced head is an operator by the language's naming rule: one the installed table does not
                 // know is refused, never read as data (owner ruling 2026-10-24; data lists like it are quoted).

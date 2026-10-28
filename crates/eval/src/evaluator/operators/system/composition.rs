@@ -75,8 +75,8 @@ pub struct TimeStartOfOp;
 impl Operator for TimeStartOfOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/startOf", >= 2);
-        let ts = eval_expr(&args[0], ctx)?.to_number().unwrap_or(0.0);
-        let unit = TimeUnit::parse(&eval_expr(&args[1], ctx)?.to_string_value())?;
+        let ts = eval_expr(&args[0], ctx)?.number()?;
+        let unit = TimeUnit::parse(eval_expr(&args[1], ctx)?.text()?)?;
         Ok(Value::Number(start_of(ts, unit)))
     }
 }
@@ -86,8 +86,8 @@ pub struct TimeEndOfOp;
 impl Operator for TimeEndOfOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/endOf", >= 2);
-        let ts = eval_expr(&args[0], ctx)?.to_number().unwrap_or(0.0);
-        let unit = TimeUnit::parse(&eval_expr(&args[1], ctx)?.to_string_value())?;
+        let ts = eval_expr(&args[0], ctx)?.number()?;
+        let unit = TimeUnit::parse(eval_expr(&args[1], ctx)?.text()?)?;
         let day_ms = 24.0 * 60.0 * 60.0 * 1000.0;
         let result = match unit {
             TimeUnit::Millisecond => ts.floor(),
@@ -129,7 +129,7 @@ pub struct TimeRelativeOp;
 impl Operator for TimeRelativeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/relative", 1);
-        let ts = eval_expr(&args[0], ctx)?.to_number().unwrap_or(0.0);
+        let ts = eval_expr(&args[0], ctx)?.number()?;
         let now = ctx.now_millis();
         let diff = now - ts; // >0 past, <0 future
         let plural = |n: i64| if n == 1 { "" } else { "s" };
@@ -167,8 +167,9 @@ pub struct FormatCreditCardOp;
 impl Operator for FormatCreditCardOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/creditCard", 1);
-        let digits: String = eval_expr(&args[0], ctx)?
-            .to_string_value()
+        let card = eval_expr(&args[0], ctx)?;
+        let digits: String = card
+            .text()?
             .chars()
             .filter(|c| c.is_ascii_digit())
             .collect();

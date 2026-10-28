@@ -117,10 +117,11 @@ pub struct ValidateEmailOp;
 impl Operator for ValidateEmailOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/email", 1);
-        let val = eval_expr(&args[0], ctx)?.to_string_value();
+        let val = eval_expr(&args[0], ctx)?;
+        let val = val.text()?;
         Ok(Value::Bool(matches_semantic_pattern(
             "validate/email",
-            &val,
+            val,
         )?))
     }
 }
@@ -130,8 +131,18 @@ pub struct ValidateUrlOp;
 impl Operator for ValidateUrlOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/url", 1);
-        let val = eval_expr(&args[0], ctx)?.to_string_value();
-        Ok(Value::Bool(matches_semantic_pattern("validate/url", &val)?))
+        let val = eval_expr(&args[0], ctx)?;
+        let val = val.text()?;
+        Ok(Value::Bool(matches_semantic_pattern("validate/url", val)?))
+    }
+}
+
+/// The length of a `string | [T]` value: characters of a string, elements of a list; any other kind is an error.
+fn length_of(val: &Value) -> Result<usize, OrbitalError> {
+    match val {
+        Value::String(s) => Ok(s.chars().count()),
+        Value::Array(a) => Ok(a.len()),
+        other => Err(other.kind_error("string or array").into()),
     }
 }
 
@@ -140,10 +151,10 @@ pub struct ValidateMinLengthOp;
 impl Operator for ValidateMinLengthOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/minLength", >= 2);
-        let val = eval_expr(&args[0], ctx)?.to_string_value();
-        let min = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let len = length_of(&eval_expr(&args[0], ctx)?)?;
+        let min = require_number!(eval_expr(&args[1], ctx)?);
 
-        Ok(Value::Bool(val.chars().count() >= min))
+        Ok(Value::Bool(len as f64 >= min))
     }
 }
 
@@ -152,10 +163,10 @@ pub struct ValidateMaxLengthOp;
 impl Operator for ValidateMaxLengthOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/maxLength", >= 2);
-        let val = eval_expr(&args[0], ctx)?.to_string_value();
-        let max = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let len = length_of(&eval_expr(&args[0], ctx)?)?;
+        let max = require_number!(eval_expr(&args[1], ctx)?);
 
-        Ok(Value::Bool(val.chars().count() <= max))
+        Ok(Value::Bool(len as f64 <= max))
     }
 }
 
@@ -185,11 +196,9 @@ pub struct ValidateUuidOp;
 impl Operator for ValidateUuidOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/uuid", 1);
-        let val = eval_expr(&args[0], ctx)?.to_string_value();
-        Ok(Value::Bool(matches_semantic_pattern(
-            "validate/uuid",
-            &val,
-        )?))
+        let val = eval_expr(&args[0], ctx)?;
+        let val = val.text()?;
+        Ok(Value::Bool(matches_semantic_pattern("validate/uuid", val)?))
     }
 }
 
@@ -198,7 +207,10 @@ pub struct ValidateDateOp;
 impl Operator for ValidateDateOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/date", 1);
-        let val = eval_expr(&args[0], ctx)?.to_string_value();
+        let val = eval_expr(&args[0], ctx)?;
+        let Value::String(val) = val else {
+            return Ok(Value::Bool(false));
+        };
 
         // Try common date formats: YYYY-MM-DD or YYYY/MM/DD
         let parts: Vec<&str> = if val.contains('-') {
@@ -230,16 +242,10 @@ pub struct ValidateLengthOp;
 impl Operator for ValidateLengthOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/length", >= 2);
-        let val = eval_expr(&args[0], ctx)?;
-        let expected_len = require_number!(eval_expr(&args[1], ctx)?) as usize;
+        let actual_len = length_of(&eval_expr(&args[0], ctx)?)?;
+        let expected_len = require_number!(eval_expr(&args[1], ctx)?);
 
-        let actual_len = match &val {
-            Value::String(s) => s.chars().count(),
-            Value::Array(a) => a.len(),
-            _ => val.to_string_value().chars().count(),
-        };
-
-        Ok(Value::Bool(actual_len == expected_len))
+        Ok(Value::Bool(actual_len as f64 == expected_len))
     }
 }
 
@@ -274,8 +280,12 @@ impl Operator for ValidateOneOfOp {
             }
         };
 
-        let is_valid = array.iter().any(|opt| opt.loose_eq(&val));
-        Ok(Value::Bool(is_valid))
+        for opt in array.iter() {
+            if *opt == val {
+                return Ok(Value::Bool(true));
+            }
+        }
+        Ok(Value::Bool(false))
     }
 }
 
@@ -300,10 +310,11 @@ pub struct ValidatePhoneOp;
 impl Operator for ValidatePhoneOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/phone", 1);
-        let val = eval_expr(&args[0], ctx)?.to_string_value();
+        let val = eval_expr(&args[0], ctx)?;
+        let val = val.text()?;
         Ok(Value::Bool(matches_semantic_pattern(
             "validate/phone",
-            &val,
+            val,
         )?))
     }
 }
@@ -313,7 +324,8 @@ pub struct ValidateCreditCardOp;
 impl Operator for ValidateCreditCardOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/creditCard", 1);
-        let val = eval_expr(&args[0], ctx)?.to_string_value();
+        let val = eval_expr(&args[0], ctx)?;
+        let val = val.text()?;
 
         // Extract only digits
         let digits: Vec<u32> = val
@@ -365,8 +377,12 @@ impl Operator for ValidateNoneOfOp {
             }
         };
 
-        let is_valid = !array.iter().any(|opt| opt.loose_eq(&val));
-        Ok(Value::Bool(is_valid))
+        for opt in array.iter() {
+            if *opt == val {
+                return Ok(Value::Bool(false));
+            }
+        }
+        Ok(Value::Bool(true))
     }
 }
 
@@ -491,9 +507,19 @@ pub(super) fn rule_holds(
             }
             _ => false,
         },
-        "oneOf" => {
-            matches!(args.first(), Some(Value::Array(options)) if options.iter().any(|opt| opt.loose_eq(value)))
-        }
+        "oneOf" => match args.first() {
+            Some(Value::Array(options)) => {
+                let mut found = false;
+                for opt in options.iter() {
+                    if opt == value {
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            }
+            _ => false,
+        },
         _ => return Ok(None),
     };
     Ok(Some(holds))
@@ -535,9 +561,8 @@ pub struct ValidateMaxOp;
 impl Operator for ValidateMaxOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/max", >= 2);
-        let val = eval_expr(&args[0], ctx)?;
+        let num = eval_expr(&args[0], ctx)?.number()?;
         let max = require_number!(eval_expr(&args[1], ctx)?);
-        let num = val.to_number().unwrap_or(f64::INFINITY);
         Ok(Value::Bool(num <= max))
     }
 }
@@ -547,9 +572,8 @@ pub struct ValidateMinOp;
 impl Operator for ValidateMinOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/min", >= 2);
-        let val = eval_expr(&args[0], ctx)?;
+        let num = eval_expr(&args[0], ctx)?.number()?;
         let min = require_number!(eval_expr(&args[1], ctx)?);
-        let num = val.to_number().unwrap_or(f64::NEG_INFINITY);
         Ok(Value::Bool(num >= min))
     }
 }

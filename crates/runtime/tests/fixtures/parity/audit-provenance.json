@@ -525,7 +525,7 @@
                           "AuditEntry",
                           {
                             "sourceTick": [
-                              "str/default",
+                              "default",
                               "@event.source.tick",
                               ""
                             ],
@@ -533,13 +533,13 @@
                             "entityType": "Contact",
                             "after": "@entity.after",
                             "sourceOrbital": [
-                              "str/default",
+                              "default",
                               "@event.source.orbital",
                               ""
                             ],
                             "sourceEvent": "@event.event",
                             "sourceTrait": [
-                              "str/default",
+                              "default",
                               "@event.source.trait",
                               ""
                             ],
@@ -556,18 +556,18 @@
                             "action": "@entity.action",
                             "entityId": "@entity.entityId",
                             "sourceTrait": [
-                              "str/default",
+                              "default",
                               "@event.source.trait",
                               ""
                             ],
                             "sourceTick": [
-                              "str/default",
+                              "default",
                               "@event.source.tick",
                               ""
                             ],
                             "actor": "@user.id",
                             "sourceOrbital": [
-                              "str/default",
+                              "default",
                               "@event.source.orbital",
                               ""
                             ],

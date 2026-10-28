@@ -613,21 +613,29 @@ impl EffectRun {
                 }
             }
             "do" => (self.sequence(rest), Vec::new()),
-            "when" if !rest.is_empty() => match Evaluator::new().evaluate(&rest[0], &self.ctx) {
-                Ok(condition) if condition.is_truthy() => (self.sequence(&rest[1..]), Vec::new()),
-                Ok(_) => (Ended::Executed, Vec::new()),
-                Err(error) => (Ended::Failed(error.to_string()), Vec::new()),
+            "when" if !rest.is_empty() => match self.condition(&rest[0]) {
+                Ok(true) => (self.sequence(&rest[1..]), Vec::new()),
+                Ok(false) => (Ended::Executed, Vec::new()),
+                Err(error) => (Ended::Failed(error), Vec::new()),
             },
-            "if" if rest.len() >= 2 => match Evaluator::new().evaluate(&rest[0], &self.ctx) {
-                Ok(condition) => {
-                    let branch = if condition.is_truthy() { rest.get(1) } else { rest.get(2) };
+            "if" if rest.len() >= 2 => match self.condition(&rest[0]) {
+                Ok(holds) => {
+                    let branch = if holds { rest.get(1) } else { rest.get(2) };
                     (branch.map_or(Ended::Executed, |b| self.run(b).0), Vec::new())
                 }
-                Err(error) => (Ended::Failed(error.to_string()), Vec::new()),
+                Err(error) => (Ended::Failed(error), Vec::new()),
             },
             "let" if rest.len() >= 2 => (self.scoped(rest), Vec::new()),
             other => (Ended::Skipped(format!("`{other}` has no handler in traceEffects; only set and emit, and the do/when/if/let forms around them, run")), Vec::new()),
         }
+    }
+
+    fn condition(&self, expr: &SExpression) -> Result<bool, String> {
+        Evaluator::new()
+            .evaluate(expr, &self.ctx)
+            .map_err(|error| error.to_string())?
+            .boolean()
+            .map_err(|error| error.to_string())
     }
 
     fn sequence(&mut self, effects: &[SExpression]) -> Ended {

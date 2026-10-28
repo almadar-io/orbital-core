@@ -282,14 +282,9 @@ impl<'a> Signature<'a> {
         }
     }
 
-    /// Whether the operand at `index` raises in the kernel when it is null.
+    /// Whether the operand at `index` raises in the kernel when it is null: its declared type excludes null.
     pub fn rejects_null(&self, index: usize) -> bool {
-        match self.params.get(index) {
-            Some(param) => param.rejects_null,
-            None => self.params.last().is_some_and(|last| {
-                (last.name.starts_with("...") || self.unbounded) && last.rejects_null
-            }),
-        }
+        self.formal(index).is_some_and(|ty| !ty.admits_null())
     }
 
     /// The declared type of the argument at `index`: its own parameter, or the rest parameter past the last.
@@ -303,6 +298,14 @@ impl<'a> Signature<'a> {
 
     pub fn returns(&self) -> &'a OperatorTypeRef {
         self.returns
+    }
+
+    /// The declared parameters' count, and the index from which arguments share the rest parameter, when it has one.
+    pub fn arity(&self) -> (usize, Option<usize>) {
+        let rest = self.params.last().and_then(|last| {
+            (last.name.starts_with("...") || self.unbounded).then_some(self.params.len() - 1)
+        });
+        (self.params.len(), rest)
     }
 
     /// The declared `returnSemantics` kind, when the operator has one.

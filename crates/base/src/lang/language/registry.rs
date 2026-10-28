@@ -44,6 +44,21 @@ pub enum OperatorTypeRef {
 }
 
 impl OperatorTypeRef {
+    /// Whether null is a value of this type: a null literal or `null`, a union with such a member, an unevaluated
+    /// expression whose value may be null, or a type variable whose bound admits null (an unbounded one does).
+    pub fn admits_null(&self) -> bool {
+        match self {
+            OperatorTypeRef::Primitive(name) => matches!(name.as_str(), "null" | "sexpr"),
+            OperatorTypeRef::Tagged(kind) => match kind {
+                OperatorTypeRefKind::Literal { value } => value.is_null(),
+                OperatorTypeRefKind::Union { of } => of.iter().any(OperatorTypeRef::admits_null),
+                OperatorTypeRefKind::Var { bound, .. } => bound.as_ref().is_none_or(|b| b.admits_null()),
+                OperatorTypeRefKind::Sexpr { of } => of.as_ref().is_none_or(|t| t.admits_null()),
+                _ => false,
+            },
+        }
+    }
+
     /// The coarse kind the signature declares, for readers that only branch on it: a primitive's own name, `array`
     /// (lists and tuples), `object` (records, shapes and maps), `function` (a function type), `union`, `var`,
     /// and the kind tag of everything else.
@@ -209,10 +224,6 @@ pub struct EmbeddedOperatorParam {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: OperatorTypeRef,
-    /// The kernel raises when this operand is null (`rejectsNull` in the operator table); `orb validate` refuses a value
-    /// that can be missing here.
-    #[serde(rename = "rejectsNull", default)]
-    pub rejects_null: bool,
 }
 
 /// Metadata for a single operator parsed from `operators.json`.

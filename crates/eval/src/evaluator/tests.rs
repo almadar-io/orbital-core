@@ -56,13 +56,10 @@ fn eval_with_ctx(json: &str, ctx: &BindingContext) -> Value {
 
 #[test]
 fn random_int_with_max_below_min_answers_null_not_a_panic() {
-    for call in [
-        r#"["math/randomInt", 5, 1]"#,
-        r#"["math/randomInt", 1, 0]"#,
-        r#"["math/randomInt", 3, null]"#,
-    ] {
+    for call in [r#"["math/randomInt", 5, 1]"#, r#"["math/randomInt", 1, 0]"#] {
         assert_eq!(eval(call), Value::Null, "{call}");
     }
+    assert!(eval_err(r#"["math/randomInt", 3, null]"#).contains("expected number, got null"));
 }
 
 #[test]
@@ -250,13 +247,14 @@ fn test_or() {
 
 // Twin of almadar-evaluator/__tests__/lisp-audit-parity.test.ts (R-OR-AND-RETURN-BOOLEAN).
 #[test]
-fn test_and_or_return_operand_values() {
-    assert_eq!(eval(r#"["or", 0, 42]"#), Value::Number(42.0));
-    assert_eq!(eval(r#"["and", "y", "x"]"#), Value::string("x"));
-    assert_eq!(eval(r#"["or", 0, null, 7]"#), Value::Number(7.0));
-    assert_eq!(eval(r#"["and", 1, 0, 5]"#), Value::Number(0.0));
-    assert_eq!(eval(r#"["or", 0, null]"#), Value::Null);
-    assert_eq!(eval(r#"["and", 1, 2]"#), Value::Number(2.0));
+fn test_and_or_take_and_return_booleans() {
+    assert_eq!(eval(r#"["and", true, true, false]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["and", true, true]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["or", false, false, true]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["or", false, false]"#), Value::Bool(false));
+    for expr in [r#"["or", 0, 42]"#, r#"["and", "y", "x"]"#, r#"["or", false, null]"#] {
+        assert!(eval_err(expr).contains("expected boolean"), "{expr}");
+    }
 }
 
 #[test]
@@ -270,8 +268,8 @@ fn test_and_or_operands_share_one_type() {
 
 #[test]
 fn test_and_or_short_circuit() {
-    assert_eq!(eval(r#"["or", 3, ["no/such-op"]]"#), Value::Number(3.0));
-    assert_eq!(eval(r#"["and", 0, ["no/such-op"]]"#), Value::Number(0.0));
+    assert_eq!(eval(r#"["or", true, ["no/such-op"]]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["and", false, ["no/such-op"]]"#), Value::Bool(false));
 }
 
 #[test]
@@ -1278,7 +1276,7 @@ fn test_object_values() {
     let result = eval(r#"["object/values", {"a": 1, "b": 2}]"#);
     if let Value::Array(values) = result {
         assert_eq!(values.len(), 2);
-        let nums: Vec<f64> = values.iter().filter_map(|v| v.to_number()).collect();
+        let nums: Vec<f64> = values.iter().map(|v| v.number().unwrap()).collect();
         assert!(nums.contains(&1.0));
         assert!(nums.contains(&2.0));
     } else {
@@ -1816,7 +1814,7 @@ fn test_validate_email() {
         Value::Bool(false)
     );
     assert_eq!(
-        eval(r#"["validate/email", "@example.com"]"#),
+        eval(r#"["validate/email", ["quote", "\"@example.com\""]]"#),
         Value::Bool(false)
     );
 }
@@ -2517,19 +2515,12 @@ fn test_str_snake_case() {
 }
 
 #[test]
-fn test_str_default() {
-    assert_eq!(
-        eval(r#"["str/default", "", "fallback"]"#),
-        Value::string("fallback")
-    );
-    assert_eq!(
-        eval(r#"["str/default", "hello", "fallback"]"#),
-        Value::string("hello")
-    );
-    assert_eq!(
-        eval(r#"["str/default", null, "fallback"]"#),
-        Value::string("fallback")
-    );
+fn default_answers_the_fallback_only_for_null_and_evaluates_it_only_then() {
+    assert_eq!(eval(r#"["default", null, "fallback"]"#), Value::string("fallback"));
+    assert_eq!(eval(r#"["default", "", "fallback"]"#), Value::string(""), "an empty string is present");
+    assert_eq!(eval(r#"["default", 0, 42]"#), Value::Number(0.0), "zero is present");
+    assert_eq!(eval(r#"["default", 10, ["no/such-op"]]"#), Value::Number(10.0));
+    assert!(eval_err(r#"["default", null, ["no/such-op"]]"#).contains("no/such-op"));
 }
 
 // =========================================================================
@@ -2596,12 +2587,6 @@ fn test_math_random_int() {
     if let Value::Number(n) = result {
         assert!((1.0..=10.0).contains(&n));
     }
-}
-
-#[test]
-fn test_math_default() {
-    assert_eq!(eval(r#"["math/default", null, 42]"#), Value::Number(42.0));
-    assert_eq!(eval(r#"["math/default", 10, 42]"#), Value::Number(10.0));
 }
 
 // =========================================================================
@@ -2935,8 +2920,8 @@ fn operators_without_a_raw_body_form_have_no_raw_callback_params() {
 fn array_max_and_min_follow_the_one_contract() {
     assert_eq!(eval(r#"["array/max", [3, 7, 1]]"#), Value::Number(7.0));
     assert_eq!(eval(r#"["array/min", [3, 7, 1]]"#), Value::Number(1.0));
-    assert_eq!(eval(r#"["array/max", ["3", "7"]]"#), Value::Number(7.0));
-    assert_eq!(eval(r#"["array/min", [true, false]]"#), Value::Number(0.0));
+    assert!(eval_err(r#"["array/max", ["3", "7"]]"#).contains("expected number, got string"));
+    assert!(eval_err(r#"["array/min", [true, false]]"#).contains("expected number, got boolean"));
     assert_eq!(eval(r#"["array/max", []]"#), Value::Null);
     assert_eq!(
         eval(r#"["array/max", [{"price": 3}, {"price": 9}], "price"]"#),
@@ -3734,5 +3719,18 @@ fn dispatched_names_are_exactly_the_table_operators_the_kernel_evaluates() {
     assert!(
         undispatched.is_empty(),
         "pure table operators with no dispatch arm: {undispatched:?}"
+    );
+}
+
+#[test]
+fn a_filter_lambda_binds_its_parameter_to_each_item() {
+    assert_eq!(
+        eval(r#"["array/filter", ["list", "h:a", "r:b"], ["fn", "s", ["str/startsWith", "@s", "h:"]]]"#),
+        Value::array(vec![Value::string("h:a")])
+    );
+    assert_eq!(
+        eval(r#"["array/map", ["array/filter", ["list", "h:a", "r:b"], ["fn", "s", ["str/startsWith", "@s", "r:"]]], ["fn", "s", ["str/slice", "@s", 2, ["str/len", "@s"]]]]"#),
+        Value::array(vec![Value::string("b")]),
+        "control: the same chain through map"
     );
 }

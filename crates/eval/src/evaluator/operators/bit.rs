@@ -27,10 +27,7 @@ fn bounded(
             op,
             format!(
                 "{what} {}: expected a whole number 0..{max}",
-                match other {
-                    Value::Null => "null".to_string(),
-                    other => other.to_text(),
-                }
+                other.to_string_value()
             ),
         )),
     }

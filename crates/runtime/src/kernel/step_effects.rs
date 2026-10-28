@@ -185,11 +185,12 @@ impl RuntimeKernel {
                         "if" => {
                             // [ "if", cond, then, else? ]
                             if let Some(cond) = items.get(1) {
-                                let truthy = evaluator
-                                    .evaluate(cond, ctx)
-                                    .map(|v| v.is_truthy())
-                                    .unwrap_or(false);
-                                let branch = if truthy { items.get(2) } else { items.get(3) };
+                                let Some(holds) =
+                                    condition_holds(effect_expr, cond, ctx, evaluator, effect_results)
+                                else {
+                                    return;
+                                };
+                                let branch = if holds { items.get(2) } else { items.get(3) };
                                 if let Some(branch) = branch {
                                     self.exec_effect_expr(
                                         branch,
@@ -204,11 +205,12 @@ impl RuntimeKernel {
                         "when" => {
                             // [ "when", cond, body… ]
                             if let Some(cond) = items.get(1) {
-                                let truthy = evaluator
-                                    .evaluate(cond, ctx)
-                                    .map(|v| v.is_truthy())
-                                    .unwrap_or(false);
-                                if truthy {
+                                let Some(holds) =
+                                    condition_holds(effect_expr, cond, ctx, evaluator, effect_results)
+                                else {
+                                    return;
+                                };
+                                if holds {
                                     for body in items.iter().skip(2) {
                                         self.exec_effect_expr(
                                             body,
@@ -702,6 +704,26 @@ impl CallShape {
         settles: None,
         echoes_key: false,
     };
+}
+
+/// An `if`/`when` condition: a boolean, or the form fails the step (a non-boolean is never read as false).
+fn condition_holds(
+    form: &SExpression,
+    cond: &SExpression,
+    ctx: &BindingContext,
+    evaluator: &Evaluator,
+    effect_results: &mut Vec<EffectResult>,
+) -> Option<bool> {
+    match evaluator.evaluate(cond, ctx).map_err(|err| err.to_string()).and_then(|v| v.boolean().map_err(|err| err.to_string())) {
+        Ok(holds) => Some(holds),
+        Err(message) => {
+            tracing::error!(error = %message, "kernel: effect condition is not a boolean");
+            if let Some(effect) = orbital_core_base::effect_types::parse_effect(form) {
+                effect_results.push(EffectResult::failed(effect, &message));
+            }
+            None
+        }
+    }
 }
 
 /// The value a `set` stores: a list or map literal is evaluated, a whole binding resolves (to null when it resolves to

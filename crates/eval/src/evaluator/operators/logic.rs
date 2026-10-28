@@ -15,7 +15,7 @@ impl Operator for EqOp {
         require_arity!(args, "=", >= 2);
         let a = eval_expr(&args[0], ctx)?;
         let b = eval_expr(&args[1], ctx)?;
-        Ok(Value::Bool(a.loose_eq(&b)))
+        Ok(Value::Bool(a == b))
     }
 }
 
@@ -25,7 +25,7 @@ impl Operator for NeOp {
         require_arity!(args, "!=", >= 2);
         let a = eval_expr(&args[0], ctx)?;
         let b = eval_expr(&args[1], ctx)?;
-        Ok(Value::Bool(!a.loose_eq(&b)))
+        Ok(Value::Bool(a != b))
     }
 }
 
@@ -35,11 +35,7 @@ impl Operator for LtOp {
         require_arity!(args, "<", >= 2);
         let a = eval_expr(&args[0], ctx)?;
         let b = eval_expr(&args[1], ctx)?;
-        Ok(Value::Bool(
-            a.compare(&b)
-                .map(|ord| ord == std::cmp::Ordering::Less)
-                .unwrap_or(false),
-        ))
+        Ok(Value::Bool(a.compare(&b)? == std::cmp::Ordering::Less))
     }
 }
 
@@ -49,11 +45,7 @@ impl Operator for GtOp {
         require_arity!(args, ">", >= 2);
         let a = eval_expr(&args[0], ctx)?;
         let b = eval_expr(&args[1], ctx)?;
-        Ok(Value::Bool(
-            a.compare(&b)
-                .map(|ord| ord == std::cmp::Ordering::Greater)
-                .unwrap_or(false),
-        ))
+        Ok(Value::Bool(a.compare(&b)? == std::cmp::Ordering::Greater))
     }
 }
 
@@ -63,11 +55,7 @@ impl Operator for LeOp {
         require_arity!(args, "<=", >= 2);
         let a = eval_expr(&args[0], ctx)?;
         let b = eval_expr(&args[1], ctx)?;
-        Ok(Value::Bool(
-            a.compare(&b)
-                .map(|ord| ord != std::cmp::Ordering::Greater)
-                .unwrap_or(false),
-        ))
+        Ok(Value::Bool(a.compare(&b)? != std::cmp::Ordering::Greater))
     }
 }
 
@@ -77,11 +65,7 @@ impl Operator for GeOp {
         require_arity!(args, ">=", >= 2);
         let a = eval_expr(&args[0], ctx)?;
         let b = eval_expr(&args[1], ctx)?;
-        Ok(Value::Bool(
-            a.compare(&b)
-                .map(|ord| ord != std::cmp::Ordering::Less)
-                .unwrap_or(false),
-        ))
+        Ok(Value::Bool(a.compare(&b)? != std::cmp::Ordering::Less))
     }
 }
 
@@ -89,33 +73,41 @@ impl Operator for GeOp {
 // Logical Operators
 // ============================================================================
 
-/// Operand semantics, as the registry's `last-truthy-of-args` and the JS evaluator: the first falsy value, else the last.
+/// Every operand must be a boolean; short-circuits on the first `false`.
 pub struct AndOp;
 impl Operator for AndOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        let mut last = Value::Bool(true);
         for arg in args {
-            last = eval_expr(arg, ctx)?;
-            if !last.is_truthy() {
-                return Ok(last);
+            if !eval_expr(arg, ctx)?.boolean()? {
+                return Ok(Value::Bool(false));
             }
         }
-        Ok(last)
+        Ok(Value::Bool(true))
     }
 }
 
-/// Operand semantics, as the registry's `first-truthy-of-args` and the JS evaluator: the first truthy value, else the last.
+/// Every operand must be a boolean; short-circuits on the first `true`.
 pub struct OrOp;
 impl Operator for OrOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        let mut last = Value::Bool(false);
         for arg in args {
-            last = eval_expr(arg, ctx)?;
-            if last.is_truthy() {
-                return Ok(last);
+            if eval_expr(arg, ctx)?.boolean()? {
+                return Ok(Value::Bool(true));
             }
         }
-        Ok(last)
+        Ok(Value::Bool(false))
+    }
+}
+
+/// `(default value fallback)`: the value, or the fallback (evaluated only then) when the value is null.
+pub struct DefaultOp;
+impl Operator for DefaultOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "default", >= 2);
+        match eval_expr(&args[0], ctx)? {
+            Value::Null => eval_expr(&args[1], ctx),
+            value => Ok(value),
+        }
     }
 }
 
@@ -130,7 +122,7 @@ impl Operator for NotOp {
             }));
         }
         let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(!val.is_truthy()))
+        Ok(Value::Bool(!val.boolean()?))
     }
 }
 
@@ -139,7 +131,7 @@ impl Operator for IfOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "if", >= 2);
         let condition = eval_expr(&args[0], ctx)?;
-        if condition.is_truthy() {
+        if condition.boolean()? {
             eval_expr(&args[1], ctx)
         } else if args.len() > 2 {
             eval_expr(&args[2], ctx)
@@ -169,7 +161,7 @@ impl Operator for WhenOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "when", >= 2);
         let condition = eval_expr(&args[0], ctx)?;
-        if condition.is_truthy() {
+        if condition.boolean()? {
             eval_expr(&args[1], ctx)
         } else {
             Ok(Value::Null)

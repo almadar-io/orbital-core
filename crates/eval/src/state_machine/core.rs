@@ -161,7 +161,25 @@ impl StateMachineCore {
                     continue;
                 }
             };
-            if !value.is_truthy() {
+            let holds = match value.boolean() {
+                Ok(holds) => holds,
+                Err(error) => {
+                    tracing::warn!(
+                        target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
+                        event = %payload.event,
+                        from = %current_state,
+                        to = %transition.to,
+                        %error,
+                        "guard:error-blocks-arm",
+                    );
+                    guards.push(ArmGuard {
+                        arm,
+                        guard: GuardResult::error(Arc::new(guard.clone()), error.to_string()),
+                    });
+                    continue;
+                }
+            };
+            if !holds {
                 guards.push(ArmGuard {
                     arm,
                     guard: GuardResult::failed(Arc::new(guard.clone()), value),

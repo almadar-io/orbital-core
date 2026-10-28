@@ -1,5 +1,5 @@
 {
-  "description": "Operator argument types (D-12) and type-variable consistency. A present argument that contradicts the signature the installed operator table declares for its call raises the typed TypeMismatch on every path: a declared concrete type, a variable's bound, and the agreement of every argument bound to one type variable (`= : T, T`, `array/append : [T], T`). null is absent and passes; a nominal std type is not checked; there are no generic types. Read by orbital-core tests/operator_types.rs and @almadar/evaluator operator-types.test.ts (canonical source orbital-core fixtures/operator-types, mirrored into each test dir).",
+  "description": "Operator argument types (D-12) and type-variable consistency. A present argument that contradicts the signature the installed operator table declares for its call raises the typed TypeMismatch on every path: a declared concrete type, a variable's bound, and the agreement of every argument bound to one type variable (`= : T, T`, `array/append : [T], T`). null is a type error where the declared type excludes it (EXEC-EVAL-2); a nominal std type is not checked; there are no generic types. Read by orbital-core tests/operator_types.rs and @almadar/evaluator operator-types.test.ts (canonical source orbital-core fixtures/operator-types, mirrored into each test dir).",
   "cases": [
     {
       "name": "!=: [\"!=\",5,3]",
@@ -3458,9 +3458,9 @@
       }
     },
     {
-      "name": "math/default: [\"math/default\",null,0]",
+      "name": "default: [\"default\",null,0]",
       "expr": [
-        "math/default",
+        "default",
         null,
         0
       ],
@@ -3469,32 +3469,119 @@
       }
     },
     {
-      "name": "math/default: argument 0 is string",
+      "name": "default: [\"default\",null,\"N/A\"]",
       "expr": [
-        "math/default",
-        "5",
+        "default",
+        null,
+        "N/A"
+      ],
+      "expect": {
+        "value": "N/A"
+      }
+    },
+    {
+      "name": "default: a present value is kept, even empty",
+      "expr": [
+        "default",
+        "",
+        "N/A"
+      ],
+      "expect": {
+        "value": ""
+      }
+    },
+    {
+      "name": "default: a present value never evaluates the fallback",
+      "expr": [
+        "default",
+        5,
+        [
+          "no/such-op"
+        ]
+      ],
+      "expect": {
+        "value": 5
+      }
+    },
+    {
+      "name": "null is not a number",
+      "expr": [
+        "+",
+        null,
+        1
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "number",
+          "actual": "null"
+        }
+      }
+    },
+    {
+      "name": "and takes booleans",
+      "expr": [
+        "and",
+        true,
+        false
+      ],
+      "expect": {
+        "value": false
+      }
+    },
+    {
+      "name": "and refuses a number operand",
+      "expr": [
+        "and",
+        1,
         0
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "boolean",
+          "actual": "number"
         }
       }
     },
     {
-      "name": "math/default: argument 1 is string",
+      "name": "or takes booleans",
       "expr": [
-        "math/default",
+        "or",
+        false,
+        true
+      ],
+      "expect": {
+        "value": true
+      }
+    },
+    {
+      "name": "or refuses a null operand",
+      "expr": [
+        "or",
         null,
-        "5"
+        true
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "boolean",
+          "actual": "null"
+        }
+      }
+    },
+    {
+      "name": "or refuses a number operand",
+      "expr": [
+        "or",
+        false,
+        42
+      ],
+      "expect": {
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "boolean",
+          "actual": "number"
         }
       }
     },
@@ -5102,43 +5189,6 @@
       ],
       "expect": {
         "value": "Hello World"
-      }
-    },
-    {
-      "name": "str/default: [\"str/default\",null,\"N/A\"]",
-      "expr": [
-        "str/default",
-        null,
-        "N/A"
-      ],
-      "expect": {
-        "value": "N/A"
-      }
-    },
-    {
-      "name": "str/default: a scalar value and a string default disagree",
-      "expr": [
-        "str/default",
-        5,
-        "N/A"
-      ],
-      "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
-        }
-      }
-    },
-    {
-      "name": "str/default: a number default for an absent value",
-      "expr": [
-        "str/default",
-        null,
-        5
-      ],
-      "expect": {
-        "value": 5
       }
     },
     {
@@ -8243,17 +8293,6 @@
       }
     },
     {
-      "name": "null is an absent value and passes the check",
-      "expr": [
-        "+",
-        null,
-        1
-      ],
-      "expect": {
-        "value": 1
-      }
-    },
-    {
       "name": "a mistyped later argument of a variadic names its own type",
       "expr": [
         "math/max",
@@ -8720,81 +8759,6 @@
       ],
       "expect": {
         "value": null
-      }
-    },
-    {
-      "name": "type variable: and of one type returns the first falsy operand",
-      "expr": [
-        "and",
-        1,
-        0,
-        5
-      ],
-      "expect": {
-        "value": 0
-      }
-    },
-    {
-      "name": "type variable: and of strings returns the last",
-      "expr": [
-        "and",
-        "y",
-        "x"
-      ],
-      "expect": {
-        "value": "x"
-      }
-    },
-    {
-      "name": "type variable: and of two types",
-      "expr": [
-        "and",
-        5,
-        "x"
-      ],
-      "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
-        }
-      }
-    },
-    {
-      "name": "type variable: or of one type returns the first truthy operand",
-      "expr": [
-        "or",
-        0,
-        42
-      ],
-      "expect": {
-        "value": 42
-      }
-    },
-    {
-      "name": "type variable: or skips null operands",
-      "expr": [
-        "or",
-        null,
-        "b"
-      ],
-      "expect": {
-        "value": "b"
-      }
-    },
-    {
-      "name": "type variable: or of two types",
-      "expr": [
-        "or",
-        false,
-        42
-      ],
-      "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "boolean",
-          "actual": "number"
-        }
       }
     },
     {
@@ -9327,7 +9291,7 @@
       }
     },
     {
-      "name": "every element: unique refuses a string at the end of numbers",
+      "name": "every element: unique keeps every distinct value across kinds: string at the end of numbers",
       "expr": [
         "array/unique",
         [
@@ -9337,15 +9301,15 @@
         ]
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
-        }
+        "value": [
+          1,
+          2,
+          "a"
+        ]
       }
     },
     {
-      "name": "every element: unique refuses a number after strings",
+      "name": "every element: unique keeps every distinct value across kinds: number after strings",
       "expr": [
         "array/unique",
         [
@@ -9355,15 +9319,15 @@
         ]
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "string",
-          "actual": "number"
-        }
+        "value": [
+          "a",
+          "b",
+          1
+        ]
       }
     },
     {
-      "name": "every element: unique refuses a mixed tail past a null",
+      "name": "every element: unique keeps every distinct value across kinds: mixed tail past a null",
       "expr": [
         "array/unique",
         [
@@ -9374,11 +9338,12 @@
         ]
       ],
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "boolean"
-        }
+        "value": [
+          1,
+          null,
+          2,
+          true
+        ]
       }
     },
     {
@@ -9569,7 +9534,7 @@
       }
     },
     {
-      "name": "control: the same unlike list without a declared type is a mismatch",
+      "name": "a list whose element variable no other parameter names binds nothing: its length is read",
       "expr": [
         "array/len",
         "@entity.xs"
@@ -9581,11 +9546,7 @@
         ]
       },
       "expect": {
-        "error": {
-          "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
-        }
+        "value": 2
       }
     }
   ]

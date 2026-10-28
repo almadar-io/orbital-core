@@ -2,7 +2,7 @@
 //!
 //! These de-duplicate the per-operator arity / type / lambda checks. Each macro
 //! expands to exactly the inline code the operators used before this module
-//! split, so behavior is unchanged.
+//! split; the kind checks are thin wrappers over the strict `Value` accessors.
 
 /// Require an argument count, else return an `ArityMismatch` error.
 ///
@@ -63,18 +63,10 @@ macro_rules! require_array {
     };
 }
 
-/// Coerce a `Value` to a number, else return a `TypeMismatch` error with the
-/// `"non-number"` actual marker (matching the historical inline form).
+/// Read a `Value` as a number; any other kind is a `TypeMismatch` naming the actual kind.
 macro_rules! require_number {
     ($val:expr) => {
-        $val.to_number().ok_or_else(|| {
-            ::orbital_core_base::error::OrbitalError::Eval(
-                ::orbital_core_base::error::EvalError::TypeMismatch {
-                    expected: "number".to_string(),
-                    actual: "non-number".to_string(),
-                },
-            )
-        })?
+        $val.number()?
     };
 }
 

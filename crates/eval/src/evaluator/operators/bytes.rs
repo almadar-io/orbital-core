@@ -180,7 +180,10 @@ fn whole(
         Value::Number(_) => Ok(None),
         other => Err(invalid(
             op,
-            format!("{what} {}: expected a whole number", other.to_text()),
+            format!(
+                "{what} {}: expected a whole number",
+                other.to_string_value()
+            ),
         )),
     }
 }
@@ -198,7 +201,7 @@ fn width_arg(
         Value::Number(_) => Ok(None),
         other => Err(invalid(
             op,
-            format!("width {}: expected 1, 2, 4 or 8", other.to_text()),
+            format!("width {}: expected 1, 2, 4 or 8", other.to_string_value()),
         )),
     }
 }
@@ -214,7 +217,10 @@ fn big_endian_arg(
         Value::String(_) => Ok(None),
         other => Err(invalid(
             op,
-            format!("endian {}: expected \"be\" or \"le\"", other.to_text()),
+            format!(
+                "endian {}: expected \"be\" or \"le\"",
+                other.to_string_value()
+            ),
         )),
     }
 }

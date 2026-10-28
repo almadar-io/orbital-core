@@ -47,19 +47,14 @@ fn exec_eval_1a_or_stops_at_the_first_truthy_operand_and_never_checks_the_rest()
     assert_eq!(eval(json!(["or", false, false])), Ok(Value::Bool(false)), "all false answers the last");
 }
 
-/// EXEC-EVAL-2: a null or unset argument is never a type error.
+/// EXEC-EVAL-2: null is a type error where the declared type excludes it, and a value where the type admits it.
 #[test]
-fn exec_eval_2_a_null_argument_passes_the_type_check() {
-    for expr in [
-        json!(["json/parse", null, "Row"]),
-        json!(["str/startsWith", null, "a"]),
-        json!(["str/upper", "@payload.missing"]),
-        json!(["array/includes", ["a"], null]),
-    ] {
-        let result = eval(expr.clone());
-        assert!(result.is_ok(), "null passes in {expr}: {result:?}");
+fn exec_eval_2_a_null_argument_is_a_type_error_unless_the_type_admits_null() {
+    for expr in [json!(["str/startsWith", null, "a"]), json!(["str/upper", "@payload.missing"]), json!(["math/abs", null])] {
+        assert!(is_type_mismatch(&eval(expr.clone())), "null is not a value of the declared type in {expr}");
     }
-    assert!(is_type_mismatch(&eval(json!(["json/parse", 42, "Row"]))), "control: a mistyped non-null argument is a type error");
+    assert_eq!(eval(json!(["array/includes", ["a"], null])), Ok(Value::Bool(false)), "control: an item of a type variable may be null");
+    assert_eq!(eval(json!(["default", "@payload.missing", "x"])), Ok(Value::from("x")), "control: `default` says what absence means");
     assert!(is_type_mismatch(&eval(json!(["array/includes", "hello", "e"]))), "control: a string where an array belongs is a type error");
 }
 
@@ -95,12 +90,13 @@ fn exec_eval_7_a_condition_is_a_boolean_never_truthiness() {
     assert_eq!(pick(json!(true)), Ok(Value::from("t")), "control: a boolean condition reads as itself");
 }
 
-/// EXEC-EVAL-7: a string operator reads an absent value as "", an unset root reads null, NaN and Infinity arrive as null.
+/// EXEC-EVAL-7: a string operator's null operand is a type error, an unset root reads null, NaN and Infinity arrive as null.
 #[test]
-fn exec_eval_7_string_operators_and_unset_roots_read_absent_values_the_kernel_way() {
-    assert_eq!(eval(json!(["str/concat", "a", "@payload.missing", "b"])), Ok(Value::from("ab")), "an absent value is the empty string");
+fn exec_eval_7_string_operators_refuse_null_and_unset_roots_read_null() {
+    assert!(is_type_mismatch(&eval(json!(["str/concat", "a", "@payload.missing", "b"]))), "an absent operand is not a string");
+    assert_eq!(eval(json!(["str/concat", "a", ["default", "@payload.missing", ""], "b"])), Ok(Value::from("ab")), "control: `default` reads it as empty");
     assert_eq!(eval_with(json!(["str/concat", "a", "@payload.v", "b"]), json!({ "v": "x" })), Ok(Value::from("axb")), "control: a present value is read as itself");
-    assert_eq!(eval(json!(["str/join", ["a", null, "b"], "-"])), Ok(Value::from("a--b")), "a null element joins as the empty string");
+    assert!(is_type_mismatch(&eval(json!(["str/join", ["a", null, "b"], "-"]))), "a null element is not a string");
     assert_eq!(eval(json!(["=", "@payload.missing", null])), Ok(Value::Bool(true)), "an omitted root reads null");
 
     assert_eq!(serde_json::to_value(Value::Number(f64::NAN)).unwrap(), Json::Null, "NaN arrives as null");

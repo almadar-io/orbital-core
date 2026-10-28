@@ -378,24 +378,6 @@ impl Value {
         matches!(self, Value::Null)
     }
 
-    /// Check if value is truthy
-    pub fn is_truthy(&self) -> bool {
-        match self {
-            Value::Null => false,
-            Value::Bool(b) => *b,
-            Value::Number(n) => *n != 0.0 && !n.is_nan(),
-            Value::String(s) => !s.is_empty(),
-            Value::Array(a) => !a.is_empty(),
-            Value::Object(o) => !o.is_empty(),
-            Value::Lambda { .. } => true, // Lambdas are always truthy
-        }
-    }
-
-    /// Convert to boolean
-    pub fn to_bool(&self) -> bool {
-        self.is_truthy()
-    }
-
     /// Try to get as boolean
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -412,32 +394,11 @@ impl Value {
         }
     }
 
-    /// Try to convert to number (with coercion)
-    pub fn to_number(&self) -> Option<f64> {
-        match self {
-            Value::Number(n) => Some(*n),
-            Value::Bool(true) => Some(1.0),
-            Value::Bool(false) => Some(0.0),
-            Value::String(s) => s.parse().ok(),
-            Value::Null => Some(0.0),
-            _ => None,
-        }
-    }
-
     /// Try to get as string reference
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::String(s) => Some(s),
             _ => None,
-        }
-    }
-
-    /// The text of this value as a string operator reads it: absence (`null`) is the empty string, as the
-    /// compiled TypeScript's `join('')` and `toUpperCase()` over a missing value read it.
-    pub fn to_text(&self) -> String {
-        match self {
-            Value::Null => String::new(),
-            other => other.to_string_value(),
         }
     }
 
@@ -625,45 +586,35 @@ impl Value {
         }
     }
 
-    /// Compare two values for equality (with type coercion)
-    pub fn loose_eq(&self, other: &Value) -> bool {
-        match (self, other) {
-            (Value::Null, Value::Null) => true,
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Number(a), Value::Number(b)) => a == b,
-            (Value::String(a), Value::String(b)) => a == b,
-            (Value::Array(a), Value::Array(b)) => {
-                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.loose_eq(y))
-            }
-            (Value::Object(a), Value::Object(b)) => {
-                a.len() == b.len()
-                    && a.iter()
-                        .all(|(k, v)| b.get(k).is_some_and(|bv| v.loose_eq(bv)))
-            }
-            // Type coercion cases
-            (Value::Number(n), Value::String(s)) | (Value::String(s), Value::Number(n)) => s
-                .parse::<f64>()
-                .is_ok_and(|sn| sn == *n),
-            (Value::Bool(b), Value::Number(n)) | (Value::Number(n), Value::Bool(b)) => {
-                let bn = if *b { 1.0 } else { 0.0 };
-                *n == bn
-            }
-            _ => false,
-        }
+    /// A type mismatch naming `expected` and this value's kind.
+    pub fn kind_error(&self, expected: &str) -> crate::error::EvalError {
+        crate::error::EvalError::TypeMismatch { expected: expected.to_string(), actual: self.type_name().to_string() }
     }
 
-    /// Compare two values for ordering
-    pub fn compare(&self, other: &Value) -> Option<std::cmp::Ordering> {
+    /// This value as a number, or a type mismatch: no other kind reads as a number.
+    pub fn number(&self) -> Result<f64, crate::error::EvalError> {
+        self.as_number().ok_or_else(|| self.kind_error("number"))
+    }
+
+    /// This value as text, or a type mismatch: no other kind reads as text.
+    pub fn text(&self) -> Result<&str, crate::error::EvalError> {
+        self.as_str().ok_or_else(|| self.kind_error("string"))
+    }
+
+    /// This value as a boolean, or a type mismatch: no other kind is true or false.
+    pub fn boolean(&self) -> Result<bool, crate::error::EvalError> {
+        self.as_bool().ok_or_else(|| self.kind_error("boolean"))
+    }
+
+    /// The order of two values of one orderable kind (number, string, boolean); any other pair is a type mismatch.
+    pub fn compare(&self, other: &Value) -> Result<std::cmp::Ordering, crate::error::EvalError> {
         match (self, other) {
-            (Value::Number(a), Value::Number(b)) => a.partial_cmp(b),
-            (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
-            (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)),
-            // Coerce to numbers for comparison
-            _ => {
-                let a = self.to_number()?;
-                let b = other.to_number()?;
-                a.partial_cmp(&b)
+            (Value::Number(a), Value::Number(b)) => {
+                a.partial_cmp(b).ok_or_else(|| crate::error::EvalError::InvalidArgument("NaN has no order".to_string()))
             }
+            (Value::String(a), Value::String(b)) => Ok(a.cmp(b)),
+            (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
+            (a, b) => Err(a.kind_error(b.type_name())),
         }
     }
 }
@@ -852,17 +803,18 @@ mod tests {
     }
 
     #[test]
-    fn test_truthy() {
-        assert!(!Value::Null.is_truthy());
-        assert!(!Value::Bool(false).is_truthy());
-        assert!(Value::Bool(true).is_truthy());
-        assert!(!Value::Number(0.0).is_truthy());
-        assert!(Value::Number(1.0).is_truthy());
-        assert!(Value::Number(-1.0).is_truthy());
-        assert!(!Value::string("").is_truthy());
-        assert!(Value::string("hello").is_truthy());
-        assert!(!Value::array(vec![]).is_truthy());
-        assert!(Value::array(vec![Value::Null]).is_truthy());
+    fn a_strict_accessor_reads_only_its_own_kind() {
+        assert_eq!(Value::Bool(true).boolean().ok(), Some(true), "control: a boolean is a boolean");
+        for not_bool in [Value::Null, Value::Number(1.0), Value::string("true"), Value::array(vec![])] {
+            assert!(not_bool.boolean().is_err(), "{not_bool:?} is not a boolean");
+        }
+        assert_eq!(Value::Number(3.0).number().ok(), Some(3.0), "control: a number is a number");
+        for not_number in [Value::Null, Value::Bool(true), Value::string("3")] {
+            assert!(not_number.number().is_err(), "{not_number:?} is not a number");
+        }
+        assert_eq!(Value::string("a").text().ok(), Some("a"), "control: text is text");
+        assert!(Value::Null.text().is_err(), "null is not the empty string");
+        assert!(Value::Number(1.0).text().is_err(), "a number is not text");
     }
 
     #[test]
@@ -949,32 +901,23 @@ mod tests {
     }
 
     #[test]
-    fn test_loose_eq() {
-        assert!(Value::Number(1.0).loose_eq(&Value::string("1")));
-        assert!(Value::Bool(true).loose_eq(&Value::Number(1.0)));
-        assert!(Value::Bool(false).loose_eq(&Value::Number(0.0)));
-        assert!(!Value::Number(1.0).loose_eq(&Value::string("2")));
+    fn equality_is_structural_and_different_kinds_are_unequal() {
+        assert_ne!(Value::Number(1.0), Value::string("1"), "a number and a string are unequal");
+        assert_ne!(Value::Bool(true), Value::Number(1.0), "a boolean and a number are unequal");
+        assert_eq!(Value::Number(1.0), Value::Number(1.0), "control: same kind, same value");
+        assert_ne!(Value::Null, Value::string(String::new()), "null is not the empty string");
+        assert_eq!(Value::Null, Value::Null, "control: null is null");
+        let list = |n: f64| Value::array(vec![Value::Number(n)]);
+        assert_eq!(list(1.0), list(1.0), "control: lists compare item by item");
+        assert_ne!(Value::array(vec![Value::string("emit")]), Value::object(ValueMap::default()), "a list and an object are unequal");
     }
 
     #[test]
-    fn an_empty_string_is_a_present_value_not_null() {
-        let empty = Value::string(String::new());
-        assert!(!Value::Null.loose_eq(&empty));
-        assert!(!empty.loose_eq(&Value::Null));
-        assert!(Value::Null.loose_eq(&Value::Null), "control: null is null");
-        assert!(empty.loose_eq(&Value::string(String::new())), "control: \"\" is \"\"");
-        assert!(!Value::Null.loose_eq(&Value::string("x")), "control: null is not a non-empty string");
-    }
-
-    #[test]
-    fn test_compare() {
-        assert_eq!(
-            Value::Number(1.0).compare(&Value::Number(2.0)),
-            Some(std::cmp::Ordering::Less)
-        );
-        assert_eq!(
-            Value::string("a").compare(&Value::string("b")),
-            Some(std::cmp::Ordering::Less)
-        );
+    fn ordering_is_within_one_orderable_kind() {
+        assert_eq!(Value::Number(1.0).compare(&Value::Number(2.0)).ok(), Some(std::cmp::Ordering::Less));
+        assert_eq!(Value::string("a").compare(&Value::string("b")).ok(), Some(std::cmp::Ordering::Less));
+        assert!(Value::Number(1.0).compare(&Value::string("2")).is_err(), "a number and a string have no order");
+        assert!(Value::Null.compare(&Value::Number(0.0)).is_err(), "null is not zero");
+        assert!(Value::Number(f64::NAN).compare(&Value::Number(1.0)).is_err(), "NaN has no order");
     }
 }

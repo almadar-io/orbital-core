@@ -210,7 +210,7 @@ impl Operator for HashPbkdf2Op {
                 Value::Number(_) => Ok(None),
                 other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
                     "{OP}: {what} {}: expected a whole number from 1",
-                    other.to_text()
+                    other.to_string_value()
                 )))),
             }
         };
@@ -386,7 +386,7 @@ fn decompress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResul
         other => {
             return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
                 "{op}: maxBytes {}: expected a whole number from 0",
-                other.to_text()
+                other.to_string_value()
             ))))
         }
     };

@@ -290,9 +290,9 @@ pub fn apply_read_access(
         row_ctx.entity = SharedEntity::whole(row);
         let mut keep = true;
         for predicate in &predicates {
-            match evaluator.evaluate(predicate, &row_ctx) {
-                Ok(v) if v.is_truthy() => continue,
-                Ok(_) => keep = false,
+            match evaluator.evaluate(predicate, &row_ctx).and_then(|v| Ok(v.boolean()?)) {
+                Ok(true) => continue,
+                Ok(false) => keep = false,
                 Err(err) => {
                     tracing::warn!(
                         entity_type,
@@ -383,9 +383,9 @@ pub fn check_mutation_access(
     let mut row_ctx = ctx.clone();
     row_ctx.set_entity(row.clone());
     let evaluator = Evaluator::new();
-    match evaluator.evaluate(&predicate, &row_ctx) {
-        Ok(v) if v.is_truthy() => Ok(()),
-        Ok(_) => Err(AccessDenied(format!(
+    match evaluator.evaluate(&predicate, &row_ctx).and_then(|v| Ok(v.boolean()?)) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(AccessDenied(format!(
             "@{operation:?} denied: the declared access policy for `{entity_type}` rejected this row"
         ))),
         Err(err) => {

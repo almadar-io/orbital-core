@@ -19,12 +19,20 @@ fn sum_by_field_adds_that_field_of_each_row() {
 }
 
 #[test]
-fn sum_by_field_counts_a_missing_or_non_numeric_field_as_nothing() {
-    let rows = serde_json::json!([{ "amount": 10 }, { "other": 5 }, { "amount": "x" }]);
+fn sum_by_field_counts_a_missing_or_null_field_as_nothing() {
+    let rows = serde_json::json!([{ "amount": 10 }, { "other": 5 }, { "amount": null }]);
     assert_eq!(
         eval(serde_json::json!(["array/sum", rows, "amount"])),
         serde_json::json!(10.0)
     );
+}
+
+#[test]
+fn sum_by_field_refuses_a_non_numeric_field() {
+    let rows = serde_json::json!([{ "amount": 10 }, { "amount": "x" }]);
+    let sexpr = serde_json::from_value(serde_json::json!(["array/sum", rows, "amount"])).unwrap();
+    let err = Evaluator::new().evaluate(&sexpr, &BindingContextBuilder::new().build()).unwrap_err();
+    assert!(err.to_string().contains("expected number, got string"), "{err}");
 }
 
 #[test]
