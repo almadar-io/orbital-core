@@ -222,7 +222,7 @@ pub const HTTP_PAGED_SHAPE: &[ShapeField] = &[
 /// An `http` failure: the message, its kind (`timeout`, `failed`, `refused`, `unconfigured`, `oauth`,
 /// `unavailable`), the credential a missing one names, the leg that failed (`phase`: `grant`, `request` or
 /// `null`), the status of a failed grant reply (`grantStatus`), the public `code` and closed `reason` of an
-/// `oauth` failure (each `null` for every other kind) and the call's key.
+/// `oauth` failure (each absent for every other kind, never null) and the call's key (absent for an unkeyed call).
 pub const HTTP_FAILURE_SHAPE: &[ShapeField] = &[
     field("error", "string"),
     field("kind", "string"),

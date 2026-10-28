@@ -8,7 +8,7 @@ pub(super) struct EntitySourceHandler {
     pub(super) source: Arc<dyn EntitySource>,
     pub(super) io: Arc<IoPort>,
     pub(super) entity_policies: Arc<RwLock<EntityAccessTable>>,
-    pub(super) entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
+    pub(super) entity_definitions: Arc<RwLock<HashMap<String, Arc<EntityDefinition>>>>,
     /// Entity types the kernel has written since the render store last heard (EXEC-RENDER-3).
     pub(super) written: Arc<orbital_core_base::sync::Mutex<BTreeSet<String>>>,
 }

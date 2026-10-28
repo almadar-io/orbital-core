@@ -555,7 +555,7 @@ mod tests {
         let mut second = s.orbitals[0].clone();
         second.name = "Other".into();
         if let TraitReference::Inline(def) = &mut second.traits[0] {
-            def.name = "T2".into();
+            std::sync::Arc::make_mut(def).name = "T2".into();
         }
         s.orbitals.push(second);
         assert_eq!(TickClock::from_schema(&s).len(), 2);

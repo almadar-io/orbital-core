@@ -1010,12 +1010,12 @@ fn route_params(pattern: &str, path: &str) -> Option<ValueMap> {
 /// Every trait some host embeds (orbital-core [`EmbedIndex`] over the schema's inline traits).
 fn embedded_traits(schema: &OrbitalSchema) -> std::collections::HashSet<String> {
     use orbital_core_base::schema::types::TraitReference;
-    let defs: HashMap<String, orbital_core_base::schema::types::TraitDefinition> = schema
+    let defs: HashMap<String, Arc<orbital_core_base::schema::types::TraitDefinition>> = schema
         .orbitals
         .iter()
         .flat_map(|orbital| orbital.traits.iter())
         .filter_map(|t| match t {
-            TraitReference::Inline(def) => Some((def.name.clone(), def.clone())),
+            TraitReference::Inline(def) => Some((def.name.clone(), Arc::clone(def))),
             _ => None,
         })
         .collect();

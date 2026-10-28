@@ -577,7 +577,7 @@ fn sse_frames_multi_line_data_event_id_and_comments() {
     );
     assert_eq!(events.len(), 2);
     assert_eq!(events[0], val(json!({"data": "line1\nline2", "event": "ping", "id": "7"})));
-    assert_eq!(events[1], val(json!({"data": "solo", "event": null, "id": null})));
+    assert_eq!(events[1], val(json!({"data": "solo"})));
     assert_eq!(carry, "");
 }
 
@@ -587,10 +587,10 @@ fn sse_chunk_split_across_calls_uses_the_carry() {
     assert!(stream_events(StreamFraming::Sse, "data: he", &mut carry).is_empty());
     assert!(stream_events(StreamFraming::Sse, "llo\r\n", &mut carry).is_empty());
     let events = stream_events(StreamFraming::Sse, "\r\ndata: next", &mut carry);
-    assert_eq!(events, vec![val(json!({"data": "hello", "event": null, "id": null}))]);
+    assert_eq!(events, vec![val(json!({"data": "hello"}))]);
     assert_eq!(carry, "data: next");
     let tail = stream_finish(StreamFraming::Sse, &mut carry);
-    assert_eq!(tail, vec![val(json!({"data": "next", "event": null, "id": null}))]);
+    assert_eq!(tail, vec![val(json!({"data": "next"}))]);
     assert_eq!(carry, "");
     assert!(stream_finish(StreamFraming::Sse, &mut carry).is_empty());
 }
@@ -599,12 +599,12 @@ fn sse_chunk_split_across_calls_uses_the_carry() {
 fn json_lines_split_blank_and_flushed() {
     let mut carry = String::new();
     let events = stream_events(StreamFraming::JsonLines, "{\"a\":1}\n\n{\"b\"", &mut carry);
-    assert_eq!(events, vec![val(json!({"data": "{\"a\":1}", "event": null, "id": null}))]);
+    assert_eq!(events, vec![val(json!({"data": "{\"a\":1}"}))]);
     let events = stream_events(StreamFraming::JsonLines, ":2}\r\n{\"c\":3}", &mut carry);
-    assert_eq!(events, vec![val(json!({"data": "{\"b\":2}", "event": null, "id": null}))]);
+    assert_eq!(events, vec![val(json!({"data": "{\"b\":2}"}))]);
     assert_eq!(
         stream_finish(StreamFraming::JsonLines, &mut carry),
-        vec![val(json!({"data": "{\"c\":3}", "event": null, "id": null}))]
+        vec![val(json!({"data": "{\"c\":3}"}))]
     );
 }
 
@@ -637,14 +637,14 @@ fn reply_payload_text_bytes_and_lowercased_headers() {
 
 #[test]
 fn failure_and_refusal_payload_shapes() {
-    let rest = json!({"phase": null, "grantStatus": null, "grantBody": null, "code": null, "reason": null});
+    let rest = json!({});
     let with_rest = |mut j: serde_json::Value| {
         j.as_object_mut().unwrap().extend(rest.as_object().unwrap().clone());
         val(j)
     };
-    assert_eq!(failure_payload(&TransportError::TimedOut), with_rest(json!({"error": "request timed out", "kind": "timeout", "credential": null})));
-    assert_eq!(failure_payload(&TransportError::Failed("boom".into())), with_rest(json!({"error": "boom", "kind": "failed", "credential": null})));
-    assert_eq!(failure_payload(&TransportError::Refused("private".into())), with_rest(json!({"error": "private", "kind": "refused", "credential": null})));
+    assert_eq!(failure_payload(&TransportError::TimedOut), with_rest(json!({"error": "request timed out", "kind": "timeout"})));
+    assert_eq!(failure_payload(&TransportError::Failed("boom".into())), with_rest(json!({"error": "boom", "kind": "failed"})));
+    assert_eq!(failure_payload(&TransportError::Refused("private".into())), with_rest(json!({"error": "private", "kind": "refused"})));
     assert_eq!(
         refusal_payload(&HttpRefusal::CredentialMissing("K".into())),
         with_rest(json!({"error": "credential missing: K", "kind": "unconfigured", "credential": "K"}))
@@ -832,8 +832,8 @@ fn driver_stream_asks_http_stream_and_frames_with_the_key() {
     assert!(matches!(step, HttpStep::Ask(HttpAsk::HttpStream { framing: StreamFraming::Sse, .. })));
     let mut carry = String::new();
     let events = d.stream_events("data: a\n\ndata: b", &mut carry);
-    assert_eq!(events, vec![val(json!({"data": "a", "event": null, "id": null, "key": "s"}))]);
-    assert_eq!(d.stream_finish(&mut carry), vec![val(json!({"data": "b", "event": null, "id": null, "key": "s"}))]);
+    assert_eq!(events, vec![val(json!({"data": "a", "key": "s"}))]);
+    assert_eq!(d.stream_finish(&mut carry), vec![val(json!({"data": "b", "key": "s"}))]);
 }
 
 #[test]
@@ -872,19 +872,19 @@ fn frame_stream_is_the_one_place_the_key_is_added() {
     let mut carry = String::new();
     assert_eq!(
         frame_stream(StreamFraming::JsonLines, Some("k"), "{\"a\":1}\n{\"b\"", &mut carry),
-        vec![val(json!({"data": "{\"a\":1}", "event": null, "id": null, "key": "k"}))]
+        vec![val(json!({"data": "{\"a\":1}", "key": "k"}))]
     );
     assert_eq!(
         frame_stream_finish(StreamFraming::JsonLines, Some("k"), &mut carry),
-        vec![val(json!({"data": "{\"b\"", "event": null, "id": null, "key": "k"}))]
+        vec![val(json!({"data": "{\"b\"", "key": "k"}))]
     );
     assert_eq!(
         frame_stream(StreamFraming::Sse, None, "data: x\n\n", &mut String::new()),
-        vec![val(json!({"data": "x", "event": null, "id": null, "key": null}))]
+        vec![val(json!({"data": "x"}))]
     );
     assert_eq!(
         stream_events(StreamFraming::Sse, "data: x\n\n", &mut String::new()),
-        vec![val(json!({"data": "x", "event": null, "id": null}))],
+        vec![val(json!({"data": "x"}))],
         "the bare framer adds no key"
     );
 }
@@ -3293,6 +3293,6 @@ fn stream_decoder_matches_text_response_replacement_of_invalid_and_incomplete_ut
     let mut decoder = StreamDecoder::new(StreamFraming::JsonLines, None);
     assert!(decoder.push(b"a\xff\xe2").is_empty());
     assert!(decoder.push(b"\x82").is_empty());
-    assert_eq!(decoder.finish(), vec![val(json!({"data": "a��", "event": null, "id": null, "key": null}))]);
+    assert_eq!(decoder.finish(), vec![val(json!({"data": "a��"}))]);
     assert!(decoder.finish().is_empty());
 }

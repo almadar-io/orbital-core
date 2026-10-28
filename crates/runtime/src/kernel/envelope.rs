@@ -55,7 +55,7 @@ pub(super) struct Admitted {
 pub(crate) fn mapped_listen_payload(
     evaluator: &Evaluator,
     ctx: &BindingContext,
-    mapping: &Option<SObject>,
+    mapping: Option<&SObject>,
     source_payload: &Value,
 ) -> Value {
     match mapping {
@@ -203,7 +203,7 @@ impl RuntimeKernel {
                     payload: mapped_listen_payload(
                         &evaluator,
                         &ctx,
-                        &listener.payload_mapping,
+                        listener.payload_mapping.as_deref(),
                         payload,
                     ),
                     causal_id: causal,

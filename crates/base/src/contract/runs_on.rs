@@ -109,12 +109,14 @@ impl Residence {
     }
 
     /// The residence of a program's entities.
-    pub fn of_entities<'a>(
-        entities: impl IntoIterator<Item = &'a crate::schema::types::EntityDefinition>,
-    ) -> Self {
+    pub fn of_entities<'a, E>(entities: impl IntoIterator<Item = &'a E>) -> Self
+    where
+        E: core::borrow::Borrow<crate::schema::types::EntityDefinition> + 'a,
+    {
         Self {
             client: entities
                 .into_iter()
+                .map(core::borrow::Borrow::borrow)
                 .filter(|e| e.browser)
                 .map(|e| e.name.clone())
                 .collect(),

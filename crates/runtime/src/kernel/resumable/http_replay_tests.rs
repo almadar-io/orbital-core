@@ -212,9 +212,9 @@ fn a_blocking_stream_answer_carries_the_key_the_framer_adds_flush_included() {
 }
 
 #[test]
-fn control_an_unkeyed_blocking_stream_carries_a_null_key() {
+fn control_an_unkeyed_blocking_stream_carries_no_key() {
     let events = streamed(None);
-    assert_eq!(keys(&events), vec![Value::Null; 2]);
+    assert_eq!(keys(&events), vec![Value::string("absent"); 2], "a field without `!` is absent, never null");
 }
 
 #[test]

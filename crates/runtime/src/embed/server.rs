@@ -1191,7 +1191,7 @@ mod program_context_tests {
         else {
             panic!("inline trait")
         };
-        def.name = "AppTrait".to_string();
+        std::sync::Arc::make_mut(def).name = "AppTrait".to_string();
         cases.push((schema, "trait"));
         let mut schema = plain();
         let orbital_core_base::schema::types::EntityRef::Inline(def) =

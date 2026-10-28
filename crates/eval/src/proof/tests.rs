@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 use orbital_core_base::schema::types::{EntityRef, TraitReference};
 use serde_json::{json, Value as J};
 
@@ -555,6 +556,7 @@ fn configured(transitions: J, knobs: J) -> OrbitalSchema {
     let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] else {
         panic!()
     };
+    let td = std::sync::Arc::make_mut(td);
     let knobs: orbital_core_base::collections::IndexMap<String, ConfigField> =
         serde_json::from_value(knobs).unwrap();
     td.config = Some(knobs);
@@ -713,7 +715,7 @@ fn another_traits_write_is_unproved_not_violated() {
     schema.orbitals[0]
         .traits
         .push(orbital_core_base::schema::types::TraitReference::Inline(
-            refund,
+            Arc::new(refund),
         ));
     let v = verdicts(&schema);
     let foreign = v
@@ -740,6 +742,7 @@ fn a_config_bound_target_is_resolved_and_an_unknown_one_is_unproved() {
             inv.clone(),
         );
         if let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] {
+            let td = std::sync::Arc::make_mut(td);
             let field: ConfigField =
                 serde_json::from_value(json!({ "type": "entity", "default": default }))
                     .unwrap();
@@ -1126,6 +1129,7 @@ fn the_ensures_assumes_the_guard_and_the_source_states_holds() {
     let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] else {
         panic!()
     };
+    let td = std::sync::Arc::make_mut(td);
     td.state_machine.states[0].holds =
         Some(serde_json::from_value(json!([">=", "@entity.paid", 0])).unwrap());
     assert_eq!(

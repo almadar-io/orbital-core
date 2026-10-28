@@ -22,6 +22,7 @@ pub use sexpr::{SObject,
 pub use types::*;
 
 use crate::error::Result;
+use std::sync::Arc;
 
 /// Parse an OrbitalSchema from a JSON string.
 ///
@@ -57,6 +58,7 @@ pub fn normalize_fn_shapes(schema: &mut OrbitalSchema) {
         for tref in &mut orbital.traits {
             match tref {
                 TraitReference::Inline(td) => {
+                    let td = Arc::make_mut(td);
                     for p in td.propositions_mut() {
                         p.normalize_fn_shapes();
                     }

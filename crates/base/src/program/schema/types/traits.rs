@@ -42,10 +42,9 @@ pub struct TraitTypeParamDef {
 /// variant's real field-level error (`unknown field`, `missing field`, type
 /// mismatch) instead of the opaque "did not match any variant of untagged enum".
 #[derive(Debug, Clone)]
-#[allow(clippy::large_enum_variant)] // boxing Inline would change match sites across the tree
 pub enum TraitReference {
     /// Inline trait definition
-    Inline(TraitDefinition),
+    Inline(Arc<TraitDefinition>),
     /// Reference to a named trait. Serde attributes for these fields live on the
     /// `TraitReferenceFields` (deserialize) and `TraitReferenceFieldsRef`
     /// (serialize) mirror structs below; the enum's `Serialize`/`Deserialize`
@@ -233,7 +232,7 @@ impl Serialize for TraitReference {
         // variant serializes its fields at the top level via the borrowing
         // mirror. Matches the old untagged derive byte-for-byte.
         match self {
-            TraitReference::Inline(t) => t.serialize(serializer),
+            TraitReference::Inline(t) => (**t).serialize(serializer),
             TraitReference::Reference {
                 reference,
                 ref_id,
@@ -312,7 +311,7 @@ impl<'de> Deserialize<'de> for TraitReference {
             })
         } else {
             let td: TraitDefinition = serde_json::from_value(value).map_err(D::Error::custom)?;
-            Ok(TraitReference::Inline(td))
+            Ok(TraitReference::Inline(Arc::new(td)))
         }
     }
 }
@@ -468,7 +467,7 @@ pub struct TraitDefinition {
         rename = "sourceEntityDefinition",
         skip_serializing_if = "Option::is_none"
     )]
-    pub source_entity_definition: Option<EntityDefinition>,
+    pub source_entity_definition: Option<Arc<EntityDefinition>>,
 
     /// Increment 3-II: this trait's own declared type parameters —
     /// `(V : Type, R : Type)` in `trait Name (V : Type, R : Type) -> Entity

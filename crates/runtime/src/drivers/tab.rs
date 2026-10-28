@@ -14,16 +14,19 @@ pub fn refusal_payload(message: &str, key: Option<&str>) -> Value {
     failure_payload(TabFailureKind::Invalid, message, key)
 }
 
-fn key_value(key: Option<&str>) -> Value {
-    key.map_or(Value::Null, |k| Value::string(k.to_string()))
+fn with_key(fields: &mut Vec<(String, Value)>, key: Option<&str>) {
+    if let Some(key) = key {
+        fields.push(("key".to_string(), Value::string(key.to_string())));
+    }
 }
 
 fn failure_payload(kind: TabFailureKind, message: &str, key: Option<&str>) -> Value {
-    Value::object(ValueMap::from_iter([
+    let mut fields = vec![
         ("error".to_string(), Value::String(message.to_string().into())),
         ("kind".to_string(), Value::String(kind.as_str().to_string().into())),
-        ("key".to_string(), key_value(key)),
-    ]))
+    ];
+    with_key(&mut fields, key);
+    Value::object(ValueMap::from_iter(fields))
 }
 
 fn whole(value: &Value) -> Option<u64> {
@@ -125,7 +128,9 @@ impl TabDriver {
     }
 
     fn ok(&self, mut fields: Vec<(&str, Value)>) -> DriverStep {
-        fields.push(("key", key_value(self.key.as_deref())));
+        if let Some(key) = self.key.as_deref() {
+            fields.push(("key", Value::string(key.to_string())));
+        }
         DriverStep::Done(Ok(Value::Object(fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect())))
     }
 
@@ -407,7 +412,7 @@ mod tests {
         assert_eq!(asks, vec![TabAsk::List]);
         let out = done_ok(step);
         assert_eq!(get(&out, "tabs").as_array().unwrap().len(), 1);
-        assert!(get(&out, "key").is_null());
+        assert!(out.get_path("key").is_none(), "an unkeyed call answers no key");
         let (_, all) = run(call(TabOp::List, json!({})).unwrap(), vec![Ok(tabs)]);
         assert_eq!(get(&done_ok(all), "tabs").as_array().unwrap().len(), 2);
     }
@@ -643,6 +648,6 @@ mod tests {
         let failure = done_err(step);
         assert_eq!(get(&failure, "kind"), &Value::string("unavailable"));
         assert_eq!(get(&failure, "key"), &Value::string("k"));
-        assert_eq!(refusal_payload("bad", None), value(json!({ "error": "bad", "kind": "invalid", "key": null })));
+        assert_eq!(refusal_payload("bad", None), value(json!({ "error": "bad", "kind": "invalid" })));
     }
 }

@@ -676,3 +676,65 @@ fn orbital_types_map_round_trips_and_stays_absent_when_unset() {
         plain_once
     );
 }
+
+fn inline_trait_program_with_source_entity() -> OrbitalSchema {
+    serde_json::from_str(
+        r#"{
+        "name": "Shared",
+        "orbitals": [{
+            "name": "Notes",
+            "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "NoteView", "linkedEntity": "Note",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "events": [{ "key": "INIT", "name": "INIT" }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [] }]
+                },
+                "sourceEntityDefinition": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] }
+            }, { "ref": "NoteView", "name": "NoteViewCopy" }],
+            "pages": []
+        }]
+    }"#,
+    )
+    .expect("program with an inline trait and a source entity")
+}
+
+#[test]
+fn inline_traits_and_source_entities_serialize_flat_and_round_trip_byte_identically() {
+    let schema = inline_trait_program_with_source_entity();
+    let first = serde_json::to_string(&schema).expect("serializes");
+    let again: OrbitalSchema = serde_json::from_str(&first).expect("reloads");
+    assert_eq!(first, serde_json::to_string(&again).expect("serializes again"));
+    let value: serde_json::Value = serde_json::from_str(&first).expect("json");
+    let inline = &value["orbitals"][0]["traits"][0];
+    assert!(inline.get("stateMachine").is_some(), "an inline trait stays flat, never tagged");
+    assert_eq!(inline["sourceEntityDefinition"]["name"], "Note");
+    assert!(value["orbitals"][0]["traits"][1].get("stateMachine").is_none());
+}
+
+#[test]
+fn control_a_cloned_program_shares_its_inline_traits_and_a_write_copies_only_that_trait() {
+    use orbital_core_base::schema::TraitReference;
+    use std::sync::Arc;
+    let schema = inline_trait_program_with_source_entity();
+    let mut copy = schema.clone();
+    let body = |s: &OrbitalSchema| match &s.orbitals[0].traits[0] {
+        TraitReference::Inline(td) => Arc::clone(td),
+        TraitReference::Reference { .. } => unreachable!("fixture trait is inline"),
+    };
+    assert!(Arc::ptr_eq(&body(&schema), &body(&copy)), "a clone shares the trait body");
+    if let TraitReference::Inline(td) = &mut copy.orbitals[0].traits[0] {
+        Arc::make_mut(td).name = "Renamed".to_string();
+    }
+    assert!(!Arc::ptr_eq(&body(&schema), &body(&copy)));
+    assert_eq!(body(&schema).name, "NoteView", "the original is untouched by the write");
+}
+
+#[test]
+fn an_inline_trait_reference_does_not_carry_its_body_in_the_enum() {
+    let reference = std::mem::size_of::<orbital_core_base::schema::TraitReference>();
+    let body = std::mem::size_of::<orbital_core_base::schema::TraitDefinition>();
+    println!("TraitReference {reference} bytes, TraitDefinition {body} bytes");
+    assert!(reference < body, "TraitReference ({reference}) must not embed a TraitDefinition ({body})");
+}

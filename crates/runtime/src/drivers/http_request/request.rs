@@ -426,17 +426,33 @@ pub fn reply_payload(resp: &HttpResponse, as_: ResponseAs) -> Value {
     ])
 }
 
+/// The failure payload carries only what this failure has: `credential`, `phase`, `grantStatus`, `grantBody`, `code`
+/// and `reason` are added by the leg that knows them and are otherwise absent, never null.
 pub(super) fn failure_value(error: String, kind: &str, credential: Option<String>) -> Value {
-    object(vec![
-        ("error", Value::string(error)),
-        ("kind", Value::string(kind.to_string())),
-        ("credential", credential.map_or(Value::Null, Value::string)),
-        ("phase", Value::Null),
-        ("grantStatus", Value::Null),
-        ("grantBody", Value::Null),
-        ("code", Value::Null),
-        ("reason", Value::Null),
-    ])
+    let mut fields = vec![("error", Value::string(error)), ("kind", Value::string(kind.to_string()))];
+    if let Some(credential) = credential {
+        fields.push(("credential", Value::string(credential)));
+    }
+    object(fields)
+}
+
+#[cfg(test)]
+mod failure_value_tests {
+    use super::*;
+
+    #[test]
+    fn a_failure_carries_no_field_it_does_not_have() {
+        let failure = failure_value("down".to_string(), "failed", None);
+        for absent in ["credential", "phase", "grantStatus", "grantBody", "code", "reason"] {
+            assert!(failure.get_path(absent).is_none(), "{absent} is absent, not null: {failure:?}");
+        }
+    }
+
+    #[test]
+    fn control_a_failure_naming_a_credential_carries_it() {
+        let failure = failure_value("missing".to_string(), "unconfigured", Some("API_KEY".to_string()));
+        assert_eq!(failure.get_path("credential").and_then(|v| v.as_str().map(str::to_string)), Some("API_KEY".to_string()));
+    }
 }
 
 pub(super) fn set_field(mut payload: Value, name: &str, value: Value) -> Value {

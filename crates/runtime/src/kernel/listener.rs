@@ -36,10 +36,10 @@ pub struct ListenerInfo {
     pub source: Option<ListenSource>,
 
     /// Optional payload remap applied to the source event's payload.
-    pub payload_mapping: Option<orbital_core_base::schema::sexpr::SObject>,
+    pub payload_mapping: Option<Arc<orbital_core_base::schema::sexpr::SObject>>,
 
     /// Optional guard gating whether the listener fires.
-    pub guard: Option<SExpression>,
+    pub guard: Option<Arc<SExpression>>,
 
     /// Subscription ID for unsubscribing.
     pub subscription_id: SubscriptionId,
@@ -111,8 +111,10 @@ impl ListenerManager {
             .triggers
             .clone()
             .unwrap_or_else(|| event_pattern.clone());
-        let payload_mapping = listen.payload_mapping.clone();
-        let guard = listen.guard.clone();
+        let payload_mapping = listen.payload_mapping.clone().map(Arc::new);
+        let guard = listen.guard.clone().map(Arc::new);
+        let info_mapping = payload_mapping.clone();
+        let info_guard = guard.clone();
         let trait_name_owned = trait_name.to_string();
 
         let trigger_callback = self.trigger_callback.clone();
@@ -126,7 +128,7 @@ impl ListenerManager {
                 .build();
 
             if let Some(ref guard_expr) = guard {
-                match evaluator.evaluate_guard(guard_expr, &ctx) {
+                match evaluator.evaluate_guard(guard_expr.as_ref(), &ctx) {
                     Ok(true) => {}
                     Ok(false) => {
                         debug!(
@@ -142,7 +144,7 @@ impl ListenerManager {
 
             let mapped_payload = if let Some(ref mapping) = payload_mapping {
                 let mut mapped = ValueMap::default();
-                for (key, expr) in mapping {
+                for (key, expr) in mapping.as_ref() {
                     if let Ok(value) = evaluator.evaluate(expr, &ctx) {
                         mapped.insert(key.clone(), value);
                     }
@@ -163,8 +165,8 @@ impl ListenerManager {
             orbital: orbital.to_string(),
             triggers,
             source,
-            payload_mapping: listen.payload_mapping.clone(),
-            guard: listen.guard.clone(),
+            payload_mapping: info_mapping,
+            guard: info_guard,
             subscription_id,
         };
 
@@ -452,6 +454,54 @@ mod tests {
         if let Value::Object(obj) = &*received {
             assert!(obj.contains_key("userId"));
         }
+    }
+
+    #[test]
+    fn a_listens_guard_and_mapping_are_one_copy_shared_by_the_bus_handler_and_every_listener_info() {
+        let manager = ListenerManager::new(shared_bus());
+        let mut mapping = orbital_core_base::schema::sexpr::SObject::default();
+        mapping.insert("userId".to_string(), serde_json::from_str::<SExpression>(r#""@payload.id""#).unwrap());
+        let listen = ListenDefinition {
+            event: "USER_CREATED".to_string(),
+            triggers: Some("INIT_PROFILE".to_string()),
+            scope: None,
+            description: None,
+            synonyms: None,
+            tier: None,
+            payload_mapping: Some(mapping),
+            source: None,
+            guard: Some(serde_json::from_str::<SExpression>(r#"["=", "@payload.kind", "new"]"#).unwrap()),
+            event_id: None,
+            triggers_id: None,
+        };
+        manager.register("Profile", "Orb", &listen).unwrap();
+        let first = manager.get_listeners("Profile").remove(0);
+        let second = manager.get_listeners("Profile").remove(0);
+        let (guard, other) = (first.guard.as_ref().unwrap(), second.guard.as_ref().unwrap());
+        assert!(Arc::ptr_eq(guard, other), "a listener info clone must share the guard");
+        assert!(Arc::ptr_eq(first.payload_mapping.as_ref().unwrap(), second.payload_mapping.as_ref().unwrap()));
+        assert_eq!(Arc::strong_count(guard), 4, "manager info + bus handler + the two clones, no private copies");
+    }
+
+    #[test]
+    fn control_a_listen_without_a_guard_or_mapping_holds_neither() {
+        let manager = ListenerManager::new(shared_bus());
+        let listen = ListenDefinition {
+            event: "USER_CREATED".to_string(),
+            triggers: None,
+            scope: None,
+            description: None,
+            synonyms: None,
+            tier: None,
+            payload_mapping: None,
+            source: None,
+            guard: None,
+            event_id: None,
+            triggers_id: None,
+        };
+        manager.register("Profile", "Orb", &listen).unwrap();
+        let info = manager.get_listeners("Profile").remove(0);
+        assert!(info.guard.is_none() && info.payload_mapping.is_none());
     }
 
     #[test]

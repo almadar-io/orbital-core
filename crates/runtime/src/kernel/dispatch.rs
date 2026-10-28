@@ -422,7 +422,7 @@ impl RuntimeKernel {
                     .or_else(|| program.types.as_ref().and_then(|aliases| aliases.get(name)))
                     .map(|members| declared_alias_shape(members))
             })
-            .or_else(|| entities.get(name).map(super::row_intake::entity_struct))
+            .or_else(|| entities.get(name).map(|def| super::row_intake::entity_struct(def)))
         };
         crate::payload_validation::validate_event_payload_with_context(event, payload, schema, &resolve)
     }

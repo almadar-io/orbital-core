@@ -109,11 +109,29 @@ pub struct HttpCallDriver {
     pub(super) oauth: Option<OAuthFlow>,
 }
 
+/// A call with no `key` answers with no `key` field: a field without `!` is absent, never null.
 pub(crate) fn with_key(mut payload: Value, key: &Option<String>) -> Value {
-    if let Value::Object(map) = &mut payload {
-        map.insert("key".to_string(), key.clone().map_or(Value::Null, Value::string));
+    if let (Value::Object(map), Some(key)) = (&mut payload, key) {
+        map.insert("key".to_string(), Value::string(key.clone()));
     }
     payload
+}
+
+#[cfg(test)]
+mod with_key_tests {
+    use super::*;
+
+    #[test]
+    fn an_answer_to_a_call_without_a_key_has_no_key_field() {
+        let answer = with_key(Value::object(orbital_core_base::value::ValueMap::default()), &None);
+        assert!(answer.get_path("key").is_none(), "absent, not null: {answer:?}");
+    }
+
+    #[test]
+    fn control_an_answer_to_a_keyed_call_carries_its_key() {
+        let answer = with_key(Value::object(orbital_core_base::value::ValueMap::default()), &Some("k1".to_string()));
+        assert_eq!(answer.get_path("key").and_then(|k| k.as_str().map(str::to_string)), Some("k1".to_string()));
+    }
 }
 
 pub(super) const BOUNDARY_BYTES: u32 = 16;
@@ -705,16 +723,16 @@ impl HttpCallDriver {
     pub(super) fn on_beacon(&mut self, result: Result<BeaconOutcome, TransportError>) -> HttpStep {
         let (sent, via, status) = match result {
             Ok(BeaconOutcome::Unavailable { message }) => return self.done(Err(unavailable_payload(&message))),
-            Ok(BeaconOutcome::Queued) => (true, "queue", Value::Null),
-            Ok(BeaconOutcome::Fetched { status }) => ((200..300).contains(&status), "fetch", Value::Number(f64::from(status))),
-            Err(TransportError::TimedOut | TransportError::Failed(_)) => (false, "fetch", Value::Null),
+            Ok(BeaconOutcome::Queued) => (true, "queue", None),
+            Ok(BeaconOutcome::Fetched { status }) => ((200..300).contains(&status), "fetch", Some(Value::Number(f64::from(status)))),
+            Err(TransportError::TimedOut | TransportError::Failed(_)) => (false, "fetch", None),
             Err(err @ TransportError::Refused(_)) => return self.fail(err),
         };
-        self.done(Ok(object(vec![
-            ("sent", Value::Bool(sent)),
-            ("via", Value::string(via.to_string())),
-            ("status", status),
-        ])))
+        let mut fields = vec![("sent", Value::Bool(sent)), ("via", Value::string(via.to_string()))];
+        if let Some(status) = status {
+            fields.push(("status", status));
+        }
+        self.done(Ok(object(fields)))
     }
 
     pub(super) fn on_reply(&mut self, resp: HttpResponse) -> HttpStep {

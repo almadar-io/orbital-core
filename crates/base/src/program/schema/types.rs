@@ -6,6 +6,7 @@ use std::prelude::v1::*;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::schema::sexpr::SExpression;
 use crate::effect_row::EffectRow;
@@ -219,6 +220,7 @@ impl OrbitalSchema {
             for t in &mut orbital.traits {
                 if let TraitReference::Inline(td) = t {
                     if td.linked_entity.is_none() {
+                        let td = Arc::make_mut(td);
                         td.linked_entity = Some(name.clone());
                         td.linked_entity_id = id.clone();
                     }

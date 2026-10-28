@@ -213,11 +213,11 @@ fn embed_bubble_realizes_every_declared_host_transition_listener() {
     let schema = notes_like_schema();
     let kernel = kernel_with(schema.clone());
 
-    let trait_definitions: HashMap<String, TraitDefinition> = schema.orbitals[0]
+    let trait_definitions: HashMap<String, std::sync::Arc<TraitDefinition>> = schema.orbitals[0]
         .traits
         .iter()
         .filter_map(|t| match t {
-            TraitReference::Inline(def) => Some((def.name.clone(), def.clone())),
+            TraitReference::Inline(def) => Some((def.name.clone(), std::sync::Arc::clone(def))),
             _ => None,
         })
         .collect();

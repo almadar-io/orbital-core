@@ -175,7 +175,11 @@
             "beats": 1.0
           },
           "source": {
-            "trait": "Ticker"
+            "orbital": "TickCounterOrbital",
+            "orbitalId": "orb_01M4FRNC8VGQCGFY0D9BZQB2Q0",
+            "trait": "Ticker",
+            "traitId": "trt_01M4FRNC8V2N1A7W8BHTZAP1BJ",
+            "tick": "beat"
           }
         }
       ],
@@ -342,7 +346,11 @@
             "beats": 2.0
           },
           "source": {
-            "trait": "Ticker"
+            "orbital": "TickCounterOrbital",
+            "orbitalId": "orb_01M4FRNC8VGQCGFY0D9BZQB2Q0",
+            "trait": "Ticker",
+            "traitId": "trt_01M4FRNC8V2N1A7W8BHTZAP1BJ",
+            "tick": "beat"
           }
         }
       ],
@@ -447,7 +455,11 @@
           "beats": 3.0
         },
         "source": {
-          "trait": "Ticker"
+          "orbital": "TickCounterOrbital",
+          "orbitalId": "orb_01M4FRNC8VGQCGFY0D9BZQB2Q0",
+          "trait": "Ticker",
+          "traitId": "trt_01M4FRNC8V2N1A7W8BHTZAP1BJ",
+          "tick": "beat"
         }
       }
     ],
@@ -573,7 +585,11 @@
             "beats": 4.0
           },
           "source": {
-            "trait": "Ticker"
+            "orbital": "TickCounterOrbital",
+            "orbitalId": "orb_01M4FRNC8VGQCGFY0D9BZQB2Q0",
+            "trait": "Ticker",
+            "traitId": "trt_01M4FRNC8V2N1A7W8BHTZAP1BJ",
+            "tick": "beat"
           }
         }
       ],
@@ -756,7 +772,11 @@
             "beats": 5.0
           },
           "source": {
-            "trait": "Ticker"
+            "orbital": "TickCounterOrbital",
+            "orbitalId": "orb_01M4FRNC8VGQCGFY0D9BZQB2Q0",
+            "trait": "Ticker",
+            "traitId": "trt_01M4FRNC8V2N1A7W8BHTZAP1BJ",
+            "tick": "beat"
           }
         }
       ],

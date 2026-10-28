@@ -351,7 +351,9 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
 // 11194: +2, a built record type holds its field list in one shared `Arc`, so every later copy of it is a reference bump
 // (P-017 K1, 2026-10-27; std-kflow validate 291 -> 230 s).
 // 12118: +924, an IR object node boxes its map so every `SExpression` is 24 bytes (owner accepted, P-017, 2026-10-28).
-const PINNED_REPLAY: usize = 12118;
+// 12120: +2, measured on main after wave 3 (present before step-4 phase A; most likely the per-step emit-source stamp,
+// G-ORB-553, not bisected), 2026-10-28.
+const PINNED_REPLAY: usize = 12120;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)

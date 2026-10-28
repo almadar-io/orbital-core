@@ -327,7 +327,7 @@ pub fn map_listen_payload_json(
     to_json(&mapped_listen_payload(
         &Evaluator::new(),
         &ctx,
-        &mapping,
+        mapping.as_ref(),
         &payload,
     ))
 }

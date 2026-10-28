@@ -11,12 +11,13 @@ use orbital_core_base::value::ValueMap;
 use orbital_core_base::schema::types::{Cardinality, EntityDefinition, FieldDefinition, FieldType};
 use orbital_core_base::value::Value;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// The deepest `include` nesting a fetch hydrates; a deeper level is left as ids.
 const MAX_DEPTH: usize = 2;
 
 /// Every entity the kernel knows, by name.
-pub type EntityDefinitions = HashMap<String, EntityDefinition>;
+pub type EntityDefinitions = HashMap<String, Arc<EntityDefinition>>;
 
 fn named_fields(def: &EntityDefinition) -> impl Iterator<Item = (&str, &FieldDefinition)> {
     def.fields

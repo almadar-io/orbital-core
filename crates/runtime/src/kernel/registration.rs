@@ -238,7 +238,7 @@ impl RuntimeKernel {
                     .chain(orbital.auxiliary_entities.iter().flatten())
                 {
                     if let EntityRef::Inline(def) = entity_ref {
-                        defs.insert(def.name.clone(), def.clone());
+                        defs.insert(def.name.clone(), Arc::new(def.clone()));
                     }
                 }
             }
@@ -266,7 +266,6 @@ impl RuntimeKernel {
             let mut registered = Vec::new();
             for trait_ref in &orbital.traits {
                 if let Some(trait_def) = self.resolve_trait_definition(trait_ref, &schema) {
-                    let trait_def = Arc::new(trait_def);
                     self.register_trait(Arc::clone(&trait_def))?;
                     self.register_trait_listeners(&trait_def, &orbital.name)?;
                     registered.push(trait_def);
@@ -317,9 +316,9 @@ impl RuntimeKernel {
         &self,
         trait_ref: &TraitReference,
         schema: &OrbitalSchema,
-    ) -> Option<TraitDefinition> {
+    ) -> Option<Arc<TraitDefinition>> {
         match trait_ref {
-            TraitReference::Inline(def) => Some(def.clone()),
+            TraitReference::Inline(def) => Some(Arc::clone(def)),
             TraitReference::Reference {
                 reference, name, ..
             } => {
@@ -328,7 +327,7 @@ impl RuntimeKernel {
                     for other_trait_ref in &orbital.traits {
                         if let TraitReference::Inline(trait_def) = other_trait_ref {
                             if &trait_def.name == lookup_name {
-                                return Some(trait_def.clone());
+                                return Some(Arc::clone(trait_def));
                             }
                         }
                     }

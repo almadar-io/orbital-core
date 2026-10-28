@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 fn preset(json: &str) -> ThemeDefinition {
     serde_json::from_str(json).unwrap()
@@ -52,9 +53,9 @@ fn minimal_orbital(name: &str, theme: Option<ThemeRef>) -> Orbital {
         services: None,
         entity: EntityRef::Reference(format!("{name}Entity")),
         auxiliary_entities: None,
-        traits: vec![TraitReference::Inline(minimal_trait_def(&format!(
+        traits: vec![TraitReference::Inline(Arc::new(minimal_trait_def(&format!(
             "{name}Trait"
-        )))],
+        ))))],
         pages: None,
         emits: None,
         listens: None,

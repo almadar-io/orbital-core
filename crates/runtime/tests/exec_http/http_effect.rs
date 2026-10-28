@@ -29,8 +29,9 @@ fn native_sigv4_signing_uses_the_same_stamp_as_authored_now_expressions() {
     let (_, seen) = run(schema(call(ORIGIN,request)),ask(),|request| match request {
         IoRequest::Secret { .. } => IoAnswer::Secret(Ok(Some("dummy".into()))),
         IoRequest::Http { request, .. } => {
-            let stamp = request.headers.iter().find(|(name,_)| name == "X-Dispatch-Now").unwrap().1.parse::<i64>().unwrap();
-            let expected = orbital_core_runtime::sigv4::amz_date(stamp).1;
+            let stamp = &request.headers.iter().find(|(name,_)| name == "X-Dispatch-Now").unwrap().1;
+            // `@now` is an ISO instant (YYYY-MM-DDTHH:MM:SS.mmmZ); the signing date is that instant as YYYYMMDDTHHMMSSZ.
+            let expected = format!("{}Z", stamp[..19].replace(['-', ':'], ""));
             assert!(request.headers.iter().any(|(name,value)| name == "x-amz-date" && value == &expected));
             IoAnswer::Http(Ok(HttpResponse {status:200,headers:vec![],body:b"ok".to_vec()}))
         }
@@ -191,14 +192,14 @@ fn unkeyed_effect() -> Json {
 }
 
 #[test]
-fn an_unkeyed_http_reply_and_failure_carry_a_null_key() {
+fn an_unkeyed_http_reply_and_failure_carry_no_key() {
     let (response, _) = run(schema(unkeyed_effect()), ask(), |_| reply(200, &[], "ok"));
     let payload = payload_of(&response, "SEARCHED");
-    assert_eq!(payload.get_path("key"), Some(&Value::Null));
+    assert_eq!(payload.get_path("key"), None);
     assert_eq!(payload.get_path("status"), Some(&Value::Number(200.0)));
     let (response, _) = run(schema(unkeyed_effect()), ask(), |_| IoAnswer::Http(Err(TransportError::TimedOut)));
     let payload = payload_of(&response, "SEARCH_FAILED");
-    assert_eq!(payload.get_path("key"), Some(&Value::Null));
+    assert_eq!(payload.get_path("key"), None);
     assert_eq!(payload.get_path("kind").and_then(Value::as_str), Some("timeout"));
 }
 
@@ -959,7 +960,7 @@ mod browser_effects {
         assert_eq!(request.body, b"hello".to_vec());
         assert!(request.headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v == "text/plain"));
         assert_eq!(key.as_deref(), Some("k1"));
-        assert_eq!(payload_of(&response, "OK"), json!({ "sent": true, "via": "queue", "status": null, "key": "k1" }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "sent": true, "via": "queue", "key": "k1" }));
     }
 
     #[test]
@@ -981,7 +982,7 @@ mod browser_effects {
         let (response, _) = run(beacon("https://collector.example.com/e"), |_| {
             IoAnswer::HttpBeacon(Err(TransportError::Failed("network down".into())))
         });
-        assert_eq!(payload_of(&response, "OK"), json!({ "sent": false, "via": "fetch", "status": null, "key": "k1" }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "sent": false, "via": "fetch", "key": "k1" }));
     }
 
     #[test]
@@ -1015,13 +1016,13 @@ mod browser_effects {
     }
 
     #[test]
-    fn a_beacon_key_is_optional_and_echoes_null_when_absent() {
+    fn a_beacon_key_is_optional_and_absent_when_not_given() {
         let (response, seen) = run(
             json!(["browser/beacon", "https://collector.example.com/e", { "text": "x" }, routes()]),
             |_| IoAnswer::HttpBeacon(Ok(BeaconOutcome::Queued)),
         );
         assert!(matches!(seen.as_slice(), [IoRequest::HttpBeacon { key: None, .. }]));
-        assert_eq!(payload_of(&response, "OK"), json!({ "sent": true, "via": "queue", "status": null, "key": null }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "sent": true, "via": "queue" }));
     }
 
     #[test]
@@ -1092,7 +1093,7 @@ mod browser_effects {
     fn a_prompt_asks_the_host_once_with_the_text_and_schema_and_emits_the_reply_with_a_null_key() {
         let (response, seen) = run(prompt(None), |_| IoAnswer::Prompt(Ok("{\"category\":\"a\"}".to_string())));
         assert_eq!(seen, vec![IoRequest::Prompt { text: "hello".into(), schema: SCHEMA.into(), key: None }]);
-        assert_eq!(payload_of(&response, "OK"), json!({ "reply": "{\"category\":\"a\"}", "key": null }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "reply": "{\"category\":\"a\"}" }));
     }
 
     #[test]
@@ -1114,10 +1115,10 @@ mod browser_effects {
         let (response, _) = run(prompt(None), |_| IoAnswer::Prompt(Err(failure(ModelFailureKind::Unavailable, "The on-device model is downloading"))));
         assert_eq!(
             payload_of(&response, "BAD"),
-            json!({ "error": "The on-device model is downloading", "kind": "unavailable", "key": null })
+            json!({ "error": "The on-device model is downloading", "kind": "unavailable" })
         );
         let (response, _) = run(prompt(None), |_| IoAnswer::Prompt(Err(failure(ModelFailureKind::Failed, "quota exceeded"))));
-        assert_eq!(payload_of(&response, "BAD"), json!({ "error": "quota exceeded", "kind": "failed", "key": null }));
+        assert_eq!(payload_of(&response, "BAD"), json!({ "error": "quota exceeded", "kind": "failed" }));
         assert!(!emitted(&response).iter().any(|(e, _)| *e == "OK"));
     }
 
@@ -1145,7 +1146,7 @@ mod browser_effects {
             assert!(seen.is_empty());
             assert_eq!(
                 payload_of(&response, "BAD"),
-                json!({ "error": "browser/prompt: the text and the response schema must be text", "kind": "failed", "key": null })
+                json!({ "error": "browser/prompt: the text and the response schema must be text", "kind": "failed" })
             );
         }
     }
@@ -1207,13 +1208,13 @@ mod browser_effects {
     fn embed_of_no_texts_succeeds_with_no_vectors_and_never_asks_the_host() {
         let (response, seen) = run(embed(json!([]), None), |request| panic!("an empty embed asked {request:?}"));
         assert!(seen.is_empty());
-        assert_eq!(payload_of(&response, "OK"), json!({ "embeddings": [], "key": null }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "embeddings": [] }));
     }
 
     #[test]
     fn embed_hands_back_whatever_vectors_the_host_answers_and_leaves_the_count_check_to_the_program() {
         let (response, _) = run(embed(json!(["a", "b"]), None), |_| IoAnswer::Embed(Ok(vec![vec![1.0]])));
-        assert_eq!(payload_of(&response, "OK"), json!({ "embeddings": [[1.0]], "key": null }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "embeddings": [[1.0]] }));
     }
 
     #[test]
@@ -1223,7 +1224,7 @@ mod browser_effects {
             assert!(seen.is_empty());
             assert_eq!(
                 payload_of(&response, "BAD"),
-                json!({ "error": "browser/embed: the texts must be a list of text", "kind": "failed", "key": null })
+                json!({ "error": "browser/embed: the texts must be a list of text", "kind": "failed" })
             );
         }
     }
@@ -1235,7 +1236,7 @@ mod browser_effects {
         });
         assert_eq!(
             payload_of(&response, "BAD"),
-            json!({ "error": "browser/embed: no on-device embedder is wired into this host", "kind": "unconfigured", "key": null })
+            json!({ "error": "browser/embed: no on-device embedder is wired into this host", "kind": "unconfigured" })
         );
     }
 }
@@ -1362,7 +1363,7 @@ mod tab_effects {
             |_| reply(json!(99)),
         );
         assert_eq!(tab(&seen[0]), &TabAsk::Open { url: "https://example.com/results?q=a+b".into(), active: false });
-        assert_eq!(payload_of(&response, "OK"), json!({ "tab": 99.0, "key": null }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "tab": 99.0 }));
     }
 
     #[test]
@@ -1372,7 +1373,7 @@ mod tab_effects {
             |_| reply(json!("data:image/jpeg;base64,/9j/4AAQ")),
         );
         assert_eq!(tab(&seen[0]), &TabAsk::Capture { tab: 2, format: TabImageFormat::Jpeg, quality: Some(70) });
-        assert_eq!(payload_of(&response, "OK"), json!({ "tab": 2.0, "format": "jpeg", "image": "/9j/4AAQ", "key": null }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "tab": 2.0, "format": "jpeg", "image": "/9j/4AAQ" }));
     }
 
     #[test]
@@ -1437,7 +1438,7 @@ mod tab_effects {
         assert_eq!(seen.len(), 3);
         assert_eq!(
             payload_of(&response, "OK"),
-            json!({ "tab": 4.0, "elements": [{ "elementId": "el-1", "fields": { "title": "x" } }], "key": null })
+            json!({ "tab": 4.0, "elements": [{ "elementId": "el-1", "fields": { "title": "x" } }] })
         );
     }
 
@@ -1448,7 +1449,7 @@ mod tab_effects {
         let TabAsk::Watch { watch_id, deliver, match_pattern, .. } = tab(&seen[0]) else { panic!("expected a watch ask") };
         assert_eq!((deliver.orbital.as_str(), deliver.trait_name.as_str(), deliver.event.as_str()), ("Main", "Probe", "ITEM_SEEN"));
         assert_eq!(match_pattern, "https://example.com/*");
-        assert_eq!(payload_of(&response, "OK"), json!({ "watchId": watch_id, "key": null }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "watchId": watch_id }));
     }
 
     #[test]
@@ -1488,7 +1489,7 @@ mod tab_effects {
         assert_eq!(apply.styles.len(), 1);
         assert_eq!((apply.styles[0].property.as_str(), apply.styles[0].value.as_str()), ("filter", "blur(8px)"));
         assert_eq!(apply.label.as_deref(), Some("later"));
-        assert_eq!(payload_of(&response, "OK"), json!({ "applied": true, "tab": 3.0, "elementId": "el-2", "treatment": "blur", "key": null }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "applied": true, "tab": 3.0, "elementId": "el-2", "treatment": "blur" }));
     }
 }
 

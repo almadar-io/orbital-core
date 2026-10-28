@@ -66,7 +66,7 @@ fn inline_traits(schema: &OrbitalSchema) -> Vec<&TraitDefinition> {
         .iter()
         .flat_map(|orbital| orbital.traits.iter())
         .filter_map(|tr| match tr {
-            TraitReference::Inline(td) => Some(td),
+            TraitReference::Inline(td) => Some(&**td),
             _ => None,
         })
         .collect()

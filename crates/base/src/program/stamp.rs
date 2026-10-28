@@ -29,6 +29,7 @@ use crate::schema::types::{
     TraitDefinition, TraitReference,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 /// The `.orb` identity schema version stamped once ids are minted.
 const SCHEMA_VERSION: u32 = 1;
@@ -324,7 +325,7 @@ fn stamp_orbital(orbital: &mut Orbital, synthetic_traits: &HashSet<String>, mint
         let TraitReference::Inline(td) = tr else {
             continue;
         };
-        let Ok(body) = serde_json::to_value(&*td) else {
+        let Ok(body) = serde_json::to_value(&**td) else {
             continue;
         };
         let mut ent_names: HashSet<String> = HashSet::new();
@@ -334,6 +335,7 @@ fn stamp_orbital(orbital: &mut Orbital, synthetic_traits: &HashSet<String>, mint
             .into_iter()
             .filter_map(|n| ids.entities.get(&n).map(|id| (n, id.clone())))
             .collect();
+        let td = Arc::make_mut(td);
         td.entity_ref_ids = (!entity_map.is_empty()).then_some(entity_map);
 
         let mut embed_names: HashSet<String> = HashSet::new();
@@ -356,7 +358,7 @@ fn stamp_orbital(orbital: &mut Orbital, synthetic_traits: &HashSet<String>, mint
         let (config, definer_knobs) = match tr {
             TraitReference::Inline(td) => {
                 let definer_knobs = crate::schema::types::definer_knobs_for_trait(td);
-                (td.config.as_mut(), definer_knobs)
+                (Arc::make_mut(td).config.as_mut(), definer_knobs)
             }
             // A Reference trait's own body carries no emits/stateMachine to
             // derive definer knobs from — its `config` overrides only reach
@@ -573,7 +575,7 @@ fn mint_trait_ids(
                 None => minter.mint(IdKind::Trait, &name, None),
             };
             if let TraitReference::Inline(td) = &mut orbital.traits[idx] {
-                td.id = Some(id.clone());
+                Arc::make_mut(td).id = Some(id.clone());
             }
             ids.traits.insert(name, id);
             progressed = true;
@@ -589,7 +591,7 @@ fn mint_trait_ids(
                     let name = td.name.clone();
                     let id = minter.mint(IdKind::Trait, &name, None);
                     if let TraitReference::Inline(td) = &mut orbital.traits[*idx] {
-                        td.id = Some(id.clone());
+                        Arc::make_mut(td).id = Some(id.clone());
                     }
                     ids.traits.insert(name, id);
                 }
@@ -716,7 +718,7 @@ fn trait_ref_id_of(tr: &TraitReference, ids: &OrbitalIds) -> Option<String> {
 
 fn resolve_trait_ref_edges(tr: &mut TraitReference, ids: &OrbitalIds) {
     match tr {
-        TraitReference::Inline(td) => resolve_inline_trait_edges(td, ids),
+        TraitReference::Inline(td) => resolve_inline_trait_edges(Arc::make_mut(td), ids),
         TraitReference::Reference {
             reference,
             ref_id,

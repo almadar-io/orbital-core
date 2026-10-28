@@ -102,3 +102,33 @@ fn the_registered_program_is_the_kernels_own_copy() {
 fn control_an_unregistered_program_is_none() {
     assert!(kernel_with_program().registered_schema("Elsewhere").is_none());
 }
+
+#[test]
+fn a_registered_inline_trait_is_the_schemas_own_body_shared_with_the_registry_and_the_state_manager() {
+    let kernel = kernel_with_program();
+    let schemas = kernel.registry.schemas.read();
+    let orbital_core_base::schema::TraitReference::Inline(in_schema) = &schemas["Notes"].orbitals[0].traits[0] else {
+        panic!("the fixture trait is inline");
+    };
+    let registry = kernel.registry.trait_definitions.read()["NoteView"].clone();
+    let state = kernel.state_manager.read().shared_trait("NoteView").expect("the state manager knows the trait");
+    assert!(Arc::ptr_eq(in_schema, &registry), "the schema and the registry must share one body");
+    assert!(Arc::ptr_eq(&registry, &state), "the registry and the state manager must share one body");
+}
+
+#[test]
+fn a_fork_shares_the_registered_entity_definitions() {
+    let template = kernel_with_program();
+    let fork = fork_of(&template);
+    let ours = template.registry.entity_definitions.read()["Note"].clone();
+    let theirs = fork.registry.entity_definitions.read()["Note"].clone();
+    assert!(Arc::ptr_eq(&ours, &theirs), "the fork must share the entity definition, not copy it");
+}
+
+#[test]
+fn control_two_kernels_registering_the_same_program_hold_their_own_entity_definitions() {
+    let (first, second) = (kernel_with_program(), kernel_with_program());
+    let ours = first.registry.entity_definitions.read()["Note"].clone();
+    let theirs = second.registry.entity_definitions.read()["Note"].clone();
+    assert!(!Arc::ptr_eq(&ours, &theirs));
+}

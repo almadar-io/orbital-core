@@ -213,7 +213,7 @@ impl RuntimeKernel {
                 (Some(_), Some(ctx)) => Arc::new(envelope::mapped_listen_payload(
                     &evaluator,
                     ctx,
-                    &l.payload_mapping,
+                    l.payload_mapping.as_deref(),
                     source_payload,
                 )),
                 _ => Arc::clone(&shared),

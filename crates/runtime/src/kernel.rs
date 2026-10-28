@@ -130,7 +130,7 @@ struct CascadeItem {
     /// The emit's own payload, which a listens `when` reads as `@payload`.
     source_payload: Arc<Value>,
     /// Evaluated when the delivery is processed, so it sees the listener's log.
-    listen_guard: Option<SExpression>,
+    listen_guard: Option<Arc<SExpression>>,
     /// Whether processing this item offers its event to the listeners of that event. A listener's
     /// delivery runs its `triggers` event privately: only the seed and `emit`s reach listeners.
     fans_out: bool,
@@ -321,7 +321,7 @@ struct Registry {
     /// (same loop, same inline-only/additive-across-registrations contract).
     /// Policy and residence readers resolve a trait's linked entity here;
     /// `DispatchMode` never does (it is the trait's declared `dispatch`).
-    entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>>,
+    entity_definitions: Arc<RwLock<HashMap<String, Arc<EntityDefinition>>>>,
     /// Each entity type's declared field defaults as one object (`Null` when none), built when the
     /// schema registers; `read_trait_entity` layers a row and a frame over it.
     entity_defaults: Arc<RwLock<HashMap<String, SharedEntity>>>,
@@ -578,7 +578,7 @@ impl RuntimeKernel {
         );
         let entity_source: Arc<dyn EntitySource> = io.clone();
         let prob_entropy = entropy_from(Arc::clone(&io));
-        let entity_definitions: Arc<RwLock<HashMap<String, EntityDefinition>>> =
+        let entity_definitions: Arc<RwLock<HashMap<String, Arc<EntityDefinition>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let entity_handler = Arc::new(EntitySourceHandler {
             source: entity_source.clone(),

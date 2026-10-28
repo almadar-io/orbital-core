@@ -550,20 +550,18 @@ impl RuntimeKernel {
     }
 
     /// Run a `browser/prompt` or `browser/embed`: one journaled ask to the host's on-device model or embedder. The
-    /// payload echoes the key (`null` unkeyed); a failure names its kind (`unconfigured`, `unavailable`, `failed`).
+    /// payload echoes the key (absent unkeyed); a failure names its kind (`unconfigured`, `unavailable`, `failed`).
     pub(super) fn run_on_device_model(&self, effect: &Effect, key: Option<&str>) -> EffectResult {
         use super::resumable::{ModelFailure, ModelFailureKind};
-        let key_value = key.map_or(Value::Null, |k| Value::string(k.to_string()));
         let failed = |failure: ModelFailure| {
             let mut result = EffectResult::failed(effect.clone(), &failure.message);
-            result.return_value = Some(Value::object(ValueMap::from_iter([
+            result.return_value = Some(keyed(key, Value::object(ValueMap::from_iter([
                 ("error".to_string(), Value::String(failure.message.into())),
                 (
                     "kind".to_string(),
                     Value::String(failure.kind.as_str().to_string().into()),
                 ),
-                ("key".to_string(), key_value.clone()),
-            ])));
+                            ]))));
             result
         };
         let refuse = |message: String| failed(ModelFailure::new(ModelFailureKind::Failed, message));
@@ -577,10 +575,9 @@ impl RuntimeKernel {
                 match self.io.prompt(text, schema, key) {
                     Ok(reply) => EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::object(ValueMap::from_iter([
+                        keyed(key, Value::object(ValueMap::from_iter([
                             ("reply".to_string(), Value::String(reply.into())),
-                            ("key".to_string(), key_value),
-                        ])),
+                                                    ]))),
                     ),
                     Err(failure) => failed(failure),
                 }
@@ -599,16 +596,15 @@ impl RuntimeKernel {
                 if texts.is_empty() {
                     return EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::object(ValueMap::from_iter([
+                        keyed(key, Value::object(ValueMap::from_iter([
                             ("embeddings".to_string(), Value::Array(Vec::new().into())),
-                            ("key".to_string(), key_value),
-                        ])),
+                                                    ]))),
                     );
                 }
                 match self.io.embed(&texts, key) {
                     Ok(vectors) => EffectResult::executed_with_value(
                         effect.clone(),
-                        Value::object(ValueMap::from_iter([
+                        keyed(key, Value::object(ValueMap::from_iter([
                             (
                                 "embeddings".to_string(),
                                 Value::Array(
@@ -620,8 +616,7 @@ impl RuntimeKernel {
                                         .collect(),
                                 ),
                             ),
-                            ("key".to_string(), key_value),
-                        ])),
+                                                    ]))),
                     ),
                     Err(failure) => failed(failure),
                 }
@@ -752,4 +747,12 @@ impl RuntimeKernel {
             Err(message) => failed(&message),
         }
     }
+}
+
+/// `value` with the call's `key` added when the call had one; an unkeyed call's payload has no `key`.
+fn keyed(key: Option<&str>, mut value: Value) -> Value {
+    if let (Value::Object(fields), Some(key)) = (&mut value, key) {
+        fields.insert("key".to_string(), Value::string(key.to_string()));
+    }
+    value
 }

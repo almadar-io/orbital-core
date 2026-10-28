@@ -74,7 +74,7 @@ impl<'a> Program<'a> {
         for orbital in schema.orbitals.iter().filter(|o| !o.is_spec()) {
             for t in &orbital.traits {
                 if let TraitReference::Inline(td) = t {
-                    traits.push(td);
+                    traits.push(&**td);
                 }
             }
             for e in

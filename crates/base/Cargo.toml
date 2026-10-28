@@ -10,7 +10,7 @@ description = "orbital-core layer: base"
 orbital-core-std = { path = "../std" }
 indexmap = { version = "2", default-features = false, features = ["serde"] }
 foldhash = { version = "0.2", default-features = false }
-serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc", "rc"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc", "preserve_order"] }
 serde_path_to_error = "0.1"
 thiserror = { version = "2", default-features = false }
