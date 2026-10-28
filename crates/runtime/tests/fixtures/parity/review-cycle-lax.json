@@ -3,7 +3,7 @@
   "description": "control: with requireSeparateApproval off, the bot's same-action approval is accepted ReviewLogged.id is minted by the store, whose format is its own, so it compares as 'a minted id'.",
   "schema": {
     "name": "ReviewDemo",
-    "orbitals": [
+    "typeContractVersion": 1, "orbitals": [
       {
         "name": "Docs",
         "id": "orb_01M39YNKHXGQZ90F2QE58APAH2",

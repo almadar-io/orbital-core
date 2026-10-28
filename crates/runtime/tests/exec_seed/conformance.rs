@@ -12,7 +12,7 @@ type Outcomes = Vec<(String, ProcessEventResult)>;
 fn stamp_kernel() -> RuntimeKernel {
     TestKernel::server().build(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -62,7 +62,7 @@ fn exec_seed_1_one_stamp_serves_the_operator_the_binding_and_the_cascaded_listen
 fn mount_kernel() -> RuntimeKernel {
     TestKernel::server().build(json!({
         "name": "Boot",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Level",
             "entity": { "name": "World", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [

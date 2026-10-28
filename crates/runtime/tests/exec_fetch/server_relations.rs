@@ -41,7 +41,7 @@ fn notes_schema(note_is_primary: bool) -> OrbitalSchema {
         orbital["entity"] = task;
         orbital["auxiliaryEntities"] = json!([note_entity()]);
     }
-    serde_json::from_value(json!({ "name": "App", "orbitals": [orbital] })).unwrap()
+    serde_json::from_value(json!({ "name": "App", "typeContractVersion": 1, "orbitals": [orbital] })).unwrap()
 }
 
 type Store = HashMap<String, Vec<Json>>;
@@ -209,7 +209,7 @@ fn control_a_fetch_without_include_leaves_ids() {
 fn editor_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             { "name": "StaffOrbital",
               "entity": { "name": "Staff", "persistence": "persistent", "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] },
               "traits": [] },

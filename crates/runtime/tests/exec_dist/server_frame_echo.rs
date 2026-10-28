@@ -14,7 +14,7 @@ fn schema() -> OrbitalSchema {
     };
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Doc", "shared": true, "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "v", "type": "string" }] },
             "auxiliaryEntities": [{ "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] }],
@@ -134,7 +134,7 @@ fn list_schema(bump_resets_the_list: bool) -> OrbitalSchema {
     }
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Ledger", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -209,7 +209,7 @@ fn doc_schema(extra_traits: Vec<Json>) -> OrbitalSchema {
     traits.extend(extra_traits);
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Doc3", "shared": true, "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -244,7 +244,7 @@ fn control_a_shared_field_no_trait_wrote_is_absent_from_every_row() {
 fn cascade_schema(second_writes: Json) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Doc3", "shared": true, "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -288,7 +288,7 @@ fn cascade_steps_writing_different_fields_leave_both() {
 fn quiet_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -339,7 +339,7 @@ fn failing_schema(with_failure: bool) -> OrbitalSchema {
     effects.push(json!(["set", "@entity.x", "after"]));
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Doc4", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -378,7 +378,7 @@ fn handoff_schema() -> OrbitalSchema {
     let machine = |arms: Json| json!({ "states": [{ "name": "idle", "isInitial": true }], "transitions": arms });
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },
             "traits": [
@@ -474,4 +474,54 @@ fn control_the_client_view_drops_a_server_only_emit_no_pattern_prop_names() {
     let (full, view) = viewed(&server, "GO", "Source");
     assert!(emitted_names(&full).contains(&"QUIET".to_string()));
     assert!(!emitted_names(&view).contains(&"QUIET".to_string()), "{:?}", emitted_names(&view));
+}
+
+fn mount_batch_schema(sibling_writes: bool) -> OrbitalSchema {
+    let sibling_effects = if sibling_writes { json!([["set", "@entity.v", "fresh"]]) } else { json!([]) };
+    serde_json::from_value(json!({
+        "name": "App",
+        "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Doc3", "shared": true, "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "v", "type": "string", "default": "" }
+            ] },
+            "traits": [
+                { "name": "Early", "linkedEntity": "Doc3", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [] }] } },
+                { "name": "Late", "linkedEntity": "Doc3", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": sibling_effects }] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn mount_both() -> EventRequest {
+    EventRequest {
+        event: "INIT".to_string(),
+        mount: Some(
+            ["Early", "Late"]
+                .map(|t| MountSeed { r#trait: t.to_string(), event: LifecycleEvent::Init })
+                .to_vec(),
+        ),
+        ..Default::default()
+    }
+}
+
+// EXEC-DIST-7 (G-ORB-051): a trait that stepped before a sibling wrote the shared row reports the fresh value.
+#[test]
+fn a_mount_batch_reports_the_final_shared_row_to_a_trait_that_stepped_before_its_sibling_wrote() {
+    let server = EmbeddedServer::new(mount_batch_schema(true)).unwrap();
+    let rows = rows(&start(&server, mount_both()));
+    assert_eq!(rows["Early"]["v"], json!("fresh"), "{rows}");
+    assert_eq!(rows["Late"]["v"], json!("fresh"), "{rows}");
+}
+
+#[test]
+fn control_a_mount_batch_where_no_sibling_writes_keeps_the_default() {
+    let server = EmbeddedServer::new(mount_batch_schema(false)).unwrap();
+    let rows = rows(&start(&server, mount_both()));
+    assert_eq!(rows["Early"]["v"], json!(""), "{rows}");
 }

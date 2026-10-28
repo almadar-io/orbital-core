@@ -1,4 +1,5 @@
 //! EXEC-STORE family: the store seam, pushed-down queries and writes.
+#![recursion_limit = "256"]
 
 mod collection_policy_inheritance;
 mod pushdown_compile_cases;

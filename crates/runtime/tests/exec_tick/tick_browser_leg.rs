@@ -13,7 +13,7 @@ use std::sync::Arc;
 fn tick_of(effects: Json) -> TickDispatch {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Draft", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "saved", "type": "number" }] },
             "auxiliaryEntities": [

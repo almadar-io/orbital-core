@@ -40,7 +40,9 @@ fn answer_context(cx: &Cx<'_>, args: &[Value]) -> Option<Result<Value, OsError>>
         if fd < FIRST_HANDLE_ID || !cx.fs.fds.contains(fd) {
             return None;
         }
-        cx.fs.fds.remove(fd);
+        if let Some(entry) = cx.fs.fds.remove(fd) {
+            entry.cancel_reads();
+        }
         return Some(Ok(obj([])));
     }
     Some(cx.run(args))
@@ -194,11 +196,14 @@ fn io_os_error(op: OsOp, path: &Path, e: &io::Error) -> OsError {
 /// The blocking half of `os/read`: the pipe read (a file's bytes are already in `buf`), shaped as the reply.
 fn finish_read(op: OsOp, count: u64, pipe: Option<PipeEnd>, mut buf: Vec<u8>) -> Result<Value, OsError> {
     match pipe {
-        Some(PipeEnd::Stdout(pipe)) => pipe_read(&mut *pipe.lock(), count, &mut buf),
-        Some(PipeEnd::Stderr(pipe)) => pipe_read(&mut *pipe.lock(), count, &mut buf),
+        Some(PipeEnd::Stdout(pipe)) => pipe_read(&pipe, count, &mut buf),
+        Some(PipeEnd::Stderr(pipe)) => pipe_read(&pipe, count, &mut buf),
         _ => Ok(()),
     }
-    .map_err(|e| io_os_error(op, Path::new("fd"), &e))?;
+    .map_err(|e| match e.kind() {
+        io::ErrorKind::ConnectionAborted => OsError::new(OsErrorKind::Closed, format!("{}: fd closed during read", op.name())),
+        _ => io_os_error(op, Path::new("fd"), &e),
+    })?;
     let eof = count > 0 && buf.is_empty();
     Ok(obj([("data", bytes_value(&buf)), ("eof", Value::Bool(eof))]))
 }
@@ -529,9 +534,30 @@ fn c_path(path: &Path) -> io::Result<CString> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))
 }
 
-fn pipe_read(pipe: &mut impl Read, count: u64, out: &mut Vec<u8>) -> io::Result<()> {
+const CLOSE_POLL_MS: libc::c_int = 50;
+
+fn pipe_read<T: Read>(pipe: &super::ReadPipe<T>, count: u64, out: &mut Vec<u8>) -> io::Result<()> {
     let mut buf = vec![0u8; count as usize];
-    let n = pipe.read(&mut buf)?;
+    let mut guard = pipe.lock();
+    loop {
+        if pipe.is_cancelled() {
+            return Err(io::Error::from(io::ErrorKind::ConnectionAborted));
+        }
+        let mut waiting = libc::pollfd { fd: pipe.raw(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: `waiting` is one valid pollfd and the descriptor stays open while `pipe` is held.
+        match unsafe { libc::poll(&mut waiting, 1, CLOSE_POLL_MS) } {
+            0 => continue,
+            n if n < 0 => {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            _ => break,
+        }
+    }
+    let n = guard.read(&mut buf)?;
     buf.truncate(n);
     *out = buf;
     Ok(())

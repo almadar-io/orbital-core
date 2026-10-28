@@ -9,7 +9,7 @@ use serde_json::{json, Value as Json};
 fn kernel(field: &str) -> RuntimeKernel {
     let schema: Json = json!({
         "name": "App",
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             {
                 "name": "StarterOrbital",
                 "entity": { "name": "Start", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },

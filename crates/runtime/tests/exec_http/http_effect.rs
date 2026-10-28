@@ -53,7 +53,7 @@ fn schema(effect: Json) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
         "egress": [ORIGIN, AUTH_ORIGIN],
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "Fetcher", "linkedEntity": "Job",
@@ -806,7 +806,7 @@ mod browser_effects {
         serde_json::from_value(json!({
             "name": "App",
             "egress": [COLLECTOR],
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{ "name": "Probe", "linkedEntity": "Job",
@@ -1253,7 +1253,7 @@ mod tab_effects {
     fn schema(effect: Json) -> OrbitalSchema {
         serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{ "name": "Probe", "linkedEntity": "Job",
@@ -1556,7 +1556,7 @@ mod repeated_deliveries {
         serde_json::from_value(json!({
             "name": "App",
             "egress": [ORIGIN],
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{ "name": "Fetcher", "linkedEntity": "Job",

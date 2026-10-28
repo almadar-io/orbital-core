@@ -19,7 +19,7 @@ use {
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "ChatOrbital",
             "entity": { "name": "Message", "persistence": "persistent", "fields": [{ "name": "id", "type": "string" }, { "name": "content", "type": "string" }] },
             "traits": [
@@ -199,7 +199,7 @@ fn an_empty_declared_list_is_an_inert_rejection() {
 fn carried_rows_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "CardOrbital",
             "entity": { "name": "Card", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "label", "type": "string" }, { "name": "seen", "type": "object" }] },
             "traits": [{ "name": "Viewer", "linkedEntity": "Card",
@@ -421,7 +421,7 @@ fn holder_schema() -> OrbitalSchema {
     let items: Vec<Json> = (0..20).map(|i| json!({ "k": format!("item-{i}") })).collect();
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "HolderOrbital",
             "entity": { "name": "Ledger", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -469,7 +469,7 @@ fn control_a_dispatch_after_the_mount_returns_only_what_it_wrote() {
 fn topic_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "TopicOrbital",
             "entity": { "name": "Topic", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },

@@ -3,7 +3,7 @@
   "description": "std-global-search: a duplicate module answer counts once and a keyless answer is filed under its source (@event.source); completion fires once after every module answered, on both paths",
   "schema": {
     "name": "FederatedSearch",
-    "orbitals": [
+    "typeContractVersion": 1, "orbitals": [
       {
         "name": "Search",
         "id": "orb_01M39WP8K0WCX5MW5EJSBNDJYB",

@@ -90,7 +90,7 @@ fn schema() -> OrbitalSchema {
     effects.push(json!(["render-ui", "main", { "type": "typography", "content": "@entity.f3" }]));
     serde_json::from_value(json!({
         "name": "alloc",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "SearchQuery", "persistence": "runtime", "fields": fields },
             "traits": [{
@@ -164,7 +164,7 @@ const PINNED_SEARCH: usize = 985;
 fn fetch_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "alloc-fetch",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Ticket", "persistence": "persistent", "collection": "tickets",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" },
@@ -280,7 +280,7 @@ fn replay_schema() -> OrbitalSchema {
     }
     serde_json::from_value(json!({
         "name": "alloc-replay",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "persistence": "persistent", "collection": "items",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
@@ -368,7 +368,7 @@ fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
 fn scanner_schema(blob: &str) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "alloc-loop",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Scan", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -431,7 +431,7 @@ fn an_unchanged_large_field_is_shared_across_the_recorded_steps() {
 fn counter_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "alloc-counter",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Count", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -573,7 +573,7 @@ fn control_a_large_field_rewritten_each_step_is_still_a_new_frame() {
 fn rewriter_schema(blob: &str) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "alloc-rewrite",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Doc", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -638,7 +638,7 @@ fn reader_schema(big: &serde_json::Value, through_let: bool) -> OrbitalSchema {
     };
     serde_json::from_value(json!({
         "name": "alloc-read",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Reader", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -698,7 +698,7 @@ fn reading_one_key_of_a_bound_map_does_not_copy_the_map() {
 fn part_reader_schema(list: &serde_json::Value, big: &serde_json::Value, read: serde_json::Value) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "alloc-part-read",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Reader", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -777,7 +777,7 @@ fn a_reduce_binds_its_accumulator_without_copying_it() {
     let schema = |big: &serde_json::Value| -> OrbitalSchema {
         serde_json::from_value(json!({
             "name": "alloc-reduce",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Folder", "persistence": "runtime", "fields": [
                     { "name": "id", "type": "string" },
@@ -823,7 +823,7 @@ fn a_reduce_binds_its_accumulator_without_copying_it() {
 fn mapper_schema(list: &serde_json::Value, read: serde_json::Value) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "alloc-map",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Mapped", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },
@@ -932,7 +932,7 @@ fn fanout_schema(listeners: usize) -> OrbitalSchema {
     }
     serde_json::from_value(json!({
         "name": "fanout",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Blob", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": traits
@@ -1036,7 +1036,7 @@ fn a_dispatch_retains_only_the_rows_it_persists() {
 fn session_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Draft", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "body", "type": "string" }] },
             "traits": [{ "name": "Editor", "linkedEntity": "Draft",

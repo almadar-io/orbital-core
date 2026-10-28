@@ -473,7 +473,7 @@ mod tests {
     fn the_services_a_program_calls_come_from_its_transitions_and_ticks() {
         let schema: orbital_core_base::schema::types::OrbitalSchema = serde_json::from_value(serde_json::json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Billing",
                 "entity": { "name": "Invoice", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{

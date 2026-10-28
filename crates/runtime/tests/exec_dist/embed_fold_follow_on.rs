@@ -9,7 +9,7 @@ fn kernel(local: bool) -> EmbeddedKernel {
     let dispatch = if local { json!("client") } else { json!(null) };
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "books",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Books",
             "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices", "browser": local,
                 "fields": [{ "name": "id", "type": "string" }] },
@@ -135,7 +135,7 @@ fn pager() -> EmbeddedKernel {
 fn pager_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "paging",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Board",
             "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices",
                 "fields": [{ "name": "id", "type": "string" }] },

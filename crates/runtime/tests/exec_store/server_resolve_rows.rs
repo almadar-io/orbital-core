@@ -17,7 +17,7 @@ fn v(j: &Json) -> Value {
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "rsr",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": {
                 "name": "Ticket", "persistence": "persistent",

@@ -77,23 +77,23 @@ pub enum TraitReference {
         /// Serialization: a plain wiring value serializes as
         /// `{ "key": { "type": "unknown", "default": <SExpr> } }` — the
         /// same shape the atom's config block uses, so round-trip is clean.
-        config: Option<HashMap<String, ConfigField>>,
+        config: Option<crate::collections::IndexMap<String, ConfigField>>,
         /// Phase F: caller-supplied event-key renames, e.g. {"OPEN": "ADD_ITEM"}.
         /// The inline phase rewrites every occurrence of the atom-declared event
         /// key (StateMachine.events[*].key, transitions[*].event, emits[*].event,
         /// listens[*].event/triggers, and any SExpression event references) to
         /// the caller-supplied value.
-        events: Option<HashMap<String, String>>,
+        events: Option<crate::collections::IndexMap<String, String>>,
         /// V4 dual-carry id siblings of `events` keys (baked event name → id) —
         /// optional until the Phase-7 flip.
-        event_ids: Option<HashMap<String, String>>,
+        event_ids: Option<crate::collections::IndexMap<String, String>>,
         /// Per-key entity-field rename map, e.g. {"title": "dishName"}. Mirrors
         /// `events`: the inline phase rewrites every `@entity.<old>` read inside
         /// the resolved trait to `@entity.<new>` at the call site, so a DATA
         /// field the trait reads can be satisfied by a differently-named field
         /// on the rebind target. Keys are the trait's declared field names;
         /// values are the target entity's field names.
-        fields: Option<HashMap<String, String>>,
+        fields: Option<crate::collections::IndexMap<String, String>>,
         /// Phase F.7: replace the imported trait's `listens` array with the
         /// caller-supplied list. Empty array clears all upstream listens.
         /// Applied AFTER the substitution pass, overwriting whatever the
@@ -113,7 +113,7 @@ pub enum TraitReference {
         /// resolved source trait's `type_params` to substitute each
         /// `"$<param>"` payload sentinel; unconsumed keys (source declares no
         /// matching param) are a harmless no-op.
-        type_args: Option<HashMap<String, String>>,
+        type_args: Option<crate::collections::IndexMap<String, String>>,
         /// Call-site dispatch mode (`trait X = Alias.traits.Y -> E [client]`):
         /// replaces the mode the atom declared when present.
         dispatch: Option<DispatchMode>,
@@ -169,19 +169,19 @@ pub(super) struct TraitReferenceFields {
     #[serde(rename = "linkedEntityId", default)]
     pub(super) linked_entity_id: Option<String>,
     #[serde(default)]
-    pub(super) config: Option<HashMap<String, ConfigField>>,
+    pub(super) config: Option<crate::collections::IndexMap<String, ConfigField>>,
     #[serde(default)]
-    pub(super) events: Option<HashMap<String, String>>,
+    pub(super) events: Option<crate::collections::IndexMap<String, String>>,
     #[serde(rename = "eventIds", default)]
-    pub(super) event_ids: Option<HashMap<String, String>>,
+    pub(super) event_ids: Option<crate::collections::IndexMap<String, String>>,
     #[serde(default)]
-    pub(super) fields: Option<HashMap<String, String>>,
+    pub(super) fields: Option<crate::collections::IndexMap<String, String>>,
     #[serde(default)]
     pub(super) listens: Option<Vec<ListenDefinition>>,
     #[serde(rename = "emitsScope", default)]
     pub(super) emits_scope: Option<EventScope>,
     #[serde(rename = "typeArgs", default)]
-    pub(super) type_args: Option<HashMap<String, String>>,
+    pub(super) type_args: Option<crate::collections::IndexMap<String, String>>,
     #[serde(default)]
     pub(super) dispatch: Option<DispatchMode>,
 }
@@ -206,19 +206,19 @@ pub(super) struct TraitReferenceFieldsRef<'a> {
     #[serde(rename = "linkedEntityId", skip_serializing_if = "Option::is_none")]
     pub(super) linked_entity_id: &'a Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) config: &'a Option<HashMap<String, ConfigField>>,
+    pub(super) config: &'a Option<crate::collections::IndexMap<String, ConfigField>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) events: &'a Option<HashMap<String, String>>,
+    pub(super) events: &'a Option<crate::collections::IndexMap<String, String>>,
     #[serde(rename = "eventIds", skip_serializing_if = "Option::is_none")]
-    pub(super) event_ids: &'a Option<HashMap<String, String>>,
+    pub(super) event_ids: &'a Option<crate::collections::IndexMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) fields: &'a Option<HashMap<String, String>>,
+    pub(super) fields: &'a Option<crate::collections::IndexMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) listens: &'a Option<Vec<ListenDefinition>>,
     #[serde(rename = "emitsScope", skip_serializing_if = "Option::is_none")]
     pub(super) emits_scope: &'a Option<EventScope>,
     #[serde(rename = "typeArgs", skip_serializing_if = "Option::is_none")]
-    pub(super) type_args: &'a Option<HashMap<String, String>>,
+    pub(super) type_args: &'a Option<crate::collections::IndexMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) dispatch: &'a Option<DispatchMode>,
 }
@@ -404,7 +404,7 @@ pub struct TraitDefinition {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub entity_ref_ids: Option<HashMap<String, String>>,
+    pub entity_ref_ids: Option<crate::collections::IndexMap<String, String>>,
 
     /// V4 leverage-ids — id side-map for `@trait.<Name>` embed tokens (render-ui embeds /
     /// effect-tree sibling references). Maps the embed token NAME → the embedded trait's
@@ -416,7 +416,7 @@ pub struct TraitDefinition {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub trait_embed_ids: Option<HashMap<String, String>>,
+    pub trait_embed_ids: Option<crate::collections::IndexMap<String, String>>,
 
     /// Events this trait emits
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -436,7 +436,7 @@ pub struct TraitDefinition {
 
     /// Configuration schema
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<HashMap<String, ConfigField>>,
+    pub config: Option<crate::collections::IndexMap<String, ConfigField>>,
 
     /// Data entities created by this trait
     #[serde(rename = "dataEntities", skip_serializing_if = "Option::is_none")]
@@ -493,7 +493,7 @@ pub struct TraitDefinition {
     /// entity-valued argument. That pass clears this field after consuming
     /// it — it never appears in a final emitted `.orb`.
     #[serde(rename = "typeArgs", default, skip_serializing_if = "Option::is_none")]
-    pub type_args: Option<HashMap<String, String>>,
+    pub type_args: Option<crate::collections::IndexMap<String, String>>,
 }
 
 impl TraitDefinition {

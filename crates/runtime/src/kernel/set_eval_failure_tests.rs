@@ -9,7 +9,7 @@ fn kernel() -> RuntimeKernel {
     let broken = serde_json::json!(["set", "@entity.app", ["behavior/ref", "Indigo Pioneer"]]);
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "SetFailure",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Page",
             "entity": { "name": "View", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{

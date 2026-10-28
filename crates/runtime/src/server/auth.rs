@@ -1141,7 +1141,7 @@ mod tests {
             .iter()
             .map(|e| json!({ "name": format!("{}Orbital", e["name"].as_str().unwrap()), "entity": e, "traits": [], "pages": [] }))
             .collect();
-        serde_json::from_value(json!({ "name": "app", "orbitals": orbitals })).unwrap()
+        serde_json::from_value(json!({ "name": "app", "typeContractVersion": 1, "orbitals": orbitals })).unwrap()
     }
 
     #[test]

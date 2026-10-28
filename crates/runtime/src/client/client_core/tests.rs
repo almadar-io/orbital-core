@@ -6,7 +6,7 @@ use crate::client::client_kernel::ClientKernel;
 fn render_ui_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -75,7 +75,7 @@ fn peer_main_schema() -> OrbitalSchema {
     };
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -255,7 +255,7 @@ fn two_page_schema() -> OrbitalSchema {
     };
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -320,7 +320,7 @@ fn main_shows_the_current_pages_writers_and_navigate_switches_page() {
 fn emit_listener_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [
                 { "name": "id", "type": "string" },
@@ -438,7 +438,7 @@ fn peer_buttons_schema() -> OrbitalSchema {
     };
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [peer("First"), peer("Second")]
@@ -491,7 +491,7 @@ fn two_orbital_schema() -> OrbitalSchema {
     };
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             orbital("Home", "HomePage", "/home", "HomeTrait", serde_json::json!([["navigate", "/settings"]])),
             orbital("Settings", "SettingsPage", "/settings", "SettingsTrait", serde_json::json!([]))
         ]
@@ -534,7 +534,7 @@ fn a_refused_dispatch_is_reported() {
 fn routed_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [

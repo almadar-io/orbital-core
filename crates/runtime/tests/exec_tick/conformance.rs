@@ -9,7 +9,7 @@ use crate::support::TestKernel;
 fn exec_tick_2_a_sibling_with_a_same_named_arm_and_no_listens_does_not_hear_a_tick_emit() {
     let kernel = TestKernel::client().build(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }, { "name": "beats", "type": "number" }] },
             "traits": [
@@ -45,7 +45,7 @@ use serde_json::Value as Json;
 fn client_tick(effects: Json) -> TickDispatch {
     let kernel = TestKernel::client().build(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Draft", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "saved", "type": "number" }] },
             "auxiliaryEntities": [
@@ -91,7 +91,7 @@ fn visible_kernel() -> EmbeddedKernel {
     };
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "E", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },
             "traits": [tick("V", true), tick("P", false), tick("U", true)]

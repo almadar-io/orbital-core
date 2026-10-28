@@ -14,7 +14,7 @@ fn emitter() -> Json {
 fn heard_by(traits: Vec<Json>, who: &str) -> bool {
     let kernel = TestKernel::server().build(json!({
         "name": "Queue",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "QueueOrbital",
             "entity": { "name": "S", "persistence": "runtime",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "dir", "type": "string" }] },
@@ -97,7 +97,7 @@ fn diamond(first: Json, second: Json) -> Json {
     };
     json!({
         "name": "Queue",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "QueueOrbital",
             "entity": { "name": "S", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -161,7 +161,7 @@ fn job_kernel() -> orbital_core_runtime::kernel::RuntimeKernel {
     use orbital_core_runtime::resumable::HostAnswered;
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "jobs",
-        "orbitals": [{ "name": "Main",
+        "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Tally", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "Job", "linkedEntity": "Tally",
                 "stateMachine": {
@@ -264,7 +264,7 @@ fn exec_event_payload_1_a_kernel_refuses_a_payload_that_breaks_the_declared_even
     use orbital_core_runtime::kernel::KernelError;
     let program = json!({
         "name": "Chat",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "ChatOrbital",
             "entity": { "name": "Message", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "Composer", "linkedEntity": "Message",

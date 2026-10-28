@@ -120,6 +120,8 @@ pub mod runtime {
     #[cfg(not(target_arch = "wasm32"))]
     pub use orbital_core_runtime::native_host;
     #[cfg(not(target_arch = "wasm32"))]
+    pub use orbital_core_runtime::memory_release;
+    #[cfg(not(target_arch = "wasm32"))]
     pub use orbital_core_runtime::credentials;
     #[cfg(feature = "native-transport")]
     pub use orbital_core_runtime::native_transport;

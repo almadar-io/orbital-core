@@ -62,7 +62,7 @@ fn persist_success() -> Setup {
     let emit = json!({ "emit": { "success": "SAVED", "failure": "SAVE_FAILED" } });
     let schema = json!({
         "name": "persist-success",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "persistent", "collection": "notes", "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
             "traits": [{
@@ -95,7 +95,7 @@ fn moves_then_writes() -> Setup {
     let emit = json!({ "emit": { "success": "SAVED", "failure": "SAVE_FAILED" } });
     let schema = json!({
         "name": "moves",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "persistent", "collection": "notes", "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
             "traits": [{
@@ -117,7 +117,7 @@ fn moves_then_writes() -> Setup {
 fn fetch_success() -> Setup {
     let schema = json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -163,7 +163,7 @@ fn fetch_success() -> Setup {
 fn same_trait_cascade() -> Setup {
     let schema = json!({
         "name": "loop",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -218,7 +218,7 @@ fn dispatch_roots() -> Setup {
     }]]);
     let schema = json!({
         "name": "dispatch-roots-app",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -259,7 +259,7 @@ fn dispatch_roots() -> Setup {
 fn cross_trait() -> Setup {
     let schema = json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -360,7 +360,7 @@ fn completion(effect: Json) -> Setup {
     effect.as_array_mut().unwrap().push(options);
     let schema = json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Run", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -388,7 +388,7 @@ fn service_call(fail: bool) -> Setup {
 
 fn substrate_call(fail: bool) -> Setup {
     let mut setup =
-        completion(json!(["program/eval", { "name": "P", "orbitals": [] }, { "final": true }]));
+        completion(json!(["program/eval", { "name": "P", "typeContractVersion": 1, "orbitals": [] }, { "final": true }]));
     setup.substrate = Some(Arc::new(Host { fail }));
     setup
 }
@@ -396,7 +396,7 @@ fn substrate_call(fail: bool) -> Setup {
 fn stamped() -> Setup {
     let schema = json!({
         "name": "stamp",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "persistent", "collection": "notes", "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
             "traits": [
@@ -1547,7 +1547,7 @@ fn fan_out(effects: Vec<Json>, events: &[&str]) -> Setup {
     }
     let schema = json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Run", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -2009,7 +2009,7 @@ fn placed_program(deployment: Json, with_watch: bool) -> Json {
     json!({
         "name": "placed",
         "deployment": deployment,
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             { "name": "Src", "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] }, "traits": src_traits },
             { "name": "Dst", "entity": { "name": "Thing", "fields": [{ "name": "id", "type": "string" }] }, "traits": [{
                 "name": "Receiver",
@@ -2276,7 +2276,7 @@ fn hand_off_board() -> Setup {
     let arm = |event: &str, effects: Json| json!({ "from": "idle", "to": "idle", "event": event, "effects": effects });
     let schema = json!({
         "name": "views",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Board", "shared": true, "persistence": "runtime",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "score", "type": "number", "default": 0 }] },
@@ -2331,7 +2331,7 @@ fn control_without_the_record_a_step_carries_no_after_view() {
 fn the_after_view_reads_the_row_a_step_persisted() {
     let schema = json!({
         "name": "views-row",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "persistent", "collection": "notes",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "hits", "type": "number", "default": 0 }] },

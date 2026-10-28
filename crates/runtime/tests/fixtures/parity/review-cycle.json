@@ -3,7 +3,7 @@
   "description": "std-review-cycle: history stamped by @fromState/@toState; four-eyes via @prevStates rejects a bot's same-action approval, accepts the reviewer's separate one; same on both paths ReviewLogged.id is minted by the store, whose format is its own, so it compares as 'a minted id'.",
   "schema": {
     "name": "ReviewDemo",
-    "orbitals": [
+    "typeContractVersion": 1, "orbitals": [
       {
         "name": "Docs",
         "id": "orb_01M39YNKC9HKKCS641YG9QJ341",

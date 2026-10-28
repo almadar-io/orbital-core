@@ -201,7 +201,7 @@ fn control_a_changed_step_breaks_the_golden() {
 #[test]
 fn an_empty_schema_is_refused() {
     let schema: OrbitalSchema =
-        serde_json::from_value(json!({ "name": "Empty", "orbitals": [] })).unwrap();
+        serde_json::from_value(json!({ "name": "Empty", "typeContractVersion": 1, "orbitals": [] })).unwrap();
     assert_eq!(
         EmbeddedKernel::new(schema, "c").err().as_deref(),
         Some("resolved schema declares no orbitals")

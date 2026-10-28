@@ -24,7 +24,7 @@ fn schema(broken: Vec<Json>) -> OrbitalSchema {
     };
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "PageOrbital",
             "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [trait_with("Header", "shown", vec![render("header")]), trait_with("Broken", "ready", broken)]

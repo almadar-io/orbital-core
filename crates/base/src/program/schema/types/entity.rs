@@ -194,6 +194,23 @@ pub enum AssetAspect {
 }
 
 impl EntityDefinition {
+    /// Names of this entity's `persist create`-required columns: a field declaring `required: true`, excluding
+    /// [`FRAMEWORK_STAMPED_FIELDS`], any `@intrinsic` field, any field declaring a `default` (the store fills it in),
+    /// and any field carrying `merged_from` (added by the inline phase's rebind merge from an imported atom's entity,
+    /// never authored by this entity's own writer). The one definition; the kernel and the validator both read it.
+    pub fn required_create_field_names(&self) -> Vec<String> {
+        self.fields
+            .iter()
+            .filter(|f| f.required == Some(true))
+            .filter(|f| f.intrinsic != Some(true))
+            .filter(|f| f.default.is_none())
+            .filter(|f| f.merged_from.is_none())
+            .filter_map(|f| f.name.as_ref())
+            .filter(|name| !FRAMEWORK_STAMPED_FIELDS.contains(&name.as_str()))
+            .cloned()
+            .collect()
+    }
+
     /// The rows the entity starts with for a viewer's locale: its locale block, else
     /// `instances`. Twin of `@almadar/core` `instancesForLocale`.
     pub fn instances_for_locale(&self, locale: Option<&str>) -> &[crate::schema::sexpr::SObject] {

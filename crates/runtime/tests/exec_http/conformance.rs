@@ -395,7 +395,7 @@ fn endpoint_trait(name: &str) -> serde_json::Value {
 fn endpoint_kernel(pages: serde_json::Value, traits: &[&str]) -> RuntimeKernel {
     TestKernel::server().build(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": traits.iter().map(|t| endpoint_trait(t)).collect::<Vec<_>>(),
@@ -577,7 +577,7 @@ fn hooks_kernel() -> RuntimeKernel {
     TestKernel::server().build(json!({
         "name": "Hooks",
         "inbound": ["echo", "shown", "double", "guarded", "unhandled"],
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Req", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [echo, shown, hidden, twin, guarded]

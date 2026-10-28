@@ -8,7 +8,7 @@ use std::sync::Arc;
 fn steered(heard: &str) -> bool {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "Snake",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "SnakeOrbital",
             "entity": { "name": "S", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "dir", "type": "string" }] },
             "traits": [
@@ -62,7 +62,7 @@ fn control_a_bare_listen_still_hears_any_source() {
 fn guarded(sent_key: &str, guard: serde_json::Value) -> bool {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "Keyed",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "KeyedOrbital",
             "entity": { "name": "S", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "dir", "type": "string" }] },
             "traits": [

@@ -565,7 +565,7 @@ fn every_id_and_resolve_case_matches() {
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "tiers",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Ticket", "persistence": "persistent", "collection": "tickets",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" },
@@ -1244,7 +1244,7 @@ impl EntitySource for Plain {
 fn a_batch_on_a_store_without_atomic_writes_restores_what_it_applied() {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "comp",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Ticket", "persistence": "persistent", "collection": "tickets",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "score", "type": "number" }] },

@@ -28,7 +28,7 @@ fn arm(event: &str, effects: Json) -> Json {
 fn schema(persistence: &str, shared: bool) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "rerender",
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             {
                 "name": "Main",
                 "entity": { "name": "Board", "shared": shared, "persistence": persistence,
@@ -403,7 +403,7 @@ fn control_a_committed_dispatch_repaints_once_and_leaves_nothing_pending() {
 fn host_backed_kernel() -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "hosted",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Board", "persistence": "runtime",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "score", "type": "number", "default": 0 }] },

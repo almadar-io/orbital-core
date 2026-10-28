@@ -10,7 +10,7 @@ use std::sync::Arc;
 fn thread_loads(initial_filter_value: &str, active_channel: &str) -> Vec<String> {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "Chat",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "ChatOrbital",
             "entity": { "name": "Message", "persistence": "persistent", "shared": true, "fields": [
                 { "name": "id", "type": "string" }, { "name": "channel", "type": "string" },

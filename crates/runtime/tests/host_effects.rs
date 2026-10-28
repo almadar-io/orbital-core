@@ -11,7 +11,7 @@ use serde_json::{json, Value as Json};
 fn schema(effect: Json) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "Host", "linkedEntity": "Job",
@@ -482,7 +482,7 @@ mod credential_admin_effects {
 
     /// The app a console manages: its `github` orbital reads the `GITHUB_TOKEN` secret knob in an `http` auth slot.
     fn shown_program() -> Json {
-        json!({ "name": "shop", "orbitals": [{ "name": "github", "traits": [{
+        json!({ "name": "shop", "typeContractVersion": 1, "orbitals": [{ "name": "github", "traits": [{
             "name": "Repo", "config": { "token": { "type": "secret", "default": "GITHUB_TOKEN" } },
             "stateMachine": { "transitions": [{ "from": "idle", "to": "idle", "event": "SYNC", "effects": [
                 ["http", "GET", "https://api.github.com", "/user", { "auth": { "scheme": "bearer", "credential": "@config.token" } }, { "emit": { "success": "OK" } }]
@@ -530,7 +530,7 @@ mod credential_admin_effects {
         install_registry();
         let server = console();
         server.set_managed_program(&shown_program());
-        server.set_managed_program(&json!({ "name": "blank", "orbitals": [] }));
+        server.set_managed_program(&json!({ "name": "blank", "typeContractVersion": 1, "orbitals": [] }));
         let (response, _) = set_github_token(server);
         assert_eq!(payload_of(&response, "BAD")["error"], "Service \"github\" declares no credentials");
     }
@@ -579,7 +579,7 @@ mod credential_admin_effects {
         install_registry();
         let program: OrbitalSchema = serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "KeysOrbital",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{ "name": "Host", "linkedEntity": "Job",
@@ -657,7 +657,7 @@ mod credential_admin_effects {
     fn a_scrypt_salt_credential_is_resolved_by_the_kernel_and_never_reaches_program_data() {
         let schema: OrbitalSchema = serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Keys",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{ "name": "Host", "linkedEntity": "Job",
@@ -1815,7 +1815,7 @@ mod os_completion {
     fn supervisor(child_script: &str) -> OrbitalSchema {
         serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [
                     { "name": "id", "type": "string" },
@@ -1900,7 +1900,7 @@ mod os_completion {
         };
         let schema: OrbitalSchema = serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{ "name": "Sup", "linkedEntity": "Job", "stateMachine": {
@@ -1959,7 +1959,7 @@ mod os_completion {
         let routes = |ok: &str| json!({ "success": ok, "failure": "READ_BAD" });
         serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [
                     { "name": "id", "type": "string" },
@@ -2035,7 +2035,7 @@ mod os_completion {
         let keyed = |key: &str, ok: &str| json!({ "key": key, "emit": routes(ok) });
         serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [
                     { "name": "id", "type": "string" },
@@ -2177,7 +2177,7 @@ mod os_completion {
         let ask = json!(["os/stat", path, options]);
         serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [
                     { "name": "id", "type": "string" },
@@ -2285,7 +2285,7 @@ mod os_completion {
         let (tmp_s, out_s) = (tmp.to_str().unwrap(), out.to_str().unwrap());
         let schema: OrbitalSchema = serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{ "name": "Sup", "linkedEntity": "Job",

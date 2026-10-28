@@ -11,7 +11,7 @@ use std::collections::HashMap;
 fn remount_holds_a_seed_until_the_receivers_init() {
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "Boot",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Level",
             "entity": { "name": "World", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -42,7 +42,7 @@ fn remount_holds_a_seed_until_the_receivers_init() {
 fn persisted_awaited_with_watcher_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [
                 { "name": "id", "type": "string" },
@@ -103,7 +103,7 @@ fn persisted_awaited_with_watcher_schema() -> OrbitalSchema {
 fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -136,7 +136,7 @@ fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
 fn runtime_optimistic_with_call_service_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": {
                 "name": "Cursor", "persistence": "runtime",
@@ -248,7 +248,7 @@ fn client_kernel_hybrid_local_never_posts() {
 fn a_local_seed_posts_the_server_work_its_cascade_reaches() {
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
             "traits": [
@@ -463,7 +463,7 @@ fn client_kernel_runtime_optimistic_restores_on_error() {
 fn optimistic_with_bound_sibling_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": {
                 "name": "Cursor", "persistence": "runtime", "shared": true,
@@ -656,7 +656,7 @@ fn orbital(name: &str, entity: &str, traits: Vec<serde_json::Value>) -> serde_js
 }
 
 fn schema_of(orbitals: Vec<serde_json::Value>) -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({ "name": "App", "orbitals": orbitals })).unwrap()
+    serde_json::from_value(serde_json::json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals })).unwrap()
 }
 
 const BEAT_TICK: &str =
@@ -857,7 +857,7 @@ fn mount_schema() -> OrbitalSchema {
     let loading = |label: &str| serde_json::json!(["render-ui", "main", { "type": "skeleton", "variant": "text", "content": label }]);
     serde_json::from_value(serde_json::json!({
         "name": "MountApp",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "PageOrbital",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [

@@ -13,7 +13,7 @@ fn kernel() -> RuntimeKernel {
     let emit = json!({ "emit": { "success": "SAVED", "failure": "SAVE_FAILED" } });
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "persist-success",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "persistent", "collection": "notes", "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
             "traits": [{
@@ -127,7 +127,7 @@ fn guarded_kernel() -> RuntimeKernel {
     let emit = json!({ "emit": { "success": "SAVED", "failure": "SAVE_FAILED" } });
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "persist-guarded",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": {
                 "name": "Note", "persistence": "persistent", "collection": "notes",

@@ -12,7 +12,7 @@ const ORIGIN: &str = "https://api.example.com";
 fn kernel(effect: serde_json::Value, dispatch: Option<&str>) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "feed", "egress": [ORIGIN],
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Feed",
             "entity": { "name": "Row", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "Loader", "linkedEntity": "Row", "dispatch": dispatch,

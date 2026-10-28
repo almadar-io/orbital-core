@@ -15,7 +15,7 @@ fn kernel() -> EmbeddedKernel {
     };
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "chat",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Chat",
             "entity": { "name": "Message", "persistence": "persistent", "collection": "messages",
                 "fields": [{ "name": "id", "type": "string" }] },

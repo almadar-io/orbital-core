@@ -555,7 +555,7 @@ fn configured(transitions: J, knobs: J) -> OrbitalSchema {
     let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] else {
         panic!()
     };
-    let knobs: std::collections::HashMap<String, ConfigField> =
+    let knobs: orbital_core_base::collections::IndexMap<String, ConfigField> =
         serde_json::from_value(knobs).unwrap();
     td.config = Some(knobs);
     schema
@@ -743,7 +743,7 @@ fn a_config_bound_target_is_resolved_and_an_unknown_one_is_unproved() {
             let field: ConfigField =
                 serde_json::from_value(json!({ "type": "entity", "default": default }))
                     .unwrap();
-            td.config = Some(std::collections::HashMap::from([(
+            td.config = Some(orbital_core_base::collections::IndexMap::from([(
                 "target".to_string(),
                 field,
             )]));

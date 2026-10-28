@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 fn emitted_dispatched(orbitals: Json) -> Option<bool> {
     let schema: OrbitalSchema =
-        serde_json::from_value(json!({ "name": "App", "orbitals": orbitals })).unwrap();
+        serde_json::from_value(json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals })).unwrap();
     let k = RuntimeKernel::new(
         RuntimeEnvironment::Server,
         Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
@@ -105,7 +105,7 @@ fn edge_an_arm_for_the_emit_from_another_state_does_not_consume_it() {
 fn quoted_emit(env: RuntimeEnvironment) -> (Vec<String>, Option<Json>) {
     let described = json!({ "guard": ["array/some", "@entity.transitions", ["fn", "t", true]], "states": ["a"] });
     let body = orbital_core_base::schema::quote::encode_quote_body(&serde_json::from_value(described).unwrap());
-    let schema: OrbitalSchema = serde_json::from_value(json!({ "name": "App", "orbitals": [orbital("Src", json!([source(json!([
+    let schema: OrbitalSchema = serde_json::from_value(json!({ "name": "App", "typeContractVersion": 1, "orbitals": [orbital("Src", json!([source(json!([
         { "from": "idle", "to": "loading", "event": "GO", "effects": [["emit", "LOADED", { "result": ["quote", body] }]] }
     ]))]))] }))
     .unwrap();

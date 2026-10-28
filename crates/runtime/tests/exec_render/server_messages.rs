@@ -11,7 +11,7 @@ fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "site",
         "locales": ["en", "ar"],
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Home",
             "entity": { "name": "HomeView", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{

@@ -52,7 +52,7 @@ fn kernel(ticking: usize) -> EmbeddedKernel {
         .collect();
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "frame-bench",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "TickCounterOrbital",
             "entity": { "name": "Counter", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string", "required": true },

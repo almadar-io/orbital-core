@@ -10,7 +10,7 @@ use orbital_core_base::schema::types::ListenSource;
 fn notes_like_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -65,7 +65,7 @@ fn notes_like_schema() -> OrbitalSchema {
 fn internal_emit_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -302,7 +302,7 @@ fn double_delivery_schema(route: serde_json::Value, via_mid: bool) -> OrbitalSch
     }
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": traits

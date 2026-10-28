@@ -22,7 +22,7 @@ fn call() -> Json {
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -213,7 +213,7 @@ fn a_deferred_call_fires_no_outcome_now() {
 fn unrouted_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "Plain", "linkedEntity": "Job",
@@ -265,7 +265,7 @@ fn control_a_call_that_succeeds_runs_the_effects_after_it() {
 fn args_schema(args: Json) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "Judge", "linkedEntity": "Job",
@@ -326,7 +326,7 @@ fn control_literal_call_service_arguments_pass_unchanged() {
 fn overlap_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "Judge", "linkedEntity": "Job",
@@ -453,7 +453,7 @@ fn a_call_result_after_another_dispatch_moved_the_trait_is_handled_from_the_move
 fn lane_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [

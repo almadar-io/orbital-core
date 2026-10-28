@@ -111,7 +111,7 @@
       "schemaVersion": 1
     },
     "name": "RetryParity",
-    "orbitals": [
+    "typeContractVersion": 1, "orbitals": [
       {
         "entity": {
           "fields": [

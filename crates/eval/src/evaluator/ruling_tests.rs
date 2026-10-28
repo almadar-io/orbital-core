@@ -40,6 +40,51 @@ fn a_call_with_more_arguments_than_declared_is_an_arity_error() {
 }
 
 #[test]
+fn every_dispatched_operator_with_a_declared_maximum_refuses_one_extra_argument() {
+    use crate::evaluator::operators::DISPATCHED_NAMES;
+    use orbital_core_base::language::registry::operators;
+    let table = operators();
+    let mut checked = 0;
+    let mut leaked = Vec::new();
+    for name in DISPATCHED_NAMES {
+        let Some(max) = table.get(*name).and_then(|operator| operator.max_arity) else {
+            continue;
+        };
+        if name.starts_with("behavior/") {
+            assert!(run(&format!(r#"["{name}"]"#)).is_err(), "{name} refuses every call at run time");
+            continue;
+        }
+        let extra = vec!["1"; max as usize + 1].join(", ");
+        let call = format!(r#"["{name}", {extra}]"#);
+        checked += 1;
+        if !run(&call).is_err_and(|message| message.contains("Arity mismatch")) {
+            leaked.push(*name);
+        }
+    }
+    assert!(checked > 50, "the table declares maxima for many dispatched operators: {checked}");
+    assert!(leaked.is_empty(), "accepted an extra argument: {leaked:?}");
+}
+
+#[test]
+fn let_refuses_an_extra_body_slot() {
+    assert!(err(r#"["let", [["x", 1]], "@x", 2]"#).contains("Arity mismatch"));
+    assert_eq!(ok(r#"["let", [["x", 1]], "@x"]"#), num(1.0));
+}
+
+#[test]
+fn membership_operators_compare_structurally_never_across_kinds() {
+    assert_eq!(ok(r#"["array/includes", [1], "1"]"#), Value::Bool(false));
+    assert_eq!(ok(r#"["array/includes", [1], true]"#), Value::Bool(false));
+    assert_eq!(ok(r#"["array/indexOf", [1, "1"], "1"]"#), num(1.0));
+    assert_eq!(ok(r#"["array/indexOf", [true], 1]"#), num(-1.0));
+    assert_eq!(ok(r#"["array/unique", [1, "1", true, 1]]"#).as_array().map(|items| items.len()), Some(3));
+    assert_eq!(ok(r#"["validate/oneOf", 1, ["list", "1", true]]"#), Value::Bool(false));
+    assert_eq!(ok(r#"["validate/noneOf", 1, ["list", "1", true]]"#), Value::Bool(true));
+    assert_eq!(ok(r#"["array/includes", [1], 1]"#), Value::Bool(true));
+    assert_eq!(ok(r#"["validate/oneOf", "1", ["list", "1"]]"#), Value::Bool(true));
+}
+
+#[test]
 fn control_the_declared_arity_runs_and_a_variadic_operator_takes_any_count() {
     assert_eq!(ok(r#"["%", 7, 3]"#), num(1.0));
     assert_eq!(ok(r#"["math/map", 5, 0, 10, 0, 100]"#), num(50.0));

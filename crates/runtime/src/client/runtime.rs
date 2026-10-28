@@ -183,7 +183,7 @@ mod tests {
             r#"{
             "name": "TestApp",
             "version": "1.0.0",
-            "orbitals": [
+            "typeContractVersion": 1, "orbitals": [
                 {
                     "name": "Counter",
                     "entity": {

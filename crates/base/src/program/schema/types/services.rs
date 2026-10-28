@@ -64,7 +64,7 @@ pub struct RestServiceDef {
 
     /// Default headers
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<HashMap<String, String>>,
+    pub headers: Option<crate::collections::IndexMap<String, String>>,
 
     /// Authentication configuration
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,7 +148,7 @@ pub struct McpServiceDef {
 
     /// Environment variables to pass to the MCP server
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub env: Option<HashMap<String, String>>,
+    pub env: Option<crate::collections::IndexMap<String, String>>,
 }
 
 /// Service definition - discriminated union by type field
@@ -172,7 +172,7 @@ pub struct RestServiceDefInner {
     #[serde(rename = "baseUrl")]
     pub base_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<HashMap<String, String>>,
+    pub headers: Option<crate::collections::IndexMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<RestAuthConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -201,7 +201,7 @@ pub struct McpServiceDefInner {
     pub server_path: String,
     pub capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub env: Option<HashMap<String, String>>,
+    pub env: Option<crate::collections::IndexMap<String, String>>,
 }
 
 impl ServiceDefinition {
@@ -253,7 +253,7 @@ pub struct ServiceRefObject {
 
     /// Optional REST `headers` override (full replacement, not merge).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<HashMap<String, String>>,
+    pub headers: Option<crate::collections::IndexMap<String, String>>,
 
     /// Optional Socket `url` override.
     #[serde(skip_serializing_if = "Option::is_none")]

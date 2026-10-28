@@ -13,7 +13,7 @@ fn fetch_errors(store: Option<&str>) -> Vec<String> {
     }
     let kernel = TestKernel::server().build(json!({
         "name": "Desk",
-        "orbitals": [{ "name": "Tickets", "entity": ticket,
+        "typeContractVersion": 1, "orbitals": [{ "name": "Tickets", "entity": ticket,
             "traits": [{ "name": "Desk", "linkedEntity": "Ticket",
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
                     "transitions": [{ "from": "idle", "to": "idle", "event": "LOOK",
@@ -54,7 +54,7 @@ fn emit_chain(listener_listens: bool) -> (RuntimeKernel, usize) {
     }
     let kernel = TestKernel::server().build(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -88,7 +88,7 @@ fn exec_conc_2_control_without_a_listener_the_emit_reaches_no_other_trait() {
 fn session_kernel() -> RuntimeKernel {
     TestKernel::server().build(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "T", "linkedEntity": "Note",
@@ -126,7 +126,7 @@ fn exec_conc_5_control_a_dispatch_on_a_fork_leaves_the_parent_session_alone() {
 fn lane_schema() -> orbital_core_base::schema::types::OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [

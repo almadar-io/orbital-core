@@ -97,7 +97,10 @@ fn declaration_ids(schema: &OrbitalSchema) -> Vec<(String, Option<String>)> {
         }
         for (ai, aux) in orbital.auxiliary_entities.iter().flatten().enumerate() {
             if let EntityRef::Inline(entity) = aux {
-                out.push((format!("{at}.auxiliaryEntities[{ai}].id"), entity.id.clone()));
+                out.push((
+                    format!("{at}.auxiliaryEntities[{ai}].id"),
+                    entity.id.clone(),
+                ));
             }
         }
         for (ti, tr) in orbital.traits.iter().enumerate() {
@@ -298,6 +301,12 @@ fn stamp_orbital(orbital: &mut Orbital, synthetic_traits: &HashSet<String>, mint
                 ids.events_any.entry(ev.key.clone()).or_insert(id.clone());
                 event_ids.insert(ev.key.clone(), id);
             }
+            for e in td.emits.iter().flatten() {
+                if !event_ids.contains_key(&e.event) {
+                    let id = minter.mint(IdKind::Event, &e.event, Some(&trait_id));
+                    event_ids.insert(e.event.clone(), id);
+                }
+            }
             ids.trait_events.insert(trait_id, event_ids);
         }
     }
@@ -321,7 +330,7 @@ fn stamp_orbital(orbital: &mut Orbital, synthetic_traits: &HashSet<String>, mint
         let mut ent_names: HashSet<String> = HashSet::new();
         collect_entity_ref_names(&body, &ids.entities, &mut ent_names);
         let ent_names: std::collections::BTreeSet<String> = ent_names.into_iter().collect();
-        let entity_map: HashMap<String, String> = ent_names
+        let entity_map: crate::collections::IndexMap<String, String> = ent_names
             .into_iter()
             .filter_map(|n| ids.entities.get(&n).map(|id| (n, id.clone())))
             .collect();
@@ -330,7 +339,7 @@ fn stamp_orbital(orbital: &mut Orbital, synthetic_traits: &HashSet<String>, mint
         let mut embed_names: HashSet<String> = HashSet::new();
         collect_embed_ref_names(&body, &ids.traits, &mut embed_names);
         let embed_names: std::collections::BTreeSet<String> = embed_names.into_iter().collect();
-        let embed_map: HashMap<String, String> = embed_names
+        let embed_map: crate::collections::IndexMap<String, String> = embed_names
             .into_iter()
             .filter_map(|n| ids.traits.get(&n).map(|id| (n, id.clone())))
             .collect();
@@ -435,7 +444,7 @@ fn collect_trait_refs(expr: &SExpression, out: &mut HashSet<String>) {
 /// name would false-bind, and a later rename of that sibling would then
 /// rewrite this knob's DEFINITION out from under it via identity-normalize.
 fn stamp_config_ref_ids(
-    config: Option<&mut HashMap<String, ConfigField>>,
+    config: Option<&mut crate::collections::IndexMap<String, ConfigField>>,
     ids: &OrbitalIds,
     definer_knobs: &HashSet<String>,
 ) {
@@ -900,5 +909,46 @@ mod tests {
         let first = stamped(vec![orbital("O", "E")], None);
         let again = stamped(vec![orbital("O", "E")], Some(&first));
         assert_eq!(trait_ids(&again), trait_ids(&first));
+    }
+
+    fn emit_ids(schema: &OrbitalSchema) -> Vec<(String, Option<String>)> {
+        schema
+            .orbitals
+            .iter()
+            .flat_map(|o| o.traits.iter())
+            .filter_map(|tr| match tr {
+                TraitReference::Inline(td) => Some(td),
+                _ => None,
+            })
+            .flat_map(|td| td.emits.iter().flatten())
+            .map(|e| (e.event.clone(), e.event_id.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_trait_that_only_emits_an_event_gets_an_id_for_it() {
+        let mut o = orbital("O", "E");
+        o["traits"][0]["emits"] = serde_json::json!([{ "event": "ONLY_EMITTED" }]);
+        let first = stamped(vec![o.clone()], None);
+        let ids = emit_ids(&first);
+        assert_eq!(ids.len(), 1);
+        let id = ids[0].1.clone().expect("emit-only event carries an id");
+        let ledger = first.ledger.as_ref().expect("ledger");
+        assert!(ledger.entries.contains_key(&id));
+        let again = stamped(vec![o], Some(&first));
+        assert_eq!(emit_ids(&again)[0].1.as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn control_an_emit_of_a_declared_event_keeps_the_declared_id() {
+        let mut o = orbital("O", "E");
+        o["traits"][0]["emits"] = serde_json::json!([{ "event": "INIT" }]);
+        let schema = stamped(vec![o], None);
+        let declared = match &schema.orbitals[0].traits[0] {
+            TraitReference::Inline(td) => td.state_machine.events.as_ref().unwrap()[0].id.clone(),
+            _ => None,
+        };
+        assert!(declared.is_some());
+        assert_eq!(emit_ids(&schema)[0].1, declared);
     }
 }

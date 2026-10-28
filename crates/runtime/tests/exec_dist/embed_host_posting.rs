@@ -13,7 +13,7 @@ use {
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "shop",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Shop",
             "entity": { "name": "Item", "persistence": "persistent", "collection": "items",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "note", "type": "string" }, { "name": "count", "type": "number" }] },
@@ -336,7 +336,7 @@ fn control_a_mount_whose_seeds_all_ran_awaits_nothing() {
 fn shared_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "Chat",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "ChatOrbital",
             "entity": { "name": "Message", "persistence": "persistent", "collection": "messages", "shared": true,
                 "fields": [{ "name": "id", "type": "string" }, { "name": "activeChannel", "type": "string" }] },
@@ -432,7 +432,7 @@ fn composer_schema() -> OrbitalSchema {
 fn composer_schema_with(thread_init: serde_json::Value) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "Chat",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "ChatOrbital",
             "entity": { "name": "Message", "persistence": "persistent", "collection": "messages", "shared": true,
                 "fields": [{ "name": "id", "type": "string" }, { "name": "activeChannel", "type": "string", "default": "" }] },

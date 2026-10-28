@@ -463,29 +463,7 @@ pub fn intrinsic_field_names(entity: &EntityDefinition) -> Vec<String> {
 /// host never declared) — the definition shared with `@almadar/runtime`'s
 /// `missingRequiredFields`.
 pub fn required_create_field_names(entity: &EntityDefinition) -> Vec<String> {
-    entity
-        .fields
-        .iter()
-        .filter_map(|f| {
-            let name = f.name.as_ref()?;
-            if f.required != Some(true) {
-                return None;
-            }
-            if orbital_core_base::schema::types::FRAMEWORK_STAMPED_FIELDS.contains(&name.as_str()) {
-                return None;
-            }
-            if f.intrinsic == Some(true) {
-                return None;
-            }
-            if f.default.is_some() {
-                return None;
-            }
-            if f.merged_from.is_some() {
-                return None;
-            }
-            Some(name.clone())
-        })
-        .collect()
+    entity.required_create_field_names()
 }
 
 /// Which of `required` are missing from `data` — key absent, or `null`/`""`.
@@ -724,7 +702,7 @@ mod role_satisfying_policy_tests {
     fn schema_with_employee_policy(update_policy: serde_json::Value) -> OrbitalSchema {
         serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "EmployeeOrbital",
                 "entity": {
                     "name": "Employee",
@@ -795,7 +773,7 @@ mod role_satisfying_policy_tests {
     fn picks_a_role_from_a_reversed_array_includes_literal_array_haystack() {
         let schema: OrbitalSchema = serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "EmployeeOrbital",
                 "entity": {
                     "name": "Employee",

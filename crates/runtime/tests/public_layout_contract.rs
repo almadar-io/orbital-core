@@ -55,7 +55,7 @@ fn notes_schema() -> OrbitalSchema {
     let emit = json!({ "emit": { "success": "SAVED", "failure": "SAVE_FAILED" } });
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "persistent", "collection": "notes",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
@@ -77,7 +77,7 @@ fn notes_schema() -> OrbitalSchema {
 fn tickets_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "rsr",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": {
                 "name": "Ticket", "persistence": "persistent",

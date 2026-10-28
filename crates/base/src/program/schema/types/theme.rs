@@ -866,7 +866,7 @@ pub struct ThemeDefinition {
 
     /// Named variants (e.g., "dark", "high-contrast")
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub variants: Option<HashMap<String, ThemeVariant>>,
+    pub variants: Option<crate::collections::IndexMap<String, ThemeVariant>>,
 }
 
 /// ThemeRef - Theme can be inline definition OR reference to imported theme.

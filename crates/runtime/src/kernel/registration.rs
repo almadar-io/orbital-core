@@ -114,6 +114,9 @@ impl RuntimeKernel {
 
     /// Register a schema with the kernel.
     pub fn register_schema(&self, mut schema: OrbitalSchema) -> Result<(), KernelError> {
+        if schema.resolved.is_none() && schema.type_contract_version.is_none() {
+            return Err(KernelError::UnresolvedProgram { program: schema.name });
+        }
         self.registry.row_shapes.write().clear();
         schema.bind_unlinked_traits_to_host_entity();
         if let Some(declared) = &schema.egress {
@@ -258,7 +261,8 @@ impl RuntimeKernel {
             let mut registered = Vec::new();
             for trait_ref in &orbital.traits {
                 if let Some(trait_def) = self.resolve_trait_definition(trait_ref, &schema) {
-                    self.register_trait(&trait_def)?;
+                    let trait_def = Arc::new(trait_def);
+                    self.register_trait(Arc::clone(&trait_def))?;
                     self.register_trait_listeners(&trait_def, &orbital.name)?;
                     registered.push(trait_def);
                 }
@@ -266,14 +270,15 @@ impl RuntimeKernel {
             self.capture_children
                 .write()
                 .extend(super::callsite_capture::capture_children(
-                    &registered.iter().collect::<Vec<_>>(),
+                    &registered.iter().map(|t| &**t).collect::<Vec<_>>(),
                 ));
         }
         self.bind_program_rows(&schema);
+        let nav_items = app_nav_items(&schema);
 
         {
             let mut schemas = self.registry.schemas.write();
-            schemas.insert(schema_name.clone(), Arc::new(schema.clone()));
+            schemas.insert(schema_name.clone(), Arc::new(schema));
             let mut homes = HashMap::new();
             for (name, schema) in schemas.iter() {
                 for (index, orbital) in schema.orbitals.iter().enumerate() {
@@ -290,7 +295,7 @@ impl RuntimeKernel {
         }
         {
             let mut nav = self.presentation.nav_pages.write();
-            *nav = merge_nav_items(&nav, app_nav_items(&schema));
+            *nav = merge_nav_items(&nav, nav_items);
         }
 
         // Additive rebuild over the FULL accumulated trait set, not just this
@@ -558,15 +563,11 @@ impl RuntimeKernel {
         Ok(fork)
     }
 
-    pub(super) fn register_trait(&self, trait_def: &TraitDefinition) -> Result<(), KernelError> {
-        let trait_name = &trait_def.name;
-        debug!(trait_name = %trait_name, "Registering trait");
-
-        self.state_manager.write().register_trait(trait_def.clone());
-        self.registry.trait_definitions
-            .write()
-            .insert(trait_name.clone(), Arc::new(trait_def.clone()));
-
+    /// One definition per trait, shared by the state manager and the registry.
+    pub(super) fn register_trait(&self, trait_def: Arc<TraitDefinition>) -> Result<(), KernelError> {
+        debug!(trait_name = %trait_def.name, "Registering trait");
+        self.state_manager.write().register_shared_trait(Arc::clone(&trait_def));
+        self.registry.trait_definitions.write().insert(trait_def.name.clone(), trait_def);
         Ok(())
     }
 

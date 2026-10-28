@@ -47,7 +47,7 @@ fn kernel(effect: serde_json::Value, config: KernelConfig) -> RuntimeKernel {
 fn kernel_over(effect: serde_json::Value, config: KernelConfig, source: Arc<dyn EntitySource>) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Run", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -119,7 +119,7 @@ fn control_a_call_service_without_emit_fires_nothing() {
 
 #[test]
 fn a_substrate_op_success_fires_its_success_event_with_the_result() {
-    let k = kernel(json!(["program/eval", { "name": "P", "orbitals": [] }, { "final": true }, options()]), with_host(false));
+    let k = kernel(json!(["program/eval", { "name": "P", "typeContractVersion": 1, "orbitals": [] }, { "final": true }, options()]), with_host(false));
     let (state, got) = after_go(&k);
     assert_eq!(state, "done");
     assert_eq!(got, json!({ "result": "ok" }));
@@ -127,7 +127,7 @@ fn a_substrate_op_success_fires_its_success_event_with_the_result() {
 
 #[test]
 fn a_substrate_op_failure_carries_the_error_and_its_issues() {
-    let k = kernel(json!(["program/eval", { "name": "P", "orbitals": [] }, options()]), with_host(true));
+    let k = kernel(json!(["program/eval", { "name": "P", "typeContractVersion": 1, "orbitals": [] }, options()]), with_host(true));
     let (state, got) = after_go(&k);
     assert_eq!(state, "failed");
     assert_eq!(got, json!({ "error": "program/eval refused", "errors": ["ORB_X"] }));
@@ -135,7 +135,7 @@ fn a_substrate_op_failure_carries_the_error_and_its_issues() {
 
 #[test]
 fn edge_a_substrate_op_on_a_server_with_no_host_fails_loudly() {
-    let k = kernel(json!(["program/eval", { "name": "P", "orbitals": [] }, options()]), KernelConfig::default());
+    let k = kernel(json!(["program/eval", { "name": "P", "typeContractVersion": 1, "orbitals": [] }, options()]), KernelConfig::default());
     let (state, got) = after_go(&k);
     assert_eq!(state, "failed");
     assert_eq!(got, json!({ "error": "no substrate host configured for program/eval" }));
@@ -436,7 +436,7 @@ mod agent_ports {
 
     #[test]
     fn a_keyed_substrate_op_the_host_defers_commits_without_its_completion() {
-        let effect = json!(["program/eval", { "name": "App", "orbitals": [] }, keyed(json!("k1"))]);
+        let effect = json!(["program/eval", { "name": "App", "typeContractVersion": 1, "orbitals": [] }, keyed(json!("k1"))]);
         let (key, routed, state, got) = keyed_op_answered(effect, orbital_core_runtime::resumable::IoAnswer::ServiceDeferred);
         assert_eq!(key.as_deref(), Some("k1"), "the substrate ask carries its key");
         assert!(routed, "and the call site its completion dispatches to");
@@ -446,7 +446,7 @@ mod agent_ports {
 
     #[test]
     fn control_an_unkeyed_substrate_op_is_answered_inline() {
-        let effect = json!(["program/eval", { "name": "App", "orbitals": [] }, options()]);
+        let effect = json!(["program/eval", { "name": "App", "typeContractVersion": 1, "orbitals": [] }, options()]);
         let answer = orbital_core_runtime::resumable::IoAnswer::Substrate(Ok(as_value(&json!({ "valid": true }))));
         let (key, routed, state, got) = keyed_op_answered(effect, answer);
         assert_eq!((key, routed), (None, false), "an unkeyed ask carries neither key nor site");
@@ -457,7 +457,7 @@ mod agent_ports {
     fn read_as(user: Json) -> Json {
         let schema: OrbitalSchema = serde_json::from_value(json!({
             "name": "Policy",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": {
                     "name": "Ticket", "persistence": "persistent",
@@ -596,7 +596,7 @@ mod agent_ports {
     fn state_reading_kernel() -> RuntimeKernel {
         let schema: OrbitalSchema = serde_json::from_value(json!({
             "name": "Desk",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Desk",
                 "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "got", "type": "string" }] },
                 "traits": [{

@@ -13,7 +13,7 @@ fn kernel(sent: Json) -> RuntimeKernel {
 fn kernel_declaring(sent: Json, emits: Json) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [

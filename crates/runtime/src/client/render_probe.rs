@@ -814,7 +814,7 @@ mod tests {
     fn program(main: serde_json::Value) -> OrbitalSchema {
         serde_json::from_value(serde_json::json!({
             "name": "t",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Notes",
                 "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{

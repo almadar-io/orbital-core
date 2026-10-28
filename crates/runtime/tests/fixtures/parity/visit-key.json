@@ -4,7 +4,7 @@
   "schema": {
     "name": "visit-key",
     "version": "1.0.0",
-    "orbitals": [
+    "typeContractVersion": 1, "orbitals": [
       {
         "name": "Main",
         "pages": [],

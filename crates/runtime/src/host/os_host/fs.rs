@@ -15,15 +15,60 @@ use std::sync::Arc;
 pub(super) enum FdEntry {
     File(std::fs::File),
     ChildStdin(Arc<Mutex<std::process::ChildStdin>>),
-    ChildStdout(Arc<Mutex<std::process::ChildStdout>>),
-    ChildStderr(Arc<Mutex<std::process::ChildStderr>>),
+    ChildStdout(Arc<ReadPipe<std::process::ChildStdout>>),
+    ChildStderr(Arc<ReadPipe<std::process::ChildStderr>>),
+}
+
+impl FdEntry {
+    pub(super) fn cancel_reads(&self) {
+        match self {
+            Self::ChildStdout(pipe) => pipe.cancel(),
+            Self::ChildStderr(pipe) => pipe.cancel(),
+            Self::File(_) | Self::ChildStdin(_) => {}
+        }
+    }
+}
+
+/// The read end of a child pipe. A reader waits on the descriptor in bounded polls and gives up once `os/close`
+/// has cancelled the pipe, so closing interrupts a read blocked on it.
+pub(super) struct ReadPipe<T> {
+    inner: Mutex<T>,
+    #[cfg(unix)]
+    raw: std::os::fd::RawFd,
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(unix)]
+impl<T: std::os::fd::AsRawFd> ReadPipe<T> {
+    pub(super) fn new(pipe: T) -> Self {
+        Self { raw: pipe.as_raw_fd(), inner: Mutex::new(pipe), cancelled: std::sync::atomic::AtomicBool::new(false) }
+    }
+}
+
+impl<T> ReadPipe<T> {
+    pub(super) fn lock(&self) -> orbital_core_base::sync::MutexGuard<'_, T> {
+        self.inner.lock()
+    }
+
+    #[cfg(unix)]
+    pub(super) fn raw(&self) -> std::os::fd::RawFd {
+        self.raw
+    }
+
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub(super) fn cancel(&self) {
+        self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// A pipe end cloned out of the table, so a blocking pipe call never holds the table lock.
 enum PipeEnd {
     Stdin(Arc<Mutex<std::process::ChildStdin>>),
-    Stdout(Arc<Mutex<std::process::ChildStdout>>),
-    Stderr(Arc<Mutex<std::process::ChildStderr>>),
+    Stdout(Arc<ReadPipe<std::process::ChildStdout>>),
+    Stderr(Arc<ReadPipe<std::process::ChildStderr>>),
 }
 
 /// Open descriptors and the virtual working directory; ids come from the counter shared with the net table,
@@ -45,7 +90,9 @@ impl FsTable {
     }
 
     pub(super) fn clear(&self) {
-        self.fds.clear();
+        for entry in self.fds.drain() {
+            entry.cancel_reads();
+        }
         *self.cwd.lock() = None;
     }
 }

@@ -29,7 +29,7 @@ pub struct UseDeclaration {
     /// `uses A from "…" { config { … } }` — call-site override of the imported
     /// organism's app-level declared config knobs (Almadar_Orbital_Import.md §4.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config: Option<HashMap<String, ConfigField>>,
+    pub config: Option<crate::collections::IndexMap<String, ConfigField>>,
 
     /// `uses lazy A from "…"` — the imported behavior is compiled to its own
     /// `.orb` and loaded when one of its pages is opened (see [`LazyPage`]).
@@ -492,12 +492,12 @@ pub struct OrbitalRefObject {
 
     /// Primary-entity field renames: upstream field name → local field name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fields: Option<HashMap<String, String>>,
+    pub fields: Option<crate::collections::IndexMap<String, String>>,
 
     /// Route path remap: upstream path → local path. An unmapped path keeps
     /// its upstream value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pages: Option<HashMap<String, String>>,
+    pub pages: Option<crate::collections::IndexMap<String, String>>,
 
     /// Page modifiers a `pages {}` remap entry declares, keyed by the
     /// UPSTREAM path: they replace the upstream page's, absent ones inherit.
@@ -518,31 +518,31 @@ pub struct OrbitalRefObject {
 
     /// Call-site overrides of the upstream orbital's declared config knobs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config: Option<HashMap<String, ConfigField>>,
+    pub config: Option<crate::collections::IndexMap<String, ConfigField>>,
 
     /// Orbital-scope event rename: upstream event key → local event key,
     /// applied to every trait in the imported set (emits and listen keys).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub events: Option<HashMap<String, String>>,
+    pub events: Option<crate::collections::IndexMap<String, String>>,
 
     /// Role-vocabulary remap (Stage B): upstream role name → one or more
     /// consumer roster role names. A single target lowers to a one-element
     /// Vec; the formatter prints the single form back when len == 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub roles: Option<HashMap<String, Vec<String>>>,
+    pub roles: Option<crate::collections::IndexMap<String, Vec<String>>>,
 
     /// Out-of-orbital entity remap (Stage B): upstream entity name →
     /// consumer entity name, applied to relation targets, `@Entity` tokens,
     /// fetch/persist targets, policy comparisons, and page
     /// `primaryEntity`/`sourceEntityDefinition`. Identity (`X: X`) is legal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entities: Option<HashMap<String, String>>,
+    pub entities: Option<crate::collections::IndexMap<String, String>>,
 
     /// Sibling-trait page mounts (Stage B): upstream page path → the
     /// sibling trait names (declared in this reference's body) to mount on
     /// that page, in addition to the traits it already imports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mounts: Option<HashMap<String, Vec<String>>>,
+    pub mounts: Option<crate::collections::IndexMap<String, Vec<String>>>,
 
     /// `extend { <field-decl>+ }` (Stage C): full entity-field declarations
     /// appended to the materialized primary entity, AFTER `fields {}`
@@ -555,7 +555,7 @@ pub struct OrbitalRefObject {
     /// primary entity (named after `fields {}` renames), replacing the
     /// upstream field's `@mock`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mock: Option<HashMap<String, String>>,
+    pub mock: Option<crate::collections::IndexMap<String, String>>,
 
     /// `retype { name : Type = default }`: replaces the type/default of fields the
     /// upstream primary entity already declares (after `fields {}` renames). Unlike
@@ -585,7 +585,7 @@ pub struct OrbitalRefObject {
     /// `traits { UpstreamTrait { ... } }`: per-imported-trait call-site overrides,
     /// keyed by the trait's UPSTREAM name. Same surface as a trait reference's body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub traits: Option<HashMap<String, OrbitalRefTraitOverride>>,
+    pub traits: Option<crate::collections::IndexMap<String, OrbitalRefTraitOverride>>,
 
     /// Declared routes INTO the imported set: each entry appends one listen
     /// to the named imported trait (upstream name). The source is a host
@@ -608,13 +608,13 @@ pub struct OrbitalRefTraitOverride {
     pub linked_entity: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config: Option<HashMap<String, ConfigField>>,
+    pub config: Option<crate::collections::IndexMap<String, ConfigField>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub events: Option<HashMap<String, String>>,
+    pub events: Option<crate::collections::IndexMap<String, String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fields: Option<HashMap<String, String>>,
+    pub fields: Option<crate::collections::IndexMap<String, String>>,
 
     /// Replaces the trait's whole `listens` array when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -741,7 +741,7 @@ pub struct Orbital {
 
     /// This orbital's own declared config knobs (§4.5) — mirrors `TraitDefinition.config`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config: Option<HashMap<String, ConfigField>>,
+    pub config: Option<crate::collections::IndexMap<String, ConfigField>>,
 
     /// This orbital's own `os/` grants (`orbital Name [ fs: …, exec: … ]`); its effective grants are the app level plus these.
     #[serde(rename = "osGrants", default, skip_serializing_if = "Option::is_none")]

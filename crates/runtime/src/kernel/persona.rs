@@ -191,7 +191,7 @@ mod tests {
     fn identity_schema(extra_entity_json: serde_json::Value) -> OrbitalSchema {
         serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "PersonOrbital",
                 "entity": extra_entity_json,
                 "traits": [],

@@ -43,7 +43,7 @@ fn orbital(name: &str, traits: Vec<Json>) -> Json {
 }
 
 fn heard(orbitals: Vec<Json>, seed: &str) -> bool {
-    let k = kernel(json!({ "name": "App", "orbitals": orbitals }));
+    let k = kernel(json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals }));
     k.dispatch(seed, None, "UP", Value::Null)
         .unwrap()
         .iter()

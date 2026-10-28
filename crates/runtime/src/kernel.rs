@@ -87,6 +87,11 @@ pub enum KernelError {
     /// forever, so it is refused until that dispatch is resumed or its continuation dropped.
     #[error("dispatch #{ticket} ({event}) is parked holding the dispatch lane under this turn; resume or drop it before starting another dispatch")]
     LaneHeldByParkedDispatch { ticket: u64, event: String },
+
+    /// The program carries no type-contract stamp (`resolved` / `typeContractVersion`), so it was never resolved
+    /// under the contract this kernel checks values by.
+    #[error("program '{program}' carries no type-contract stamp; resolve it again from source")]
+    UnresolvedProgram { program: String },
 }
 
 pub mod agent_ports;

@@ -8,7 +8,7 @@ fn kernel_with_program() -> RuntimeKernel {
     );
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "Notes",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "NotesOrbital",
             "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
             "traits": [{
@@ -72,4 +72,20 @@ fn control_a_program_registered_on_a_fork_stays_on_that_fork() {
     fork.register_schema(other).expect("registers on the fork");
     assert!(fork.registry.schemas.read().contains_key("Other"));
     assert!(!template.registry.schemas.read().contains_key("Other"));
+}
+
+#[test]
+fn a_registered_trait_is_one_definition_shared_by_the_state_manager_and_the_registry() {
+    let kernel = kernel_with_program();
+    let registry = kernel.registry.trait_definitions.read()["NoteView"].clone();
+    let state = kernel.state_manager.read().shared_trait("NoteView").expect("the state manager knows the trait");
+    assert!(Arc::ptr_eq(&registry, &state), "registration must hold one definition, not a copy per table");
+}
+
+#[test]
+fn control_two_kernels_registering_the_same_program_hold_their_own_definitions() {
+    let (first, second) = (kernel_with_program(), kernel_with_program());
+    let ours = first.registry.trait_definitions.read()["NoteView"].clone();
+    let theirs = second.registry.trait_definitions.read()["NoteView"].clone();
+    assert!(!Arc::ptr_eq(&ours, &theirs));
 }

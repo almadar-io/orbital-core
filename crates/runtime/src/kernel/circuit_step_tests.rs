@@ -12,7 +12,7 @@ fn kernel() -> RuntimeKernel {
     );
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "EditorApp",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Editor",
             "entity": { "name": "Doc", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "mode", "type": "string", "default": "normal" }] },
             "traits": [{

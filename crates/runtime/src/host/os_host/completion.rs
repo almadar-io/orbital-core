@@ -675,7 +675,7 @@ mod tests {
         use orbital_core_base::schema::types::OrbitalSchema;
         let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{ "name": "Host", "linkedEntity": "Job",

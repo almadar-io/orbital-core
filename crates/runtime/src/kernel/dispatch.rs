@@ -410,7 +410,6 @@ impl RuntimeKernel {
         let homes = self.registry.trait_homes.read();
         let schemas = self.registry.schemas.read();
         let home = homes.get(trait_name).and_then(|(name, index)| schemas.get(name).map(|program| (program, *index)));
-        let version = home.and_then(|(program, _)| program.type_contract_version);
         let resolve = |name: &str| {
             home.and_then(|(program, index)| {
                 program
@@ -423,7 +422,7 @@ impl RuntimeKernel {
             })
             .or_else(|| entities.get(name).map(super::row_intake::entity_struct))
         };
-        crate::payload_validation::validate_event_payload_with_context(event, payload, schema, &resolve, version)
+        crate::payload_validation::validate_event_payload_with_context(event, payload, schema, &resolve)
     }
 
     /// The entry check of an external event, a client's UI event included: a payload that does not satisfy its

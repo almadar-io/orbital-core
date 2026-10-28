@@ -16,7 +16,7 @@ use {
 fn response(config: Json, slot: &str, props: Json) -> EventResponse {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "O",
             "entity": { "name": "E", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{

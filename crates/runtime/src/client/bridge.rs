@@ -366,7 +366,7 @@ mod tests {
         let schema = serde_json::from_value(json!({
             "name": "Reader",
             "osGrants": { "fs": [{ "glob": format!("{}/**", granted.display()), "modes": ["read"] }] },
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Doc", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{

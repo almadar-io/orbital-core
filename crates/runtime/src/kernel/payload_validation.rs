@@ -54,7 +54,6 @@ pub fn validate_event_payload_with_types(
         payload,
         schema,
         &|name| named.get(name).cloned(),
-        None,
     )
 }
 
@@ -63,7 +62,6 @@ pub(crate) fn validate_event_payload_with_context(
     payload: &Value,
     schema: &[PayloadField],
     resolve: &dyn Fn(&str) -> Option<OirType>,
-    version: Option<u32>,
 ) -> Vec<PayloadFailure> {
     let mut failures = Vec::new();
     for field in schema {
@@ -82,19 +80,13 @@ pub(crate) fn validate_event_payload_with_context(
                     failures.push(fail(PayloadFailureReason::Missing));
                 }
             }
-            Some(Value::Null) if version.is_none() => {
-                if field.required == Some(true) {
-                    failures.push(fail(PayloadFailureReason::Null));
-                }
-            }
             Some(value) => {
-                let mut declared =
+                let declared =
                     DeclaredShape::with_resolver(None, payload_field_shape(field), resolve);
-                declared.version = version;
                 if let Some(found) = misfit_detail_of_shape(value, &declared) {
                     let mut failure = fail(if found.actual == "absent" {
                         PayloadFailureReason::Missing
-                    } else if version == Some(1) && found.actual == "null" {
+                    } else if found.actual == "null" {
                         PayloadFailureReason::Null
                     } else {
                         PayloadFailureReason::WrongType
@@ -250,7 +242,7 @@ mod tests {
            {"name": "tag", "type": "string", "required": false, "nullable": true}]))
         .unwrap();
         let versioned = |value| {
-            validate_event_payload_with_context("E", &payload(value), &schema, &|_| None, Some(1))
+            validate_event_payload_with_context("E", &payload(value), &schema, &|_| None)
         };
         for ok in [
             json!({"viewer": {"id": "u"}}),

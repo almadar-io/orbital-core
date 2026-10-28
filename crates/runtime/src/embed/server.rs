@@ -1076,7 +1076,7 @@ mod program_context_tests {
         effect: Json,
     ) -> OrbitalSchema {
         serde_json::from_value(json!({
-            "name":name, "orbitals":[{"name":orbital,"entity":{"name":entity,"persistence":"runtime","fields":[{"name":"id","type":"string"}]},
+            "name":name, "typeContractVersion": 1, "orbitals":[{"name":orbital,"entity":{"name":entity,"persistence":"runtime","fields":[{"name":"id","type":"string"}]},
             "traits":[{"name":trait_name,"linkedEntity":entity,"stateMachine":{"states":[{"name":"idle","isInitial":true},{"name":"done"}],"transitions":[{"from":"idle","to":"done","event":"GO","effects":[effect]}]}}]}]
         })).unwrap()
     }
@@ -1252,7 +1252,7 @@ mod os_anchor_tests {
 
     fn listener() -> EmbeddedServer {
         let mut schema: OrbitalSchema = serde_json::from_value(json!({
-            "name":"L", "orbitals":[{"name":"L","entity":{"name":"S","persistence":"runtime","fields":[{"name":"id","type":"string"}]},
+            "name":"L", "typeContractVersion": 1, "orbitals":[{"name":"L","entity":{"name":"S","persistence":"runtime","fields":[{"name":"id","type":"string"}]},
             "traits":[{"name":"T","linkedEntity":"S","stateMachine":{"states":[{"name":"idle","isInitial":true}],"transitions":[]}}]}]
         }))
         .unwrap();

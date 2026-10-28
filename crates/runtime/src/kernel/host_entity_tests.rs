@@ -16,7 +16,7 @@ fn kernel_with(entity_persistence: &str, linked: Option<&str>) -> RuntimeKernel 
     }
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "Host",
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             { "name": "Frames",
               "entity": { "name": "Frame", "persistence": entity_persistence,
                           "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },

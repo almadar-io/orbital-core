@@ -38,7 +38,7 @@ fn listener(name: &str, heard: &str, trigger: &str, effects: Json) -> Json {
 fn schema(traits: Vec<Json>) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [
                 { "name": "id", "type": "string" },

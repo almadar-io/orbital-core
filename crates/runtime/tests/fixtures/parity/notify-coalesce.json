@@ -3,7 +3,7 @@
   "description": "std-notify-on-event coalesce (@prevEvents): one import raising RowImported a,b,a notifies 3x (none), 1x (perDispatch), 2x (perKey id) on both paths",
   "schema": {
     "name": "NotifyCoalesce",
-    "orbitals": [
+    "typeContractVersion": 1, "orbitals": [
       {
         "name": "Imports",
         "id": "orb_01M39WGCX8PBP3BR555SXZY8MC",

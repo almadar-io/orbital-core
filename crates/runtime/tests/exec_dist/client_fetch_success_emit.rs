@@ -16,7 +16,7 @@ fn schema(fetching: bool) -> OrbitalSchema {
     };
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -268,7 +268,7 @@ fn guarded_seed_schema(with_listener: bool) -> OrbitalSchema {
     traits.extend(listener.as_array().unwrap().iter().cloned());
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": traits

@@ -440,7 +440,7 @@ fn a_blocking_pipe_read_does_not_hold_the_descriptor_table() {
         .handles
         .fs
         .fds
-        .insert(FdEntry::ChildStdout(Arc::new(Mutex::new(out))));
+        .insert(FdEntry::ChildStdout(Arc::new(ReadPipe::new(out))));
     std::thread::scope(|scope| {
         let reader = scope.spawn(|| fx.ok(OsOp::Read, vec![n(fd), n(16)]));
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -450,6 +450,44 @@ fn a_blocking_pipe_read_does_not_hold_the_descriptor_table() {
         let read = reader.join().expect("reader");
         assert_eq!(data_of(&read), b"hi");
     });
+    child.wait().expect("wait");
+}
+
+#[test]
+fn closing_a_child_pipe_interrupts_a_blocked_read() {
+    let fx = Fx::new();
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "sleep 5"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let out = child.stdout.take().expect("stdout");
+    let fd = fx.handles.fs.fds.insert(FdEntry::ChildStdout(Arc::new(ReadPipe::new(out))));
+    let started = std::time::Instant::now();
+    std::thread::scope(|scope| {
+        let reader = scope.spawn(|| fx.kind(OsOp::Read, vec![n(fd), n(16)]));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        fx.ok(OsOp::Close, vec![n(fd)]);
+        assert_eq!(reader.join().expect("reader"), OsErrorKind::Closed);
+    });
+    assert!(started.elapsed() < std::time::Duration::from_millis(3000), "read outlived the close");
+    child.kill().expect("kill");
+    child.wait().expect("wait");
+}
+
+#[test]
+fn a_pipe_read_after_close_is_closed_and_an_open_pipe_still_reads() {
+    let fx = Fx::new();
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "printf hi"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let out = child.stdout.take().expect("stdout");
+    let fd = fx.handles.fs.fds.insert(FdEntry::ChildStdout(Arc::new(ReadPipe::new(out))));
+    assert_eq!(data_of(&fx.ok(OsOp::Read, vec![n(fd), n(16)])), b"hi");
+    fx.ok(OsOp::Close, vec![n(fd)]);
+    assert_eq!(fx.kind(OsOp::Read, vec![n(fd), n(16)]), OsErrorKind::Closed);
     child.wait().expect("wait");
 }
 

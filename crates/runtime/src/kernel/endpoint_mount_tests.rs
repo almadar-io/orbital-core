@@ -15,7 +15,7 @@ fn trait_json(name: &str) -> serde_json::Value {
 fn kernel(pages: serde_json::Value, traits: &[&str]) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": traits.iter().map(|t| trait_json(t)).collect::<Vec<_>>(),
@@ -60,7 +60,7 @@ fn lifecycle_kernel() -> RuntimeKernel {
     });
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [with("Inits", "INIT"), with("Loads", "LOAD"), with("Mounts", "$MOUNT"), with("Deaf", "GO")],

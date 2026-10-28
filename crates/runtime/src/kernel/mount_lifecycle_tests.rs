@@ -8,7 +8,7 @@ use crate::entity_source::InMemoryEntityCache;
 fn kernel() -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "Boot",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Level",
             "entity": { "name": "World", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [

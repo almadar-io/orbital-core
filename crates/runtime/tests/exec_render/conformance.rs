@@ -10,7 +10,7 @@ use crate::support::TestKernel;
 fn render_outcome(config: Json, slot: &str) -> EffectOutcome {
     let kernel = TestKernel::client().config(KernelConfig::default()).build(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "O",
             "entity": { "name": "E", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "T", "linkedEntity": "E", "config": config,
@@ -48,7 +48,7 @@ use orbital_core_runtime::effects::response::EventResponse;
 fn nav_schema(pages: Json) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "NavApp",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "ShellOrbital",
             "entity": { "name": "Shell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -103,7 +103,7 @@ fn render_effect_wire(extra: Json) -> Vec<Json> {
     effects.extend(extra.as_array().cloned().unwrap_or_default());
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "Wire",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "O",
             "entity": { "name": "E", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "T", "linkedEntity": "E",

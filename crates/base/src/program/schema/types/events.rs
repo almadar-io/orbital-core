@@ -194,7 +194,7 @@ pub enum ConfigRefEventError {
 pub fn resolve_config_ref_event_name(
     event: &str,
     effective_config: &crate::schema::sexpr::SObject,
-    declared_config: Option<&HashMap<String, ConfigField>>,
+    declared_config: Option<&crate::collections::IndexMap<String, ConfigField>>,
 ) -> Result<String, ConfigRefEventError> {
     let knob = config_ref_event_knob(event).ok_or(ConfigRefEventError::UnknownKnob)?;
     let field = declared_config
@@ -543,7 +543,7 @@ pub(super) fn config_literal_spelling(value: &SExpression) -> Option<String> {
 /// this only evaluates it.
 pub fn resolve_payload_type_when(
     conditions: &[PayloadTypeWhen],
-    declared_config: Option<&HashMap<String, ConfigField>>,
+    declared_config: Option<&crate::collections::IndexMap<String, ConfigField>>,
 ) -> Option<String> {
     conditions.iter().find_map(|cond| {
         let resolved = declared_config?.get(&cond.knob)?.default.as_ref()?;

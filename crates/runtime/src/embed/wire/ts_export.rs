@@ -394,12 +394,12 @@ fn check_expr(shape: &Shape, v: &str, declared: &BTreeMap<String, String>, used:
     }
 }
 
-/// The checks a host makes of a kernel response and of a kernel-parsed request at the boundary, generated from the
-/// declarations above: `EventResponse`, `EventRequest` and every wire type reachable from them, recursively (fields, list
+/// The checks a host makes of a kernel response at the boundary, generated from the
+/// declarations above: `EventResponse` and every wire type reachable from it, recursively (fields, list
 /// elements, options, tuples, string enums, tagged unions). A name outside the wire types (`EntityRow`, `EventId`, ...) is an
 /// opaque JSON value and only has to be present.
 fn event_response_check(declared: &BTreeMap<String, String>) -> String {
-    let mut used = vec!["EventResponse".to_string(), "EventRequest".to_string()];
+    let mut used = vec!["EventResponse".to_string()];
     let mut functions = Vec::new();
     let mut next = 0;
     while next < used.len() {
@@ -418,9 +418,7 @@ fn event_response_check(declared: &BTreeMap<String, String>) -> String {
     }
     out.push_str(
         "/** The check of a kernel response at the host boundary: every field of `EventResponse` and of the wire types nested in it. */\n\
-         export function isEventResponse(value: JsonValue): value is JsonValue & EventResponse {\n  return checkEventResponse(value);\n}\n\n\
-         /** The check of a request the kernel parsed (`parseEventRequest`): every field of `EventRequest` and of the wire types nested in it. */\n\
-         export function isEventRequest(value: JsonValue): value is JsonValue & EventRequest {\n  return checkEventRequest(value);\n}\n",
+         export function isEventResponse(value: JsonValue): value is JsonValue & EventResponse {\n  return checkEventResponse(value);\n}\n",
     );
     out
 }

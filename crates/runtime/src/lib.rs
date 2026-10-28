@@ -142,6 +142,9 @@ pub mod kv_host;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "host/native_host.rs"]
 pub mod native_host;
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+#[path = "host/memory_release.rs"]
+pub mod memory_release;
 #[cfg(feature = "native-transport")]
 #[path = "host/native_transport.rs"]
 pub mod native_transport;

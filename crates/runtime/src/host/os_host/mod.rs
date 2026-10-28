@@ -63,6 +63,10 @@ impl<T> HandleSlab<T> {
     pub fn clear(&self) {
         self.entries.lock().clear();
     }
+
+    pub fn drain(&self) -> Vec<T> {
+        self.entries.lock().drain().map(|(_, entry)| entry).collect()
+    }
 }
 
 /// The handles one program instance owns; closed by [`OsHandles::close_all`] at teardown.

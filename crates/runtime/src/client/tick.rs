@@ -93,7 +93,7 @@ mod tests {
         let schema: OrbitalSchema = serde_json::from_value(json!({
             "name": "t",
             "version": "1.0.0",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "O",
                 "entity": { "name": "E", "persistence": "runtime", "fields": [] },
                 "traits": [{

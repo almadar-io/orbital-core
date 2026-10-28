@@ -36,7 +36,7 @@ fn trait_with_tick(name: &str, emit: &str, background: bool, applies_to: Option<
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Board",
             "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -197,7 +197,7 @@ fn an_entity_id_runs_the_tick_for_that_row_alone() {
 fn edge_a_tick_over_a_persistent_entity_with_no_rows_fires_nothing() {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Board",
             "entity": { "name": "Cell", "persistence": "persistent", "collection": "cells", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [trait_with_tick("Background", "BG_PULSE", true, None)]
@@ -254,7 +254,7 @@ mod unfired_step_render {
             |text: &str| json!(["render-ui", "main", { "type": "typography", "content": text }]);
         serde_json::from_value(json!({
             "name": "App",
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Board",
                 "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{

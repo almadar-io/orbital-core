@@ -12,7 +12,7 @@ fn schema() -> OrbitalSchema {
     };
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             { "name": "Main",
               "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
               "traits": [

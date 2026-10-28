@@ -15,7 +15,7 @@ fn schema_with_theme(theme_key: &str) -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
         "theme": theme_key,
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{

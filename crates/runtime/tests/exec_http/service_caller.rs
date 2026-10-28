@@ -34,7 +34,7 @@ impl ServiceHandler for Recording {
 fn kernel(handler: Arc<Recording>) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Run", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{

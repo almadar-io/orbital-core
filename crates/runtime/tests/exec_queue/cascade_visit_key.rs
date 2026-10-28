@@ -9,7 +9,7 @@ use std::sync::Arc;
 fn fanner(transitions: Json, states: Json) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -122,7 +122,7 @@ fn control_an_exact_repeat_cycle_is_not_truncation() {
 fn counting_fanner(set_value: Json) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [
                 { "name": "id", "type": "string" },
@@ -159,7 +159,7 @@ fn an_identical_payload_with_an_unchanged_frame_is_still_a_cycle() {
 fn persisting_fanner(n_value: Json) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "persistence": "persistent", "collection": "items", "fields": [
                 { "name": "id", "type": "string" },
@@ -214,7 +214,7 @@ fn relay_chain() -> RuntimeKernel {
     let idle = json!([{ "name": "idle", "isInitial": true }]);
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -299,7 +299,7 @@ fn self_looper(guarded: bool) -> RuntimeKernel {
     }
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [
                 { "name": "id", "type": "string" },
@@ -365,7 +365,7 @@ fn a_traits_own_endless_loop_names_itself_as_truncated() {
 fn a_two_hop_cascade_response_serializes_byte_identically() {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" },

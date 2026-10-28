@@ -249,7 +249,7 @@ pub struct DomainContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vocabulary: Option<HashMap<String, String>>,
+    pub vocabulary: Option<crate::collections::IndexMap<String, String>>,
     #[serde(rename = "requestFragment", skip_serializing_if = "Option::is_none")]
     pub request_fragment: Option<String>,
 }
@@ -260,5 +260,5 @@ pub struct DesignHints {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
     #[serde(rename = "uxHints", skip_serializing_if = "Option::is_none")]
-    pub ux_hints: Option<HashMap<String, String>>,
+    pub ux_hints: Option<crate::collections::IndexMap<String, String>>,
 }

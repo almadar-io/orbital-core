@@ -24,6 +24,7 @@ fn schema() -> OrbitalSchema {
     };
     serde_json::from_value(json!({
         "name": "App",
+        "typeContractVersion": 1,
         "orbitals": [{
             "name": "ChatOrbital",
             "entity": { "name": "Message", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -67,6 +68,15 @@ fn send(target: Option<&str>, payload: Json) -> EventResponse {
             ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
         }
     }
+}
+
+#[test]
+fn a_payload_string_starting_with_a_dollar_reaches_the_kernel_as_that_string() {
+    for text in ["$T", "$", "$name", "a$T"] {
+        let response = send(Some("ChatComposer"), json!({"value": text}));
+        assert!(response.success, "{text}: {:?}", response.error);
+    }
+    assert!(!send(Some("ChatComposer"), json!({"value": 1})).success, "control: a number is refused");
 }
 
 #[test]
@@ -236,8 +246,11 @@ mod native_record_event_admission {
 
     fn program(version: Option<u32>, field: Json) -> Json {
         let mut program = serde_json::to_value(schema()).unwrap();
-        if let Some(version) = version {
-            program["typeContractVersion"] = json!(version);
+        match version {
+            Some(version) => program["typeContractVersion"] = json!(version),
+            None => {
+                program.as_object_mut().unwrap().remove("typeContractVersion");
+            }
         }
         program["orbitals"][0]["traits"][0]["stateMachine"]["events"][0]["payloadSchema"] =
             json!([field]);
@@ -287,18 +300,21 @@ mod native_record_event_admission {
     }
 
     #[test]
-    fn native_record_event_admission_legacy_programs_keep_their_null_contract() {
-        for (required, nullable) in [(false, false), (true, false), (false, true), (true, true)] {
-            let kernel = kernel(program(
-                None,
-                json!({
-                    "name": "value", "type": "string", "required": required, "nullable": nullable
-                }),
-            ));
-            dispatch(&kernel, json!({}), !required);
-            dispatch(&kernel, json!({"value": null}), !required);
-            dispatch(&kernel, json!({"value": "ok"}), true);
-        }
+    fn an_unstamped_program_is_refused_where_the_kernel_registers_it_and_a_stamped_one_registers() {
+        let field = json!({"name": "value", "type": "string", "required": false});
+        let unstamped = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()),
+            Default::default(),
+        );
+        let refused = unstamped
+            .register_schema(serde_json::from_value(program(None, field.clone())).unwrap());
+        assert!(
+            matches!(&refused, Err(KernelError::UnresolvedProgram { program }) if program == "App"),
+            "{refused:?}"
+        );
+        assert!(refused.unwrap_err().to_string().contains("resolve it again from source"));
+        let _ = kernel(program(Some(1), field));
     }
 
     #[test]

@@ -17,7 +17,7 @@ fn kernel() -> RuntimeKernel {
     let list = json!({ "emit": { "success": "LISTED" } });
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "persist-batch",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "persistent", "collection": "notes",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string", "required": true }, { "name": "status", "type": "string" }] },

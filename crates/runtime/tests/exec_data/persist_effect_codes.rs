@@ -112,7 +112,7 @@ fn store_program_json(bound: bool, seeded: bool, query: Option<bool>) -> serde_j
     let mirror_then = |event: &str, body: serde_json::Value| {
         serde_json::json!([["persist", "create", "Mirror", { "id": "@payload.key", "batch": "@payload.batch" }], ["emit", event, body]])
     };
-    let mut program = serde_json::json!({ "name": "store-seam", "orbitals": [
+    let mut program = serde_json::json!({ "name": "store-seam", "typeContractVersion": 1, "orbitals": [
         { "name": "Tickets", "pages": [], "entity": ticket, "traits": [{ "name": "Desk", "linkedEntity": "Ticket",
             "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
                 "events": [{ "key": "TAKE", "name": "TAKE" }, { "key": "TAKE_UNUSED", "name": "TAKE_UNUSED" }, { "key": "LOOK", "name": "LOOK" }],

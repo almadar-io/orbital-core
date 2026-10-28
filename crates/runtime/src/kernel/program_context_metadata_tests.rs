@@ -4,7 +4,7 @@ use serde_json::json;
 #[test]
 fn program_context_and_its_session_fork_exclude_app_credential_catalog_and_schemas() {
     let schema = |name: &str| -> OrbitalSchema {
-        serde_json::from_value(json!({"name":name,"orbitals":[{"name":name,"entity":{"name":name,"persistence":"runtime","fields":[]},"traits":[{
+        serde_json::from_value(json!({"name":name,"typeContractVersion": 1, "orbitals":[{"name":name,"entity":{"name":name,"persistence":"runtime","fields":[]},"traits":[{
             "name":name,"config":{"apiKey":{"type":"secret","default":format!("{name}_CREDENTIAL")}},
             "stateMachine":{"states":[{"name":"idle","isInitial":true}],"transitions":[{"from":"idle","to":"idle","event":"CHECK","effects":[["credential-status","@config.apiKey",{"emit":{"success":"OK"}}]]}]}
         }]}]})).unwrap()

@@ -11,7 +11,7 @@ use std::sync::Arc;
 fn two_trait_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -127,7 +127,7 @@ fn create_from_wrong_source_does_not_open_modal() {
 fn composed_peer_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -200,7 +200,7 @@ fn listens_cascade_schema(with_mapping: bool) -> OrbitalSchema {
     });
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -292,7 +292,7 @@ impl orbital_core_runtime::effects::ServiceHandler for Gate {
 fn lane_kernel() -> (Arc<RuntimeKernel>, Arc<dyn EntitySource>) {
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "lane",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Tally", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number", "default": 0 }] },
             "traits": [{
@@ -665,7 +665,7 @@ fn asking_kernel(keyed: bool) -> Asking {
     }
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "asking",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Tally", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" }, { "name": "n", "type": "number", "default": 0 },
@@ -815,7 +815,7 @@ fn live_kernel() -> Live {
     use orbital_core_runtime::os_host::completion::{KernelCompletionSink, StreamPoll};
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "live",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Feed", "persistence": "runtime", "fields": [
                 { "name": "id", "type": "string" }, { "name": "count", "type": "number", "default": 0 }, { "name": "error", "type": "string" }] },
@@ -934,7 +934,7 @@ fn two_listener_schema() -> OrbitalSchema {
     };
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [

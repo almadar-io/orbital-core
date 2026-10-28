@@ -139,7 +139,7 @@ fn set_kernel(call: Json) -> RuntimeKernel {
         .register_schema(
             serde_json::from_value(json!({
                 "name": "App",
-                "orbitals": [{
+                "typeContractVersion": 1, "orbitals": [{
                     "name": "AppOrbital",
                     "entity": { "name": "Item", "persistence": "runtime",
                         "fields": [{ "name": "id", "type": "string" }, { "name": "list", "type": "array" }] },

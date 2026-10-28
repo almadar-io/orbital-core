@@ -4,7 +4,7 @@
   "schema": {
     "name": "mount-lifecycle",
     "version": "1.0.0",
-    "orbitals": [
+    "typeContractVersion": 1, "orbitals": [
       {
         "name": "Level",
         "pages": [],

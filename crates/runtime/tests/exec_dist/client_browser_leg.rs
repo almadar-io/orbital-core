@@ -18,7 +18,7 @@ use {
 fn kernel(effects: serde_json::Value, local: bool) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "books",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Books",
             "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices", "browser": local,
                 "fields": [{ "name": "id", "type": "string" }] },
@@ -78,7 +78,7 @@ fn control_a_server_entity_fetch_still_posts_its_leg() {
 fn cascade_kernel() -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "books",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Books",
             "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices", "browser": true,
                 "fields": [{ "name": "id", "type": "string" }] },

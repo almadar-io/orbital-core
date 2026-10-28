@@ -7,7 +7,7 @@ use serde_json::json;
 fn kernel() -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "provenance",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [

@@ -10,7 +10,7 @@ use crate::support::TestKernel;
 fn dispatch(mode: Option<&str>, effects: Json) -> ClientDispatch {
     let kernel = TestKernel::client().build(json!({
         "name": "books",
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             { "name": "Books",
               "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices", "browser": true,
                   "fields": [{ "name": "id", "type": "string" }] },
@@ -56,7 +56,7 @@ fn mode_of(declared: Option<&str>, entity_persistence: &str, collection: Option<
     }
     let kernel = TestKernel::client().build(json!({
         "name": "modes",
-        "orbitals": [{ "name": "App", "entity": entity,
+        "typeContractVersion": 1, "orbitals": [{ "name": "App", "entity": entity,
             "traits": [{ "name": "Probe", "linkedEntity": "Row", "dispatch": declared,
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
                     "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [] }] } }] }]
@@ -101,7 +101,7 @@ fn optimistic_state_after(reply: orbital_core_runtime::effects::response::EventR
     use orbital_core_runtime::client::ClientKernel;
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{ "name": "Main",
+        "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Cursor", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "x", "type": "number" }] },
             "traits": [{ "name": "Move", "linkedEntity": "Cursor", "dispatch": "optimistic",
                 "stateMachine": {
@@ -143,7 +143,7 @@ fn exec_dist_4_the_fold_skips_what_the_client_delivered_and_ignores_a_hosts_stat
     use std::collections::{HashMap, HashSet};
     let kernel = || TestKernel::client().build(json!({
         "name": "fold",
-        "orbitals": [{ "name": "Main",
+        "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
                 { "name": "Emitter", "linkedEntity": "Item",
@@ -183,7 +183,7 @@ fn exec_dist_4_the_fold_skips_what_the_client_delivered_and_ignores_a_hosts_stat
 
     let split = || TestKernel::client().build(json!({
         "name": "split",
-        "orbitals": [{ "name": "Main",
+        "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
                 { "name": "Local", "linkedEntity": "Item", "dispatch": "client",

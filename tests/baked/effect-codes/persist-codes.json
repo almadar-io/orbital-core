@@ -1,6 +1,7 @@
 {
   "description": "ServerEffectResult.code on a persist: `no-row-key` when no row key resolves (an update/delete, or an upsert naming no id), `not-found` when the keyed row is absent, `duplicate-id` when a create names a taken id, none when it lands. Read by orbital-core tests/persist_effect_codes.rs and @almadar/runtime persist-effect-codes.test.ts.",
   "schema": {
+    "typeContractVersion": 1,
     "name": "persist-codes",
     "version": "1.0.0",
     "orbitals": [

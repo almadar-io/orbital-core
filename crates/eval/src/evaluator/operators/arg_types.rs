@@ -284,16 +284,15 @@ impl Misfit {
     }
 }
 
-/// The first mismatch under the explicit legacy or nullable-field contract. A name `named` defines is checked as its definition,
+/// The first mismatch under the strict type contract: null passes only at an optional type. A name `named` defines is checked as its definition,
 /// so each item of a list of a recursive union matches a member of the union on its own; a closed string set
 /// (`"a" | "b"`) admits only its members.
 fn first_misfit(
     value: &Value,
     ty: &OirType,
     named: &BTreeMap<String, OirType>,
-    strict: bool,
 ) -> Option<Misfit> {
-    if value.is_null() && (!strict || matches!(ty, OirType::Optional { .. })) {
+    if value.is_null() && matches!(ty, OirType::Optional { .. }) {
         return None;
     }
     // A reference is the related row's id, or the row itself, which is checked as one.
@@ -302,11 +301,11 @@ fn first_misfit(
     }
     if let Some(declared) = declared_alias(ty, named) {
         if let Some((list_null, map_null)) = json_total(declared, named) {
-            if json_fits(value, list_null || !strict, map_null || !strict) {
+            if json_fits(value, list_null, map_null) {
                 return None;
             }
         }
-        return first_misfit(value, declared, named, strict).map(|mut found| {
+        return first_misfit(value, declared, named).map(|mut found| {
             if found.path.is_empty() {
                 found.expected = declared_text(ty);
             }
@@ -314,7 +313,7 @@ fn first_misfit(
         });
     }
     let misfit = || Some(Misfit::here(value, ty));
-    if strict && value.is_null() && !matches!(ty, OirType::Union { .. }) {
+    if value.is_null() && !matches!(ty, OirType::Union { .. }) {
         return misfit();
     }
     // The path is written only for a misfit: a value that fits allocates nothing.
@@ -324,7 +323,7 @@ fn first_misfit(
     };
     let items = |items: &[Value], inner: &OirType| {
         items.iter().enumerate().find_map(|(i, item)| {
-            first_misfit(item, inner, named, strict).map(|misfit| at(format_args!("[{i}]"), misfit))
+            first_misfit(item, inner, named).map(|misfit| at(format_args!("[{i}]"), misfit))
         })
     };
     match ty {
@@ -336,11 +335,11 @@ fn first_misfit(
         | OirType::Behavior => None,
         // An unbound variable admits any value; a bound one was substituted before run time.
         OirType::Var { .. } => None,
-        OirType::Optional { inner } => first_misfit(value, inner, named, strict),
+        OirType::Optional { inner } => first_misfit(value, inner, named),
         OirType::Union { variants } => {
             if variants
                 .iter()
-                .any(|v| first_misfit(value, &v.field_type, named, strict).is_none())
+                .any(|v| first_misfit(value, &v.field_type, named).is_none())
             {
                 None
             } else {
@@ -357,14 +356,14 @@ fn first_misfit(
                 .zip(slots)
                 .enumerate()
                 .find_map(|(i, (item, slot))| {
-                    first_misfit(item, slot, named, strict)
+                    first_misfit(item, slot, named)
                         .map(|misfit| at(format_args!("[{i}]"), misfit))
                 }),
             _ => misfit(),
         },
         OirType::Map { value: inner, .. } => match value {
             Value::Object(map) => map.iter().find_map(|(k, item)| {
-                first_misfit(item, inner, named, strict)
+                first_misfit(item, inner, named)
                     .map(|misfit| at(format_args!(".{k}"), misfit))
             }),
             _ => misfit(),
@@ -376,7 +375,7 @@ fn first_misfit(
                     None => field.required.then(|| {
                         Misfit::new(format!(".{}", field.name), "absent", &field.field_type)
                     }),
-                    Some(item) => first_misfit(item, &field.field_type, named, strict)
+                    Some(item) => first_misfit(item, &field.field_type, named)
                         .map(|misfit| at(format_args!(".{}", field.name), misfit)),
                 })
                 .or_else(|| {
@@ -388,7 +387,7 @@ fn first_misfit(
                                     .any(|field| field.name.as_str() == key.as_str())
                             })
                             .find_map(|(key, item)| {
-                                first_misfit(item, additional, named, strict)
+                                first_misfit(item, additional, named)
                                     .map(|misfit| at(format_args!(".{key}"), misfit))
                             })
                     })
@@ -420,7 +419,6 @@ fn first_misfit(
                 (!members.contains(text)).then(|| Misfit::new(String::new(), "string", ty))
             }
             (Value::String(_), Ok(None)) => None,
-            (Value::String(_), Err(_)) if !strict => None,
             _ => misfit(),
         },
         _ => (!matches!(value, Value::String(_))).then(|| Misfit::here(value, ty)),
@@ -434,7 +432,7 @@ pub fn misfit_of_declared(
     ty: &OirType,
     named: &BTreeMap<String, OirType>,
 ) -> Option<(String, &'static str)> {
-    first_misfit(value, ty, named, false).map(|found| (found.path, found.actual))
+    first_misfit(value, ty, named).map(|found| (found.path, found.actual))
 }
 
 /// `value` is of the declared `ty`, kind by kind, and a record's declared fields field by field.
@@ -443,7 +441,7 @@ pub fn value_of_declared(
     ty: &OirType,
     named: &BTreeMap<String, OirType>,
 ) -> Result<(), OrbitalError> {
-    match first_misfit(value, ty, named, false) {
+    match first_misfit(value, ty, named) {
         None => Ok(()),
         Some(found) => Err(OrbitalError::Eval(EvalError::TypeMismatch {
             expected: declared_text(ty),
@@ -465,12 +463,7 @@ pub fn misfit_detail_of_shape(value: &Value, declared: &DeclaredShape) -> Option
             &declared.ty,
         ));
     }
-    first_misfit(
-        value,
-        &declared.ty,
-        &declared.named,
-        declared.version == Some(1),
-    )
+    first_misfit(value, &declared.ty, &declared.named)
 }
 
 #[cfg(test)]
@@ -607,21 +600,16 @@ mod tests {
     }
 
     #[test]
-    fn control_a_non_nullable_item_null_misfits_only_under_the_strict_contract() {
+    fn a_non_nullable_item_null_misfits_and_a_nullable_one_admits_it() {
         let named = total_union("V");
         let data: Value = serde_json::from_value(serde_json::json!([1, null])).unwrap();
-        assert_eq!(
-            first_misfit(&data, &v(), &named, false),
-            None,
-            "the legacy contract admits a null item"
-        );
         assert!(
-            first_misfit(&data, &v(), &named, true).is_some(),
-            "the strict contract refuses it"
+            first_misfit(&data, &v(), &named).is_some(),
+            "the strict contract refuses a null item"
         );
         let nullable = total_union("V?");
         assert_eq!(
-            first_misfit(&data, &v(), &nullable, true),
+            first_misfit(&data, &v(), &nullable),
             None,
             "control: a nullable item admits it"
         );
@@ -642,7 +630,7 @@ mod tests {
             key: Box::new(OirType::String),
             value: Box::new(OirType::Number),
         };
-        let strict = |value: &Value, ty: &OirType| first_misfit(value, ty, &named, true);
+        let strict = |value: &Value, ty: &OirType| first_misfit(value, ty, &named);
         let null_content: Value =
             serde_json::from_value(serde_json::json!([{ "content": null }])).unwrap();
         let found = strict(&null_content, &in_list).unwrap();
@@ -687,7 +675,7 @@ mod tests {
         let named = BTreeMap::new();
         let check = |json: serde_json::Value| {
             let value: Value = serde_json::from_value(json).unwrap();
-            first_misfit(&value, &shape, &named, true)
+            first_misfit(&value, &shape, &named)
         };
         assert_eq!(check(serde_json::json!({"id": "u"})), None);
         assert_eq!(

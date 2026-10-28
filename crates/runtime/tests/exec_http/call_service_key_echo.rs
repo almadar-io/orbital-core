@@ -8,7 +8,7 @@ use serde_json::{json, Value as Json};
 fn schema(options: Json) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "Helper", "linkedEntity": "Job",

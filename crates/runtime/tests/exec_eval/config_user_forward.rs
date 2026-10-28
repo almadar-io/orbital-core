@@ -7,7 +7,7 @@ use serde_json::json;
 fn kernel() -> EmbeddedKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "gw",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Gw",
             "entity": { "name": "Route", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "Header", "linkedEntity": "Route", "dispatch": "client",

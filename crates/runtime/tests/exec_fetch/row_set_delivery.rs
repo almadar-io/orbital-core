@@ -33,7 +33,7 @@ fn schema(extra_fetch: Json, persistence: &str) -> OrbitalSchema {
     }
     serde_json::from_value(json!({
         "name": "rsd",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": {
                 "name": "Ticket", "persistence": persistence,

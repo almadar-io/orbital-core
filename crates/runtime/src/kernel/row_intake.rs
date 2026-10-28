@@ -15,7 +15,7 @@ use orbital_core_eval::evaluator::operators::arg_types::misfit_of_shape;
 use std::sync::Arc;
 
 /// An entity's row as a record of its declared fields, as the intake checks it (EXEC-EVAL-10): a present value must fit
-/// its field's kind, an absent or null field passes (a trait's working row is unsaved, so `required` is not enforced).
+/// its field's kind, an absent field passes and null passes only at a nullable one (a trait's working row is unsaved, so `required` is not enforced).
 pub(super) fn entity_struct(entity: &EntityDefinition) -> OirType {
     let fields = entity
         .fields

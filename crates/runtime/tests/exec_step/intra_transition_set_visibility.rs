@@ -30,7 +30,7 @@ fn obj(pairs: &[(&str, Value)]) -> Value {
 fn stamp_then_persist_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": {
                 "name": "Policy",
@@ -66,7 +66,7 @@ fn stamp_then_persist_schema() -> OrbitalSchema {
 fn chained_set_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": {
                 "name": "Policy",
@@ -191,7 +191,7 @@ fn a_set_value_reads_a_field_set_earlier_in_the_same_transition() {
 fn compound_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Box", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },
             "traits": [{

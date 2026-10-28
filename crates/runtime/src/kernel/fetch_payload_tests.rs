@@ -7,7 +7,7 @@ use crate::entity_source::InMemoryEntityCache;
 fn loaded(fetch: serde_json::Value) -> Option<Value> {
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "Fetches",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Items",
             "entity": {
                 "name": "Item",

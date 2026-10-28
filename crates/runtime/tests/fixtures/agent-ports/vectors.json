@@ -5,7 +5,7 @@
   },
   "schema": {
     "name": "AgentPortsApp",
-    "orbitals": [
+    "typeContractVersion": 1, "orbitals": [
       {
         "name": "Desk",
         "entity": {

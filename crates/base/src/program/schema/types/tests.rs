@@ -4,7 +4,11 @@ fn an_int_entity_field_is_int_on_the_wire_and_float_number_duration_stay_number(
     use serde_json::json;
     assert_eq!(FieldType::from_primitive_name("int"), Some(FieldType::Int));
     for name in ["float", "number", "duration"] {
-        assert_eq!(FieldType::from_primitive_name(name), Some(FieldType::Number), "{name}");
+        assert_eq!(
+            FieldType::from_primitive_name(name),
+            Some(FieldType::Number),
+            "{name}"
+        );
     }
     let field: super::FieldDefinition =
         serde_json::from_value(json!({ "name": "count", "type": "int", "default": 3 })).unwrap();
@@ -16,7 +20,10 @@ fn an_int_entity_field_is_int_on_the_wire_and_float_number_duration_stay_number(
     assert_eq!(back.default, Some(super::SExpression::Number(3.0)));
     let number: super::FieldDefinition =
         serde_json::from_value(json!({ "name": "price", "type": "number" })).unwrap();
-    assert_eq!(serde_json::to_value(&number).unwrap()["type"], json!("number"));
+    assert_eq!(
+        serde_json::to_value(&number).unwrap()["type"],
+        json!("number")
+    );
 }
 
 #[test]
@@ -32,13 +39,18 @@ fn generic_substitution_composes_nullable_without_changing_field_presence() {
         let mut field: super::FieldDefinition = serde_json::from_value(json!({
             "name":"value", "type":"$v", "nullable":occurrence, "required":true,
             "description":"keep"
-        })).unwrap();
+        }))
+        .unwrap();
         let binding: super::FieldDefinition = serde_json::from_value(json!({
             "type":"string", "nullable":bound, "required":false, "values":["ready"]
-        })).unwrap();
+        }))
+        .unwrap();
         let bindings = crate::collections::IndexMap::from([("v".to_string(), binding)]);
         field.substitute_type_vars(&bindings);
-        assert_eq!(field.nullable, expected, "occurrence={occurrence:?}, bound={bound:?}");
+        assert_eq!(
+            field.nullable, expected,
+            "occurrence={occurrence:?}, bound={bound:?}"
+        );
         assert_eq!(field.required, Some(true));
         assert_eq!(field.name.as_deref(), Some("value"));
         assert_eq!(field.description.as_deref(), Some("keep"));
@@ -48,13 +60,26 @@ fn generic_substitution_composes_nullable_without_changing_field_presence() {
         "type":"object", "properties":{"slot":{"type":"$v","nullable":false,"required":false}},
         "items":{"type":"$v","nullable":false},
         "additionalProperties":{"type":"$v","nullable":false}
-    })).unwrap();
+    }))
+    .unwrap();
     let binding = serde_json::from_value(json!({"type":"string","nullable":true})).unwrap();
-    container.substitute_type_vars(&crate::collections::IndexMap::from([("v".to_string(), binding)]));
-    assert_eq!(container.properties.as_ref().unwrap()["slot"].nullable, Some(true));
-    assert_eq!(container.properties.as_ref().unwrap()["slot"].required, Some(false));
+    container.substitute_type_vars(&crate::collections::IndexMap::from([(
+        "v".to_string(),
+        binding,
+    )]));
+    assert_eq!(
+        container.properties.as_ref().unwrap()["slot"].nullable,
+        Some(true)
+    );
+    assert_eq!(
+        container.properties.as_ref().unwrap()["slot"].required,
+        Some(false)
+    );
     assert_eq!(container.items.as_ref().unwrap().nullable, Some(true));
-    assert_eq!(container.additional_properties.as_ref().unwrap().nullable, Some(true));
+    assert_eq!(
+        container.additional_properties.as_ref().unwrap().nullable,
+        Some(true)
+    );
 }
 
 #[test]
@@ -66,27 +91,50 @@ fn a_type_variable_is_dollar_named_on_the_wire_and_binds_by_substitution() {
     }});
     let mut def: super::FieldDefinition = serde_json::from_value(page.clone()).unwrap();
     let items = &def.properties.as_ref().unwrap()["items"];
-    assert_eq!(items.items.as_ref().unwrap().field_type, super::FieldType::type_var("t"));
-    assert_eq!(serde_json::to_value(&def).unwrap(), page, "round-trips as `$t`");
+    assert_eq!(
+        items.items.as_ref().unwrap().field_type,
+        super::FieldType::type_var("t")
+    );
+    assert_eq!(
+        serde_json::to_value(&def).unwrap(),
+        page,
+        "round-trips as `$t`"
+    );
     let plain: super::FieldType = serde_json::from_value(json!("string")).unwrap();
-    assert_eq!(plain, super::FieldType::String, "control: a tag is not a variable");
+    assert_eq!(
+        plain,
+        super::FieldType::String,
+        "control: a tag is not a variable"
+    );
     assert!(serde_json::from_value::<super::FieldType>(json!("strnig")).is_err());
     assert!(serde_json::from_value::<super::FieldType>(json!("$")).is_err());
 
     let order: super::FieldDefinition =
-        serde_json::from_value(json!({ "type": "relation", "relation": { "entity": "Order" } })).unwrap();
-    let other: super::FieldDefinition = serde_json::from_value(json!({ "type": "number" })).unwrap();
+        serde_json::from_value(json!({ "type": "relation", "relation": { "entity": "Order" } }))
+            .unwrap();
+    let other: super::FieldDefinition =
+        serde_json::from_value(json!({ "type": "number" })).unwrap();
     let bindings = crate::collections::IndexMap::from([("u".to_string(), other)]);
     def.substitute_type_vars(&bindings);
     let unbound = &def.properties.as_ref().unwrap()["items"];
-    assert_eq!(unbound.items.as_ref().unwrap().field_type, super::FieldType::type_var("t"), "control: another binding leaves `t`");
-    def.substitute_type_vars(&crate::collections::IndexMap::from([("t".to_string(), order)]));
+    assert_eq!(
+        unbound.items.as_ref().unwrap().field_type,
+        super::FieldType::type_var("t"),
+        "control: another binding leaves `t`"
+    );
+    def.substitute_type_vars(&crate::collections::IndexMap::from([(
+        "t".to_string(),
+        order,
+    )]));
     let bound = &def.properties.as_ref().unwrap()["items"];
     assert_eq!(bound.required, Some(true));
     let elem = bound.items.as_ref().unwrap();
     assert_eq!(elem.field_type, super::FieldType::Relation);
     assert_eq!(elem.relation.as_ref().unwrap().entity, "Order");
-    assert_eq!(def.properties.as_ref().unwrap()["cursor"].field_type, super::FieldType::String);
+    assert_eq!(
+        def.properties.as_ref().unwrap()["cursor"].field_type,
+        super::FieldType::String
+    );
 }
 
 #[test]
@@ -95,10 +143,20 @@ fn a_field_derived_expression_round_trips_and_skips_when_absent() {
     let field = json!({ "name": "emailKey", "type": "string", "derived": ["str/lower", ["object/get", "@entity", "email"]] });
     let f: super::FieldDefinition = serde_json::from_value(field.clone()).unwrap();
     assert!(f.derived.is_some());
-    assert_eq!(serde_json::to_value(&f).unwrap()["derived"], field["derived"]);
-    let plain: super::FieldDefinition = serde_json::from_value(json!({ "name": "email", "type": "string" })).unwrap();
+    assert_eq!(
+        serde_json::to_value(&f).unwrap()["derived"],
+        field["derived"]
+    );
+    let plain: super::FieldDefinition =
+        serde_json::from_value(json!({ "name": "email", "type": "string" })).unwrap();
     assert!(plain.derived.is_none());
-    assert!(serde_json::to_value(&plain).unwrap().get("derived").is_none(), "control: absent stays absent");
+    assert!(
+        serde_json::to_value(&plain)
+            .unwrap()
+            .get("derived")
+            .is_none(),
+        "control: absent stays absent"
+    );
 }
 
 #[test]
@@ -112,27 +170,49 @@ fn entity_indexes_round_trip_camel_case_and_skip_when_absent() {
     let e: super::EntityDefinition = serde_json::from_value(entity.clone()).unwrap();
     let indexes = e.indexes.as_ref().expect("indexes parsed");
     assert_eq!(indexes.len(), 2);
-    assert_eq!(indexes[1].fields, vec!["graphId".to_string(), "relation".to_string()]);
+    assert_eq!(
+        indexes[1].fields,
+        vec!["graphId".to_string(), "relation".to_string()]
+    );
     assert_eq!(indexes[1].order_by.as_deref(), Some("weight:desc"));
     assert_eq!(indexes[0].order_by, None);
-    assert_eq!(serde_json::to_value(&e).unwrap()["indexes"], entity["indexes"]);
-    let bare: super::EntityDefinition = serde_json::from_value(json!({ "name": "A", "fields": [] })).unwrap();
-    assert!(serde_json::to_value(&bare).unwrap().get("indexes").is_none());
-    let unknown = json!({ "name": "A", "fields": [], "indexes": [{ "fields": ["x"], "unique": true }] });
-    assert!(serde_json::from_value::<super::EntityDefinition>(unknown).is_err(), "control: an unknown index key is refused");
+    assert_eq!(
+        serde_json::to_value(&e).unwrap()["indexes"],
+        entity["indexes"]
+    );
+    let bare: super::EntityDefinition =
+        serde_json::from_value(json!({ "name": "A", "fields": [] })).unwrap();
+    assert!(serde_json::to_value(&bare)
+        .unwrap()
+        .get("indexes")
+        .is_none());
+    let unknown =
+        json!({ "name": "A", "fields": [], "indexes": [{ "fields": ["x"], "unique": true }] });
+    assert!(
+        serde_json::from_value::<super::EntityDefinition>(unknown).is_err(),
+        "control: an unknown index key is refused"
+    );
 }
 
 #[test]
 fn propositions_on_real_declarations_and_on_the_transition_expectation_round_trip() {
     use serde_json::json;
-    let ensures = json!([["=", "@entity.balance", ["-", "@fromEntity.balance", "@payload.amount"]]]);
+    let ensures = json!([[
+        "=",
+        "@entity.balance",
+        ["-", "@fromEntity.balance", "@payload.amount"]
+    ]]);
     let entity = json!({ "name": "Account", "fields": [{ "name": "balance", "type": "number" }], "invariants": [[">=", "@entity.balance", 0.0]] });
     let state = json!({ "name": "active", "holds": [">=", "@entity.balance", 0.0] });
-    let transition = json!({ "from": "active", "to": "active", "event": "SPEND", "ensures": ensures });
+    let transition =
+        json!({ "from": "active", "to": "active", "event": "SPEND", "ensures": ensures });
     let expectation = json!({ "kind": "transition", "traitName": "Wallet", "from": "active", "event": "SPEND", "to": "active", "ensures": ensures, "strict": true });
     let e: super::EntityDefinition = serde_json::from_value(entity.clone()).unwrap();
     assert_eq!(e.invariants.as_ref().map(Vec::len), Some(1));
-    assert_eq!(serde_json::to_value(&e).unwrap()["invariants"], entity["invariants"]);
+    assert_eq!(
+        serde_json::to_value(&e).unwrap()["invariants"],
+        entity["invariants"]
+    );
     let s: super::StateDefinition = serde_json::from_value(state.clone()).unwrap();
     assert_eq!(serde_json::to_value(&s).unwrap(), state);
     let t: super::TransitionDefinition = serde_json::from_value(transition.clone()).unwrap();
@@ -153,15 +233,28 @@ fn control_declarations_without_propositions_serialize_no_proposition_keys() {
     assert_eq!(serde_json::to_value(&t).unwrap(), transition);
     let x: super::ExpectDeclaration = serde_json::from_value(expectation.clone()).unwrap();
     assert_eq!(serde_json::to_value(&x).unwrap(), expectation);
-    let e: super::EntityDefinition = serde_json::from_value(json!({ "name": "A", "fields": [{ "name": "n", "type": "number" }] })).unwrap();
-    assert!(serde_json::to_value(&e).unwrap().get("invariants").is_none());
+    let e: super::EntityDefinition = serde_json::from_value(
+        json!({ "name": "A", "fields": [{ "name": "n", "type": "number" }] }),
+    )
+    .unwrap();
+    assert!(serde_json::to_value(&e)
+        .unwrap()
+        .get("invariants")
+        .is_none());
 }
 
 #[test]
 fn a_tick_interval_is_a_duration_only_when_it_is_a_number_or_digits_with_a_known_unit() {
-    let tick = |interval: StringOrNumber| TickDefinition { interval, ..serde_json::from_value(serde_json::json!({ "name": "t", "interval": 1, "effects": [] })).unwrap() };
+    let tick = |interval: StringOrNumber| TickDefinition {
+        interval,
+        ..serde_json::from_value(serde_json::json!({ "name": "t", "interval": 1, "effects": [] }))
+            .unwrap()
+    };
     let text = |s: &str| tick(StringOrNumber::String(s.to_string()));
-    assert_eq!(tick(StringOrNumber::Number(1500.0)).duration_ms(), Some(1500));
+    assert_eq!(
+        tick(StringOrNumber::Number(1500.0)).duration_ms(),
+        Some(1500)
+    );
     assert_eq!(text("5s").duration_ms(), Some(5000));
     assert_eq!(text("2m").duration_ms(), Some(120_000));
     assert_eq!(text("1h").duration_ms(), Some(3_600_000));
@@ -172,7 +265,11 @@ fn a_tick_interval_is_a_duration_only_when_it_is_a_number_or_digits_with_a_known
     }
     assert_eq!(text("frame").interval_ms(), None);
     assert_eq!(text("every-frame").interval_ms(), None);
-    assert_eq!(text("0 9 * * *").interval_ms(), Some(1000), "the fallback the cron caller never reaches");
+    assert_eq!(
+        text("0 9 * * *").interval_ms(),
+        Some(1000),
+        "the fallback the cron caller never reaches"
+    );
     assert_eq!(text("7s").interval_ms(), Some(7000));
 }
 
@@ -230,7 +327,8 @@ mod union_variant {
     use serde_json::json;
 
     fn union(variants: serde_json::Value, order: &[&str]) -> FieldDefinition {
-        serde_json::from_value(json!({ "type": "union", "values": order, "properties": variants })).unwrap()
+        serde_json::from_value(json!({ "type": "union", "values": order, "properties": variants }))
+            .unwrap()
     }
 
     fn tag(value: &str) -> serde_json::Value {
@@ -253,9 +351,14 @@ mod union_variant {
     }
 
     fn chosen<'d>(def: &'d FieldDefinition, c: UnionVariantChoice<'d>) -> Option<&'d str> {
-        let UnionVariantChoice::Matched(v) = c else { return None };
+        let UnionVariantChoice::Matched(v) = c else {
+            return None;
+        };
         let (names, variants) = (def.values.as_ref()?, def.properties.as_ref()?);
-        names.iter().find(|n| variants.get(*n).is_some_and(|d| std::ptr::eq(d, v))).map(String::as_str)
+        names
+            .iter()
+            .find(|n| variants.get(*n).is_some_and(|d| std::ptr::eq(d, v)))
+            .map(String::as_str)
     }
 
     fn agent_tool() -> FieldDefinition {
@@ -296,22 +399,37 @@ mod union_variant {
     #[test]
     fn control_a_real_tag_still_selects_beside_a_by_name_variant() {
         let def = predicate();
-        assert_eq!(chosen(&def, pick(&def, &[("kind", "compare"), ("field", "a")])), Some("Compare"));
+        assert_eq!(
+            chosen(&def, pick(&def, &[("kind", "compare"), ("field", "a")])),
+            Some("Compare")
+        );
         assert_eq!(chosen(&def, pick(&def, &[("label", "l")])), Some("Leaf"));
     }
 
     #[test]
     fn a_tag_selects_and_an_untagged_value_selects_by_closed_shape() {
         let def = agent_tool();
-        assert_eq!(chosen(&def, pick(&def, &[("scope", "declared")])), Some("Scope"));
-        assert_eq!(chosen(&def, pick(&def, &[("read", "Product")])), Some("Read"));
-        assert_eq!(chosen(&def, pick(&def, &[("event", "Shop.ADD")])), Some("Input"));
+        assert_eq!(
+            chosen(&def, pick(&def, &[("scope", "declared")])),
+            Some("Scope")
+        );
+        assert_eq!(
+            chosen(&def, pick(&def, &[("read", "Product")])),
+            Some("Read")
+        );
+        assert_eq!(
+            chosen(&def, pick(&def, &[("event", "Shop.ADD")])),
+            Some("Input")
+        );
     }
 
     #[test]
     fn a_value_merging_two_variants_fits_none() {
         let def = agent_tool();
-        assert!(matches!(pick(&def, &[("event", "Shop.ADD"), ("read", "Product")]), UnionVariantChoice::NoMatch));
+        assert!(matches!(
+            pick(&def, &[("event", "Shop.ADD"), ("read", "Product")]),
+            UnionVariantChoice::NoMatch
+        ));
     }
 
     #[test]
@@ -323,7 +441,9 @@ mod union_variant {
                     "B": { "type": "object", "properties": { "x": x, "y": x } } }),
             &["A", "B"],
         );
-        assert!(matches!(pick(&tie, &[("x", "1")]), UnionVariantChoice::Ambiguous(n) if n == ["A", "B"]));
+        assert!(
+            matches!(pick(&tie, &[("x", "1")]), UnionVariantChoice::Ambiguous(n) if n == ["A", "B"])
+        );
         let broken = union(
             json!({ "A": { "type": "object", "properties": { "x": x_req } },
                     "B": { "type": "object", "properties": { "x": x, "y": x_req } } }),
@@ -335,13 +455,21 @@ mod union_variant {
     #[test]
     fn a_late_bound_tag_defers() {
         let def = agent_tool();
-        assert!(matches!(pick(&def, &[("scope", "@config.scope")]), UnionVariantChoice::Deferred));
+        assert!(matches!(
+            pick(&def, &[("scope", "@config.scope")]),
+            UnionVariantChoice::Deferred
+        ));
     }
 
     #[test]
     fn an_undeclared_variant_or_a_by_name_reference_is_malformed() {
-        let def = union(json!({ "A": { "type": "object", "properties": {} } }), &["A", "Missing"]);
-        assert!(matches!(pick(&def, &[]), UnionVariantChoice::Malformed(m) if m.contains("Missing")));
+        let def = union(
+            json!({ "A": { "type": "object", "properties": {} } }),
+            &["A", "Missing"],
+        );
+        assert!(
+            matches!(pick(&def, &[]), UnionVariantChoice::Malformed(m) if m.contains("Missing"))
+        );
         let back: FieldDefinition = serde_json::from_value(by_name("Pred")).unwrap();
         assert!(matches!(pick(&back, &[]), UnionVariantChoice::Malformed(_)));
     }
@@ -356,8 +484,8 @@ fn field_type_event_serde_round_trips_as_lowercase_tag() {
 }
 
 /// `ConfigField.default: Option<SExpression>` must distinguish "no
-    /// default was declared" (absent `default` key) from "the default IS
-    /// `Null`" (a `trait`-typed knob's `none` sentinel, owner ruling
+/// default was declared" (absent `default` key) from "the default IS
+/// `Null`" (a `trait`-typed knob's `none` sentinel, owner ruling
 /// 2026-09-13) through a full JSON round trip — the shape a `.orb`
 /// registry file actually persists and every downstream consumer
 /// (`uses` load, `orb validate`'s re-inline, the runtime) reads back.
@@ -396,10 +524,7 @@ fn config_field_default_null_round_trips_as_some_null_not_none() {
     };
 
     for (field, expected) in [
-        (
-            bound,
-            Some(SExpression::string("@trait.DefaultForm")),
-        ),
+        (bound, Some(SExpression::string("@trait.DefaultForm"))),
         (unbound, Some(SExpression::Null)),
         (no_default, None),
     ] {
@@ -453,10 +578,7 @@ fn retag_callsite_payload_keeps_local_field_as_payload() {
     );
     retag_callsite_payload(&mut e, &local);
     if let SExpression::Object(m) = &e {
-        assert_eq!(
-            m["entity"],
-            SExpression::string("@payload.data")
-        );
+        assert_eq!(m["entity"], SExpression::string("@payload.data"));
     } else {
         panic!("shape changed");
     }
@@ -484,10 +606,7 @@ fn retag_callsite_payload_uses_field_head_for_dotted_and_indexed_paths() {
     assert_eq!(dotted, SExpression::string("@payload.row.name"));
     let mut indexed = SExpression::string("@payload.data[0].id");
     retag_callsite_payload(&mut indexed, &local); // data not local → capture
-    assert_eq!(
-        indexed,
-        SExpression::string("@callsitePayload.data[0].id")
-    );
+    assert_eq!(indexed, SExpression::string("@callsitePayload.data[0].id"));
 }
 
 #[test]
@@ -628,16 +747,21 @@ fn test_entity_shared_true_round_trips() {
 
 #[test]
 fn test_store_binding_round_trips_on_entity_and_app_and_is_omitted_when_absent() {
-    let entity: EntityDefinition =
-        serde_json::from_str(r#"{ "name": "Ticket", "persistence": "persistent", "store": "Rows", "fields": [] }"#).unwrap();
+    let entity: EntityDefinition = serde_json::from_str(
+        r#"{ "name": "Ticket", "persistence": "persistent", "store": "Rows", "fields": [] }"#,
+    )
+    .unwrap();
     assert_eq!(entity.store.as_deref(), Some("Rows"));
     assert_eq!(serde_json::to_value(&entity).unwrap()["store"], "Rows");
-    let plain: EntityDefinition = serde_json::from_str(r#"{ "name": "Note", "fields": [] }"#).unwrap();
+    let plain: EntityDefinition =
+        serde_json::from_str(r#"{ "name": "Note", "fields": [] }"#).unwrap();
     assert_eq!(plain.store, None);
     assert!(serde_json::to_value(&plain).unwrap().get("store").is_none());
-    let app: OrbitalSchema = serde_json::from_str(r#"{ "name": "shop", "store": "Rows", "orbitals": [] }"#).unwrap();
+    let app: OrbitalSchema =
+        serde_json::from_str(r#"{ "name": "shop", "store": "Rows", "orbitals": [] }"#).unwrap();
     assert_eq!(app.store.as_deref(), Some("Rows"));
-    let bare: OrbitalSchema = serde_json::from_str(r#"{ "name": "shop", "orbitals": [] }"#).unwrap();
+    let bare: OrbitalSchema =
+        serde_json::from_str(r#"{ "name": "shop", "orbitals": [] }"#).unwrap();
     assert!(serde_json::to_value(&bare).unwrap().get("store").is_none());
 }
 
@@ -713,13 +837,13 @@ fn test_entity_identity_round_trips_when_set() {
 
 #[test]
 fn orbital_ref_object_roundtrips_through_serde() {
-    let mut fields = std::collections::HashMap::new();
+    let mut fields = crate::collections::IndexMap::new();
     fields.insert("dueDate".to_string(), "deadline".to_string());
 
-    let mut pages = std::collections::HashMap::new();
+    let mut pages = crate::collections::IndexMap::new();
     pages.insert("/notes".to_string(), "/scratch-notes".to_string());
 
-    let mut config = std::collections::HashMap::new();
+    let mut config = crate::collections::IndexMap::new();
     config.insert(
         "pageSize".to_string(),
         ConfigField {
@@ -744,7 +868,7 @@ fn orbital_ref_object_roundtrips_through_serde() {
         },
     );
 
-    let mut events = std::collections::HashMap::new();
+    let mut events = crate::collections::IndexMap::new();
     events.insert("NOTE_SAVED".to_string(), "SCRATCH_NOTE_SAVED".to_string());
 
     let obj = OrbitalRefObject {
@@ -977,10 +1101,100 @@ fn field_properties_keep_their_declaration_order_through_a_round_trip() {
     let text = r#"{"name":"p","type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"},"c":{"type":"string"}}}"#;
     for _ in 0..8 {
         let field: super::FieldDefinition = serde_json::from_str(text).unwrap();
-        let keys: Vec<&str> = field.properties.as_ref().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = field
+            .properties
+            .as_ref()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(keys, ["b", "a", "c"]);
         let out = serde_json::to_string(&field).unwrap();
         let at = |k: &str| out.find(&format!("\"{k}\":{{")).unwrap();
         assert!(at("b") < at("a") && at("a") < at("c"), "{out}");
     }
+}
+
+fn key_positions(wire: &str, keys: &[&str]) -> Vec<usize> {
+    keys.iter()
+        .map(|k| {
+            wire.find(&format!("\"{k}\":"))
+                .unwrap_or_else(|| panic!("{k} missing in {wire}"))
+        })
+        .collect()
+}
+
+fn is_ascending(positions: &[usize]) -> bool {
+    positions.windows(2).all(|w| w[0] < w[1])
+}
+
+#[test]
+fn schema_maps_serialize_in_insertion_order() {
+    use super::{DesignHints, DomainContext, TraitReference};
+    let build = |keys: &[&str]| {
+        let entries = |tag: &str| {
+            keys.iter()
+                .map(|k| {
+                    format!(
+                        "\"{tag}{k}\":{}",
+                        if tag == "c" {
+                            format!("{{\"type\":\"string\",\"default\":\"{k}\"}}")
+                        } else {
+                            format!("\"{k}\"")
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let trait_ref = format!(
+            "{{\"ref\":\"A.traits.B\",\"config\":{{{}}},\"events\":{{{}}},\"eventIds\":{{{}}},\"fields\":{{{}}},\"typeArgs\":{{{}}}}}",
+            entries("c"), entries("e"), entries("i"), entries("f"), entries("t")
+        );
+        let vocab = format!("{{\"vocabulary\":{{{}}}}}", entries("v"));
+        let hints = format!("{{\"uxHints\":{{{}}}}}", entries("u"));
+        let trait_ref: TraitReference = serde_json::from_str(&trait_ref).unwrap();
+        let vocab: DomainContext = serde_json::from_str(&vocab).unwrap();
+        let hints: DesignHints = serde_json::from_str(&hints).unwrap();
+        (
+            serde_json::to_string(&trait_ref).unwrap(),
+            serde_json::to_string(&vocab).unwrap(),
+            serde_json::to_string(&hints).unwrap(),
+        )
+    };
+    let forward = ["zeta", "alpha", "mid", "beta"];
+    let reversed = ["beta", "mid", "alpha", "zeta"];
+    let (a_trait, a_vocab, a_hints) = build(&forward);
+    for _ in 0..8 {
+        assert_eq!(
+            build(&forward),
+            (a_trait.clone(), a_vocab.clone(), a_hints.clone())
+        );
+    }
+    let (b_trait, b_vocab, b_hints) = build(&reversed);
+    assert_ne!(a_trait, b_trait);
+    assert_ne!(a_vocab, b_vocab);
+    assert_ne!(a_hints, b_hints);
+    for tag in ["c", "e", "i", "f", "t"] {
+        let fwd: Vec<String> = forward.iter().map(|k| format!("{tag}{k}")).collect();
+        let rev: Vec<String> = reversed.iter().map(|k| format!("{tag}{k}")).collect();
+        let fwd: Vec<&str> = fwd.iter().map(String::as_str).collect();
+        let rev: Vec<&str> = rev.iter().map(String::as_str).collect();
+        assert!(
+            is_ascending(&key_positions(&a_trait, &fwd)),
+            "{tag} forward"
+        );
+        assert!(
+            is_ascending(&key_positions(&b_trait, &rev)),
+            "{tag} reversed"
+        );
+    }
+    assert!(is_ascending(&key_positions(
+        &a_vocab,
+        &["vzeta", "valpha", "vmid", "vbeta"]
+    )));
+    assert!(is_ascending(&key_positions(
+        &a_hints,
+        &["uzeta", "ualpha", "umid", "ubeta"]
+    )));
 }

@@ -16,7 +16,7 @@ fn schema(trigger_is_listened_name: bool) -> OrbitalSchema {
     };
     serde_json::from_value(json!({
         "name": "refan",
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             {
                 "name": "A",
                 "entity": { "name": "Q", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "answered", "type": "number", "default": 0 }] },

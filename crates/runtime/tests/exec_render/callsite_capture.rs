@@ -24,7 +24,7 @@ fn idle() -> Json {
 fn schema_of(traits: Vec<Json>) -> OrbitalSchema {
     let entity: Json = serde_json::from_str(ENTITY).unwrap();
     serde_json::from_value(json!({
-        "name": "App", "orbitals": [{ "name": "Main", "entity": entity, "traits": traits }]
+        "name": "App", "typeContractVersion": 1, "orbitals": [{ "name": "Main", "entity": entity, "traits": traits }]
     }))
     .unwrap()
 }

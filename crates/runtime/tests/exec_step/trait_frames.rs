@@ -24,7 +24,7 @@ fn from(trait_name: &str, event: &str, triggers: &str) -> Json {
 fn kernel() -> (RuntimeKernel, Arc<InMemoryEntityCache>) {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "frames",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Doc", "shared": true, "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "v", "type": "string" }, { "name": "w", "type": "string", "default": "doc-w" }] },
             "auxiliaryEntities": [{ "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "v", "type": "string", "default": "none" }] }],

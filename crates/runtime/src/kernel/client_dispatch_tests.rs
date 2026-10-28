@@ -12,7 +12,7 @@ use {
 fn persisted_awaited_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -48,7 +48,7 @@ fn persisted_awaited_schema() -> OrbitalSchema {
 fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -80,7 +80,7 @@ fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
 fn runtime_optimistic_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": {
                 "name": "Cursor", "persistence": "runtime",
@@ -115,7 +115,7 @@ fn runtime_optimistic_schema() -> OrbitalSchema {
 fn render_ui_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -144,7 +144,7 @@ fn render_ui_schema() -> OrbitalSchema {
 fn server_response_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -242,7 +242,7 @@ fn client_env_delegates_persist_and_collects_server_leg() {
 fn a_cascade_leg_names_the_event_each_trait_fired_on() {
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -283,7 +283,7 @@ fn a_cascade_leg_names_the_event_each_trait_fired_on() {
 fn a_posted_dispatch_marks_each_non_local_trait_it_fired_as_awaiting() {
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -432,7 +432,7 @@ fn render_ui_theme_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
         "theme": "clay-light",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -493,7 +493,7 @@ fn pages_schema(extra_shell_pages: serde_json::Value) -> OrbitalSchema {
     shell_pages.extend(extra_shell_pages.as_array().cloned().unwrap_or_default());
     serde_json::from_value(serde_json::json!({
         "name": "SigilApp",
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             {
                 "name": "ShellOrbital",
                 "entity": { "name": "Shell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -573,7 +573,7 @@ fn a_second_registered_program_adds_its_entries_after_the_first_and_skips_a_list
     let kernel = server_kernel_with(pages_schema(serde_json::json!([])));
     let second: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "Second",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "ExtraOrbital",
             "entity": { "name": "Extra", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [],
@@ -617,7 +617,7 @@ fn a_second_registered_program_adds_its_entries_after_the_first_and_skips_a_list
 fn control_a_program_with_no_labeled_root_page_has_no_entries() {
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "NoNav",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "ShellOrbital",
             "entity": { "name": "Shell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -638,7 +638,7 @@ fn control_a_program_with_no_labeled_root_page_has_no_entries() {
 fn i18n_schema(locales: bool) -> OrbitalSchema {
     let mut schema = serde_json::json!({
         "name": "Site",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Home",
             "entity": { "name": "HomeView", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{
@@ -975,7 +975,7 @@ fn kernel_concurrent_dispatch_and_apply_no_deadlock() {
 fn local_seed_downstream_persist_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Message", "fields": [
                 { "name": "id", "type": "string" },
@@ -1051,7 +1051,7 @@ fn tick_emit_schema(own_arm: bool) -> OrbitalSchema {
     }
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [
                 { "name": "id", "type": "string" },
@@ -1294,7 +1294,7 @@ fn dispatching_an_unknown_tick_or_trait_is_an_error() {
 fn clearing_composer_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [
                 { "name": "id", "type": "string" },
@@ -1358,7 +1358,7 @@ fn client_env_leg_carries_the_row_the_event_was_dispatched_against() {
 fn counted_note_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string", "required": true }, { "name": "count", "type": "number" }] },
             "traits": [{
@@ -1415,7 +1415,7 @@ fn control_fitting_server_rows_fold_and_an_idless_row_is_the_runtime_singleton()
 fn declared_count_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{

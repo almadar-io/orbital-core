@@ -268,13 +268,13 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     if let Some(s) = child.stdout.take() {
         fields.push((
             "stdout",
-            number(fds.insert(FdEntry::ChildStdout(Arc::new(Mutex::new(s))))),
+            number(fds.insert(FdEntry::ChildStdout(Arc::new(super::fs::ReadPipe::new(s))))),
         ));
     }
     if let Some(s) = child.stderr.take() {
         fields.push((
             "stderr",
-            number(fds.insert(FdEntry::ChildStderr(Arc::new(Mutex::new(s))))),
+            number(fds.insert(FdEntry::ChildStderr(Arc::new(super::fs::ReadPipe::new(s))))),
         ));
     }
     host.handles.process.children.lock().insert(pid, child);

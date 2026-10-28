@@ -9,7 +9,7 @@ use crate::support::TestKernel;
 fn exec_step_3_set_merges_into_the_frame_and_keeps_untouched_fields() {
     let kernel = TestKernel::server().build(json!({
         "name": "Merge",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "MergeOrbital",
             "entity": { "name": "S", "persistence": "runtime",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "a", "type": "string" }, { "name": "b", "type": "string" }] },
@@ -37,7 +37,7 @@ fn empty_object() -> Value {
 fn exec_step_6_an_absent_payload_reads_as_an_empty_object() {
     let kernel = TestKernel::server().build(json!({
         "name": "Payloads",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "P",
             "entity": { "name": "S", "persistence": "runtime",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "seen", "type": "object" }] },
@@ -54,7 +54,7 @@ fn exec_step_6_an_absent_payload_reads_as_an_empty_object() {
 fn exec_step_6_a_tick_reads_its_payload_as_an_empty_object() {
     let kernel = TestKernel::client().build(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }, { "name": "seen", "type": "object" }] },
             "traits": [{ "name": "Ticker", "linkedEntity": "Note", "dispatch": "client",
@@ -75,7 +75,7 @@ fn settled_effects(persist: Json) -> Vec<(String, Option<String>)> {
     persist.as_array_mut().unwrap().push(route);
     let kernel = TestKernel::server().build(json!({
         "name": "Settled",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "persistence": "persistent", "collection": "notes",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },

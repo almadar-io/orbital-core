@@ -11,7 +11,7 @@ use std::sync::Arc;
 fn deliveries(listener_arm_from: &str) -> usize {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
@@ -59,7 +59,7 @@ fn a_listener_takes_a_handled_emit_once() {
 fn control_a_listener_of_an_unhandled_emit_also_takes_it_once() {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [

@@ -9,7 +9,7 @@ use crate::support::TestKernel;
 fn exec_data_4_a_create_never_re_addresses_the_trait_that_ran_it() {
     let kernel = TestKernel::server().build(json!({
         "name": "Notes",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "NotesOrbital",
             "entity": { "name": "Note", "persistence": "persistent", "collection": "notes",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }, { "name": "scratch", "type": "string" }] },
@@ -54,7 +54,7 @@ fn carried_kernel(shared: bool) -> orbital_core_runtime::kernel::RuntimeKernel {
     cache.write("Note", "b", &row(json!({ "id": "b", "fromB": "B-field" }))).unwrap();
     TestKernel::server().source(cache).build(json!({
         "name": "Notes",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "NotesOrbital",
             "entity": { "name": "Note", "persistence": "persistent", "shared": shared,
                 "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" },

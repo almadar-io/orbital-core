@@ -3,7 +3,7 @@
   "description": "std-audit-capture records the delivering event and its source (@event) with no upstream kind; same on both paths",
   "schema": {
     "name": "AuditProvenance",
-    "orbitals": [
+    "typeContractVersion": 1, "orbitals": [
       {
         "name": "Crm",
         "id": "orb_01M39V1PJW0NJ558Y0FYHXFPFN",

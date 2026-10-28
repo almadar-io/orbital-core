@@ -24,12 +24,13 @@ fn kernel() -> RuntimeKernel {
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [
                 { "name": "id", "type": "string" },
                 { "name": "ownerId", "type": "string", "required": true },
                 { "name": "count", "type": "number" },
+                { "name": "note", "type": "string", "nullable": true },
                 { "name": "tags", "type": "array", "items": { "type": "string" } },
                 { "name": "replies", "type": "relation", "relation": { "entity": "Note", "cardinality": "many" } }
             ] },
@@ -86,14 +87,21 @@ fn a_list_field_is_checked_element_by_element() {
 }
 
 #[test]
-fn control_rows_that_fit_absent_or_null_fields_and_undeclared_extras_load() {
+fn control_rows_that_fit_absent_or_nullable_fields_and_undeclared_extras_load() {
     let events = answered(json!([
         { "id": "n1", "count": 5, "tags": ["a"] },
         { "id": "n2" },
-        { "id": "n3", "count": null, "createdAt": "2026-10-27" }
+        { "id": "n3", "note": null, "createdAt": "2026-10-27" }
     ]));
     assert!(events.iter().any(|e| e == "LOADED"), "{events:?}");
     assert!(!events.iter().any(|e| e == "LOAD_FAILED"), "{events:?}");
+}
+
+#[test]
+fn a_null_in_a_field_not_declared_nullable_fails_the_fetch() {
+    let events = answered(json!([{ "id": "n1", "count": null }]));
+    assert!(events.iter().any(|e| e == "LOAD_FAILED"), "{events:?}");
+    assert!(!events.iter().any(|e| e == "LOADED"), "{events:?}");
 }
 
 #[test]

@@ -13,7 +13,7 @@ fn run(entity_extra: serde_json::Value, fetch_cfg: serde_json::Value) -> usize {
         entity[k] = v.clone();
     }
     let schema: OrbitalSchema = serde_json::from_value(json!({
-        "name": "sf", "orbitals": [{ "name": "Main", "entity": entity,
+        "name": "sf", "typeContractVersion": 1, "orbitals": [{ "name": "Main", "entity": entity,
             "traits": [{ "name": "T", "linkedEntity": "Ticket", "stateMachine": {
                 "states": [{ "name": "idle", "isInitial": true }],
                 "transitions": [{ "from": "idle", "to": "idle", "event": "LIST",
@@ -72,7 +72,7 @@ fn collection_declared_entity_reads_the_entity_name_key() {
 /// The fetch's own result for a by-id miss: what the verifier's judge reads as handled or not (G-ORBITAL-CORE-035).
 fn missed_fetch(fetch_cfg: serde_json::Value) -> orbital_core_base::effect_types::EffectResult {
     let schema: OrbitalSchema = serde_json::from_value(json!({
-        "name": "sf", "orbitals": [{ "name": "Main",
+        "name": "sf", "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Ticket", "persistence": "persistent", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "T", "linkedEntity": "Ticket", "stateMachine": {
                 "states": [{ "name": "loading", "isInitial": true }, { "name": "error" }],
@@ -109,7 +109,7 @@ fn control_a_missed_fetch_with_no_failure_route_reports_none() {
 /// The ids a `fetch` with `filter` returns over `rows`, in the fetch's order, for a LIST dispatched with `payload`.
 fn fetched_ids(rows: serde_json::Value, filter: serde_json::Value, payload: serde_json::Value) -> Vec<String> {
     let schema: OrbitalSchema = serde_json::from_value(json!({
-        "name": "sf", "orbitals": [{ "name": "Main",
+        "name": "sf", "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Ticket", "persistence": "persistent", "fields": [
                 { "name": "id", "type": "string" }, { "name": "projectId", "type": "string" },
                 { "name": "status", "type": "string" }, { "name": "score", "type": "number", "required": true }] },
@@ -200,7 +200,7 @@ fn an_object_filter_with_no_keys_is_the_empty_conjunction_and_admits_every_row()
 /// The ids a `fetch` lists after a `persist create` of `row`, on a Server kernel that keeps `[runtime]` rows in the kernel.
 fn persisted_then_fetched(persistence: &str, row: serde_json::Value) -> Vec<String> {
     let schema: OrbitalSchema = serde_json::from_value(json!({
-        "name": "rt", "orbitals": [{ "name": "Main",
+        "name": "rt", "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Card", "persistence": persistence, "fields": [
                 { "name": "id", "type": "string" }, { "name": "label", "type": "string" }] },
             "traits": [{ "name": "T", "linkedEntity": "Card", "stateMachine": {

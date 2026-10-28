@@ -4,7 +4,7 @@
   "schema": {
     "name": "fetch-payload",
     "version": "1.0.0",
-    "orbitals": [
+    "typeContractVersion": 1, "orbitals": [
       {
         "name": "Items",
         "pages": [],

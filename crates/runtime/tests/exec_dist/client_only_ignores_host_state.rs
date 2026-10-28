@@ -10,7 +10,7 @@ use std::sync::Arc;
 fn kernel() -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "split",
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             { "name": "SearchOrbital",
               "entity": { "name": "Query", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
               "traits": [{ "name": "Searcher", "linkedEntity": "Query", "dispatch": "client",
@@ -117,7 +117,7 @@ fn a_host_row_for_a_trait_that_awaits_the_host_is_still_folded() {
 fn confirm_kernel() -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "crm",
-        "orbitals": [
+        "typeContractVersion": 1, "orbitals": [
             { "name": "ContactOrbital",
               "entity": { "name": "Contact", "persistence": "persistent", "fields": [{ "name": "id", "type": "string" }] },
               "traits": [
@@ -250,7 +250,7 @@ fn control_a_host_state_outside_the_clients_own_dispatch_is_folded() {
 fn server_kernel(view_dispatch: &str, view_page: serde_json::Value) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "loader",
-        "orbitals": [{ "name": "Play",
+        "typeContractVersion": 1, "orbitals": [{ "name": "Play",
             "entity": { "name": "Load", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
                 { "name": "Loader", "linkedEntity": "Load",

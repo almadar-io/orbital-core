@@ -229,7 +229,7 @@ mod tests {
         let schema: OrbitalSchema = serde_json::from_value(json!({
             "name": "CalendarApp",
             "inbound": inbound,
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Cal",
                 "entity": { "name": "Req", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{
@@ -558,7 +558,7 @@ mod tests {
         let schema: OrbitalSchema = serde_json::from_value(json!({
             "name": "LoopApp",
             "inbound": ["cli-loop"],
-            "orbitals": [{
+            "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
                 "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{

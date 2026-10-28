@@ -5,7 +5,7 @@ use crate::entity_source::InMemoryEntityCache;
 fn row(effect: serde_json::Value) -> Value {
     let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
         "name": "SetObject",
-        "orbitals": [{
+        "typeContractVersion": 1, "orbitals": [{
             "name": "Page",
             "entity": { "name": "View", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{

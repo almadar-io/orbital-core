@@ -96,7 +96,7 @@ pub struct OrbitalSchema {
     /// Organism-wide declared config knobs (Almadar_Orbital_Import.md §4.5). Same
     /// `ConfigField` value type as `TraitDefinition.config` and `Orbital.config`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config: Option<HashMap<String, ConfigField>>,
+    pub config: Option<crate::collections::IndexMap<String, ConfigField>>,
 
     /// List of orbitals (feature units)
     pub orbitals: Vec<Orbital>,
@@ -246,7 +246,7 @@ pub struct SchemaMetadata {
     /// contextual edit) reads this to trace a resolved render-ui prop back to
     /// the config knob it came from. See [`ConfigProvenanceRecord`].
     #[serde(rename = "configProvenance", skip_serializing_if = "Option::is_none")]
-    pub config_provenance: Option<HashMap<String, Vec<ConfigProvenanceRecord>>>,
+    pub config_provenance: Option<crate::collections::IndexMap<String, Vec<ConfigProvenanceRecord>>>,
 
     /// For a program that declares `locales`: each loaded behavior's name →
     /// the folder of its source file, relative to the program's own folder.
