@@ -230,6 +230,47 @@ pub struct EventRequest {
     pub residence: Option<LegResidence>,
 }
 
+/// The option keys of a `program/dispatch` event request that become request fields as they are named.
+const DISPATCH_REQUEST_KEYS: [&str; 9] =
+    ["event", "entityId", "targetTrait", "clientId", "locale", "delivery", "dispatchLog", "mount", "entityByTrait"];
+
+/// An empty text, record or list in an event request is absent, as the HTTP routes read it.
+fn dispatch_option_present(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::String(text) => !text.is_empty(),
+        serde_json::Value::Object(fields) => !fields.is_empty(),
+        serde_json::Value::Array(items) => !items.is_empty(),
+        _ => true,
+    }
+}
+
+impl EventRequest {
+    /// The typed request a `program/dispatch` call names: `payload` and the option record (`option` reads one key of
+    /// it). The one parse every host shares; a record that is no event request is refused with the reason, which a host
+    /// answers as `INVALID_REQUEST` (400). `viewer`, when a record, is the request's `user`.
+    pub fn from_dispatch(
+        payload: serde_json::Value,
+        option: impl Fn(&str) -> Option<serde_json::Value>,
+    ) -> Result<Self, String> {
+        let mut request = serde_json::Map::new();
+        request.insert("payload".to_string(), payload);
+        for key in DISPATCH_REQUEST_KEYS {
+            if let Some(value) = option(key).filter(dispatch_option_present) {
+                request.insert(key.to_string(), value);
+            }
+        }
+        if let Some(traits) = option("traits").filter(|v| !v.is_null()) {
+            request.insert("traits".to_string(), traits);
+        }
+        if let Some(viewer) = option("viewer").filter(serde_json::Value::is_object) {
+            request.insert("user".to_string(), viewer);
+        }
+        serde_json::from_value(serde_json::Value::Object(request))
+            .map_err(|e| format!("program/dispatch: not an event request: {e}"))
+    }
+}
+
 /// One trait of a mount batch and the lifecycle event (`INIT`/`LOAD`/`$MOUNT`) it runs.
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -420,7 +461,7 @@ pub struct TransitionRejection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "unknown"))]
+    #[cfg_attr(test, ts(type = "JsonValue"))]
     pub guard: Option<Value>,
     /// `effect-failed`: the failure's message.
     #[serde(default, skip_serializing_if = "Option::is_none")]

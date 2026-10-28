@@ -473,7 +473,7 @@ fn rename_var(expr: &SExpression, name: &str) -> SExpression {
         SExpression::Array(items) => {
             SExpression::Array(items.iter().map(|i| rename_var(i, name)).collect())
         }
-        SExpression::Object(map) => SExpression::Object(
+        SExpression::Object(map) => SExpression::object(
             map.iter()
                 .map(|(k, v)| (k.clone(), rename_var(v, name)))
                 .collect(),
@@ -685,7 +685,7 @@ pub fn substitute_var(expr: &SExpression, name: &str, value: &SExpression) -> SE
                     .collect(),
             )
         }
-        SExpression::Object(map) => SExpression::Object(
+        SExpression::Object(map) => SExpression::object(
             map.iter()
                 .map(|(k, v)| (k.clone(), substitute_var(v, name, value)))
                 .collect(),

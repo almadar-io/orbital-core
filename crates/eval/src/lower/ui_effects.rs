@@ -76,7 +76,7 @@ impl NodeLowerer {
                 })
                 .unwrap_or("custom");
             let mut pattern = OirPattern::new(pattern_type);
-            for (key, value) in obj {
+            for (key, value) in obj.iter() {
                 if key != "type" {
                     pattern
                         .config

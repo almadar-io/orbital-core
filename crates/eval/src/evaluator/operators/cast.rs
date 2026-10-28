@@ -46,14 +46,3 @@ impl Operator for AsOp {
         }
     }
 }
-
-/// typed - `["typed", value, <declared type>]`: a static ascription. The declared type is the validator's (a `let` local
-/// annotation, a knob's type); the kernel evaluates the value and answers it, checking nothing. A run-time shape check
-/// is written in `.lolo` as `as T` or `json/parse T`.
-pub struct TypedOp;
-impl Operator for TypedOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "typed", == 2);
-        eval_expr(&args[0], ctx)
-    }
-}

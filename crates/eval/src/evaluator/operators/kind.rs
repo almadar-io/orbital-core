@@ -161,7 +161,6 @@ operator_kind! {
     IncludesOp => IncludesOp,
     JoinOp => JoinOp,
     AsOp => AsOp,
-    TypedOp => TypedOp,
     JsonParseOp => JsonParseOp,
     JsonStringifyOp => JsonStringifyOp,
     JsonValidOp => JsonValidOp,

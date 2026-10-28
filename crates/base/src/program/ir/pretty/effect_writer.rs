@@ -252,19 +252,6 @@ impl PrettyPrinter {
                 }
                 self.write(")");
             }
-            OirEffect::OsWatchHttp {
-                url_pattern,
-                method,
-                ..
-            } => {
-                self.write("os/watch-http(");
-                self.write_expr(url_pattern);
-                if let Some(m) = method {
-                    self.write(", ");
-                    self.write_expr(m);
-                }
-                self.write(")");
-            }
             OirEffect::OsWatchCron { expression, .. } => {
                 self.write("os/watch-cron(");
                 self.write_expr(expression);

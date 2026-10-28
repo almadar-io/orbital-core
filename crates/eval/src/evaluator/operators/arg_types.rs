@@ -1,7 +1,7 @@
 //! Operator signatures and declared shapes. The kernel raises a type mismatch where an OPERATOR reads an argument
 //! of the wrong kind; it runs no separate per-call check of an argument against the signature, because
 //! `orb validate` checks every declared signature statically and the kernel trusts validated types. Run-time checks
-//! exist only where a `.lolo` line declares them: `typed`, `as`, `json/parse T`, `xml/parse T` (this file's
+//! exist only where a `.lolo` line declares them: `as`, `json/parse T`, `xml/parse T` (this file's
 //! [`declared_shape`] / [`misfit_of_shape`]) and the entry checks of EXEC-EVAL-10. What the dispatch reads from the
 //! installed operator table is the arity (`Signature::arity_breach`), one lookup per call.
 #[cfg(not(feature = "std"))]
@@ -61,10 +61,7 @@ fn build_signatures() -> SignatureTable {
         let Some(kind) = get_operator(name) else {
             continue;
         };
-        if matches!(
-            kind,
-            OperatorKind::BehaviorCompositionStubOp(_) | OperatorKind::TypedOp
-        ) {
+        if matches!(kind, OperatorKind::BehaviorCompositionStubOp(_)) {
             continue;
         }
         signatures.insert(discriminant(&kind), Signature::of(meta));
@@ -102,16 +99,16 @@ pub fn operator_signature(name: &str) -> Option<Signature<'static>> {
 orbital_core_base::kernel_local! {
     static DECLARED: RefCell<HashMap<String, std::rc::Rc<DeclaredShape>>> = RefCell::new(HashMap::new());
     /// The shapes by the address of the shared text they were read from, which each entry keeps alive so the address
-    /// is never reused: a program's `typed` text is one allocation read on every call, and hashing it whole was the cost.
+    /// is never reused: a program's declared-shape text is one allocation read on every call, and hashing it whole was the cost.
     static DECLARED_AT: RefCell<HashMap<usize, (orbital_core_base::value::Shared<String>, std::rc::Rc<DeclaredShape>), std::hash::BuildHasherDefault<DiscriminantHasher>>> = RefCell::new(HashMap::default());
 }
 
-/// The declared shape a `typed` form or a `json/parse` shape records as JSON text: a bare `OirType`, or the type with
+/// The declared shape a `let` binding or a `json/parse` shape records as JSON text: a bare `OirType`, or the type with
 /// the definitions of the program types it names (`DeclaredShape`).
 pub fn declared_shape(arg: &SExpression) -> Result<std::rc::Rc<DeclaredShape>, OrbitalError> {
     let SExpression::String(text) = arg else {
         return Err(OrbitalError::Eval(EvalError::InvalidArgument(
-            "typed: the declared type must be JSON text".into(),
+            "declared type: the shape must be JSON text".into(),
         )));
     };
     let at = text.as_str().as_ptr() as usize;
@@ -131,7 +128,7 @@ pub fn declared_shape(arg: &SExpression) -> Result<std::rc::Rc<DeclaredShape>, O
     }
     let shape = DeclaredShape::read(text).map_err(|error| {
         OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "typed: the declared type is not a type: {error}"
+            "declared type: the shape is not a type: {error}"
         )))
     })?;
     let shape = std::rc::Rc::new(shape);
@@ -265,6 +262,28 @@ fn json_fits(value: &Value, list_null: bool, map_null: bool) -> bool {
     }
 }
 
+/// Where a value departs from its declared type: the path inside it, the kind found there, and the declared type at that path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Misfit {
+    pub path: String,
+    pub actual: &'static str,
+    pub expected: String,
+}
+
+impl Misfit {
+    fn new(path: String, actual: &'static str, ty: &OirType) -> Self {
+        Self {
+            path,
+            actual,
+            expected: declared_text(ty),
+        }
+    }
+
+    fn here(value: &Value, ty: &OirType) -> Self {
+        Self::new(String::new(), value.type_name(), ty)
+    }
+}
+
 /// The first mismatch under the explicit legacy or nullable-field contract. A name `named` defines is checked as its definition,
 /// so each item of a list of a recursive union matches a member of the union on its own; a closed string set
 /// (`"a" | "b"`) admits only its members.
@@ -273,7 +292,7 @@ fn first_misfit(
     ty: &OirType,
     named: &BTreeMap<String, OirType>,
     strict: bool,
-) -> Option<(String, &'static str)> {
+) -> Option<Misfit> {
     if value.is_null() && (!strict || matches!(ty, OirType::Optional { .. })) {
         return None;
     }
@@ -287,15 +306,21 @@ fn first_misfit(
                 return None;
             }
         }
-        return first_misfit(value, declared, named, strict);
+        return first_misfit(value, declared, named, strict).map(|mut found| {
+            if found.path.is_empty() {
+                found.expected = declared_text(ty);
+            }
+            found
+        });
     }
-    let misfit = || Some((String::new(), value.type_name()));
+    let misfit = || Some(Misfit::here(value, ty));
     if strict && value.is_null() && !matches!(ty, OirType::Union { .. }) {
         return misfit();
     }
     // The path is written only for a misfit: a value that fits allocates nothing.
-    let at = |prefix: std::fmt::Arguments<'_>, (path, actual): (String, &'static str)| {
-        (format!("{prefix}{path}"), actual)
+    let at = |prefix: std::fmt::Arguments<'_>, mut found: Misfit| {
+        found.path = format!("{prefix}{}", found.path);
+        found
     };
     let items = |items: &[Value], inner: &OirType| {
         items.iter().enumerate().find_map(|(i, item)| {
@@ -348,9 +373,9 @@ fn first_misfit(
             Value::Object(map) => fields
                 .iter()
                 .find_map(|field| match map.get(&field.name) {
-                    None => field
-                        .required
-                        .then(|| (format!(".{}", field.name), "absent")),
+                    None => field.required.then(|| {
+                        Misfit::new(format!(".{}", field.name), "absent", &field.field_type)
+                    }),
                     Some(item) => first_misfit(item, &field.field_type, named, strict)
                         .map(|misfit| at(format_args!(".{}", field.name), misfit)),
                 })
@@ -371,19 +396,17 @@ fn first_misfit(
             _ => misfit(),
         },
         OirType::File | OirType::Row { .. } | OirType::TypeRef { .. } => {
-            (!matches!(value, Value::Object(_))).then(|| (String::new(), value.type_name()))
+            (!matches!(value, Value::Object(_))).then(|| Misfit::here(value, ty))
         }
-        OirType::Reference { .. } => (!matches!(value, Value::Object(_) | Value::String(_)))
-            .then(|| (String::new(), value.type_name())),
+        OirType::Reference { .. } => {
+            (!matches!(value, Value::Object(_) | Value::String(_))).then(|| Misfit::here(value, ty))
+        }
         OirType::Number | OirType::Integer | OirType::Money | OirType::Instant => {
-            (!matches!(value, Value::Number(_))).then(|| (String::new(), value.type_name()))
+            (!matches!(value, Value::Number(_))).then(|| Misfit::here(value, ty))
         }
-        OirType::Boolean => {
-            (!matches!(value, Value::Bool(_))).then(|| (String::new(), value.type_name()))
-        }
+        OirType::Boolean => (!matches!(value, Value::Bool(_))).then(|| Misfit::here(value, ty)),
         OirType::Date | OirType::DateTime => {
-            (!matches!(value, Value::String(_) | Value::Number(_)))
-                .then(|| (String::new(), value.type_name()))
+            (!matches!(value, Value::String(_) | Value::Number(_))).then(|| Misfit::here(value, ty))
         }
         OirType::Bytes => match value {
             Value::String(text) if orbital_core_base::codec::base64_decode(text).is_ok() => None,
@@ -394,13 +417,13 @@ fn first_misfit(
             orbital_core_base::type_compat::decode_literal_union(name),
         ) {
             (Value::String(text), Ok(Some(members))) => {
-                (!members.contains(text)).then(|| (String::new(), "string"))
+                (!members.contains(text)).then(|| Misfit::new(String::new(), "string", ty))
             }
             (Value::String(_), Ok(None)) => None,
             (Value::String(_), Err(_)) if !strict => None,
             _ => misfit(),
         },
-        _ => (!matches!(value, Value::String(_))).then(|| (String::new(), value.type_name())),
+        _ => (!matches!(value, Value::String(_))).then(|| Misfit::here(value, ty)),
     }
 }
 
@@ -411,7 +434,7 @@ pub fn misfit_of_declared(
     ty: &OirType,
     named: &BTreeMap<String, OirType>,
 ) -> Option<(String, &'static str)> {
-    first_misfit(value, ty, named, false)
+    first_misfit(value, ty, named, false).map(|found| (found.path, found.actual))
 }
 
 /// `value` is of the declared `ty`, kind by kind, and a record's declared fields field by field.
@@ -422,16 +445,25 @@ pub fn value_of_declared(
 ) -> Result<(), OrbitalError> {
     match first_misfit(value, ty, named, false) {
         None => Ok(()),
-        Some((_, actual)) => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+        Some(found) => Err(OrbitalError::Eval(EvalError::TypeMismatch {
             expected: declared_text(ty),
-            actual: actual.to_string(),
+            actual: found.actual.to_string(),
         })),
     }
 }
 
 pub fn misfit_of_shape(value: &Value, declared: &DeclaredShape) -> Option<(String, &'static str)> {
+    misfit_detail_of_shape(value, declared).map(|found| (found.path, found.actual))
+}
+
+/// [`misfit_of_shape`] with the declared type at the failing path.
+pub fn misfit_detail_of_shape(value: &Value, declared: &DeclaredShape) -> Option<Misfit> {
     if declared.version.is_some_and(|version| version != 1) {
-        return Some((String::new(), "unsupported declared-shape version"));
+        return Some(Misfit::new(
+            String::new(),
+            "unsupported declared-shape version",
+            &declared.ty,
+        ));
     }
     first_misfit(
         value,
@@ -593,6 +625,85 @@ mod tests {
             None,
             "control: a nullable item admits it"
         );
+    }
+
+    #[test]
+    fn a_misfit_names_the_type_declared_at_its_own_path() {
+        use orbital_core_base::ir::types::OirField;
+        let unit = || OirType::Struct {
+            additional: None,
+            fields: vec![OirField::new("content", OirType::String)].into(),
+        };
+        let named = BTreeMap::from([("Unit".to_string(), unit())]);
+        let in_list = OirType::array(OirType::TypeRef {
+            name: "Unit".into(),
+        });
+        let in_map = OirType::Map {
+            key: Box::new(OirType::String),
+            value: Box::new(OirType::Number),
+        };
+        let strict = |value: &Value, ty: &OirType| first_misfit(value, ty, &named, true);
+        let null_content: Value =
+            serde_json::from_value(serde_json::json!([{ "content": null }])).unwrap();
+        let found = strict(&null_content, &in_list).unwrap();
+        assert_eq!(
+            (found.path.as_str(), found.actual, found.expected.as_str()),
+            ("[0].content", "null", "string")
+        );
+        let bad_map: Value = serde_json::from_value(serde_json::json!({ "k": "x" })).unwrap();
+        let found = strict(&bad_map, &in_map).unwrap();
+        assert_eq!(
+            (found.path.as_str(), found.expected.as_str()),
+            (".k", "number")
+        );
+        let found = strict(&s("x"), &OirType::Number).unwrap();
+        assert_eq!(
+            (found.path.as_str(), found.expected.as_str()),
+            ("", "number")
+        );
+        let fits: Value = serde_json::from_value(serde_json::json!([{ "content": "ok" }])).unwrap();
+        assert_eq!(
+            strict(&fits, &in_list),
+            None,
+            "control: a fitting value passes"
+        );
+    }
+
+    #[test]
+    fn a_field_without_bang_may_be_absent_but_null_needs_an_optional_type() {
+        use orbital_core_base::ir::types::OirField;
+        let mut absent_ok = OirField::new("role", OirType::String);
+        absent_ok.required = false;
+        let mut nullable = OirField::new(
+            "permissions",
+            OirType::optional(OirType::array(OirType::String)),
+        );
+        nullable.required = false;
+        let required = OirField::new("id", OirType::String);
+        let shape = OirType::Struct {
+            additional: None,
+            fields: vec![required, absent_ok, nullable].into(),
+        };
+        let named = BTreeMap::new();
+        let check = |json: serde_json::Value| {
+            let value: Value = serde_json::from_value(json).unwrap();
+            first_misfit(&value, &shape, &named, true)
+        };
+        assert_eq!(check(serde_json::json!({"id": "u"})), None);
+        assert_eq!(
+            check(serde_json::json!({"id": "u", "role": "r", "permissions": ["a"]})),
+            None
+        );
+        assert_eq!(
+            check(serde_json::json!({"id": "u", "permissions": null})),
+            None
+        );
+        let found = check(serde_json::json!({"id": "u", "role": null})).unwrap();
+        assert_eq!((found.path.as_str(), found.actual), (".role", "null"));
+        let found = check(serde_json::json!({"id": null})).unwrap();
+        assert_eq!((found.path.as_str(), found.actual), (".id", "null"));
+        let found = check(serde_json::json!({"id": "u", "permissions": "x"})).unwrap();
+        assert_eq!(found.path.as_str(), ".permissions");
     }
 
     #[test]

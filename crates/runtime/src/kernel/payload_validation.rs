@@ -5,7 +5,7 @@ use std::prelude::v1::*;
 use orbital_core_base::ir::types::{payload_field_shape, DeclaredShape, OirType};
 use orbital_core_base::schema::types::PayloadField;
 use orbital_core_base::value::Value;
-use orbital_core_eval::evaluator::operators::arg_types::misfit_of_shape;
+use orbital_core_eval::evaluator::operators::arg_types::misfit_detail_of_shape;
 use std::collections::BTreeMap;
 
 /// One violation of an event's declared payload.
@@ -49,7 +49,13 @@ pub fn validate_event_payload_with_types(
     schema: &[PayloadField],
     named: &BTreeMap<String, OirType>,
 ) -> Vec<PayloadFailure> {
-    validate_event_payload_with_context(event, payload, schema, &|name| named.get(name).cloned(), None)
+    validate_event_payload_with_context(
+        event,
+        payload,
+        schema,
+        &|name| named.get(name).cloned(),
+        None,
+    )
 }
 
 pub(crate) fn validate_event_payload_with_context(
@@ -85,15 +91,16 @@ pub(crate) fn validate_event_payload_with_context(
                 let mut declared =
                     DeclaredShape::with_resolver(None, payload_field_shape(field), resolve);
                 declared.version = version;
-                if let Some((path, actual)) = misfit_of_shape(value, &declared) {
-                    let mut failure = fail(if actual == "absent" {
+                if let Some(found) = misfit_detail_of_shape(value, &declared) {
+                    let mut failure = fail(if found.actual == "absent" {
                         PayloadFailureReason::Missing
-                    } else if version == Some(1) && actual == "null" {
+                    } else if version == Some(1) && found.actual == "null" {
                         PayloadFailureReason::Null
                     } else {
                         PayloadFailureReason::WrongType
                     });
-                    failure.field.push_str(&path);
+                    failure.field.push_str(&found.path);
+                    failure.expected_type = found.expected;
                     failures.push(failure);
                 }
             }
@@ -229,6 +236,81 @@ mod tests {
             validate_event_payload("E", &payload(json!({"rows": [{}]})), &schema)[0].reason,
             PayloadFailureReason::Missing
         );
+    }
+
+    #[test]
+    fn a_member_without_bang_may_be_absent_but_null_needs_a_nullable_declaration() {
+        let schema: Vec<PayloadField> = serde_json::from_value(json!([{
+            "name": "viewer", "type": "object", "required": true, "properties": [
+                {"name": "id", "type": "string", "required": true},
+                {"name": "role", "type": "string", "required": false},
+                {"name": "permissions", "type": "[string]", "required": false, "nullable": true}
+            ]
+        }, {"name": "note", "type": "string", "required": false},
+           {"name": "tag", "type": "string", "required": false, "nullable": true}]))
+        .unwrap();
+        let versioned = |value| {
+            validate_event_payload_with_context("E", &payload(value), &schema, &|_| None, Some(1))
+        };
+        for ok in [
+            json!({"viewer": {"id": "u"}}),
+            json!({"viewer": {"id": "u", "permissions": null}, "tag": null}),
+        ] {
+            assert!(versioned(ok).is_empty());
+        }
+        for (bad, field) in [
+            (json!({"viewer": {"id": "u", "role": null}}), "viewer.role"),
+            (json!({"viewer": {"id": null}}), "viewer.id"),
+            (json!({"viewer": {"id": "u"}, "note": null}), "note"),
+        ] {
+            let failures = versioned(bad);
+            assert_eq!(failures.len(), 1, "{field}");
+            assert_eq!(failures[0].field, field);
+        }
+    }
+
+    #[test]
+    fn a_misfit_names_the_type_declared_at_its_own_path() {
+        let schema: Vec<PayloadField> = serde_json::from_value(json!([
+            {"name": "units", "type": "[object]", "properties": [
+                {"name": "content", "type": "string", "required": true}
+            ]},
+            {"name": "counts", "type": "object", "items": {"name": "", "type": "number"}},
+            {"name": "total", "type": "number"}
+        ]))
+        .unwrap();
+        let failures = validate_event_payload(
+            "E",
+            &payload(json!({
+                "units": [{"content": 4}],
+                "counts": {"one": "bad"},
+                "total": "x"
+            })),
+            &schema,
+        );
+        let named: Vec<(&str, &str)> = failures
+            .iter()
+            .map(|f| (f.field.as_str(), f.expected_type.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("units[0].content", "string"),
+                ("counts.one", "number"),
+                ("total", "number")
+            ]
+        );
+        let absent = validate_event_payload("E", &payload(json!({"units": [{}]})), &schema);
+        assert_eq!(
+            (absent[0].field.as_str(), absent[0].expected_type.as_str()),
+            ("units[0].content", "string")
+        );
+        assert!(validate_event_payload(
+            "E",
+            &payload(json!({"units": [{"content": "ok"}], "counts": {"one": 1}, "total": 2})),
+            &schema
+        )
+        .is_empty());
     }
 
     #[test]

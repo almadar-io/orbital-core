@@ -128,7 +128,7 @@ pub(super) fn subst_record(
                 .map(|i| subst_record(i, root, value, whole))
                 .collect(),
         ),
-        SExpression::Object(map) => SExpression::Object(
+        SExpression::Object(map) => SExpression::object(
             map.iter()
                 .map(|(k, v)| (k.clone(), subst_record(v, root, value, whole)))
                 .collect(),

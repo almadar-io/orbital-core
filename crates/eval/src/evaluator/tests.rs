@@ -792,8 +792,8 @@ fn control_json_parse_undeclared_alias_name_stays_unchecked() {
     assert_eq!(parse_in_program(r#""abc""#, "Other"), Value::string("abc"));
 }
 
-// `typed` is a static ascription (G-CROSS-335): the kernel returns the value and checks nothing against the declared
-// `[OrbValue]`, so the validator is the only place a misfit is found.
+// A `let` binding's declared shape is static (G-CROSS-335): the kernel binds the value and checks nothing against the
+// declared `[OrbValue]`, so the validator is the only place a misfit is found.
 fn map_len_of_ascribed_list(items: serde_json::Value) -> Result<Value, String> {
     let aliases = serde_json::from_value(serde_json::json!({
         "OrbValue": [{ "name": "", "type": "union", "properties": [
@@ -818,12 +818,9 @@ fn map_len_of_ascribed_list(items: serde_json::Value) -> Result<Value, String> {
     ))
     .unwrap();
     let expr: SExpression = serde_json::from_value(serde_json::json!([
-        "array/len",
-        [
-            "array/map",
-            ["typed", "@payload.items", declared],
-            ["fn", "i", 1]
-        ]
+        "let",
+        [["xs", "@payload.items", declared]],
+        ["array/len", ["array/map", "@xs", ["fn", "i", 1]]]
     ]))
     .unwrap();
     Evaluator::new()
@@ -2765,26 +2762,15 @@ fn map_fn_lambda_also_binds_index_like_the_ts_evaluator() {
 }
 
 #[test]
-fn group_by_a_field_name_like_the_ts_evaluator() {
+fn group_by_a_field_name() {
     // std-graphs groups rows by a declared field (`["array/groupBy", @rows, "stage"]`).
-    let out = eval(
-        r#"["array/groupBy", [{"stage": "a"}, {"stage": "b"}, {"stage": "a"}, {"x": 1}], "stage"]"#,
-    );
+    let out = eval(r#"["array/groupBy", [{"stage": "a"}, {"stage": "b"}, {"stage": "a"}], "stage"]"#);
     let groups = out.as_object().expect("object");
-    assert_eq!(
-        groups.get("a").and_then(|v| v.as_array()).map(|v| v.len()),
-        Some(2)
-    );
-    assert_eq!(
-        groups.get("b").and_then(|v| v.as_array()).map(|v| v.len()),
-        Some(1)
-    );
-    assert_eq!(
-        groups
-            .get("undefined")
-            .and_then(|v| v.as_array())
-            .map(|v| v.len()),
-        Some(1)
+    assert_eq!(groups.get("a").and_then(|v| v.as_array()).map(|v| v.len()), Some(2));
+    assert_eq!(groups.get("b").and_then(|v| v.as_array()).map(|v| v.len()), Some(1));
+    assert!(
+        eval_err(r#"["array/groupBy", [{"stage": "a"}, {"x": 1}], "stage"]"#).contains("no `stage` key"),
+        "an item without the key is refused, never grouped under \"undefined\""
     );
 }
 

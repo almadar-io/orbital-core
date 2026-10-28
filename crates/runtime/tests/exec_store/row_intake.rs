@@ -28,6 +28,7 @@ fn schema() -> OrbitalSchema {
             "name": "Main",
             "entity": { "name": "Note", "fields": [
                 { "name": "id", "type": "string" },
+                { "name": "ownerId", "type": "string", "required": true },
                 { "name": "count", "type": "number" },
                 { "name": "tags", "type": "array", "items": { "type": "string" } },
                 { "name": "replies", "type": "relation", "relation": { "entity": "Note", "cardinality": "many" } }
@@ -93,6 +94,16 @@ fn control_rows_that_fit_absent_or_null_fields_and_undeclared_extras_load() {
     ]));
     assert!(events.iter().any(|e| e == "LOADED"), "{events:?}");
     assert!(!events.iter().any(|e| e == "LOAD_FAILED"), "{events:?}");
+}
+
+#[test]
+fn a_row_without_a_required_field_loads_and_a_present_wrong_kind_still_fails() {
+    // EXEC-EVAL-10: at row and frame intake an absent or null field passes (a trait's unsaved working row has no
+    // `ownerId` yet); presence is the program's own `required` check, kinds are the intake's.
+    let absent = answered(json!([{ "id": "n1", "count": 1 }]));
+    assert!(absent.iter().any(|e| e == "LOADED"), "an absent required field loads: {absent:?}");
+    let wrong = answered(json!([{ "id": "n1", "ownerId": 7 }]));
+    assert!(wrong.iter().any(|e| e == "LOAD_FAILED"), "control: a present value of the wrong kind fails: {wrong:?}");
 }
 
 #[test]

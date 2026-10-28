@@ -362,7 +362,7 @@ fn parse_os_effects_refuse_the_wrong_arity_and_the_unknown_ops_still_fall_to_cus
         let expr: SExpression = serde_json::from_str(src).unwrap();
         assert!(parse_effect(&expr).is_none(), "{src}");
     }
-    let unknown: SExpression = serde_json::from_str(r#"["os/watch-http", "/x"]"#).unwrap();
+    let unknown: SExpression = serde_json::from_str(r#"["os/not-an-operator", "/x"]"#).unwrap();
     assert!(matches!(parse_effect(&unknown), Some(Effect::Custom { .. })));
 }
 

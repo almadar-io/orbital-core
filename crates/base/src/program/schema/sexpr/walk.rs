@@ -38,10 +38,16 @@ pub struct ValueWalk<'r> {
     pub skip_dead_branches: bool,
 }
 
-/// The ordered initializer/body slots evaluated by the canonical `let` form.
+/// The ordered initializer/body slots evaluated by the canonical `let` form. A binding is `[name, init]` or
+/// `[name, init, shape]`: the optional third item is the local's declared type as shape text, static only (the
+/// kernel never reads it).
 #[derive(Debug)]
 pub struct SequentialBindings<'a> {
-    pub bindings: Vec<(&'a crate::value::Shared<String>, &'a SExpression)>,
+    pub bindings: Vec<(
+        &'a crate::value::Shared<String>,
+        &'a SExpression,
+        Option<&'a str>,
+    )>,
     pub body: &'a SExpression,
 }
 
@@ -53,7 +59,10 @@ impl<'a> SequentialBindings<'a> {
             bindings: bindings
                 .iter()
                 .map(|binding| match binding.as_array()?.as_slice() {
-                    [SExpression::String(name), initializer] => Some((name, initializer)),
+                    [SExpression::String(name), initializer] => Some((name, initializer, None)),
+                    [SExpression::String(name), initializer, SExpression::String(shape)] => {
+                        Some((name, initializer, Some(shape.as_str())))
+                    }
                     _ => None,
                 })
                 .collect::<Option<_>>()?,

@@ -3044,6 +3044,16 @@ fn a_proof_binds_only_what_every_value_of_the_argument_type_fits() {
     assert!(bind(string_or_number, Mode::Proof).is_err());
     assert!(bind(OirType::Date, Mode::Static).is_ok(), "control: a date passes a string position at rest");
     assert!(bind(OirType::Date, Mode::Proof).is_ok(), "a date stays a string at rest in a strict call");
+
+    let when = op(json!([p("d", json!("date"))]), json!("number"), Some(1));
+    let when_sig = Signature::of(&when);
+    let bind_date = |ty: OirType, mode: Mode| when_sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode);
+    let refused = bind_date(OirType::String, Mode::Proof).unwrap_err().to_string();
+    assert!(refused.contains("time/parse") && refused.contains("declare the field `date`"), "{refused}");
+    assert!(bind_date(OirType::Optional { inner: Box::new(OirType::String) }, Mode::Proof).is_err());
+    assert!(bind_date(OirType::Date, Mode::Proof).is_ok(), "control: a date-typed value passes a date position");
+    assert!(bind_date(OirType::Number, Mode::Proof).is_ok(), "control: (time/parse s) answers epoch ms, which a date position takes");
+    assert!(bind_date(OirType::String, Mode::Static).is_ok(), "control: only a strict call refuses a string at a date position");
     assert!(matches!(bind(OirType::Json, Mode::Proof), Err(Mismatch::Undetermined { .. })));
     assert!(bind(OirType::String, Mode::Proof).is_ok());
     assert!(

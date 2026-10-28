@@ -354,7 +354,7 @@ mod tests {
             .filter(|(_, effect)| *effect)
             .map(|(name, _)| *name)
             .collect();
-        assert_eq!(effectful, vec!["os/watch-http"], "the pure os/path-* operators are evaluated in eval; os/watch-http is the legacy trigger the compiler validates");
+        assert!(effectful.is_empty(), "the pure os/path-* operators are evaluated in eval; every effectful os operator is hosted: {effectful:?}");
     }
 
     #[test]

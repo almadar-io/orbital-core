@@ -172,7 +172,7 @@ fn extract_holes(
             for key in keys {
                 out.insert(key.clone(), extract_holes(&map[key], holes)?);
             }
-            Ok(SExpression::Object(out))
+            Ok(SExpression::object(out))
         }
         other => Ok(other.clone()),
     }

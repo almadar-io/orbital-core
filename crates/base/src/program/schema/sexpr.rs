@@ -40,8 +40,8 @@ pub enum SExpression {
     String(crate::value::Shared<String>),
     /// Array - either a function call `[op, ...args]` or a list
     Array(Vec<SExpression>),
-    /// Object - key-value map
-    Object(SObject),
+    /// Object - key-value map, boxed so a node stays 32 bytes (the map is 72)
+    Object(Box<SObject>),
 }
 
 /// Read by one visit per node: the derived `untagged` form buffers every node and retries each variant, which
@@ -110,7 +110,7 @@ impl<'de> serde::de::Visitor<'de> for SExpressionVisitor {
         while let Some((key, value)) = map.next_entry::<String, SExpression>()? {
             object.insert(key, value);
         }
-        Ok(SExpression::Object(object))
+        Ok(SExpression::object(object))
     }
 }
 

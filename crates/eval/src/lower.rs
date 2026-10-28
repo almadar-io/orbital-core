@@ -24,19 +24,6 @@ pub fn lower_sexpr(sexpr: &SExpression) -> Result<OirExpr, LowerError> {
     ExprLowerer.resolve_sexpr(sexpr)
 }
 
-orbital_core_base::kernel_local! {
-    static KEEP_TYPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// [`lower_sexpr`] keeping each `typed` form as a call, for the compiler pass that records declared argument types
-/// (the checker reads a local annotation or knob type from it). Every other lowering reads `["typed", value, type]` as its value.
-pub fn lower_sexpr_keeping_typed(sexpr: &SExpression) -> Result<OirExpr, LowerError> {
-    KEEP_TYPED.with(|keep| keep.set(true));
-    let lowered = ExprLowerer.resolve_sexpr(sexpr);
-    KEEP_TYPED.with(|keep| keep.set(false));
-    lowered
-}
-
 /// The existing lowering decision that distinguishes a registered call from literal array data.
 pub fn recognized_call_head(sexpr: &SExpression) -> Option<&str> {
     let op = sexpr.operator()?;
@@ -261,7 +248,7 @@ impl NodeLowerer {
             }
             SExpression::Object(obj) => {
                 let mut fields = orbital_core_base::ir::expr::OirFields::default();
-                for (key, value) in obj {
+                for (key, value) in obj.iter() {
                     fields.insert(key.clone(), self.resolve_sexpr(value)?);
                 }
                 Ok(OirExpr::object(fields))
@@ -301,9 +288,6 @@ impl NodeLowerer {
     }
 
     fn resolve_sexpr_call(&self, op: &str, args: &[SExpression]) -> Result<OirExpr, LowerError> {
-        if op == "typed" && args.len() == 2 && !KEEP_TYPED.with(std::cell::Cell::get) {
-            return self.resolve_sexpr(&args[0]);
-        }
         // Enforce canonical maxArity (canonical-operators.json). Variadic ops
         // (maxArity null) skip. Catches the silent-drop bug in binary_op /
         // unary_op, which keep only the first 1–2 args and discard the rest
@@ -416,8 +400,8 @@ impl NodeLowerer {
             // OS trigger effects (server-side only)
             //
             // Each may accept a trailing options object carrying `emit:`:
-            //   ["os/watch-http", urlPattern, method?, { emit: {...} }]
-            //   ["os/watch-cron", expr,               { emit: {...} }]
+            //   ["os/watch-port", port, protocol?, { emit: {...} }]
+            //   ["os/watch-cron", expr,           { emit: {...} }]
             //
             // The options object is detected by being an `Object` *and*
             // carrying an `emit` key, so existing 2-arg forms where arg[1]
@@ -446,15 +430,6 @@ impl NodeLowerer {
                 Ok(OirExpr::effect(OirEffect::OsWatchPort {
                     port,
                     protocol,
-                    emit: emit_cfg,
-                }))
-            }
-            "os/watch-http" => {
-                let url_pattern = self.resolve_sexpr(&args[0])?;
-                let (method, emit_cfg) = self.split_watch_trailing(&args[1..])?;
-                Ok(OirExpr::effect(OirEffect::OsWatchHttp {
-                    url_pattern,
-                    method,
                     emit: emit_cfg,
                 }))
             }
@@ -678,21 +653,28 @@ impl NodeLowerer {
                 let mut bindings = Vec::with_capacity(pairs.len());
                 for pair in pairs {
                     match pair {
-                        SExpression::Array(kv) if kv.len() == 2 => {
+                        SExpression::Array(kv) if matches!(kv.len(), 2 | 3) => {
                             let SExpression::String(name) = &kv[0] else {
                                 return Err(LowerError::InvalidSExpr(format!(
                                     "let binding name must be a string, got {:?}",
                                     kv[0]
                                 )));
                             };
-                            bindings.push(OirExpr::array(vec![
-                                OirExpr::string(name),
-                                self.resolve_sexpr(&kv[1])?,
-                            ]));
+                            let mut binding =
+                                vec![OirExpr::string(name), self.resolve_sexpr(&kv[1])?];
+                            if let Some(shape) = kv.get(2) {
+                                let SExpression::String(shape) = shape else {
+                                    return Err(LowerError::InvalidSExpr(format!(
+                                        "let binding shape must be a string, got {shape:?}"
+                                    )));
+                                };
+                                binding.push(OirExpr::string(shape));
+                            }
+                            bindings.push(OirExpr::array(binding));
                         }
                         other => {
                             return Err(LowerError::InvalidSExpr(format!(
-                                "let binding must be [name, value], got {other:?}"
+                                "let binding must be [name, value] or [name, value, shape], got {other:?}"
                             )))
                         }
                     }

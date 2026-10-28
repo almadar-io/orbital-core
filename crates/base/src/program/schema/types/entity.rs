@@ -287,7 +287,7 @@ pub struct FieldDefinition {
 
     /// Object properties (for object type)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub properties: Option<HashMap<String, FieldDefinition>>,
+    pub properties: Option<crate::collections::IndexMap<String, FieldDefinition>>,
 
     /// Field-level rebindability designation. `Some(true)` marks the field as
     /// INTRINSIC machinery/view-state the owning trait computes itself (e.g. a
@@ -495,7 +495,7 @@ pub enum UnionVariantChoice<'d> {
 /// Tuple slots carried in a `properties` map keyed by slot index, in slot order — the
 /// one reader for a tuple field and a tuple-typed config knob alike.
 pub fn tuple_slots_of(
-    properties: Option<&HashMap<String, FieldDefinition>>,
+    properties: Option<&crate::collections::IndexMap<String, FieldDefinition>>,
 ) -> Vec<&FieldDefinition> {
     let mut slots: Vec<(usize, &FieldDefinition)> = properties
         .into_iter()
@@ -722,7 +722,7 @@ impl FieldDefinition {
     /// Replaces every type variable in this shape (items, properties, map
     /// values) by its binding, keeping the occurrence's own name, `required`
     /// and description. An unbound variable stays a variable.
-    pub fn substitute_type_vars(&mut self, bindings: &HashMap<String, FieldDefinition>) {
+    pub fn substitute_type_vars(&mut self, bindings: &crate::collections::IndexMap<String, FieldDefinition>) {
         if let FieldType::TypeVar(TypeVarName(var)) = &self.field_type {
             if let Some(bound) = bindings.get(var) {
                 let name = self.name.take();

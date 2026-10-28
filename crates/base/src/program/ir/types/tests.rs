@@ -388,7 +388,7 @@ fn a_field_knob_shapes_as_a_field_ref_of_its_value_type() {
     );
     let mut alias = bare_field(FieldType::Field);
     alias.record = Some("Point".to_string());
-    alias.properties = Some(HashMap::from([("x".to_string(), bare_field(FieldType::Number))]));
+    alias.properties = Some(crate::collections::IndexMap::from([("x".to_string(), bare_field(FieldType::Number))]));
     let OirType::FieldRef { record, .. } = field_shape(&alias) else { panic!("a field reference") };
     assert!(matches!(*record, OirType::Struct { ref fields, .. } if fields.len() == 1 && fields[0].name == "x"));
     assert_eq!(serde_json::to_string(&FieldType::Field).unwrap(), "\"field\"");
@@ -424,7 +424,7 @@ fn field_shape_retains_closed_string_and_enum_values_through_nullable_containers
         map.items = Some(Box::new(field.clone()));
         assert_eq!(field_shape(&map), OirType::map(OirType::String, nullable.clone()));
         let mut record = bare_field(FieldType::Object);
-        record.properties = Some(std::collections::HashMap::new());
+        record.properties = Some(crate::collections::IndexMap::new());
         record.additional_properties = Some(Box::new(field));
         assert_eq!(field_shape(&record), OirType::Struct { fields: Default::default(), additional: Some(Box::new(nullable)) });
     }
@@ -474,7 +474,7 @@ fn field_shape_bare_array_is_array_of_json() {
 #[test]
 fn field_shape_object_with_properties_is_the_struct_of_them() {
     let mut f = bare_field(FieldType::Object);
-    let mut props = std::collections::HashMap::new();
+    let mut props = crate::collections::IndexMap::new();
     props.insert("label".to_string(), bare_field(FieldType::String));
     props.insert("count".to_string(), bare_field(FieldType::Number));
     f.properties = Some(props);
@@ -509,7 +509,7 @@ fn field_shape_keeps_a_recursive_back_reference_as_the_type_it_names() {
 #[test]
 fn field_shape_of_a_union_carries_its_variants_sorted() {
     let mut union = bare_field(FieldType::Union);
-    let mut props = std::collections::HashMap::new();
+    let mut props = crate::collections::IndexMap::new();
     props.insert("string".to_string(), bare_field(FieldType::String));
     props.insert("number".to_string(), bare_field(FieldType::Number));
     union.properties = Some(props);
@@ -525,7 +525,7 @@ fn field_shape_of_a_union_carries_its_variants_sorted() {
 fn a_union_with_variant_shapes_is_not_a_by_name_reference() {
     let mut tagged = bare_field(FieldType::Union);
     tagged.values = Some(vec!["A".to_string()]);
-    let mut props = std::collections::HashMap::new();
+    let mut props = crate::collections::IndexMap::new();
     props.insert("A".to_string(), bare_field(FieldType::Object));
     tagged.properties = Some(props);
     assert_eq!(tagged.by_name_reference(), None);

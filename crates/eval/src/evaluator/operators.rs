@@ -174,7 +174,6 @@ operator_dispatch! {
 
         // Explicit cast
         "as" => K::AsOp,
-        "typed" => K::TypedOp,
 
         // JSON
         "json/parse" => K::JsonParseOp,
@@ -604,7 +603,7 @@ fn eval_node(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
         // Object - evaluate all values
         SExpression::Object(obj) => {
             let mut result = ValueMap::default();
-            for (k, v) in obj {
+            for (k, v) in obj.iter() {
                 result.insert(k.clone(), eval_expr(v, ctx)?);
             }
             Ok(Value::object(result))

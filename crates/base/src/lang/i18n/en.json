@@ -580,7 +580,8 @@
     "operatorSites": "operatorSites",
     "protocols": "protocols",
     "record": "record",
-    "typeContractVersion": "typeContractVersion"
+    "typeContractVersion": "typeContractVersion",
+    "orb": "orb"
   },
   "operators": {
     "!=": "!=",
@@ -925,7 +926,6 @@
     "os/watch-cron": "os/watch-cron",
     "os/watch-env": "os/watch-env",
     "os/watch-files": "os/watch-files",
-    "os/watch-http": "os/watch-http",
     "os/watch-port": "os/watch-port",
     "os/watch-process": "os/watch-process",
     "os/watch-signal": "os/watch-signal",
@@ -1045,7 +1045,6 @@
     "trace/emit": "trace/emit",
     "trace/log": "trace/log",
     "tree/fold": "tree/fold",
-    "typed": "typed",
     "unquote": "unquote",
     "validate/array": "validate/array",
     "validate/boolean": "validate/boolean",

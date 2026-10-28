@@ -183,7 +183,7 @@ impl Operator for LetOp {
 
         let mut child_ctx = ctx.child();
 
-        for (name, initializer) in scope.bindings {
+        for (name, initializer, _) in scope.bindings {
             let value = eval_expr(initializer, &child_ctx)?;
             child_ctx.set_local(name, value);
         }

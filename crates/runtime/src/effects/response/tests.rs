@@ -484,3 +484,33 @@ fn control_an_event_request_without_a_locale_serializes_none() {
     assert_eq!(req.locale, None);
     assert_eq!(serde_json::to_value(&req).unwrap().get("locale"), None);
 }
+
+fn dispatch_options(options: serde_json::Value) -> impl Fn(&str) -> Option<serde_json::Value> {
+    move |key| options.get(key).cloned()
+}
+
+#[test]
+fn a_dispatch_option_record_parses_into_the_typed_request() {
+    let options = serde_json::json!({
+        "event": "SAVE", "entityId": "", "targetTrait": "Form", "locale": "ar", "mount": [],
+        "traits": [{ "trait": "Form", "from": "idle" }], "viewer": { "id": "u1" },
+    });
+    let request = super::EventRequest::from_dispatch(serde_json::json!({ "n": "x" }), dispatch_options(options)).expect("parses");
+    assert_eq!(request.event, "SAVE");
+    assert_eq!(request.target_trait.as_deref(), Some("Form"));
+    assert_eq!(request.locale.as_deref(), Some("ar"));
+    assert_eq!(request.entity_id, None, "an empty text is absent");
+    assert_eq!(request.mount, None, "an empty list is absent");
+    assert_eq!(request.traits.expect("traits").len(), 1);
+    assert_eq!(request.user, Some(serde_json::from_value(serde_json::json!({ "id": "u1" })).unwrap()));
+    assert!(request.payload.is_some());
+}
+
+#[test]
+fn a_dispatch_option_record_that_is_no_event_request_is_refused_with_the_reason() {
+    let missing_event = super::EventRequest::from_dispatch(serde_json::json!({}), dispatch_options(serde_json::json!({}))).unwrap_err();
+    assert!(missing_event.starts_with("program/dispatch: not an event request: "), "{missing_event}");
+    assert!(super::EventRequest::from_dispatch(serde_json::json!({}), dispatch_options(serde_json::json!({ "event": 3 }))).is_err());
+    let bad_mount = serde_json::json!({ "event": "INIT", "mount": [{ "trait": "T", "event": "SAVE" }] });
+    assert!(super::EventRequest::from_dispatch(serde_json::json!({}), dispatch_options(bad_mount)).is_err());
+}

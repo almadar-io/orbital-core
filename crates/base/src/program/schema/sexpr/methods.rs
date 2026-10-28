@@ -7,6 +7,10 @@ impl SExpression {
         SExpression::String(text.into())
     }
 
+    pub fn object(map: SObject) -> SExpression {
+        SExpression::Object(Box::new(map))
+    }
+
     /// A rewrite of the tree without recursion, so its depth is bounded by the heap, not the thread stack: `enter`
     /// runs on every node in pre-order, `exit` on every descended node once its children are rewritten, in the order
     /// a recursive walk visits them (the first error is the one a recursive walk would raise).
@@ -42,7 +46,7 @@ impl SExpression {
                 }
                 RewriteFrame::Object(keys) => {
                     let values = done.split_off(done.len() - keys.len());
-                    done.push(exit(SExpression::Object(keys.into_iter().zip(values).collect()))?);
+                    done.push(exit(SExpression::object(keys.into_iter().zip(values).collect()))?);
                 }
             }
         }
@@ -166,7 +170,7 @@ impl SExpression {
     /// Try to get as an object
     pub fn as_object(&self) -> Option<&crate::schema::sexpr::SObject> {
         match self {
-            SExpression::Object(o) => Some(o),
+            SExpression::Object(o) => Some(o.as_ref()),
             _ => None,
         }
     }
@@ -270,6 +274,27 @@ impl SExpression {
         )
     }
 
+    /// The literal of a declared-knob read, `(let ((knob_<k> <literal> <declared type>)) @knob_<k>)`: the form the
+    /// inline phase substitutes for a knob whose declared type the checker needs. Every reader of a substituted
+    /// knob's value sees through it with this one helper.
+    pub fn declared_knob_literal(&self) -> Option<&SExpression> {
+        let [SExpression::String(head), SExpression::Array(bindings), SExpression::String(body)] =
+            self.as_array()?.as_slice()
+        else {
+            return None;
+        };
+        let [SExpression::Array(binding)] = bindings.as_slice() else {
+            return None;
+        };
+        let [SExpression::String(name), literal, SExpression::String(_)] = binding.as_slice() else {
+            return None;
+        };
+        (head == "let"
+            && name.starts_with("knob_")
+            && body.strip_prefix('@') == Some(name.as_str()))
+        .then_some(literal)
+    }
+
     pub fn sequential_bindings(&self) -> Option<SequentialBindings<'_>> {
         if self.operator()? != "let" {
             return None;
@@ -278,6 +303,9 @@ impl SExpression {
     }
 
     pub(super) fn collect_value_leaves<'a>(&'a self, walk: &ValueWalk<'_>, out: &mut Vec<&'a SExpression>) {
+        if let Some(literal) = self.declared_knob_literal() {
+            return literal.collect_value_leaves(walk, out);
+        }
         let SExpression::Array(arr) = self else {
             out.push(self);
             return;

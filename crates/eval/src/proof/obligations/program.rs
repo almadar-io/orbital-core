@@ -259,7 +259,7 @@ impl<'a> Program<'a> {
                                             }
                                         }
                                     }
-                                    SExpression::Object(record)
+                                    SExpression::object(record)
                                 }
                                 _ => unresolved("created whole record"),
                             };

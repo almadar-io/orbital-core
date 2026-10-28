@@ -669,7 +669,7 @@ impl From<SExpression> for Value {
             SExpression::String(s) => Value::string(s),
             SExpression::Array(arr) => Value::Array(arr.into_iter().map(Value::from).collect()),
             SExpression::Object(obj) => {
-                Value::Object(obj.into_iter().map(|(k, v)| (k, Value::from(v))).collect())
+                Value::Object((*obj).into_iter().map(|(k, v)| (k, Value::from(v))).collect())
             }
         }
     }
@@ -686,7 +686,7 @@ impl From<Value> for SExpression {
             Value::Array(arr) => {
                 SExpression::Array(arr.into_iter().map(SExpression::from).collect())
             }
-            Value::Object(obj) => SExpression::Object(
+            Value::Object(obj) => SExpression::object(
                 obj.into_iter()
                     .map(|(k, v)| (k, SExpression::from(v)))
                     .collect(),

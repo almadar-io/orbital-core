@@ -18,7 +18,7 @@ fn nested_sampler_lowering_fits_an_ordinary_worker_stack() {
     let lowered = std::thread::Builder::new()
         .name("lowering-ordinary-stack".into())
         .stack_size(2 * 1024 * 1024)
-        .spawn(move || lower_sexpr_keeping_typed(&expr))
+        .spawn(move || lower_sexpr(&expr))
         .expect("ordinary worker starts")
         .join().expect("ordinary worker finishes")
         .expect("sampler expression lowers");
@@ -26,21 +26,32 @@ fn nested_sampler_lowering_fits_an_ordinary_worker_stack() {
 }
 
 #[test]
-fn syntax_names_and_discarded_type_metadata_are_not_lowered_as_children() {
+fn syntax_names_are_not_lowered_as_children_and_a_declared_shape_is_kept_as_text() {
     let expr = call("let", vec![
         SExpression::Array(vec![SExpression::Array(vec![
-            SExpression::string("if"), SExpression::Number(7.0),
+            SExpression::string("if"), SExpression::Number(7.0), SExpression::string("{\"type\":\"number\"}"),
         ])]),
-        call("typed", vec![
-            SExpression::string("@local.if"), call("if", vec![]),
-        ]),
+        SExpression::string("@local.if"),
     ]);
     let expected = OirExpr::call("let", vec![
-        OirExpr::array(vec![OirExpr::array(vec![OirExpr::string("if"), OirExpr::number(7.0)])]),
+        OirExpr::array(vec![OirExpr::array(vec![
+            OirExpr::string("if"), OirExpr::number(7.0), OirExpr::string("{\"type\":\"number\"}"),
+        ])]),
         OirExpr::binding(OirBinding::parse("@local.if").expect("local binding")),
     ]);
     assert_eq!(lower_sexpr(&expr), Ok(expected));
-    assert!(lower_sexpr_keeping_typed(&expr).is_err());
+    let pair = call("let", vec![
+        SExpression::Array(vec![SExpression::Array(vec![SExpression::string("if"), SExpression::Number(7.0)])]),
+        SExpression::string("@local.if"),
+    ]);
+    assert!(lower_sexpr(&pair).is_ok(), "control: a pair lowers");
+    let malformed = call("let", vec![
+        SExpression::Array(vec![SExpression::Array(vec![
+            SExpression::string("x"), SExpression::Number(7.0), SExpression::Number(1.0),
+        ])]),
+        SExpression::string("@local.x"),
+    ]);
+    assert!(lower_sexpr(&malformed).is_err());
 }
 
 #[test]

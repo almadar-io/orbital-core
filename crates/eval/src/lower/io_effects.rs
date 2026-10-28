@@ -120,7 +120,7 @@ impl NodeLowerer {
             match trailing {
                 SExpression::Null => {}
                 SExpression::Object(fields) => {
-                    for (name, value) in fields {
+                    for (name, value) in fields.iter() {
                         match name.as_str() {
                             "key" if matches!(value, SExpression::Null) => {}
                             "key" => key = Some(self.resolve_sexpr(value)?),
@@ -143,7 +143,7 @@ impl NodeLowerer {
         let options = if options.is_empty() {
             None
         } else {
-            Some(self.resolve_owned(SExpression::Object(options))?)
+            Some(self.resolve_owned(SExpression::object(options))?)
         };
         Ok(OirExpr::effect(OirEffect::Postgres {
             origin: self.resolve_sexpr(&args[0])?,
@@ -169,7 +169,7 @@ impl NodeLowerer {
             match trailing {
                 SExpression::Null => {}
                 SExpression::Object(fields) => {
-                    for (name, value) in fields {
+                    for (name, value) in fields.iter() {
                         match name.as_str() {
                             "key" if matches!(value, SExpression::Null) => {}
                             "key" => key = Some(self.resolve_sexpr(value)?),
@@ -192,7 +192,7 @@ impl NodeLowerer {
         let options = if options.is_empty() {
             None
         } else {
-            Some(self.resolve_owned(SExpression::Object(options))?)
+            Some(self.resolve_owned(SExpression::object(options))?)
         };
         Ok(OirExpr::effect(OirEffect::Redis {
             origin: self.resolve_sexpr(&args[0])?,
@@ -212,7 +212,7 @@ impl NodeLowerer {
         let Some(SExpression::Object(paginate)) = fields.get("paginate") else {
             return self.resolve_sexpr(request);
         };
-        let mut held = paginate.clone();
+        let mut held = (**paginate).clone();
         for key in ["next", "collect"] {
             if let Some(expr) = held.get(key) {
                 if orbital_core_base::schema::quote::quote_body_of(expr).is_none() {
@@ -221,9 +221,9 @@ impl NodeLowerer {
                 }
             }
         }
-        let mut fields = fields.clone();
-        fields.insert("paginate".to_string(), SExpression::Object(held));
-        self.resolve_owned(SExpression::Object(fields))
+        let mut fields = (**fields).clone();
+        fields.insert("paginate".to_string(), SExpression::object(held));
+        self.resolve_owned(SExpression::object(fields))
     }
 
     /// The `{ emit }` options object a one-argument effect may carry.

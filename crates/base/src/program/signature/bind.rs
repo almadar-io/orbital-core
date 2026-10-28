@@ -52,6 +52,18 @@ pub(super) fn bind_type(
             match known {
                 Known::Type(ty) if mode == Mode::Proof && is_uninformative(ty) => Err(loose(ty, formal)),
                 Known::Type(ty) if fits(ty, &expected, b, mode) => Ok(()),
+                Known::Type(ty)
+                    if mode == Mode::Proof
+                        && matches!(unwrap_optional(ty), OirType::String)
+                        && matches!(expected, OirType::Date | OirType::DateTime | OirType::Instant) =>
+                {
+                    Err(Mismatch::Type {
+                        expected: format!(
+                            "{name} (a string is not a {name}: parse it with `(time/parse x)`, or declare the field `{name}`)"
+                        ),
+                        actual: type_label(ty, mode),
+                    })
+                }
                 _ => Err(type_mismatch(formal, actual)),
             }
         }

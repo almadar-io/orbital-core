@@ -29,10 +29,10 @@ fn sequential_binding_view_preserves_order_duplicates_and_arbitrary_string_names
         "@x"
     ]));
     let view = SequentialBindings::from_args(&arguments).unwrap();
-    let names: Vec<&str> = view.bindings.iter().map(|(name, _)| name.as_str()).collect();
+    let names: Vec<&str> = view.bindings.iter().map(|(name, _, _)| name.as_str()).collect();
     assert_eq!(names, ["x", "x", "", "base64/encode", "اسم", "a.b", "@name"]);
     let pairs = arguments[0].as_array().unwrap();
-    for (index, (_, value)) in view.bindings.iter().enumerate() {
+    for (index, (_, value, _)) in view.bindings.iter().enumerate() {
         assert!(std::ptr::eq(*value, &pairs[index].as_array().unwrap()[1]));
     }
     assert!(std::ptr::eq(view.body, &arguments[1]));
@@ -49,6 +49,26 @@ fn sequential_binding_view_refuses_a_malformed_entry() {
     assert_eq!(view.bindings[0].1, &SExpression::Number(1.0));
     assert_eq!(view.body, &SExpression::string("@kept"));
     assert!(std::ptr::eq(view.body, &arguments[1]));
+}
+
+#[test]
+fn sequential_binding_view_reads_an_optional_declared_shape_and_refuses_other_third_items() {
+    let arguments = args(json!([[["x", 1, "{\"type\":\"number\"}"], ["y", 2]], "@x"]));
+    let view = SequentialBindings::from_args(&arguments).unwrap();
+    assert_eq!(view.bindings[0].2, Some("{\"type\":\"number\"}"));
+    assert_eq!(view.bindings[1].2, None, "control: a pair declares no shape");
+    for malformed in [json!([[["x", 1, 2]], "@x"]), json!([[["x", 1, "s", "t"]], "@x"]), json!([[["x", 1, {}]], "@x"])] {
+        assert!(SequentialBindings::from_args(&args(malformed)).is_none());
+    }
+}
+
+#[test]
+fn a_let_with_a_declared_shape_evaluates_exactly_like_the_pair() {
+    let ctx = BindingContextBuilder::new().build();
+    let declared = evaluate(args(json!([[["x", 2, "{\"type\":\"number\"}"]], ["+", "@x", 1]])), &ctx).unwrap();
+    let pair = evaluate(args(json!([[["x", 2]], ["+", "@x", 1]])), &ctx).unwrap();
+    assert_eq!(declared, Value::Number(3.0));
+    assert_eq!(declared, pair);
 }
 
 #[test]
@@ -79,7 +99,7 @@ fn sequential_bindings_wrapper_recognizes_only_the_canonical_let_form() {
         "let", [["x", 1]], null, ["base64/decode", "!"]
     ])).unwrap();
     let view = expression.sequential_bindings().unwrap();
-    assert_eq!(view.bindings.iter().map(|(name, value)| (name.as_str(), *value)).collect::<Vec<_>>(), [("x", &SExpression::Number(1.0))]);
+    assert_eq!(view.bindings.iter().map(|(name, value, _)| (name.as_str(), *value)).collect::<Vec<_>>(), [("x", &SExpression::Number(1.0))]);
     assert_eq!(view.body, &SExpression::Null);
 }
 

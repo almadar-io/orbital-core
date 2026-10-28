@@ -261,3 +261,19 @@ fn a_trait_reference_evaluates_to_itself_inside_an_operator_branch() {
 fn control_an_unresolved_entity_binding_still_evaluates_to_null() {
     assert_eq!(ok(r#"["if", true, "@entity.missing", 1]"#), Value::Null);
 }
+
+#[test]
+fn an_operator_that_answers_null_declares_a_nullable_result() {
+    for (operator, call) in [
+        ("array/first", r#"["array/first", ["list"]]"#),
+        ("array/last", r#"["array/last", ["list"]]"#),
+        ("array/find", r#"["array/find", ["list", 1, 2], ["fn", "x", [">", "@x", 5]]]"#),
+        ("array/nth", r#"["array/nth", ["list", 1], 3]"#),
+    ] {
+        assert_eq!(run(call).unwrap(), Value::Null, "{operator} answers null here");
+        let declared = crate::evaluator::operator_signature(operator).expect("declared").returns();
+        assert!(declared.admits_null(), "{operator} answers null, so its declared result must admit null: {declared:?}");
+    }
+    let declared = crate::evaluator::operator_signature("array/len").expect("declared").returns();
+    assert!(!declared.admits_null(), "control: array/len always answers a number");
+}

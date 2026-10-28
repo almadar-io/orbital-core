@@ -87,7 +87,7 @@ fn minimal_schema(app_theme: Option<ThemeRef>, orbitals: Vec<Orbital>) -> Orbita
     OrbitalSchema {
         types: None,
         type_contract_version: None,
-        store: None,
+        resolved: None,        store: None,
         theme_definitions: None,
         themes: None,
         site: None,

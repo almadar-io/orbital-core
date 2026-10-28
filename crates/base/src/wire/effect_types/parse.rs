@@ -386,7 +386,7 @@ pub(super) fn parse_redis(args: &[SExpression]) -> Option<Effect> {
         let SExpression::Object(fields) = trailing else {
             return None;
         };
-        for (name, value) in fields {
+        for (name, value) in fields.iter() {
             let value = Value::from(value.clone());
             match name.as_str() {
                 "key" => key = Some(value),
@@ -422,7 +422,7 @@ pub(super) fn parse_postgres(args: &[SExpression]) -> Option<Effect> {
         let SExpression::Object(fields) = trailing else {
             return None;
         };
-        for (name, value) in fields {
+        for (name, value) in fields.iter() {
             let value = Value::from(value.clone());
             match name.as_str() {
                 "key" => key = Some(value),
@@ -551,7 +551,7 @@ pub(super) fn parse_os(op: OsOp, args: &[SExpression]) -> Option<Effect> {
     if !accepts_arity(op, positional.len()) {
         return None;
     }
-    let options = envelope.map(|fields| Value::from(SExpression::Object(fields.clone())));
+    let options = envelope.map(|fields| Value::from(SExpression::object(fields.clone())));
     let key = options
         .as_ref()
         .and_then(|o| o.as_object())

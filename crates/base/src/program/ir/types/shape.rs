@@ -106,7 +106,7 @@ pub(super) fn field_shape_inner(field: &FieldDefinition) -> OirType {
 /// The record `R` of a `field R T`: a record alias is its `properties` as a struct; a type variable (`$r`) is a
 /// variable; any other spelling (`@entity`, `@entity(<knob>)`, `@payload(<knob>)`, an entity name) is a reference
 /// the consumer resolves where it knows the binding.
-pub fn record_shape(record: Option<&str>, properties: Option<&HashMap<String, FieldDefinition>>) -> OirType {
+pub fn record_shape(record: Option<&str>, properties: Option<&crate::collections::IndexMap<String, FieldDefinition>>) -> OirType {
     if let Some(properties) = properties.filter(|p| !p.is_empty()) {
         let mut fields: Vec<OirField> = properties
             .iter()

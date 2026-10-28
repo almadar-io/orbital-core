@@ -160,7 +160,7 @@ impl OirExpr {
                 for (k, val) in fields {
                     m.insert(k.clone(), val.to_sexpression()?);
                 }
-                S::Object(m)
+                S::object(m)
             }
             OirExpr::BinaryOp { op, left, right } => {
                 // Three `symbol()` spellings are NOT operator names. `++`

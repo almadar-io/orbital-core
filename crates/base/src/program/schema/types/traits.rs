@@ -692,7 +692,7 @@ pub struct ConfigField {
     /// — mirrors `FieldDefinition.properties`. Populated when the config
     /// type resolves to a `TypeExpr::Object` (struct alias or literal).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub properties: Option<HashMap<String, FieldDefinition>>,
+    pub properties: Option<crate::collections::IndexMap<String, FieldDefinition>>,
     /// `!` required marker — authored in `.lolo` as `fields : [FieldSpec]!`.
     /// Declares that call sites referencing this trait MUST supply this
     /// knob's key in their `config` block (any value form). Coexists with

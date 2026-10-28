@@ -747,12 +747,12 @@ fn as_if(expr: &SExpression) -> Option<(SExpression, SExpression, SExpression)> 
 /// nested binder reuses one of the names (substitution would capture it).
 pub fn substitute_let(args: &[SExpression]) -> Option<SExpression> {
     let scope = SequentialBindings::from_args(args)?;
-    let names: BTreeSet<&str> = scope.bindings.iter().map(|(n, _)| n.as_str()).collect();
+    let names: BTreeSet<&str> = scope.bindings.iter().map(|(n, _, _)| n.as_str()).collect();
     if args.iter().any(|a| rebinds(a, &names)) {
         return None;
     }
     let mut values: Vec<(String, SExpression)> = Vec::new();
-    for (name, init) in &scope.bindings {
+    for (name, init, _) in &scope.bindings {
         let mut v = (*init).clone();
         for (prev, pv) in &values {
             v = super::witness::substitute_var(&v, prev, pv);

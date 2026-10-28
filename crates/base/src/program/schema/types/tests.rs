@@ -36,7 +36,7 @@ fn generic_substitution_composes_nullable_without_changing_field_presence() {
         let binding: super::FieldDefinition = serde_json::from_value(json!({
             "type":"string", "nullable":bound, "required":false, "values":["ready"]
         })).unwrap();
-        let bindings = std::collections::HashMap::from([("v".to_string(), binding)]);
+        let bindings = crate::collections::IndexMap::from([("v".to_string(), binding)]);
         field.substitute_type_vars(&bindings);
         assert_eq!(field.nullable, expected, "occurrence={occurrence:?}, bound={bound:?}");
         assert_eq!(field.required, Some(true));
@@ -50,7 +50,7 @@ fn generic_substitution_composes_nullable_without_changing_field_presence() {
         "additionalProperties":{"type":"$v","nullable":false}
     })).unwrap();
     let binding = serde_json::from_value(json!({"type":"string","nullable":true})).unwrap();
-    container.substitute_type_vars(&std::collections::HashMap::from([("v".to_string(), binding)]));
+    container.substitute_type_vars(&crate::collections::IndexMap::from([("v".to_string(), binding)]));
     assert_eq!(container.properties.as_ref().unwrap()["slot"].nullable, Some(true));
     assert_eq!(container.properties.as_ref().unwrap()["slot"].required, Some(false));
     assert_eq!(container.items.as_ref().unwrap().nullable, Some(true));
@@ -76,11 +76,11 @@ fn a_type_variable_is_dollar_named_on_the_wire_and_binds_by_substitution() {
     let order: super::FieldDefinition =
         serde_json::from_value(json!({ "type": "relation", "relation": { "entity": "Order" } })).unwrap();
     let other: super::FieldDefinition = serde_json::from_value(json!({ "type": "number" })).unwrap();
-    let bindings = std::collections::HashMap::from([("u".to_string(), other)]);
+    let bindings = crate::collections::IndexMap::from([("u".to_string(), other)]);
     def.substitute_type_vars(&bindings);
     let unbound = &def.properties.as_ref().unwrap()["items"];
     assert_eq!(unbound.items.as_ref().unwrap().field_type, super::FieldType::type_var("t"), "control: another binding leaves `t`");
-    def.substitute_type_vars(&std::collections::HashMap::from([("t".to_string(), order)]));
+    def.substitute_type_vars(&crate::collections::IndexMap::from([("t".to_string(), order)]));
     let bound = &def.properties.as_ref().unwrap()["items"];
     assert_eq!(bound.required, Some(true));
     let elem = bound.items.as_ref().unwrap();
@@ -443,7 +443,7 @@ fn retag_callsite_payload_keeps_local_field_as_payload() {
     // resolves locally → ordinary @payload. Incoming @callsitePayload (from
     // a lower-time eager tag) is corrected back to @payload.
     let local: std::collections::HashSet<String> = ["data".to_string()].into_iter().collect();
-    let mut e = SExpression::Object(
+    let mut e = SExpression::object(
         [(
             "entity".to_string(),
             SExpression::string("@callsitePayload.data"),
@@ -969,5 +969,18 @@ fn migrated_theme_presets_round_trip_losslessly() {
             dark.unwrap().colors.is_some(),
             "{name}: expected dark colors override"
         );
+    }
+}
+
+#[test]
+fn field_properties_keep_their_declaration_order_through_a_round_trip() {
+    let text = r#"{"name":"p","type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"},"c":{"type":"string"}}}"#;
+    for _ in 0..8 {
+        let field: super::FieldDefinition = serde_json::from_str(text).unwrap();
+        let keys: Vec<&str> = field.properties.as_ref().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["b", "a", "c"]);
+        let out = serde_json::to_string(&field).unwrap();
+        let at = |k: &str| out.find(&format!("\"{k}\":{{")).unwrap();
+        assert!(at("b") < at("a") && at("a") < at("c"), "{out}");
     }
 }

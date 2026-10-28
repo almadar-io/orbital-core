@@ -322,7 +322,7 @@ pub(super) fn spawn_needs(args: &[SExpression], command: usize, options: usize, 
         }
     }
     if let Some(SExpression::Object(option_map)) = args.get(options) {
-        for (key, value) in option_map {
+        for (key, value) in option_map.iter() {
             match (key.as_str(), value) {
                 ("cwd", SExpression::String(path)) if !path.starts_with('@') => {
                     needs.push(OsRequirement::Fs { path: path.clone().into_inner(), mode: FsMode::Read });
@@ -337,7 +337,7 @@ pub(super) fn spawn_needs(args: &[SExpression], command: usize, options: usize, 
                 ("cwd", value) if deferred(value) => {}
                 ("cwd", _) => return Err(options),
                 ("env", SExpression::Object(vars)) => {
-                    for (name, value) in vars {
+                    for (name, value) in vars.iter() {
                         if matches!(value, SExpression::Null) {
                             needs.push(OsRequirement::inherited_env(name));
                         }
@@ -415,11 +415,8 @@ pub(super) fn literal_list_pick(expr: &SExpression) -> Option<Vec<SExpression>> 
         return None;
     }
     let mut source = arr.get(1)?;
-    // A list carrying its declared type (`["typed", list, type]`) is that list.
-    if let SExpression::Array(parts) = source {
-        if parts.len() == 3 && parts[0].as_str() == Some("typed") {
-            source = &parts[1];
-        }
+    if let Some(literal) = source.declared_knob_literal() {
+        source = literal;
     }
     let SExpression::Array(list) = source else {
         return None;

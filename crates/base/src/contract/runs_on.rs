@@ -75,7 +75,6 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("os/watch-cron", RunsOn::Server),
     ("os/watch-env", RunsOn::Server),
     ("os/watch-files", RunsOn::Server),
-    ("os/watch-http", RunsOn::Server),
     ("os/watch-port", RunsOn::Server),
     ("os/watch-process", RunsOn::Server),
     ("os/watch-signal", RunsOn::Server),

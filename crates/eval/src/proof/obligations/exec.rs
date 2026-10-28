@@ -126,7 +126,7 @@ pub(super) fn exec(
                 return Ok(vec![path]);
             };
             let mut values: Vec<(String, SExpression)> = Vec::new();
-            for (name, init) in &scope.bindings {
+            for (name, init, _) in &scope.bindings {
                 let mut v = path.read(init);
                 for (prev, pv) in &values {
                     v = super::witness::substitute_var(&v, prev, pv);

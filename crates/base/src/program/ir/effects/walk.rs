@@ -240,21 +240,6 @@ impl OirEffect {
                         .for_each(|b| bindings.push(b));
                 }
             }
-            Self::OsWatchHttp {
-                url_pattern,
-                method,
-                ..
-            } => {
-                url_pattern
-                    .collect_bindings()
-                    .into_iter()
-                    .for_each(|b| bindings.push(b));
-                if let Some(m) = method {
-                    m.collect_bindings()
-                        .into_iter()
-                        .for_each(|b| bindings.push(b));
-                }
-            }
             Self::OsWatchCron { expression, .. } => {
                 expression
                     .collect_bindings()
@@ -502,14 +487,6 @@ impl OirEffect {
             Self::OsWatchPort { port, protocol, .. } => {
                 out.push(port);
                 push_opt(&mut out, protocol);
-            }
-            Self::OsWatchHttp {
-                url_pattern,
-                method,
-                ..
-            } => {
-                out.push(url_pattern);
-                push_opt(&mut out, method);
             }
             Self::OsWatchCron { expression, .. } => out.push(expression),
             Self::OsWatchSignal { signal, .. } => out.push(signal),

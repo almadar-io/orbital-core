@@ -331,7 +331,7 @@ fn test_persist_create_data_call_expression_is_evaluated_not_left_literal() {
         SExpression::Array(vec![
             SExpression::string("object/merge"),
             SExpression::string("@payload.data"),
-            SExpression::Object({
+            SExpression::object({
                 let mut m = orbital_core_base::schema::sexpr::SObject::default();
                 m.insert(
                     "sender".to_string(),

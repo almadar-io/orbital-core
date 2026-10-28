@@ -69,7 +69,7 @@ fn index_tree(
             }
         }
         SExpression::Object(map) => {
-            for (k, child) in map {
+            for (k, child) in map.iter() {
                 let mut p = path.clone();
                 p.push(PathSeg::Key(k.clone()));
                 index_tree(child, &p, paths);

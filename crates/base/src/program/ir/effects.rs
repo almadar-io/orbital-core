@@ -343,15 +343,6 @@ pub enum OirEffect {
         emit: Option<OirEmitConfig>,
     },
 
-    /// Intercept HTTP responses matching pattern
-    OsWatchHttp {
-        url_pattern: OirExpr,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        method: Option<OirExpr>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<OirEmitConfig>,
-    },
-
     /// Register a cron schedule
     OsWatchCron {
         expression: OirExpr,
@@ -568,7 +559,6 @@ impl OirEffect {
             Self::OsWatchFiles { .. } => "os/watch-files",
             Self::OsWatchProcess { .. } => "os/watch-process",
             Self::OsWatchPort { .. } => "os/watch-port",
-            Self::OsWatchHttp { .. } => "os/watch-http",
             Self::OsWatchCron { .. } => "os/watch-cron",
             Self::OsWatchSignal { .. } => "os/watch-signal",
             Self::OsWatchEnv { .. } => "os/watch-env",

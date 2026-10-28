@@ -14,15 +14,15 @@ use orbital_core_base::value::Value;
 use orbital_core_eval::evaluator::operators::arg_types::misfit_of_shape;
 use std::sync::Arc;
 
-/// An entity's row as a record of its declared fields.
+/// An entity's row as a record of its declared fields, as the intake checks it (EXEC-EVAL-10): a present value must fit
+/// its field's kind, an absent or null field passes (a trait's working row is unsaved, so `required` is not enforced).
 pub(super) fn entity_struct(entity: &EntityDefinition) -> OirType {
     let fields = entity
         .fields
         .iter()
         .filter_map(|field| {
-            let name = field.name.as_ref()?;
-            let mut declared = OirField::new(name.clone(), field_shape(field));
-            declared.required = field.required.unwrap_or(false);
+            let mut declared = OirField::new(field.name.as_ref()?.clone(), field_shape(field));
+            declared.required = false;
             Some(declared)
         })
         .collect();

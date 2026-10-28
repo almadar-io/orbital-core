@@ -797,16 +797,20 @@ impl Operator for ArrayGroupByOp {
         let mut groups: std::collections::HashMap<String, Vec<Value>> =
             std::collections::HashMap::new();
 
-        // A field-name key (`"stage"`) groups by that field, as the TS evaluator does:
-        // `String(item[key] ?? 'undefined')`.
+        // A field-name key (`"stage"`) groups by that field's text; a missing or null key is an error (the program
+        // `default`s it), never an implicit group.
         if let Value::String(field) = &key_fn {
             for item in array {
-                let key = match item.as_object() {
-                    Some(row) => match row.get(field.as_str()) {
-                        Some(Value::Null) | None => "undefined".to_string(),
-                        Some(v) => v.to_string_value(),
-                    },
-                    None => return Err(item.kind_error("object").into()),
+                let row = item.as_object().ok_or_else(|| item.kind_error("object"))?;
+                let key = match row.get(field.as_str()) {
+                    Some(Value::String(text)) => text.to_string(),
+                    Some(Value::Null) | None => {
+                        return Err(EvalError::InvalidArgument(format!(
+                            "array/groupBy: an item has no `{field}` key; default it to group the item"
+                        ))
+                        .into())
+                    }
+                    Some(other) => return Err(other.kind_error("string").into()),
                 };
                 groups.entry(key).or_default().push(item);
             }
@@ -1459,6 +1463,18 @@ mod strict_tests {
         assert!(run(json!(["array/flatten", [[1], 2]]))
             .unwrap_err()
             .contains("expected array, got number"));
+    }
+
+    #[test]
+    fn group_by_a_field_needs_a_text_key_on_every_item() {
+        assert!(run(json!(["array/groupBy", [{"k": "a"}, {"j": 1}], "k"])).is_err(), "a missing key is refused");
+        assert!(run(json!(["array/groupBy", [{"k": null}], "k"])).is_err(), "a null key is refused");
+        assert!(run(json!(["array/groupBy", [{"k": 1}], "k"])).is_err(), "a number key is not text");
+        assert_eq!(
+            run(json!(["array/groupBy", [{"k": "a", "n": 1}, {"k": "a", "n": 2}], "k"])).unwrap(),
+            json!({"a": [{"k": "a", "n": 1.0}, {"k": "a", "n": 2.0}]}),
+            "control: text keys group"
+        );
     }
 
     #[test]

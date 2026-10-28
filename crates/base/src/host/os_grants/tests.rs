@@ -414,13 +414,21 @@ fn a_command_picked_from_a_config_fed_mixed_list_needs_each_anchored_or_plain_co
     assert_eq!(
         call(
             OsOp::Spawn,
-            json!([["array/nth", ["typed", ["list", { "anchor": "exe-dir", "path": "bun" }, "bun"], "<declared type>"], "@entity.cmdCursor"], []])
+            json!([["array/nth", ["let", [["knob_cmds", ["list", { "anchor": "exe-dir", "path": "bun" }, "bun"], "<declared type>"]], "@knob_cmds"], "@entity.cmdCursor"], []])
         ),
         Ok(vec![
             OsRequirement::ExecAnchored { anchor: GrantAnchor::ExeDir, path: Some("bun".into()) },
             OsRequirement::Exec { command: "bun".into() },
         ]),
-        "a marked list carrying its declared type is the same list"
+        "a knob's literal bound by its declaring let is the same list"
+    );
+    assert_eq!(
+        call(
+            OsOp::Spawn,
+            json!([["array/nth", ["let", [["knob_cmds", ["list", "bun"], "<declared type>"]], "@other"], "@entity.cmdCursor"], []])
+        ),
+        Err(0),
+        "control: a let that does not read its binding back is not a static list"
     );
 }
 

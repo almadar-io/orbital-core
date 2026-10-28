@@ -237,7 +237,7 @@ fn canonical_json_sorts_object_keys_so_emission_is_byte_stable() {
         map.insert("middle".to_string(), SExpression::string("x"));
         let expr = SExpression::Array(vec![
             SExpression::string("="),
-            SExpression::Object(map),
+            SExpression::object(map),
         ]);
         serde_json::to_string(&expr.to_canonical_json()).expect("serializes")
     };
@@ -593,7 +593,7 @@ fn is_statically_false_false_for_nonzero_number() {
 
 #[test]
 fn is_statically_false_true_for_empty_object() {
-    assert!(SExpression::Object(SObject::default()).is_statically_false());
+    assert!(SExpression::object(SObject::default()).is_statically_false());
 }
 
 #[test]
@@ -651,4 +651,18 @@ fn entity_reads_count_render_bindings_by_their_root_field() {
 #[test]
 fn entity_reads_ignore_payload_and_config_bindings() {
     assert!(reads(serde_json::json!(["if", "@config.on", "@payload.x", "?y"])).is_empty());
+}
+
+#[test]
+fn an_ir_node_is_24_bytes_because_the_object_map_is_boxed() {
+    // 72 when the object map was inline; boxing it lets every variant fit beside a `Vec`.
+    assert_eq!(std::mem::size_of::<SExpression>(), 24);
+}
+
+#[test]
+fn a_boxed_object_keeps_the_plain_json_wire_form() {
+    let json = serde_json::json!({"type": "page", "items": [1.5, {"k": null}]});
+    let expr: SExpression = serde_json::from_value(json.clone()).unwrap();
+    assert!(matches!(expr, SExpression::Object(_)));
+    assert_eq!(serde_json::to_value(&expr).unwrap(), json);
 }

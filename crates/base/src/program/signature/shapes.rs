@@ -14,6 +14,13 @@ pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings
     {
         return false;
     }
+    // A plain string is not a date: the program parses it (`time/parse`) or reads a value declared `date`.
+    if mode == Mode::Proof
+        && matches!(unwrap_optional(actual), OirType::String)
+        && matches!(expected, OirType::Date | OirType::DateTime | OirType::Instant)
+    {
+        return false;
+    }
     // A date is a string or a number at rest, depending on the host; a static date passes either.
     let date_at_rest = matches!(unwrap_optional(actual), OirType::Date | OirType::DateTime)
         && matches!(expected, OirType::Number | OirType::String);

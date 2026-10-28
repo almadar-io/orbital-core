@@ -33,11 +33,28 @@ where
 // Root Schema
 // =============================================================================
 
+/// The type contract version this build reads and writes.
+pub const TYPE_CONTRACT_VERSION: u32 = 1;
+
+/// Who resolved a program and under which type contract (`OrbitalSchema.resolved`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedMark {
+    /// The `orb` version that resolved the program.
+    pub orb: String,
+    /// The type contract version the resolved program was written under.
+    #[serde(rename = "typeContractVersion")]
+    pub type_contract_version: u32,
+}
+
 /// The root OrbitalSchema type
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrbitalSchema {
     #[serde(default, rename = "typeContractVersion", skip_serializing_if = "Option::is_none", deserialize_with = "crate::ir::types::deserialize_type_contract_version")]
     pub type_contract_version: Option<u32>,
+    /// Present exactly when the program is RESOLVED (inlined, composed, enriched): stamped by the compiler as the
+    /// last step of resolution, never authored. A loader takes a program carrying it as-is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<ResolvedMark>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub types: Option<std::collections::BTreeMap<String, Vec<PayloadField>>>,
 
